@@ -1,7 +1,6 @@
 
 use std::collections::{HashMap, HashSet};
-use lsp_server::{Connection, Message, Notification};
-use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location, NumberOrString, PublishDiagnosticsParams, Uri};
+use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location, NumberOrString, Uri};
 use crate::annotations::{DiagnosticSuppression, SuppressionKind};
 use crate::diagnostics::WowDiagnostic;
 
@@ -12,17 +11,6 @@ pub(crate) struct PluginDiag {
     pub(crate) severity: DiagnosticSeverity,
     pub(crate) start: usize,
     pub(crate) end: usize,
-}
-
-pub(crate) fn publish(
-    connection: &Connection,
-    uri: Uri,
-    text: &str,
-    errors: &[crate::syntax::tree::ParseError],
-    semantic: &[WowDiagnostic],
-    suppressions: &[DiagnosticSuppression],
-) {
-    publish_with_config(connection, uri, text, errors, semantic, &[], suppressions, &HashSet::new(), &HashMap::new());
 }
 
 /// Build a `Vec<Diagnostic>` without sending it. Used by the pull-model handlers
@@ -118,35 +106,6 @@ pub(crate) fn build_lsp_diagnostics(
     }
 
     diagnostics
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn publish_with_config(
-    connection: &Connection,
-    uri: Uri,
-    text: &str,
-    errors: &[crate::syntax::tree::ParseError],
-    semantic: &[WowDiagnostic],
-    plugin_diags: &[PluginDiag],
-    suppressions: &[DiagnosticSuppression],
-    disabled_diagnostics: &HashSet<String>,
-    severity_overrides: &HashMap<String, DiagnosticSeverity>,
-) {
-    let diagnostics = build_lsp_diagnostics(&uri, text, errors, semantic, plugin_diags, suppressions, disabled_diagnostics, severity_overrides);
-
-    let params = PublishDiagnosticsParams {
-        uri,
-        version: None,
-        diagnostics,
-    };
-    let Ok(encoded) = serde_json::to_value(params) else {
-        return
-    };
-    let not = Notification {
-        method: String::from("textDocument/publishDiagnostics"),
-        params: encoded,
-    };
-    let _ = connection.sender.send(Message::Notification(not));
 }
 
 pub fn is_suppressed(code: &str, line: u32, suppressions: &[DiagnosticSuppression]) -> bool {

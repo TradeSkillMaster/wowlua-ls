@@ -63,9 +63,14 @@ struct Document {
     pending_text: Option<String>,
     tree: Option<SyntaxTree>,
     analysis: Option<AnalysisResult>,
+    /// Cached plugin diagnostics from the last analysis cycle, served by pull handlers.
+    plugin_diags: Vec<diagnostics::PluginDiag>,
     /// True if the text has changed since the last full analysis cycle (Phase 4).
     dirty: bool,
 }
+
+/// Cached workspace diagnostics: (generation, vec of (uri_string, diagnostics)).
+type CachedWsDiagnostics = (u64, Vec<(String, Vec<lsp_types::Diagnostic>)>);
 
 struct WorkspaceState {
     root: Option<PathBuf>,
@@ -101,6 +106,13 @@ struct WorkspaceState {
     /// Per-file class name associated with the addon namespace variable (from @class on select(2,...)).
     ws_file_addon_ns_class: HashMap<PathBuf, String>,
     plugin_engine: Option<crate::plugins::PluginEngine>,
+    /// Monotonically increasing counter bumped on every workspace rebuild.
+    /// Used to invalidate `cached_ws_diagnostics`.
+    ws_generation: u64,
+    /// Cached diagnostics for unopened workspace files, keyed by URI string.
+    /// Populated lazily on first `workspace/diagnostic` request and invalidated
+    /// when `ws_generation` changes (i.e. workspace is rebuilt).
+    cached_ws_diagnostics: Option<CachedWsDiagnostics>,
 }
 
 /// Merge `@defclass` / `@built-name`-discovered `ClassDecl`s into an input set
@@ -275,6 +287,8 @@ impl WorkspaceState {
         }
 
         self.pre_globals = Arc::new(pg);
+        self.ws_generation += 1;
+        self.cached_ws_diagnostics = None;
     }
 
     /// Run plugins against an analysis result and return diagnostics.
@@ -1107,6 +1121,8 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         cached_built_name_func_names: Vec::new(),
         ws_file_addon_ns_class: scan_result.addon_ns_class,
         plugin_engine: None,
+        ws_generation: 0,
+        cached_ws_diagnostics: None,
     };
     let plugin_paths = ws.configs.all_plugins();
     if !plugin_paths.is_empty() {
@@ -1141,6 +1157,11 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         .and_then(|w| w.inlay_hint.as_ref())
         .and_then(|i| i.refresh_support)
         .unwrap_or(false);
+    let supports_diagnostic_refresh = client_capabilities.workspace
+        .as_ref()
+        .and_then(|w| w.diagnostic.as_ref())
+        .and_then(|d| d.refresh_support)
+        .unwrap_or(false);
     let client_snippet_support = client_capabilities.text_document
         .as_ref()
         .and_then(|td| td.completion.as_ref())
@@ -1148,9 +1169,14 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         .and_then(|ci| ci.snippet_support)
         .unwrap_or(false);
 
-    main_loop(connection, ws, supports_progress,
-        supports_code_lens_refresh, supports_semantic_tokens_refresh, supports_inlay_hint_refresh,
-        client_snippet_support)
+    main_loop(connection, ws, ClientSupport {
+        progress: supports_progress,
+        code_lens_refresh: supports_code_lens_refresh,
+        semantic_tokens_refresh: supports_semantic_tokens_refresh,
+        inlay_hint_refresh: supports_inlay_hint_refresh,
+        diagnostic_refresh: supports_diagnostic_refresh,
+        snippets: client_snippet_support,
+    })
 }
 
 /// Parse a Lua source string and return a syntax tree.
@@ -1160,7 +1186,6 @@ fn parse_lua(text: &str) -> SyntaxTree {
 
 /// Analyze a Lua source string from scratch. Returns a `(SyntaxTree, AnalysisResult)`.
 fn analyze_lua(
-    connection: &Connection,
     uri: &lsp_types::Uri,
     text: &str,
     pre_globals: &Arc<PreResolvedGlobals>,
@@ -1168,14 +1193,10 @@ fn analyze_lua(
 ) -> (SyntaxTree, AnalysisResult) {
     let tree = parse_lua(text);
     let result = analyze_lua_parsed(uri, pre_globals, configs, &tree);
-    publish_analysis_diagnostics(connection, uri, configs, &tree, &result, &[]);
     (tree, result)
 }
 
 /// Analyze a pre-parsed tree. Returns an `AnalysisResult` (no lifetime, safe to store).
-/// Does NOT publish diagnostics — call `publish_analysis_diagnostics` separately when ready.
-/// Use this for hot-path interactive requests (hover, completion) where publishing partial-state
-/// diagnostics mid-keystroke would cause flickering. Phase 4's debounced cycle publishes.
 fn analyze_lua_parsed(
     uri: &lsp_types::Uri,
     pre_globals: &Arc<PreResolvedGlobals>,
@@ -1202,43 +1223,20 @@ fn analyze_lua_parsed(
     analysis.into_result()
 }
 
-/// Publish LSP diagnostics for an already-analyzed file.
-fn publish_analysis_diagnostics(
-    connection: &Connection,
-    uri: &lsp_types::Uri,
-    configs: &crate::config::ProjectConfigs,
-    tree: &SyntaxTree,
-    result: &AnalysisResult,
-    plugin_diags: &[diagnostics::PluginDiag],
-) {
-    let root = crate::syntax::SyntaxNode::new_root(tree);
-    let suppressions = scan_diagnostic_directives(root);
-    let file_path = uri_to_abs_path(uri).unwrap_or_default();
-    let text = tree.source();
-    let syntax_errors = &tree.errors;
-    if result.is_meta() {
-        // @meta files are declaration-only stubs — suppress all diagnostics
-        diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
-    } else {
-        let diags = result.run_diagnostics(tree);
-        let disabled = configs.disabled_diagnostics_for(&file_path);
-        let severity = configs.severity_overrides_for(&file_path);
-        diagnostics::publish_with_config(
-            connection, uri.clone(), text,
-            syntax_errors, &diags, plugin_diags, &suppressions,
-            &disabled, &severity,
-        );
-    }
+/// Client capability flags negotiated during initialization.
+struct ClientSupport {
+    progress: bool,
+    code_lens_refresh: bool,
+    semantic_tokens_refresh: bool,
+    inlay_hint_refresh: bool,
+    diagnostic_refresh: bool,
+    snippets: bool,
 }
 
 fn main_loop(
     connection: Connection,
     mut ws: WorkspaceState,
-    supports_progress: bool,
-    supports_code_lens_refresh: bool,
-    supports_semantic_tokens_refresh: bool,
-    supports_inlay_hint_refresh: bool,
-    client_snippet_support: bool,
+    client: ClientSupport,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut documents: HashMap<String, Document> = HashMap::new();
     let mut progress_counter: i32 = 1; // 0 is used by the startup loading token
@@ -1313,7 +1311,7 @@ fn main_loop(
         // the next recv_timeout is measured from the most recent user edit.
         let has_did_change = notifications.iter().any(|n| n.method == "textDocument/didChange");
         for not in notifications {
-            handle_notification(&connection, &mut documents, &mut ws, not, &None, supports_progress, &mut progress_counter);
+            handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter);
         }
         if has_did_change {
             last_dirty_at = Some(Instant::now());
@@ -1361,7 +1359,7 @@ fn main_loop(
                         let result = Some(analyze_lua_parsed(
                             &uri, &ws.pre_globals, &ws.configs, &tree,
                         ));
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), dirty: true });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), plugin_diags: Vec::new(), dirty: true });
                     }
                 }
             }
@@ -1370,7 +1368,7 @@ fn main_loop(
         // Phase 3: Handle all requests (now with up-to-date text and analysis
         // for the requested documents).
         for req in requests {
-            handle_request(&connection, &documents, &ws, req, client_snippet_support);
+            handle_request(&connection, &documents, &mut ws, req, client.snippets);
         }
 
         // Phase 4: Re-analyze any dirty documents. Only run when the
@@ -1390,7 +1388,7 @@ fn main_loop(
         if !dirty_uris.is_empty() {
             let phase4_start = std::time::Instant::now();
             log::debug!("Phase 4: reanalyzing {} dirty documents", dirty_uris.len());
-            let has_analysis_work = supports_progress;
+            let has_analysis_work = client.progress;
             let analysis_token = if has_analysis_work {
                 let token = NumberOrString::Number(progress_counter);
                 progress_counter += 1;
@@ -1414,7 +1412,7 @@ fn main_loop(
             // Try parallel batch analysis when many files are dirty (e.g. initial load).
             // This avoids analyzing 20+ files sequentially at ~100ms each.
             let did_batch = if dirty_uris.len() >= 3 {
-                try_batch_analyze(&dirty_uris, &connection, &mut documents, &ws)
+                try_batch_analyze(&dirty_uris, &mut documents, &ws)
             } else {
                 false
             };
@@ -1428,11 +1426,11 @@ fn main_loop(
             if !did_batch {
                 // Sequential fallback: process one file at a time, checking for messages between each.
                 for uri_str in dirty_uris {
-                    let (drained, shutdown) = drain_pending_requests(&connection, &documents, &ws, client_snippet_support);
+                    let (drained, shutdown) = drain_pending_requests(&connection, &documents, &mut ws, client.snippets);
                     if shutdown { return Ok(()); }
                     if !drained.is_empty() {
                         for not in drained {
-                            handle_notification(&connection, &mut documents, &mut ws, not, &None, supports_progress, &mut progress_counter);
+                            handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter);
                         }
                         if documents.get(&uri_str).is_some_and(|d| d.dirty) {
                         } else {
@@ -1464,8 +1462,7 @@ fn main_loop(
                         let text = doc.pending_text.unwrap_or(doc.text);
 
                         if is_ignored_uri(&uri, &ws.configs) {
-                            diagnostics::publish(&connection, uri.clone(), &text, &[], &[], &[]);
-                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, dirty: false });
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
                             continue;
                         }
 
@@ -1500,8 +1497,7 @@ fn main_loop(
 
                         let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                         let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                        publish_analysis_diagnostics(&connection, &uri, &ws.configs, &tree, &result, &plugin_diags);
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), plugin_diags, dirty: false });
                         if rebuilt {
                             had_workspace_rebuild = true;
                             if let Some(ref token) = analysis_token {
@@ -1533,17 +1529,23 @@ fn main_loop(
                 }));
             }
 
-            // Ask the editor to re-request code lenses, semantic tokens,
-            // and inlay hints when cross-file state changed (workspace
-            // rebuild). Normal single-file reanalysis results are already
-            // served fresh by Phase 2+3; only cross-file counts (e.g.
-            // "N usages" code lenses) need a refresh after rebuild.
+            // Always ask the editor to re-pull diagnostics after Phase 4
+            // reanalysis, since the pull model is the sole diagnostic delivery
+            // channel. Code lenses, semantic tokens, and inlay hints only need
+            // a refresh after workspace rebuilds (cross-file state changes).
             if had_workspace_rebuild {
                 send_refresh_requests(
                     &connection, &mut progress_counter,
-                    supports_code_lens_refresh,
-                    supports_semantic_tokens_refresh,
-                    supports_inlay_hint_refresh,
+                    client.code_lens_refresh,
+                    client.semantic_tokens_refresh,
+                    client.inlay_hint_refresh,
+                    client.diagnostic_refresh,
+                );
+            } else if client.diagnostic_refresh {
+                send_refresh_requests(
+                    &connection, &mut progress_counter,
+                    false, false, false,
+                    true,
                 );
             }
         }
@@ -1552,13 +1554,14 @@ fn main_loop(
 }
 
 /// Send workspace refresh requests (server→client) so the editor re-requests
-/// code lenses, semantic tokens, and inlay hints with fresh analysis data.
+/// code lenses, semantic tokens, inlay hints, and diagnostics with fresh data.
 fn send_refresh_requests(
     connection: &Connection,
     progress_counter: &mut i32,
     code_lens: bool,
     semantic_tokens: bool,
     inlay_hint: bool,
+    diagnostic: bool,
 ) {
     if code_lens {
         *progress_counter += 1;
@@ -1587,6 +1590,15 @@ fn send_refresh_requests(
         );
         let _ = connection.sender.send(Message::Request(req));
     }
+    if diagnostic {
+        *progress_counter += 1;
+        let req = Request::new(
+            RequestId::from(*progress_counter),
+            "workspace/diagnostic/refresh".to_string(),
+            serde_json::Value::Null,
+        );
+        let _ = connection.sender.send(Message::Request(req));
+    }
 }
 
 /// Drain pending messages, handle requests immediately using the current
@@ -1595,7 +1607,7 @@ fn send_refresh_requests(
 fn drain_pending_requests(
     connection: &Connection,
     documents: &HashMap<String, Document>,
-    ws: &WorkspaceState,
+    ws: &mut WorkspaceState,
     client_snippet_support: bool,
 ) -> (Vec<Notification>, bool) {
     let mut pending_notifications = Vec::new();
@@ -1642,7 +1654,7 @@ where
 fn handle_request(
     connection: &Connection,
     documents: &HashMap<String, Document>,
-    ws: &WorkspaceState,
+    ws: &mut WorkspaceState,
     req: Request,
     client_snippet_support: bool,
 ) {
@@ -2811,7 +2823,7 @@ fn handle_notification(
     ws: &mut WorkspaceState,
     not: Notification,
     analysis_token: &Option<NumberOrString>,
-    supports_progress: bool,
+    client: &ClientSupport,
     progress_counter: &mut i32,
 ) {
     match &*not.method {
@@ -2852,8 +2864,7 @@ fn handle_notification(
                 if params.text_document.language_id == "lua" {
                     if crate::has_shebang(&text) {
                         // Store with analysis: None so didChange ignores subsequent edits.
-                        diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, dirty: false });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
                         return;
                     }
                     // Stub files: run analysis (so hover/go-to-definition work)
@@ -2861,18 +2872,15 @@ fn handle_notification(
                     if is_stub_path(&uri) {
                         let tree = parse_lua(&text);
                         let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-                        publish_analysis_diagnostics(connection, &uri, &ws.configs, &tree, &result, &[]);
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), plugin_diags: Vec::new(), dirty: false });
                         return;
                     }
                     if is_ignored_uri(&uri, &ws.configs) {
-                        // Suppress diagnostics for files in ignored directories
-                        diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, dirty: false });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
                         return;
                     }
                     // Show progress while analyzing the newly opened file
-                    let open_token = if supports_progress {
+                    let open_token = if client.progress {
                         let token = NumberOrString::Number(*progress_counter);
                         *progress_counter += 1;
                         let create_req = Request::new(
@@ -2896,20 +2904,13 @@ fn handle_notification(
                     // Parse once, reuse for both workspace check and analysis
                     let tree = parse_lua(&text);
 
-                    // Eagerly publish syntax errors so the user sees immediate
-                    // feedback while the slower semantic analysis runs.
-                    if !tree.errors.is_empty() {
-                        diagnostics::publish(connection, uri.clone(), &text, &tree.errors, &[], &[]);
-                    }
-
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
                     let rebuilt = maybe_rebuild_workspace(&uri, root, ws);
                     let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
                     result.plugin_diag_codes = ws.plugin_codes();
                     let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                     let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                    publish_analysis_diagnostics(connection, &uri, &ws.configs, &tree, &result, &plugin_diags);
-                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), plugin_diags, dirty: false });
                     if rebuilt {
                         if let Some(ref token) = open_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -2935,9 +2936,15 @@ fn handle_notification(
                             message: Some("Ready".to_string()),
                         }));
                     }
+                    // VS Code auto-pulls textDocument/diagnostic on open, so we only
+                    // need a workspace refresh when a rebuild occurred (other docs
+                    // were marked dirty and need to re-pull).
+                    if rebuilt && client.diagnostic_refresh {
+                        send_refresh_requests(connection, progress_counter, false, false, false, true);
+                    }
                     return;
                 }
-                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, dirty: false });
+                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
             }
         }
         "textDocument/didSave" => {
@@ -2998,7 +3005,7 @@ fn reload_config(
     ws.ws_file_addon_ns_class = addon_ns_class;
     ws.rebuild_caches();
     ws.rebuild();
-    reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
+    reanalyze_open_documents(documents, &ws.pre_globals, &ws.configs);
 }
 
 
@@ -3840,7 +3847,6 @@ fn resolve_ext_symbol_to_function(
 
 /// Re-analyze all open Lua documents after a workspace rebuild.
 fn reanalyze_open_documents(
-    connection: &Connection,
     documents: &mut HashMap<String, Document>,
     pre_globals: &Arc<PreResolvedGlobals>,
     configs: &crate::config::ProjectConfigs,
@@ -3854,12 +3860,11 @@ fn reanalyze_open_documents(
         let Ok(uri) = lsp_types::Uri::from_str(&uri_str) else { continue };
         let text = doc.pending_text.as_ref().unwrap_or(&doc.text).clone();
         if is_ignored_uri(&uri, configs) {
-            diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
-            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, dirty: false });
+            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
             continue;
         }
-        let (tree, result) = analyze_lua(connection, &uri, &text, pre_globals, configs);
-        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
+        let (tree, result) = analyze_lua(&uri, &text, pre_globals, configs);
+        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), plugin_diags: Vec::new(), dirty: false });
     }
 }
 
@@ -3882,7 +3887,6 @@ fn is_ignored_uri(uri: &lsp_types::Uri, configs: &crate::config::ProjectConfigs)
 /// No side effects occur if returning false — all work is discarded.
 fn try_batch_analyze(
     dirty_uris: &[String],
-    connection: &Connection,
     documents: &mut HashMap<String, Document>,
     ws: &WorkspaceState,
 ) -> bool {
@@ -3948,7 +3952,6 @@ fn try_batch_analyze(
     struct AnalyzedFile {
         uri_str: String,
         result: AnalysisResult,
-        idx: usize, // index into `parsed` to recover tree
     }
 
     let analysis_indices: Vec<usize> = parsed.iter().enumerate()
@@ -3978,45 +3981,23 @@ fn try_batch_analyze(
             analysis.resolve_types();
             let mut result = analysis.into_result();
             result.plugin_diag_codes = ws.plugin_codes();
-            Some(AnalyzedFile { uri_str: f.uri_str.clone(), result, idx })
+            Some(AnalyzedFile { uri_str: f.uri_str.clone(), result })
         })
         .collect();
 
-    // Phase 3: Publish diagnostics and collect results for document insertion.
-    // Uses the original tree from `parsed` (no re-parse).
+    // Phase 3: Collect results for document insertion.
+    // Pull-model handlers serve diagnostics from cached analysis on demand.
     let mut result_map: HashMap<String, AnalysisResult> = HashMap::new();
     for af in results {
-        let f = &parsed[af.idx];
-        let Ok(uri) = lsp_types::Uri::from_str(&af.uri_str) else { continue };
-        let file_path = uri_to_abs_path(&uri).unwrap_or_default();
-
-        if af.result.is_meta() {
-            diagnostics::publish(connection, uri.clone(), &f.text, &[], &[], &[]);
-        } else {
-            let diags = af.result.run_diagnostics(&f.tree);
-            let root = crate::syntax::SyntaxNode::new_root(&f.tree);
-            let suppressions = scan_diagnostic_directives(root);
-            let disabled = configs.disabled_diagnostics_for(&file_path);
-            let severity = configs.severity_overrides_for(&file_path);
-            diagnostics::publish_with_config(
-                connection, uri.clone(), &f.text,
-                &f.tree.errors, &diags, &[], &suppressions,
-                &disabled, &severity,
-            );
-        }
-
         result_map.insert(af.uri_str, af.result);
     }
 
     for f in parsed {
         if f.ignored {
-            if let Ok(uri) = lsp_types::Uri::from_str(&f.uri_str) {
-                diagnostics::publish(connection, uri, &f.text, &[], &[], &[]);
-            }
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, dirty: false });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
         } else {
             let analysis = result_map.remove(&f.uri_str);
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), dirty: false });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), plugin_diags: Vec::new(), dirty: false });
         }
     }
 
@@ -4037,6 +4018,7 @@ fn build_file_diagnostics(
     tree: &SyntaxTree,
     analysis: &AnalysisResult,
     text: &str,
+    plugin_diags: &[diagnostics::PluginDiag],
     ws: &WorkspaceState,
 ) -> Vec<lsp_types::Diagnostic> {
     if analysis.is_meta() {
@@ -4048,7 +4030,7 @@ fn build_file_diagnostics(
     let suppressions = scan_diagnostic_directives(root);
     let disabled = ws.configs.disabled_diagnostics_for(&file_path);
     let severity = ws.configs.severity_overrides_for(&file_path);
-    diagnostics::build_lsp_diagnostics(uri, text, &tree.errors, &diags, &[], &suppressions, &disabled, &severity)
+    diagnostics::build_lsp_diagnostics(uri, text, &tree.errors, &diags, plugin_diags, &suppressions, &disabled, &severity)
 }
 
 /// Handle a `textDocument/diagnostic` pull request (LSP 3.17).
@@ -4061,7 +4043,7 @@ fn handle_document_diagnostic(
     let items = if let Some(doc) = documents.get(&uri.to_string()) {
         // Open document: use cached tree and analysis.
         if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
-            build_file_diagnostics(uri, tree, analysis, &doc.text, ws)
+            build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws)
         } else {
             Vec::new()
         }
@@ -4074,7 +4056,7 @@ fn handle_document_diagnostic(
                 } else {
                     let tree = parse_lua(&text);
                     let analysis = analyze_lua_parsed(uri, &ws.pre_globals, &ws.configs, &tree);
-                    build_file_diagnostics(uri, &tree, &analysis, &text, ws)
+                    build_file_diagnostics(uri, &tree, &analysis, &text, &[], ws)
                 }
             }
             Err(_) => Vec::new(),
@@ -4096,26 +4078,20 @@ fn handle_document_diagnostic(
 
 /// Handle a `workspace/diagnostic` pull request (LSP 3.17).
 /// Returns diagnostics for every known file in the workspace.
+/// Unopened files use a cache keyed by `ws_generation` to avoid re-analyzing
+/// hundreds of files on every request (which blocks the server and causes
+/// "Loading..." delays on hover).
 fn handle_workspace_diagnostic(
     documents: &HashMap<String, Document>,
-    ws: &WorkspaceState,
+    ws: &mut WorkspaceState,
 ) -> WorkspaceDiagnosticReportResult {
-    use rayon::prelude::*;
-
     let mut items: Vec<WorkspaceDocumentDiagnosticReport> = Vec::new();
-
-    // Collect paths already covered by open documents.
-    let open_paths: HashSet<PathBuf> = documents
-        .keys()
-        .filter_map(|s| lsp_types::Uri::from_str(s).ok())
-        .filter_map(|u| uri_to_abs_path(&u))
-        .collect();
 
     // Open documents: use cached analysis.
     for (uri_str, doc) in documents {
         let Ok(uri) = lsp_types::Uri::from_str(uri_str) else { continue };
         if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
-            let diag_items = build_file_diagnostics(&uri, tree, analysis, &doc.text, ws);
+            let diag_items = build_file_diagnostics(&uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
             items.push(WorkspaceDocumentDiagnosticReport::Full(
                 WorkspaceFullDocumentDiagnosticReport {
                     uri,
@@ -4129,43 +4105,64 @@ fn handle_workspace_diagnostic(
         }
     }
 
-    // Workspace files not currently open: analyze from disk in parallel.
-    let unopened: Vec<&PathBuf> = ws
-        .ws_file_globals
-        .keys()
-        .filter(|p| !open_paths.contains(*p))
-        .collect();
+    // Workspace files not currently open: use cached diagnostics when available.
+    // The cache stores diagnostics for ALL workspace files (not just unopened ones),
+    // so we filter against currently-open documents when serving to avoid duplicates.
+    let open_uri_strs: HashSet<&str> = documents.keys().map(|s| s.as_str()).collect();
+    let current_gen = ws.ws_generation;
+    let needs_recompute = match ws.cached_ws_diagnostics {
+        Some((cached_gen, _)) => cached_gen != current_gen,
+        None => true,
+    };
+    if needs_recompute {
+        use rayon::prelude::*;
+        let all_ws_paths: Vec<&PathBuf> = ws
+            .ws_file_globals
+            .keys()
+            .collect();
 
-    type DiskDiagResult = (lsp_types::Uri, Vec<lsp_types::Diagnostic>);
-    let disk_results: Vec<DiskDiagResult> = unopened
-        .par_iter()
-        .filter_map(|&path| {
-            let text = std::fs::read_to_string(path).ok()?;
-            if crate::has_shebang(&text) {
-                return None;
-            }
-            let uri = abs_path_to_uri(path)?;
-            if is_ignored_uri(&uri, &ws.configs) {
-                return None;
-            }
-            let tree = parse_lua(&text);
-            let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-            let diag_items = build_file_diagnostics(&uri, &tree, &result, &text, ws);
-            Some((uri, diag_items))
-        })
-        .collect();
+        let disk_results: Vec<(String, Vec<lsp_types::Diagnostic>)> = all_ws_paths
+            .par_iter()
+            .filter_map(|&path| {
+                let text = std::fs::read_to_string(path).ok()?;
+                if crate::has_shebang(&text) {
+                    return None;
+                }
+                let uri = abs_path_to_uri(path)?;
+                if is_ignored_uri(&uri, &ws.configs) {
+                    return None;
+                }
+                let tree = parse_lua(&text);
+                let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
+                let diag_items = build_file_diagnostics(&uri, &tree, &result, &text, &[], ws);
+                Some((uri.to_string(), diag_items))
+            })
+            .collect();
 
-    for (uri, diag_items) in disk_results {
-        items.push(WorkspaceDocumentDiagnosticReport::Full(
-            WorkspaceFullDocumentDiagnosticReport {
-                uri,
-                version: None,
-                full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                    result_id: None,
-                    items: diag_items,
-                },
-            },
-        ));
+        ws.cached_ws_diagnostics = Some((current_gen, disk_results));
+    }
+
+    if let Some((_, ref cached)) = ws.cached_ws_diagnostics {
+        for (uri_str, diag_items) in cached {
+            // Skip files that are currently open — they were already handled above
+            // with fresh analysis. Without this filter, opening/closing files between
+            // requests would produce duplicate entries.
+            if open_uri_strs.contains(uri_str.as_str()) {
+                continue;
+            }
+            if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
+                items.push(WorkspaceDocumentDiagnosticReport::Full(
+                    WorkspaceFullDocumentDiagnosticReport {
+                        uri,
+                        version: None,
+                        full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                            result_id: None,
+                            items: diag_items.clone(),
+                        },
+                    },
+                ));
+            }
+        }
     }
 
     WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items })
@@ -4553,6 +4550,8 @@ mod tests {
             cached_built_name_func_names: Vec::new(),
             ws_file_addon_ns_class: HashMap::new(),
             plugin_engine: None,
+            ws_generation: 0,
+            cached_ws_diagnostics: None,
         };
 
         ws.rebuild_caches();
