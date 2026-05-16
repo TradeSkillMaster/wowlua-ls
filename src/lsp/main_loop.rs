@@ -1371,7 +1371,7 @@ fn main_loop(
         // Phase 3: Handle all requests (now with up-to-date text and analysis
         // for the requested documents).
         for req in requests {
-            handle_request(&connection, &mut documents, &mut ws, req, client.snippets);
+            handle_request(&connection, &mut documents, &mut ws, req, client.snippets, client.progress, &mut progress_counter);
         }
 
         // Phase 4: Re-analyze any dirty documents. Only run when the
@@ -1629,7 +1629,9 @@ fn drain_pending_requests(
                     let _ = connection.sender.send(Message::Response(resp));
                     return (pending_notifications, true);
                 }
-                handle_request(connection, documents, ws, req, client_snippet_support);
+                // Progress is disabled in drain path (supports_progress=false), so
+                // the counter is unused; pass a throwaway mutable reference.
+                handle_request(connection, documents, ws, req, client_snippet_support, false, &mut 0);
             }
             Message::Notification(not) => pending_notifications.push(not),
             Message::Response(_) => {}
@@ -1694,6 +1696,8 @@ fn handle_request(
     ws: &mut WorkspaceState,
     req: Request,
     client_snippet_support: bool,
+    supports_progress: bool,
+    progress_counter: &mut i32,
 ) {
     let method = req.method.clone();
     let req_start = std::time::Instant::now();
@@ -2383,7 +2387,39 @@ fn handle_request(
         }
         "workspace/diagnostic" => {
             if let Ok((id, _params)) = cast_req::<request::WorkspaceDiagnosticRequest>(req) {
-                let result = handle_workspace_diagnostic(documents, ws);
+                // Show progress only when a full recomputation will occur (first
+                // request or after workspace state changed). Cached responses are
+                // near-instant and don't need a spinner.
+                let will_recompute = match &ws.cached_ws_diagnostics {
+                    Some((cached_gen, _)) => *cached_gen != ws.ws_generation,
+                    None => true,
+                };
+                let file_count = ws.ws_file_globals.len();
+                let token = if supports_progress && will_recompute && file_count > 0 {
+                    let t = NumberOrString::Number(*progress_counter);
+                    *progress_counter += 1;
+                    let create_req = Request::new(
+                        RequestId::from(*progress_counter),
+                        "window/workDoneProgress/create".to_string(),
+                        lsp_types::WorkDoneProgressCreateParams { token: t.clone() },
+                    );
+                    let _ = connection.sender.send(Message::Request(create_req));
+                    send_progress(connection, &t, WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                        title: "wowlua_ls: Analyzing".to_string(),
+                        message: Some(format!("Checking {} workspace files\u{2026}", file_count)),
+                        percentage: Some(0),
+                        cancellable: Some(false),
+                    }));
+                    Some(t)
+                } else {
+                    None
+                };
+                let (result, _) = handle_workspace_diagnostic(documents, ws);
+                if let Some(ref t) = token {
+                    send_progress(connection, t, WorkDoneProgress::End(WorkDoneProgressEnd {
+                        message: Some("Ready".to_string()),
+                    }));
+                }
                 send_response(connection, id, &result);
             }
         }
@@ -4284,10 +4320,13 @@ fn handle_document_diagnostic(
 /// Unopened files use a cache keyed by `ws_generation` to avoid re-analyzing
 /// hundreds of files on every request (which blocks the server and causes
 /// "Loading..." delays on hover).
+///
+/// Returns `(result, needs_recompute)` — the bool indicates whether a full
+/// workspace re-analysis was performed (for progress reporting by the caller).
 fn handle_workspace_diagnostic(
     documents: &HashMap<String, Document>,
     ws: &mut WorkspaceState,
-) -> WorkspaceDiagnosticReportResult {
+) -> (WorkspaceDiagnosticReportResult, bool) {
     let mut items: Vec<WorkspaceDocumentDiagnosticReport> = Vec::new();
 
     // Open documents: use cached analysis.
@@ -4370,7 +4409,7 @@ fn handle_workspace_diagnostic(
         }
     }
 
-    WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items })
+    (WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items }), needs_recompute)
 }
 
 /// Search workspace symbols by name query. Returns matching `SymbolInformation`
