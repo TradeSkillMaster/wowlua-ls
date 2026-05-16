@@ -2218,6 +2218,7 @@ impl<'a> Analysis<'a> {
                 let mut elem_types: Vec<ValueType> = Vec::new();
                 for member in &members {
                     if let ValueType::Table(Some(idx)) = member
+                        && !self.table(*idx).is_explicit_map
                         && let Some(vt) = self.table(*idx).value_type.clone()
                             && !elem_types.contains(&vt) {
                                 elem_types.push(vt);

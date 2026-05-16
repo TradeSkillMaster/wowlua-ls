@@ -809,4 +809,20 @@ local f2 = makeField("number", getCount)
 --    ^ hover: (local) f2: number  def: local
 -- ^ diag: none
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2 }
+-- ── Array element type from union with hash table ─────────────────────────
+-- Regression: V[] generic should only bind from array members, not table<K,V>
+
+---@generic V
+---@param tbl V[]
+---@return fun(): number, V
+local function ReverseIPairs(tbl) end
+
+---@type number[] | table<string, true>
+local mixedUnion = {}
+
+for _, val in ReverseIPairs(mixedUnion) do
+    local captured = val
+--        ^ hover: (local) captured: number  def: local
+end
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion }
