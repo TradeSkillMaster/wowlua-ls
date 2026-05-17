@@ -41,11 +41,11 @@ function MyComp:GetName(name)
     return name
 end
 
--- self must resolve to MyComp (not the generic constraint) and
--- field injection produces a hint (class now has constructor fields)
+-- self must resolve to MyComp (not the generic constraint);
+-- bare self-field scan captures _label so inject-field does not fire
 function MyComp:Init(label)
     self._label = label
---  ^ hover: (param) self: MyComp  diag: inject-field
+--  ^ hover: (param) self: MyComp  diag: none
 end
 
 ---@return UnrelatedInfo

@@ -615,6 +615,177 @@ fn scan_funcall_self_fields_inner(
     }
 }
 
+// ── Bare self-field scanning ─────────────────────────────────────────────────
+
+/// Scan method bodies for `self.field = expr` assignments that have neither
+/// explicit `---@type` annotations nor function-call RHS. Infers types from:
+/// - `@param` annotations on the enclosing function (when RHS is a parameter name)
+/// - Literal expressions (number, string, boolean)
+/// - Table constructors → `table`
+/// - Falls back to `any` for other expressions
+///
+/// Results have lowest priority: only adds fields not already captured by
+/// typed or funcall self-field scans.
+pub(crate) fn scan_method_bare_self_fields(
+    root: SyntaxNode<'_>,
+    known_classes: &HashSet<String>,
+    implicit_protected_prefix: bool,
+    already_captured: &HashSet<(String, String)>,
+) -> Vec<TypedSelfField> {
+    let mut results = Vec::new();
+    let Some(block) = Block::cast(root) else { return results };
+    let mut all_stmts = Vec::new();
+    collect_statements_recursive(&block, &mut all_stmts);
+    let var_to_class = build_var_to_class(&all_stmts);
+    for stmt in &all_stmts {
+        let Statement::FunctionDefinition(func) = stmt else { continue };
+        let Some(ident) = func.identifier() else { continue };
+        if !ident.is_call_to_self() { continue; }
+        let names = ident.names();
+        if names.len() < 2 { continue; }
+        let receiver = &names[0];
+        let class_name = if known_classes.contains(receiver) {
+            receiver.clone()
+        } else if let Some(cn) = var_to_class.get(receiver).filter(|cn| known_classes.contains(*cn)) {
+            cn.clone()
+        } else {
+            continue;
+        };
+        let Some(body) = func.block() else { continue };
+        // Build param name → type map from @param annotations
+        let annotations = super::extract_annotations(func.syntax());
+        let param_types: HashMap<&str, &AnnotationType> = annotations.params.iter()
+            .map(|p| (p.name.as_str(), &p.typ))
+            .collect();
+        let mut seen = HashSet::new();
+        let mut field_list = Vec::new();
+        scan_bare_self_fields_inner(body, &param_types, &mut field_list, &mut seen);
+        for (field_name, ann_type, range) in field_list {
+            if already_captured.contains(&(class_name.clone(), field_name.clone())) {
+                continue;
+            }
+            let vis = default_visibility_for_name(&field_name, implicit_protected_prefix);
+            results.push(TypedSelfField {
+                class_name: class_name.clone(), field_name, annotation_type: ann_type,
+                visibility: vis, byte_range: range,
+            });
+        }
+    }
+    results
+}
+
+/// Walk a block for bare `self.field = expr` assignments (no @type, not funcall).
+fn scan_bare_self_fields_inner(
+    block: Block<'_>,
+    param_types: &HashMap<&str, &AnnotationType>,
+    fields: &mut Vec<(String, AnnotationType, (u32, u32))>,
+    seen: &mut HashSet<String>,
+) {
+    for stmt in block.statements() {
+        match &stmt {
+            Statement::Assign(assign) => {
+                if let Some(vl) = assign.variable_list() {
+                    let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
+                    for (i, ident) in vl.identifiers().iter().enumerate() {
+                        let names = ident.names();
+                        if names.len() == 2 && names[0] == "self" {
+                            let field_name = &names[1];
+                            if !seen.insert(field_name.clone()) { continue; }
+                            // Skip if there's an explicit @type annotation (handled by typed scan)
+                            if extract_type_annotation_for_assign(assign.syntax()).is_some()
+                                || extract_inline_type_annotation(assign.syntax()).is_some()
+                            {
+                                continue;
+                            }
+                            // Infer type from RHS expression
+                            let ann_type = match exprs.get(i) {
+                                // Skip funcall RHS (handled by funcall scan)
+                                Some(Expression::FunctionCall(_)) => continue,
+                                // Skip function literals (not useful cross-file)
+                                Some(Expression::Function(_)) => continue,
+                                Some(Expression::Literal(lit)) => {
+                                    if lit.is_nil() {
+                                        // Skip nil-only assignments
+                                        continue;
+                                    } else if lit.get_number().is_some() {
+                                        AnnotationType::Simple("number".into())
+                                    } else if lit.get_string().is_some() {
+                                        AnnotationType::Simple("string".into())
+                                    } else if lit.get_bool().is_some() {
+                                        AnnotationType::Simple("boolean".into())
+                                    } else {
+                                        AnnotationType::Simple("any".into())
+                                    }
+                                }
+                                Some(Expression::TableConstructor(_)) => {
+                                    AnnotationType::Simple("table".into())
+                                }
+                                Some(Expression::Identifier(rhs_ident)) => {
+                                    let rhs_names = rhs_ident.names();
+                                    if rhs_names.len() == 1 {
+                                        if let Some(param_type) = param_types.get(rhs_names[0].as_str()) {
+                                            (*param_type).clone()
+                                        } else {
+                                            AnnotationType::Simple("any".into())
+                                        }
+                                    } else {
+                                        AnnotationType::Simple("any".into())
+                                    }
+                                }
+                                // No RHS or complex expression
+                                _ => AnnotationType::Simple("any".into()),
+                            };
+                            let field_range = ident.syntax().children_with_tokens()
+                                .filter_map(|c| c.into_token())
+                                .find(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
+                                .map(|t| {
+                                    let r = t.text_range();
+                                    (u32::from(r.start()), u32::from(r.end()))
+                                });
+                            if let Some(range) = field_range {
+                                fields.push((field_name.clone(), ann_type, range));
+                            }
+                        }
+                    }
+                }
+            }
+            Statement::If(if_chain) => {
+                for child in if_chain.syntax().children() {
+                    if let Some(b) = Block::cast(child) {
+                        scan_bare_self_fields_inner(b, param_types, fields, seen);
+                    }
+                }
+            }
+            Statement::While(w) => {
+                if let Some(b) = w.syntax().children().find_map(Block::cast) {
+                    scan_bare_self_fields_inner(b, param_types, fields, seen);
+                }
+            }
+            Statement::ForInLoop(f) => {
+                if let Some(b) = f.syntax().children().find_map(Block::cast) {
+                    scan_bare_self_fields_inner(b, param_types, fields, seen);
+                }
+            }
+            Statement::ForCountLoop(f) => {
+                if let Some(b) = f.syntax().children().find_map(Block::cast) {
+                    scan_bare_self_fields_inner(b, param_types, fields, seen);
+                }
+            }
+            Statement::Repeat(r) => {
+                if let Some(b) = r.syntax().children().find_map(Block::cast) {
+                    scan_bare_self_fields_inner(b, param_types, fields, seen);
+                }
+            }
+            Statement::Do(d) => {
+                if let Some(b) = d.syntax().children().find_map(Block::cast) {
+                    scan_bare_self_fields_inner(b, param_types, fields, seen);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 // ── Type conversion ─────────────────────────────────────────────────────────
 
 /// Walk `at` through `NonNil` and `Union(T, nil)` wrappers and `alias_fun_types`

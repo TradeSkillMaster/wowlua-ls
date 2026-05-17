@@ -1069,6 +1069,15 @@ fn crossfile_self_field_funcall() {
 }
 
 #[test]
+fn crossfile_self_field_bare() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/self_field_bare_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_class_field_gets() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/class_field_gets_user.lua",

@@ -548,12 +548,13 @@ pub fn scan_paths_with_overrides(
     // Pass 4: scan method bodies for self-field assignments.
     // - Typed: `self.x = ... ---@type T` — added to ClassDecl.fields for prescan import.
     // - Funcall: `self.x = SomeCall()` — added to globals for build_on_stubs resolution.
-    // Both scans run in a single file-parse pass to avoid redundant I/O and parsing.
+    // - Bare: `self.x = param` / `self.x = literal` — inferred from @param or literal type.
+    // All scans run in a single file-parse pass to avoid redundant I/O and parsing.
     {
         use rayon::prelude::*;
-        use crate::annotations::{scan_method_typed_self_fields, scan_method_funcall_self_fields};
+        use crate::annotations::{scan_method_typed_self_fields, scan_method_funcall_self_fields, scan_method_bare_self_fields};
         let known_classes: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
-        // Pre-collect @field names so funcall scan can skip fields already declared.
+        // Pre-collect @field names so funcall/bare scans can skip fields already declared.
         // Typed self-fields from other files aren't included yet, so a small number of
         // redundant funcall entries may be emitted — build_on_stubs deduplicates them.
         let mut typed_field_names: HashSet<(String, String)> = HashSet::new();
@@ -574,12 +575,14 @@ pub fn scan_paths_with_overrides(
                     let funcall = scan_method_funcall_self_fields(
                         root, &known_classes, ipp, &typed_field_names, Some(p.clone()),
                     );
-                    if typed.is_empty() && funcall.is_empty() { None } else { Some((p.clone(), typed, funcall)) }
+                    let bare = scan_method_bare_self_fields(root, &known_classes, ipp, &typed_field_names);
+                    if typed.is_empty() && funcall.is_empty() && bare.is_empty() { None } else { Some((p.clone(), typed, funcall, bare)) }
                 })
                 .collect();
             let mut typed_count = 0usize;
             let mut funcall_count = 0usize;
-            for (path, file_typed, file_funcall) in per_file {
+            let mut bare_count = 0usize;
+            for (path, file_typed, file_funcall, file_bare) in per_file {
                 for tsf in file_typed {
                     if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name) {
                         let already_has = decl.fields.iter().any(|(n, _, _)| n == &tsf.field_name);
@@ -591,6 +594,30 @@ pub fn scan_paths_with_overrides(
                         }
                     }
                 }
+                // Bare fields: lowest priority — skip if funcall covers the same field
+                let funcall_field_names: HashSet<(String, String)> = file_funcall.iter()
+                    .filter_map(|g| {
+                        if let crate::annotations::ExternalGlobalKind::TableField(_, fn_name, _) = &g.kind {
+                            Some((g.name.clone(), fn_name.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                for tsf in file_bare {
+                    if funcall_field_names.contains(&(tsf.class_name.clone(), tsf.field_name.clone())) {
+                        continue;
+                    }
+                    if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name) {
+                        let already_has = decl.fields.iter().any(|(n, _, _)| n == &tsf.field_name);
+                        if !already_has {
+                            decl.fields.push((tsf.field_name.clone(), tsf.annotation_type, tsf.visibility));
+                            decl.field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
+                            decl.field_paths.entry(tsf.field_name).or_insert_with(|| path.clone());
+                            bare_count += 1;
+                        }
+                    }
+                }
                 funcall_count += file_funcall.len();
                 globals.extend(file_funcall);
             }
@@ -599,6 +626,9 @@ pub fn scan_paths_with_overrides(
             }
             if funcall_count > 0 {
                 log::debug!("self-field scan: {} funcall fields discovered", funcall_count);
+            }
+            if bare_count > 0 {
+                log::debug!("self-field scan: {} bare fields discovered", bare_count);
             }
         }
     }
