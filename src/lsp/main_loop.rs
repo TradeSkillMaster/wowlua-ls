@@ -3292,7 +3292,44 @@ fn handle_notification(
         }
         "textDocument/didClose" => {
             if let Ok(params) = cast_not::<notification::DidCloseTextDocument>(not) {
-                documents.remove(&params.text_document.uri.to_string());
+                let uri_str = params.text_document.uri.to_string();
+                documents.remove(&uri_str);
+                // Update cached workspace diagnostics for this file by re-reading
+                // from disk. Without this, closing a file after fixing a warning
+                // serves stale diagnostics from the pre-fix cache.
+                // Compute fresh diagnostics first (immutable borrow of ws), then
+                // mutate the cache — this avoids a borrow-split issue.
+                let new_diags = if ws.cached_ws_diagnostics.is_some() {
+                    uri_to_abs_path(&params.text_document.uri)
+                        .and_then(|path| std::fs::read_to_string(&path).ok())
+                        .map(|text| {
+                            if crate::has_shebang(&text) || is_ignored_uri(&params.text_document.uri, &ws.configs) {
+                                return Vec::new();
+                            }
+                            let tree = parse_lua(&text);
+                            let mut result = analyze_lua_parsed(
+                                &params.text_document.uri, &ws.pre_globals, &ws.configs, &tree,
+                            );
+                            result.plugin_diag_codes = ws.plugin_codes();
+                            build_file_diagnostics(
+                                &params.text_document.uri, &tree, &result, &text, &[], ws,
+                            )
+                        })
+                } else {
+                    None
+                };
+                if let (Some(new_diags), Some((_, cached))) = (new_diags, ws.cached_ws_diagnostics.as_mut()) {
+                    if let Some(entry) = cached.iter_mut().find(|(u, _)| *u == uri_str) {
+                        entry.1 = new_diags;
+                    } else {
+                        cached.push((uri_str, new_diags));
+                    }
+                }
+                // Tell the client to re-pull diagnostics so the Problems panel
+                // reflects the updated state for this now-closed file.
+                if client.diagnostic_refresh {
+                    send_refresh_requests(connection, progress_counter, false, false, false, true);
+                }
             }
         }
         _ => {}
