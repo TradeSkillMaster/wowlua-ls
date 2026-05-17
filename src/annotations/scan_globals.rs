@@ -263,6 +263,80 @@ fn synth_collect_returns(block: &Block<'_>, out: &mut Vec<(Vec<AnnotationType>, 
     }
 }
 
+/// If any return statement in the block ends with a function call as its last
+/// (or only) expression, return that callee's dotted name (e.g. `"private.Foo"`).
+/// This detects the pattern `return g()` or `return x, g()` where the trailing
+/// call makes the return arity unknowable at the AST level.  The caller gates
+/// invocation on the body-derived return ending with `any`, so `return x, g()`
+/// is only reached when `x` itself resolved to `any`.
+/// Returns `None` when no such return is found.
+fn tail_call_callee_name(block: &Block<'_>) -> Option<String> {
+    for stmt in block.statements() {
+        match &stmt {
+            Statement::Return(ret) => {
+                if let Some(el) = ret.expression_list()
+                    && let Some(Expression::FunctionCall(call)) = el.expressions().last()
+                    && let Some(ident) = call.identifier()
+                {
+                    let names = ident.names();
+                    if !names.is_empty() {
+                        return Some(names.join("."));
+                    }
+                }
+            }
+            Statement::If(chain) => {
+                for branch in chain.if_branches() {
+                    if let Some(inner) = branch.block()
+                        && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
+                }
+                if let Some(eb) = chain.else_branch()
+                    && let Some(inner) = eb.block()
+                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
+            }
+            Statement::Do(g) => {
+                if let Some(inner) = g.block()
+                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
+            }
+            Statement::While(w) => {
+                if let Some(inner) = w.block()
+                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
+            }
+            Statement::Repeat(r) => {
+                if let Some(inner) = r.block()
+                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
+            }
+            Statement::ForCountLoop(f) => {
+                if let Some(inner) = f.block()
+                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
+            }
+            Statement::ForInLoop(f) => {
+                if let Some(inner) = f.block()
+                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Follow a tail-call chain within the same file to find the terminal callee's
+/// body-derived returns.  Returns `None` when the chain leads outside the file
+/// or exceeds the depth limit.
+fn resolve_through_tail_calls<'a>(
+    callee: &str,
+    returns_map: &'a HashMap<String, Vec<AnnotationType>>,
+    tail_callees: &HashMap<String, String>,
+) -> Option<&'a Vec<AnnotationType>> {
+    let mut name = callee;
+    for _ in 0..10 {
+        match tail_callees.get(name) {
+            Some(next) => name = next,
+            None => return returns_map.get(name),
+        }
+    }
+    None
+}
+
 /// AST-only mirror of `Analysis::synthesize_correlated_return_overloads` in
 /// `build_ir.rs`. Walks the given function body and returns synthesized
 /// return-only overloads when the body matches the all-set-or-all-nil pattern.
@@ -557,6 +631,50 @@ pub(crate) fn scan_file_globals_with_synth(
             }
     }
 
+    // Pre-pass: collect body-derived returns for ALL functions in this file
+    // (including private/local ones), keyed by dotted name.  Also track which
+    // functions are tail-call wrappers and their callee names.  This enables
+    // tail-call resolution within the same file so cross-file callers see the
+    // concrete return types of the terminal callee rather than just `any`.
+    let mut file_func_returns: HashMap<String, Vec<AnnotationType>> = HashMap::new();
+    let mut file_func_tail_callee: HashMap<String, String> = HashMap::new();
+    for stmt in &all_stmts {
+        if let Statement::FunctionDefinition(func) = stmt {
+            let func_names = if let Some(ident) = func.identifier() {
+                ident.names()
+            } else if let Some(name) = func.name() {
+                vec![name]
+            } else {
+                continue;
+            };
+            if func_names.is_empty() { continue; }
+            let key = func_names.join(".");
+            let ann = extract_annotations(func.syntax());
+            if !ann.returns.is_empty() {
+                file_func_returns.insert(key, ann.returns);
+                continue;
+            }
+            if let Some(body) = func.block() {
+                let mut returns = Vec::new();
+                synth_collect_returns(&body, &mut returns);
+                let body_derived: Vec<AnnotationType> = returns.iter()
+                    .filter(|(_, is_bare)| !*is_bare)
+                    .max_by_key(|(exprs, _)| exprs.len())
+                    .map(|(exprs, _)| exprs.clone())
+                    .unwrap_or_default();
+                if !body_derived.is_empty() {
+                    if body_derived.last()
+                        .is_some_and(|t| matches!(t, AnnotationType::Simple(s) if s == "any"))
+                        && let Some(callee) = tail_call_callee_name(&body)
+                    {
+                        file_func_tail_callee.insert(key.clone(), callee);
+                    }
+                    file_func_returns.insert(key, body_derived);
+                }
+            }
+        }
+    }
+
     let mut globals = Vec::new();
     // Track field names assigned on the addon table in this file (e.g. ns.LibTSMApp = ...)
     // Used to gate 3-part chains so we don't inject fields onto unrelated external classes
@@ -620,6 +738,17 @@ pub(crate) fn scan_file_globals_with_synth(
                                 .map(|(exprs, _)| exprs.clone())
                         })
                         .unwrap_or_default();
+                    // When the body-derived return ends with `any` (typically from
+                    // a tail-call function call), the actual return arity is unknown
+                    // at scan time.  Try to resolve the callee within the same file
+                    // to get concrete return types; otherwise fall back to VarArgs.
+                    let tail_callee = if body_derived_returns.last()
+                        .is_some_and(|t| matches!(t, AnnotationType::Simple(s) if s == "any"))
+                    {
+                        func.block().and_then(|body| tail_call_callee_name(&body))
+                    } else {
+                        None
+                    };
                     // Synthesize correlated return-only overloads from the
                     // pre-collected returns. Matches the per-file IR synthesis so
                     // cross-file call sites (method calls resolving through a
@@ -635,7 +764,25 @@ pub(crate) fn scan_file_globals_with_synth(
                     // correct return arity and coarse types (comparisons →
                     // boolean, literals → their type, everything else → any).
                     if annotations.returns.is_empty() && !body_derived_returns.is_empty() {
-                        annotations.returns = body_derived_returns;
+                        if let Some(callee) = &tail_callee {
+                            // Tail-call return: resolve through same-file functions
+                            // to find the terminal callee's concrete return types.
+                            if let Some(resolved) = resolve_through_tail_calls(
+                                callee, &file_func_returns, &file_func_tail_callee,
+                            ) {
+                                annotations.returns = resolved.clone();
+                            } else {
+                                // Callee not in this file; keep VarArgs(any) to
+                                // signal open-ended arity.
+                                let last = body_derived_returns.last().unwrap().clone();
+                                let mut returns = body_derived_returns;
+                                let len = returns.len();
+                                returns[len - 1] = AnnotationType::VarArgs(Box::new(last));
+                                annotations.returns = returns;
+                            }
+                        } else {
+                            annotations.returns = body_derived_returns;
+                        }
                     }
                     let range = func.syntax().text_range();
                     let def_start = u32::from(range.start());

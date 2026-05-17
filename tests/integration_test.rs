@@ -2053,6 +2053,16 @@ fn crossfile_body_returns() {
 }
 
 #[test]
+fn crossfile_tail_call_returns() {
+    // Cross-file tail-call wrapper: no false unbalanced-assignments
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/tail_call_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_global_ref_field() {
     // Stub function assigned to table field should preserve function type cross-file
     run_annotation_tests(&TestConfig {

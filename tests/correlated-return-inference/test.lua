@@ -745,3 +745,25 @@ if r1 then
     local _ = r2
     --        ^ hover: (local) r2: number?
 end
+
+-- ── Single-return tail-call passthrough ───────────────────────────────
+-- When a function's ONLY return is a tail call to a multi-return function,
+-- all return values should propagate through — not just the first slot.
+
+local tailHelpers = {}
+
+function tailHelpers.getResult()
+    return "value", 99
+end
+
+local tailApi = {}
+
+function tailApi.fetch()
+    return tailHelpers.getResult()
+end
+
+local v1, v2 = tailApi.fetch()
+local _ = v1
+--        ^ hover: (local) v1: string
+local _ = v2
+--        ^ hover: (local) v2: number

@@ -271,6 +271,15 @@ impl<'a> Analysis<'a> {
                 if self.refine_synthesized_return_overloads() {
                     new_resolution = true;
                 }
+                // Expand single-return tail calls: create FunctionRet symbols at
+                // higher slots once the callee's return arity is known.
+                let tail_expanded = self.expand_resolved_tail_call_returns();
+                if !tail_expanded.is_empty() {
+                    for &(si, vi) in &tail_expanded {
+                        pending.push((si, vi));
+                    }
+                    new_resolution = true;
+                }
                 if !new_resolution {
                     break;
                 }
@@ -560,6 +569,147 @@ impl<'a> Analysis<'a> {
             }
         }
         self.deferred_sibling_narrowings = remaining;
+    }
+
+    /// Expand single-return tail-call functions during Phase 2. When a function's
+    /// only return is a tail call (FunctionRet at slot 0 backed by a FunctionCall
+    /// expression) and the callee is now known to have more return slots, create
+    /// additional FunctionRet symbols at higher slots so hover and call-site
+    /// resolution see the full multi-return signature.
+    ///
+    /// Returns the newly created (SymbolIndex, version_index) pairs for the caller
+    /// to add to the pending-resolution list.
+    fn expand_resolved_tail_call_returns(&mut self) -> Vec<(SymbolIndex, usize)> {
+        use std::collections::BTreeMap;
+
+        let mut new_pending: Vec<(SymbolIndex, usize)> = Vec::new();
+
+        // Collect candidate functions: local functions with no return annotations,
+        // no synthesized return-only overloads, and rets whose max slot is 0.
+        // The `max_slot > 0` check makes already-expanded functions O(rets.len())
+        // to skip — acceptable since this runs only on fixpoint stall (typically
+        // 0–2 times per file).
+        let mut candidates: Vec<FunctionIndex> = Vec::new();
+        for (fi, func) in self.ir.functions.iter().enumerate() {
+            if !func.return_annotations.is_empty() { continue; }
+            if func.overloads.iter().any(|o| o.is_return_only) { continue; }
+            if func.rets.is_empty() { continue; }
+
+            // Check max slot across all rets — once expanded, max_slot > 0
+            // and the function is skipped on all subsequent iterations.
+            let max_slot = func.rets.iter()
+                .filter_map(|&sym_idx| {
+                    if sym_idx.is_external() { return None; }
+                    match &self.ir.symbols[sym_idx.val()].id {
+                        SymbolIdentifier::FunctionRet(_, slot) => Some(*slot),
+                        _ => None,
+                    }
+                })
+                .max()
+                .unwrap_or(0);
+            if max_slot > 0 { continue; }
+            candidates.push(FunctionIndex(fi));
+        }
+
+        for func_id in candidates {
+            let rets = self.ir.functions[func_id.val()].rets.clone();
+
+            // Group by DefNode
+            let mut groups: BTreeMap<(u32, u32), Vec<(usize, SymbolIndex)>> = BTreeMap::new();
+            for &sym_idx in &rets {
+                if sym_idx.is_external() { continue; }
+                let sym = &self.ir.symbols[sym_idx.val()];
+                let SymbolIdentifier::FunctionRet(_, slot) = sym.id else { continue };
+                let Some(ver) = sym.versions.first() else { continue };
+                let key = (ver.def_node.start, ver.def_node.end);
+                groups.entry(key).or_default().push((slot, sym_idx));
+            }
+
+            // For each pure tail call at slot 0, check callee's arity
+            for group in groups.values() {
+                if group.len() != 1 { continue; }
+                let &(slot, sym_idx) = &group[0];
+                if slot != 0 { continue; }
+
+                let sym = &self.ir.symbols[sym_idx.val()];
+                let scope_idx = sym.scope_idx;
+                let Some(ver) = sym.versions.first() else { continue };
+                let def_node = ver.def_node;
+                let Some(type_source) = ver.type_source else { continue };
+
+                // Must be a FunctionCall at ret_index 0
+                let expr = self.ir.expr(type_source).clone();
+                let (callee_func_expr, args, arg_ranges, call_range, is_method_call) = match &expr {
+                    Expr::FunctionCall { func, args, arg_ranges, ret_index: 0, call_range, is_method_call, .. } =>
+                        (*func, args.clone(), arg_ranges.clone(), *call_range, *is_method_call),
+                    _ => continue,
+                };
+
+                // Resolve the callee's function type
+                let Some(callee_type) = self.resolve_expr(callee_func_expr) else { continue };
+                let callee_type = callee_type.into_strip_opaque();
+                let callee_func_idx = match callee_type {
+                    ValueType::Function(Some(idx)) => idx,
+                    ValueType::Union(ref types) | ValueType::Intersection(ref types) => {
+                        match types.iter().find_map(|t| match t {
+                            ValueType::Function(Some(idx)) => Some(*idx),
+                            _ => None,
+                        }) {
+                            Some(idx) => idx,
+                            None => continue,
+                        }
+                    }
+                    _ => continue,
+                };
+
+                // Determine callee's return arity.
+                // Mutual recursion is safe: if A tail-calls B and B tail-calls A,
+                // both have max_slot == 0 and callee_arity == 1, so neither expands.
+                // Only a callee with already-established arity > 1 (from annotations
+                // or multi-expression returns) triggers expansion.
+                let callee_func = self.func(callee_func_idx);
+                let callee_arity = if !callee_func.return_annotations.is_empty() {
+                    callee_func.return_annotations.len()
+                } else {
+                    // Infer from callee's rets
+                    callee_func.rets.iter()
+                        .filter_map(|&s| match &self.sym(s).id {
+                            SymbolIdentifier::FunctionRet(_, idx) => Some(*idx + 1),
+                            _ => None,
+                        })
+                        .max()
+                        .unwrap_or(0)
+                };
+
+                if callee_arity <= 1 { continue; }
+
+                // Expand: create FunctionRet symbols for slots 1..callee_arity
+                for new_slot in 1..callee_arity {
+                    let new_expr = Expr::FunctionCall {
+                        func: callee_func_expr,
+                        args: args.clone(),
+                        arg_ranges: arg_ranges.clone(),
+                        ret_index: new_slot,
+                        call_range,
+                        discarded: false,
+                        is_method_call,
+                    };
+                    let new_expr_id = self.ir.push_expr(new_expr);
+                    let symbol_idx = self.ir.insert_symbol(
+                        SymbolIdentifier::FunctionRet(func_id, new_slot),
+                        scope_idx,
+                        def_node,
+                    );
+                    self.ir.set_type_source(symbol_idx, new_expr_id);
+                    let func_def = self.ir.functions.get_mut(func_id.val()).unwrap();
+                    if !func_def.rets.contains(&symbol_idx) {
+                        func_def.rets.push(symbol_idx);
+                    }
+                    new_pending.push((symbol_idx, 0));
+                }
+            }
+        }
+        new_pending
     }
 
     /// Refine synthesized return-only overload slots whose source expressions

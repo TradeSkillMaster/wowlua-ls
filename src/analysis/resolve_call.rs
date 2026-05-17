@@ -1203,11 +1203,29 @@ impl<'a> Analysis<'a> {
             // body-scope-only lookup loses both pure-branched returns
             // (no body-scope return at all) and the branched contributions
             // to mixed body+branched returns.
-            super::queries::return_type_at_slot(
+            let slot_type = super::queries::return_type_at_slot(
                 &self.ir,
                 &self.func(func_idx).rets,
                 ret_index,
-            )
+            );
+            // Tail-call passthrough: when this slot has no direct symbol but
+            // the function has pure tail calls at slot 0, resolve through to
+            // the callee's return at the same slot. This handles the common
+            // pattern `function f() return g() end` where g returns multiple
+            // values — without @return annotations, f only has FunctionRet at
+            // slot 0, so higher slots would otherwise be lost.
+            //
+            // This complements `expand_resolved_tail_call_returns` (which
+            // creates proper FunctionRet symbols in the stall-recovery phase).
+            // The passthrough is needed during the inner fixpoint loop when a
+            // caller already has FunctionRet at slot > 0 (from Phase 1's
+            // `expand_tail_call_returns`) but the tail-call wrapper hasn't been
+            // expanded yet by the Phase 2 pass (which runs only on stall).
+            if slot_type.is_none() && ret_index > 0 {
+                self.tail_call_passthrough_return(func_idx, ret_index)
+            } else {
+                slot_type
+            }
         };
         // Implicit nil return: a bare `return` statement or fall-through
         // from the end of the function body contributes nil at every
@@ -1470,6 +1488,102 @@ impl<'a> Analysis<'a> {
                         }
         }
         None
+    }
+
+    /// When a function has no return symbol at the requested slot but has pure
+    /// tail-call returns at slot 0, resolve through to the callee's return at
+    /// the same slot. Handles `function f() return g() end` where g returns
+    /// multiple values.
+    ///
+    /// Mutual recursion (A tail-calls B, B tail-calls A) is safe because
+    /// `resolve_expr` tracks in-progress resolutions — re-entering an
+    /// expression already on the resolution stack returns `None`, breaking
+    /// the cycle.
+    fn tail_call_passthrough_return(
+        &mut self,
+        func_idx: FunctionIndex,
+        ret_index: usize,
+    ) -> Option<ValueType> {
+        use std::collections::BTreeMap;
+
+        // Only handle local functions (external functions have annotations)
+        if func_idx.is_external() { return None; }
+
+        let rets = self.func(func_idx).rets.clone();
+        if rets.is_empty() { return None; }
+
+        // Group rets by DefNode to identify return statements.
+        let mut groups: BTreeMap<(u32, u32), Vec<(usize, SymbolIndex)>> = BTreeMap::new();
+        for &sym_idx in &rets {
+            if sym_idx.is_external() { continue; }
+            let sym = self.sym(sym_idx);
+            let SymbolIdentifier::FunctionRet(_, slot) = sym.id else { continue };
+            let Some(ver) = sym.versions.first() else { continue };
+            let key = (ver.def_node.start, ver.def_node.end);
+            groups.entry(key).or_default().push((slot, sym_idx));
+        }
+
+        // Only proceed if the max arity across all groups is exactly 1
+        // (single-slot returns). If any group already has arity >= 2, the
+        // expand_tail_call_returns pass should have handled it.
+        let max_arity = groups.values().map(|g| g.len()).max().unwrap_or(0);
+        if max_arity > 1 { return None; }
+
+        // For each group that is a pure tail call at slot 0, resolve the callee
+        // and look up its return at the requested slot.
+        let mut acc: Option<ValueType> = None;
+        for group in groups.values() {
+            if group.len() != 1 { continue; }
+            let &(slot, sym_idx) = &group[0];
+            if slot != 0 { continue; }
+
+            let sym = self.sym(sym_idx);
+            let Some(ver) = sym.versions.first() else { continue };
+            let Some(type_source) = ver.type_source else { continue };
+
+            // Check if this is a function call expression
+            let expr = self.ir.expr(type_source).clone();
+            let callee_func_expr = match &expr {
+                Expr::FunctionCall { func, ret_index: 0, .. } => *func,
+                _ => continue,
+            };
+
+            // Resolve the callee's function type to get its function index
+            let Some(callee_type) = self.resolve_expr(callee_func_expr) else { continue };
+            let callee_type = callee_type.into_strip_opaque();
+            let callee_func_idx = match callee_type {
+                ValueType::Function(Some(idx)) => idx,
+                ValueType::Union(ref types) | ValueType::Intersection(ref types) => {
+                    match types.iter().find_map(|t| match t {
+                        ValueType::Function(Some(idx)) => Some(*idx),
+                        _ => None,
+                    }) {
+                        Some(idx) => idx,
+                        None => continue,
+                    }
+                }
+                _ => continue,
+            };
+
+            // Look up the callee's return at the requested slot
+            let callee_rets = self.func(callee_func_idx).rets.clone();
+            let callee_ret_type = if !self.func(callee_func_idx).return_annotations.is_empty() {
+                // Callee has annotations — use them directly
+                self.func(callee_func_idx).return_annotations.get(ret_index).cloned()
+            } else {
+                super::queries::return_type_at_slot(&self.ir, &callee_rets, ret_index)
+            };
+
+            if let Some(vt) = callee_ret_type {
+                acc = Some(match acc.take() {
+                    Some(prev) => self.ir.dedupe_union_tables(
+                        ValueType::make_union(vec![prev, vt])
+                    ),
+                    None => vt,
+                });
+            }
+        }
+        acc
     }
 
     fn extract_table_from_type(&self, vt: &ValueType) -> Option<TableIndex> {
