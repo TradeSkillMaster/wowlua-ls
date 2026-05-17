@@ -253,3 +253,76 @@ local function testFieldLiteralNoDiag(self)
     end
 end
 _consume(testFieldLiteralNoDiag)
+
+-- ── Boolean type-guard alias: if/else ────────────────────────────────
+
+---@param data string | number
+local function testBoolGuardAlias(data)
+    local isString = type(data) == "string"
+    if isString then
+        local x = data
+        --    ^ hover: (local) x: string
+    else
+        local y = data
+        --    ^ hover: (local) y: number
+    end
+end
+_consume(testBoolGuardAlias)
+
+-- ── Boolean type-guard alias: negated (~=) ───────────────────────────
+
+---@param data string | number
+local function testBoolGuardAliasNeq(data)
+    local isNotString = type(data) ~= "string"
+    if isNotString then
+        local a = data
+        --    ^ hover: (local) a: number
+    else
+        local b = data
+        --    ^ hover: (local) b: string
+    end
+end
+_consume(testBoolGuardAliasNeq)
+
+-- ── Boolean type-guard alias: early exit ─────────────────────────────
+
+---@param data string | number
+local function testBoolGuardAliasEarlyExit(data)
+    local isString = type(data) == "string"
+    if not isString then return end
+    local z = data
+    --    ^ hover: (local) z: string
+end
+_consume(testBoolGuardAliasEarlyExit)
+
+-- ── Boolean type-guard alias: early exit (truthy) ────────────────────
+
+---@param data string | number
+local function testBoolGuardAliasEarlyExitTruthy(data)
+    local isString = type(data) == "string"
+    if isString then return end
+    local w = data
+    --    ^ hover: (local) w: number
+end
+_consume(testBoolGuardAliasEarlyExitTruthy)
+
+-- ── Boolean type-guard alias: assert ─────────────────────────────────
+
+---@param data string | number
+local function testBoolGuardAliasAssert(data)
+    local isString = type(data) == "string"
+    assert(isString)
+    local r = data
+    --    ^ hover: (local) r: string
+end
+_consume(testBoolGuardAliasAssert)
+
+-- ── Boolean type-guard alias: and-chain ──────────────────────────────
+
+---@param data string | number
+local function testBoolGuardAliasAndChain(data)
+    local isString = type(data) == "string"
+    local x = isString and data
+    --    ^ hover: (local) x: false | string
+end
+_consume(testBoolGuardAliasAndChain)

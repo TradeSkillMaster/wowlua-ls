@@ -540,6 +540,27 @@ impl<'a> Analysis<'a> {
                                 && let Some(target_sym) = self.extract_type_call_target(call, scope_idx) {
                                     self.type_of_aliases.insert(symbol_idx, target_sym);
                                 }
+                            // Track `local b = type(x) == "string"` as a boolean type-guard alias
+                            if let Some(Expression::BinaryExpression(bin)) = expression {
+                                let op = bin.kind();
+                                let is_eq = matches!(op, Operator::Equals);
+                                let is_neq = matches!(op, Operator::NotEquals);
+                                if is_eq || is_neq {
+                                    let terms = bin.get_terms();
+                                    if let [lhs_term, rhs_term] = terms.as_slice() {
+                                        // Find the type() call among the two terms
+                                        let target_sym = match (lhs_term, rhs_term) {
+                                            (Expression::FunctionCall(call), _) => self.extract_type_call_target(call, scope_idx),
+                                            (_, Expression::FunctionCall(call)) => self.extract_type_call_target(call, scope_idx),
+                                            _ => None,
+                                        };
+                                        if let Some(target) = target_sym
+                                            && let Some(type_name) = Self::extract_type_name_literal(lhs_term, rhs_term) {
+                                                self.type_guard_aliases.insert(symbol_idx, (target, type_name.to_string(), is_eq));
+                                            }
+                                    }
+                                }
+                            }
                             // Apply @type and @class annotations (first variable only)
                             if index == 0 {
                                 let annotations = extract_annotations(assign.syntax());

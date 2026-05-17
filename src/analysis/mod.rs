@@ -1250,6 +1250,9 @@ pub struct Analysis<'a> {
     pub(crate) type_filtered_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) type_of_aliases: HashMap<SymbolIndex, SymbolIndex>,
+    /// Maps `local b = type(x) == "typename"` → (target_sym, type_name, is_positive).
+    /// `is_positive` is true for `==`, false for `~=`.
+    pub(crate) type_guard_aliases: HashMap<SymbolIndex, (SymbolIndex, String, bool)>,
     pub(crate) symbol_version_at: HashMap<u32, usize>, // token start offset → version_idx used at that point
     /// For each symbol, the SymbolRef sites (expression id + token offset) where it's referenced.
     /// Used by resolve-time narrowing to retroactively update `SymbolRef(_, _)` expressions
@@ -1521,6 +1524,7 @@ impl<'a> Analysis<'a> {
             type_filtered_symbols: HashMap::new(),
             type_stripped_symbols: HashMap::new(),
             type_of_aliases: HashMap::new(),
+            type_guard_aliases: HashMap::new(),
             symbol_version_at: HashMap::new(),
             sym_ref_sites: HashMap::new(),
             type_narrows_version_cache: HashMap::new(),

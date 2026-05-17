@@ -269,6 +269,8 @@ impl<'a> Analysis<'a> {
                             self.narrow_siblings(sym_idx, target_scope);
                             self.narrow_correlated_locals(sym_idx, target_scope, true);
                             self.narrow_or_coalesce_derived(sym_idx, target_scope, true);
+                            // Boolean type-guard alias: `local b = type(x) == "string"; if b then`
+                            self.try_apply_type_guard_alias(sym_idx, target_scope, true);
                         }
                     } else if !ident.has_complex_dynamic_bracket() {
                         // Union member narrowing: if info.title then → narrow info to members with required `title`
@@ -291,6 +293,8 @@ impl<'a> Analysis<'a> {
                         && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                             self.truthy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.narrow_siblings(sym_idx, target_scope);
+                            // Boolean type-guard alias: else-branch of `if b then`
+                            self.try_apply_type_guard_alias(sym_idx, target_scope, false);
                         }
                     else if names.len() >= 2 && !ident.has_complex_dynamic_bracket() {
                         // Union member narrowing: else branch → narrow to complement (lacks/optional)
@@ -673,6 +677,8 @@ impl<'a> Analysis<'a> {
                     && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                         self.truthy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
                         self.narrow_siblings(sym_idx, scope_idx);
+                        // `if isString then return end` → after exit, data is NOT string
+                        self.try_apply_type_guard_alias(sym_idx, scope_idx, false);
                     }
                 else if names.len() >= 2 && !ident.has_complex_dynamic_bracket() {
                     // `if info.title then return end` → info is the else-type after
@@ -695,6 +701,8 @@ impl<'a> Analysis<'a> {
                     if names.len() == 1 {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                             self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
+                            // `if not isString then return end` → after exit, data IS string
+                            self.try_apply_type_guard_alias(sym_idx, scope_idx, true);
                         }
                     } else if !ident.has_complex_dynamic_bracket() {
                         // `if not info.title then return end` → info is the then-type after
@@ -1039,6 +1047,8 @@ impl<'a> Analysis<'a> {
                 if names.len() == 1 {
                     if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                         self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
+                        // assert(isString) → narrow target to string
+                        self.try_apply_type_guard_alias(sym_idx, scope_idx, true);
                     }
                 } else if !ident.has_complex_dynamic_bracket() {
                     // assert(info.title) → narrow info to members with required `title`
@@ -2371,7 +2381,7 @@ impl<'a> Analysis<'a> {
     }
 
     /// Extract the type name string literal from an expression pair (either order).
-    fn extract_type_name_literal(lhs: &Expression<'_>, rhs: &Expression<'_>) -> Option<&'static str> {
+    pub(super) fn extract_type_name_literal(lhs: &Expression<'_>, rhs: &Expression<'_>) -> Option<&'static str> {
         let lit_expr = match (lhs, rhs) {
             (_, Expression::Literal(_)) => rhs,
             (Expression::Literal(_), _) => lhs,
@@ -2957,6 +2967,57 @@ impl<'a> Analysis<'a> {
         self.type_of_aliases.get(&alias_sym).copied()
     }
 
+    /// Apply type-guard alias narrowing for a boolean alias symbol used in a guard.
+    /// `is_truthy_branch` is true when the alias is truthy (then-branch of `if b then`,
+    /// or after `if not b then return end`).
+    fn try_apply_type_guard_alias(&mut self, alias_sym: SymbolIndex, scope: ScopeIndex, is_truthy_branch: bool) {
+        let Some((target_sym, type_name, is_positive)) = self.type_guard_aliases.get(&alias_sym)
+            .map(|(t, n, p)| (*t, n.clone(), *p)) else { return };
+        // is_truthy_branch XOR is_positive determines whether we filter or strip:
+        // - truthy + positive (b = type(x) == "s", if b then) → filter to s
+        // - truthy + negative (b = type(x) ~= "s", if b then) → strip s
+        // - falsy + positive (b = type(x) == "s", else branch) → strip s
+        // - falsy + negative (b = type(x) ~= "s", else branch) → filter to s
+        let is_filter = is_truthy_branch == is_positive;
+        if type_name == "nil" {
+            // type(x) == "nil" alias: filter→noop, strip→strip nil
+            if !is_filter {
+                self.narrowed_symbols.entry(scope).or_default().insert(target_sym);
+                self.narrow_siblings(target_sym, scope);
+                self.narrow_or_coalesce_derived(target_sym, scope, false);
+            }
+        } else if let Some(vt) = Self::type_name_to_value_type(&type_name) {
+            if is_filter {
+                self.narrowed_symbols.entry(scope).or_default().insert(target_sym);
+                self.narrow_siblings(target_sym, scope);
+                self.type_filtered_symbols.entry(scope).or_default()
+                    .insert(target_sym, vt);
+                self.narrow_or_coalesce_derived(target_sym, scope, false);
+            } else {
+                self.add_type_stripped(scope, target_sym, vt.clone());
+                self.push_strip_type_version(target_sym, vt, scope, false);
+            }
+        }
+    }
+
+    /// Resolve a boolean type-guard alias to a `(target_sym, GuardNarrow)` pair
+    /// for use in and-chain detection. Only handles the positive direction
+    /// (alias is truthy → filter target to the guarded type).
+    fn resolve_type_guard_alias_guard(&self, alias_sym: SymbolIndex) -> Option<(SymbolIndex, GuardNarrow)> {
+        let &(target_sym, ref type_name, is_positive) = self.type_guard_aliases.get(&alias_sym)?;
+        if !is_positive {
+            // `~=` aliases invert the meaning — bare truthiness would strip, not filter.
+            // And-chain guards expect the positive direction, so skip these.
+            return None;
+        }
+        if type_name == "nil" {
+            Some((target_sym, GuardNarrow::StripNil))
+        } else {
+            Self::type_name_to_value_type(type_name)
+                .map(|vt| (target_sym, GuardNarrow::FilterTo(vt)))
+        }
+    }
+
     /// Extract the bare-name symbol from an `and` LHS (for ternary idiom suppression).
     /// Given `BinaryExpr(And, [x, ...])`, returns the symbol for `x` if it's a single name.
     pub(super) fn extract_and_lhs_symbol(expr: &Expression<'_>, resolve: impl Fn(String) -> Option<SymbolIndex>) -> Option<SymbolIndex> {
@@ -3027,11 +3088,17 @@ impl<'a> Analysis<'a> {
     /// Returns (symbol_index, guard_narrow_kind) if a guard pattern is found.
     pub(super) fn detect_and_lhs_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
         // Bare name: `x and ...` → truthiness guard (strip nil + false)
+        // Also resolves boolean type-guard aliases: `isString and ...` → FilterTo(String) on target
         if let Expression::Identifier(ident) = lhs {
             let names = ident.names();
             if names.len() == 1 {
-                return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
-                    .map(|s| (s, GuardNarrow::StripFalsy));
+                if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                    if let Some(guard) = self.resolve_type_guard_alias_guard(sym_idx) {
+                        return Some(guard);
+                    }
+                    return Some((sym_idx, GuardNarrow::StripFalsy));
+                }
+                return None;
             }
         }
         if let Expression::BinaryExpression(bin) = lhs {
@@ -3234,8 +3301,13 @@ impl<'a> Analysis<'a> {
         if let Expression::Identifier(ident) = expr {
             let names = ident.names();
             if names.len() == 1 {
-                return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
-                    .map(|s| (s, GuardNarrow::StripFalsy));
+                if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                    if let Some(guard) = self.resolve_type_guard_alias_guard(sym_idx) {
+                        return Some(guard);
+                    }
+                    return Some((sym_idx, GuardNarrow::StripFalsy));
+                }
+                return None;
             }
         }
         if let Expression::BinaryExpression(bin) = expr {
