@@ -1794,6 +1794,13 @@ impl AnalysisResult {
                 }
         }
 
+        // Suppress function-call snippets when a '(' already follows the cursor.
+        // This handles swapping one function name for another in an existing call —
+        // inserting parens+params would duplicate the existing ones.
+        let snippets = snippets && source.get(offset as usize..)
+            .is_none_or(|rest| rest.bytes()
+                .find(|&b| b != b' ' && b != b'\t') != Some(b'('));
+
         // Determine effective offset for member-access completions.
         // When the user has typed characters after a '.' or ':', scan backwards
         // through the identifier to find the separator and use its position.
