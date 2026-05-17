@@ -34,7 +34,7 @@ use lsp_types::{PositionEncodingKind, TextDocumentSyncCapability, TextDocumentSy
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
+use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, DiagnosticSuppression, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
 use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, ValueType};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
@@ -4263,16 +4263,31 @@ fn build_file_diagnostics(
     plugin_diags: &[diagnostics::PluginDiag],
     ws: &WorkspaceState,
 ) -> Vec<lsp_types::Diagnostic> {
+    let root = crate::syntax::SyntaxNode::new_root(tree);
+    let suppressions = scan_diagnostic_directives(root);
+    build_file_diagnostics_with(uri, tree, analysis, text, plugin_diags, ws, &suppressions)
+}
+
+/// Like `build_file_diagnostics` but accepts pre-computed suppressions.
+/// Used when the suppression source differs from the analysis tree (e.g.
+/// pending text contains a newly-added `@diagnostic` directive).
+fn build_file_diagnostics_with(
+    uri: &lsp_types::Uri,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+    text: &str,
+    plugin_diags: &[diagnostics::PluginDiag],
+    ws: &WorkspaceState,
+    suppressions: &[DiagnosticSuppression],
+) -> Vec<lsp_types::Diagnostic> {
     if analysis.is_meta() {
         return Vec::new();
     }
     let file_path = uri_to_abs_path(uri).unwrap_or_default();
     let diags = analysis.run_diagnostics(tree);
-    let root = crate::syntax::SyntaxNode::new_root(tree);
-    let suppressions = scan_diagnostic_directives(root);
     let disabled = ws.configs.disabled_diagnostics_for(&file_path);
     let severity = ws.configs.severity_overrides_for(&file_path);
-    diagnostics::build_lsp_diagnostics(uri, text, &tree.errors, &diags, plugin_diags, &suppressions, &disabled, &severity)
+    diagnostics::build_lsp_diagnostics(uri, text, &tree.errors, &diags, plugin_diags, suppressions, &disabled, &severity)
 }
 
 /// Handle a `textDocument/diagnostic` pull request (LSP 3.17).
@@ -4320,7 +4335,17 @@ fn handle_document_diagnostic(
         }
         // Open document: use cached tree and analysis.
         else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
-            build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws)
+            if let Some(pending) = &doc.pending_text {
+                // Pending text may contain new @diagnostic directives (e.g. from
+                // a code-action quick fix). Parse it to get fresh suppressions so
+                // they take effect immediately instead of waiting for Phase 4.
+                let pending_tree = parse_lua(pending);
+                let pending_root = crate::syntax::SyntaxNode::new_root(&pending_tree);
+                let suppressions = scan_diagnostic_directives(pending_root);
+                build_file_diagnostics_with(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws, &suppressions)
+            } else {
+                build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws)
+            }
         } else {
             Vec::new()
         }
