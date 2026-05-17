@@ -1345,45 +1345,65 @@ fn main_loop(
         // many requests reference it (typically 3-4: semanticTokens,
         // codeLens, inlayHint, completion).
         //
+        // Only trigger this hot-path re-analysis when a request truly
+        // needs current-text analysis. Completion and signatureHelp need
+        // it because the user just typed a trigger character and expects
+        // results reflecting that character. Other requests (hover,
+        // semanticTokens, inlayHint, codeLens, diagnostic) serve from
+        // cached analysis built on the previous text version — positions
+        // are consistent because doc.text/tree/analysis haven't been
+        // updated yet (didChange stores edits in pending_text only).
+        // Phase 4's debounced cycle brings everything up to date.
+        //
         // Skip the workspace rebuild on this hot path — it costs ~200ms on
         // large projects (e.g. 1000+ classes / 5000+ globals) and blocks
         // the completion response. Keep `dirty=true` so Phase 4's debounced
         // cycle still runs `maybe_rebuild_workspace` and marks other docs dirty
         // once the user pauses typing.
         if !requests.is_empty() {
-            let request_uris: HashSet<String> = requests.iter()
-                .filter_map(|req| {
-                    let params: serde_json::Value = serde_json::from_value(req.params.clone()).ok()?;
-                    params.get("textDocument")
-                        .and_then(|td| td.get("uri"))
-                        .and_then(|u| u.as_str())
-                        .map(|s| s.to_string())
-                })
-                .collect();
-            for uri_str in &request_uris {
-                // Only re-analyze when there is genuinely new text (pending_text
-                // from a didChange in this batch). If the document is dirty but
-                // pending_text is None, Phase 2 already analyzed the current text
-                // in a previous iteration — reanalyzing would be redundant and
-                // adds ~20ms latency that widens the keystroke race window.
-                if let Some(doc) = documents.get(uri_str)
-                    && doc.toc.is_none()
-                    && let Some(text) = doc.pending_text.as_ref()
-                {
-                    let text = text.clone();
-                    if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
-                        let tree = parse_lua(&text);
-                        // Do not publish diagnostics here: this is a hot-path re-analysis
-                        // triggered by an interactive request (hover/completion) while the
-                        // document is still dirty. Publishing partial-state diagnostics mid-
-                        // keystroke causes flickering warnings. Phase 4's debounced cycle
-                        // publishes diagnostics once the user pauses.
-                        let result = Some(analyze_lua_parsed(
-                            &uri, &ws.pre_globals, &ws.configs, &tree,
-                        ));
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true });
+            let needs_fresh_analysis = requests.iter().any(|req| {
+                matches!(req.method.as_str(),
+                    "textDocument/completion" | "textDocument/signatureHelp"
+                )
+            });
+
+            if needs_fresh_analysis {
+                let request_uris: HashSet<String> = requests.iter()
+                    .filter_map(|req| {
+                        let params: serde_json::Value = serde_json::from_value(req.params.clone()).ok()?;
+                        params.get("textDocument")
+                            .and_then(|td| td.get("uri"))
+                            .and_then(|u| u.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .collect();
+                for uri_str in &request_uris {
+                    // Only re-analyze when there is genuinely new text (pending_text
+                    // from a didChange in this batch). If the document is dirty but
+                    // pending_text is None, Phase 2 already analyzed the current text
+                    // in a previous iteration — reanalyzing would be redundant and
+                    // adds ~20ms latency that widens the keystroke race window.
+                    if let Some(doc) = documents.get(uri_str)
+                        && doc.toc.is_none()
+                        && let Some(text) = doc.pending_text.as_ref()
+                    {
+                        let text = text.clone();
+                        if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
+                            let tree = parse_lua(&text);
+                            // Do not publish diagnostics here: this is a hot-path re-analysis
+                            // triggered by an interactive request (hover/completion) while the
+                            // document is still dirty. Publishing partial-state diagnostics mid-
+                            // keystroke causes flickering warnings. Phase 4's debounced cycle
+                            // publishes diagnostics once the user pauses.
+                            let result = Some(analyze_lua_parsed(
+                                &uri, &ws.pre_globals, &ws.configs, &tree,
+                            ));
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true });
+                        }
                     }
                 }
+            } else {
+                log::debug!("Phase 2: skipped re-analysis ({} non-interactive requests)", requests.len());
             }
         }
 
