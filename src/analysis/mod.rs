@@ -1075,7 +1075,34 @@ pub struct AnalysisResult {
     pub plugin_diag_codes: Vec<String>,
 }
 
+/// Summary statistics from a single file's analysis, for the `check` command.
+pub struct AnalysisStats {
+    pub functions: usize,
+    pub annotated_functions: usize,
+    pub classes: usize,
+    pub symbols: usize,
+    pub resolved_symbols: usize,
+}
+
 impl AnalysisResult {
+    /// Collect summary statistics for the `check` command.
+    pub fn stats(&self) -> AnalysisStats {
+        let functions = self.ir.functions.len();
+        let annotated_functions = self.ir.functions.iter()
+            .filter(|f| !f.param_annotations.is_empty() || !f.return_annotations.is_empty())
+            .count();
+        let classes = self.ir.classes.values().filter(|idx| !idx.is_external()).count();
+        let symbols = self.ir.symbols.len();
+        let resolved_symbols = self.ir.symbols.iter()
+            .filter(|s| {
+                s.versions.last().is_some_and(|v| {
+                    v.resolved_type.as_ref().is_some_and(|t| !matches!(t, ValueType::Any))
+                })
+            })
+            .count();
+        AnalysisStats { functions, annotated_functions, classes, symbols, resolved_symbols }
+    }
+
     // ── Delegators for two-tier lookups ──────────────────────────────────────
 
     #[inline] pub(crate) fn sym(&self, idx: SymbolIndex) -> &Symbol { self.ir.sym(idx) }

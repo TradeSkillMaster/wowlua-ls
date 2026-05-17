@@ -12,6 +12,30 @@ use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::*;
 use wowlua_ls::doc_gen;
 
+#[derive(Default)]
+struct CheckStats {
+    total_files: usize,
+    total_lines: usize,
+    total_functions: usize,
+    annotated_functions: usize,
+    total_classes: usize,
+    total_symbols: usize,
+    resolved_symbols: usize,
+    errors: usize,
+    warnings: usize,
+    hints: usize,
+}
+
+fn format_number(n: usize) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 { result.push(','); }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
 fn dump_tree_debug(tree: &syntax::tree::SyntaxTree) {
     dump_node_debug(tree, tree.root(), 0);
 }
@@ -678,7 +702,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         lua_files.sort();
 
         // Analyze every file and collect diagnostics
-        let result = std::thread::Builder::new()
+        let started = std::time::Instant::now();
+        let stats = std::thread::Builder::new()
             .stack_size(1024 * 1024 * 1024)
             .spawn(move || {
                 let mut plugin_engine = {
@@ -689,7 +714,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         Some(wowlua_ls::plugins::PluginEngine::new(&plugin_paths))
                     }
                 };
-                let mut count = 0usize;
+                let mut stats = CheckStats::default();
                 for path in &lua_files {
                     let text = match std::fs::read_to_string(path) {
                         Ok(t) => t,
@@ -697,6 +722,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                     };
                     if wowlua_ls::has_shebang(&text) { continue; }
                     let name = path.strip_prefix(&dir).unwrap_or(path);
+
+                    stats.total_files += 1;
+                    stats.total_lines += text.lines().count();
 
                     let tree = syntax::parser::parse(&text);
                     let root = syntax::SyntaxNode::new_root(&tree);
@@ -709,7 +737,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         let start_line = start.0.0;
                         if !lsp::diagnostics::is_suppressed("syntax", start_line, &suppressions) {
                             println!("{}:{}:{}: error[syntax] {}", name.display(), start_line + 1, start.1 + 1, e.message);
-                            count += 1;
+                            stats.errors += 1;
                         }
                     }
 
@@ -734,31 +762,44 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         if let Some(ref engine) = plugin_engine {
                             ar.plugin_diag_codes = engine.plugin_codes().iter().map(|s| s.to_string()).collect();
                         }
+
+                        // Collect analysis stats
+                        let file_stats = ar.stats();
+                        stats.total_functions += file_stats.functions;
+                        stats.annotated_functions += file_stats.annotated_functions;
+                        stats.total_classes += file_stats.classes;
+                        stats.total_symbols += file_stats.symbols;
+                        stats.resolved_symbols += file_stats.resolved_symbols;
+
                         let diags = ar.run_diagnostics(&tree);
-                        let mut file_count = 0usize;
                         let file_disabled = project_configs.disabled_diagnostics_for(path);
                         let file_severity = project_configs.severity_overrides_for(path);
-                        for d in &diags {
-                            if file_disabled.contains(d.code) {
-                                continue;
-                            }
-                            let effective_severity = file_severity.get(d.code).copied().unwrap_or(d.severity);
-                            if !include_hints && effective_severity == lsp_types::DiagnosticSeverity::HINT {
-                                continue;
-                            }
-                            let start = numbers.from_offset(d.start);
+
+                        let mut emit_diag = |code: &str, severity: lsp_types::DiagnosticSeverity, start_offset: usize, message: &str| {
+                            if file_disabled.contains(code) { return; }
+                            let effective_severity = file_severity.get(code).copied().unwrap_or(severity);
+                            let start = numbers.from_offset(start_offset);
                             let start_line = start.0.0;
-                            if !lsp::diagnostics::is_suppressed(d.code, start_line, &suppressions) {
-                                let severity = if effective_severity == lsp_types::DiagnosticSeverity::ERROR {
-                                    "error"
-                                } else if effective_severity == lsp_types::DiagnosticSeverity::HINT {
-                                    "hint"
-                                } else {
-                                    "warning"
-                                };
-                                println!("{}:{}:{}: {}[{}] {}", name.display(), start_line + 1, start.1 + 1, severity, d.code, d.message);
-                                file_count += 1;
+                            if lsp::diagnostics::is_suppressed(code, start_line, &suppressions) { return; }
+                            let is_hint = effective_severity == lsp_types::DiagnosticSeverity::HINT;
+                            if is_hint {
+                                stats.hints += 1;
+                                if !include_hints { return; }
                             }
+                            let severity_str = if effective_severity == lsp_types::DiagnosticSeverity::ERROR {
+                                stats.errors += 1;
+                                "error"
+                            } else if is_hint {
+                                "hint"
+                            } else {
+                                stats.warnings += 1;
+                                "warning"
+                            };
+                            println!("{}:{}:{}: {}[{}] {}", name.display(), start_line + 1, start.1 + 1, severity_str, code, message);
+                        };
+
+                        for d in &diags {
+                            emit_diag(d.code, d.severity, d.start, &d.message);
                         }
                         // Plugin diagnostics
                         if let Some(ref mut engine) = plugin_engine {
@@ -766,46 +807,57 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                             let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
                             let pdiags = engine.run_plugins(&ar, &text, &uri_str, &file_name);
                             for d in &pdiags {
-                                if file_disabled.contains(&d.code) { continue; }
-                                let effective_severity = file_severity.get(&d.code).copied().unwrap_or(d.severity);
-                                if !include_hints && effective_severity == lsp_types::DiagnosticSeverity::HINT { continue; }
-                                let start = numbers.from_offset(d.start);
-                                let start_line = start.0.0;
-                                if !lsp::diagnostics::is_suppressed(&d.code, start_line, &suppressions) {
-                                    let severity = if effective_severity == lsp_types::DiagnosticSeverity::ERROR {
-                                        "error"
-                                    } else if effective_severity == lsp_types::DiagnosticSeverity::HINT {
-                                        "hint"
-                                    } else {
-                                        "warning"
-                                    };
-                                    println!("{}:{}:{}: {}[{}] {}", name.display(), start_line + 1, start.1 + 1, severity, d.code, d.message);
-                                    file_count += 1;
-                                }
+                                emit_diag(&d.code, d.severity, d.start, &d.message);
                             }
                         }
-                        file_count
                     }));
-                    match result {
-                        Ok(c) => count += c,
-                        Err(_) => {
-                            error!("PANIC analyzing: {}", name.display());
-                            count += 1;
-                        }
+                    if result.is_err() {
+                        error!("PANIC analyzing: {}", name.display());
+                        stats.errors += 1;
                     }
                 }
-                count
+                stats
             })
             .expect("thread spawn")
             .join()
             .expect("analysis thread panicked");
-        let total_diagnostics = result;
+        let elapsed = started.elapsed();
 
-        if total_diagnostics > 0 {
-            info!("{} diagnostic(s) found", total_diagnostics);
-            std::process::exit(1);
+        // Print summary
+        eprintln!();
+        let lines_str = format_number(stats.total_lines);
+        eprintln!("Checked {} files ({} lines) in {:.1}s", stats.total_files, lines_str, elapsed.as_secs_f64());
+        eprintln!();
+        eprintln!("  Functions:     {} ({} annotated)", format_number(stats.total_functions), format_number(stats.annotated_functions));
+        eprintln!("  Classes:       {}", format_number(stats.total_classes));
+        if stats.total_symbols > 0 {
+            let pct = stats.resolved_symbols as f64 / stats.total_symbols as f64 * 100.0;
+            eprintln!("  Type coverage: {:.1}% of symbols resolved", pct);
+        }
+        eprintln!();
+        let has_issues = stats.errors > 0 || stats.warnings > 0;
+        if has_issues || stats.hints > 0 {
+            let mut parts = Vec::new();
+            if stats.errors > 0 {
+                parts.push(format!("{} {}", stats.errors, if stats.errors == 1 { "error" } else { "errors" }));
+            }
+            if stats.warnings > 0 {
+                parts.push(format!("{} {}", stats.warnings, if stats.warnings == 1 { "warning" } else { "warnings" }));
+            }
+            let main = if parts.is_empty() { "No errors or warnings".to_string() } else { parts.join(", ") };
+            if !include_hints && stats.hints > 0 {
+                eprintln!("  {} ({} hints hidden, use --severity hint)", main, stats.hints);
+            } else if include_hints && stats.hints > 0 {
+                eprintln!("  {}, {} {}", main, stats.hints, if stats.hints == 1 { "hint" } else { "hints" });
+            } else {
+                eprintln!("  {}", main);
+            }
         } else {
-            info!("No diagnostics found");
+            eprintln!("  No issues found");
+        }
+
+        if has_issues {
+            std::process::exit(1);
         }
         Ok(())
     } else if args.len() > 1 && args[1] == "evaluate" {
