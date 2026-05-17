@@ -179,3 +179,52 @@ elseif etype == "baz" then
     print(evar)
 --        ^ hover: (local) evar: number
 end
+
+-- ── @cast with unknown type (undefined-doc-name) ─────────────────────────────
+
+---@type any
+local unknownCast = nil
+
+---@cast unknownCast NonExistentType
+--^ diag: undefined-doc-name
+print(unknownCast)
+
+-- ── @cast add with unknown type ───────────────────────────────────────────────
+
+---@type string
+local addUnknown = "hello"
+
+---@cast addUnknown +GhostType
+--^ diag: undefined-doc-name
+print(addUnknown)
+
+-- ── @cast remove with unknown type ────────────────────────────────────────────
+
+---@type string|number
+local remUnknown = "hello"
+
+---@cast remUnknown -PhantomType
+--^ diag: undefined-doc-name
+print(remUnknown)
+
+-- ── @cast with known class type (no diagnostic) ───────────────────────────────
+
+---@class CastKnown
+---@field x number
+
+---@type any
+local knownCast = nil
+
+---@cast knownCast CastKnown
+--^ diag: none
+print(knownCast)
+
+-- ── @cast with block comment syntax and unknown type (no test assertion here;
+-- the --[[...]] form is handled by the same code path but the test harness
+-- does not easily support diag: assertions on block comment lines) ──────────
+
+---@type any
+local blockCast = nil
+
+--[[@cast blockCast BlockGhostType]]
+print(blockCast)
