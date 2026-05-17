@@ -720,7 +720,16 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
             let Some(FieldKind::Named { name, value }) = field.kind() else { continue };
             if existing_fields.contains(name.as_str()) { continue; }
 
-            let Some(typ) = infer_literal_type(&value) else { continue };
+            // If the field has a preceding @class annotation, use the class
+            // name as the type so the parent class's field table records the
+            // subclass type rather than a bare "table".
+            let typ = if let Some((class_name, _)) = extract_class_from_field_comments(field.syntax()) {
+                AnnotationType::Simple(class_name)
+            } else if let Some(t) = infer_literal_type(&value) {
+                t
+            } else {
+                continue;
+            };
             let vis = default_visibility_for_name(&name, false);
 
             // Record field name range for go-to-definition
@@ -744,6 +753,42 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
             class.field_ranges.extend(new_field_ranges);
         }
     }
+}
+
+/// Extract a `@class` name and comment byte offset from comments preceding a
+/// `Field` node inside a table constructor. Walks backward through sibling
+/// tokens looking for `---@class ClassName` (with or without space after `---`).
+/// Returns `(class_name, comment_byte_offset)` for positional disambiguation.
+pub(crate) fn extract_class_from_field_comments(field_node: SyntaxNode<'_>) -> Option<(String, u32)> {
+    use crate::syntax::tree::SyntaxToken;
+    let mut tok: Option<SyntaxToken<'_>> = field_node.first_token()
+        .and_then(|t| t.prev_token());
+    while let Some(t) = tok {
+        let kind = t.kind();
+        if kind == SyntaxKind::Comment {
+            let text = t.text();
+            if let Some(rest) = text.strip_prefix("---@class ")
+                .or_else(|| text.strip_prefix("--- @class "))
+            {
+                let rest = rest.trim();
+                let offset = u32::from(t.text_range().start());
+                return rest.split([':', '<', ' ', '('])
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| (s.to_string(), offset));
+            }
+            // Other annotation comments (e.g. @field) are part of the
+            // same annotation block — keep walking to find the @class.
+        } else if kind == SyntaxKind::Newline {
+            if t.prev_token().is_some_and(|p| p.kind() == SyntaxKind::Newline) {
+                break;
+            }
+        } else if kind != SyntaxKind::Whitespace && kind != SyntaxKind::Comma {
+            break;
+        }
+        tok = t.prev_token();
+    }
+    None
 }
 
 /// Infer a basic `AnnotationType` from a literal expression.

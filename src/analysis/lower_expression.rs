@@ -502,7 +502,31 @@ impl<'a> Analysis<'a> {
                 for field in tc.fields() {
                     match field.kind() {
                         Some(FieldKind::Named { name, value }) => {
-                            let expr_id = self.lower_expression(&value, scope_idx);
+                            let mut expr_id = self.lower_expression(&value, scope_idx);
+                            // Check for @class annotation above this constructor field.
+                            // Links the inner table constructor to the prescan-registered
+                            // class table, mirroring the top-level assignment logic in
+                            // build_ir.rs for `---@class Foo\nlocal x = {}`.
+                            if let Some(class_table_idx) = crate::annotations::extract_class_from_field_comments(field.syntax())
+                                .and_then(|(_, offset)| self.ir.class_table_by_offset.get(&offset).copied())
+                                .filter(|idx| !idx.is_external())
+                            {
+                                if let Some(rhs_table_idx) = self.ir.find_table_index(expr_id)
+                                    && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external()
+                                {
+                                    let runtime_fields: Vec<(String, FieldInfo)> =
+                                        self.ir.tables[rhs_table_idx.val()].fields.iter()
+                                            .map(|(k, v)| (k.clone(), v.clone()))
+                                            .collect();
+                                    for (field_name, field_info) in runtime_fields {
+                                        self.ir.tables[class_table_idx.val()].fields
+                                            .entry(field_name).or_insert(field_info);
+                                    }
+                                }
+                                expr_id = self.ir.push_expr(Expr::Literal(
+                                    ValueType::Table(Some(class_table_idx))
+                                ));
+                            }
                             // Check for inline ---@type annotation after the field
                             // Also check inside table constructor opening: `{ ---@type Foo ... }`
                             let inline_type = Self::extract_inline_type(field.syntax())

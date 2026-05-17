@@ -3644,6 +3644,69 @@ local classDefInst2 = {}
 classDefInst2.x = 42
 --            ^ diag: none
 
+-- ── @class on nested constructor field — subclass passed to parent param ──────
+-- Regression: @class on a field inside a table constructor was not linking the
+-- inner constructor to the class table, causing inject-field when the subclass
+-- was passed to a parameter typed as the parent class.
+
+---@class NestedCtorParent
+---@field enabled boolean
+---@field name string
+
+---@param item NestedCtorParent
+local function _useNestedCtorItem(item)
+    _consume(item)
+end
+
+---@class NestedCtorDB
+local _nestedDefaults = {
+    ---@class NestedCtorChild: NestedCtorParent
+    child = {
+        enabled = true,
+        name = "test",
+        extra = false,
+    },
+}
+
+---@type NestedCtorDB
+local _nestedDb = {}
+
+-- Subclass field passed to parent param: no inject-field
+_useNestedCtorItem(_nestedDb.child)
+--                           ^ hover: (field) child: NestedCtorChild  diag: none
+
+-- Nested @class with explicit @field: annotated fields take priority over
+-- constructor-inferred fields, and the class type is still correct.
+---@class NestedCtorFieldParent
+---@field id number
+
+---@class NestedCtorFieldDB
+local _nestedFieldDefaults = {
+    ---@class NestedCtorFieldChild: NestedCtorFieldParent
+    ---@field tag string
+    entry = {
+        id = 1,
+        tag = "ok",
+        bonus = true,
+    },
+}
+
+---@type NestedCtorFieldDB
+local _nestedFieldDb = {}
+
+---@param item NestedCtorFieldParent
+local function _useNestedFieldItem(item)
+    _consume(item)
+end
+
+-- Subclass with @field passed to parent param: no inject-field
+_useNestedFieldItem(_nestedFieldDb.entry)
+--                                 ^ hover: (field) entry: NestedCtorFieldChild  diag: none
+
+-- Declared @field is accessible on the subclass
+local _nestedTag = _nestedFieldDb.entry.tag
+--                                      ^ hover: (field) tag: string  diag: none
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function
