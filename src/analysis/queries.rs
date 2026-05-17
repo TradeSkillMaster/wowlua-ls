@@ -2047,6 +2047,13 @@ impl AnalysisResult {
                 return None;
             }
 
+            // --- Table constructor field completion ---
+            // When cursor is inside a table constructor whose expected type is a
+            // known class, offer the class's field names as completions.
+            if let Some(items) = self.constructor_field_completions(tree, offset, source) {
+                return Some(items);
+            }
+
             let scope_idx = self.scope_at_offset(text_size)?;
 
             // Extract the typed prefix (partial identifier before the cursor)
@@ -2193,6 +2200,105 @@ impl AnalysisResult {
             items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
             if items.is_empty() { None } else { Some(items) }
         }
+    }
+
+    /// Offer field-name completions when the cursor is inside a table constructor
+    /// whose expected type is a known class. Returns `None` if no constructor
+    /// context or no expected class is found, letting the caller fall through
+    /// to normal scope completions.
+    fn constructor_field_completions(&self, tree: &SyntaxTree, offset: u32, source: &str) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
+
+        // Find enclosing TableConstructor by walking the AST upward from cursor.
+        let check_pos = TextSize::from(offset.saturating_sub(1));
+        let token = SyntaxNode::new_root(tree).token_at_offset(check_pos).left_biased()?;
+        let parent = token.parent()?;
+        let tc_node = parent.ancestors().find(|a| a.kind() == SyntaxKind::TableConstructor)?;
+
+        // Look up the table index for this constructor
+        let r = tc_node.text_range();
+        let key = (u32::from(r.start()), u32::from(r.end()));
+        let ctor_idx = *self.ir.table_ranges.get(&key)?;
+
+        // Find the expected class for this constructor
+        let class_idx = *self.ir.tc_expected_class.get(&ctor_idx)?;
+        let class_table = self.table(class_idx);
+
+        // Extract the typed prefix for filtering
+        let prefix = {
+            let end = offset as usize;
+            let mut start = end;
+            while start > 0 {
+                let ch = source.as_bytes()[start - 1];
+                if ch.is_ascii_alphanumeric() || ch == b'_' {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            if start < end { &source[start..end] } else { "" }
+        };
+        let prefix_lower = prefix.to_ascii_lowercase();
+
+        // Collect already-set field names from the constructor to exclude them
+        let ctor_table = &self.ir.tables[ctor_idx.val()];
+        let already_set: HashSet<&String> = ctor_table.fields.keys().collect();
+
+        // Collect fields from the class and its parents
+        let mut seen_fields: HashSet<&String> = HashSet::new();
+        let mut all_fields: Vec<(&String, &FieldInfo)> = Vec::new();
+        for (name, fi) in &class_table.fields {
+            if seen_fields.insert(name) {
+                all_fields.push((name, fi));
+            }
+        }
+        for &parent_idx in &class_table.parent_classes {
+            let parent_table = self.table(parent_idx);
+            for (name, fi) in &parent_table.fields {
+                if seen_fields.insert(name) {
+                    all_fields.push((name, fi));
+                }
+            }
+        }
+
+        let mut items: Vec<CompletionItem> = all_fields.iter()
+            .filter_map(|(name, field_info)| {
+                // Skip fields already set in the constructor
+                if already_set.contains(*name) { return None; }
+                // Skip methods (functions with `self` as first param) — they
+                // belong on the prototype, not in a constructor literal.
+                // Callbacks like `---@field onClick fun()` are kept.
+                let resolved = self.resolve_expr_type(field_info.expr);
+                if let Some(ValueType::Function(Some(func_idx))) = &resolved {
+                    let func = self.func(*func_idx);
+                    let has_self = func.args.first().is_some_and(|&arg| {
+                        matches!(&self.sym(arg).id, SymbolIdentifier::Name(n) if n == "self")
+                    });
+                    if has_self { return None; }
+                }
+                // Filter by typed prefix
+                if !prefix_lower.is_empty()
+                    && !name.to_ascii_lowercase().starts_with(&prefix_lower)
+                {
+                    return None;
+                }
+                let sort_text = if name.starts_with('_') {
+                    format!("1{}", name)
+                } else {
+                    format!("0{}", name)
+                };
+                Some(CompletionItem {
+                    label: name.to_string(),
+                    kind: Some(CompletionItemKind::FIELD),
+                    sort_text: Some(sort_text),
+                    ..CompletionItem::default()
+                })
+            })
+            .collect();
+
+        if items.is_empty() { return None; }
+        items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
+        Some(items)
     }
 
     /// Build a function-call snippet string for the given function index.

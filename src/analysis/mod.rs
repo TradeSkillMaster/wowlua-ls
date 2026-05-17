@@ -152,6 +152,10 @@ pub(crate) struct Ir {
     /// return inference). `Any` values in their overloads are unrefined
     /// placeholders, not the intended type.
     pub(crate) synthesized_overload_funcs: HashSet<FunctionIndex>,
+    /// Maps table constructor indices to their expected class table indices.
+    /// Populated during type resolution from `@type`, function call arguments,
+    /// and bracket assignments on `table<K, V>` typed tables.
+    pub(crate) tc_expected_class: HashMap<TableIndex, TableIndex>,
 }
 
 /// Metadata for a string literal argument annotated as `expression<C, R>`.
@@ -1513,6 +1517,7 @@ impl<'a> Analysis<'a> {
                 addon_table_override,
                 expression_args: HashMap::new(),
                 synthesized_overload_funcs: HashSet::new(),
+                tc_expected_class: HashMap::new(),
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),

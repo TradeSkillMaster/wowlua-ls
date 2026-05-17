@@ -2646,6 +2646,29 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Case 3: Bracket assignments on table<K, V> typed tables
+        // e.g. `items[1] = { ... }` where items is `table<integer, SomeClass>`
+        let parent_tables: Vec<TableIndex> = self.ir.bracket_key_fields.keys().copied().collect();
+        for parent_idx in parent_tables {
+            let value_type = self.ir.tables[parent_idx.val()].value_type.clone();
+            let Some(class_idx) = value_type.as_ref().and_then(extract_table_idx_from_type) else { continue };
+            // Only if value_type is annotated (authoritative), not inferred
+            if !self.ir.tables[parent_idx.val()].value_type_annotated { continue; }
+            let Some(bracket_fields) = self.ir.bracket_key_fields.get(&parent_idx).cloned() else { continue };
+            for (_key_expr, val_expr) in &bracket_fields {
+                if val_expr.is_external() { continue; }
+                if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(*val_expr) {
+                    if ctor_idx.is_external() { continue; }
+                    tc_pairs.push((class_idx, ctor_idx));
+                }
+            }
+        }
+
+        // Record expected class for each constructor (used by completions)
+        for &(class_idx, ctor_idx) in &tc_pairs {
+            self.ir.tc_expected_class.insert(ctor_idx, class_idx);
+        }
+
         if tc_pairs.is_empty() { return false; }
 
         // Phase 2: Collect param type updates
