@@ -1053,26 +1053,23 @@ fn parse_widget_wiki_annotations(wikitext: &str, param_names: &[&str]) -> Option
     }
 }
 
-/// Enrich vendor widget stub files by scraping wiki pages for methods missing annotations.
-///
-/// Scans all `.lua` files under `vendor_dirs` for method definitions that have a
-/// `---[Documentation]` link but no `@param`/`@return` annotations, fetches their
-/// wiki pages in bulk, and rewrites the files with injected annotation lines.
-fn enrich_widget_stubs(vendor_dirs: &[PathBuf]) {
+struct WidgetMethodInfo {
+    file_path: PathBuf,
+    line_idx: usize, // line index of the doc link
+    api_name: String, // e.g. "GameTooltip_GetItem"
+    param_names: Vec<String>,
+}
+
+/// Scan vendor widget stubs for methods that have a `---[Documentation]` link
+/// but no `@param`/`@return` annotations. Returns the list of methods whose
+/// wiki pages should be fetched.
+fn collect_widget_enrichment_methods(vendor_dirs: &[PathBuf]) -> Vec<WidgetMethodInfo> {
     let doc_link_re = regex_lite::Regex::new(
         r"---\[Documentation\]\(https://warcraft\.wiki\.gg/wiki/API_([^)]+)\)"
     ).unwrap();
     let func_re = regex_lite::Regex::new(r"^function \w+:(\w+)\(([^)]*)\)\s*end").unwrap();
 
-    // 1. Scan for unannotated methods
-    struct MethodInfo {
-        file_path: PathBuf,
-        line_idx: usize, // line index of the doc link
-        api_name: String, // e.g. "GameTooltip_GetItem"
-        param_names: Vec<String>,
-    }
-
-    let mut methods: Vec<MethodInfo> = Vec::new();
+    let mut methods = Vec::new();
     let mut all_files: Vec<PathBuf> = Vec::new();
 
     for dir in vendor_dirs {
@@ -1126,7 +1123,7 @@ fn enrich_widget_stubs(vendor_dirs: &[PathBuf]) {
                     Vec::new()
                 };
 
-                methods.push(MethodInfo {
+                methods.push(WidgetMethodInfo {
                     file_path: (*path).clone(),
                     line_idx: i,
                     api_name,
@@ -1136,6 +1133,16 @@ fn enrich_widget_stubs(vendor_dirs: &[PathBuf]) {
         }
     }
 
+    methods
+}
+
+/// Enrich vendor widget stub files using pre-fetched wiki pages.
+/// Rewrites files in-place with injected annotation lines.
+fn enrich_widget_stubs(
+    methods: &[WidgetMethodInfo],
+    wiki_pages: &HashMap<String, String>,
+    wiki_redirects: &HashMap<String, String>,
+) {
     if methods.is_empty() {
         log::info!("  No widget methods need wiki enrichment");
         return;
@@ -1143,18 +1150,13 @@ fn enrich_widget_stubs(vendor_dirs: &[PathBuf]) {
 
     log::info!("  Found {} widget methods needing wiki enrichment", methods.len());
 
-    // 2. Batch-fetch wiki pages
-    let api_names: Vec<String> = methods.iter().map(|m| m.api_name.clone()).collect();
-    let (wiki_pages, wiki_redirects) = fetch_wiki_pages(&api_names);
-    log::info!("  Got {} wiki pages for widget methods", wiki_pages.len());
-
-    // 3. Parse annotations and group by file
+    // Parse annotations and group by file
     let mut file_patches: HashMap<PathBuf, Vec<(usize, Vec<String>)>> = HashMap::new();
     let mut enriched = 0;
 
     let mut no_page = 0;
     let mut no_parse = 0;
-    for method in &methods {
+    for method in methods {
         let doc_name = wiki_redirects.get(&method.api_name).unwrap_or(&method.api_name);
         let Some(wikitext) = wiki_pages.get(&method.api_name).or_else(|| wiki_pages.get(doc_name)) else {
             no_page += 1;
@@ -1176,7 +1178,7 @@ fn enrich_widget_stubs(vendor_dirs: &[PathBuf]) {
 
     log::info!("  Enriched {enriched} widget methods with wiki annotations");
 
-    // 4. Rewrite files with injected annotations (process patches in reverse line order)
+    // Rewrite files with injected annotations (process patches in reverse line order)
     for (path, mut patches) in file_patches {
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
@@ -1210,12 +1212,11 @@ fn enrich_widget_stubs(vendor_dirs: &[PathBuf]) {
 /// Uses the function names from Ketho's Wiki.lua as the source list, then
 /// fetches and parses each wiki page with our own `parse_wikitext()`.
 /// Functions without a wiki page or whose markup can't be parsed get a bare
-/// `function name(...) end` stub with just a doc link.
-fn generate_wiki_stubs(wiki_lua_path: &Path) -> String {
+/// Extract function names from Ketho's Wiki.lua as the source list for wiki stub generation.
+fn collect_wiki_stub_names(wiki_lua_path: &Path) -> Vec<String> {
     let wiki_content = std::fs::read_to_string(wiki_lua_path)
         .unwrap_or_else(|e| panic!("Failed to read Wiki.lua from cloned repo at {}: {e}", wiki_lua_path.display()));
 
-    // 1. Extract function names from Ketho's Wiki.lua (includes dotted names like C_Foo.Bar)
     let func_re = regex_lite::Regex::new(r"(?m)^function ([\w.]+)\(").unwrap();
     let mut names: Vec<String> = func_re.captures_iter(&wiki_content)
         .filter_map(|c| Some(c.get(1)?.as_str().to_string()))
@@ -1223,18 +1224,17 @@ fn generate_wiki_stubs(wiki_lua_path: &Path) -> String {
     names.sort();
     names.dedup();
     log::info!("  Found {} function names in Wiki.lua", names.len());
+    names
+}
 
-    // 2. Fetch wiki pages (panics if wiki is unavailable)
-    let (wiki_pages, wiki_redirects) = if !names.is_empty() {
-        log::info!("Fetching wiki pages for {} wiki-documented APIs...", names.len());
-        let (pages, redirects) = fetch_wiki_pages(&names);
-        log::info!("  Got {} wiki pages", pages.len());
-        (pages, redirects)
-    } else {
-        (HashMap::new(), HashMap::new())
-    };
-
-    // 3. Generate stubs
+/// Generate stubs for non-Blizzard-documented global functions using pre-fetched wiki data.
+/// Functions without a wiki page or whose markup can't be parsed get a bare
+/// `function name(...) end` stub with just a doc link.
+fn generate_wiki_stubs(
+    names: &[String],
+    wiki_pages: &HashMap<String, String>,
+    wiki_redirects: &HashMap<String, String>,
+) -> String {
     let mut out = vec![
         "---@meta _".to_string(),
         "-- Wiki-documented WoW API stubs (auto-generated from warcraft.wiki.gg)".to_string(),
@@ -1242,7 +1242,7 @@ fn generate_wiki_stubs(wiki_lua_path: &Path) -> String {
     ];
     let mut documented = 0;
     let mut undocumented = 0;
-    for name in &names {
+    for name in names {
         let doc_name = wiki_redirects.get(name).unwrap_or(name);
         if let Some(wikitext) = wiki_pages.get(name)
             && let Some(stub) = parse_wikitext(name, wikitext, doc_name) {
@@ -1756,16 +1756,21 @@ fn infer_rhs_type(rhs: &str) -> String {
 /// Generate ClassicGlobals.lua content in memory.
 /// `classic_ui_dirs` and `retail_ui_dir` are optional wow-ui-source clones for constant/enum extraction.
 /// `all_ui_dirs` includes all branches (classic + retail) for XML frame extraction.
-fn generate_classic_stubs(
-    stubs_dir: &Path,
-    classic_ui_dirs: &[PathBuf],
-    retail_ui_dir: Option<&Path>,
-    all_ui_dirs: &[PathBuf],
-) -> String {
+/// Pre-computed classic API diff: which APIs are classic-only and not already covered.
+struct ClassicApiDiff {
+    /// Classic-only API names needing wiki stubs.
+    missing: Vec<String>,
+    /// Classic-only FrameXML function names (bare stubs, no wiki needed).
+    missing_fxml: Vec<String>,
+    /// All existing global names in current stubs (for namespace/constant/frame filtering).
+    existing_globals: HashSet<String>,
+}
+
+/// Fetch BlizzardInterfaceResources lists and compute the classic-only API diff.
+fn compute_classic_api_diff(stubs_dir: &Path) -> ClassicApiDiff {
     log::info!("Downloading BlizzardInterfaceResources (parallel)...");
 
     // Fetch resources in parallel: 3 branches × 2 file types (GlobalAPI, FrameXML)
-    // Frames.lua is no longer needed — XML parsing replaces it.
     let specs: &[(&str, &str)] = &[
         ("live", "GlobalAPI.lua"), ("classic_era", "GlobalAPI.lua"), ("classic", "GlobalAPI.lua"),
         ("live", "FrameXML.lua"),  ("classic_era", "FrameXML.lua"),  ("classic", "FrameXML.lua"),
@@ -1802,17 +1807,21 @@ fn generate_classic_stubs(
 
     log::info!("  {} APIs to generate, {} FrameXML", missing.len(), missing_fxml.len());
 
-    // Fetch wiki pages
-    let (wiki_pages, wiki_redirects) = if !missing.is_empty() {
-        log::info!("Fetching wiki pages for {} APIs...", missing.len());
-        let (pages, redirects) = fetch_wiki_pages(&missing);
-        log::info!("  Got {} wiki pages", pages.len());
-        (pages, redirects)
-    } else {
-        (HashMap::new(), HashMap::new())
-    };
+    ClassicApiDiff { missing, missing_fxml, existing_globals }
+}
 
-    // Generate
+fn generate_classic_stubs(
+    diff: &ClassicApiDiff,
+    wiki_pages: &HashMap<String, String>,
+    wiki_redirects: &HashMap<String, String>,
+    classic_ui_dirs: &[PathBuf],
+    retail_ui_dir: Option<&Path>,
+    all_ui_dirs: &[PathBuf],
+) -> String {
+    let missing = &diff.missing;
+    let missing_fxml = &diff.missing_fxml;
+    let existing_globals = &diff.existing_globals;
+
     let overrides = manual_overrides();
     let mut out = vec![
         "---@meta _".to_string(),
@@ -1844,7 +1853,7 @@ fn generate_classic_stubs(
 
     let mut documented = 0;
     let mut undocumented = 0;
-    for name in &missing {
+    for name in missing {
         let doc_name = wiki_redirects.get(name).unwrap_or(name);
         if let Some(&ovr) = overrides.get(name.as_str()) {
             out.push(ovr.to_string());
@@ -1875,7 +1884,7 @@ fn generate_classic_stubs(
     if !missing_fxml.is_empty() {
         out.push("-- Classic-only FrameXML functions".to_string());
         out.push(String::new());
-        for name in &missing_fxml {
+        for name in missing_fxml {
             out.push("---@return ...any".to_string());
             out.push(format!("function {name}(...) end"));
             out.push(String::new());
@@ -2444,7 +2453,7 @@ pub fn regenerate_stubs() {
         std::process::exit(1);
     }
 
-    // Init submodules within the cloned repo (e.g. BlizzardInterfaceResources)
+    // Init submodules within the cloned repo (FramexmlAnnotations → Annotations/FrameXML)
     let status = std::process::Command::new("git")
         .current_dir(&clone_dir)
         .args(["submodule", "update", "--init", "--recursive", "--depth", "1"])
@@ -2510,15 +2519,48 @@ pub fn regenerate_stubs() {
         log::warn!("could not clone live branch");
     }
 
-    // Step 3: Generate classic stubs (wiki scraping + constant/enum + LE_* + XML frames)
-    log::info!("Generating classic stubs from wiki...");
     // Build all_ui_dirs: classic branches + retail (for XML frame extraction across all versions)
     let mut all_ui_dirs: Vec<PathBuf> = classic_ui_dirs.clone();
     if has_retail_ui {
         all_ui_dirs.push(retail_ui_dir.clone());
     }
+
+    // Vendor stubs from clone (Core + FrameXML)
+    let vendor_dirs = [
+        clone_dir.join("Annotations/Core"),
+        clone_dir.join("Annotations/FrameXML"),
+    ];
+    let vendor_dir_paths: Vec<PathBuf> = vendor_dirs.to_vec();
+
+    // Step 3: Collect all wiki page names from the three passes, then batch-fetch once
+    log::info!("Collecting wiki page names...");
+    let classic_diff = compute_classic_api_diff(&combined_stubs);
+    let wiki_lua_path = clone_dir.join("Annotations/Core/Data/Wiki.lua");
+    let wiki_names = collect_wiki_stub_names(&wiki_lua_path);
+    let widget_methods = collect_widget_enrichment_methods(&vendor_dir_paths);
+    log::info!("  Widget methods needing enrichment: {}", widget_methods.len());
+
+    let mut all_wiki_names: HashSet<String> = HashSet::new();
+    all_wiki_names.extend(classic_diff.missing.iter().cloned());
+    all_wiki_names.extend(wiki_names.iter().cloned());
+    all_wiki_names.extend(widget_methods.iter().map(|m| m.api_name.clone()));
+    let all_wiki_names_vec: Vec<String> = all_wiki_names.into_iter().collect();
+
+    let (wiki_pages, wiki_redirects) = if !all_wiki_names_vec.is_empty() {
+        log::info!("Batch-fetching {} wiki pages...", all_wiki_names_vec.len());
+        let (pages, redirects) = fetch_wiki_pages(&all_wiki_names_vec);
+        log::info!("  Got {} wiki pages, {} redirects", pages.len(), redirects.len());
+        (pages, redirects)
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
+
+    // Step 3a: Generate classic stubs (wiki + constant/enum + LE_* + XML frames)
+    log::info!("Generating classic stubs...");
     let classic_lua = generate_classic_stubs(
-        &combined_stubs,
+        &classic_diff,
+        &wiki_pages,
+        &wiki_redirects,
         &classic_ui_dirs,
         if has_retail_ui { Some(&retail_ui_dir) } else { None },
         &all_ui_dirs,
@@ -2526,8 +2568,11 @@ pub fn regenerate_stubs() {
 
     // Step 3b: Generate wiki-documented global stubs (replaces Ketho's Wiki.lua)
     log::info!("Generating wiki-documented global stubs...");
-    let wiki_lua_path = clone_dir.join("Annotations/Core/Data/Wiki.lua");
-    let wiki_globals_lua = generate_wiki_stubs(&wiki_lua_path);
+    let wiki_globals_lua = generate_wiki_stubs(&wiki_names, &wiki_pages, &wiki_redirects);
+
+    // Step 3c: Enrich widget stubs with wiki-scraped annotations
+    log::info!("Enriching widget stubs with wiki annotations...");
+    enrich_widget_stubs(&widget_methods, &wiki_pages, &wiki_redirects);
 
     // Step 4: Write generated stubs to temp dir for scanning
     let gen_dir = scan_tmp.join("generated");
@@ -2567,17 +2612,6 @@ pub fn regenerate_stubs() {
     }
     // Skip Ketho's Wiki.lua — we generate our own WikiGlobals.lua from wiki scraping
     override_stems.insert("Wiki".to_string());
-
-    // Vendor stubs from clone (Core + FrameXML)
-    let vendor_dirs = [
-        clone_dir.join("Annotations/Core"),
-        clone_dir.join("Annotations/FrameXML"),
-    ];
-
-    // Step 5a: Enrich widget stubs with wiki-scraped annotations
-    log::info!("Enriching widget stubs with wiki annotations...");
-    let vendor_dir_paths: Vec<PathBuf> = vendor_dirs.to_vec();
-    enrich_widget_stubs(&vendor_dir_paths);
 
     for vendor_dir in &vendor_dirs {
         let mut vendor_paths = Vec::new();
