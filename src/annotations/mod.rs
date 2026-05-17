@@ -1311,4 +1311,6 @@ pub(crate) use annotation_scanning::{
 pub use scan_globals::scan_file_globals;
 pub(crate) use scan_globals::scan_file_globals_with_synth;
 pub use scan_defclass::scan_defclass_calls;
+pub use scan_defclass::{DefclassContext, scan_defclass_calls_with_context};
 pub use scan_built_name::scan_built_name_calls;
+pub use scan_built_name::{BuiltNameContext, scan_built_name_calls_with_context};

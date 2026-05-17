@@ -12,24 +12,21 @@ use super::annotation_scanning::{
 
 type BuiltFields = (Vec<(String, AnnotationType, Visibility)>, HashMap<String, (u32, u32)>);
 
-/// Scan a file for calls to functions with `@built-name`, extracting the class name
-/// from the specified string literal argument. Returns empty `ClassDecl` entries so the
-/// name is registered in `PreResolvedGlobals` for cross-file annotation resolution.
-pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], implicit_protected_prefix: bool) -> Vec<ClassDecl> {
-    let Some(block) = Block::cast(root) else { return Vec::new() };
+struct BuildsFieldInfo {
+    param_idx: usize,
+    field_type: AnnotationType,
+    generics: Vec<(String, Option<String>)>,
+    params: Vec<ParamInfo>,
+}
 
-    // Build map of function paths → param index for @built-name
+/// Build the `built_name_funcs` map from all globals. Shared between `DefclassContext`
+/// and `BuiltNameContext` to avoid duplicating this logic.
+pub(crate) fn build_built_name_map(all_globals: &[ExternalGlobal]) -> HashMap<String, usize> {
     let mut built_name_funcs: HashMap<String, usize> = HashMap::new();
-    // Also track which schema class each func_path belongs to
-    let mut func_path_to_schema: HashMap<String, String> = HashMap::new();
     for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
         let Some(path) = func_path(g) else { continue };
-        func_path_to_schema.insert(path.clone(), g.name.clone());
         built_name_funcs.insert(path, g.built_name.unwrap());
     }
-
-    // Propagate @built-name through wrapper functions: if a function returns a class
-    // whose method (e.g. __init) has @built-name, treat the wrapper as having @built-name too.
     let mut class_init_built_name: HashMap<String, usize> = HashMap::new();
     for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
         if matches!(&g.kind, ExternalGlobalKind::Method(_, _, _)) {
@@ -48,47 +45,101 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
             if let Some(schema_class) = returns_class {
                 let param_idx = class_init_built_name[&schema_class];
                 let Some(path) = func_path(g) else { continue };
-                func_path_to_schema.entry(path.clone()).or_insert(schema_class);
                 built_name_funcs.entry(path).or_insert(param_idx);
             }
         }
     }
+    built_name_funcs
+}
 
-    if built_name_funcs.is_empty() { return Vec::new(); }
+/// Pre-built lookup tables for built-name scanning, constructed once from all_globals
+/// and reused across multiple files.
+pub struct BuiltNameContext {
+    built_name_funcs: HashMap<String, usize>,
+    func_path_to_schema: HashMap<String, String>,
+    builds_field_funcs: HashMap<String, BuildsFieldInfo>,
+    schema_built_parent: HashMap<String, String>,
+}
 
-    // Build map: "{ClassName}.{MethodName}" → builds-field info for @builds-field methods
-    struct BuildsFieldInfo {
-        param_idx: usize,
-        field_type: AnnotationType,
-        generics: Vec<(String, Option<String>)>,
-        params: Vec<ParamInfo>,
-    }
-    let mut builds_field_funcs: HashMap<String, BuildsFieldInfo> = HashMap::new();
-    for g in all_globals.iter().filter(|g| g.builds_field.is_some()) {
-        let Some(method_path) = func_path(g) else { continue };
-        let (param_idx, field_type) = g.builds_field.clone().unwrap();
-        builds_field_funcs.insert(method_path, BuildsFieldInfo {
-            param_idx,
-            field_type,
-            generics: g.generics.clone(),
-            params: g.params.clone(),
-        });
-    }
-
-    // Build map: schema class → parent from @return built : Parent methods
-    let mut schema_built_parent: HashMap<String, String> = HashMap::new();
-    for g in all_globals {
-        let class_name = match &g.kind {
-            ExternalGlobalKind::Method(_, _, _) => &g.name,
-            _ => continue,
-        };
-        for rt in &g.returns {
-            if let AnnotationType::Simple(s) = rt
-                && let Some(parent) = s.strip_prefix("built:") {
-                    schema_built_parent.entry(class_name.clone()).or_insert_with(|| parent.to_string());
-                }
+impl BuiltNameContext {
+    pub fn new(all_globals: &[ExternalGlobal]) -> Self {
+        let mut func_path_to_schema: HashMap<String, String> = HashMap::new();
+        for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
+            let Some(path) = func_path(g) else { continue };
+            func_path_to_schema.insert(path, g.name.clone());
         }
+        // Also propagate schema mapping for factory functions that return a schema class
+        let mut class_init_built_name: HashMap<String, usize> = HashMap::new();
+        for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
+            if matches!(&g.kind, ExternalGlobalKind::Method(_, _, _)) {
+                class_init_built_name.insert(g.name.clone(), g.built_name.unwrap());
+            }
+        }
+        if !class_init_built_name.is_empty() {
+            for g in all_globals.iter().filter(|g| g.built_name.is_none()) {
+                let returns_class = g.returns.first().and_then(|rt| {
+                    if let AnnotationType::Simple(name) = rt {
+                        if class_init_built_name.contains_key(name) { Some(name.clone()) } else { None }
+                    } else {
+                        None
+                    }
+                });
+                if let Some(schema_class) = returns_class {
+                    let Some(path) = func_path(g) else { continue };
+                    func_path_to_schema.entry(path).or_insert(schema_class);
+                }
+            }
+        }
+
+        let built_name_funcs = build_built_name_map(all_globals);
+
+        let mut builds_field_funcs: HashMap<String, BuildsFieldInfo> = HashMap::new();
+        for g in all_globals.iter().filter(|g| g.builds_field.is_some()) {
+            let Some(method_path) = func_path(g) else { continue };
+            let (param_idx, field_type) = g.builds_field.clone().unwrap();
+            builds_field_funcs.insert(method_path, BuildsFieldInfo {
+                param_idx,
+                field_type,
+                generics: g.generics.clone(),
+                params: g.params.clone(),
+            });
+        }
+
+        let mut schema_built_parent: HashMap<String, String> = HashMap::new();
+        for g in all_globals {
+            let class_name = match &g.kind {
+                ExternalGlobalKind::Method(_, _, _) => &g.name,
+                _ => continue,
+            };
+            for rt in &g.returns {
+                if let AnnotationType::Simple(s) = rt
+                    && let Some(parent) = s.strip_prefix("built:") {
+                        schema_built_parent.entry(class_name.clone()).or_insert_with(|| parent.to_string());
+                    }
+            }
+        }
+
+        Self { built_name_funcs, func_path_to_schema, builds_field_funcs, schema_built_parent }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.built_name_funcs.is_empty()
+    }
+}
+
+/// Scan a file for calls to functions with `@built-name`, extracting the class name
+/// from the specified string literal argument. Returns empty `ClassDecl` entries so the
+/// name is registered in `PreResolvedGlobals` for cross-file annotation resolution.
+pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], implicit_protected_prefix: bool) -> Vec<ClassDecl> {
+    let ctx = BuiltNameContext::new(all_globals);
+    scan_built_name_calls_with_context(root, &ctx, implicit_protected_prefix)
+}
+
+/// Like `scan_built_name_calls`, but uses a pre-built `BuiltNameContext` to avoid
+/// rebuilding lookup tables from all_globals on every call.
+pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameContext, implicit_protected_prefix: bool) -> Vec<ClassDecl> {
+    let Some(block) = Block::cast(root) else { return Vec::new() };
+    if ctx.built_name_funcs.is_empty() { return Vec::new(); }
 
     // Helper: walk a FunctionCall chain to find a @built-name call
     // Returns (class_name, matched_func_path_key, name_literal_range)
@@ -300,18 +351,18 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
         };
         let Some(call) = rhs_call else { continue };
 
-        if let Some((name, matched_path, name_range)) = find_built_name_in_chain(&call, &built_name_funcs)
+        if let Some((name, matched_path, name_range)) = find_built_name_in_chain(&call, &ctx.built_name_funcs)
             && seen.insert(name.clone()) {
                 // Look up parent from @return built : Parent on the schema class
-                let schema_class = func_path_to_schema.get(&matched_path);
+                let schema_class = ctx.func_path_to_schema.get(&matched_path);
                 let parents: Vec<String> = schema_class
-                    .and_then(|schema| schema_built_parent.get(schema))
+                    .and_then(|schema| ctx.schema_built_parent.get(schema))
                     .cloned()
                     .into_iter()
                     .collect();
                 // Extract built fields from @builds-field methods in the chain
                 let (fields, field_ranges) = schema_class
-                    .map(|sc| extract_built_fields_from_chain(&call, sc, &builds_field_funcs, implicit_protected_prefix))
+                    .map(|sc| extract_built_fields_from_chain(&call, sc, &ctx.builds_field_funcs, implicit_protected_prefix))
                     .unwrap_or_default();
                 results.push(ClassDecl {
                     name,

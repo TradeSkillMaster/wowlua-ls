@@ -34,7 +34,7 @@ use lsp_types::{PositionEncodingKind, TextDocumentSyncCapability, TextDocumentSy
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, DiagnosticSuppression, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
+use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, DiagnosticSuppression, scan_all_annotations, scan_diagnostic_directives, scan_built_name_calls, DefclassContext, BuiltNameContext, scan_defclass_calls_with_context, scan_built_name_calls_with_context};
 use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, ValueType};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
@@ -407,7 +407,6 @@ pub fn scan_paths_with_overrides(
     stub_classes: &[ClassDecl],
 ) -> WorkspaceScanResult {
     use rayon::prelude::*;
-    use crate::annotations::scan_defclass_calls;
 
     let results: Vec<_> = paths.par_iter()
         .filter_map(|p| {
@@ -458,6 +457,7 @@ pub fn scan_paths_with_overrides(
                 .chain(classes.iter())
                 .cloned()
                 .collect();
+            let defclass_ctx = DefclassContext::new(&all_globals, &all_classes);
             let defclass_classes: Vec<ClassDecl> = paths.par_iter()
                 .filter_map(|p| {
                     let text = std::fs::read_to_string(p).ok()?;
@@ -465,7 +465,7 @@ pub fn scan_paths_with_overrides(
                     let tree = crate::syntax::parser::parse(&text);
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
                     let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-                    let mut found = scan_defclass_calls(root, &all_globals, &all_classes, ipp);
+                    let mut found = scan_defclass_calls_with_context(root, &defclass_ctx, ipp);
                     for decl in &mut found {
                         if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
                             decl.def_path = Some(p.clone());
@@ -485,62 +485,63 @@ pub fn scan_paths_with_overrides(
         // merge the built fields into the overlay (overlay @field types take precedence).
         if needs_built_name {
             let class_names: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
-        let built_classes: Vec<ClassDecl> = paths.par_iter()
-            .filter_map(|p| {
-                let text = std::fs::read_to_string(p).ok()?;
-                if crate::has_shebang(&text) { return None; }
-                let tree = crate::syntax::parser::parse(&text);
-                let root = crate::syntax::SyntaxNode::new_root(&tree);
-                let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-                let mut found = scan_built_name_calls(root, &all_globals, ipp);
-                for decl in &mut found {
-                    if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
-                        decl.def_path = Some(p.clone());
+            let built_ctx = BuiltNameContext::new(&all_globals);
+            let built_classes: Vec<ClassDecl> = paths.par_iter()
+                .filter_map(|p| {
+                    let text = std::fs::read_to_string(p).ok()?;
+                    if crate::has_shebang(&text) { return None; }
+                    let tree = crate::syntax::parser::parse(&text);
+                    let root = crate::syntax::SyntaxNode::new_root(&tree);
+                    let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+                    let mut found = scan_built_name_calls_with_context(root, &built_ctx, ipp);
+                    for decl in &mut found {
+                        if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
+                            decl.def_path = Some(p.clone());
+                        }
                     }
-                }
-                if found.is_empty() { None } else { Some(found) }
-            })
-            .flatten()
-            .collect();
-        if !built_classes.is_empty() {
-            let mut new_count = 0;
-            for built_decl in built_classes {
-                if class_names.contains(&built_decl.name) {
-                    if let Some(existing) = classes.iter_mut().find(|c| c.name == built_decl.name) {
-                        let overlay_names: HashSet<String> = existing.fields.iter()
-                            .map(|(n, _, _)| n.clone()).collect();
-                        for field in &built_decl.fields {
-                            if !overlay_names.contains(&field.0) {
-                                existing.fields.push(field.clone());
+                    if found.is_empty() { None } else { Some(found) }
+                })
+                .flatten()
+                .collect();
+            if !built_classes.is_empty() {
+                let mut new_count = 0;
+                for built_decl in built_classes {
+                    if class_names.contains(&built_decl.name) {
+                        if let Some(existing) = classes.iter_mut().find(|c| c.name == built_decl.name) {
+                            let overlay_names: HashSet<String> = existing.fields.iter()
+                                .map(|(n, _, _)| n.clone()).collect();
+                            for field in &built_decl.fields {
+                                if !overlay_names.contains(&field.0) {
+                                    existing.fields.push(field.clone());
+                                }
                             }
-                        }
-                        // Merge field_ranges for go-to-definition
-                        for (name, range) in &built_decl.field_ranges {
-                            existing.field_ranges.entry(name.clone()).or_insert(*range);
-                        }
-                        if existing.def_path.is_none() {
-                            existing.def_path = built_decl.def_path.clone();
-                        }
-                        if let Some(ref path) = built_decl.def_path {
-                            for name in built_decl.field_ranges.keys() {
-                                if !existing.field_paths.contains_key(name) {
-                                    existing.field_paths.insert(name.clone(), path.clone());
+                            // Merge field_ranges for go-to-definition
+                            for (name, range) in &built_decl.field_ranges {
+                                existing.field_ranges.entry(name.clone()).or_insert(*range);
+                            }
+                            if existing.def_path.is_none() {
+                                existing.def_path = built_decl.def_path.clone();
+                            }
+                            if let Some(ref path) = built_decl.def_path {
+                                for name in built_decl.field_ranges.keys() {
+                                    if !existing.field_paths.contains_key(name) {
+                                        existing.field_paths.insert(name.clone(), path.clone());
+                                    }
+                                }
+                            }
+                            // Merge parents from built-name scan (e.g. @return built : BaseState)
+                            for parent in &built_decl.parents {
+                                if !existing.parents.contains(parent) {
+                                    existing.parents.push(parent.clone());
                                 }
                             }
                         }
-                        // Merge parents from built-name scan (e.g. @return built : BaseState)
-                        for parent in &built_decl.parents {
-                            if !existing.parents.contains(parent) {
-                                existing.parents.push(parent.clone());
-                            }
-                        }
+                    } else {
+                        classes.push(built_decl);
+                        new_count += 1;
                     }
-                } else {
-                    classes.push(built_decl);
-                    new_count += 1;
                 }
-            }
-            log::debug!("built-name scan: {} classes discovered", new_count);
+                log::debug!("built-name scan: {} classes discovered", new_count);
             }
         }
     }
@@ -815,17 +816,19 @@ fn complete_directory_scan(
             .chain(out.file_classes.values().flatten())
             .cloned()
             .collect();
-        // Reuse cached trees instead of re-reading from disk
+        // Pre-build lookup contexts once, shared across all files in par_iter
+        let defclass_ctx = DefclassContext::new(&all_globals_owned, &all_classes);
+        let built_ctx = BuiltNameContext::new(&all_globals_owned);
         let defclass_results: Vec<_> = pass1.results.par_iter()
             .filter_map(|(p, cached)| {
                 let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
                 let mut found = Vec::new();
                 let ipp = configs.implicit_protected_prefix_for(p);
                 if needs_defclass {
-                    found.extend(scan_defclass_calls(root, &all_globals_owned, &all_classes, ipp));
+                    found.extend(scan_defclass_calls_with_context(root, &defclass_ctx, ipp));
                 }
                 if needs_built_name {
-                    found.extend(scan_built_name_calls(root, &all_globals_owned, ipp));
+                    found.extend(scan_built_name_calls_with_context(root, &built_ctx, ipp));
                 }
                 Some((p.clone(), found))
             })

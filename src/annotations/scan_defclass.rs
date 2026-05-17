@@ -7,87 +7,135 @@ use super::{
     default_visibility_for_name, extract_table_literal_fields,
 };
 use super::annotation_scanning::{
-    ExternalGlobal, ExternalGlobalKind, func_path,
+    ExternalGlobal, func_path,
     extract_type_annotation_for_assign, extract_inline_type_annotation,
     collect_statements_recursive,
 };
+use super::scan_built_name::build_built_name_map;
+
+struct DefclassFuncInfo {
+    parents: Vec<String>,
+    parent_param_idx: Option<usize>,
+    /// Index of the param whose type is the defclass generic (for table literal absorption)
+    values_param_idx: Option<usize>,
+    /// For each constraint parent: (base_name, [type_arg_generic_names])
+    /// e.g. for `@generic T: Class<P>` → [("Class", ["P"])]
+    constraint_type_args: Vec<(String, Vec<String>)>,
+    /// The name of the parent generic (e.g. "P" from `@defclass T : P`)
+    parent_generic_name: Option<String>,
+    /// Index signature type from parent class (e.g. EnumValue from @field [string] EnumValue)
+    index_sig_type: Option<AnnotationType>,
+}
+
+/// Pre-built lookup tables for defclass scanning, constructed once from all_globals/all_classes
+/// and reused across multiple files.
+pub struct DefclassContext {
+    defclass_funcs: HashMap<String, DefclassFuncInfo>,
+    constructor_names: HashSet<String>,
+    /// func_path → return types for resolving function call RHS in constructors
+    global_returns: HashMap<String, Vec<AnnotationType>>,
+    /// func_path → param_index for @built-name extraction
+    built_name_funcs: HashMap<String, usize>,
+}
+
+impl DefclassContext {
+    pub fn new(all_globals: &[ExternalGlobal], all_classes: &[ClassDecl]) -> Self {
+        // Build map of class name → index signature type from @field [string] Type
+        let class_index_sigs: HashMap<&str, &AnnotationType> = all_classes.iter()
+            .filter_map(|c| {
+                c.fields.iter()
+                    .find(|(name, _, _)| name == "[string]" || name == "[number]")
+                    .map(|(_, typ, _)| (c.name.as_str(), typ))
+            })
+            .collect();
+
+        let mut defclass_funcs: HashMap<String, DefclassFuncInfo> = HashMap::new();
+        for g in all_globals.iter().filter(|g| g.defclass.is_some()) {
+            let Some(fp) = func_path(g) else { continue };
+            let defclass_name = g.defclass.as_ref().unwrap();
+            let parents: Vec<String> = g.generics.iter()
+                .filter(|(n, _)| n == defclass_name)
+                .filter_map(|(_, c)| c.as_ref().map(|s| s.split('<').next().unwrap_or(s).to_string()))
+                .collect();
+            let constraint_type_args: Vec<(String, Vec<String>)> = g.generics.iter()
+                .filter(|(n, _)| n == defclass_name)
+                .filter_map(|(_, c)| {
+                    let c = c.as_ref()?;
+                    let open = c.find('<')?;
+                    let close = c.rfind('>')?;
+                    let base = c[..open].to_string();
+                    let args: Vec<String> = c[open+1..close].split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if args.is_empty() { None } else { Some((base, args)) }
+                })
+                .collect();
+            let parent_param_idx = g.defclass_parent.as_ref().and_then(|parent_name| {
+                g.params.iter()
+                    .filter(|p| p.name != "...")
+                    .position(|p| match &p.typ {
+                        AnnotationType::Simple(name) => name == parent_name,
+                        AnnotationType::Backtick(inner) => matches!(inner.as_ref(), AnnotationType::Simple(name) if name == parent_name),
+                        _ => false,
+                    })
+            });
+            let parent_generic_name = g.defclass_parent.clone();
+            let values_param_idx = g.params.iter()
+                .filter(|p| p.name != "...")
+                .position(|p| matches!(&p.typ, AnnotationType::Simple(name) if name == defclass_name));
+            let index_sig_type = parents.iter()
+                .find_map(|p| class_index_sigs.get(p.as_str()).copied().cloned());
+            defclass_funcs.insert(fp, DefclassFuncInfo {
+                parents, parent_param_idx, values_param_idx, constraint_type_args, parent_generic_name, index_sig_type,
+            });
+        }
+
+        let mut constructor_names: HashSet<String> = HashSet::new();
+        for class in all_classes {
+            for cname in &class.constructor_methods {
+                constructor_names.insert(cname.clone());
+            }
+        }
+
+        // Only build global_returns when there are constructors to scan
+        let global_returns = if constructor_names.is_empty() {
+            HashMap::new()
+        } else {
+            let mut map: HashMap<String, Vec<AnnotationType>> = HashMap::new();
+            for g in all_globals {
+                let Some(path) = func_path(g) else { continue };
+                if !g.returns.is_empty() {
+                    map.insert(path, g.returns.clone());
+                }
+            }
+            map
+        };
+
+        let built_name_funcs = build_built_name_map(all_globals);
+
+        Self { defclass_funcs, constructor_names, global_returns, built_name_funcs }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.defclass_funcs.is_empty()
+    }
+}
 
 /// Scan for `local X = Y.func("ClassName")` calls where `Y.func` has `@defclass`.
 /// Returns ClassDecl entries for discovered classes, with parent info from generic constraints.
 /// `all_globals` should contain globals from ALL scanned files (not just this file).
 pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], all_classes: &[ClassDecl], implicit_protected_prefix: bool) -> Vec<ClassDecl> {
-    use std::collections::{HashMap, HashSet};
+    let ctx = DefclassContext::new(all_globals, all_classes);
+    scan_defclass_calls_with_context(root, &ctx, implicit_protected_prefix)
+}
+
+/// Like `scan_defclass_calls`, but uses a pre-built `DefclassContext` to avoid
+/// rebuilding lookup tables from all_globals on every call. Use this when scanning
+/// multiple files against the same set of globals.
+pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassContext, implicit_protected_prefix: bool) -> Vec<ClassDecl> {
     let Some(block) = Block::cast(root) else { return Vec::new() };
-
-    // Build map of class name → index signature type from @field [string] Type
-    let class_index_sigs: HashMap<&str, &AnnotationType> = all_classes.iter()
-        .filter_map(|c| {
-            c.fields.iter()
-                .find(|(name, _, _)| name == "[string]" || name == "[number]")
-                .map(|(_, typ, _)| (c.name.as_str(), typ))
-        })
-        .collect();
-
-    // Build map of dotted function names → defclass function info
-    struct DefclassFuncInfo {
-        parents: Vec<String>,
-        parent_param_idx: Option<usize>,
-        /// Index of the param whose type is the defclass generic (for table literal absorption)
-        values_param_idx: Option<usize>,
-        /// For each constraint parent: (base_name, [type_arg_generic_names])
-        /// e.g. for `@generic T: Class<P>` → [("Class", ["P"])]
-        constraint_type_args: Vec<(String, Vec<String>)>,
-        /// The name of the parent generic (e.g. "P" from `@defclass T : P`)
-        parent_generic_name: Option<String>,
-        /// Index signature type from parent class (e.g. EnumValue from @field [string] EnumValue)
-        index_sig_type: Option<AnnotationType>,
-    }
-    let mut defclass_funcs: HashMap<String, DefclassFuncInfo> = HashMap::new();
-    for g in all_globals.iter().filter(|g| g.defclass.is_some()) {
-        let Some(func_path) = func_path(g) else { continue };
-        let defclass_name = g.defclass.as_ref().unwrap();
-        let parents: Vec<String> = g.generics.iter()
-            .filter(|(n, _)| n == defclass_name)
-            .filter_map(|(_, c)| c.as_ref().map(|s| s.split('<').next().unwrap_or(s).to_string()))
-            .collect();
-        // Extract constraint type args: for `T: Class<P>` → [("Class", ["P"])]
-        let constraint_type_args: Vec<(String, Vec<String>)> = g.generics.iter()
-            .filter(|(n, _)| n == defclass_name)
-            .filter_map(|(_, c)| {
-                let c = c.as_ref()?;
-                let open = c.find('<')?;
-                let close = c.rfind('>')?;
-                let base = c[..open].to_string();
-                let args: Vec<String> = c[open+1..close].split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if args.is_empty() { None } else { Some((base, args)) }
-            })
-            .collect();
-        // Find which param index holds the parent class generic
-        let parent_param_idx = g.defclass_parent.as_ref().and_then(|parent_name| {
-            g.params.iter()
-                .filter(|p| p.name != "...")
-                .position(|p| match &p.typ {
-                    AnnotationType::Simple(name) => name == parent_name,
-                    AnnotationType::Backtick(inner) => matches!(inner.as_ref(), AnnotationType::Simple(name) if name == parent_name),
-                    _ => false,
-                })
-        });
-        let parent_generic_name = g.defclass_parent.clone();
-        // Find param index whose annotation is Simple(defclass_name) — for table literal absorption
-        let values_param_idx = g.params.iter()
-            .filter(|p| p.name != "...")
-            .position(|p| matches!(&p.typ, AnnotationType::Simple(name) if name == defclass_name));
-        // Look up index signature type from constraint parent class
-        let index_sig_type = parents.iter()
-            .find_map(|p| class_index_sigs.get(p.as_str()).copied().cloned());
-        defclass_funcs.insert(func_path, DefclassFuncInfo {
-            parents, parent_param_idx, values_param_idx, constraint_type_args, parent_generic_name, index_sig_type,
-        });
-    }
-    if defclass_funcs.is_empty() { return Vec::new(); }
+    if ctx.defclass_funcs.is_empty() { return Vec::new(); }
 
     // Result from find_defclass_in_chain: class name, parents, constraint type arg subs, and table literal fields
     struct DefclassCallResult {
@@ -180,14 +228,6 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
         find_defclass_in_chain(&nested, defclass_funcs)
     }
 
-    // Collect all known constructor method names from external classes
-    let mut constructor_names: HashSet<&str> = HashSet::new();
-    for class in all_classes {
-        for cname in &class.constructor_methods {
-            constructor_names.insert(cname.as_str());
-        }
-    }
-
     let mut results: Vec<ClassDecl> = Vec::new();
     // Map local variable name → index in results (for matching constructor definitions)
     let mut var_to_result: HashMap<String, usize> = HashMap::new();
@@ -223,7 +263,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
         };
         let Some(call) = rhs_call else { continue };
 
-        if let Some(mut result) = find_defclass_in_chain(&call, &defclass_funcs) {
+        if let Some(mut result) = find_defclass_in_chain(&call, &ctx.defclass_funcs) {
             // Resolve variable parent names to actual class names via var_to_result.
             // E.g. DefineClass("Child", ParentVar) records parent as "ParentVar";
             // resolve it to the class name "ParentClass" from the earlier assignment.
@@ -335,46 +375,9 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
     }
 
     // Second pass: scan for constructor method definitions and extract self.X = ... fields
-    if !results.is_empty() && !constructor_names.is_empty() {
-        // Build lookup: func_path → return types for resolving function call RHS in constructors
-        let mut global_returns: HashMap<String, Vec<AnnotationType>> = HashMap::new();
-        for g in all_globals {
-            let Some(path) = func_path(g) else { continue };
-            if !g.returns.is_empty() {
-                global_returns.insert(path, g.returns.clone());
-            }
-        }
-
-        // Build @built-name lookup: func_path → param_index for extracting built table names
-        let mut built_name_funcs: HashMap<String, usize> = HashMap::new();
-        for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
-            let Some(path) = func_path(g) else { continue };
-            built_name_funcs.insert(path, g.built_name.unwrap());
-        }
-        // Propagate @built-name through wrapper functions: if a function returns a class
-        // whose method (e.g. __init) has @built-name, treat the wrapper as having @built-name too.
-        let mut class_init_built_name: HashMap<String, usize> = HashMap::new();
-        for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
-            if matches!(&g.kind, ExternalGlobalKind::Method(_, _, _)) {
-                class_init_built_name.insert(g.name.clone(), g.built_name.unwrap());
-            }
-        }
-        if !class_init_built_name.is_empty() {
-            for g in all_globals.iter().filter(|g| g.built_name.is_none()) {
-                let returns_class = g.returns.first().and_then(|rt| {
-                    if let AnnotationType::Simple(name) = rt {
-                        if class_init_built_name.contains_key(name) { Some(name.clone()) } else { None }
-                    } else {
-                        None
-                    }
-                });
-                if let Some(schema_class) = returns_class {
-                    let param_idx = class_init_built_name[&schema_class];
-                    let Some(path) = func_path(g) else { continue };
-                    built_name_funcs.entry(path).or_insert(param_idx);
-                }
-            }
-        }
+    if !results.is_empty() && !ctx.constructor_names.is_empty() {
+        let global_returns = &ctx.global_returns;
+        let built_name_funcs = &ctx.built_name_funcs;
 
         // Scan class-level field assignments (ClassName.field = expr) to build per-class field type maps.
         // This allows constructor scanning to resolve self._X:Method() by knowing _X's type.
@@ -400,7 +403,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 let exprs = el.expressions();
                 if let Some(expr) = exprs.first() {
                     let field_type = extract_type_annotation_for_assign(assign.syntax())
-                        .unwrap_or_else(|| infer_type_from_expression(expr, &global_returns, &HashMap::new(), &HashMap::new()));
+                        .unwrap_or_else(|| infer_type_from_expression(expr, global_returns, &HashMap::new(), &HashMap::new()));
                     // Always record for cross-file visibility
                     class_field_all.entry(result_idx)
                         .or_default()
@@ -413,7 +416,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                     }
                     // Extract @built-name from the call chain if the RHS is a function call
                     if let Expression::FunctionCall(call) = expr
-                        && let Some((built_name, _)) = extract_built_name_from_chain(call, &built_name_funcs) {
+                        && let Some((built_name, _)) = extract_built_name_from_chain(call, built_name_funcs) {
                             class_field_built_names.entry(result_idx)
                                 .or_default()
                                 .insert(field_name.clone(), built_name);
@@ -427,7 +430,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
         for stmt in &stmts {
             let Statement::FunctionCall(call) = stmt else { continue };
             // Extract @built-name from the chain
-            if let Some((built_name, _)) = extract_built_name_from_chain(call, &built_name_funcs) {
+            if let Some((built_name, _)) = extract_built_name_from_chain(call, built_name_funcs) {
                 // Find the root identifier: ClassName._FIELD:Method(...)
                 // Walk down the chain to find the deepest identifier with 2+ names
                 fn find_root_field(call: &FunctionCall<'_>) -> Option<(String, String)> {
@@ -480,7 +483,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
             if names.len() < 2 { continue; }
             let root_var = &names[0];
             let method_name = &names[names.len() - 1];
-            if !constructor_names.contains(method_name.as_str()) { continue; }
+            if !ctx.constructor_names.contains(method_name) { continue; }
             let Some(&result_idx) = var_to_result.get(root_var) else { continue; };
 
             // Walk the constructor body for self.X = ... assignments
@@ -489,7 +492,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                     .map(|(name, _, _)| name.clone()).collect();
                 let field_types = class_field_types.get(&result_idx).cloned().unwrap_or_default();
                 let field_built_names = class_field_built_names.get(&result_idx).cloned().unwrap_or_default();
-                let ctor_fields = extract_self_fields(body, &global_returns, &field_types, &field_built_names);
+                let ctor_fields = extract_self_fields(body, global_returns, &field_types, &field_built_names);
                 for entry in ctor_fields {
                     if !existing_fields.contains(&entry.name) {
                         let vis = default_visibility_for_name(&entry.name, implicit_protected_prefix);
