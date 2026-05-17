@@ -647,6 +647,15 @@ do
     end)
 end
 
+-- ── SetScript handler with underscore params (no false positive) ──
+do
+    local uf = CreateFrame('Frame')
+    uf:SetScript("OnEvent", function(_, _, unit)
+--                           ^ diag: none
+        local u = unit
+    end)
+end
+
 -- ── HookScript handler contextual typing from overload ──
 do
     local hf = CreateFrame('Frame')

@@ -180,6 +180,14 @@ impl AnalysisResult {
         let actual_params = &actual_args[skip_self..];
         let expected_params = &expected_args[skip_self..];
         for (pos, &actual_sym) in actual_params.iter().enumerate() {
+            // Skip `_` params — they're "don't care" placeholders. When duplicate
+            // `_` params exist (e.g. `function(_, _, unit)`), both share a single
+            // symbol with only the first version's type set, causing false mismatches
+            // at later positions. Skipping them is correct: the user explicitly
+            // opted out of using the value, so its type is irrelevant.
+            if matches!(&self.sym(actual_sym).id, SymbolIdentifier::Name(n) if n == "_") {
+                continue;
+            }
             let actual_ty = self.sym(actual_sym).versions.first()
                 .and_then(|v| v.resolved_type.clone())
                 .unwrap_or(ValueType::Any);
