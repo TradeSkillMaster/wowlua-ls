@@ -870,3 +870,29 @@ SendComm(function(arg, i, parts)
     local _ = parts
 --        ^ hover: (local) _: number
 end)
+
+-- ── Signal: bracket-index table (param used as the table being indexed) → table ──
+
+local function sumArray(value)
+--                      ^ hover: (param) value: table
+    local total = 0
+    for j = 1, #value do
+        total = total + value[j]
+    end
+    return total
+end
+
+-- When combined with # (string|table) and bracket indexing (table), intersection yields table
+local function insertListData(value)
+--                            ^ hover: (param) value: table
+    local n = #value
+    for j = 1, #value do
+        local _ = value[j]
+    end
+end
+
+-- Bracket index alone (no #) should still infer table
+local function getFirst(arr)
+--                      ^ hover: (param) arr: table
+    return arr[1]
+end

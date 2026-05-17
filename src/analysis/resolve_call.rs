@@ -2487,6 +2487,9 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                     }
+                    if let Some(sym) = self.candidate_ref_in(table, candidates) {
+                        record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, ValueType::Table(None));
+                    }
                 }
                 _ => {}
             }
