@@ -48,6 +48,11 @@ function ctxFuncTest(x) end
 --  ^ comp: param, return, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, see
 function ctxInferredFunc() end
 
+-- Function context with params: "Annotate function" appears alongside tags
+---@
+--  ^ comp: Annotate function, param, return, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, see
+function ctxWithParams(a, b) end
+
 -- ── Param name completions ───────────────────────────────────────────────────
 
 -- Partial param name prefix "a"
@@ -101,3 +106,58 @@ compTest:do
 -- Dot completion with partial field name typed
 compTest.al
 --         ^ comp: alpha
+
+-- ── Generate annotations completions ──────────────────────────────────────
+
+-- Generate annotations for function with parameters
+---
+-- ^ comp: Annotate function
+function genAnnot(x, y)
+    return x + y
+end
+
+-- No generation when above non-function
+---
+-- ^ comp: none
+local plainVar = 42
+
+-- No generation for parameterless void function
+function voidNoArgs()
+end
+---
+-- ^ comp: none
+local afterVoid = 1
+
+-- Generate when function has params but void return
+---
+-- ^ comp: Annotate function
+function genParamsOnly(a, b, c)
+end
+
+-- No generation when annotation block already has @param
+---@param x number
+---
+-- ^ comp: none
+function alreadyAnnotated(x)
+    return x
+end
+
+-- Method with self parameter (colon syntax) — self is skipped
+---@class GenAnnotClass
+local genAnnotObj = {}
+---
+-- ^ comp: Annotate function
+function genAnnotObj:myMethod(val)
+    return val
+end
+
+-- Function assigned to a local variable
+---
+-- ^ comp: Annotate function
+local genAssigned = function(x, y) return x end
+
+-- Varargs function
+---
+-- ^ comp: Annotate function
+function genVarargs(fmt, ...)
+end

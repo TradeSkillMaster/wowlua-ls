@@ -163,7 +163,7 @@ fn run_annotation_tests(config: &TestConfig) {
             if code_line_num == 0 { break; }
             code_line_num -= 1;
             let cl = lines[code_line_num].trim();
-            if !cl.is_empty() && (!cl.starts_with("--") || cl.starts_with("---@")) { break; }
+            if !cl.is_empty() && (!cl.starts_with("--") || cl.starts_with("---@") || cl == "---") { break; }
         }
         let code_line_1based = code_line_num + 1;
 
@@ -486,15 +486,17 @@ fn run_annotation_tests(config: &TestConfig) {
         if let Some(expected) = &expected_comp {
             if *expected == "none" {
                 if let Some(completions) = result.completions_at(&tree, offset, &contents, false) {
-                    let actual_items: Vec<&str> = completions.iter()
-                        .take(10)
-                        .map(|c| c.label.as_str())
-                        .collect();
-                    failures.push(format!(
-                        "  {}:{} (queried at {})\n    comp expected: none\n    comp actual:   {}",
-                        config.lua_file, i + 1, location,
-                        actual_items.join(", ")
-                    ));
+                    if !completions.is_empty() {
+                        let actual_items: Vec<&str> = completions.iter()
+                            .take(10)
+                            .map(|c| c.label.as_str())
+                            .collect();
+                        failures.push(format!(
+                            "  {}:{} (queried at {})\n    comp expected: none\n    comp actual:   {}",
+                            config.lua_file, i + 1, location,
+                            actual_items.join(", ")
+                        ));
+                    }
                 }
             } else {
                 match result.completions_at(&tree, offset, &contents, false) {
