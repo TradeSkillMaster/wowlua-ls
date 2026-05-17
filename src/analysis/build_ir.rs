@@ -1428,7 +1428,9 @@ impl<'a> Analysis<'a> {
                                     // the assignment targets an element of the field, not the field
                                     // itself. Lower the RHS for side effects but skip field type
                                     // modification, inject-field checks, and field_assignment_sites.
-                                    if ident.is_indexed_expression() {
+                                    if ident.is_indexed_expression()
+                                        || ident.has_non_string_bracket_in_chain()
+                                    {
                                         if let Some(expr) = expressions.get(index) {
                                             let expr_id = self.lower_expression(expr, scope_idx);
                                             // Cache for multi-return if applicable

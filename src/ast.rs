@@ -270,6 +270,33 @@ impl<'a> Identifier<'a> {
     pub(crate) fn is_indexed_expression(&self) -> bool {
         self.node.kind() == SyntaxKind::BracketAccess
     }
+
+    /// Returns true when there is a non-string BracketAccess anywhere in the
+    /// identifier chain (e.g. `a[x].b`, `a.b[x].c`). Assignments through such
+    /// chains target a field on a dynamically-indexed element, so field
+    /// inference on the parent table would be incorrect.
+    pub(crate) fn has_non_string_bracket_in_chain(&self) -> bool {
+        Self::check_non_string_bracket(self.node)
+    }
+
+    fn check_non_string_bracket(node: SyntaxNode<'a>) -> bool {
+        if node.kind() == SyntaxKind::BracketAccess
+            && extract_bracket_string_key(node).is_none()
+        {
+            return true;
+        }
+        for child in node.children() {
+            match child.kind() {
+                SyntaxKind::NameRef | SyntaxKind::DotAccess | SyntaxKind::BracketAccess => {
+                    if Self::check_non_string_bracket(child) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
     /// Like `names()` but includes numeric literal bracket keys in the chain
     /// (formatted as `[N]`). Used for nil-guard field narrowing where numeric
     /// indices are part of the identity (e.g. `obj.arr[1].field`).

@@ -84,3 +84,21 @@ local function ModifyList(i)
     local item = list[i]
     item.modified = true  -- should NOT leak
 end
+
+-- Case 5: Direct table[key].field assignment must not add field to the table itself
+local pending = {}
+--    ^ hover: (local) pending: {name: string}[]
+
+---@param seq number
+local function Start(seq)
+    local ctx = {}
+    ctx.name = "rpc"
+    pending[seq] = ctx
+end
+
+---@param seq number
+local function Extend(seq)
+    -- This assigns a field on a dynamically-indexed element.
+    -- "timeout" must NOT appear as a field of `pending` itself.
+    pending[seq].timeout = 100
+end
