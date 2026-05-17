@@ -350,6 +350,14 @@ local cc_result = cc_outer(cc_arg)()
 --                         ^ diag: none
 _consume(cc_result)
 
+-- Variables used inside parenthesized expression calls should not be unused
+local fmt_alt = tostring
+local fmt_def = tostring
+local pe_result = (fmt_alt or fmt_def)(42)
+--                 ^ diag: none
+--                            ^ diag: none
+_consume(pe_result)
+
 -- ── Redundant parameter ────────────────────────────────────────────────────
 
 ---@param a number

@@ -1159,6 +1159,10 @@ impl<'a> Analysis<'a> {
             // Chained call: f(args1)(args2) — the callee is itself a FunctionCall.
             // Recursively lower it so its arguments are tracked.
             self.lower_function_call(&inner_call, scope_idx, 0, false)
+        } else if let Some(expr) = call.syntax().children().find_map(Expression::cast) {
+            // Parenthesized or other expression callee: (expr)(args)
+            // Lower the expression so symbol references inside are tracked.
+            self.lower_expression(&expr, scope_idx)
         } else {
             self.ir.push_expr(Expr::Unknown)
         };
