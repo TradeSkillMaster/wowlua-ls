@@ -23,14 +23,26 @@ impl DiagnosticPass for ShadowedLocal {
             let Some(parent_scope) = parent else { continue; };
 
             let sym_id = &sym.id;
+            let inner_start = match sym.versions.first() {
+                Some(v) => v.def_node.start,
+                None => continue,
+            };
             let mut si = Some(parent_scope);
             let mut found = false;
             while let Some(s) = si {
                 if s.is_external() { break; }
                 let Some(scope_obj) = analysis.ir.scopes.get(s.val()) else { break; };
-                if scope_obj.symbols.contains_key(sym_id) {
-                    found = true;
-                    break;
+                if let Some(&outer_idx) = scope_obj.symbols.get(sym_id) {
+                    // Only count as shadowed if the outer symbol is declared before
+                    // the inner one. A later declaration in an outer scope is not
+                    // visible at the inner declaration site.
+                    let outer_declared_before = analysis.ir.symbols.get(outer_idx.val())
+                        .and_then(|s| s.versions.first())
+                        .is_some_and(|v| v.def_node.start < inner_start);
+                    if outer_declared_before {
+                        found = true;
+                        break;
+                    }
                 }
                 si = scope_obj.parent;
             }

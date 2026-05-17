@@ -3486,6 +3486,19 @@ local function test_shadow_multi()
 end
 _consume(test_shadow_multi)
 
+-- Later declaration in outer scope: no shadow (outer variable not yet in scope)
+local function test_shadow_later_decl()
+    if true then
+        local value = 0
+        -- ^ diag: none
+        _consume(value)
+    end
+    local value = 1
+    --    ^ diag: none
+    _consume(value)
+end
+_consume(test_shadow_later_decl)
+
 -- ── field-type-mismatch: @type {shape}[] array element field checking ──────
 
 -- Basic shape mismatch: wrong field type in array element
