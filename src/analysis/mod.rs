@@ -415,6 +415,7 @@ impl Ir {
             parent,
             symbols: HashMap::new(),
             creation_order: order,
+            is_loop: false,
         });
         ScopeIndex(self.scopes.len() - 1)
     }
@@ -723,6 +724,10 @@ impl Ir {
     /// ensures the version was created **before** the querying scope. This prevents
     /// closure bodies (whose scope was created before an enclosing assignment) from
     /// seeing variable versions created by that assignment.
+    ///
+    /// Exception: versions in **loop** scopes (while/for/repeat bodies) are always
+    /// visible to descendant scopes regardless of temporal ordering, because they
+    /// represent state from previous iterations.
     pub(crate) fn version_for_scope(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> usize {
         // External symbols always have a single version; no branch filtering needed
         if sym_idx.is_external() {
@@ -740,7 +745,12 @@ impl Ir {
                 // Only skip if the version was created in a strict ancestor and
                 // was created AFTER the querying scope (i.e. the querying scope
                 // is a closure whose scope existed before this version).
-                if ver.creation_order > scope_order && self.is_ancestor_scope(ver.created_in_scope, scope_idx) {
+                // Exception: loop scopes — merge versions represent previous-iteration
+                // state and must be visible to all inner scopes.
+                if ver.creation_order > scope_order
+                    && self.is_ancestor_scope(ver.created_in_scope, scope_idx)
+                    && !self.scopes[ver.created_in_scope.val()].is_loop
+                {
                     continue;
                 }
                 return i;

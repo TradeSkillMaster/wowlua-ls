@@ -784,3 +784,49 @@ local function testBracketFieldInference(key)
     local litResult = LABEL_MAP["alpha"]
     --    ^ hover: (local) litResult: string
 end
+
+-- Loop-carried variable type inference: variables assigned in an if-branch
+-- inside a loop should be non-nil in subsequent elseif/else branches (since
+-- they were assigned in a previous iteration).
+local function loopCarriedType(items)
+    local count = nil
+    for i = 1, 10 do
+        if not count then
+            count = i or 0
+        elseif i < count then
+            local useCount = count
+            --    ^ hover: (local) useCount: number
+        end
+    end
+    -- While loop variant
+    local state = nil
+    local idx = 0
+    while idx < 10 do
+        idx = idx + 1
+        if not state then
+            state = "init"
+        else
+            local useState = state
+            --    ^ hover: (local) useState: string
+        end
+    end
+    -- Repeat loop variant
+    local phase = nil
+    repeat
+        if not phase then
+            phase = 1
+        else
+            local usePhase = phase
+            --    ^ hover: (local) usePhase: number
+        end
+    until phase == 1
+    -- Closures in loops should not be affected (preserve nil at definition time)
+    local captured = nil
+    for j = 1, 5 do
+        local fn_inside = function() return captured end
+        --                                  ^ hover: (local) captured: nil
+        if not captured then
+            captured = j
+        end
+    end
+end

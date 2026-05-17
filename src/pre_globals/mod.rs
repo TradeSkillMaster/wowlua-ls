@@ -2359,7 +2359,7 @@ impl PreResolvedGlobals {
     ) -> ValueType {
         let func_scope_local = scopes.len();
         let func_scope = ScopeIndex(EXT_BASE + func_scope_local);
-        scopes.push(Scope { parent: Some(ScopeIndex(0)), symbols: HashMap::new(), creation_order: 0 });
+        scopes.push(Scope { parent: Some(ScopeIndex(0)), symbols: HashMap::new(), creation_order: 0, is_loop: false });
 
         let mut arg_symbols = Vec::new();
         let mut param_annotations = Vec::new();
@@ -2537,6 +2537,7 @@ impl PreResolvedGlobals {
             parent: Some(ScopeIndex(0)),
             symbols: HashMap::new(),
             creation_order: 0,
+            is_loop: false,
         });
 
         let mut arg_symbols = Vec::new();

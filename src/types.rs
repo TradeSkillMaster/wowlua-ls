@@ -566,6 +566,10 @@ pub(crate) struct Scope {
     /// closure body references a variable that is reassigned by the enclosing
     /// assignment statement).
     pub(crate) creation_order: u32,
+    /// True for loop body scopes (while, for-count, for-in, repeat). Versions
+    /// created in a loop scope represent state from previous iterations and
+    /// should be visible to all inner scopes regardless of temporal ordering.
+    pub(crate) is_loop: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

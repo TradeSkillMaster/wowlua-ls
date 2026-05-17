@@ -49,6 +49,7 @@ impl<'a> Analysis<'a> {
             parent: None,
             symbols: HashMap::new(),
             creation_order: root_order,
+            is_loop: false,
         });
 
         /// Tracks an if/elseif/else chain where all branches may assign to a variable.
@@ -272,6 +273,49 @@ impl<'a> Analysis<'a> {
                                 creation_order: order,
                                 original_type_source: None,
                             });
+
+                            // In loop scopes, retroactively update SymbolRef expressions
+                            // that still point to a pre-loop version. This makes the
+                            // merged type (from previous iterations) visible within the
+                            // loop body — e.g. a variable assigned in an if-branch
+                            // becomes non-nil in subsequent elseif branches.
+                            // Excludes references inside nested function scopes (closures)
+                            // to preserve closure capture semantics.
+                            if self.ir.scopes[scope_idx.val()].is_loop {
+                                let merge_ver = self.ir.symbols[sym_idx.val()].versions.len() - 1;
+                                // Collect function body scopes nested within the loop
+                                let func_scopes: Vec<ScopeIndex> = self.ir.functions.iter()
+                                    .map(|f| f.scope)
+                                    .filter(|fs| fs.val() < self.ir.scopes.len()
+                                        && Self::is_scope_in_subtree_static(&self.ir.scopes, *fs, scope_idx))
+                                    .collect();
+                                let sites = self.sym_ref_sites.get(sym_idx).cloned().unwrap_or_default();
+                                for (expr_id, offset) in sites {
+                                    let (s, old_ver) = match self.ir.exprs[expr_id.val()] {
+                                        Expr::SymbolRef(s, v) if s == *sym_idx && v < merge_ver => (s, v),
+                                        _ => continue,
+                                    };
+                                    // Only update references whose current version was
+                                    // created outside the loop (i.e. the pre-loop value).
+                                    let old_scope = self.ir.symbols[s.val()].versions[old_ver].created_in_scope;
+                                    if Self::is_scope_in_subtree_static(&self.ir.scopes, old_scope, scope_idx) {
+                                        continue;
+                                    }
+                                    // Ensure the reference site is within the loop scope.
+                                    let Some(site_scope) = self.ir.scope_at_offset(offset) else { continue };
+                                    if !Self::is_scope_in_subtree_static(&self.ir.scopes, site_scope, scope_idx) {
+                                        continue;
+                                    }
+                                    // Skip references inside nested function bodies (closures).
+                                    if func_scopes.iter().any(|fs|
+                                        Self::is_scope_in_subtree_static(&self.ir.scopes, site_scope, *fs)
+                                    ) {
+                                        continue;
+                                    }
+                                    self.ir.exprs[expr_id.val()] = Expr::SymbolRef(s, merge_ver);
+                                    self.symbol_version_at.insert(offset, merge_ver);
+                                }
+                            }
                         }
 
                         // Register correlated-local group (2+ symbols assigned in
@@ -673,6 +717,7 @@ impl<'a> Analysis<'a> {
                     }
                     if let Some(inner_block) = while_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
+                        self.ir.scopes[new_scope_idx.val()].is_loop = true;
                         if let Some(cond) = while_loop.condition() {
                             // Narrow the loop body scope (condition is true inside the loop)
                             self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, true);
@@ -709,6 +754,7 @@ impl<'a> Analysis<'a> {
                     }
                     if let Some(inner_block) = repeat_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
+                        self.ir.scopes[new_scope_idx.val()].is_loop = true;
                         stack.push(Frame {
                             block: inner_block,
                             next_stmt: 0,
@@ -899,6 +945,7 @@ impl<'a> Analysis<'a> {
                     }
                     if let Some(inner_block) = for_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
+                        self.ir.scopes[new_scope_idx.val()].is_loop = true;
                         // Register scope for entire for-loop so variable names in the header resolve
                         let br = for_loop.syntax().text_range();
                         self.ir.block_scopes.push((u32::from(br.start()), u32::from(br.end()), new_scope_idx));
@@ -931,6 +978,7 @@ impl<'a> Analysis<'a> {
                     }
                     if let Some(inner_block) = for_in.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
+                        self.ir.scopes[new_scope_idx.val()].is_loop = true;
                         // Register scope for entire for-loop so variable names in the header resolve
                         let br = for_in.syntax().text_range();
                         self.ir.block_scopes.push((u32::from(br.start()), u32::from(br.end()), new_scope_idx));
@@ -2097,6 +2145,20 @@ impl<'a> Analysis<'a> {
         }
     }
 
+
+    /// Check if `candidate` is `root` or a descendant of `root`.
+    /// (Static variant of `resolve.rs::is_scope_in_subtree` — needed here to
+    /// avoid borrowing all of `self` during the loop-merge rewrite.)
+    fn is_scope_in_subtree_static(scopes: &[Scope], candidate: ScopeIndex, root: ScopeIndex) -> bool {
+        if candidate == root { return true; }
+        let mut current = scopes.get(candidate.val()).and_then(|s| s.parent);
+        while let Some(s) = current {
+            if s == root { return true; }
+            if s.val() >= scopes.len() { break; }
+            current = scopes[s.val()].parent;
+        }
+        false
+    }
 
     pub(super) fn insert_function_definition(&mut self, func: &FunctionDefinition<'_>, scope_idx: ScopeIndex, inject_self: bool) -> ScopeIndex {
         let node = DefNode::from_node(func.syntax());
