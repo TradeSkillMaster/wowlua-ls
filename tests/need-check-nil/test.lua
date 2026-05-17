@@ -2354,3 +2354,44 @@ local function testBracketNoGuard(name)
     -- ^ diag: need-check-nil
 end
 _consume(testBracketNoGuard)
+
+-- ── Length operator on possibly-nil values ─────────────────────────────
+
+---@type string?
+local maybeStr = nil
+local _lenBad = #maybeStr
+--              ^ diag: need-check-nil
+
+-- Non-nil string — no diagnostic
+---@type string
+local definiteStr = "hello"
+local _lenOk = #definiteStr
+--             ^ diag: none
+
+-- Nil guard suppresses the diagnostic
+---@type string?
+local guardedStr = nil
+if guardedStr then
+    local _lenGuarded = #guardedStr
+    --                  ^ diag: none
+end
+
+-- Nil comparison guard
+---@type string?
+local cmpGuarded = nil
+if cmpGuarded ~= nil then
+    local _lenCmpGuarded = #cmpGuarded
+    --                     ^ diag: none
+end
+
+-- Table type that is nullable
+---@type table?
+local maybeTbl = nil
+local _tblLen = #maybeTbl
+--              ^ diag: need-check-nil
+
+-- and-guard pattern: x and #x
+---@type string?
+local andStr = nil
+local _andLen = andStr and #andStr or 0
+--                         ^ diag: none

@@ -107,7 +107,7 @@ pub(crate) struct Ir {
     /// Binary-op sites for `invalid-op` diagnostic.
     /// Each entry is (binary_op_expr_id, start, end) covering arithmetic and concatenation ops.
     pub(crate) binary_op_sites: Vec<(ExprId, u32, u32)>,
-    /// Unary-op sites for `invalid-op` diagnostic (currently `#` length operator).
+    /// Unary-op sites for `invalid-op` and `need-check-nil` diagnostics (currently `#` length operator).
     /// Each entry is (unary_op_expr_id, start, end).
     pub(crate) unary_op_sites: Vec<(ExprId, u32, u32)>,
     /// Source ranges for local @class declarations (class name → (start, end) byte offsets).

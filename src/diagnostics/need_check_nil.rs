@@ -85,12 +85,29 @@ pub(crate) fn run_callee(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnosti
     }
 }
 
+pub(crate) fn run_length(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
+    for &(expr_id, start, end) in &analysis.ir.unary_op_sites {
+        let Expr::UnaryOp { operand, .. } = analysis.ir.exprs[expr_id.val()] else { continue };
+        let Some(operand_type) = analysis.resolve_expr_type(operand) else { continue };
+        if !is_nullable(&operand_type) { continue; }
+        if check_nil_suppressed(analysis, operand, start) { continue; }
+        let type_str = analysis.format_value_type_depth(&operand_type, 0);
+        super::NEED_CHECK_NIL.emit(
+            diags,
+            format!("'#' on possibly-nil value of type '{type_str}'"),
+            start as usize,
+            end as usize,
+        );
+    }
+}
+
 pub(crate) struct NeedCheckNil;
 
 impl DiagnosticPass for NeedCheckNil {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         run_access(analysis, diags);
         run_callee(analysis, diags);
+        run_length(analysis, diags);
     }
 }
 
