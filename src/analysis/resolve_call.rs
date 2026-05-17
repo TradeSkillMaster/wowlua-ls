@@ -2491,6 +2491,11 @@ impl<'a> Analysis<'a> {
                         record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, ValueType::Table(None));
                     }
                 }
+                Expr::FieldAccess { table, .. } => {
+                    if let Some(sym) = self.candidate_ref_in(table, candidates) {
+                        narrowing_hints.entry(sym).or_default().push(ValueType::Table(None));
+                    }
+                }
                 _ => {}
             }
         }

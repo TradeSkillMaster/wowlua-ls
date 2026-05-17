@@ -896,3 +896,13 @@ local function getFirst(arr)
 --                      ^ hover: (param) arr: table
     return arr[1]
 end
+
+-- Field access (dot) narrows # signal from string|table down to table
+local function processQueue(queue)
+--                          ^ hover: (param) queue: table
+    if #queue == 0 then
+        queue.done = true
+        return
+    end
+    local item = queue[1]
+end
