@@ -320,3 +320,36 @@ local function getItemInfo(slotId)
 end
 --  ^ diag: none
 _consume(getItemInfo)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Union in actual return types matching tuple-union overloads
+-- (number?, EnumValue) should match (number, EnumValue) | (nil, EnumValue?)
+-- because each expansion of the union matches at least one case.
+-- ══════════════════════════════════════════════════════════════════════════
+
+---@class TupleEnumVal
+
+---@return (number, TupleEnumVal) | (nil, TupleEnumVal?)
+local function getWithEnum()
+    ---@type number?
+    local n
+    ---@type TupleEnumVal
+    local e
+    return n, e
+--  ^ diag: none
+end
+_consume(getWithEnum)
+
+-- Union decomposition should still catch real mismatches:
+-- (number?, string?) vs (number, string) | (nil, nil) — the combo (nil, string)
+-- doesn't match either case, so the diagnostic should fire.
+---@return (number, string) | (nil, nil)
+local function strictPairs()
+    ---@type number?
+    local n
+    ---@type string?
+    local s
+    return n, s
+--  ^ diag: grouped-return-mismatch
+end
+_consume(strictPairs)

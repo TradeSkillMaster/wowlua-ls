@@ -128,6 +128,13 @@ impl DiagnosticPass for GroupedReturnMismatch {
                     })
                 });
 
+                // When the direct match fails and actual types contain unions,
+                // decompose them: every combination from the cartesian product of
+                // union members must match at least one overload case.
+                let matches_any = matches_any || (actual_types.iter().any(|t| matches!(t, Some(ValueType::Union(_)))) && {
+                    all_union_expansions_match(&actual_types, &return_only_overloads, analysis, is_correlated_forward)
+                });
+
                 if !matches_any {
                     if return_exprs.len() == 1
                         && let Expr::FunctionCall { func: callee, ret_index: 0, .. } = analysis.expr(return_exprs[0]).clone()
@@ -177,4 +184,71 @@ impl DiagnosticPass for GroupedReturnMismatch {
             }
         }
     }
+}
+
+/// Check that every combination from the cartesian product of union members
+/// in `actual_types` matches at least one overload case.
+fn all_union_expansions_match(
+    actual_types: &[Option<ValueType>],
+    overloads: &[&ResolvedOverload],
+    analysis: &AnalysisResult,
+    is_correlated_forward: bool,
+) -> bool {
+    let nil_singleton = ValueType::Nil;
+    let member_sets: Vec<Vec<&ValueType>> = actual_types.iter()
+        .map(|t| match t {
+            Some(ValueType::Union(members)) => members.iter().collect(),
+            Some(ty) => vec![ty],
+            None => vec![&nil_singleton],
+        })
+        .collect();
+
+    let mut indices = vec![0usize; member_sets.len()];
+    loop {
+        let combo: Vec<&ValueType> = indices.iter().enumerate()
+            .map(|(pos, &idx)| member_sets[pos][idx])
+            .collect();
+
+        let combo_matches = overloads.iter().any(|overload| {
+            if overload.returns.is_empty()
+                || (overload.returns.len() == 1 && overload.returns[0] == ValueType::Nil)
+            {
+                return combo.iter().all(|t| matches!(t, ValueType::Nil));
+            }
+            if overload.has_vararg_tail && !overload.returns.is_empty() {
+                let fixed = overload.returns.len() - 1;
+                if combo.len() < fixed { return false; }
+                let vararg_ty = &overload.returns[fixed];
+                return combo.iter().enumerate().all(|(i, actual)| {
+                    let expected = if i < fixed { &overload.returns[i] } else { vararg_ty };
+                    actual.is_assignable_to(expected)
+                        || analysis.is_table_subtype(actual, expected)
+                        || (is_correlated_forward && expected.is_assignable_to(actual))
+                });
+            }
+            if combo.len() != overload.returns.len() { return false; }
+            combo.iter().zip(overload.returns.iter()).all(|(actual, expected)| {
+                actual.is_assignable_to(expected)
+                    || analysis.is_table_subtype(actual, expected)
+                    || (is_correlated_forward && expected.is_assignable_to(actual))
+            })
+        });
+
+        if !combo_matches { return false; }
+
+        // Advance to next combination (cartesian product iteration)
+        let mut carry = true;
+        for pos in (0..indices.len()).rev() {
+            if carry {
+                indices[pos] += 1;
+                if indices[pos] < member_sets[pos].len() {
+                    carry = false;
+                } else {
+                    indices[pos] = 0;
+                }
+            }
+        }
+        if carry { break; }
+    }
+    true
 }
