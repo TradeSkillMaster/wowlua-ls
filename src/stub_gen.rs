@@ -2612,7 +2612,7 @@ pub fn regenerate_stubs() {
     }));
 
     let (classes, aliases, mut globals, _addon_ns_class_names, stub_events) =
-        crate::lsp::scan_paths_with_overrides(&paths, &override_set, None);
+        crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
 
     // Step 5b: Merge Ketho flavor bitmask data into globals
     let flavor_ts_path = data_dir.join("flavor.ts");

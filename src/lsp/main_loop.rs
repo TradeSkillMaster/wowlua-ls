@@ -399,6 +399,8 @@ pub fn scan_paths_with_overrides(
     paths: &[PathBuf],
     override_paths: &std::collections::HashSet<PathBuf>,
     configs: Option<&crate::config::ProjectConfigs>,
+    stub_globals: &[ExternalGlobal],
+    stub_classes: &[ClassDecl],
 ) -> WorkspaceScanResult {
     use rayon::prelude::*;
     use crate::annotations::scan_defclass_calls;
@@ -434,36 +436,51 @@ pub fn scan_paths_with_overrides(
         }
     }
 
-    // Pass 2: if any globals have @defclass, re-scan files for defclass calls
-    if globals.iter().any(|g| g.defclass.is_some()) {
-        let defclass_classes: Vec<ClassDecl> = paths.par_iter()
-            .filter_map(|p| {
-                let text = std::fs::read_to_string(p).ok()?;
-                if crate::has_shebang(&text) { return None; }
-                let tree = crate::syntax::parser::parse(&text);
-                let root = crate::syntax::SyntaxNode::new_root(&tree);
-                let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-                let mut found = scan_defclass_calls(root, &globals, &classes, ipp);
-                for decl in &mut found {
-                    if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
-                        decl.def_path = Some(p.clone());
-                    }
-                }
-                if found.is_empty() { None } else { Some(found) }
-            })
-            .flatten()
+    // Pass 2+3: defclass + built-name scans.
+    // Include stub globals/classes so the context matches what the LSP uses after
+    // rebuild_caches (which includes stubs + workspace globals).
+    let needs_defclass = stub_globals.iter().any(|g| g.defclass.is_some())
+        || globals.iter().any(|g| g.defclass.is_some());
+    let needs_built_name = stub_globals.iter().any(|g| g.built_name.is_some())
+        || globals.iter().any(|g| g.built_name.is_some());
+    if needs_defclass || needs_built_name {
+        let all_globals: Vec<ExternalGlobal> = stub_globals.iter()
+            .chain(globals.iter())
+            .cloned()
             .collect();
-        if !defclass_classes.is_empty() {
-            log::debug!("defclass scan: {} classes discovered", defclass_classes.len());
-            classes.extend(defclass_classes);
-        }
-    }
 
-    // Pass 3: if any globals have @built-name, re-scan files for built-name calls.
-    // When a @built-name class has the same name as a @class overlay,
-    // merge the built fields into the overlay (overlay @field types take precedence).
-    if globals.iter().any(|g| g.built_name.is_some()) {
-        let class_names: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
+        if needs_defclass {
+            let all_classes: Vec<ClassDecl> = stub_classes.iter()
+                .chain(classes.iter())
+                .cloned()
+                .collect();
+            let defclass_classes: Vec<ClassDecl> = paths.par_iter()
+                .filter_map(|p| {
+                    let text = std::fs::read_to_string(p).ok()?;
+                    if crate::has_shebang(&text) { return None; }
+                    let tree = crate::syntax::parser::parse(&text);
+                    let root = crate::syntax::SyntaxNode::new_root(&tree);
+                    let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+                    let mut found = scan_defclass_calls(root, &all_globals, &all_classes, ipp);
+                    for decl in &mut found {
+                        if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
+                            decl.def_path = Some(p.clone());
+                        }
+                    }
+                    if found.is_empty() { None } else { Some(found) }
+                })
+                .flatten()
+                .collect();
+            if !defclass_classes.is_empty() {
+                log::debug!("defclass scan: {} classes discovered", defclass_classes.len());
+                classes.extend(defclass_classes);
+            }
+        }
+
+        // When a @built-name class has the same name as a @class overlay,
+        // merge the built fields into the overlay (overlay @field types take precedence).
+        if needs_built_name {
+            let class_names: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
         let built_classes: Vec<ClassDecl> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
@@ -471,7 +488,7 @@ pub fn scan_paths_with_overrides(
                 let tree = crate::syntax::parser::parse(&text);
                 let root = crate::syntax::SyntaxNode::new_root(&tree);
                 let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-                let mut found = scan_built_name_calls(root, &globals, ipp);
+                let mut found = scan_built_name_calls(root, &all_globals, ipp);
                 for decl in &mut found {
                     if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
                         decl.def_path = Some(p.clone());
@@ -520,6 +537,7 @@ pub fn scan_paths_with_overrides(
                 }
             }
             log::debug!("built-name scan: {} classes discovered", new_count);
+            }
         }
     }
 
@@ -598,6 +616,15 @@ fn scan_xml_paths_into(xml_paths: &[PathBuf], result: &mut WorkspaceScanResult) 
 }
 
 pub fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> WorkspaceScanResult {
+    scan_workspace_with_stubs(dirs, configs, &[], &[])
+}
+
+pub fn scan_workspace_with_stubs(
+    dirs: &[PathBuf],
+    configs: &mut crate::config::ProjectConfigs,
+    stub_globals: &[ExternalGlobal],
+    stub_classes: &[ClassDecl],
+) -> WorkspaceScanResult {
     let mut paths = Vec::new();
     let mut xml_paths = Vec::new();
     for dir in dirs {
@@ -605,7 +632,7 @@ pub fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConf
             collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
         }
     }
-    let mut result = scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs));
+    let mut result = scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs), stub_globals, stub_classes);
     scan_xml_paths_into(&xml_paths, &mut result);
     result
 }
@@ -693,6 +720,7 @@ fn scan_directory_pass1(
 fn complete_directory_scan(
     pass1: ScanPass1Result,
     stub_classes: &[ClassDecl],
+    stub_globals: &[ExternalGlobal],
     configs: &crate::config::ProjectConfigs,
 ) -> DirectoryScanResult {
     use rayon::prelude::*;
@@ -720,14 +748,21 @@ fn complete_directory_scan(
         }
     }
 
-    // Pass 2: defclass + built-name scan reusing cached parse trees (no re-read/re-parse)
-    let all_globals: Vec<&ExternalGlobal> = pass1.results.iter()
-        .flat_map(|(_p, cached)| cached.file_globals.iter())
-        .collect();
-    let needs_defclass = all_globals.iter().any(|g| g.defclass.is_some());
-    let needs_built_name = all_globals.iter().any(|g| g.built_name.is_some());
+    // Pass 2: defclass + built-name scan reusing cached parse trees (no re-read/re-parse).
+    // Use the full set of globals (workspace Lua + XML + stubs) to match what
+    // rebuild_caches/maybe_rebuild_workspace uses. Previously this only included
+    // workspace Lua globals from pass1.results, missing XML globals and stubs,
+    // which could cause defclass/built-name discoveries to differ between the
+    // initial scan and later incremental rebuilds.
+    let needs_defclass = stub_globals.iter().any(|g| g.defclass.is_some())
+        || out.file_globals.values().flatten().any(|g| g.defclass.is_some());
+    let needs_built_name = stub_globals.iter().any(|g| g.built_name.is_some())
+        || out.file_globals.values().flatten().any(|g| g.built_name.is_some());
     if needs_defclass || needs_built_name {
-        let all_globals_owned: Vec<ExternalGlobal> = all_globals.iter().map(|g| (*g).clone()).collect();
+        let all_globals_owned: Vec<ExternalGlobal> = stub_globals.iter()
+            .chain(out.file_globals.values().flatten())
+            .cloned()
+            .collect();
         let all_classes: Vec<ClassDecl> = stub_classes.iter()
             .chain(out.file_classes.values().flatten())
             .cloned()
@@ -763,9 +798,10 @@ fn scan_directory_tracked(
     dir: &Path,
     configs: &mut crate::config::ProjectConfigs,
     stub_classes: &[ClassDecl],
+    stub_globals: &[ExternalGlobal],
 ) -> DirectoryScanResult {
     let pass1 = scan_directory_pass1(dir, configs);
-    complete_directory_scan(pass1, stub_classes, configs)
+    complete_directory_scan(pass1, stub_classes, stub_globals, configs)
 }
 
 fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
@@ -1122,7 +1158,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     // Complete workspace scan: process results + Pass 2 (defclass/built-name, needs stubs)
     let scan_result = if let Some(pass1) = scan_pass1 {
-        complete_directory_scan(pass1, &stub_classes, &configs)
+        complete_directory_scan(pass1, &stub_classes, &stub_globals, &configs)
     } else {
         DirectoryScanResult::default()
     };
@@ -3248,7 +3284,7 @@ fn reload_config(
         file_defclasses,
         file_events,
         addon_ns_class,
-    } = scan_directory_tracked(root, &mut ws.configs, &ws.stub_classes);
+    } = scan_directory_tracked(root, &mut ws.configs, &ws.stub_classes, &ws.stub_globals);
     ws.ws_file_globals = file_globals;
     ws.ws_file_classes = file_classes;
     ws.ws_file_aliases = file_aliases;
@@ -3377,6 +3413,14 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
     };
 
     if globals_changed || classes_changed || aliases_changed || defclasses_changed {
+        log::info!(
+            "Workspace rebuild triggered by didOpen: {} (globals={} classes={} aliases={} defclasses={})",
+            file_path.display(),
+            globals_changed,
+            classes_changed,
+            aliases_changed,
+            defclasses_changed,
+        );
         ws.rebuild();
         true
     } else {

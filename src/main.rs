@@ -81,13 +81,13 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             .collect();
         let class_filter = if class_filter.is_empty() { None } else { Some(class_filter) };
 
-        let mut project_configs = config::ProjectConfigs::default();
-        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) =
-            lsp::scan_workspace(std::slice::from_ref(&project_root), &mut project_configs);
-        crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
-
         let stubs = lsp::load_precomputed_stubs()
             .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+        let mut project_configs = config::ProjectConfigs::default();
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) =
+            lsp::scan_workspace_with_stubs(std::slice::from_ref(&project_root), &mut project_configs, &stubs.stub_globals, &stubs.stub_classes);
+        crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
+
         let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
             Arc::new(stubs.pre_globals)
         } else {
@@ -134,8 +134,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         } else {
             None
         };
+        let (stub_globals_ref, stub_classes_ref): (&[_], &[_]) = match &stubs {
+            Some(s) => (&s.stub_globals, &s.stub_classes),
+            None => (&[], &[]),
+        };
         let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) = if let Some(dir) = &scan_dir {
-            lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs)
+            lsp::scan_workspace_with_stubs(std::slice::from_ref(dir), &mut project_configs, stub_globals_ref, stub_classes_ref)
         } else {
             (Vec::new(), Vec::new(), Vec::new(), std::collections::HashSet::new(), Vec::new())
         };
@@ -306,7 +310,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Phase 2: Scan workspace directory (discovers configs hierarchically)
         let mut project_configs = config::ProjectConfigs::default();
         let t = std::time::Instant::now();
-        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names, ws_events) = lsp::scan_workspace(std::slice::from_ref(&dir), &mut project_configs);
+        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names, ws_events) = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, &stub_globals, &stub_classes);
         let ws_scan_dur = t.elapsed();
         info!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
             ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
@@ -500,14 +504,22 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         let with_stubs = args.iter().any(|a| a == "--with-stubs");
 
+        let stubs = if with_stubs {
+            Some(lsp::load_precomputed_stubs()
+                .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first"))
+        } else {
+            None
+        };
+        let (stub_globals_ref, stub_classes_ref): (&[_], &[_]) = match &stubs {
+            Some(s) => (&s.stub_globals, &s.stub_classes),
+            None => (&[], &[]),
+        };
         let mut project_configs = config::ProjectConfigs::default();
         let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) =
-            lsp::scan_workspace(std::slice::from_ref(&dir), &mut project_configs);
+            lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, stub_globals_ref, stub_classes_ref);
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
-        let pre_globals = if with_stubs {
-            let stubs = lsp::load_precomputed_stubs()
-                .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+        let pre_globals = if let Some(stubs) = stubs {
             if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
                 Arc::new(stubs.pre_globals)
             } else {
@@ -631,12 +643,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             .unwrap_or("warning");
         let include_hints = min_severity == "hint";
 
-        let mut project_configs = config::ProjectConfigs::default();
-        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) = lsp::scan_workspace(std::slice::from_ref(&dir), &mut project_configs);
-        crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
-
         let stubs = lsp::load_precomputed_stubs()
             .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+        let mut project_configs = config::ProjectConfigs::default();
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, &stubs.stub_globals, &stubs.stub_classes);
+        crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
+
         let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
             Arc::new(stubs.pre_globals)
         } else {
