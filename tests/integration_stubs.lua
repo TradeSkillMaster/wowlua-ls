@@ -773,6 +773,15 @@ do
     --    ^ diag: none
     local _mid = strsplit(",", piece3)
     --    ^ diag: none
+
+    -- Table constructor from strsplit + bracket mutation: hover should show the
+    -- initial constructor type (string[]), not the post-mutation type (number[]).
+    local data = "1,2,3"
+    local parts = {strsplit(",", data)}
+    --    ^ hover: (local) parts: string[]
+    for i = 1, #parts do
+        parts[i] = tonumber(parts[i])
+    end
 end
 
 -- ── FrameXML globals: type inference from RHS expressions ───────────────────

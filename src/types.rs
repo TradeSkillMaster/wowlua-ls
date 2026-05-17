@@ -805,6 +805,12 @@ pub(crate) struct TableInfo {
     pub(crate) array_fields: Vec<ExprId>,
     pub(crate) key_type: Option<ValueType>,
     pub(crate) value_type: Option<ValueType>,
+    /// Original element type from table constructor array fields, before bracket
+    /// assignment mutation replaced value_type.  Used for display (hover/inlay
+    /// hints) so declarations like `{strsplit(","  , s)}` show `string[]` even
+    /// after an in-place map loop converts elements to numbers.
+    #[serde(skip)]
+    pub(crate) initial_value_type: Option<ValueType>,
     pub(crate) accessors: HashMap<String, crate::annotations::Visibility>,
     pub(crate) call_func: Option<FunctionIndex>,
     #[serde(skip)]

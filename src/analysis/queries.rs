@@ -1070,9 +1070,14 @@ impl AnalysisResult {
                     .or_else(|| self.get_number_value(symbol_idx, token_start)
                         .map(|n| format!(" = {}", n)))
                     .unwrap_or_default();
-                let formatted = self.format_type_accessible(type_to_format, enclosing_class);
-                let type_args = self.get_symbol_type_args(symbol_idx, token_start);
-                let formatted = self.append_type_args_to_class(&formatted, type_to_format, &type_args);
+                // For tables mutated via bracket assignment, show the constructor's
+                // initial element type rather than the post-mutation type.
+                let formatted = self.initial_array_display(type_to_format)
+                    .unwrap_or_else(|| {
+                        let f = self.format_type_accessible(type_to_format, enclosing_class);
+                        let type_args = self.get_symbol_type_args(symbol_idx, token_start);
+                        self.append_type_args_to_class(&f, type_to_format, &type_args)
+                    });
                 let mut type_str = format!("({}) {}: {}{}{}", kind, name, formatted, optional_suffix, value_suffix);
                 let doc = if let ValueType::Table(Some(table_idx)) = type_to_format {
                     self.append_call_hover(*table_idx, &mut type_str, doc)
@@ -4491,6 +4496,23 @@ impl AnalysisResult {
         }
     }
 
+    /// For tables whose constructor had array elements that were later mutated
+    /// via bracket assignment (e.g. `{strsplit(","  , s)}` then `tbl[i] = tonumber(tbl[i])`),
+    /// return the initial element type for display purposes.
+    fn initial_array_display(&self, vt: &ValueType) -> Option<String> {
+        let ValueType::Table(Some(table_idx)) = vt else { return None };
+        let table = self.table(*table_idx);
+        let ivt = table.initial_value_type.as_ref()?;
+        // Only use initial type when it actually differs from the resolved value_type
+        if table.value_type.as_ref() == Some(ivt) { return None; }
+        let val_str = self.format_value_type_depth(ivt, 1);
+        Some(if matches!(ivt, ValueType::Union(_) | ValueType::Intersection(_)) {
+            format!("({})[]", val_str)
+        } else {
+            format!("{}[]", val_str)
+        })
+    }
+
     fn format_field_type(&self, field_info: &FieldInfo, depth: usize) -> String {
         if let Some(ref text) = field_info.annotation_text {
             // annotation_text from format_annotation_type already includes ! for NonNil
@@ -5562,7 +5584,10 @@ impl AnalysisResult {
                 continue;
             }
 
-            let formatted = self.format_type_for_hint(resolved);
+            // For tables mutated via bracket assignment, show the constructor's
+            // initial element type rather than the post-mutation type.
+            let formatted = self.initial_array_display(resolved)
+                .unwrap_or_else(|| self.format_type_for_hint(resolved));
             if formatted == "?" { continue; }
 
             hints.push(InlayHintData {

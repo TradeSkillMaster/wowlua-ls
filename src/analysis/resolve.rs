@@ -487,6 +487,27 @@ impl<'a> Analysis<'a> {
                 continue;
             }
 
+            // When the table constructor has positional elements AND later bracket
+            // assignments mutate elements, save the original array-only element type
+            // for display purposes (hover/inlay hints). The resolved value_type
+            // (union of both) is used for type checking; initial_value_type preserves
+            // what the constructor produced so `{strsplit(","  , s)}` shows `string[]`.
+            if !array_fields.is_empty() && !bracket_fields.is_empty() {
+                let mut initial_types: Vec<ValueType> = Vec::new();
+                for af in &array_fields {
+                    if let Some(vt) = self.resolve_expr_to_broad_type(*af)
+                        && !self.is_structurally_duplicate_type(&initial_types, &vt)
+                    {
+                        initial_types.push(vt);
+                    }
+                }
+                if !initial_types.is_empty() {
+                    let initial_vt = if initial_types.len() == 1 { initial_types.pop().unwrap() }
+                                     else { ValueType::make_union(initial_types) };
+                    self.ir.tables[table_idx.val()].initial_value_type = Some(initial_vt);
+                }
+            }
+
             let key = if key_types.len() == 1 { key_types.pop().unwrap() }
                       else { ValueType::make_union(key_types) };
             // Strip nil from inferred key type — nil keys can't exist in a Lua table.
