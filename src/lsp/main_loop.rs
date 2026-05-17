@@ -1632,13 +1632,15 @@ fn main_loop(
                 }));
             }
 
-            // Always ask the editor to re-pull diagnostics and inlay hints
-            // after Phase 4 reanalysis. Diagnostics use pull model as the
-            // sole delivery channel. Inlay hints are suppressed while the
-            // document has pending edits (to prevent stale positions causing
-            // visual jumps), so a refresh is needed to restore them once
-            // re-analysis completes. Code lenses and semantic tokens only
-            // need a refresh after workspace rebuilds (cross-file state).
+            // Always ask the editor to re-pull diagnostics, inlay hints,
+            // and semantic tokens after Phase 4 reanalysis.  Diagnostics
+            // use pull model as the sole delivery channel.  Inlay hints
+            // are shifted and semantic tokens are suppressed while the
+            // document has pending edits (to prevent stale positions
+            // causing visual jumps / wrong highlights), so a refresh is
+            // needed to restore them once re-analysis completes.  Code
+            // lenses only need a refresh after workspace rebuilds
+            // (cross-file state).
             if had_workspace_rebuild {
                 send_refresh_requests(
                     &connection, &mut progress_counter,
@@ -1650,7 +1652,7 @@ fn main_loop(
             } else {
                 send_refresh_requests(
                     &connection, &mut progress_counter,
-                    false, false,
+                    false, client.semantic_tokens_refresh,
                     client.inlay_hint_refresh,
                     client.diagnostic_refresh,
                 );
@@ -2133,6 +2135,12 @@ fn handle_request(
                 let uri = params.text_document.uri;
                 let result: Option<SemanticTokensResult> = documents.get(&uri.to_string())
                     .and_then(|doc| {
+                        // Don't serve stale tokens when edits are pending — the
+                        // byte offsets from the old analysis don't match the
+                        // editor's current buffer, causing highlights to land on
+                        // wrong positions.  Phase 4 sends a refresh after
+                        // reanalysis to restore them.
+                        if doc.pending_text.is_some() { return None; }
                         let tree = doc.tree.as_ref()?;
                         let analysis = doc.analysis.as_ref()?;
                         let raw = analysis.semantic_tokens(tree);
@@ -2146,6 +2154,7 @@ fn handle_request(
                 let uri = params.text_document.uri;
                 let result: Option<SemanticTokensRangeResult> = documents.get(&uri.to_string())
                     .and_then(|doc| {
+                        if doc.pending_text.is_some() { return None; }
                         let tree = doc.tree.as_ref()?;
                         let analysis = doc.analysis.as_ref()?;
                         let start_offset = super::lsp_position_to_offset(
