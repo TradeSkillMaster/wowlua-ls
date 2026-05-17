@@ -350,6 +350,7 @@ impl<'a> Analysis<'a> {
                         if !Self::block_always_exits(&popped_block) {
                             self.ir.functions[fid.val()].implicit_nil_return = true;
                         }
+                        self.expand_tail_call_returns(fid);
                         self.synthesize_correlated_return_overloads(fid);
                     }
                 // Apply pending while-loop exit narrowings when a while body scope pops.

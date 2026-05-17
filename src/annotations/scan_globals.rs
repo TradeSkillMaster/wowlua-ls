@@ -306,8 +306,17 @@ fn synthesize_return_only_overloads_from(
     if max_arity < 2 { return Vec::new(); }
 
     let mut tuples: Vec<Vec<AnnotationType>> = explicit.into_iter().map(|mut tuple| {
+        // When the last element is `any` (an unresolved expression — typically a
+        // function call), pad with `any` rather than `nil`. In Lua, a tail-call
+        // `return someFunc()` passes through all of the callee's return values,
+        // so positions beyond the explicit count are unknown, not definitely nil.
+        let pad = if tuple.last().is_some_and(|t| matches!(t, AnnotationType::Simple(s) if s == "any")) {
+            AnnotationType::Simple("any".to_string())
+        } else {
+            AnnotationType::Simple("nil".to_string())
+        };
         while tuple.len() < max_arity {
-            tuple.push(AnnotationType::Simple("nil".to_string()));
+            tuple.push(pad.clone());
         }
         tuple
     }).collect();

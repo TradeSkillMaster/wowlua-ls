@@ -1161,6 +1161,100 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Expand tail-call return statements to match the max arity established by
+    /// other return statements in the same function. When a function has multiple
+    /// return paths and one ends with a tail call (`return someFunc()`), the tail
+    /// call only creates a single FunctionRet slot (index 0) during the initial
+    /// build_ir walk (multi-return expansion requires `@return` annotations to
+    /// know the target arity). This method retroactively creates additional
+    /// FunctionRet symbols for those tail calls so that the correlated return
+    /// synthesis and regular return type inference can properly represent all
+    /// return positions.
+    pub(super) fn expand_tail_call_returns(&mut self, func_id: FunctionIndex) {
+        if func_id.is_external() { return; }
+        if !self.ir.functions[func_id.val()].return_annotations.is_empty() { return; }
+
+        let rets = self.ir.functions[func_id.val()].rets.clone();
+
+        // Group rets by DefNode (return statement identity), collecting (ret_index, sym_idx).
+        let mut groups: BTreeMap<(u32, u32), Vec<(usize, SymbolIndex)>> = BTreeMap::new();
+        for &sym_idx in &rets {
+            let sym = &self.ir.symbols[sym_idx.val()];
+            let SymbolIdentifier::FunctionRet(_, ret_index) = sym.id else { continue };
+            let Some(ver) = sym.versions.first() else { continue };
+            let key = (ver.def_node.start, ver.def_node.end);
+            groups.entry(key).or_default().push((ret_index, sym_idx));
+        }
+
+        // Find max arity across all return statements.
+        let max_arity = groups.values().map(|g| g.len()).max().unwrap_or(0);
+        if max_arity < 2 { return; }
+
+        // For each group that is a pure tail call (single function call expression
+        // at slot 0), expand to match max_arity. Only pure tail calls are expanded
+        // because a function call in a non-final position (e.g. `return false, f()`)
+        // may not actually return multiple values; expanding it would produce
+        // unresolvable slots.
+        for group in groups.values() {
+            if group.len() >= max_arity { continue; }
+            // Only expand pure tail calls: single entry at slot 0.
+            if group.len() != 1 { continue; }
+            let &(last_slot, last_sym_idx) = &group[0];
+            if last_slot != 0 { continue; }
+
+            let sym = &self.ir.symbols[last_sym_idx.val()];
+            let scope_idx = sym.scope_idx;
+            let Some(ver) = sym.versions.first() else { continue };
+            let def_node = ver.def_node;
+            let Some(type_source) = ver.type_source else { continue };
+
+            match self.ir.expr(type_source).clone() {
+                Expr::FunctionCall { func, args, arg_ranges, ret_index: existing_ret_index, call_range, is_method_call, .. } => {
+                    for new_slot in (last_slot + 1)..max_arity {
+                        let new_ret_index = existing_ret_index + (new_slot - last_slot);
+                        let new_expr = Expr::FunctionCall {
+                            func,
+                            args: args.clone(),
+                            arg_ranges: arg_ranges.clone(),
+                            ret_index: new_ret_index,
+                            call_range,
+                            discarded: false,
+                            is_method_call,
+                        };
+                        let new_expr_id = self.ir.push_expr(new_expr);
+                        let symbol_idx = self.ir.insert_symbol(
+                            SymbolIdentifier::FunctionRet(func_id, new_slot),
+                            scope_idx,
+                            def_node,
+                        );
+                        self.ir.set_type_source(symbol_idx, new_expr_id);
+                        let func_def = self.ir.functions.get_mut(func_id.val()).unwrap();
+                        if !func_def.rets.contains(&symbol_idx) {
+                            func_def.rets.push(symbol_idx);
+                        }
+                    }
+                }
+                Expr::VarArgs(existing_ret_index, file_level) => {
+                    for new_slot in (last_slot + 1)..max_arity {
+                        let new_ret_index = existing_ret_index + (new_slot - last_slot);
+                        let new_expr_id = self.ir.push_expr(Expr::VarArgs(new_ret_index, file_level));
+                        let symbol_idx = self.ir.insert_symbol(
+                            SymbolIdentifier::FunctionRet(func_id, new_slot),
+                            scope_idx,
+                            def_node,
+                        );
+                        self.ir.set_type_source(symbol_idx, new_expr_id);
+                        let func_def = self.ir.functions.get_mut(func_id.val()).unwrap();
+                        if !func_def.rets.contains(&symbol_idx) {
+                            func_def.rets.push(symbol_idx);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Synthesize correlated return-only overloads for a function whose body has
     /// just finished walking. Triggered when:
     ///   * `inference.correlated_return_overloads` is enabled

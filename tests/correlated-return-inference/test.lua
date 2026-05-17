@@ -709,3 +709,39 @@ local function processCaller()
     end
 end
 _consume(processCaller)
+
+-- ── Tail-call return expansion ────────────────────────────────────────
+-- When a function has multiple return paths and one path tail-calls another
+-- function, the tail call's multi-return should expand to match sibling
+-- return arities. Without expansion, the tail call slot is padded with nil.
+
+local private = {}
+
+function private.clearAndReturn()
+    if cond then
+        return "result", 42
+    end
+    return nil, nil
+end
+
+local ns = {}
+
+function ns.doWork()
+    if not cond then
+        return nil, "no context"
+    end
+    return private.clearAndReturn()
+end
+
+local r1, r2 = ns.doWork()
+local _ = r1
+--        ^ hover: (local) r1: string?
+local _ = r2
+--        ^ hover: (local) r2: string | number | nil
+
+if r1 then
+    local _ = r1
+    --        ^ hover: (local) r1: string
+    local _ = r2
+    --        ^ hover: (local) r2: number?
+end
