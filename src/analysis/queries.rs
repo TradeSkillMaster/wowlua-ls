@@ -797,21 +797,11 @@ impl AnalysisResult {
                 break;
             }
         }
-        // Last resort: scan all field_locations for any external table that has this field
-        // registered AND also has the field in its fields map. Handles cross-addon fields
-        // where the build-time table index differs from the query-time table index (e.g.
-        // the workspace build creates a sub-table for "Disenchant" with one index, but
-        // per-file analysis resolves the type to a local table with a different index).
-        if self.table(table_idx).fields.contains_key(field_name) {
-            for (&other_idx, locs) in fl.iter() {
-                if other_idx != table_idx
-                    && other_idx.is_external()
-                    && self.table(other_idx).fields.contains_key(field_name)
-                    && let Some(loc) = locs.get(field_name) {
-                        return Some(loc);
-                    }
-            }
-        }
+        // NOTE: Previously had a "last resort" scan over all field_locations looking for
+        // any external table with the same field name. Removed because it produced wrong
+        // results for common field names (e.g. "type" → random WoW API file). The
+        // legitimate cases (cross-addon sub-tables) are covered by the class_name redirect
+        // and addon namespace checks above.
         None
     }
 

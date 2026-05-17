@@ -30,6 +30,7 @@ local nm = STATE2.name
 function useBuiltNameParam(state)
     local sl = state.label
     --    ^ hover: (local) sl: string
+    --               ^ def: external
     local sc = state.count
     --    ^ hover: (local) sc: number
 end

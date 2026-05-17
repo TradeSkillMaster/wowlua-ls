@@ -90,29 +90,42 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
     }
 
     // Helper: walk a FunctionCall chain to find a @built-name call
-    // Returns (class_name, matched_func_path_key)
+    // Returns (class_name, matched_func_path_key, name_literal_range)
     fn find_built_name_in_chain(
         call: &FunctionCall<'_>,
         built_name_funcs: &HashMap<String, usize>,
-    ) -> Option<(String, String)> {
+    ) -> Option<(String, String, (u32, u32))> {
         let ident = call.identifier()?;
         let func_names = ident.names();
         if func_names.is_empty() { return None; }
         let func_path = func_names.join(".");
 
-        let matched = built_name_funcs.iter().find_map(|(path, idx)| {
-            if func_path == *path || func_path.ends_with(&format!(".{}", path.split('.').next_back().unwrap_or(""))) {
-                Some((*idx, path.clone()))
-            } else {
-                None
-            }
-        });
+        // Prefer exact match, fall back to suffix match: check if the call's func_path
+        // ends with the global's last segment (e.g. "Foo.Bar.Create" matches "Schema.Create"
+        // because both end with ".Create"). When multiple globals match, pick the longest
+        // path (then lexicographic) to be fully deterministic regardless of HashMap order.
+        let matched = built_name_funcs.get(&func_path).map(|idx| (*idx, func_path.clone()))
+            .or_else(|| {
+                built_name_funcs.iter()
+                    .filter(|(path, _)| {
+                        let global_last = path.split('.').next_back().unwrap_or("");
+                        let suffix = format!(".{}", global_last);
+                        func_path.ends_with(&suffix)
+                    })
+                    .max_by(|(a, _), (b, _)| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
+                    .map(|(path, idx)| (*idx, path.clone()))
+            });
         if let Some((param_idx, matched_path)) = matched {
             let arg_list = call.arguments()?;
             let call_args = arg_list.expressions();
             if let Some(Expression::Literal(lit)) = call_args.get(param_idx - 1)
                 && let Some(s) = lit.get_string() {
-                    return Some((s.trim_matches(|c| c == '"' || c == '\'').to_string(), matched_path));
+                    let range = lit.syntax().text_range();
+                    return Some((
+                        s.trim_matches(|c| c == '"' || c == '\'').to_string(),
+                        matched_path,
+                        (u32::from(range.start()), u32::from(range.end())),
+                    ));
                 }
             return None;
         }
@@ -123,16 +136,17 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
     }
 
     // Helper: walk a FunctionCall chain and extract fields from @builds-field methods.
-    // Returns Vec<(field_name, field_type, Visibility)> for all builder calls in the chain.
+    // Returns (Vec<(field_name, field_type, Visibility)>, field_ranges) for all builder calls.
     fn extract_built_fields_from_chain(
         call: &FunctionCall<'_>,
         schema_class: &str,
         builds_field_funcs: &HashMap<String, BuildsFieldInfo>,
         implicit_protected_prefix: bool,
-    ) -> Vec<(String, AnnotationType, Visibility)> {
+    ) -> (Vec<(String, AnnotationType, Visibility)>, HashMap<String, (u32, u32)>) {
         let mut fields = Vec::new();
-        collect_built_fields(call, schema_class, builds_field_funcs, &mut fields, implicit_protected_prefix);
-        fields
+        let mut field_ranges = HashMap::new();
+        collect_built_fields(call, schema_class, builds_field_funcs, &mut fields, &mut field_ranges, implicit_protected_prefix);
+        (fields, field_ranges)
     }
 
     fn collect_built_fields(
@@ -140,6 +154,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
         schema_class: &str,
         builds_field_funcs: &HashMap<String, BuildsFieldInfo>,
         fields: &mut Vec<(String, AnnotationType, Visibility)>,
+        field_ranges: &mut HashMap<String, (u32, u32)>,
         implicit_protected_prefix: bool,
     ) {
         let Some(ident) = call.identifier() else { return };
@@ -159,6 +174,10 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                             let field_type = resolve_builds_field_generics(
                                 &info.field_type, &info.generics, &info.params, &args,
                             );
+                            // Record definition range (the string literal in the builder call)
+                            let range = lit.syntax().text_range();
+                            field_ranges.entry(field_name.clone())
+                                .or_insert((u32::from(range.start()), u32::from(range.end())));
                             fields.push((field_name.clone(), field_type, default_visibility_for_name(&field_name, implicit_protected_prefix)));
                         }
                 }
@@ -167,7 +186,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
 
         // Recurse into nested FunctionCall in the identifier (inner chain call)
         if let Some(nested) = ident.syntax().children().find_map(FunctionCall::cast) {
-            collect_built_fields(&nested, schema_class, builds_field_funcs, fields, implicit_protected_prefix);
+            collect_built_fields(&nested, schema_class, builds_field_funcs, fields, field_ranges, implicit_protected_prefix);
         }
     }
 
@@ -280,7 +299,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
         };
         let Some(call) = rhs_call else { continue };
 
-        if let Some((name, matched_path)) = find_built_name_in_chain(&call, &built_name_funcs)
+        if let Some((name, matched_path, name_range)) = find_built_name_in_chain(&call, &built_name_funcs)
             && seen.insert(name.clone()) {
                 // Look up parent from @return built : Parent on the schema class
                 let schema_class = func_path_to_schema.get(&matched_path);
@@ -290,7 +309,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                     .into_iter()
                     .collect();
                 // Extract built fields from @builds-field methods in the chain
-                let fields = schema_class
+                let (fields, field_ranges) = schema_class
                     .map(|sc| extract_built_fields_from_chain(&call, sc, &builds_field_funcs, implicit_protected_prefix))
                     .unwrap_or_default();
                 results.push(ClassDecl {
@@ -308,9 +327,9 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                     is_enum: false,
                     is_key_enum: false,
                     correlated_groups: Vec::new(),
-                    def_range: None,
+                    def_range: Some(name_range),
                     def_path: None,
-                    field_ranges: HashMap::new(),
+                    field_ranges,
                     field_paths: HashMap::new(),
                     see: Vec::new(),
                     declared_field_names: HashSet::new(),

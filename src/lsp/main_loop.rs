@@ -467,7 +467,12 @@ pub fn scan_paths_with_overrides(
                 let tree = crate::syntax::parser::parse(&text);
                 let root = crate::syntax::SyntaxNode::new_root(&tree);
                 let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-                let found = scan_built_name_calls(root, &globals, ipp);
+                let mut found = scan_built_name_calls(root, &globals, ipp);
+                for decl in &mut found {
+                    if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
+                        decl.def_path = Some(p.clone());
+                    }
+                }
                 if found.is_empty() { None } else { Some(found) }
             })
             .flatten()
@@ -482,6 +487,20 @@ pub fn scan_paths_with_overrides(
                         for field in &built_decl.fields {
                             if !overlay_names.contains(&field.0) {
                                 existing.fields.push(field.clone());
+                            }
+                        }
+                        // Merge field_ranges for go-to-definition
+                        for (name, range) in &built_decl.field_ranges {
+                            existing.field_ranges.entry(name.clone()).or_insert(*range);
+                        }
+                        if existing.def_path.is_none() {
+                            existing.def_path = built_decl.def_path.clone();
+                        }
+                        if let Some(ref path) = built_decl.def_path {
+                            for name in built_decl.field_ranges.keys() {
+                                if !existing.field_paths.contains_key(name) {
+                                    existing.field_paths.insert(name.clone(), path.clone());
+                                }
                             }
                         }
                         // Merge parents from built-name scan (e.g. @return built : BaseState)
