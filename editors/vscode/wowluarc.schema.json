@@ -161,7 +161,8 @@
   "$defs": {
     "diagnosticCode": {
       "type": "string",
-      "enum": [
+      "pattern": "^[a-z][a-z0-9-]+$",
+      "examples": [
         "access-private",
         "access-protected",
         "assign-type-mismatch",
@@ -191,6 +192,7 @@
         "incomplete-signature-doc",
         "inject-field",
         "invalid-class-parent",
+        "invalid-op",
         "malformed-annotation",
         "missing-fields",
         "missing-parameter",
