@@ -350,3 +350,52 @@ local function multiReassignInsideGuard()
     end
 end
 _consume(multiReassignInsideGuard)
+
+-- ── Exiting middle branch in if/elseif/else: variable still non-nil ─────
+-- When a middle elseif branch always exits (return/error), it should not
+-- contribute nil to the merged type of variables assigned in all other branches.
+
+---@param mode string
+---@param fallback boolean
+local function exitingMiddleBranch(mode, fallback)
+    local reason = nil ---@type string?
+    local value = nil  ---@type number?
+    if mode == "buy" then
+        reason = "buying"
+        value = 100
+    elseif mode == "invalid" then
+        return nil
+    elseif mode == "sell" then
+        reason = "selling"
+        value = 200
+    else
+        reason = "default"
+        value = 0
+    end
+    local r = reason
+    --    ^ hover: (local) r: string
+    local v = value
+    --    ^ hover: (local) v: number
+    _takeStr(reason)
+    -- ^ diag: none
+    _takeNum(value)
+    -- ^ diag: none
+end
+_consume(exitingMiddleBranch)
+
+-- ── Exiting middle branch via error(): same as return ───────────────────
+
+---@param mode string
+local function exitingMiddleBranchError(mode)
+    local label = nil ---@type string?
+    if mode == "a" then
+        label = "alpha"
+    elseif mode == "b" then
+        error("unsupported mode")
+    else
+        label = "other"
+    end
+    local l = label
+    --    ^ hover: (local) l: string
+end
+_consume(exitingMiddleBranchError)

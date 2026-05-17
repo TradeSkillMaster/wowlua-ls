@@ -866,7 +866,9 @@ impl<'a> Analysis<'a> {
                         let else_exits = if_chain.else_branch().is_some_and(|eb| {
                             eb.block().is_some_and(|b| Self::block_always_exits(&b))
                         });
-                        let any_exit = else_exits || exiting_prefix_len > 0;
+                        let any_exit = else_exits || branches.iter().any(|b| {
+                            b.block().is_some_and(|blk| Self::block_always_exits(&blk))
+                        });
                         if any_exit {
                             // Filter to only non-exiting branches
                             let non_exiting: Vec<ScopeIndex> = branch_scopes.iter().enumerate()
