@@ -190,3 +190,66 @@ local function testCachedTypeNotNil(x)
     end
 end
 _consume(testCachedTypeNotNil)
+
+-- ── String literal equality narrowing (simple symbols) ──────────────────
+
+---@param x "FIRST" | "LAST" | number | nil
+local function testStringLiteralElseif(x)
+    if x == "LAST" then
+        local a = x
+        --    ^ hover: (local) a: "FIRST" | "LAST" | number
+    elseif x == "FIRST" then
+        local b = x
+        --    ^ hover: (local) b: "FIRST" | number
+    elseif x then
+        local c = x
+        --    ^ hover: (local) c: number
+    end
+end
+_consume(testStringLiteralElseif)
+
+---@param x "A" | "B" | "C" | number
+local function testStringLiteralNeq(x)
+    if x ~= "A" then
+        local a = x
+        --    ^ hover: (local) a: "B" | "C" | number
+    end
+end
+_consume(testStringLiteralNeq)
+
+-- ── String literal equality narrowing (field chains) ────────────────────
+
+---@class LiteralNarrowObj
+---@field mode "idle" | "running" | "done" | nil
+
+---@param obj LiteralNarrowObj
+local function testFieldLiteralElseif(obj)
+    if obj.mode == "idle" then
+        local a = obj.mode
+        --    ^ hover: (local) a: "idle"
+    elseif obj.mode == "running" then
+        local b = obj.mode
+        --    ^ hover: (local) b: "running"
+    elseif obj.mode then
+        local c = obj.mode
+        --    ^ hover: (local) c: "done"
+    end
+end
+_consume(testFieldLiteralElseif)
+
+---@class PageQuery
+---@field _specifiedPage "FIRST" | "LAST" | number | nil
+---@field _page number
+
+---@param self PageQuery
+local function testFieldLiteralNoDiag(self)
+    if self._specifiedPage == "LAST" then
+        self._page = 0
+    elseif self._specifiedPage == "FIRST" then
+        self._page = 0
+    elseif self._specifiedPage then
+        self._page = self._specifiedPage
+        -- ^ diag: none
+    end
+end
+_consume(testFieldLiteralNoDiag)

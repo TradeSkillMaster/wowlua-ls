@@ -761,7 +761,15 @@ impl<'a> Analysis<'a> {
                 if let Some(guard_vt) = self.get_field_type_narrowing(sym_idx, &chain, scope_idx).cloned() {
                     return self.ir.push_expr(Expr::TypeFilter(expr_id, guard_vt));
                 } else if let Some(strip_vt) = self.get_field_type_stripping(sym_idx, &chain, scope_idx).cloned() {
-                    return self.ir.push_expr(Expr::CastRemove(expr_id, strip_vt));
+                    let stripped = self.ir.push_expr(Expr::CastRemove(expr_id, strip_vt));
+                    // Also apply falsy/nil narrowing if both are active (e.g. elseif chain
+                    // strips literals AND the final branch has a truthiness guard).
+                    if self.is_field_falsy_narrowed(sym_idx, &chain, scope_idx) {
+                        return self.ir.push_expr(Expr::StripFalsy(stripped));
+                    } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                        return self.ir.push_expr(Expr::StripNil(stripped));
+                    }
+                    return stripped;
                 } else if self.is_field_falsy_narrowed(sym_idx, &chain, scope_idx) {
                     return self.ir.push_expr(Expr::StripFalsy(expr_id));
                 } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
@@ -873,7 +881,13 @@ impl<'a> Analysis<'a> {
                 if let Some(guard_vt) = self.get_field_type_narrowing(sym_idx, &chain, scope_idx).cloned() {
                     return self.ir.push_expr(Expr::TypeFilter(expr_id, guard_vt));
                 } else if let Some(strip_vt) = self.get_field_type_stripping(sym_idx, &chain, scope_idx).cloned() {
-                    return self.ir.push_expr(Expr::CastRemove(expr_id, strip_vt));
+                    let stripped = self.ir.push_expr(Expr::CastRemove(expr_id, strip_vt));
+                    if self.is_field_falsy_narrowed(sym_idx, &chain, scope_idx) {
+                        return self.ir.push_expr(Expr::StripFalsy(stripped));
+                    } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                        return self.ir.push_expr(Expr::StripNil(stripped));
+                    }
+                    return stripped;
                 } else if self.is_field_falsy_narrowed(sym_idx, &chain, scope_idx) {
                     return self.ir.push_expr(Expr::StripFalsy(expr_id));
                 } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {

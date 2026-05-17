@@ -399,6 +399,39 @@ impl<'a> Analysis<'a> {
                             }
                         }
                     }
+                    // String literal equality narrowing for field chains and symbols:
+                    // `x == "LAST"` → then-branch filters to "LAST", else-branch strips "LAST"
+                    if let Some((ident, lit_vt)) = Self::extract_literal_eq_sides(lhs, rhs) {
+                        let names = ident.names_with_brackets();
+                        let is_filter = (is_eq && is_then_branch) || (is_neq && !is_then_branch);
+                        let is_strip = (is_eq && !is_then_branch) || (is_neq && is_then_branch);
+                        if names.len() == 1 {
+                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                                if is_strip {
+                                    self.add_type_stripped(target_scope, sym_idx, lit_vt.clone());
+                                    self.push_strip_type_version(sym_idx, lit_vt, target_scope, false);
+                                } else if is_filter {
+                                    // Positive: equality implies non-nil, so strip nil.
+                                    // Don't filter to the literal — it over-narrows general types.
+                                    self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                    self.narrow_siblings(sym_idx, target_scope);
+                                    self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
+                                }
+                            }
+                        } else if names.len() >= 2 && !ident.has_any_dynamic_bracket()
+                            && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope)
+                        {
+                            let chain = names[1..].to_vec();
+                            if is_strip {
+                                self.add_type_stripped_field(target_scope, sym_idx, chain, lit_vt);
+                            } else if is_filter {
+                                self.narrowed_fields.entry(target_scope).or_default()
+                                    .insert((sym_idx, chain.clone()));
+                                self.type_narrowed_fields.entry(target_scope).or_default()
+                                    .insert((sym_idx, chain), lit_vt);
+                            }
+                        }
+                    }
                     // Check for type() guard: `type(x) == "string"` etc.
                     // Also handles cached pattern: `local t = type(x); if t == "string"`
                     let is_positive_type_guard = (is_eq && is_then_branch) || (is_neq && !is_then_branch);
@@ -2008,6 +2041,39 @@ impl<'a> Analysis<'a> {
             }
         }
         None
+    }
+
+    /// Given `lhs == rhs` (or `~=`), if one side is an identifier and the other is
+    /// a non-empty string literal, return the identifier and the corresponding
+    /// `ValueType::String(Some(...))`. Safe to fire alongside the `type()` guard path
+    /// because `type(x)` is a FunctionCall (not Identifier), so real `type()` guards
+    /// never match here. For cached type guards (`local t = type(x); if t == "string"`),
+    /// both paths fire but the type() guard's version is more specific and takes precedence.
+    fn extract_literal_eq_sides<'b>(lhs: &'b Expression<'_>, rhs: &'b Expression<'_>) -> Option<(&'b crate::ast::Identifier<'b>, ValueType)> {
+        let (ident_expr, lit_expr) = match (lhs, rhs) {
+            (Expression::Identifier(id), _) => (id, rhs),
+            (_, Expression::Identifier(id)) => (id, lhs),
+            _ => return None,
+        };
+        // Skip empty strings (used for completion triggers, not meaningful narrowing)
+        if let Some(s) = Self::extract_string_literal(lit_expr) {
+            if s.is_empty() {
+                return None;
+            }
+            return Some((ident_expr, ValueType::String(Some(s))));
+        }
+        None
+    }
+
+    /// Add a type to strip for a field chain in a scope, combining with any existing strip.
+    fn add_type_stripped_field(&mut self, scope: ScopeIndex, sym_idx: SymbolIndex, chain: Vec<String>, vt: ValueType) {
+        let map = self.type_stripped_fields.entry(scope).or_default();
+        let key = (sym_idx, chain);
+        if let Some(existing) = map.remove(&key) {
+            map.insert(key, ValueType::union(existing, vt));
+        } else {
+            map.insert(key, vt);
+        }
     }
 
     /// Detect `(x or LITERAL) CMP VALUE` where `LITERAL CMP VALUE` is statically
