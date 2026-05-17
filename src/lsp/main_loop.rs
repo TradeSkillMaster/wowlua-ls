@@ -4469,17 +4469,30 @@ fn handle_document_diagnostic(
         }
         // Open document: use cached tree and analysis.
         else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
-            if let Some(pending) = &doc.pending_text {
-                // Pending text may contain new @diagnostic directives (e.g. from
-                // a code-action quick fix). Parse it to get fresh suppressions so
-                // they take effect immediately instead of waiting for Phase 4.
-                let pending_tree = parse_lua(pending);
-                let pending_root = crate::syntax::SyntaxNode::new_root(&pending_tree);
-                let suppressions = scan_diagnostic_directives(pending_root);
-                build_file_diagnostics_with(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws, &suppressions)
-            } else {
-                build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws)
+            let mut items = build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
+            if let Some((first_line, delta)) = doc.pending_line_delta {
+                // Text has changed but analysis hasn't run yet (Phase 4
+                // debounce pending).  Shift diagnostic positions by the net
+                // line delta (same approach as inlay hints) so they stay
+                // roughly aligned with the new text.  Drop diagnostics that
+                // touch the edited line — they're the most likely to be stale.
+                items.retain_mut(|d| {
+                    if d.range.start.line == first_line || d.range.end.line == first_line {
+                        return false;
+                    }
+                    if d.range.start.line > first_line {
+                        let new_start = d.range.start.line as i64 + delta as i64;
+                        let new_end = d.range.end.line as i64 + delta as i64;
+                        if new_start < 0 || new_end < 0 {
+                            return false;
+                        }
+                        d.range.start.line = new_start as u32;
+                        d.range.end.line = new_end as u32;
+                    }
+                    true
+                });
             }
+            items
         } else {
             Vec::new()
         }
