@@ -945,6 +945,18 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // Run the server
     let (id, params) = connection.initialize_start()?;
 
+    // lsp-types 0.97 has a bug: it declares the workspace diagnostic capability
+    // field as "diagnostic" (singular) but the LSP 3.17 spec and vscode-languageclient
+    // use "diagnostics" (plural). Extract refreshSupport from raw JSON before
+    // deserialization consumes the value.
+    let supports_diagnostic_refresh_raw = params
+        .get("capabilities")
+        .and_then(|c| c.get("workspace"))
+        .and_then(|w| w.get("diagnostics"))
+        .and_then(|d| d.get("refreshSupport"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     let init_params: InitializeParams = serde_json::from_value(params)?;
     let client_capabilities: ClientCapabilities = init_params.capabilities;
     let supports_progress = client_capabilities.window
@@ -1178,11 +1190,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         .and_then(|w| w.inlay_hint.as_ref())
         .and_then(|i| i.refresh_support)
         .unwrap_or(false);
-    let supports_diagnostic_refresh = client_capabilities.workspace
-        .as_ref()
-        .and_then(|w| w.diagnostic.as_ref())
-        .and_then(|d| d.refresh_support)
-        .unwrap_or(false);
+    let supports_diagnostic_refresh = supports_diagnostic_refresh_raw;
     let client_snippet_support = client_capabilities.text_document
         .as_ref()
         .and_then(|td| td.completion.as_ref())
