@@ -270,8 +270,9 @@ impl<'a> Analysis<'a> {
                             self.narrow_correlated_locals(sym_idx, target_scope, true);
                             self.narrow_or_coalesce_derived(sym_idx, target_scope, true);
                         }
-                    } else if !ident.has_any_dynamic_bracket() {
+                    } else if !ident.has_complex_dynamic_bracket() {
                         // Union member narrowing: if info.title then → narrow info to members with required `title`
+                        // Also handles bracket access with simple variable keys: if tbl[key] then
                         if let Some((sym_idx, then_type, _)) =
                             self.extract_field_presence_discriminator(&names, parent_scope)
                         {
@@ -291,7 +292,7 @@ impl<'a> Analysis<'a> {
                             self.truthy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.narrow_siblings(sym_idx, target_scope);
                         }
-                    else if names.len() >= 2 && !ident.has_any_dynamic_bracket() {
+                    else if names.len() >= 2 && !ident.has_complex_dynamic_bracket() {
                         // Union member narrowing: else branch → narrow to complement (lacks/optional)
                         if let Some((sym_idx, _, else_type)) =
                             self.extract_field_presence_discriminator(&names, parent_scope)
@@ -640,8 +641,9 @@ impl<'a> Analysis<'a> {
                         self.truthy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
                         self.narrow_siblings(sym_idx, scope_idx);
                     }
-                else if names.len() >= 2 && !ident.has_any_dynamic_bracket() {
+                else if names.len() >= 2 && !ident.has_complex_dynamic_bracket() {
                     // `if info.title then return end` → info is the else-type after
+                    // Also handles: `if tbl[key] then return end` → tbl[key] is falsy after
                     if let Some((sym_idx, _, else_type)) =
                         self.extract_field_presence_discriminator(&names, scope_idx)
                     {
@@ -661,8 +663,9 @@ impl<'a> Analysis<'a> {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                             self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
                         }
-                    } else if !ident.has_any_dynamic_bracket() {
+                    } else if !ident.has_complex_dynamic_bracket() {
                         // `if not info.title then return end` → info is the then-type after
+                        // Also handles: `if not tbl[key] then return end` → tbl[key] is non-nil after
                         if let Some((sym_idx, then_type, _)) =
                             self.extract_field_presence_discriminator(&names, scope_idx)
                         {
@@ -1004,8 +1007,9 @@ impl<'a> Analysis<'a> {
                     if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                         self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
                     }
-                } else if !ident.has_any_dynamic_bracket() {
+                } else if !ident.has_complex_dynamic_bracket() {
                     // assert(info.title) → narrow info to members with required `title`
+                    // Also handles: assert(tbl[key]) → tbl[key] is non-nil after
                     if let Some((sym_idx, then_type, _)) =
                         self.extract_field_presence_discriminator(&names, scope_idx)
                     {

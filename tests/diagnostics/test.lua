@@ -3156,14 +3156,14 @@ do
     end
 end
 
--- Dynamic bracket key does NOT narrow
+-- Dynamic bracket key DOES narrow (if tbl[key] then → tbl[key] is non-nil)
 do
     ---@type table<string, number[]|nil>
     local G = {}
     local key = "x"
     if G[key] then
         consume_list(G[key])
-        --           ^ diag: type-mismatch
+        --           ^ diag: none
     end
 end
 

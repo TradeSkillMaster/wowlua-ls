@@ -974,3 +974,4 @@ pub(crate) fn extract_bracket_literal_key(node: SyntaxNode<'_>) -> Option<String
     }
     None
 }
+

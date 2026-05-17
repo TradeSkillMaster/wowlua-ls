@@ -1448,7 +1448,16 @@ impl<'a> Analysis<'a> {
                 Some(e) => e.clone(),
                 None => continue,
             };
-            let base_expr = match &expr {
+            // Unwrap narrowing wrappers (StripNil/StripFalsy/Grouped) that may
+            // have been applied by condition-based narrowing.
+            let unwrapped = match &expr {
+                Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
+                    self.ir.exprs.get(inner.val()).cloned()
+                }
+                _ => None,
+            };
+            let check_expr = unwrapped.as_ref().unwrap_or(&expr);
+            let base_expr = match check_expr {
                 Expr::BracketIndex { table, .. } => Some(*table),
                 Expr::FieldAccess { table, .. } => Some(*table),
                 _ => None,

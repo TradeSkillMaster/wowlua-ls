@@ -1671,6 +1671,7 @@ impl<'a> Analysis<'a> {
         Self::check_field_set(&self.falsy_narrowed_fields, sym_idx, fields, scope_idx, &self.ir.scopes)
     }
 
+
     fn check_field_set(
         map: &HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
         sym_idx: SymbolIndex,

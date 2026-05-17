@@ -2296,3 +2296,61 @@ local function testBracketEnsureInitEq()
     -- ^ diag: none
 end
 _consume(testBracketEnsureInitEq)
+
+-- ── Dynamic bracket access narrowing ───────────────────────────────────────
+-- If `tbl[key]` is used as a condition, the result is non-nil in the then-branch.
+
+---@type table<string, {anchor: string, x: number}|nil>
+local POINTS = {}
+
+local function testBracketNarrow(name)
+    if POINTS[name] then
+        local pt = POINTS[name]
+        --    ^ hover: (local) pt: {
+        pt.anchor = "TOP"
+        -- ^ diag: none
+    end
+end
+_consume(testBracketNarrow)
+
+-- elseif case
+local function testBracketNarrowElseif(name, flag)
+    if flag then
+        _consume("flag")
+    elseif POINTS[name] then
+        local pt = POINTS[name]
+        --    ^ hover: (local) pt: {
+        pt.x = 10
+        -- ^ diag: none
+    end
+end
+_consume(testBracketNarrowElseif)
+
+-- early-exit pattern
+local function testBracketEarlyExit(name)
+    if not POINTS[name] then return end
+    local pt = POINTS[name]
+    --    ^ hover: (local) pt: {
+    pt.anchor = "TOP"
+    -- ^ diag: none
+end
+_consume(testBracketEarlyExit)
+
+-- assert pattern
+local function testBracketAssert(name)
+    assert(POINTS[name])
+    local pt = POINTS[name]
+    --    ^ hover: (local) pt: {
+    pt.anchor = "TOP"
+    -- ^ diag: none
+end
+_consume(testBracketAssert)
+
+-- Without guard, type includes nil
+local function testBracketNoGuard(name)
+    local pt = POINTS[name]
+    --    ^ hover: (local) pt: {anchor: string, x: number}?
+    pt.anchor = "TOP"
+    -- ^ diag: need-check-nil
+end
+_consume(testBracketNoGuard)
