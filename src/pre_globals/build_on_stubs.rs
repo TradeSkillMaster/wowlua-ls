@@ -421,6 +421,18 @@ impl<'a> BuildOnStubsContext<'a> {
                 if !seen_methods.insert(dedupe_key) && !g.is_override {
                     // Duplicate method definition — synthesize an overload from
                     // the duplicate so both signatures participate in resolution.
+                    // Skip unannotated duplicates (no additional type info).
+                    let has_typed_params = g.params.iter().any(|p| {
+                        !matches!(&p.typ, AnnotationType::Simple(s) if s.is_empty())
+                    });
+                    let has_typed_returns = g.returns.iter().any(|r| match r {
+                        AnnotationType::Simple(s) if s == "any" => false,
+                        AnnotationType::VarArgs(inner) => !matches!(inner.as_ref(), AnnotationType::Simple(s) if s == "any"),
+                        _ => true,
+                    });
+                    if !has_typed_params && !has_typed_returns {
+                        continue;
+                    }
                     let local_idx = target_idx.ext_offset();
                     let existing_func_idx = self.tables[local_idx].fields.get(method_name)
                         .and_then(|field| {

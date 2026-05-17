@@ -2055,6 +2055,16 @@ fn crossfile_body_returns() {
 }
 
 #[test]
+fn crossfile_dedup_unannotated() {
+    // Unannotated duplicate method defs should not create spurious overloads
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/dedup_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_tail_call_returns() {
     // Cross-file tail-call wrapper: no false unbalanced-assignments
     run_annotation_tests(&TestConfig {
