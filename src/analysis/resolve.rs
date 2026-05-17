@@ -2728,7 +2728,17 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
                 _ => Some(rhs_type), // unreachable after opaque unwrap, satisfies exhaustiveness
             }
         },
-        Operator::LessThan | Operator::GreaterThan | Operator::LessThanOrEquals | Operator::GreaterThanOrEquals => Some(ValueType::Boolean(None)),
+        Operator::LessThan | Operator::GreaterThan | Operator::LessThanOrEquals | Operator::GreaterThanOrEquals => {
+            match (&lhs_type, &rhs_type) {
+                (ValueType::Number, ValueType::Number) => Some(ValueType::Boolean(None)),
+                (ValueType::String(_), ValueType::String(_)) => Some(ValueType::Boolean(None)),
+                (ValueType::Any, _) | (_, ValueType::Any) => Some(ValueType::Boolean(None)),
+                (ValueType::TypeVariable(_), _) | (_, ValueType::TypeVariable(_)) => Some(ValueType::Boolean(None)),
+                (ValueType::Table(_), _) | (_, ValueType::Table(_)) => Some(ValueType::Boolean(None)),
+                (ValueType::Userdata, _) | (_, ValueType::Userdata) => Some(ValueType::Boolean(None)),
+                _ => None,
+            }
+        }
         Operator::NotEquals | Operator::Equals => Some(ValueType::Boolean(None)),
         Operator::Concatenate => {
             if lhs_type.can_concat_to_string() && rhs_type.can_concat_to_string() {

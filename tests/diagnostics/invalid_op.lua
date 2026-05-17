@@ -104,3 +104,49 @@ local _u = #v3
 ---@diagnostic disable-next-line: invalid-op
 local _v = #42
 -- ^ diag: none
+
+-- Ordered comparisons on incompatible types
+
+-- nil compared with number
+---@type number?
+local maybeNum
+_use(maybeNum < 2)
+--   ^ diag: invalid-op
+
+-- nil literal
+_use(nil > 1)
+--   ^ diag: invalid-op
+
+-- boolean compared with number
+_use(true >= 1)
+--   ^ diag: invalid-op
+
+-- string compared with number
+_use("hello" <= 42)
+--   ^ diag: invalid-op
+
+-- Valid comparisons — no diagnostic
+_use(1 < 2)
+--   ^ diag: none
+_use(10 >= 3)
+--   ^ diag: none
+_use("a" < "b")
+--   ^ diag: none
+
+-- Any-typed operand in comparison — no diagnostic
+---@param x any
+local function _withAnyCmp(x)
+    _use(x < 1)
+    --   ^ diag: none
+end
+
+-- Table operand (may have __lt) — no diagnostic
+---@type Vec
+local v4
+_use(v4 < v4)
+--   ^ diag: none
+
+-- Suppress comparison diagnostic via @diagnostic
+---@diagnostic disable-next-line: invalid-op
+_use(nil < 1)
+-- ^ diag: none

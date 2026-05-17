@@ -14,6 +14,10 @@ fn op_symbol(op: Operator) -> &'static str {
         Operator::Modulo => "%",
         Operator::Hat => "^",
         Operator::Concatenate => "..",
+        Operator::LessThan => "<",
+        Operator::GreaterThan => ">",
+        Operator::LessThanOrEquals => "<=",
+        Operator::GreaterThanOrEquals => ">=",
         _ => "?",
     }
 }
