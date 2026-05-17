@@ -100,6 +100,10 @@ fn check_invalid_interface(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
                 if trimmed.is_empty() {
                     continue;
                 }
+                // Skip packager replacement tokens like @toc-version-midnight@
+                if trimmed.starts_with('@') && trimmed.ends_with('@') && trimmed.len() > 2 {
+                    continue;
+                }
                 if trimmed.parse::<u32>().is_err() {
                     diags.push(TocDiagnostic {
                         code: "toc-invalid-interface",
@@ -261,6 +265,12 @@ mod tests {
     #[test]
     fn valid_multi_interface() {
         let diags = run("## Interface: 110002, 11503\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-invalid-interface"));
+    }
+
+    #[test]
+    fn packager_replacement_tokens_in_interface() {
+        let diags = run("## Interface: @toc-version-midnight@, @toc-version-retail@\n");
         assert!(!diags.iter().any(|d| d.code == "toc-invalid-interface"));
     }
 
