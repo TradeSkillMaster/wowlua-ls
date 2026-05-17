@@ -11,6 +11,15 @@
         </Layers>
     </Frame>
 
+    <!-- A frame that uses SearchMixin; SearchMixin methods should be able to
+         access self.InputBox / self.SearchButton without undefined-field -->
+    <Frame name="SearchFrame" virtual="true" mixin="SearchMixin">
+        <Frames>
+            <EditBox parentKey="InputBox" />
+            <Button parentKey="SearchButton" />
+        </Frames>
+    </Frame>
+
     <!-- Virtual template: should create a class, no global -->
     <Frame name="MyBaseTemplate" virtual="true" mixin="MyBaseMixin">
         <KeyValues>

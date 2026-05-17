@@ -9,6 +9,11 @@ use crate::annotations::{
 pub struct XmlScanResult {
     pub classes: Vec<ClassDecl>,
     pub globals: Vec<ExternalGlobal>,
+    /// Slim ClassDecl entries that augment existing mixin classes with parentKey
+    /// fields declared on frames that use those mixins. These should be merged
+    /// via the defclass overlay mechanism so they add to (not replace) the
+    /// mixin's own Lua-declared fields.
+    pub mixin_augments: Vec<ClassDecl>,
 }
 
 /// Mutable scanning context threaded through parsing helpers.
@@ -16,6 +21,7 @@ struct ScanContext {
     stack: Vec<StackEntry>,
     classes: Vec<ClassDecl>,
     globals: Vec<ExternalGlobal>,
+    mixin_augments: Vec<ClassDecl>,
     intrinsics: HashMap<String, String>,
 }
 
@@ -211,6 +217,7 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
         stack: Vec::new(),
         classes: Vec::new(),
         globals: Vec::new(),
+        mixin_augments: Vec::new(),
         intrinsics: HashMap::new(),
     };
     let mut script_depth: usize = 0;
@@ -264,7 +271,7 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
                     && let Some(mut frame_ctx) = entry.frame
                 {
                     frame_ctx.def_end = end_pos;
-                    finalize_frame(frame_ctx, path, &mut ctx.classes, &mut ctx.globals);
+                    finalize_frame(frame_ctx, path, &mut ctx.classes, &mut ctx.globals, &mut ctx.mixin_augments);
                 }
             }
             Ok(Event::Eof) => break,
@@ -279,6 +286,7 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
     XmlScanResult {
         classes: ctx.classes,
         globals: ctx.globals,
+        mixin_augments: ctx.mixin_augments,
     }
 }
 
@@ -314,7 +322,7 @@ fn process_open_tag(
                 && let Some(mut frame_ctx) = entry.frame
             {
                 frame_ctx.def_end = tag_start;
-                finalize_frame(frame_ctx, path, &mut ctx.classes, &mut ctx.globals);
+                finalize_frame(frame_ctx, path, &mut ctx.classes, &mut ctx.globals, &mut ctx.mixin_augments);
             }
         }
     } else {
@@ -604,6 +612,7 @@ fn finalize_frame(
     path: &Path,
     classes: &mut Vec<ClassDecl>,
     globals: &mut Vec<ExternalGlobal>,
+    mixin_augments: &mut Vec<ClassDecl>,
 ) {
     let Some(ref name) = ctx.name else {
         return;
@@ -626,6 +635,13 @@ fn finalize_frame(
             parents.push(m.clone());
         }
     }
+
+    // Clone fields for mixin augmentation before moving them into the ClassDecl.
+    let mixin_fields: Vec<_> = if !ctx.mixins.is_empty() {
+        ctx.fields.clone()
+    } else {
+        Vec::new()
+    };
 
     // Create ClassDecl
     let class_decl = ClassDecl {
@@ -655,6 +671,47 @@ fn finalize_frame(
         declared_field_names: HashSet::new(),
     };
     classes.push(class_decl);
+
+    // For each mixin, emit a slim ClassDecl that augments it with the frame's
+    // parentKey fields. This allows mixin methods to access `self.InputBox`
+    // (or any other parentKey field) without an `undefined-field` diagnostic.
+    // These are stored separately and merged via the defclass overlay mechanism
+    // so they add to (not replace) the mixin's own Lua-declared fields.
+    if !mixin_fields.is_empty() {
+        for mixin_name in &ctx.mixins {
+            // Skip if this mixin name is the same as the frame itself
+            if mixin_name == name {
+                continue;
+            }
+            let augment = ClassDecl {
+                name: mixin_name.clone(),
+                type_params: Vec::new(),
+                type_param_constraints: Vec::new(),
+                parents: Vec::new(),
+                fields: mixin_fields.clone(),
+                accessors: Vec::new(),
+                overloads: Vec::new(),
+                generics: Vec::new(),
+                constructor_methods: Vec::new(),
+                constraint_type_arg_subs: Vec::new(),
+                field_built_names: HashMap::new(),
+                is_enum: false,
+                is_key_enum: false,
+                correlated_groups: Vec::new(),
+                def_range: None,
+                def_path: None,
+                field_ranges: ctx.field_ranges.clone(),
+                field_paths: ctx
+                    .field_ranges
+                    .keys()
+                    .map(|k| (k.clone(), path.to_path_buf()))
+                    .collect(),
+                see: Vec::new(),
+                declared_field_names: HashSet::new(),
+            };
+            mixin_augments.push(augment);
+        }
+    }
 
     // For non-virtual frames, also create an ExternalGlobal
     if !ctx.is_virtual {
@@ -1056,5 +1113,69 @@ mod tests {
         "#);
         let c = &r.classes[0];
         assert!(c.fields.iter().any(|(n, _, _)| n == "Content"));
+    }
+
+    #[test]
+    fn mixin_gets_parent_key_augment() {
+        let r = scan(r#"
+            <Ui>
+                <Frame name="SearchFrame" virtual="true" mixin="SearchMixin">
+                    <Frames>
+                        <EditBox parentKey="InputBox" />
+                        <Button parentKey="SearchButton" />
+                    </Frames>
+                </Frame>
+            </Ui>
+        "#);
+        // Frame class is created normally
+        assert_eq!(r.classes.len(), 1);
+        assert_eq!(r.classes[0].name, "SearchFrame");
+        assert!(r.classes[0].fields.iter().any(|(n, _, _)| n == "InputBox"));
+        assert!(r.classes[0].fields.iter().any(|(n, _, _)| n == "SearchButton"));
+        // Mixin augment is emitted separately for overlay merging
+        assert_eq!(r.mixin_augments.len(), 1);
+        let aug = &r.mixin_augments[0];
+        assert_eq!(aug.name, "SearchMixin");
+        assert!(aug.fields.iter().any(|(n, t, _)| n == "InputBox"
+            && matches!(t, AnnotationType::Simple(s) if s == "EditBox")));
+        assert!(aug.fields.iter().any(|(n, t, _)| n == "SearchButton"
+            && matches!(t, AnnotationType::Simple(s) if s == "Button")));
+        // Augment has no parents (it doesn't extend the mixin's hierarchy)
+        assert!(aug.parents.is_empty());
+    }
+
+    #[test]
+    fn no_mixin_no_augments() {
+        let r = scan(r#"
+            <Ui>
+                <Frame name="PlainFrame" virtual="true">
+                    <Frames>
+                        <Frame parentKey="Child" />
+                    </Frames>
+                </Frame>
+            </Ui>
+        "#);
+        assert_eq!(r.classes.len(), 1);
+        assert!(r.mixin_augments.is_empty());
+    }
+
+    #[test]
+    fn multiple_mixins_each_get_augment() {
+        let r = scan(r#"
+            <Ui>
+                <Frame name="ComboFrame" virtual="true" mixin="MixinA" secureMixin="MixinB">
+                    <Frames>
+                        <Frame parentKey="Panel" />
+                    </Frames>
+                </Frame>
+            </Ui>
+        "#);
+        assert_eq!(r.mixin_augments.len(), 2);
+        let names: Vec<&str> = r.mixin_augments.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"MixinA"));
+        assert!(names.contains(&"MixinB"));
+        for aug in &r.mixin_augments {
+            assert!(aug.fields.iter().any(|(n, _, _)| n == "Panel"));
+        }
     }
 }

@@ -85,6 +85,18 @@ local lf
 local items = lf.Items
 --    ^ hover: (local) items: MyBaseTemplate[]
 
+-- parentKey fields are visible on mixin classes: SearchMixin methods can
+-- access self.InputBox / self.SearchButton without undefined-field.
+---@class SearchMixin
+local SearchMixin = {}
+
+function SearchMixin:OnLoad()
+    self.InputBox:SetText("")
+    --   ^ hover: (field) InputBox: EditBox  diag: none
+    self.SearchButton:Enable()
+    --   ^ hover: (field) SearchButton: Button  diag: none
+end
+
 -- Hyphenated names should not create globals (invalid Lua identifier)
 local x = InvalidFrame
 --        ^ diag: undefined-global

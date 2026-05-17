@@ -643,9 +643,18 @@ fn scan_xml_paths_into(xml_paths: &[PathBuf], result: &mut WorkspaceScanResult) 
     let xml_results: Vec<_> = xml_paths.par_iter()
         .filter_map(|p| crate::xml_scan::scan_xml_file(p))
         .collect();
+    let mut all_mixin_augments: Vec<ClassDecl> = Vec::new();
     for xml_result in xml_results {
         result.0.extend(xml_result.classes);
         result.2.extend(xml_result.globals);
+        all_mixin_augments.extend(xml_result.mixin_augments);
+    }
+    // Merge mixin augments into the class list so that mixin Lua classes gain
+    // parentKey fields from frames that use them. Uses the same overlay merge
+    // logic as defclass scanning: existing fields are not overwritten.
+    if !all_mixin_augments.is_empty() {
+        let classes = std::mem::take(&mut result.0);
+        result.0 = merge_defclass_into_overlays(classes, &[], all_mixin_augments.iter().collect());
     }
 }
 
@@ -776,6 +785,11 @@ fn complete_directory_scan(
     for (path, xml_result) in pass1.xml_results {
         if !xml_result.classes.is_empty() {
             out.file_classes.entry(path.clone()).or_default().extend(xml_result.classes);
+        }
+        if !xml_result.mixin_augments.is_empty() {
+            // Mixin augments are merged via the defclass overlay mechanism so
+            // they add parentKey fields to mixin classes without replacing them.
+            out.file_defclasses.entry(path.clone()).or_default().extend(xml_result.mixin_augments);
         }
         if !xml_result.globals.is_empty() {
             out.file_globals.entry(path).or_default().extend(xml_result.globals);
