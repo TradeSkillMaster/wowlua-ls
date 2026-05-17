@@ -3660,7 +3660,7 @@ fn find_references_across_workspace(
     // Workspace files not currently open — parse + analyze on demand in parallel.
     // Collect borrowed refs so only paths that actually produce a hit pay the clone.
     let unopened: Vec<&PathBuf> = ws.ws_file_globals.keys()
-        .filter(|p| !searched_paths.contains(*p))
+        .filter(|p| p.extension().is_some_and(|e| e == "lua") && !searched_paths.contains(*p))
         .collect();
 
     let disk_results: Vec<(PathBuf, String, Vec<crate::syntax::TextRange>)> = unopened
@@ -4059,7 +4059,7 @@ fn handle_incoming_calls(
 
         // Workspace files not currently open.
         let unopened: Vec<&PathBuf> = ws.ws_file_globals.keys()
-            .filter(|p| !searched_paths.contains(*p))
+            .filter(|p| p.extension().is_some_and(|e| e == "lua") && !searched_paths.contains(*p))
             .collect();
 
         type DiskResult = (
@@ -4641,6 +4641,7 @@ fn handle_workspace_diagnostic(
         let all_ws_paths: Vec<&PathBuf> = ws
             .ws_file_globals
             .keys()
+            .filter(|p| p.extension().is_some_and(|e| e == "lua"))
             .collect();
         let plugin_codes = ws.plugin_codes();
 
