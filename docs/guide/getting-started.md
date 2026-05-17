@@ -10,6 +10,81 @@ Install the **wowlua-ls** extension from the VS Code marketplace. It bundles the
 
 Download the plugin ZIP for your platform from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) and install via **Settings → Plugins → ⚙️ → Install Plugin from Disk...**. Requires the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin. The release ZIPs bundle the language server binary — no separate install needed.
 
+### Neovim
+
+Neovim has built-in LSP client support — no plugin required, just configuration.
+
+**1. Get the binary.** Either download a release from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases), or build from source:
+
+```bash
+git clone https://github.com/TradeSkillMaster/wowlua-ls.git
+cd wowlua-ls
+cargo build --release
+# Binary is at target/release/wowlua_ls
+```
+
+**2. Configure the LSP client.** Add this to your Neovim config (requires Neovim 0.11+):
+
+```lua
+vim.lsp.config('wowlua_ls', {
+  cmd = { '/path/to/wowlua_ls' },
+  filetypes = { 'lua' },
+  root_markers = { '.wowluarc.json', '.toc', '.git' },
+  workspace_required = false,
+})
+vim.lsp.enable('wowlua_ls')
+```
+
+Replace `/path/to/wowlua_ls` with the actual path to the binary. `workspace_required = false` lets the server attach to standalone Lua files outside a project.
+
+#### LazyVim
+
+If you use [LazyVim](https://www.lazyvim.org/), add a plugin spec:
+
+```lua
+-- ~/.config/nvim/lua/plugins/wowlua-ls.lua
+return {
+  {
+    "neovim/nvim-lspconfig",
+    opts = {
+      servers = {
+        wowlua_ls = {
+          cmd = { "/path/to/wowlua_ls" },
+          filetypes = { "lua" },
+          root_markers = { ".wowluarc.json", ".toc", ".git" },
+          workspace_required = false,
+        },
+      },
+    },
+  },
+}
+```
+
+#### nvim-lspconfig (standalone)
+
+If you use [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig) without a distro, you can register the server manually:
+
+```lua
+local configs = require('lspconfig.configs')
+
+if not configs.wowlua_ls then
+  configs.wowlua_ls = {
+    default_config = {
+      cmd = { '/path/to/wowlua_ls' },
+      filetypes = { 'lua' },
+      root_dir = require('lspconfig.util').root_pattern('.wowluarc.json', '.toc', '.git'),
+      single_file_support = true,
+    },
+  }
+end
+
+require('lspconfig').wowlua_ls.setup({})
+```
+
+::: tip
+If you also use a general-purpose Lua language server (e.g. lua_ls), you may want to disable it for WoW addon projects to avoid duplicate diagnostics. You can do this by checking for `.wowluarc.json` in your lua_ls config's `root_dir` or using a filetype autocmd.
+:::
+
 ### Other editors
 
 Build the language server from source:

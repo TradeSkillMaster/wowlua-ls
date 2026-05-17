@@ -29,6 +29,22 @@ Install **wowlua-ls** from the [VS Code Marketplace](https://marketplace.visuals
 
 Download the plugin ZIP for your platform from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) and install via **Settings → Plugins → ⚙️ → Install Plugin from Disk...**. Requires the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin. The release ZIPs bundle the language server binary — no separate install needed.
 
+### Neovim
+
+Neovim has built-in LSP support — no plugin required. Get the binary (download from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release`), then add to your config:
+
+```lua
+vim.lsp.config('wowlua_ls', {
+  cmd = { '/path/to/wowlua_ls' },
+  filetypes = { 'lua' },
+  root_markers = { '.wowluarc.json', '.toc', '.git' },
+  workspace_required = false,
+})
+vim.lsp.enable('wowlua_ls')
+```
+
+See the [Getting Started guide](https://tradeskillmaster.github.io/wowlua-ls/guide/getting-started) for LazyVim and nvim-lspconfig setup.
+
 ### Other editors
 
 ```bash
