@@ -223,7 +223,11 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
             }
         }
         if depth == 0 && !found_return_colon {
-            let base_type = parse_type(without_q);
+            let base_type = if without_q.is_empty() {
+                AnnotationType::Simple("any".to_string())
+            } else {
+                parse_type(without_q)
+            };
             return AnnotationType::Union(vec![base_type, AnnotationType::Simple("nil".to_string())]);
         }
     }

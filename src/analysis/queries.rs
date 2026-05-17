@@ -4897,7 +4897,23 @@ impl AnalysisResult {
                 if self.annotation_has_unresolvable(ann, &func.generics) {
                     return None;
                 }
-                Some(crate::annotations::format_annotation_type(ann))
+                // For named params, VarArgs(...) doesn't make sense — unwrap to
+                // just the inner type (e.g. `...any?` → `any?`).
+                let effective = match ann {
+                    crate::annotations::AnnotationType::VarArgs(inner) => inner.as_ref(),
+                    other => other,
+                };
+                let formatted = crate::annotations::format_annotation_type(effective);
+                // If the formatted result is empty or just "?" (from VarArgs
+                // wrapping an empty base type in old precomputed stubs), normalize
+                // to "any?" since the annotation intent is "optional any value".
+                if formatted.is_empty() {
+                    return None;
+                }
+                if formatted == "?" {
+                    return Some("any?".to_string());
+                }
+                Some(formatted)
             }
         }
     }

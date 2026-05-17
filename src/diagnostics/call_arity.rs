@@ -104,7 +104,9 @@ impl DiagnosticPass for CallArity {
                         let is_optional = func.param_optional.get(i).copied().unwrap_or(false);
                         let is_unannotated = func.param_annotations.get(i)
                             .is_none_or(|a| matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
-                        if is_optional || is_unannotated {
+                        let is_ann_nullable = func.param_annotations.get(i)
+                            .is_some_and(crate::annotations::annotation_type_is_nullable);
+                        if is_optional || is_unannotated || is_ann_nullable {
                             count -= 1;
                         } else {
                             break;

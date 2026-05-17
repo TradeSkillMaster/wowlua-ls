@@ -39,6 +39,7 @@ pub(crate) fn annotation_type_is_nullable(ann: &AnnotationType) -> bool {
     match ann {
         AnnotationType::Simple(s) => s == "nil",
         AnnotationType::Union(members) => members.iter().any(annotation_type_is_nullable),
+        AnnotationType::VarArgs(inner) => annotation_type_is_nullable(inner),
         AnnotationType::NonNil(_) => false,
         AnnotationType::Intersection(_) => false,
         _ => false,

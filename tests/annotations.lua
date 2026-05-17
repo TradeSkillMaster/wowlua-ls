@@ -1218,3 +1218,15 @@ local TOKEN_MAP = {}
 local widget = {}
 local dynField = widget[someKey]
 --    ^ hover: (local) dynField: any
+
+-- VarArgs type (`...?`) on named @param should be treated as optional any,
+-- and should not trigger missing-parameter when omitted at call sites.
+---@param prefix string
+---@param text string
+---@param callbackFn function?
+---@param callbackArg ...?
+function sendMsg(prefix, text, callbackFn, callbackArg) end
+--       ^ hover: (global) function sendMsg(\nprefix: string,\ntext: string,\ncallbackFn: function?,\ncallbackArg: any?\n)
+
+sendMsg("test", "hello")
+-- ^ diag: none
