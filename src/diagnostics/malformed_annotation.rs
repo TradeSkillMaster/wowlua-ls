@@ -1,4 +1,5 @@
 use crate::analysis::AnalysisResult;
+use crate::types::SymbolIdentifier;
 use crate::syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
 use crate::syntax::tree::SyntaxTree;
 use super::{DiagnosticPass, WowDiagnostic};
@@ -316,6 +317,27 @@ impl DiagnosticPass for MalformedAnnotation {
                             format!("@correlated references unknown field '{}' on class '{}'", field_name, class_name),
                             field_start, field_end,
                         );
+                    }
+                }
+            } else if tag == "correlated" && current_class.is_none() && !rest.is_empty() {
+                // Validate local variable names for standalone @correlated
+                if let Some(scope_idx) = analysis.scope_at_offset(tok_start as u32) {
+                    let rest_offset = tok_start + 4 + tag.len() + (after_at[tag.len()..].len() - rest.len());
+                    for segment in rest.split(',') {
+                        let var_name = segment.trim();
+                        if var_name.is_empty() { continue; }
+                        let id = SymbolIdentifier::Name(var_name.to_string());
+                        if analysis.get_symbol(&id, scope_idx).is_none() {
+                            let seg_start_in_rest = segment.as_ptr() as usize - rest.as_ptr() as usize;
+                            let trim_offset = segment.len() - segment.trim_start().len();
+                            let field_start = rest_offset + seg_start_in_rest + trim_offset;
+                            let field_end = field_start + var_name.len();
+                            check(
+                                diags,
+                                format!("@correlated references unknown variable '{}'", var_name),
+                                field_start, field_end,
+                            );
+                        }
                     }
                 }
             }

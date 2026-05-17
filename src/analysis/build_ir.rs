@@ -419,6 +419,8 @@ impl<'a> Analysis<'a> {
             frame.next_stmt += 1;
             // Apply @cast annotations from comments preceding this statement
             self.scan_cast_annotations(statements[stmt_index].syntax(), scope_idx);
+            // Register @correlated annotations for local variables
+            self.scan_correlated_annotations(statements[stmt_index].syntax(), scope_idx);
             // Snapshot expr count before lowering this statement so we can mark
             // the range as conditionally-reached when the enclosing frame is a
             // conditionally-executed block (if/elseif/else/while/for body).
@@ -2754,6 +2756,64 @@ impl<'a> Analysis<'a> {
                     });
                 }
             }
+        }
+    }
+
+    /// Scan for `---@correlated var1, var2` annotations preceding a statement and
+    /// register the named locals as a correlated group so that narrowing one
+    /// automatically narrows the others.
+    fn scan_correlated_annotations(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) {
+        let Some(first_token) = node.first_token() else { return };
+        let mut tok = first_token.prev_token();
+        while let Some(token) = tok {
+            let kind = token.kind();
+            if kind == SyntaxKind::Whitespace || kind == SyntaxKind::Newline {
+                tok = token.prev_token();
+                continue;
+            }
+            if kind == SyntaxKind::Comment {
+                // Skip inline trailing comments (on same line as previous code)
+                {
+                    let mut prev = token.prev_token();
+                    let mut is_inline = false;
+                    while let Some(ref p) = prev {
+                        if p.kind() == SyntaxKind::Whitespace {
+                            prev = p.prev_token();
+                            continue;
+                        }
+                        if p.kind() != SyntaxKind::Newline {
+                            is_inline = true;
+                        }
+                        break;
+                    }
+                    if is_inline { break; }
+                }
+                let text = token.text();
+                if let Some(rest) = text.strip_prefix("---@correlated")
+                    .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace)) {
+                    let names: Vec<&str> = rest.split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if names.len() >= 2 {
+                        let group: Vec<SymbolIndex> = names.iter()
+                            .filter_map(|name| {
+                                self.get_symbol(&SymbolIdentifier::Name(name.to_string()), scope_idx)
+                            })
+                            .filter(|idx| !idx.is_external())
+                            .collect();
+                        if group.len() >= 2 {
+                            self.correlated_locals.push(group);
+                        }
+                    }
+                    tok = token.prev_token();
+                    continue;
+                } else if text.starts_with("---@") || text.starts_with("--- @") || text.starts_with("---") || text.starts_with("---|") {
+                    tok = token.prev_token();
+                    continue;
+                }
+            }
+            break;
         }
     }
 

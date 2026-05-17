@@ -399,3 +399,29 @@ local function exitingMiddleBranchError(mode)
     --    ^ hover: (local) l: string
 end
 _consume(exitingMiddleBranchError)
+
+-- ── Manual @correlated annotation for locals ─────────────────────────────
+
+---@type number?
+local mCount = nil
+---@type number?
+local mOffset = nil
+---@correlated mCount, mOffset
+for _i = 1, 10 do
+    if not mCount then
+        mCount = _i
+        mOffset = 0
+    elseif mOffset < mCount then
+        local x = mOffset + 1
+        --    ^ hover: (local) x: number
+        mOffset = mOffset + 1
+    end
+end
+_consume(mCount, mOffset)
+
+-- @correlated with unknown variable name warns
+local knownVar = nil ---@type number?
+---@correlated knownVar, unknownVar
+-- ^ diag: malformed-annotation
+local _sink = knownVar
+_consume(_sink)

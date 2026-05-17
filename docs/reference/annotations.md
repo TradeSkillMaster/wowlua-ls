@@ -33,7 +33,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@field [K] V` | Bracket-index field. | [Generics](/guide/generics) |
 | `@field private name type` | Private field. | [Classes](/guide/classes) |
 | `@field protected name type` | Protected field. | [Classes](/guide/classes) |
-| `@correlated f1, f2, ...` | Fields that are always nil/non-nil together. | [Nil Safety](/guide/nil-safety) |
+| `@correlated f1, f2, ...` | Fields or locals that are always nil/non-nil together. | [Nil Safety](/guide/nil-safety) |
 
 ## Generic annotations
 

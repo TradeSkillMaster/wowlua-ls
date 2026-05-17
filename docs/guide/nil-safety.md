@@ -256,6 +256,29 @@ if not tradeType then return end
 
 No annotation needed — the LS detects the pattern automatically.
 
+### Manual `@correlated` for locals
+
+When the automatic inference can't detect the correlation (e.g. variables assigned together across loop iterations), you can declare it manually:
+
+```lua
+---@type number?
+local numModifiers = nil
+---@type number?
+local modifierOffset = nil
+---@correlated numModifiers, modifierOffset
+for part in gmatch(str, pattern) do
+    if not numModifiers then
+        numModifiers = part
+        modifierOffset = 0
+    elseif modifierOffset < numModifiers * 2 then
+        -- modifierOffset is narrowed to number (not number?)
+        modifierOffset = modifierOffset + 1
+    end
+end
+```
+
+Place the `---@correlated` annotation between the local declarations and the code that uses them. The annotation applies to local variables visible in the current scope.
+
 ## Lateinit fields (`T!`)
 
 Some fields are conceptually non-nil but may be nil at certain points in the object's lifecycle (like object pool acquire/release cycles). The `!` suffix declares a "lateinit" field:
