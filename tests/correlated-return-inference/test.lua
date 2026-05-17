@@ -798,3 +798,265 @@ if not ro_a then
     local _ = ro_c
     --        ^ hover: (local) ro_c: string?
 end
+
+-- ── Namespace method: direct enum returns, mixed arity ────────────────
+-- A table-field function with returns at arity 1, 2, and 3. The two false-
+-- returning paths differ only in whether they include a detail string.
+-- Single-position merge should collapse (false, ErrKind, nil) and
+-- (false, ErrKind, string) into (false, ErrKind, string?), yielding
+-- exactly two final overloads.
+
+---@class FilterError
+---@field INVALID FilterError
+---@field MISSING FilterError
+---@field OVERFLOW FilterError
+local FilterError = {}
+
+local filter = {}
+
+function filter.validate(str, data)
+    if str == "bad" then
+        return false, FilterError.INVALID, "unexpected char"
+    end
+    if str == "missing" then
+        return false, FilterError.MISSING
+    end
+    return true
+end
+
+local _ = filter.validate
+--               ^ hover: (field) function validate(str, data)\n-> boolean, FilterError?, string?\ncases (inferred):\n(false, FilterError, string?)\n(true, nil, nil)
+
+local function validateCaller()
+    local ok, errKind, detail = filter.validate("x", {})
+    if not ok then
+        local _ = errKind
+        --        ^ hover: (local) errKind: FilterError
+        local _ = detail
+        --        ^ hover: (local) detail: string?
+    end
+end
+_consume(validateCaller)
+
+-- ── Namespace method: enum returns from sub-function calls ────────────
+-- Same as above but the false-returning paths come from forward-referenced
+-- helper functions. The errType/errArg locals are NOT branch-merged (each
+-- return statement uses direct sub-function returns or direct values).
+
+local parser = {}
+
+function parser.run(str, data)
+    for _, tok in ipairs({}) do
+        local ok, err, detail = parser.handleToken(tok, data)
+        if not ok then
+            return false, err, detail
+        end
+    end
+    if data == 0 then
+        return false, FilterError.OVERFLOW
+    end
+    return true
+end
+
+local _ = parser.run
+--               ^ hover: (field) function run(str, data)\n-> boolean, FilterError?, string?\ncases (inferred):\n(false, FilterError, string?)\n(true, nil, nil)
+
+function parser.handleToken(tok, data)
+    if tok == "bad" then
+        return false, FilterError.INVALID, "detail"
+    end
+    return true
+end
+
+local function parserCaller()
+    local ok, errKind, detail = parser.run("x", {})
+    if not ok then
+        local _ = errKind
+        --        ^ hover: (local) errKind: FilterError
+        local _ = detail
+        --        ^ hover: (local) detail: string?
+    end
+end
+_consume(parserCaller)
+
+-- ── Branch-assigned locals with sub-function calls (ParseStr pattern) ─
+-- This is the real-world pattern that keeps regressing: inside a loop,
+-- locals (isValid, errType, errArg) are assigned from different helper
+-- calls depending on branches (if/elseif without else). The locals are
+-- then guarded and returned. Because the if/elseif has no else branch,
+-- the branch merge produces nil-optional types for errType/errArg. But
+-- the correlated return inference should recognize that the return
+-- `false, errType, errArg` is only reachable when errType is non-nil.
+--
+-- Expected cases: (false, FilterError, string?) | (true, nil, nil)
+-- Current broken: (false, FilterError?, string?) | (false, FilterError, nil) | (true, nil, nil)
+
+local parseNs = {}
+
+function parseNs.parseStr(str, data)
+--               ^ hover: (field) function parseStr(str, data)\n-> boolean, FilterError?, string?\ncases (inferred):\n(false, FilterError, string?)\n(true, nil, nil)
+    local isFirst = true
+    for _, symbol in ipairs({}) do
+        local isValid, errType, errArg = nil, nil, nil
+        if isFirst then
+            isFirst = false
+            isValid, errType = parseNs.handleFirst(symbol, data)
+        elseif symbol == "" then
+            isValid = true
+        else
+            isValid, errType, errArg = parseNs.handleOther(symbol, data)
+        end
+        if not isValid then
+            return false, errType, errArg
+        end
+    end
+    if data == 0 then
+        return false, FilterError.OVERFLOW
+    end
+    return true
+end
+
+function parseNs.handleFirst(symbol, data)
+    if symbol == "bad" then
+        return false, FilterError.INVALID
+    end
+    return true
+end
+
+function parseNs.handleOther(symbol, data)
+    if symbol == "bad" then
+        return false, FilterError.INVALID, "detail"
+    end
+    return true
+end
+
+-- Caller-site narrowing should still work even if the function hover
+-- shows the branch-merged types:
+local function parseStrCaller()
+    local ok, errType, errArg = parseNs.parseStr("x", {})
+    if not ok then
+        local _ = errType
+        --        ^ hover: (local) errType: FilterError
+        local _ = errArg
+        --        ^ hover: (local) errArg: string?
+    end
+end
+_consume(parseStrCaller)
+
+-- ── Multiple direct-value returns at different arities ────────────────
+-- Three false-returns at arity 2, plus one at arity 3, plus a true-return
+-- at arity 1. The three arity-2 returns all have FilterError at pos 1,
+-- and the arity-3 return adds a string at pos 2. After padding and merge,
+-- the final cases should be (false, FilterError, string?) | (true, nil, nil).
+
+local multiRet = {}
+
+function multiRet.check(str, data)
+    if str == "a" then
+        return false, FilterError.INVALID
+    end
+    if str == "b" then
+        return false, FilterError.MISSING
+    end
+    if str == "c" then
+        return false, FilterError.OVERFLOW, "limit exceeded"
+    end
+    if data == 0 then
+        return false, FilterError.OVERFLOW
+    end
+    return true
+end
+
+local _ = multiRet.check
+--                 ^ hover: (field) function check(str, data)\n-> boolean, FilterError?, string?\ncases (inferred):\n(false, FilterError, string?)\n(true, nil, nil)
+
+local function multiRetCaller()
+    local ok, errKind, detail = multiRet.check("x", {})
+    if not ok then
+        local _ = errKind
+        --        ^ hover: (local) errKind: FilterError
+        local _ = detail
+        --        ^ hover: (local) detail: string?
+    end
+end
+_consume(multiRetCaller)
+
+-- ── Simple two-return: (true) | (false, string) ──────────────────────
+-- Minimal case: one-value success return, two-value failure return.
+-- After padding: (true, nil) | (false, string).
+
+local simple = {}
+
+function simple.tryLoad(path)
+    if path == "" then
+        return false, "empty path"
+    end
+    return true
+end
+
+local _ = simple.tryLoad
+--               ^ hover: (field) function tryLoad(path)\n-> boolean, string?\ncases (inferred):\n(false, string)\n(true, nil)
+
+local function tryLoadCaller()
+    local ok, err = simple.tryLoad("/tmp")
+    if not ok then
+        local _ = err
+        --        ^ hover: (local) err: string
+    end
+end
+_consume(tryLoadCaller)
+
+-- ── Forward-reference caller: parseStr defined AFTER caller ──────────
+-- Exercises the deferred sibling narrowing path (build_ir can't resolve
+-- the callee's overloads because the field doesn't exist yet).
+
+local fwd = {}
+
+local function fwdCaller()
+    local ok, errType, errArg = fwd.parseStr("x", {})
+    wipe({})  -- intermediate call (like TSM's wipe() between assignment and guard)
+    if not ok then
+        local _ = errType
+        --        ^ hover: (local) errType: FilterError
+        local _ = errArg
+        --        ^ hover: (local) errArg: string?
+    end
+end
+_consume(fwdCaller)
+
+function fwd.parseStr(str, data)
+--               ^ hover: (field) function parseStr(str, data)\n-> boolean, FilterError?, string?\ncases (inferred):\n(false, FilterError, string?)\n(true, nil, nil)
+    local isFirst = true
+    for _, symbol in ipairs({}) do
+        local isValid, errType, errArg = nil, nil, nil
+        if isFirst then
+            isFirst = false
+            isValid, errType = fwd.handleFirst(symbol, data)
+        elseif symbol == "" then
+            isValid = true
+        else
+            isValid, errType, errArg = fwd.handleOther(symbol, data)
+        end
+        if not isValid then
+            return false, errType, errArg
+        end
+    end
+    if data == 0 then
+        return false, FilterError.OVERFLOW
+    end
+    return true
+end
+
+function fwd.handleFirst(symbol, data)
+    if symbol == "bad" then
+        return false, FilterError.INVALID
+    end
+    return true
+end
+
+function fwd.handleOther(symbol, data)
+    if symbol == "bad" then
+        return false, FilterError.INVALID, "detail"
+    end
+    return true
+end

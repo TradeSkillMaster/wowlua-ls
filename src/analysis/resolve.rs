@@ -897,6 +897,46 @@ impl<'a> Analysis<'a> {
                 if !merged { break; }
             }
 
+            // Subsumption absorption: when overload B is fully subsumed by overload A
+            // (B[i] assignable to A[i] for all positions), absorb B into A. At positions
+            // where A has T|nil and B has T (the "nil-only" difference), tighten A to T.
+            // This handles the common pattern where branch-merged locals (errType: T?)
+            // are returned alongside a concrete overload (FilterError.OVERFLOW: T),
+            // collapsing the spurious nil from the BranchMerge.
+            {
+                // Extract synthesized overload returns for the shared absorption helper.
+                let synth_indices: Vec<usize> = func.overloads.iter().enumerate()
+                    .filter(|(_, o)| o.is_return_only)
+                    .map(|(i, _)| i)
+                    .collect();
+                if synth_indices.len() >= 2 {
+                    let mut returns: Vec<Vec<ValueType>> = synth_indices.iter()
+                        .map(|&i| func.overloads[i].returns.clone())
+                        .collect();
+                    // Skip if any has unresolved Any slots; otherwise absorb
+                    if !returns.iter().any(|r| r.contains(&ValueType::Any))
+                        && Self::absorb_subsumed_overloads(&mut returns)
+                    {
+                        // Write back: rebuild overloads from non-synth + absorbed synth
+                        let mut new_overloads: Vec<ResolvedOverload> = func.overloads.iter()
+                            .filter(|o| !o.is_return_only)
+                            .cloned()
+                            .collect();
+                        for ret in returns {
+                            new_overloads.push(ResolvedOverload {
+                                params: Vec::new(),
+                                returns: ret,
+                                is_return_only: true,
+                                description: None,
+                                has_vararg_tail: false,
+                                is_vararg: false,
+                            });
+                        }
+                        func.overloads = new_overloads;
+                    }
+                }
+            }
+
             // If dedup+merge reduced to < 2, remove all — no narrowing benefit.
             let remaining = func.overloads.iter().filter(|o| o.is_return_only).count();
             if remaining < 2 {
@@ -1166,17 +1206,36 @@ impl<'a> Analysis<'a> {
                     let mut types = Vec::new();
                     let mut has_any_synth = false;
                     let is_synth = self.ir.synthesized_overload_funcs.contains(&func_idx);
-                    for o in &compatible {
-                        let t = o.return_type_at(ret_index);
-                        // Skip `Any` from synthesized overloads — it's an
-                        // unrefined placeholder that will settle later. For
-                        // annotated overloads, `Any` is the intended type.
-                        if matches!(t, ValueType::Any) && is_synth {
-                            has_any_synth = true;
-                            continue;
-                        }
-                        if !types.contains(&t) {
+                    // For synthesized overloads with 2+ compatible cases, apply
+                    // subsumption-based nil-tightening before collecting types.
+                    // When overload B is subsumed by A and differs only by nil,
+                    // use B's tighter types at those positions. This handles cases
+                    // where the dedup couldn't run at synthesis time (types were
+                    // still Any) but the overloads have since been refined.
+                    let tightened_at_ret_index: Option<ValueType> = if is_synth && compatible.len() >= 2 {
+                        Self::subsumption_tighten_for_position(&compatible, ret_index)
+                    } else {
+                        None
+                    };
+                    if let Some(t) = tightened_at_ret_index {
+                        if !matches!(t, ValueType::Any) {
                             types.push(t);
+                        } else {
+                            has_any_synth = true;
+                        }
+                    } else {
+                        for o in &compatible {
+                            let t = o.return_type_at(ret_index);
+                            // Skip `Any` from synthesized overloads — it's an
+                            // unrefined placeholder that will settle later. For
+                            // annotated overloads, `Any` is the intended type.
+                            if matches!(t, ValueType::Any) && is_synth {
+                                has_any_synth = true;
+                                continue;
+                            }
+                            if !types.contains(&t) {
+                                types.push(t);
+                            }
                         }
                     }
                     if !types.is_empty() {
@@ -1228,6 +1287,95 @@ impl<'a> Analysis<'a> {
             else if any_strip_nil { vt.strip_nil() }
             else { vt }
         })
+    }
+
+    /// Apply subsumption-based nil-tightening on a set of compatible overloads and
+    /// return the effective type at `ret_index`. Returns `Some(type)` if tightening
+    /// was applicable (caller uses this instead of the normal union-of-all); returns
+    /// `None` if no absorption happened (caller falls back to the normal logic).
+    /// When `Some(Any)` is returned, it means all types were Any (unrefined) — the
+    /// caller should treat it as a "retry later" signal.
+    fn subsumption_tighten_for_position(compatible: &[&ResolvedOverload], ret_index: usize) -> Option<ValueType> {
+        // Expand overloads to normalized return Vecs at the maximum arity,
+        // using return_type_at to respect has_vararg_tail.
+        let max_arity = compatible.iter().map(|o| o.returns.len()).max().unwrap_or(0);
+        let mut returns: Vec<Vec<ValueType>> = compatible.iter()
+            .map(|o| (0..max_arity).map(|k| o.return_type_at(k)).collect())
+            .collect();
+        // Skip if any overload has Any (unrefined slots)
+        if returns.iter().any(|r| r.contains(&ValueType::Any)) {
+            return None;
+        }
+        if !Self::absorb_subsumed_overloads(&mut returns) {
+            return None;
+        }
+        // Collect the union of types at ret_index from the tightened set
+        let mut types = Vec::new();
+        for r in &returns {
+            let t = if ret_index < r.len() { r[ret_index].clone() } else { ValueType::Nil };
+            if !types.contains(&t) {
+                types.push(t);
+            }
+        }
+        Some(ValueType::make_union(types))
+    }
+
+    /// Subsumption absorption on a mutable set of return-type tuples. When overload
+    /// B is fully subsumed by A (every B[k] assignable to A[k]) and they differ only
+    /// by nil (A has T|nil where B has T), tighten A and remove B. Checks both
+    /// directions (B subsumed by A, and A subsumed by B). Returns true if any
+    /// absorption occurred.
+    fn absorb_subsumed_overloads(returns: &mut Vec<Vec<ValueType>>) -> bool {
+        let mut any_absorbed = false;
+        loop {
+            let n = returns.len();
+            let mut absorbed = false;
+            'absorb: for i in 0..n {
+                for j in (i + 1)..n {
+                    // Try B subsumed by A (tighten A, remove B)
+                    if Self::try_absorb_pair(returns, i, j) {
+                        absorbed = true;
+                        any_absorbed = true;
+                        break 'absorb;
+                    }
+                    // Try A subsumed by B (tighten B, remove A)
+                    if Self::try_absorb_pair(returns, j, i) {
+                        absorbed = true;
+                        any_absorbed = true;
+                        break 'absorb;
+                    }
+                }
+            }
+            if !absorbed { break; }
+        }
+        any_absorbed
+    }
+
+    /// Try to absorb overload at `narrow_idx` into overload at `wide_idx`.
+    /// Returns true if absorption succeeded (narrow was removed, wide was tightened).
+    fn try_absorb_pair(returns: &mut Vec<Vec<ValueType>>, wide_idx: usize, narrow_idx: usize) -> bool {
+        let wide = &returns[wide_idx];
+        let narrow = &returns[narrow_idx];
+        if wide.len() != narrow.len() { return false; }
+        // Check if narrow is subsumed by wide
+        let subsumed = (0..wide.len()).all(|k| narrow[k].is_assignable_to(&wide[k]));
+        if !subsumed { return false; }
+        // Collect positions where wide has T|nil and narrow has T
+        let mut tighten: Vec<(usize, ValueType)> = Vec::new();
+        for k in 0..wide.len() {
+            if wide[k] == narrow[k] { continue; }
+            if narrow[k].contains_nil() || narrow[k] == ValueType::Nil { continue; }
+            if narrow[k] == ValueType::Any || matches!(narrow[k], ValueType::TypeVariable(_)) { continue; }
+            if wide[k].contains_nil() && wide[k].strip_nil() == narrow[k] {
+                tighten.push((k, narrow[k].clone()));
+            }
+        }
+        if tighten.is_empty() { return false; }
+        for (k, t) in tighten {
+            returns[wide_idx][k] = t;
+        }
+        returns.remove(narrow_idx);
+        true
     }
 
     /// Check if an overload type at a return position is compatible with the given narrow kind.
