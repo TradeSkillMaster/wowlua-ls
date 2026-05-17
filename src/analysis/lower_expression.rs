@@ -504,7 +504,15 @@ impl<'a> Analysis<'a> {
                         Some(FieldKind::Named { name, value }) => {
                             let expr_id = self.lower_expression(&value, scope_idx);
                             // Check for inline ---@type annotation after the field
-                            let inline_type = Self::extract_inline_type(field.syntax());
+                            // Also check inside table constructor opening: `{ ---@type Foo ... }`
+                            let inline_type = Self::extract_inline_type(field.syntax())
+                                .or_else(|| {
+                                    if let Expression::TableConstructor(tc) = &value {
+                                        Self::extract_table_constructor_type(tc.syntax())
+                                    } else {
+                                        None
+                                    }
+                                });
                             let annotation_text = inline_type.as_ref()
                                 .map(crate::annotations::format_annotation_type);
                             let annotation_type_raw = inline_type.clone();

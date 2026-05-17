@@ -464,6 +464,19 @@ mapObj.scores = {} ---@type {[string]: number}
 mapObj.scores["hello"] = 42
 --     ^ diag: none
 
+-- Inline ---@type inside table constructor braces used as field value
+local tcObj = {
+    byName = { ---@type table<string, number[]>
+        foo = {},
+        bar = {},
+    },
+}
+local _tcKey = "foo"
+local _tcVal = tcObj.byName[_tcKey]
+--     ^ hover: (local) _tcVal: number[]
+local _tcFbs = tcObj.byName
+--     ^ hover: (local) _tcFbs: table<string, number[]>
+
 -- {[K]: V} in parameterized alias
 ---@alias IndexedMap<K,V> V[]&{[K]: V}
 ---@param m IndexedMap<string, number>

@@ -2989,7 +2989,7 @@ impl<'a> Analysis<'a> {
 
     /// Extract a `---@type X` annotation from inside a table constructor's opening line.
     /// Matches the pattern `{ ---@type Foo ... }` where the comment follows the `{`.
-    fn extract_table_constructor_type(tc_node: SyntaxNode<'_>) -> Option<AnnotationType> {
+    pub(super) fn extract_table_constructor_type(tc_node: SyntaxNode<'_>) -> Option<AnnotationType> {
         let mut found_open_brace = false;
         for item in tc_node.children_with_tokens() {
             match item {
