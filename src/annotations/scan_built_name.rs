@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall};
 use crate::syntax::SyntaxNode;
 use super::{
@@ -10,11 +10,12 @@ use super::annotation_scanning::{
     collect_statements_recursive,
 };
 
+type BuiltFields = (Vec<(String, AnnotationType, Visibility)>, HashMap<String, (u32, u32)>);
+
 /// Scan a file for calls to functions with `@built-name`, extracting the class name
 /// from the specified string literal argument. Returns empty `ClassDecl` entries so the
 /// name is registered in `PreResolvedGlobals` for cross-file annotation resolution.
 pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], implicit_protected_prefix: bool) -> Vec<ClassDecl> {
-    use std::collections::HashMap;
     let Some(block) = Block::cast(root) else { return Vec::new() };
 
     // Build map of function paths → param index for @built-name
@@ -142,7 +143,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
         schema_class: &str,
         builds_field_funcs: &HashMap<String, BuildsFieldInfo>,
         implicit_protected_prefix: bool,
-    ) -> (Vec<(String, AnnotationType, Visibility)>, HashMap<String, (u32, u32)>) {
+    ) -> BuiltFields {
         let mut fields = Vec::new();
         let mut field_ranges = HashMap::new();
         collect_built_fields(call, schema_class, builds_field_funcs, &mut fields, &mut field_ranges, implicit_protected_prefix);

@@ -820,3 +820,25 @@ local function independentLocals()
     --     ^ diag: grouped-return-mismatch
 end
 _consume(independentLocals)
+
+-- ── Sibling narrowing skips reassigned variables ─────────────────────
+-- When a multi-return sibling is reassigned, assert/narrowing on a
+-- co-sibling must not overwrite the reassigned type with the original
+-- multi-return's overload type.
+
+---@return (...string) | (nil)
+local function patternMatch(s, p)
+    return s, p
+end
+
+local function parseOptional(input)
+    local extra = nil
+    if input == "x" then
+        input, extra = patternMatch(input, "^(.+):(.+)")
+        extra = tonumber(extra)
+        assert(input)
+    end
+    return input, extra
+end
+local _ = parseOptional
+--        ^ hover: (local) function parseOptional(input)\n  -> string?, number?

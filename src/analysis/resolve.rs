@@ -541,6 +541,10 @@ impl<'a> Analysis<'a> {
                     if self.narrow_kind_for(sibling_idx, entry.scope).is_some() {
                         continue;
                     }
+                    // Skip siblings reassigned since the multi-return assignment
+                    if self.sibling_was_reassigned(sibling_idx, entry.scope, ret_index) {
+                        continue;
+                    }
                     // Do NOT add to narrowed_symbols — OverloadNarrow computes the correct type
                     if let Some(new_ver) = self.ir.push_overload_narrow_version(
                         sibling_idx, entry.scope, entry.func_expr, ret_index, entry.narrowed.clone(),

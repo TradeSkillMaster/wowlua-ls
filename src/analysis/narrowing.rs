@@ -1420,9 +1420,28 @@ impl<'a> Analysis<'a> {
         // nil again, producing incorrect results.
         for &(ret_index, sibling_idx) in &siblings {
             if sibling_idx == sym_idx { continue; }
+            // Skip siblings that have been reassigned since the multi-return.
+            // If the sibling's current version type_source no longer points to a
+            // FunctionCall from the same underlying call, its type is independent.
+            if self.sibling_was_reassigned(sibling_idx, scope_idx, ret_index) { continue; }
             self.ir.push_overload_narrow_version(
                 sibling_idx, scope_idx, func_expr, ret_index, narrowed_info.clone(),
             );
+        }
+    }
+
+    /// Check whether a sibling symbol has been reassigned since the multi-return
+    /// assignment. Returns true if the sibling's current version's type_source is
+    /// not a FunctionCall with the expected ret_index (matching the multi-return
+    /// position). A reassignment like `b = tonumber(b)` produces a FunctionCall
+    /// with ret_index 0, which won't match the sibling's expected position > 0.
+    pub(crate) fn sibling_was_reassigned(&self, sibling_idx: SymbolIndex, scope_idx: ScopeIndex, expected_ret_index: usize) -> bool {
+        let ver_idx = self.ir.version_for_scope_ancestors_only(sibling_idx, scope_idx);
+        let ver = &self.ir.symbols[sibling_idx.val()].versions[ver_idx];
+        let Some(ts) = ver.type_source else { return true; };
+        match self.ir.expr(ts) {
+            Expr::FunctionCall { ret_index, .. } => *ret_index != expected_ret_index,
+            _ => true,
         }
     }
 
