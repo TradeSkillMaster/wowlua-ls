@@ -378,6 +378,7 @@ pub(crate) const CODE_ALIASES: &[(&str, &[&str])] = &[
 pub(crate) const DEFAULT_DISABLED_CODES: &[&str] = &[
     IMPLICIT_NIL_RETURN.code,
     NEED_CHECK_NIL.code,
+    NIL_INDEX.code,
     UNUSED_VARARG.code,
     INCOMPLETE_SIGNATURE_DOC.code,
     UNKNOWN_PARAM_TYPE.code,

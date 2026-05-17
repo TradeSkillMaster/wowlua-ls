@@ -22,7 +22,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `undefined-global` | Reference to unresolved global name |
 | `undefined-field` | Accessing nonexistent field on `@class` |
 | `need-check-nil` | Field/method access on possibly-nil value **(off by default)** |
-| `nil-index` | Bracket-indexing a table with a possibly-nil key |
+| `nil-index` | Bracket-indexing a table with a possibly-nil key **(off by default)** |
 | `access-private` | Accessing `@field private` from outside |
 | `access-protected` | Accessing `@field protected` from outside hierarchy (also `_`-prefixed fields when `implicit_protected_prefix` is enabled) |
 | `duplicate-index` | Duplicate keys in table constructors |

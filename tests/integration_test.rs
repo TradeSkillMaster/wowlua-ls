@@ -1601,7 +1601,7 @@ fn undefined_field() {
 #[test]
 fn nil_index() {
     run_annotation_tests(&TestConfig {
-        lua_file: "tests/nil-index.lua",
+        lua_file: "tests/nil-index/nil-index.lua",
         with_stubs: false,
         scan_dir: None,
     });
