@@ -325,8 +325,12 @@ impl<'a> Analysis<'a> {
         }
 
         self.dedup_synthesized_return_overloads();
-        self.resolve_deep_field_injections();
+        // Order matters: deferred field assignments must run first so that
+        // runtime fields (e.g. `self.display = CreateFrame(...)`) are visible
+        // when deep field injections walk intermediate chains
+        // (e.g. `self.display.wrapped = ...`).
         self.resolve_deferred_field_assignments();
+        self.resolve_deep_field_injections();
         self.finalize_enum_kinds();
     }
 
@@ -1534,8 +1538,30 @@ impl<'a> Analysis<'a> {
     fn resolve_deep_field_injections(&mut self) {
         let injections = std::mem::take(&mut self.deep_field_injections);
         for inj in injections {
-            let Some(mut current_table) = self.ir.find_table_for_symbol(&inj.root_name, inj.scope_idx)
-                else { continue };
+            let mut current_table = self.ir.find_table_for_symbol(&inj.root_name, inj.scope_idx);
+            // Fallback: if the root symbol's table isn't found via type_source (e.g.
+            // `self` in a colon method), try looking at the symbol's resolved_type.
+            if current_table.is_none()
+                && let Some(sym_idx) = self.ir.get_symbol(
+                    &SymbolIdentifier::Name(inj.root_name.clone()),
+                    inj.scope_idx,
+                )
+            {
+                let ver_idx = self.ir.version_for_scope(sym_idx, inj.scope_idx);
+                current_table = match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
+                    Some(ValueType::Table(Some(idx))) => Some(*idx),
+                    Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
+                        ValueType::Table(Some(idx)) => Some(*idx),
+                        _ => None,
+                    }),
+                    Some(ValueType::Intersection(types)) => types.iter().find_map(|t| match t {
+                        ValueType::Table(Some(idx)) => Some(*idx),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+            }
+            let Some(mut current_table) = current_table else { continue };
 
             // Walk intermediates to find the actual target table
             let mut resolved = true;
@@ -1568,7 +1594,7 @@ impl<'a> Analysis<'a> {
                 });
                 match table_type {
                     Some(ValueType::Table(Some(idx))) => current_table = idx,
-                    Some(ValueType::Union(ref types)) => {
+                    Some(ValueType::Union(ref types)) | Some(ValueType::Intersection(ref types)) => {
                         if let Some(idx) = types.iter().find_map(|t| match t {
                             ValueType::Table(Some(idx)) => Some(*idx),
                             _ => None,

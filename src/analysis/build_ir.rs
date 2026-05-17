@@ -1582,6 +1582,17 @@ impl<'a> Analysis<'a> {
                                                     is_method_def: true,
                                                 });
                                             }
+                                        } else if names.len() > 2 {
+                                            // Deep chain with unresolved root (e.g. self.sub.method
+                                            // where self's type comes from a method parameter) —
+                                            // defer to post-fixpoint deep injection resolution.
+                                            self.deep_field_injections.push(DeepFieldInjection {
+                                                root_name: root_name.clone(),
+                                                intermediates: names[1..names.len()-1].to_vec(),
+                                                field_name: field_name.clone(),
+                                                expr_id: func_def_expr,
+                                                scope_idx,
+                                            });
                                         } else if names.len() == 2 {
                                             // Table not found during Phase 1 (e.g. type comes from
                                             // function return) — defer to post-fixpoint resolution.
@@ -1694,6 +1705,7 @@ impl<'a> Analysis<'a> {
                                                     break;
                                                 }
                                             }
+
                                             if resolved {
                                                 // Insert field directly (matching the deferred
                                                 // resolve_deep_field_injections path).
@@ -1860,6 +1872,17 @@ impl<'a> Analysis<'a> {
                                                 is_method_def: false,
                                             });
                                           }
+                                        } else if names.len() > 2 {
+                                            // Deep chain with unresolved root (e.g. self.sub.field = expr
+                                            // where self's type comes from a method parameter) —
+                                            // defer to post-fixpoint deep injection resolution.
+                                            self.deep_field_injections.push(DeepFieldInjection {
+                                                root_name: root_name.clone(),
+                                                intermediates: names[1..names.len()-1].to_vec(),
+                                                field_name: field_name.clone(),
+                                                expr_id,
+                                                scope_idx,
+                                            });
                                         } else if names.len() == 2 {
                                             // Table not found during Phase 1 (e.g. type comes from
                                             // function return) — defer to post-fixpoint resolution.

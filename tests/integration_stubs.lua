@@ -884,3 +884,18 @@ local unitName, unitId = GameTooltip:GetUnit()
 local _baseObj = {}
 local _mixed = Mixin(_baseObj, {})
 --    ^ hover: (local) _mixed: table
+
+-- ── Deep chained overlay on deferred runtime field ──────────────────────────
+-- Regression: self.sub.field = CreateFrame(...) where `sub` is a runtime
+-- field injected by a deferred field assignment. The deep field injection
+-- must run after deferred field assignments so `sub` is visible.
+---@class OverlayPanel
+local OverlayPanel = {}
+
+function OverlayPanel:Init()
+    self.display = CreateFrame("Frame")
+    self.display.wrapped = CreateFrame("Frame", nil, self.display)
+    self.display.wrapped:SetSize(10, 10)
+    --                       ^ hover: (method) function Frame:SetSize(
+    --                       ^ diag: none
+end
