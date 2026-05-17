@@ -767,3 +767,34 @@ local _ = v1
 --        ^ hover: (local) v1: string
 local _ = v2
 --        ^ hover: (local) v2: number
+
+-- ── Reassignment after guard: sibling narrowing before reassignment ───────
+-- When a multi-return variable is reassigned AFTER a guard scope, the
+-- deferred sibling narrowing should still work for the pre-reassignment scope.
+-- Regression: reassigning errKind/errDetail after the first guard would cause
+-- sibling_was_reassigned() to see the later version, preventing narrowing.
+
+---@return (true, nil, nil)|(false, string errKind, string? detail)
+local function validateReassign(x)
+    if x then return true, nil, nil end
+    return false, "bad", "detail"
+end
+
+local function getReassignObj(text)
+    local isValid, errKind, errDetail = validateReassign(text)
+    if not isValid then
+        return nil, errKind, errDetail
+    end
+    -- Reassignment after the guard — this must not break sibling narrowing above
+    errKind = nil
+    errDetail = nil
+    return text, nil, nil
+end
+
+local ro_a, ro_b, ro_c = getReassignObj("x")
+if not ro_a then
+    local _ = ro_b
+    --        ^ hover: (local) ro_b: string
+    local _ = ro_c
+    --        ^ hover: (local) ro_c: string?
+end

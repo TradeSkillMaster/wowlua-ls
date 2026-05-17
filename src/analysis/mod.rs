@@ -780,6 +780,30 @@ impl Ir {
         0
     }
 
+    /// Like `version_for_scope_ancestors_only`, but skips versions whose
+    /// `creation_order` exceeds the querying scope's order — i.e., versions
+    /// created after the scope was entered (such as reassignments that appear
+    /// textually after the narrowing branch).
+    pub(crate) fn version_for_scope_ancestors_with_order(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> usize {
+        if sym_idx.is_external() {
+            return self.ext.symbols[sym_idx.ext_offset()].versions.len() - 1;
+        }
+        let scope_order = self.scopes[scope_idx.val()].creation_order;
+        let sym = &self.symbols[sym_idx.val()];
+        for (i, ver) in sym.versions.iter().enumerate().rev() {
+            if ancestor_scopes(&self.scopes, scope_idx).any(|s| s == ver.created_in_scope) {
+                // Skip versions created after the querying scope, unless
+                // they're in the same scope (same-scope versions are always
+                // visible, matching version_for_scope semantics).
+                if ver.created_in_scope != scope_idx && ver.creation_order > scope_order {
+                    continue;
+                }
+                return i;
+            }
+        }
+        0
+    }
+
     /// Insert a field into the overlay for an external table.
     pub(crate) fn insert_overlay_field(&mut self, table_idx: TableIndex, field_name: String, field_info: FieldInfo) {
         self.overlay_fields.entry(table_idx).or_default().insert(field_name, field_info);

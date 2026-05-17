@@ -1539,8 +1539,11 @@ impl<'a> Analysis<'a> {
     /// not a FunctionCall with the expected ret_index (matching the multi-return
     /// position). A reassignment like `b = tonumber(b)` produces a FunctionCall
     /// with ret_index 0, which won't match the sibling's expected position > 0.
+    ///
+    /// Uses creation_order filtering so that reassignments textually AFTER the
+    /// narrowing scope are ignored (their creation_order exceeds the scope's).
     pub(crate) fn sibling_was_reassigned(&self, sibling_idx: SymbolIndex, scope_idx: ScopeIndex, expected_ret_index: usize) -> bool {
-        let ver_idx = self.ir.version_for_scope_ancestors_only(sibling_idx, scope_idx);
+        let ver_idx = self.ir.version_for_scope_ancestors_with_order(sibling_idx, scope_idx);
         let ver = &self.ir.symbols[sibling_idx.val()].versions[ver_idx];
         let Some(ts) = ver.type_source else { return true; };
         match self.ir.expr(ts) {
