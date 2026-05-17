@@ -16,6 +16,16 @@ local function unaryNeg(z)
     return -z
 end
 
+local function getLen(s)
+--                    ^ hover: (param) s: string | table
+    return #s
+end
+
+local function getLenAndMatch(arg)
+--                            ^ hover: (param) arg: string
+    return #arg, strmatch(arg, "a+")
+end
+
 -- ── Signal 2: concat with a string-compatible operand → string | number ──
 local function greet(name)
 --                   ^ hover: (param) name: string | number

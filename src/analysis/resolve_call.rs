@@ -2348,6 +2348,10 @@ impl<'a> Analysis<'a> {
                         && let Some(s) = self.candidate_ref_in(operand, candidates) {
                             record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, ValueType::Number);
                         }
+                    if op == Operator::ArrayLength
+                        && let Some(s) = self.candidate_ref_in(operand, candidates) {
+                            record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, ValueType::Union(vec![ValueType::String(None), ValueType::Table(None)]));
+                        }
                 }
                 Expr::FunctionCall { func, ref args, is_method_call, .. } => {
                     let candidate_args: Vec<(usize, SymbolIndex)> = args.iter().enumerate()
