@@ -20,9 +20,8 @@ struct ClassicOnlyItems {
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-/// Pinned commit of Ketho/vscode-wow-api used for stub generation.
 const VSCODE_WOW_API_REPO: &str = "https://github.com/Ketho/vscode-wow-api.git";
-const VSCODE_WOW_API_COMMIT: &str = "539c3b2281261ba37fe9157ee067b188f0fa21d3";
+const VSCODE_WOW_API_BRANCH: &str = "master";
 
 const RESOURCE_URL_TEMPLATE: &str =
     "https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/{branch}/Resources/{file}";
@@ -2401,7 +2400,7 @@ pub fn regenerate_stubs() {
     let overrides_dir = stubs_dir.join("overrides");
     let output_path = stubs_dir.join("precomputed.bin.zst");
 
-    // Step 1: Shallow-fetch vscode-wow-api into a temp directory
+    // Step 1: Shallow-clone vscode-wow-api into a temp directory
     let tmp_dir = std::env::temp_dir().join("wowlua-ls-stub-gen");
     let clone_dir = tmp_dir.join("vscode-wow-api");
     if clone_dir.exists() {
@@ -2410,48 +2409,35 @@ pub fn regenerate_stubs() {
     }
     let _ = std::fs::create_dir_all(&tmp_dir);
 
-    log::info!("Shallow-fetching vscode-wow-api @ {VSCODE_WOW_API_COMMIT}...");
-    std::fs::create_dir_all(&clone_dir).expect("Failed to create clone dir");
+    log::info!("Shallow-cloning vscode-wow-api @ {VSCODE_WOW_API_BRANCH}...");
 
     let status = std::process::Command::new("git")
-        .current_dir(&clone_dir)
-        .args(["init"])
+        .arg("clone")
+        .args(["--depth", "1"])
+        .args(["--branch", VSCODE_WOW_API_BRANCH])
+        .arg(VSCODE_WOW_API_REPO)
+        .arg(&clone_dir)
         .status()
-        .expect("Failed to run git init");
+        .expect("Failed to run git clone");
     if !status.success() {
-        log::error!("git init failed");
+        log::error!("git clone failed");
         std::process::exit(1);
     }
 
-    let status = std::process::Command::new("git")
+    let rev_parse = std::process::Command::new("git")
         .current_dir(&clone_dir)
-        .args(["remote", "add", "origin", VSCODE_WOW_API_REPO])
-        .status()
-        .expect("Failed to run git remote add");
-    if !status.success() {
-        log::error!("git remote add failed");
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("Failed to run git rev-parse");
+    if !rev_parse.status.success() {
+        log::error!("git rev-parse HEAD failed");
         std::process::exit(1);
     }
-
-    let status = std::process::Command::new("git")
-        .current_dir(&clone_dir)
-        .args(["fetch", "--depth", "1", "origin", VSCODE_WOW_API_COMMIT])
-        .status()
-        .expect("Failed to run git fetch");
-    if !status.success() {
-        log::error!("git fetch failed");
-        std::process::exit(1);
-    }
-
-    let status = std::process::Command::new("git")
-        .current_dir(&clone_dir)
-        .args(["checkout", "FETCH_HEAD"])
-        .status()
-        .expect("Failed to run git checkout");
-    if !status.success() {
-        log::error!("git checkout failed");
-        std::process::exit(1);
-    }
+    let vscode_wow_api_commit = String::from_utf8(rev_parse.stdout)
+        .expect("Invalid UTF-8 from git rev-parse")
+        .trim()
+        .to_string();
+    log::info!("Resolved vscode-wow-api commit: {vscode_wow_api_commit}");
 
     // Init submodules within the cloned repo (FramexmlAnnotations → Annotations/FrameXML)
     let status = std::process::Command::new("git")
@@ -2801,7 +2787,7 @@ pub fn regenerate_stubs() {
         ),
         utc_now_iso8601(),
         VSCODE_WOW_API_REPO,
-        VSCODE_WOW_API_COMMIT,
+        vscode_wow_api_commit,
         blob.pre_globals.symbols_len(),
         blob.pre_globals.functions_len(),
         blob.pre_globals.tables_len(),
