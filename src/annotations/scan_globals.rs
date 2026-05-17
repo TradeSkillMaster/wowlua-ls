@@ -1283,20 +1283,25 @@ fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor<'_>) -> Op
     let mut fields = Vec::new();
     for field in tc.fields() {
         if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
-            let field_type = match &value {
-                Expression::Literal(lit) => {
-                    if lit.get_string().is_some() { AnnotationType::Simple("string".into()) }
-                    else if lit.get_number().is_some() { AnnotationType::Simple("number".into()) }
-                    else if lit.get_bool().is_some() { AnnotationType::Simple("boolean".into()) }
-                    else if lit.is_nil() { AnnotationType::Simple("nil".into()) }
-                    else { AnnotationType::Simple("any".into()) }
+            // Check for per-field ---@type annotation first (preceding-line or trailing)
+            let field_type = if let Some(at) = super::annotation_scanning::extract_inline_type_from_node(field.syntax()) {
+                at
+            } else {
+                match &value {
+                    Expression::Literal(lit) => {
+                        if lit.get_string().is_some() { AnnotationType::Simple("string".into()) }
+                        else if lit.get_number().is_some() { AnnotationType::Simple("number".into()) }
+                        else if lit.get_bool().is_some() { AnnotationType::Simple("boolean".into()) }
+                        else if lit.is_nil() { AnnotationType::Simple("nil".into()) }
+                        else { AnnotationType::Simple("any".into()) }
+                    }
+                    Expression::TableConstructor(nested) => {
+                        extract_table_literal_annotation(nested)
+                            .unwrap_or_else(|| AnnotationType::Simple("table".into()))
+                    }
+                    Expression::Function(_) => AnnotationType::Simple("function".into()),
+                    _ => AnnotationType::Simple("any".into()),
                 }
-                Expression::TableConstructor(nested) => {
-                    extract_table_literal_annotation(nested)
-                        .unwrap_or_else(|| AnnotationType::Simple("table".into()))
-                }
-                Expression::Function(_) => AnnotationType::Simple("function".into()),
-                _ => AnnotationType::Simple("any".into()),
             };
             fields.push((name, field_type));
         }

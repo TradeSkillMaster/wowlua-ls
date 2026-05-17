@@ -2012,6 +2012,16 @@ fn crossfile_table_shape() {
 }
 
 #[test]
+fn crossfile_inline_type_field() {
+    // Per-field ---@type annotations in table constructors preserved cross-file
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/inline_type_field_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_bracket_write() {
     // Bracket-access writes (ns.field[key] = val) should not override field type
     run_annotation_tests(&TestConfig {

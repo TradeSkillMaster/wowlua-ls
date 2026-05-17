@@ -964,3 +964,117 @@ fn parse_diagnostic_directive(rest: &str, line: u32) -> Option<DiagnosticSuppres
         .unwrap_or_default();
     Some(DiagnosticSuppression { kind, line, codes })
 }
+
+/// Extract a `---@type X` annotation from a syntax node (table field, expression, etc.).
+///
+/// Checks three locations in order:
+/// 1. Trailing comment within the node (after the last `Name` token)
+/// 2. Sibling comment after the node (same line)
+/// 3. Preceding standalone comment on the line above the node
+///
+/// Used by both per-file analysis (build_ir) and cross-file scanning (scan_globals).
+pub(crate) fn extract_inline_type_from_node(field_node: SyntaxNode<'_>) -> Option<AnnotationType> {
+    // Check within the node itself: find the last Name token and walk forward
+    // on the same line. This handles Identifier nodes that capture trailing comments.
+    let mut last_name_tok = None;
+    for item in field_node.children_with_tokens() {
+        if let NodeOrToken::Token(t) = &item
+            && t.kind() == SyntaxKind::Name {
+                last_name_tok = Some(*t);
+            }
+    }
+    if let Some(name_tok) = last_name_tok {
+        let node_end = u32::from(field_node.text_range().end());
+        let mut tok = name_tok.next_token();
+        while let Some(t) = tok {
+            if u32::from(t.text_range().start()) >= node_end { break; }
+            match t.kind() {
+                SyntaxKind::Whitespace | SyntaxKind::Comma | SyntaxKind::Semicolon => {
+                    tok = t.next_token();
+                }
+                SyntaxKind::Comment => {
+                    let text = t.text();
+                    let content = text.trim_start_matches('-').trim();
+                    if let Some(rest) = content.strip_prefix("@type") {
+                        let rest = rest.trim();
+                        if !rest.is_empty() {
+                            return Some(parse_type(rest));
+                        }
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+    }
+    // Check for trailing sibling comments on the same line as the field
+    let last_token = field_node.last_token()?;
+    let mut tok = last_token.next_token();
+    while let Some(t) = tok {
+        match t.kind() {
+            SyntaxKind::Comma | SyntaxKind::Whitespace | SyntaxKind::Semicolon => {
+                tok = t.next_token();
+            }
+            SyntaxKind::Comment => {
+                let text = t.text();
+                let content = text.trim_start_matches('-').trim();
+                if let Some(rest) = content.strip_prefix("@type") {
+                    let rest = rest.trim();
+                    if !rest.is_empty() {
+                        return Some(parse_type(rest));
+                    }
+                }
+                break;
+            }
+            _ => break,
+        }
+    }
+    // Fall back to preceding comments on lines above the field, matching
+    // the `@field`-style pattern that many WoW addon codebases use:
+    //     ---@type Pool<number>
+    //     pool = Pool.New(),
+    // A preceding `@type` comment is only valid when it sits ALONE on
+    // its own line — i.e. only whitespace or a newline precedes it. A
+    // comment like `prev = v, ---@type X` on the previous line is a
+    // TRAILING comment on `prev` and must not be captured for this field.
+    let first_token = field_node.first_token()?;
+    let mut tok = first_token.prev_token();
+    let mut crossed_newline = false;
+    while let Some(t) = tok {
+        match t.kind() {
+            SyntaxKind::Whitespace => {
+                tok = t.prev_token();
+            }
+            SyntaxKind::Newline => {
+                crossed_newline = true;
+                tok = t.prev_token();
+            }
+            SyntaxKind::Comment if crossed_newline => {
+                // Verify the comment is standalone: only whitespace/newline
+                // between it and the preceding newline (i.e. it's on a
+                // line by itself, not trailing another statement).
+                let mut back = t.prev_token();
+                let mut standalone = true;
+                while let Some(b) = back {
+                    match b.kind() {
+                        SyntaxKind::Whitespace => back = b.prev_token(),
+                        SyntaxKind::Newline => break,
+                        _ => { standalone = false; break; }
+                    }
+                }
+                if !standalone { return None; }
+                let text = t.text();
+                let content = text.trim_start_matches('-').trim();
+                if let Some(rest) = content.strip_prefix("@type") {
+                    let rest = rest.trim();
+                    if !rest.is_empty() {
+                        return Some(parse_type(rest));
+                    }
+                }
+                return None;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
