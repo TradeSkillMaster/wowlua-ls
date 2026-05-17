@@ -1519,14 +1519,14 @@ fn main_loop(
 
             if !did_batch {
                 // Sequential fallback: process one file at a time, checking for messages between each.
-                for uri_str in dirty_uris {
+                for uri_str in &dirty_uris {
                     let (drained, shutdown) = drain_pending_requests(&connection, &mut documents, &mut ws, client.snippets);
                     if shutdown { return Ok(()); }
                     if !drained.is_empty() {
                         for not in drained {
                             handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter);
                         }
-                        if documents.get(&uri_str).is_some_and(|d| d.dirty) {
+                        if documents.get(uri_str).is_some_and(|d| d.dirty) {
                         } else {
                             continue;
                         }
@@ -1534,7 +1534,7 @@ fn main_loop(
 
                     // Remove the document to take ownership of tree/analysis
                     // (SyntaxTree doesn't impl Clone). We always re-insert below.
-                    let Some(doc) = documents.remove(&uri_str) else { continue };
+                    let Some(doc) = documents.remove(uri_str) else { continue };
                     if !doc.dirty {
                         documents.insert(uri_str.clone(), doc);
                         continue;
@@ -1547,7 +1547,7 @@ fn main_loop(
                         continue;
                     }
                     {
-                        let uri = match lsp_types::Uri::from_str(&uri_str) {
+                        let uri = match lsp_types::Uri::from_str(uri_str) {
                             Ok(u) => u,
                             Err(e) => {
                                 log::error!("Invalid URI {uri_str}: {e}");
@@ -1616,7 +1616,7 @@ fn main_loop(
                             // incoming requests. The next Phase 4 cycle will pick
                             // them up with proper request draining between files.
                             for (other_uri, other_doc) in documents.iter_mut() {
-                                if *other_uri != uri_str && other_doc.analysis.is_some() {
+                                if other_uri != uri_str && other_doc.analysis.is_some() {
                                     other_doc.dirty = true;
                                 }
                             }
@@ -1633,8 +1633,7 @@ fn main_loop(
             }
 
             // Always ask the editor to re-pull diagnostics, inlay hints,
-            // and semantic tokens after Phase 4 reanalysis.  Diagnostics
-            // use pull model as the sole delivery channel.  Inlay hints
+            // and semantic tokens after Phase 4 reanalysis.  Inlay hints
             // are shifted and semantic tokens are suppressed while the
             // document has pending edits (to prevent stale positions
             // causing visual jumps / wrong highlights), so a refresh is
@@ -1656,6 +1655,29 @@ fn main_loop(
                     client.inlay_hint_refresh,
                     client.diagnostic_refresh,
                 );
+            }
+
+            // Fallback for clients that don't support workspace/diagnostic/refresh
+            // (e.g. Neovim): push diagnostics via textDocument/publishDiagnostics
+            // so the editor shows updated results after re-analysis.
+            if !client.diagnostic_refresh {
+                for uri_str in &dirty_uris {
+                    if let Some(doc) = documents.get(uri_str)
+                        && let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis)
+                        && let Ok(uri) = lsp_types::Uri::from_str(uri_str)
+                    {
+                        let items = build_file_diagnostics(&uri, tree, analysis, &doc.text, &doc.plugin_diags, &ws);
+                        let params = lsp_types::PublishDiagnosticsParams {
+                            uri,
+                            diagnostics: items,
+                            version: None,
+                        };
+                        let _ = connection.sender.send(Message::Notification(Notification::new(
+                            "textDocument/publishDiagnostics".to_string(),
+                            params,
+                        )));
+                    }
+                }
             }
         }
     }
