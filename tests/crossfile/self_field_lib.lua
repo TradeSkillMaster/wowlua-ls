@@ -12,3 +12,14 @@ function SFBase:Initialize()
     ---@type string
     self._label = ""
 end
+
+-- Cross-file self-field test: global variable with different @class name
+---@class SFGlobalClass
+SFGlobalMixin = {}
+
+---@param db table
+function SFGlobalMixin:Init(db)
+    self.db = db
+    ---@type string
+    self.tag = "default"
+end

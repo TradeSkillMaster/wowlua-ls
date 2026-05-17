@@ -322,22 +322,41 @@ pub(super) fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<Ann
 
 // ── Typed self-field scanning ───────────────────────────────────────────────
 
-/// Build a per-file mapping from local variable names to `@class` names.
-/// Handles `--- @class Foo\nlocal Bar = ...` and inline `local Bar = ... ---@class Foo`.
+/// Build a per-file mapping from variable names to `@class` names.
+/// Handles `--- @class Foo\nlocal Bar = ...`, inline `local Bar = ... ---@class Foo`,
+/// and global assignments `--- @class Foo\nBar = ...`.
 fn build_var_to_class(all_stmts: &[Statement<'_>]) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for stmt in all_stmts {
-        if let Statement::LocalAssign(assign) = stmt {
-            let annotations = super::extract_annotations(assign.syntax());
-            let class_name = annotations.class
-                .or_else(|| extract_inline_class(assign.syntax()));
-            if let Some(class_name) = class_name
-                && let Some(name_list) = assign.name_list() {
-                    let names = name_list.names();
-                    if names.len() == 1 {
-                        map.insert(names[0].clone(), class_name);
+        match stmt {
+            Statement::LocalAssign(assign) => {
+                let annotations = super::extract_annotations(assign.syntax());
+                let class_name = annotations.class
+                    .or_else(|| extract_inline_class(assign.syntax()));
+                if let Some(class_name) = class_name
+                    && let Some(name_list) = assign.name_list() {
+                        let names = name_list.names();
+                        if names.len() == 1 {
+                            map.insert(names[0].clone(), class_name);
+                        }
                     }
-                }
+            }
+            Statement::Assign(assign) => {
+                let annotations = super::extract_annotations(assign.syntax());
+                let class_name = annotations.class
+                    .or_else(|| extract_inline_class(assign.syntax()));
+                if let Some(class_name) = class_name
+                    && let Some(vl) = assign.variable_list() {
+                        let idents = vl.identifiers();
+                        if idents.len() == 1 {
+                            let names = idents[0].names();
+                            if names.len() == 1 {
+                                map.insert(names[0].clone(), class_name);
+                            }
+                        }
+                    }
+            }
+            _ => {}
         }
     }
     map

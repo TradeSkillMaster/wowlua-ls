@@ -13,3 +13,12 @@ function SFChild:DoWork()
     local n = self.name
     --             ^ hover: (field) name: string  def: external
 end
+
+-- Cross-file self-field test: global variable with @class name different from var name
+---@type SFGlobalClass
+local gc = {}
+
+local gdb = gc.db
+--             ^ hover: (field) db: table  def: external
+local gtag = gc.tag
+--               ^ hover: (field) tag: string  def: external
