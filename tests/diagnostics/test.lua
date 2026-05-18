@@ -2260,7 +2260,7 @@ do
         trbData3 = trbData3()
     end
     local _trbCheck = trbData3
-    --    ^ hover: (local) _trbCheck: number | string | function
+    --    ^ hover: (local) _trbCheck: number | string
 end
 
 -- BUG-3 regression: when first branch exits (return), reassignment in a

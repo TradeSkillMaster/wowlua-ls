@@ -488,6 +488,10 @@ impl ValueType {
         if deduped.contains(&ValueType::String(None)) {
             deduped.retain(|t| !matches!(t, ValueType::String(Some(_))));
         }
+        // Collapse table variants: table | Table(idx) → table (generic subsumes specific)
+        if deduped.contains(&ValueType::Table(None)) {
+            deduped.retain(|t| !matches!(t, ValueType::Table(Some(_))));
+        }
         if deduped.len() == 1 {
             deduped.into_iter().next().unwrap()
         } else {

@@ -21,9 +21,12 @@ local function getLen(s)
     return #s
 end
 
-local function getLenAndMatch(arg)
---                            ^ hover: (param) arg: string | table
-    return #arg, strmatch(arg, "a+")
+---@param x string | number
+local function _strOrNum(x) return x end
+
+local function getLenAndNarrow(arg)
+--                             ^ hover: (param) arg: string
+    return #arg, _strOrNum(arg)
 end
 
 -- ── Signal 2: concat with a string-compatible operand → string | number ──

@@ -372,9 +372,9 @@ local function exitingMiddleBranch(mode, fallback)
         value = 0
     end
     local r = reason
-    --    ^ hover: (local) r: string?
+    --    ^ hover: (local) r: string
     local v = value
-    --    ^ hover: (local) v: number?
+    --    ^ hover: (local) v: number
     _takeStr(reason)
     -- ^ diag: none
     _takeNum(value)
@@ -395,7 +395,7 @@ local function exitingMiddleBranchError(mode)
         label = "other"
     end
     local l = label
-    --    ^ hover: (local) l: string?
+    --    ^ hover: (local) l: string
 end
 _consume(exitingMiddleBranchError)
 

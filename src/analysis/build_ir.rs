@@ -2122,12 +2122,18 @@ impl<'a> Analysis<'a> {
                                             if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
                                                 multi_return_group.push((*ret_index, symbol_idx));
                                             }
-                                            if let Some(expected) = self.ir.symbol_type_annotations.get(&symbol_idx).cloned() {
-                                                // @type annotation is authoritative: override the
-                                                // version's type_source so hover/resolution use the
-                                                // annotation type, not the inferred expression type.
-                                                let ann_expr_id = self.ir.push_expr(Expr::Literal(expected));
-                                                self.ir.set_type_source(symbol_idx, ann_expr_id);
+                                            if self.ir.symbol_type_annotations.contains_key(&symbol_idx) {
+                                                // Reassignment path for @type-annotated variables:
+                                                // record the original RHS for assign-type-mismatch
+                                                // and backward inference, but don't override type_source.
+                                                // The actual RHS type flows through so narrowing,
+                                                // branch merges, and type guards see real types.
+                                                // (The initial declaration at ~line 708 still masks
+                                                // via set_type_source; only reassignments preserve RHS.)
+                                                let ver = self.ir.symbols[symbol_idx.val()].versions.last_mut().unwrap();
+                                                if ver.original_type_source.is_none() {
+                                                    ver.original_type_source = ver.type_source;
+                                                }
                                             }
                                         }
                                         // Apply @class annotation on global assignments

@@ -1496,7 +1496,7 @@ while true do
     break
 end
 local wnn1 = whileNoNarrow1
---    ^ hover: (local) wnn1: string?
+--    ^ hover: (local) wnn1: string
 
 -- While with break inside if: should NOT narrow
 
@@ -1507,7 +1507,7 @@ while not whileNoNarrow2 do
     if true then break end
 end
 local wnn2 = whileNoNarrow2
---    ^ hover: (local) wnn2: string?
+--    ^ hover: (local) wnn2: string
 
 -- Break inside nested loop should NOT prevent narrowing of outer while
 
@@ -1534,9 +1534,9 @@ while whileAndA == nil and whileAndB == nil do
     whileAndB = 1
 end
 local wna = whileAndA
---    ^ hover: (local) wna: string?
+--    ^ hover: (local) wna: string
 local wnb = whileAndB
---    ^ hover: (local) wnb: number?
+--    ^ hover: (local) wnb: number
 
 -- ── @param function type not contaminated by nullable field assignment ───
 

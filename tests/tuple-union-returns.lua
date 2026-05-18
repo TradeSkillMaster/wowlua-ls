@@ -89,10 +89,31 @@ local function runCallback(cb)
     --        ^ hover: (local) v: number | string
     if ok then
         local _ = v
-        --        ^ hover: (local) v: number | string
+        --        ^ hover: (local) v: number
     end
 end
 _consume(runCallback)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- @field fun() return type carries tuple-union through
+-- ══════════════════════════════════════════════════════════════════════════
+
+---@class CallbackHolder
+---@field tryLoad fun(): (true ok, number value) | (false, string error)
+
+---@param holder CallbackHolder
+local function useFieldCallback(holder)
+    local ok, v = holder.tryLoad()
+    local _ = ok
+    --        ^ hover: (local) ok: boolean
+    local _ = v
+    --        ^ hover: (local) v: number | string
+    if ok then
+        local _ = v
+        --        ^ hover: (local) v: number
+    end
+end
+_consume(useFieldCallback)
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- @alias with tuple-union body

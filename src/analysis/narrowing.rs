@@ -1890,8 +1890,13 @@ impl<'a> Analysis<'a> {
                 // or fall back to resolved_type for external symbols (which store
                 // Function(func_idx) directly without a type_source).
                 self.ir.sym(sym_idx).versions.iter().find_map(|v| {
-                    if let Some(ts) = v.type_source && let Expr::FunctionDef(idx) = self.ir.expr(ts) {
-                        return Some(*idx);
+                    if let Some(ts) = v.type_source {
+                        match self.ir.expr(ts) {
+                            Expr::FunctionDef(idx) => return Some(*idx),
+                            // @param annotations with fun() types store Literal(Function(idx))
+                            Expr::Literal(ValueType::Function(Some(idx))) => return Some(*idx),
+                            _ => {}
+                        }
                     }
                     // External symbols have resolved_type set directly
                     match &v.resolved_type {
@@ -1913,6 +1918,11 @@ impl<'a> Analysis<'a> {
                         match self.get_field(ti, &field) {
                             Some(fi) => match self.ir.expr(fi.expr) {
                                 Expr::FunctionDef(idx) => Some(*idx),
+                                // @field annotations with fun() types store Literal(Function(idx))
+                                Expr::Literal(ValueType::Function(Some(idx))) => Some(*idx),
+                                // Function(None) = unmaterialized fun() annotation;
+                                // defer to resolve phase when materialization is complete
+                                Expr::Literal(ValueType::Function(None)) => return OverloadCheck::Deferred(func_expr),
                                 _ => None,
                             },
                             None => return OverloadCheck::Deferred(func_expr),

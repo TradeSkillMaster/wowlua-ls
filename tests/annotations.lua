@@ -999,13 +999,13 @@ local tac = TypeAnnotClass
 local tacReady = tac._ready
 --    ^ hover: (local) tacReady: boolean  def: local
 
--- @type on reassignment should override inferred type
+-- @type constrains the declaration; reassignment uses actual RHS type
 ---@type number
 local reassigned = "hello"
 --    ^ hover: (local) reassigned: number  def: local
 reassigned = true
 local reassignedVal = reassigned
---    ^ hover: (local) reassignedVal: number  def: local
+--    ^ hover: (local) reassignedVal: true  def: local
 
 -- Parameterized alias: array element type
 ---@alias TestArray<T> T[]
@@ -1230,3 +1230,10 @@ function sendMsg(prefix, text, callbackFn, callbackArg) end
 
 sendMsg("test", "hello")
 -- ^ diag: none
+
+-- Regression: table | SomeClass should collapse to bare table
+---@class TableSubsume
+---@type table | TableSubsume
+local tableSubsumed
+local _ = tableSubsumed
+--        ^ hover: (local) tableSubsumed: table

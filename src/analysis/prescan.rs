@@ -1372,15 +1372,21 @@ impl<'a> Analysis<'a> {
             }
 
             let func_idx = FunctionIndex(self.ir.functions.len());
-            let return_annotations: Vec<ValueType> = sig.returns.iter()
-                .filter_map(|rt| self.resolve_annotation_type_mut(rt))
-                .collect();
+
+            // Detect tuple-form returns: fun(): (true ok, number v) | (false, string)
+            let tuple_form_flags: Vec<bool> = sig.returns.iter()
+                .map(crate::annotations::annotation_is_tuple_form).collect();
+            let is_tuple_form = sig.returns.len() == 1
+                && tuple_form_flags.iter().all(|&b| b);
+
+            let (return_annotations, return_annotations_raw, return_labels, overloads, has_vararg_return);
             let mut ret_symbols = Vec::new();
-            for (i, rt) in sig.returns.iter().enumerate() {
-                let resolved = self.resolve_annotation_type_mut(rt);
-                let sym_idx = SymbolIndex(self.ir.symbols.len());
-                self.ir.symbols.push(Symbol {
-                    id: SymbolIdentifier::FunctionRet(func_idx, i),
+
+            // Helper: create a return symbol with the given resolved type
+            let push_ret_symbol = |ir: &mut super::Ir, col: usize, resolved: Option<ValueType>| {
+                let sym_idx = SymbolIndex(ir.symbols.len());
+                ir.symbols.push(Symbol {
+                    id: SymbolIdentifier::FunctionRet(func_idx, col),
                     scope_idx: func_scope,
                     versions: vec![SymbolVersion {
                         def_node: dummy_node,
@@ -1393,11 +1399,43 @@ impl<'a> Analysis<'a> {
                     }],
                     flavor_guard: 0,
                 });
-                self.ir.scopes[func_scope.val()].symbols.insert(
-                    SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
+                ir.scopes[func_scope.val()].symbols.insert(
+                    SymbolIdentifier::FunctionRet(func_idx, col), sym_idx,
                 );
-                ret_symbols.push(sym_idx);
-            }
+                sym_idx
+            };
+
+            if is_tuple_form {
+                let cases = crate::annotations::tuple_form_cases(&sig.returns[0]);
+                let any_vararg_tail = cases.iter().any(|(p, _)| {
+                    matches!(p.last().map(|tp| &tp.typ), Some(crate::annotations::AnnotationType::VarArgs(_)))
+                });
+                has_vararg_return = any_vararg_tail;
+                let (col_vts, col_raws, labels, synth) =
+                    crate::annotations::lower_tuple_form_cases(&cases, |at| {
+                        self.resolve_annotation_type_mut(at)
+                    });
+                for (col, vt) in col_vts.iter().enumerate() {
+                    ret_symbols.push(push_ret_symbol(&mut self.ir, col, Some(vt.clone())));
+                }
+                return_annotations = col_vts;
+                return_annotations_raw = col_raws;
+                return_labels = labels;
+                overloads = synth;
+            } else {
+                has_vararg_return = false;
+                // Resolve each return type once and reuse for both symbols and annotations
+                let resolved: Vec<Option<ValueType>> = sig.returns.iter()
+                    .map(|rt| self.resolve_annotation_type_mut(rt))
+                    .collect();
+                return_annotations = resolved.iter().filter_map(|r| r.clone()).collect();
+                return_annotations_raw = sig.returns.clone();
+                return_labels = Vec::new();
+                overloads = Vec::new();
+                for (i, r) in resolved.into_iter().enumerate() {
+                    ret_symbols.push(push_ret_symbol(&mut self.ir, i, r));
+                }
+            };
 
             self.ir.functions.push(Function {
                 def_node: dummy_node,
@@ -1405,10 +1443,10 @@ impl<'a> Analysis<'a> {
                 args: arg_symbols,
                 rets: ret_symbols,
                 return_annotations,
-                return_annotations_raw: sig.returns.clone(),
-                return_labels: Vec::new(),
+                return_annotations_raw,
+                return_labels,
                 return_descriptions: Vec::new(),
-                overloads: Vec::new(),
+                overloads,
                 doc: None,
                 deprecated: false,
                 nodiscard: false,
@@ -1435,7 +1473,7 @@ impl<'a> Analysis<'a> {
                 returns_built_parent: None,
                 type_narrows: None,
                 type_narrows_class: None,
-                has_vararg_return: false,
+                has_vararg_return,
                 see: Vec::new(),
                 flavors: 0,
                 flavor_guard: 0,
