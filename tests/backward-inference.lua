@@ -709,11 +709,9 @@ msOverloadFwd(msOther)
 -- ── Unbound generic inside a `T[]` hint must be dropped ──
 -- `unpack(list: T[])` paired with a non-`T` sibling position binds nothing, so
 -- the candidate param's hint is `T[]` with `T` still unbound. The deep filter
--- must reject that hint — otherwise the candidate is typed as `T[]`, which
--- then propagates through `ipairs(...)` as an unbound `T` and fires a spurious
--- type-mismatch at any annotated downstream call. (Regression:
--- `_InsertSubRows(index, subRows, ...)` with `unpack(subRows)` + `ipairs(subRows)`
--- leaked `subRows: T[]` and flagged `self:_SetDataForRow(_, subRow, _)`.)
+-- rejects the full generic type but emits a structural `table` hint. However,
+-- without stubs, `unpack`/`ipairs` are undefined globals (no function to
+-- resolve), so no hint is produced and the param stays `?`.
 ---@class UgRow
 ---@param row UgRow
 local function ugUseRow(row) end
@@ -752,8 +750,29 @@ end
 local function ugAcceptShape(shape) end
 
 local function ugNestedHintCaller(thing)
---                                ^ hover: (param) thing: ?
+--                                ^ hover: (param) thing: table
     ugAcceptShape(thing)
+end
+
+-- ── Structural table hint intersects with # → narrows from string|table to table ──
+-- When a param is used both in `#param` (string|table) and generic calls like
+-- `mockUnpack(param)` (structural table), the intersection narrows to just
+-- `table`, eliminating the false `string` branch.
+---@generic T
+---@param list T[]
+---@return ...T
+local function biMockUnpack(list) end
+
+---@generic V
+---@param list V[]
+---@return fun(): integer, V
+local function biMockIpairs(list) end
+
+local function biStructuralIntersect(items)
+--                                   ^ hover: (param) items: table
+    local n = #items
+    local _ = biMockUnpack(items)
+    for _, v in biMockIpairs(items) do end
 end
 
 -- ── Signal: bracket-index key on typed table → key type ──

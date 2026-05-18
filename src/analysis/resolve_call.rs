@@ -2421,7 +2421,19 @@ impl<'a> Analysis<'a> {
                             } else {
                                 self.substitute_generics_deep(&sig_param.ty, &generic_subs)
                             };
-                            if self.type_contains_type_variable_deep(&substituted) { continue; }
+                            if self.type_contains_type_variable_deep(&substituted) {
+                                // The full generic type can't be used, but the structural
+                                // shape (e.g. T[] → table) is still a valid constraint.
+                                if matches!(substituted, ValueType::Table(_)) {
+                                    let structural = ValueType::Table(None);
+                                    if sig_param.optional {
+                                        narrowing_hints.entry(sym).or_default().push(structural);
+                                    } else {
+                                        record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, structural);
+                                    }
+                                }
+                                continue;
+                            }
                             if sig_param.optional {
                                 narrowing_hints.entry(sym).or_default().push(substituted);
                             } else {
