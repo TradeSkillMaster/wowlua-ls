@@ -23,5 +23,6 @@ Steps:
    - Otherwise, auto-increment from the last tag: bump MAJOR for breaking changes, MINOR for new features/diagnostics, PATCH for bug-fix-only releases.
    - Do NOT include a version heading at the top of the release notes — GitHub already displays the tag name as the release title, so a heading would be redundant.
 7. If the user provided extra context or arguments, incorporate them.
-8. Present the draft to the user for review. Ask if they want any changes.
-9. Once approved, replace the contents of `RELEASE_NOTES.md` at the repo root with only the new release's notes (do not keep previous releases).
+8. Update the workspace name to "Release notes for vX.Y.Z" (using the determined version number) by calling the `update_workspace` MCP tool.
+9. Present the draft to the user for review. Ask if they want any changes.
+10. Once approved, replace the contents of `RELEASE_NOTES.md` at the repo root with only the new release's notes (do not keep previous releases).
