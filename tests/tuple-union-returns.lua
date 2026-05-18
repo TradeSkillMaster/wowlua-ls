@@ -89,7 +89,7 @@ local function runCallback(cb)
     --        ^ hover: (local) v: number | string
     if ok then
         local _ = v
-        --        ^ hover: (local) v: number
+        --        ^ hover: (local) v: number | string
     end
 end
 _consume(runCallback)

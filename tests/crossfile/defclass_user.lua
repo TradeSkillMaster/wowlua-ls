@@ -95,7 +95,7 @@ local od = obj._data
 local ol = obj._label
 --              ^ hover: (field) _label: string!  diag: unused-local
 local og = obj:GetData()
---    ^ hover: (local) og: table  diag: unused-local
+--    ^ hover: (local) og: table<string, number>  diag: unused-local
 
 -- Regression: field assigned from a local variable (unresolvable type at scan time)
 -- must still be accessible cross-file (no undefined-field false positive).

@@ -428,7 +428,7 @@ pub(super) fn resolve_expr_type_impl(
             let inner = *inner;
             let cast_type = cast_type.clone();
             resolve_expr_type_impl(ir, resolved_expr_cache, inner, visited, depth + 1)
-                .map(|vt| vt.strip_type(&cast_type))
+                .map(|vt| vt.strip_type_with(&cast_type, &|idx| ir.table(idx).enum_kind))
         }
         _ => None,
     }

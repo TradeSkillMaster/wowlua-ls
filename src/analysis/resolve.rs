@@ -1999,7 +1999,7 @@ impl<'a> Analysis<'a> {
             Expr::CastRemove(inner, cast_type) => {
                 let inner = *inner;
                 let cast_type = cast_type.clone();
-                return self.resolve_expr(inner).map(|vt| vt.strip_type(&cast_type));
+                return self.resolve_expr(inner).map(|vt| vt.strip_type_with(&cast_type, &|idx| self.table(idx).enum_kind));
             }
             Expr::TypeFilter(inner, guard_type) => {
                 let inner = *inner;

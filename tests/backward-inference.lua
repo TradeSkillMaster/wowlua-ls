@@ -22,7 +22,7 @@ local function getLen(s)
 end
 
 local function getLenAndMatch(arg)
---                            ^ hover: (param) arg: string
+--                            ^ hover: (param) arg: string | table
     return #arg, strmatch(arg, "a+")
 end
 

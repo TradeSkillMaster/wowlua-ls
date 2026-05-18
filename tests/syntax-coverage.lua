@@ -172,7 +172,7 @@ local afterL1Comment = "ok"
 
 do
     local doInner = 99
-    --    ^ hover: (local) doInner: number  def: local
+    --    ^ hover: (local) doInner: number = 99  def: local
     _consume(doInner)
 end
 
@@ -187,10 +187,10 @@ end
 -- ── String escape sequences ─────────────────────────────────────────────────
 
 local esc1 = "\n\t\r"
---    ^ hover: (local) esc1: string  def: local
+--    ^ def: local
 
 local esc2 = '\''
---    ^ hover: (local) esc2: string  def: local
+--    ^ hover: (local) esc2: string = "\"  def: local
 
 -- ── Concatenation operator on mixed expressions ─────────────────────────────
 

@@ -429,13 +429,13 @@ _consume(ov_vararg(1, 2, 3))
 -- ── Redefined local ──────────────────────────────────────────────────────
 
 local redef_a = 1
---    ^ hover: (local) redef_a: number
+--    ^ hover: (local) redef_a: number = 1
 _consume(redef_a)
---       ^ hover: (local) redef_a: number
+--       ^ hover: (local) redef_a: number = 1
 local redef_a = "two"
---    ^ hover: (local) redef_a: string  diag: redefined-local
+--    ^ hover: (local) redef_a: string = "two"  diag: redefined-local
 _consume(redef_a)
---       ^ hover: (local) redef_a: string
+--       ^ hover: (local) redef_a: string = "two"
 
 -- local function redefinition
 local redef_fn = ""
@@ -2260,7 +2260,7 @@ do
         trbData3 = trbData3()
     end
     local _trbCheck = trbData3
-    --    ^ hover: (local) _trbCheck: number | string
+    --    ^ hover: (local) _trbCheck: number | string | function
 end
 
 -- BUG-3 regression: when first branch exits (return), reassignment in a

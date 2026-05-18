@@ -191,7 +191,7 @@ local msg = ACCEPT
 
 -- Global numbers show their literal value on hover
 local expansion = LE_EXPANSION_CLASSIC
---                 ^ hover: (global) LE_EXPANSION_CLASSIC: number  def: external
+--                 ^ hover: (global) LE_EXPANSION_CLASSIC: number = 0  def: external
 
 -- ── tinsert type checking against typed arrays ──────────────────────────────
 
@@ -703,7 +703,7 @@ do
     local GetMetadata = GetAddOnMetadata or C_AddOns.GetAddOnMetadata
     --    ^ hover: (local) function GetMetadata(name: uiAddon, variable: string)
     local ver = GetMetadata("addon", "Version")
-    --    ^ hover: (local) ver: string
+    --    ^ hover: (local) ver: string?
 
     -- Truthy LHS with unresolved RHS: use LHS type
     local f2 = C_AddOns.GetAddOnMetadata or UNKNOWN_FUNC
@@ -896,6 +896,6 @@ function OverlayPanel:Init()
     self.display = CreateFrame("Frame")
     self.display.wrapped = CreateFrame("Frame", nil, self.display)
     self.display.wrapped:SetSize(10, 10)
-    --                       ^ hover: (method) function Frame:SetSize(
+    --                       ^ hover: (method) function Frame:SetSize(x: uiUnit, y: uiUnit)
     --                       ^ diag: none
 end

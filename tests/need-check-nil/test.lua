@@ -1941,7 +1941,7 @@ local function _andOrNilOrTermUnion(kind)
     if idx == 5 or idx == 6 then
         -- idx narrowed to `5 | 6` (no nil) → kind also narrowed truthy.
         return _takeString(kind)
-        --                    ^ hover: (param) kind: "a" | "b" | "c"
+        --                    ^ hover: (param) kind: "a" | "b" | "c"?
     end
     return "x"
 end

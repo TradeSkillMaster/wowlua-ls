@@ -403,11 +403,7 @@ impl ValueType {
     /// Remove a specific type from a union (`@cast x -Type`).
     /// When `target` has a `None` inner value (e.g. `Table(None)`), it acts as a
     /// wildcard matching all variants of that type family (e.g. any `Table(...)`).
-    pub(crate) fn strip_type(&self, target: &ValueType) -> ValueType {
-        self.strip_type_with(target, &|_| EnumKind::NotEnum)
-    }
-
-    /// Like `strip_type` but enum-aware.
+    /// Enum-aware: number/string enums match their base type guard.
     pub(crate) fn strip_type_with(&self, target: &ValueType, enum_kind_of: &impl Fn(TableIndex) -> EnumKind) -> ValueType {
         match self {
             ValueType::Union(types) => {

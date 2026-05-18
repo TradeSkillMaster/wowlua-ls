@@ -1553,10 +1553,25 @@ impl<'a> Analysis<'a> {
         let ver_idx = self.ir.version_for_scope_ancestors_with_order(sibling_idx, scope_idx);
         let ver = &self.ir.symbols[sibling_idx.val()].versions[ver_idx];
         let Some(ts) = ver.type_source else { return true; };
-        match self.ir.expr(ts) {
-            Expr::FunctionCall { ret_index, .. } => *ret_index != expected_ret_index,
-            _ => true,
+        // Follow SymbolRef chains (alias versions created by `and` expression
+        // cleanup) back to the underlying type source. Without this, the alias
+        // version looks like a reassignment and prevents sibling narrowing in
+        // compound guards like `if x and x > 0 then`.
+        let mut expr = self.ir.expr(ts);
+        for _ in 0..5 {
+            match expr {
+                Expr::FunctionCall { ret_index, .. } => return *ret_index != expected_ret_index,
+                Expr::SymbolRef(sym, ver_ref) => {
+                    let ref_ver = &self.ir.symbols[sym.val()].versions[*ver_ref];
+                    match ref_ver.type_source {
+                        Some(inner_ts) => { expr = self.ir.expr(inner_ts); }
+                        None => return true,
+                    }
+                }
+                _ => return true,
+            }
         }
+        true
     }
 
     /// Collect (ret_index, NarrowKind) for every sibling in `siblings` that has a

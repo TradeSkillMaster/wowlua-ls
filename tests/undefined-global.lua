@@ -74,7 +74,7 @@ gAlias.MyAddonGlobalVar = 2
 do
     ---@diagnostic disable-next-line: create-global
     NestedDoGlobal = "test"
-    --  ^ hover: (global) NestedDoGlobal: string
+    --  ^ hover: (global) NestedDoGlobal: string = "test"
 end
 _consume(NestedDoGlobal)
 --       ^ hover: (global) NestedDoGlobal: string  diag: none
@@ -82,7 +82,7 @@ _consume(NestedDoGlobal)
 if true then
     ---@diagnostic disable-next-line: create-global
     NestedIfGlobal = 42
-    --  ^ hover: (global) NestedIfGlobal: number
+    --  ^ hover: (global) NestedIfGlobal: number = 42
 end
 _consume(NestedIfGlobal)
 --       ^ hover: (global) NestedIfGlobal: number  diag: none
@@ -106,12 +106,12 @@ _consume(NestedDoFunc)
 _G.ExplicitNewGlobal = "test"
 -- ^ diag: none
 _consume(ExplicitNewGlobal)
---       ^ hover: (global) ExplicitNewGlobal: string  diag: none
+--       ^ hover: (global) ExplicitNewGlobal: string = "test"  diag: none
 
 _G["BracketNewGlobal"] = 99
 -- ^ diag: none
 _consume(BracketNewGlobal)
---       ^ hover: (global) BracketNewGlobal: number  diag: none
+--       ^ hover: (global) BracketNewGlobal: number = 99  diag: none
 
 ---@param x number
 ---@return string

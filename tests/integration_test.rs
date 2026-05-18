@@ -28,7 +28,9 @@ struct TestConfig<'a> {
 /// Run annotation-based tests on a Lua file.
 ///
 /// Supported annotation fields (separated by double-space):
-///   hover: TYPE       — expected hover type (prefix match for multiline)
+///   hover: TYPE       — expected hover type; exact match when both sides are single-line,
+///                       prefix match when actual is multi-line (class fields, return types).
+///                       Use \n escapes in the assertion to write a full multi-line expectation.
 ///   doc: TEXT         — expected substring in the hover doc payload
 ///   def: local|external|None — expected definition location
 ///   sig: LABEL        — expected active signature label (prefix match)
@@ -224,8 +226,27 @@ fn run_annotation_tests(config: &TestConfig) {
                 }
                 None => "<missing>".to_string(),
             };
+            // Expand \n escape sequences in the assertion, then strip any
+            // trailing newline that may appear when a `\n  …` annotation is
+            // truncated by extract_field's double-space field separator.
             let expected_resolved = expected.replace("\\n", "\n");
-            if actual != expected_resolved && !actual.starts_with(&expected_resolved) {
+            let expected_resolved = expected_resolved.trim_end_matches('\n').to_string();
+            // Matching rules:
+            // - If the expected assertion is multi-line (contains \n): exact match.
+            //   The test author deliberately wrote out the full hover, so it must match.
+            // - If the actual hover is multi-line but the expectation is single-line:
+            //   prefix match. Tests that assert just the opening line of a class or
+            //   function hover (e.g. "(local) x: Foo {") intentionally omit fields.
+            // - Both single-line: exact match. This is the critical case that catches
+            //   type differences like "number" vs "number?" or "string" vs "string | table".
+            let matches = if expected_resolved.contains('\n') {
+                actual == expected_resolved
+            } else if actual.contains('\n') {
+                actual.starts_with(&expected_resolved)
+            } else {
+                actual == expected_resolved
+            };
+            if !matches {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    hover expected: {}\n    hover actual:   {}",
                     config.lua_file, i + 1, location, expected_resolved, actual

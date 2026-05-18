@@ -50,7 +50,7 @@ local nr = NestedReturns()
 
 do
     local inner = 99
-    --    ^ hover: (local) inner: number  def: local
+    --    ^ hover: (local) inner: number = 99  def: local
     local sum = inner + x
     --    ^ hover: (local) sum: number  def: local
 end
