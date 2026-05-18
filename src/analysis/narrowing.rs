@@ -393,7 +393,13 @@ impl<'a> Analysis<'a> {
                                 }
                                 self.try_narrow_field(&names, target_scope);
                             }
-                        } else if names.len() >= 2 && !ident.has_any_dynamic_bracket() {
+                        } else if names.len() == 1 {
+                            // `x == nil` in then-branch / `x ~= nil` in else-branch → narrow x to nil
+                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                                self.type_filtered_symbols.entry(target_scope).or_default()
+                                    .insert(sym_idx, ValueType::Nil);
+                            }
+                        } else if !ident.has_any_dynamic_bracket() {
                             // Inverse: info.title == nil → else_type
                             if let Some((sym_idx, _, else_type)) =
                                 self.extract_field_presence_discriminator(&names, parent_scope)

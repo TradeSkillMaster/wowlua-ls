@@ -1465,7 +1465,7 @@ local function truthyAndGuard(s)
 end
 _consume(truthyAndGuard)
 
--- `and` does not affect else branch
+-- `and` does not affect else branch; else-branch of `~= nil` narrows s to nil
 ---@param s string?
 local function nilGuardElse(s)
     if s ~= nil then
@@ -1473,7 +1473,7 @@ local function nilGuardElse(s)
 --               ^ diag: none
     else
         needsStr(s)
---               ^ diag: need-check-nil
+--               ^ diag: type-mismatch
     end
 end
 _consume(nilGuardElse)
@@ -1505,6 +1505,13 @@ local function hoverVersions(s)
         local _ = s
 --                ^ hover: (param) s: string
     end
+    if s == nil then
+        local _ = s
+--                ^ hover: (param) s: nil
+    else
+        local _ = s
+--                ^ hover: (param) s: string
+    end
 end
 _consume(hoverVersions)
 
@@ -1529,12 +1536,12 @@ local function truthyIfThen(s)
 end
 _consume(truthyIfThen)
 
--- `== nil` then branch: s is nil | string, need-check-nil (non-nil part compatible)
+-- `== nil` then branch: s is narrowed to nil → type-mismatch (not just need-check-nil)
 ---@param s string?
 local function eqNilElse(s)
     if s == nil then
         needsStr(s)
---               ^ diag: need-check-nil
+--               ^ diag: type-mismatch
     else
         needsStr(s)
 --               ^ diag: none

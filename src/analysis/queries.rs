@@ -1055,8 +1055,10 @@ impl AnalysisResult {
                 // narrowed types (e.g. inside `x and abs(x)`) display without `?`.
                 let (final_type, optional_suffix) = if kind == "param" && display_ref.contains_nil() {
                     let stripped = display_ref.strip_nil();
-                    if matches!(stripped, ValueType::Nil) {
-                        // Type was only nil — don't strip, show as-is
+                    if matches!(stripped, ValueType::Nil)
+                        || matches!(&stripped, ValueType::Union(v) if v.is_empty())
+                    {
+                        // Type was only nil (stripped result is nil or never) — don't strip, show as-is
                         (None, "")
                     } else {
                         (Some(stripped), "?")
