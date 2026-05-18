@@ -53,6 +53,19 @@ pub(crate) fn use_utf8() -> bool {
     *USE_UTF8_POSITIONS.get().unwrap_or(&false)
 }
 
+/// Maps stale analysis byte offsets (relative to `Document::text`) into
+/// `pending_text` coordinates so inlay hints stay stable during edits.
+#[derive(Clone)]
+enum PendingEditMap {
+    /// Single contiguous edit: content before `start` and from `old_end` onward
+    /// is identical (modulo a byte shift of `delta`).  Hints in `[start, old_end)`
+    /// fall inside the replaced region and are dropped.
+    Single { start: usize, old_end: usize, delta: isize },
+    /// Multiple or compounded edits: only content before `safe_prefix` is known
+    /// to be identical; everything else is dropped.
+    Prefix(usize),
+}
+
 /// Holds a parsed document and its cached analysis.
 struct Document {
     /// The text that `tree` and `analysis` were built from.
@@ -74,9 +87,12 @@ struct Document {
     /// rebuilt even if no new text arrived for this document.
     ws_generation: u64,
     /// Line adjustment from pending edits: (first_affected_line, net_line_delta).
-    /// Used to shift stale inlay hint positions when serving from cached analysis
-    /// so that hints below the edit point stay aligned with the new text.
+    /// Used to shift stale diagnostic positions when serving from cached analysis
+    /// so that diagnostics below the edit point stay aligned with the new text.
     pending_line_delta: Option<(u32, i32)>,
+    /// Byte-level edit mapping for translating stale inlay hint positions into
+    /// `pending_text` coordinates.  See [`PendingEditMap`].
+    pending_edit_map: Option<PendingEditMap>,
 }
 
 /// Cached workspace diagnostics: (generation, vec of (uri_string, diagnostics)).
@@ -1510,7 +1526,7 @@ fn main_loop(
                             let result = Some(analyze_lua_parsed(
                                 &uri, &ws.pre_globals, &ws.configs, &tree,
                             ));
-                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: ws.ws_generation, pending_line_delta: None });
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
                         }
                     }
                 }
@@ -1603,7 +1619,7 @@ fn main_loop(
                     if doc.toc.is_some() {
                         let text = doc.pending_text.unwrap_or(doc.text);
                         let toc = crate::toc::parse_toc(&text);
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
                         continue;
                     }
                     {
@@ -1623,7 +1639,7 @@ fn main_loop(
                         let text = doc.pending_text.unwrap_or(doc.text);
 
                         if is_ignored_uri(&uri, &ws.configs) {
-                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
                             continue;
                         }
 
@@ -1660,7 +1676,7 @@ fn main_loop(
 
                         let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                         let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
                         if rebuilt {
                             had_workspace_rebuild = true;
                             if let Some(ref token) = analysis_token {
@@ -2370,8 +2386,16 @@ fn handle_request(
                     .and_then(|doc| {
                         let tree = doc.tree.as_ref()?;
                         let analysis = doc.analysis.as_ref()?;
-                        let numbers = super::SafeLinePositions::new(doc.text.as_str());
-                        let line_delta = doc.pending_line_delta;
+
+                        // Use pending_text for position conversion when edits are
+                        // pending — the edit map tells us which old byte offsets
+                        // are still valid and how to adjust them.
+                        let edit_map = doc.pending_edit_map.as_ref();
+                        let text_for_positions = doc.pending_text.as_deref()
+                            .filter(|_| edit_map.is_some())
+                            .unwrap_or(&doc.text);
+                        let text_len = text_for_positions.len();
+                        let numbers = super::SafeLinePositions::new(text_for_positions);
 
                         let start_offset = super::lsp_position_to_offset(
                             &doc.text, params.range.start.line, params.range.start.character, use_utf8(),
@@ -2384,30 +2408,42 @@ fn handle_request(
                             tree, (start_offset, end_offset), hint_config,
                         );
 
-                        let hints: Vec<lsp_types::InlayHint> = raw_hints.into_iter().map(|h| {
-                            let mut position = numbers.lsp_position(h.position as usize, use_utf8());
-                            // When there are pending edits, shift hint line numbers
-                            // by the net line delta so hints below the edit point
-                            // stay aligned with the new text until re-analysis.
-                            if let Some((first_line, delta)) = line_delta
-                                && position.line >= first_line
-                            {
-                                position.line = (position.line as i64 + delta as i64).max(0) as u32;
-                            }
-                            lsp_types::InlayHint {
-                                position,
-                                label: lsp_types::InlayHintLabel::String(h.label),
-                                kind: Some(match h.kind {
-                                    InlayHintKindTag::Parameter => lsp_types::InlayHintKind::PARAMETER,
-                                    InlayHintKindTag::Type => lsp_types::InlayHintKind::TYPE,
-                                }),
-                                padding_left: Some(h.padding_left),
-                                padding_right: Some(h.padding_right),
-                                text_edits: None,
-                                tooltip: None,
-                                data: None,
-                            }
-                        }).collect();
+                        let hints: Vec<lsp_types::InlayHint> = raw_hints.into_iter()
+                            .filter_map(|h| {
+                                let pos = h.position as usize;
+                                let mapped = match edit_map {
+                                    None => pos,
+                                    Some(PendingEditMap::Single { start, old_end, delta }) => {
+                                        if pos < *start {
+                                            pos
+                                        } else if pos < *old_end {
+                                            return None; // inside replaced region
+                                        } else {
+                                            let adj = pos as isize + delta;
+                                            if adj < 0 { return None; }
+                                            adj as usize
+                                        }
+                                    }
+                                    Some(PendingEditMap::Prefix(safe)) => {
+                                        if pos < *safe { pos } else { return None; }
+                                    }
+                                };
+                                if mapped >= text_len { return None; }
+                                let position = numbers.lsp_position(mapped, use_utf8());
+                                Some(lsp_types::InlayHint {
+                                    position,
+                                    label: lsp_types::InlayHintLabel::String(h.label),
+                                    kind: Some(match h.kind {
+                                        InlayHintKindTag::Parameter => lsp_types::InlayHintKind::PARAMETER,
+                                        InlayHintKindTag::Type => lsp_types::InlayHintKind::TYPE,
+                                    }),
+                                    padding_left: Some(h.padding_left),
+                                    padding_right: Some(h.padding_right),
+                                    text_edits: None,
+                                    tooltip: None,
+                                    data: None,
+                                })
+                            }).collect();
 
                         Some(hints)
                     });
@@ -3234,10 +3270,14 @@ fn handle_notification(
                     if let Some(doc) = documents.get_mut(&uri_str) {
                         let mut text = doc.pending_text.take().unwrap_or_else(|| doc.text.clone());
                         // Track the cumulative line delta from pending edits so that
-                        // stale inlay hint positions can be shifted to stay aligned.
+                        // stale diagnostic positions can be shifted to stay aligned.
                         // Start from any existing delta (multiple didChange batches
                         // before Phase 4 runs).
                         let (mut first_line, mut line_delta) = doc.pending_line_delta.unwrap_or((u32::MAX, 0));
+                        // Build a byte-level edit map so inlay hints can remap
+                        // stale offsets into pending_text coordinates.
+                        let mut edit_map = doc.pending_edit_map.take();
+                        let mut edit_count = 0usize;
                         for change in params.content_changes {
                             if let Some(range) = change.range {
                                 let start = super::lsp_position_to_offset(&text, range.start.line, range.start.character, use_utf8()) as usize;
@@ -3246,14 +3286,27 @@ fn handle_notification(
                                 let new_newlines = change.text.matches('\n').count() as i32;
                                 line_delta += new_newlines - old_newlines;
                                 first_line = first_line.min(range.start.line);
+                                let delta = change.text.len() as isize - (end - start) as isize;
+                                edit_map = Some(match edit_map {
+                                    // First edit with no prior pending: exact Single.
+                                    None if edit_count == 0 => PendingEditMap::Single { start, old_end: end, delta },
+                                    // Second+ edit in this batch or prior pending exists:
+                                    // downgrade to conservative prefix.
+                                    None => PendingEditMap::Prefix(start),
+                                    Some(PendingEditMap::Single { start: s, .. }) => PendingEditMap::Prefix(s.min(start)),
+                                    Some(PendingEditMap::Prefix(p)) => PendingEditMap::Prefix(p.min(start)),
+                                });
+                                edit_count += 1;
                                 text.replace_range(start..end, &change.text);
                             } else {
                                 text = change.text;
                                 line_delta = 0;
                                 first_line = 0;
+                                edit_map = Some(PendingEditMap::Prefix(0));
                             }
                         }
                         doc.pending_line_delta = Some((first_line, line_delta));
+                        doc.pending_edit_map = edit_map;
                         doc.pending_text = Some(text);
                         doc.dirty = true;
                     }
@@ -3267,7 +3320,7 @@ fn handle_notification(
                 if params.text_document.language_id == "lua" {
                     if crate::has_shebang(&text) {
                         // Store with analysis: None so didChange ignores subsequent edits.
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
                         return;
                     }
                     // Stub files: run analysis (so hover/go-to-definition work)
@@ -3275,11 +3328,11 @@ fn handle_notification(
                     if is_stub_path(&uri) {
                         let tree = parse_lua(&text);
                         let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
                         return;
                     }
                     if is_ignored_uri(&uri, &ws.configs) {
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
                         return;
                     }
                     // Show progress while analyzing the newly opened file
@@ -3313,7 +3366,7 @@ fn handle_notification(
                     result.plugin_diag_codes = ws.plugin_codes();
                     let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                     let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
                     if rebuilt {
                         if let Some(ref token) = open_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -3349,10 +3402,10 @@ fn handle_notification(
                 }
                 if params.text_document.language_id == "toc" {
                     let toc = crate::toc::parse_toc(&text);
-                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
                     return;
                 }
-                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
             }
         }
         "textDocument/didSave" => {
@@ -4321,11 +4374,11 @@ fn reanalyze_open_documents(
         let Ok(uri) = lsp_types::Uri::from_str(&uri_str) else { continue };
         let text = doc.pending_text.as_ref().unwrap_or(&doc.text).clone();
         if is_ignored_uri(&uri, configs) {
-            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None });
+            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None });
             continue;
         }
         let (tree, result) = analyze_lua(&uri, &text, pre_globals, configs);
-        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None });
+        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None });
     }
 }
 
@@ -4459,10 +4512,10 @@ fn try_batch_analyze(
 
     for f in parsed {
         if f.ignored {
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
         } else {
             let analysis = result_map.remove(&f.uri_str);
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
         }
     }
 
