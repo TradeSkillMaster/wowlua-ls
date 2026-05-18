@@ -903,6 +903,32 @@ impl BuildContext {
             );
             self.tables[local_idx].call_func = Some(func_idx);
         }
+
+    }
+
+    fn mark_callable_classes(&mut self, callable_classes: &HashSet<String>) {
+        let vararg_param = crate::annotations::ParamInfo {
+            name: "...".to_string(),
+            typ: AnnotationType::Simple("any".to_string()),
+            optional: false,
+            description: None,
+        };
+        for name in callable_classes {
+            let Some(&table_idx) = self.classes.get(name.as_str()) else { continue };
+            let local_idx = table_idx.ext_offset();
+            if self.tables[local_idx].call_func.is_some() { continue; }
+            // Create a minimal vararg call function
+            let func_idx = PreResolvedGlobals::build_function(
+                std::slice::from_ref(&vararg_param), &[], &[], &[], &[], None, Vec::new(),
+                false, false, None, None, &[],
+                None, None, false, None, None, None, false, None, &[],
+                false, 0, 0,
+                DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
+                &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+            );
+            self.tables[local_idx].call_func = Some(func_idx);
+            self.tables[local_idx].call_func_is_metamethod = true;
+        }
     }
 
     fn build_methods_and_table_fields(&mut self, globals: &[crate::annotations::ExternalGlobal], external_classes: &[ClassDecl]) {
@@ -2066,6 +2092,7 @@ impl PreResolvedGlobals {
         external_aliases: &[AliasDecl],
         implicit_protected_prefix: bool,
         addon_ns_class_names: &HashSet<String>,
+        callable_classes: &HashSet<String>,
     ) -> PreResolvedGlobals {
         let mut ctx = BuildContext::new();
         ctx.implicit_protected_prefix = implicit_protected_prefix;
@@ -2073,6 +2100,7 @@ impl PreResolvedGlobals {
         ctx.populate_class_fields(external_classes);
         ctx.build_methods_and_table_fields(globals, external_classes);
         ctx.resolve_inheritance(external_classes);
+        ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(globals);
         let mut pg = ctx.finish();
         // Two merge passes: (1) copy methods from addon ns sub-tables (ns.Foo fields)
@@ -2908,7 +2936,7 @@ mod tests {
         ];
 
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(),
+            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(), &HashSet::new(),
         );
 
         let d_idx = result.classes["D"];
@@ -2946,7 +2974,7 @@ mod tests {
 
         let ws_classes = vec![parent, child, elem_state, item_list_state];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(),
+            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(), &HashSet::new(),
         );
 
         let item_list_idx = result.classes["ItemList"];
@@ -2996,7 +3024,7 @@ mod tests {
 
         let ws_classes = vec![base, parent, child];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(),
+            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(), &HashSet::new(),
         );
 
         let child_idx = result.classes["Child"];

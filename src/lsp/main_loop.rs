@@ -115,6 +115,10 @@ struct WorkspaceState {
     cached_built_name_func_names: Vec<String>,
     /// Per-file class name associated with the addon namespace variable (from @class on select(2,...)).
     ws_file_addon_ns_class: HashMap<PathBuf, String>,
+    /// Per-file class names where `setmetatable(ClassName, { __call = ... })` was detected.
+    ws_file_callable_classes: HashMap<PathBuf, HashSet<String>>,
+    /// Union of all per-file callable class names, rebuilt by `rebuild_caches`.
+    cached_callable_classes: HashSet<String>,
     plugin_engine: Option<crate::plugins::PluginEngine>,
     /// Monotonically increasing counter bumped on every workspace rebuild.
     /// Used to invalidate `cached_ws_diagnostics`.
@@ -243,6 +247,7 @@ impl WorkspaceState {
         }
         self.cached_defclass_func_names = defclass_names.into_iter().collect();
         self.cached_built_name_func_names = built_name_names.into_iter().collect();
+        self.cached_callable_classes = self.ws_file_callable_classes.values().flatten().cloned().collect();
     }
 
     fn rebuild(&mut self) {
@@ -269,7 +274,7 @@ impl WorkspaceState {
         let addon_ns_class_names: HashSet<String> = self.ws_file_addon_ns_class.values().cloned().collect();
         let mut pg = PreResolvedGlobals::build_on_stubs(
             &self.stub_pre_globals, &ws_globals, &ws_classes, &ws_aliases,
-            implicit_protected, &addon_ns_class_names,
+            implicit_protected, &addon_ns_class_names, &self.cached_callable_classes,
         );
         pg.merge_events(&ws_events);
 
@@ -397,7 +402,7 @@ fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_pre
     Some((scan, file_globals, addon_ns_class))
 }
 
-type WorkspaceScanResult = (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>, Vec<crate::annotations::EventDecl>);
+type WorkspaceScanResult = (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>, Vec<crate::annotations::EventDecl>, HashSet<String>);
 
 pub fn scan_paths_with_overrides(
     paths: &[PathBuf],
@@ -429,10 +434,12 @@ pub fn scan_paths_with_overrides(
     let mut globals = Vec::new();
     let mut events = Vec::new();
     let mut addon_ns_class_names: HashSet<String> = HashSet::new();
+    let mut callable_classes: HashSet<String> = HashSet::new();
     for (scan, file_globals, addon_ns_class) in results {
         classes.extend(scan.classes);
         aliases.extend(scan.aliases);
         events.extend(scan.events);
+        callable_classes.extend(scan.callable_classes);
         globals.extend(file_globals);
         if let Some(name) = addon_ns_class {
             addon_ns_class_names.insert(name);
@@ -635,7 +642,7 @@ pub fn scan_paths_with_overrides(
     }
 
     log::debug!("workspace scan: {} classes, {} aliases, {} globals, {} events", classes.len(), aliases.len(), globals.len(), events.len());
-    (classes, aliases, globals, addon_ns_class_names, events)
+    (classes, aliases, globals, addon_ns_class_names, events, callable_classes)
 }
 
 /// Scan XML files and merge their classes/globals into a WorkspaceScanResult.
@@ -723,6 +730,7 @@ struct DirectoryScanResult {
     file_defclasses: HashMap<PathBuf, Vec<ClassDecl>>,
     file_events: HashMap<PathBuf, Vec<crate::annotations::EventDecl>>,
     addon_ns_class: HashMap<PathBuf, String>,
+    file_callable_classes: HashMap<PathBuf, HashSet<String>>,
 }
 
 /// Intermediate result from Pass 1 of workspace scanning (no stubs dependency).
@@ -779,6 +787,9 @@ fn complete_directory_scan(
         out.file_globals.insert(path.clone(), cached.file_globals.clone());
         if let Some(name) = &cached.addon_ns_class {
             out.addon_ns_class.insert(path.clone(), name.clone());
+        }
+        if !cached.scan.callable_classes.is_empty() {
+            out.file_callable_classes.insert(path.clone(), cached.scan.callable_classes.clone());
         }
     }
 
@@ -1244,6 +1255,8 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         cached_defclass_func_names: Vec::new(),
         cached_built_name_func_names: Vec::new(),
         ws_file_addon_ns_class: scan_result.addon_ns_class,
+        ws_file_callable_classes: scan_result.file_callable_classes,
+        cached_callable_classes: HashSet::new(),
         plugin_engine: None,
         ws_generation: 0,
         cached_ws_diagnostics: None,
@@ -3428,6 +3441,7 @@ fn reload_config(
         file_defclasses,
         file_events,
         addon_ns_class,
+        file_callable_classes,
     } = scan_directory_tracked(root, &mut ws.configs, &ws.stub_classes, &ws.stub_globals);
     ws.ws_file_globals = file_globals;
     ws.ws_file_classes = file_classes;
@@ -3435,6 +3449,7 @@ fn reload_config(
     ws.ws_file_defclasses = file_defclasses;
     ws.ws_file_events = file_events;
     ws.ws_file_addon_ns_class = addon_ns_class;
+    ws.ws_file_callable_classes = file_callable_classes;
     ws.rebuild_caches();
     ws.rebuild();
     reanalyze_open_documents(documents, &ws.pre_globals, &ws.configs, ws.ws_generation);
@@ -3489,6 +3504,11 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
         ws.ws_file_globals.insert(file_path.clone(), new_globals);
         ws.ws_file_classes.insert(file_path.clone(), scan.classes);
         ws.ws_file_aliases.insert(file_path.clone(), scan.aliases);
+        if scan.callable_classes.is_empty() {
+            ws.ws_file_callable_classes.remove(&file_path);
+        } else {
+            ws.ws_file_callable_classes.insert(file_path.clone(), scan.callable_classes);
+        }
         if scan.events.is_empty() {
             ws.ws_file_events.remove(&file_path);
         } else {
@@ -5074,6 +5094,8 @@ mod tests {
             cached_defclass_func_names: Vec::new(),
             cached_built_name_func_names: Vec::new(),
             ws_file_addon_ns_class: HashMap::new(),
+            ws_file_callable_classes: HashMap::new(),
+            cached_callable_classes: HashSet::new(),
             plugin_engine: None,
             ws_generation: 0,
             cached_ws_diagnostics: None,

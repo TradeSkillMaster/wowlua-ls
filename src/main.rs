@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let stubs = lsp::load_precomputed_stubs()
             .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
         let mut project_configs = config::ProjectConfigs::default();
-        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) =
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events, ws_callable_classes) =
             lsp::scan_workspace_with_stubs(std::slice::from_ref(&project_root), &mut project_configs, &stubs.stub_globals, &stubs.stub_classes);
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
@@ -116,7 +116,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             Arc::new(stubs.pre_globals)
         } else {
             let mut pg = PreResolvedGlobals::build_on_stubs(
-                &stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names,
+                &stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names, &ws_callable_classes,
             );
             pg.merge_events(&ws_events);
             Arc::new(pg)
@@ -162,10 +162,10 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             Some(s) => (&s.stub_globals, &s.stub_classes),
             None => (&[], &[]),
         };
-        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) = if let Some(dir) = &scan_dir {
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events, ws_callable_classes) = if let Some(dir) = &scan_dir {
             lsp::scan_workspace_with_stubs(std::slice::from_ref(dir), &mut project_configs, stub_globals_ref, stub_classes_ref)
         } else {
-            (Vec::new(), Vec::new(), Vec::new(), std::collections::HashSet::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new(), std::collections::HashSet::new(), Vec::new(), std::collections::HashSet::new())
         };
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
         let file_path = if std::path::Path::new(filename).is_absolute() {
@@ -177,13 +177,13 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let pre_globals = match stubs {
             Some(s) if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() => Arc::new(s.pre_globals),
             Some(s) => {
-                let mut pg = PreResolvedGlobals::build_on_stubs(&s.pre_globals, &ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix, &addon_ns_class_names);
+                let mut pg = PreResolvedGlobals::build_on_stubs(&s.pre_globals, &ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix, &addon_ns_class_names, &ws_callable_classes);
                 pg.merge_events(&ws_events);
                 Arc::new(pg)
             }
             None if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() => Arc::new(PreResolvedGlobals::empty()),
             None => {
-                let mut pg = PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix, &addon_ns_class_names);
+                let mut pg = PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix, &addon_ns_class_names, &ws_callable_classes);
                 pg.merge_events(&ws_events);
                 Arc::new(pg)
             }
@@ -334,7 +334,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Phase 2: Scan workspace directory (discovers configs hierarchically)
         let mut project_configs = config::ProjectConfigs::default();
         let t = std::time::Instant::now();
-        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names, ws_events) = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, &stub_globals, &stub_classes);
+        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names, ws_events, ws_callable_classes) = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, &stub_globals, &stub_classes);
         let ws_scan_dur = t.elapsed();
         info!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
             ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
@@ -345,7 +345,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
             Arc::clone(&stubs_pre_globals)
         } else {
-            let mut pg = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names);
+            let mut pg = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names, &ws_callable_classes);
             pg.merge_events(&ws_events);
             Arc::new(pg)
         };
@@ -484,7 +484,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         {
             let t = std::time::Instant::now();
             for _ in 0..3 {
-                let _ = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names);
+                let _ = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names, &ws_callable_classes);
             }
             let dur = t.elapsed() / 3;
             info!("  build_on_stubs:           {:>8.1?} avg", dur);
@@ -539,7 +539,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             None => (&[], &[]),
         };
         let mut project_configs = config::ProjectConfigs::default();
-        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) =
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events, ws_callable_classes) =
             lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, stub_globals_ref, stub_classes_ref);
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
@@ -547,14 +547,14 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
                 Arc::new(stubs.pre_globals)
             } else {
-                let mut pg = PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names);
+                let mut pg = PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names, &ws_callable_classes);
                 pg.merge_events(&ws_events);
                 Arc::new(pg)
             }
         } else if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
             Arc::new(PreResolvedGlobals::empty())
         } else {
-            let mut pg = PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names);
+            let mut pg = PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names, &ws_callable_classes);
             pg.merge_events(&ws_events);
             Arc::new(pg)
         };
@@ -670,13 +670,13 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let stubs = lsp::load_precomputed_stubs()
             .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
         let mut project_configs = config::ProjectConfigs::default();
-        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, &stubs.stub_globals, &stubs.stub_classes);
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events, ws_callable_classes) = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, &stubs.stub_globals, &stubs.stub_classes);
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
         let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
             Arc::new(stubs.pre_globals)
         } else {
-            let mut pg = PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names);
+            let mut pg = PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names, &ws_callable_classes);
             pg.merge_events(&ws_events);
             Arc::new(pg)
         };

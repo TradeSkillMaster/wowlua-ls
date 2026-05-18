@@ -310,6 +310,7 @@ impl<'a> BuildOnStubsContext<'a> {
             );
             self.tables[local_idx].call_func = Some(func_idx);
         }
+
     }
 
     fn build_methods_and_table_fields(&mut self, ws_globals: &[crate::annotations::ExternalGlobal], ws_classes: &[ClassDecl]) {
@@ -623,6 +624,31 @@ impl<'a> BuildOnStubsContext<'a> {
                 });
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
             }
+        }
+    }
+
+    fn mark_callable_classes(&mut self, callable_classes: &HashSet<String>) {
+        let dummy_node = DefNode::DUMMY;
+        let vararg_param = crate::annotations::ParamInfo {
+            name: "...".to_string(),
+            typ: AnnotationType::Simple("any".to_string()),
+            optional: false,
+            description: None,
+        };
+        for name in callable_classes {
+            let Some(&table_idx) = self.classes.get(name.as_str()) else { continue };
+            let local_idx = table_idx.ext_offset();
+            if self.tables[local_idx].call_func.is_some() { continue; }
+            let func_idx = PreResolvedGlobals::build_function(
+                std::slice::from_ref(&vararg_param), &[], &[], &[], &[], None, Vec::new(),
+                false, false, None, None, &[],
+                None, None, false, None, None, None, false, None, &[],
+                false, 0, 0,
+                dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
+                &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+            );
+            self.tables[local_idx].call_func = Some(func_idx);
+            self.tables[local_idx].call_func_is_metamethod = true;
         }
     }
 
@@ -1354,12 +1380,14 @@ impl PreResolvedGlobals {
         ws_aliases: &[AliasDecl],
         implicit_protected_prefix: bool,
         addon_ns_class_names: &HashSet<String>,
+        callable_classes: &HashSet<String>,
     ) -> PreResolvedGlobals {
         let mut ctx = BuildOnStubsContext::new(stubs_base, implicit_protected_prefix);
         ctx.register_classes_and_aliases(ws_classes, ws_aliases);
         ctx.populate_class_fields(ws_classes);
         ctx.build_methods_and_table_fields(ws_globals, ws_classes);
         ctx.resolve_inheritance(ws_classes);
+        ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(ws_globals);
         let mut pg = ctx.finish(ws_classes);
         // Two merge passes: (1) sub-table methods → class tables, (2) top-level ns fields → ns-class

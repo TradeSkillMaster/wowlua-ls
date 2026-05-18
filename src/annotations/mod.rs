@@ -354,6 +354,8 @@ pub struct ScanResult {
     pub aliases: Vec<AliasDecl>,
     pub events: Vec<EventDecl>,
     pub has_meta: bool,
+    /// Class names where `setmetatable(ClassName, { __call = ... })` was detected.
+    pub callable_classes: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -576,7 +578,7 @@ fn convert_lua_doc_link(command_url: &str) -> Option<String> {
 
 /// Scan all comments in the syntax tree for @class, @alias, and @event declarations.
 pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
-    let mut result = ScanResult { classes: Vec::new(), aliases: Vec::new(), events: Vec::new(), has_meta: false };
+    let mut result = ScanResult { classes: Vec::new(), aliases: Vec::new(), events: Vec::new(), has_meta: false, callable_classes: HashSet::new() };
 
     let mut current_group: Vec<(String, u32, u32)> = Vec::new();
     let mut current_class_range: Option<(u32, u32)> = None;
@@ -642,6 +644,7 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
     flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
 
     enrich_classes_with_constructor_fields(root, &mut result);
+    detect_setmetatable_call(root, &mut result);
 
     result
 }
@@ -789,6 +792,47 @@ pub(crate) fn extract_class_from_field_comments(field_node: SyntaxNode<'_>) -> O
         tok = t.prev_token();
     }
     None
+}
+
+/// Detect `setmetatable(ClassName, { __call = function ... })` patterns and
+/// mark the corresponding `ClassDecl` with `has_call = true` so the external
+/// class table gets a `call_func` during `pre_globals` build.
+fn detect_setmetatable_call(root: SyntaxNode<'_>, result: &mut ScanResult) {
+    use crate::ast::{Block, Statement, Expression, FieldKind};
+
+    let Some(block) = Block::cast(root) else { return };
+    if result.classes.is_empty() { return; }
+
+    let class_names: HashSet<&str> = result.classes.iter()
+        .map(|c| c.name.as_str())
+        .collect();
+
+    for stmt in block.statements() {
+        let Statement::FunctionCall(call) = stmt else { continue };
+        // Match bare `setmetatable(...)` call (not method call)
+        let Some(ident) = call.identifier() else { continue };
+        let names = ident.names();
+        if names.len() != 1 || names[0] != "setmetatable" { continue; }
+
+        let Some(args) = call.arguments() else { continue };
+        let arg_exprs = args.expressions();
+        if arg_exprs.len() != 2 { continue; }
+
+        // First arg: a single name matching a known class
+        let Expression::Identifier(first_ident) = &arg_exprs[0] else { continue };
+        let first_names = first_ident.names();
+        if first_names.len() != 1 { continue; }
+        if !class_names.contains(first_names[0].as_str()) { continue; }
+
+        // Second arg: table constructor containing `__call` field
+        let Expression::TableConstructor(tc) = &arg_exprs[1] else { continue };
+        let has_call_field = tc.fields().iter().any(|f| {
+            matches!(f.kind(), Some(FieldKind::Named { name, .. }) if name == "__call")
+        });
+        if has_call_field {
+            result.callable_classes.insert(first_names[0].clone());
+        }
+    }
 }
 
 /// Infer a basic `AnnotationType` from a literal expression.

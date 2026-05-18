@@ -2631,7 +2631,7 @@ pub fn regenerate_stubs() {
             .is_none_or(|n| n != "GlobalStrings.lua" && n != "GlobalVariables.lua")
     }));
 
-    let (classes, aliases, mut globals, _addon_ns_class_names, stub_events) =
+    let (classes, aliases, mut globals, _addon_ns_class_names, stub_events, _callable_classes) =
         crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
 
     // Step 5b: Merge Ketho flavor bitmask data into globals
@@ -2651,7 +2651,7 @@ pub fn regenerate_stubs() {
 
     // Step 6: Build PreResolvedGlobals
     log::info!("Building PreResolvedGlobals...");
-    let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new());
+    let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new(), &std::collections::HashSet::new());
     pre_globals.merge_events(&stub_events);
     log::info!("  Event types: {} types, {} total events",
         pre_globals.event_types.len(),

@@ -9,8 +9,7 @@ fn is_callable(ty: &ValueType, analysis: &AnalysisResult) -> bool {
         ValueType::Function(_) => true,
         ValueType::Any | ValueType::TypeVariable(_) => true,
         ValueType::Table(Some(table_idx)) => {
-            let table = analysis.table(*table_idx);
-            table.call_func.is_some() || analysis.resolve_constructor_func(*table_idx).is_some()
+            is_table_callable(*table_idx, analysis)
         }
         ValueType::Table(None) => false, // bare `table` — not callable
         ValueType::Union(types) | ValueType::Intersection(types) => {
@@ -19,6 +18,27 @@ fn is_callable(ty: &ValueType, analysis: &AnalysisResult) -> bool {
         ValueType::OpaqueAlias(_, inner) => is_callable(inner, analysis),
         _ => false,
     }
+}
+
+fn is_table_callable(table_idx: crate::types::TableIndex, analysis: &AnalysisResult) -> bool {
+    let table = analysis.table(table_idx);
+    if table.call_func.is_some() || analysis.resolve_constructor_func(table_idx).is_some() {
+        return true;
+    }
+    // Check raw metatable for __call
+    if table.metatable.is_some_and(|mt| analysis.table(mt).fields.contains_key("__call")) {
+        return true;
+    }
+    // For external tables, check the local class overlay which may have call_func
+    // set from setmetatable() resolution during per-file analysis.
+    if table_idx.is_external()
+        && let Some(class_name) = &table.class_name
+        && let Some(&local_idx) = analysis.ir.classes.get(class_name.as_str())
+        && local_idx != table_idx
+    {
+        return is_table_callable(local_idx, analysis);
+    }
+    false
 }
 
 impl DiagnosticPass for CannotCall {
