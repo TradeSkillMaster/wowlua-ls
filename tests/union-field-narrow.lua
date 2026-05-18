@@ -135,7 +135,7 @@ local function test_three_way(s)
     end
 end
 
--- ── Optional field does NOT count as "has required" ───────��─────────────────
+-- ── Optional field is retained in then-branch (can still be truthy) ──────────
 
 ---@class Opt.A
 ---@field tag string
@@ -150,7 +150,7 @@ end
 local function test_optional_field(x)
     if x.tag then
         local t = x
-        --    ^ hover: (local) t: Opt.A
+        --    ^ hover: (local) t: Opt.A | Opt.B
     else
         local t = x
         --    ^ hover: (local) t: Opt.B

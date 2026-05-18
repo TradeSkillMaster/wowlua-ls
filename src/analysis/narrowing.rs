@@ -2903,6 +2903,10 @@ impl<'a> Analysis<'a> {
     /// Example: `info` is `WithTitle | WithIcon`, `WithTitle` has `title: string` (required),
     /// `WithIcon` doesn't have `title` → `if info.title then` narrows `info` to `WithTitle`
     /// in the then-branch and `WithIcon` in the else-branch.
+    ///
+    /// Members with an *optional* field (e.g. `tag?: string`) appear in **both** branches:
+    /// the field can be truthy (then-branch) or nil/falsy (else-branch). Only members where
+    /// the field is completely absent are excluded from the then-branch.
     fn extract_field_presence_discriminator(
         &self,
         names: &[String],
@@ -2921,8 +2925,13 @@ impl<'a> Analysis<'a> {
         let table_indices = self.resolve_expr_to_tables(expr_id);
         if table_indices.len() < 2 { return None; }
 
+        // Three categories:
+        //   has_required — field exists and is non-nil: only in then-branch
+        //   has_optional — field exists but is optional (nil-containing): in both branches
+        //   lacks        — field absent entirely: only in else-branch
         let mut has_required: Vec<ValueType> = Vec::new();
-        let mut lacks_or_optional: Vec<ValueType> = Vec::new();
+        let mut has_optional: Vec<ValueType> = Vec::new();
+        let mut lacks: Vec<ValueType> = Vec::new();
 
         for &ti in &table_indices {
             if let Some(field_info) = self.ir.get_field(ti, field_name) {
@@ -2930,21 +2939,30 @@ impl<'a> Analysis<'a> {
                 let is_optional = field_info.annotation.as_ref()
                     .is_some_and(|ann| ann.contains_nil());
                 if is_optional {
-                    lacks_or_optional.push(ValueType::Table(Some(ti)));
+                    has_optional.push(ValueType::Table(Some(ti)));
                 } else {
                     has_required.push(ValueType::Table(Some(ti)));
                 }
             } else {
                 // Field doesn't exist on this member
-                lacks_or_optional.push(ValueType::Table(Some(ti)));
+                lacks.push(ValueType::Table(Some(ti)));
             }
         }
 
-        // Must have at least one type in each bucket for discrimination
-        if has_required.is_empty() || lacks_or_optional.is_empty() { return None; }
+        // then-type = members that can have a truthy field (required + optional)
+        // else-type = members that can have a nil/absent field (optional + lacking)
+        let then_types: Vec<ValueType> = has_required.iter().cloned()
+            .chain(has_optional.iter().cloned()).collect();
+        let else_types: Vec<ValueType> = has_optional.into_iter()
+            .chain(lacks.iter().cloned()).collect();
 
-        let then_type = ValueType::make_union(has_required);
-        let else_type = ValueType::make_union(lacks_or_optional);
+        // No-op if either side is empty, or if both sides are identical
+        // (all-optional: every member is in both branches → no discrimination).
+        if then_types.is_empty() || else_types.is_empty() { return None; }
+        if has_required.is_empty() && lacks.is_empty() { return None; }
+
+        let then_type = ValueType::make_union(then_types);
+        let else_type = ValueType::make_union(else_types);
         Some((sym_idx, then_type, else_type))
     }
 
