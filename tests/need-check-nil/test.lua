@@ -1128,12 +1128,12 @@ local function useCorrTypeMismatch(self)
     end
 end
 
--- Non-correlated field still produces type-mismatch
+-- Non-correlated field is not narrowed by sibling guard (need-check-nil still fires)
 ---@param self CorrTypeMismatch
 local function uncorrelatedStillWarns(self)
     if self.name then
-        _consume(self.cache)
-        --            ^ diag: none
+        _takeStrNum(self.cache, 0)
+        --              ^ diag: need-check-nil
     end
 end
 
