@@ -1639,6 +1639,17 @@ impl<'a> Analysis<'a> {
         None
     }
 
+    /// Remove `sym_idx` from every correlated-local group that contains it, then prune
+    /// groups that have shrunk below two members. Called on any reassignment of `sym_idx`:
+    /// writing to a variable after the correlated if/elseif branches breaks the
+    /// correlation guarantee (assigning one no longer implies the others are non-nil).
+    pub(super) fn invalidate_correlated_locals(&mut self, sym_idx: SymbolIndex) {
+        for group in &mut self.correlated_locals {
+            group.retain(|&s| s != sym_idx);
+        }
+        self.correlated_locals.retain(|g| g.len() >= 2);
+    }
+
     /// When a local variable from a correlated-local group is narrowed (nil stripped),
     /// also narrow all sibling locals in the same group. This handles the pattern where
     /// multiple locals are always assigned together in every branch of an if/elseif chain

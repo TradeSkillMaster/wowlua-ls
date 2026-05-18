@@ -217,16 +217,15 @@ local function nestedChains(c1, c2, c3, c4)
 end
 _consume(nestedChains)
 
--- ── Reassignment after if/elseif: @type annotation is authoritative ─────
--- The @type annotation overrides any reassignment's inferred type,
--- so `b = nil` with `---@type string?` still has type `string | nil`.
--- Correlated narrowing then strips nil → string.
+-- ── Reassignment after if/elseif breaks correlated narrowing ─────────────
+-- Explicitly reassigning `b` to nil after the correlated branches removes it
+-- from the group: narrowing `a` no longer implies `b` is non-nil.
 
 ---@param c1 boolean
 ---@param c2 boolean
 local function reassignAfterChain(c1, c2)
     local a = nil ---@type number?
-    local b = nil ---@type string?
+    local b = nil
     if c1 then
         a = 1
         b = "x"
@@ -236,9 +235,9 @@ local function reassignAfterChain(c1, c2)
     end
     b = nil
     if not a then return end
-    -- @type annotation keeps b as string|nil; correlated narrowing strips nil → string
+    -- b was reassigned after the branches: correlated narrowing does not apply
     local rb = b
-    --    ^ hover: (local) rb: string
+    --    ^ hover: (local) rb: nil
 end
 _consume(reassignAfterChain)
 

@@ -2029,6 +2029,8 @@ impl<'a> Analysis<'a> {
                                             self.narrowing_overridden.entry(scope_idx).or_default()
                                                 .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
                                         }
+                                        // Reassignment breaks any correlated-local group for this symbol.
+                                        self.invalidate_correlated_locals(symbol_idx);
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                                         let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
@@ -2112,6 +2114,8 @@ impl<'a> Analysis<'a> {
                                         }
                                         // Register / invalidate `or`-coalesce derivations.
                                         self.maybe_register_or_coalesce(symbol_idx, root_name, expression, scope_idx, false);
+                                        // Reassignment breaks any correlated-local group for this symbol.
+                                        self.invalidate_correlated_locals(symbol_idx);
                                         if let Some(expr_id) = type_source {
                                             self.ir.set_type_source(symbol_idx, expr_id);
                                             // Track multi-return siblings from function calls
