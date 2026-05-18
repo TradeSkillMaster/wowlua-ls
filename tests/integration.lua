@@ -271,7 +271,7 @@ local function typeGuardElseif(val)
 --                ^ hover: (param) val: string[]  def: local
     elseif val == "hello" then
         local _ = val
---                ^ hover: (param) val: string  def: local
+--                ^ hover: (param) val: "hello"  def: local
     else
         local _ = val
 --                ^ hover: (param) val: string  def: local

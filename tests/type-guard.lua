@@ -197,10 +197,10 @@ _consume(testCachedTypeNotNil)
 local function testStringLiteralElseif(x)
     if x == "LAST" then
         local a = x
-        --    ^ hover: (local) a: "FIRST" | "LAST" | number
+        --    ^ hover: (local) a: "LAST"
     elseif x == "FIRST" then
         local b = x
-        --    ^ hover: (local) b: "FIRST" | number
+        --    ^ hover: (local) b: "FIRST"
     elseif x then
         local c = x
         --    ^ hover: (local) c: number

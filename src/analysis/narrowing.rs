@@ -415,8 +415,9 @@ impl<'a> Analysis<'a> {
                                     self.add_type_stripped(target_scope, sym_idx, lit_vt.clone());
                                     self.push_strip_type_version(sym_idx, lit_vt, target_scope, false);
                                 } else if is_filter {
-                                    // Positive: equality implies non-nil, so strip nil.
-                                    // Don't filter to the literal — it over-narrows general types.
+                                    // x == "literal" in then-branch: narrow to exactly the literal type.
+                                    self.type_narrowed_symbols.entry(target_scope).or_default()
+                                        .insert(sym_idx, lit_vt.clone());
                                     self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                     self.narrow_siblings(sym_idx, target_scope);
                                     self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
