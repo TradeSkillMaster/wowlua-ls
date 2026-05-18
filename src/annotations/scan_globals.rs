@@ -548,13 +548,15 @@ pub(crate) fn scan_file_globals_with_synth(
             }
         // Track @class annotations on global assignments (e.g. `---@class Foo\nMyMixin = {}`)
         // so that methods defined on the global are emitted under the class name.
+        // Also handles `local name, AddOn = ... \n ---@class Foo \n AddOn = LibStub(...)`:
+        // the variable is in local_vars but still needs class_vars tracking for field routing.
         if let Statement::Assign(assign) = stmt
             && let (Some(var_list), Some(expr_list)) = (assign.variable_list(), assign.expression_list()) {
                 let idents = var_list.identifiers();
                 let exprs = expr_list.expressions();
                 if idents.len() == 1 && exprs.len() == 1 {
                     let names = idents[0].names();
-                    if names.len() == 1 && !local_vars.contains(&names[0]) {
+                    if names.len() == 1 {
                         let annotations = extract_annotations(assign.syntax());
                         let class_name = annotations.class
                             .or_else(|| super::extract_inline_class(assign.syntax()));
@@ -1154,6 +1156,9 @@ pub(crate) fn scan_file_globals_with_synth(
                             };
                             let returns = if let Some(ref var_type) = annotations.var_type {
                                 vec![var_type.clone()]
+                            } else if let Some(ref class_name) = annotations.class {
+                                // @enum Name or @class Name above a field assignment
+                                vec![AnnotationType::Simple(class_name.clone())]
                             } else if let Expression::TableConstructor(tc) = &effective {
                                 extract_table_literal_annotation(tc)
                                     .map_or_else(Vec::new, |tl| vec![tl])

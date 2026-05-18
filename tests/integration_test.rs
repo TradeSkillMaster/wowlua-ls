@@ -3099,6 +3099,17 @@ fn crossfile_local_to_ns_field() {
 }
 
 #[test]
+fn crossfile_vararg_class_enum() {
+    // @class on reassignment of vararg-destructured local (local name, AddOn = ...)
+    // should still track class_vars so @enum fields are visible cross-file.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/vararg_class_enum_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn expression_type() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/expression-type/test.lua",
