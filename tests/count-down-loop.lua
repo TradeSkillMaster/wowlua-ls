@@ -43,9 +43,9 @@ for i = 1, 10, 0 do end
 for i = 10, 1, 0 do end
 -- ^ diag: count-down-loop
 
--- Zero step with same start/end → no diagnostic
+-- Zero step with same start/end → still infinite loop, warn
 for i = 5, 5, 0 do end
--- ^ diag: none
+-- ^ diag: count-down-loop
 
 -- Suppression via @diagnostic
 ---@diagnostic disable-next-line: count-down-loop

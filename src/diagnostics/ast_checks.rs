@@ -217,7 +217,7 @@ fn check_for_count_loop(
     let (Some(sv), Some(ev)) = (start_val, end_val) else { return };
     let step = step_val.unwrap_or(1.0);
     let should_warn = if step == 0.0 {
-        step_val.is_some() && sv != ev
+        step_val.is_some()
     } else {
         let counting_down = sv > ev;
         let step_positive = step > 0.0;
