@@ -412,12 +412,39 @@ for _i = 1, 10 do
         mCount = _i
         mOffset = 0
     elseif mOffset < mCount then
+--         ^ hover: (local) mOffset: number
         local x = mOffset + 1
         --    ^ hover: (local) x: number
         mOffset = mOffset + 1
     end
 end
 _consume(mCount, mOffset)
+
+-- ── @correlated in loop with else-break: condition sees merged type ───────
+-- When the guard is on a different variable (mCount2) than the one used in
+-- the subsequent elseif condition (mOffset2), the correlated narrowing should
+-- not produce `?` — the merge from prior loop iterations provides `number?`.
+
+---@type number?
+local mCount2 = nil
+---@type number?
+local mOffset2 = nil
+---@correlated mCount2, mOffset2
+for part in gmatch(str, "(%d*):") do
+    part = tonumber(part)
+    if not part then
+        -- skip
+    elseif not mCount2 then
+        mCount2 = part or 0
+        mOffset2 = 0
+    elseif mOffset2 < mCount2 * 2 then
+--         ^ hover: (local) mOffset2: number
+        mOffset2 = mOffset2 + 1
+    else
+        break
+    end
+end
+_consume(mCount2, mOffset2)
 
 -- @correlated with unknown variable name warns
 local knownVar = nil ---@type number?

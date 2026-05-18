@@ -297,8 +297,31 @@ impl<'a> Analysis<'a> {
                                     };
                                     // Only update references whose current version was
                                     // created outside the loop (i.e. the pre-loop value).
+                                    // Exception: narrowing-only versions (StripNil/StripFalsy
+                                    // wrapping a pre-loop SymbolRef) created inside the loop
+                                    // from correlated-local narrowing in elseif conditions.
                                     let old_scope = self.ir.symbols[s.val()].versions[old_ver].created_in_scope;
-                                    if Self::is_scope_in_subtree_static(&self.ir.scopes, old_scope, scope_idx) {
+                                    let narrowing_inner_expr = if Self::is_scope_in_subtree_static(&self.ir.scopes, old_scope, scope_idx) {
+                                        self.ir.symbols[s.val()].versions[old_ver]
+                                            .type_source.and_then(|ts| {
+                                                let inner = match self.ir.expr(ts) {
+                                                    Expr::StripNil(i) | Expr::StripFalsy(i) => Some(*i),
+                                                    _ => None,
+                                                };
+                                                inner.filter(|i| match self.ir.expr(*i) {
+                                                    Expr::SymbolRef(rs, rv) if *rs == s => {
+                                                        let base_scope = self.ir.symbols[s.val()].versions[*rv].created_in_scope;
+                                                        !Self::is_scope_in_subtree_static(&self.ir.scopes, base_scope, scope_idx)
+                                                    }
+                                                    _ => false,
+                                                })
+                                            })
+                                    } else {
+                                        None
+                                    };
+                                    if Self::is_scope_in_subtree_static(&self.ir.scopes, old_scope, scope_idx)
+                                        && narrowing_inner_expr.is_none()
+                                    {
                                         continue;
                                     }
                                     // Ensure the reference site is within the loop scope.
@@ -313,7 +336,16 @@ impl<'a> Analysis<'a> {
                                         continue;
                                     }
                                     self.ir.exprs[expr_id.val()] = Expr::SymbolRef(s, merge_ver);
-                                    self.symbol_version_at.insert(offset, merge_ver);
+                                    if let Some(inner_expr_id) = narrowing_inner_expr {
+                                        // For narrowing versions: also patch the inner
+                                        // SymbolRef in the version's type_source so the
+                                        // version resolves to StripNil(merged_type) = non-nil.
+                                        // Keep symbol_version_at pointing to the narrowing
+                                        // version so hover displays the narrowed type.
+                                        self.ir.exprs[inner_expr_id.val()] = Expr::SymbolRef(s, merge_ver);
+                                    } else {
+                                        self.symbol_version_at.insert(offset, merge_ver);
+                                    }
                                 }
                             }
                         }
