@@ -258,7 +258,7 @@ impl ValueType {
         match self {
             ValueType::Any => true,
             ValueType::Nil => false,
-            ValueType::Boolean(_) => true,
+            ValueType::Boolean(_) => false,
             ValueType::Number => true,
             ValueType::String(_) => true,
             ValueType::Function(_) => false,

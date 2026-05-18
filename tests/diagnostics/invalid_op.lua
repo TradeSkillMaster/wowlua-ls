@@ -42,9 +42,9 @@ end
 local _j = nil .. "hello"
 --         ^ diag: invalid-op
 
--- Boolean concat is valid in Lua (tostring coercion)
+-- Boolean concat is invalid in Lua (no auto-coercion, runtime error)
 local _k = true .. "world"
---         ^ diag: none
+--         ^ diag: invalid-op
 
 -- Table with __add metamethod — no diagnostic
 ---@class Vec
