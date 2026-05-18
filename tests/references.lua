@@ -41,7 +41,7 @@ end
 
 -- Local shadowing outer variable with same name (RHS refers to outer scope)
 local outer = 10
---    ^ refs: 43:7, 50:15
+--    ^ refs: 43:7, 46:19, 50:15
 do
     local outer = outer + 1
     --    ^ refs: 46:11, 48:20

@@ -4174,6 +4174,22 @@ impl AnalysisResult {
                                 // lowering), but scope-based get_symbol finds the
                                 // local post-construction.
                                 !self.is_in_own_local_init(tree, symbol_idx, &token, name)
+                            } else if !resolved.is_external()
+                                && !symbol_idx.is_external()
+                                && self.is_in_own_local_init(tree, resolved, &token, name)
+                                && self.get_symbol_excluding(
+                                    &SymbolIdentifier::Name(name.clone()),
+                                    scope_idx,
+                                    resolved,
+                                ) == Some(symbol_idx)
+                            {
+                                // The token is in the RHS of `local shadow = <token> ...`
+                                // that shadows the target symbol. In Lua, `local x = x + 1`
+                                // means the RHS `x` refers to the outer `x`. The standard
+                                // get_symbol finds the shadow (resolved) rather than the
+                                // outer symbol; get_symbol_excluding verifies the outer
+                                // symbol is actually the target.
+                                true
                             } else if symbol_idx.is_external() && !resolved.is_external() {
                                 // Cross-file search against an external global: the file that
                                 // defines the global (`function X() end` or `X = ...`) also
