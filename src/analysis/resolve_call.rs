@@ -2688,6 +2688,43 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Case 4: Deferred bracket assignments (table resolved in Phase 2)
+        // e.g. `local NPCs = private.Data.NPCs; NPCs[1] = { ... }` where
+        // NPCs resolves to table<integer, SomeClass> after cross-file resolution.
+        // The resolved table may be external (from workspace scanning), so we use
+        // self.table() which routes local/external indices correctly.
+        for (root_name, scope_idx, val_expr) in std::mem::take(&mut self.ir.pending_bracket_assigns) {
+            let mut table_idx_opt = self.ir.find_table_for_symbol(&root_name, scope_idx);
+            if table_idx_opt.is_none() {
+                // Resolve field chain: for `local NPCs = ns.NPCs`, walk
+                // the FieldAccess chain to find the field's annotation type,
+                // which preserves Table(Some(idx)) for table<K,V> fields.
+                if let Some(sym_idx) = self.ir.get_symbol(&crate::types::SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+                    let ver_idx = self.ir.version_for_scope(sym_idx, scope_idx);
+                    if let Some(ts) = self.sym(sym_idx).versions[ver_idx].type_source {
+                        table_idx_opt = self.resolve_field_access_table(ts);
+                    }
+                }
+            }
+            let Some(table_idx) = table_idx_opt else { continue };
+            let value_type = self.table(table_idx).value_type.clone();
+            let Some(class_idx) = value_type.as_ref().and_then(extract_table_idx_from_type) else { continue };
+            // For same-file tables we check value_type_annotated, but for
+            // external (cross-file) tables that flag is not propagated.
+            // Instead, verify the class has a name (was declared via @class).
+            if !table_idx.is_external() && !self.table(table_idx).value_type_annotated {
+                continue;
+            }
+            if table_idx.is_external() && self.table(class_idx).class_name.is_none() {
+                continue;
+            }
+            if val_expr.is_external() { continue; }
+            if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(val_expr) {
+                if ctor_idx.is_external() { continue; }
+                tc_pairs.push((class_idx, ctor_idx));
+            }
+        }
+
         // Record expected class for each constructor (used by completions)
         for &(class_idx, ctor_idx) in &tc_pairs {
             self.ir.tc_expected_class.insert(ctor_idx, class_idx);
@@ -2748,6 +2785,35 @@ impl<'a> Analysis<'a> {
         }
 
         progress
+    }
+
+    /// Walk a FieldAccess chain to find the terminal field's annotation type.
+    /// Returns `Some(table_idx)` when the annotation is `Table(Some(idx))`.
+    /// This preserves `table<K,V>` info that `resolve_expr` loses (it returns
+    /// `Table(None)` for cross-file field access).
+    fn resolve_field_access_table(&mut self, expr_id: ExprId) -> Option<TableIndex> {
+        let expr = self.ir.expr(expr_id).clone();
+        match expr {
+            Expr::FieldAccess { table, ref field, .. } => {
+                let base_type = self.resolve_expr(table)?;
+                let base_idx = extract_table_idx_from_type(&base_type)?;
+                let fi = self.ir.get_field(base_idx, field)?;
+                if let Some(ann) = &fi.annotation
+                    && let Some(idx) = extract_table_idx_from_type(ann) {
+                        return Some(idx);
+                }
+                // Fallback: resolve the field's expr to find its table index
+                self.ir.find_table_index(fi.expr)
+            }
+            Expr::SymbolRef(sym_idx, ver_idx) => {
+                let ver = &self.sym(sym_idx).versions[ver_idx];
+                match &ver.resolved_type {
+                    Some(ValueType::Table(Some(idx))) => Some(*idx),
+                    _ => ver.type_source.and_then(|ts| self.ir.find_table_index(ts)),
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Resolve a backtick string literal to a type. Supports comma-separated

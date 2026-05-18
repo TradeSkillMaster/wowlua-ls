@@ -2002,20 +2002,29 @@ impl<'a> Analysis<'a> {
                                         // and register (key, value) in bracket_key_fields so
                                         // Phase 2 infer_bracket_field_types() can resolve the
                                         // table's key_type/value_type.
-                                        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
-                                            && !table_idx.is_external() {
-                                                let syntax = ident.syntax();
-                                                let mut children = syntax.children();
-                                                let _base = children.next();
-                                                if let Some(key_node) = children.next()
-                                                    && let Some(key_expr) = Expression::cast(key_node) {
-                                                        let key_id = self.lower_expression(&key_expr, scope_idx);
-                                                        self.ir.bracket_key_fields
-                                                            .entry(table_idx)
-                                                            .or_default()
-                                                            .push((key_id, expr_id));
+                                        {
+                                            let syntax = ident.syntax();
+                                            let mut children = syntax.children();
+                                            let _base = children.next();
+                                            if let Some(key_node) = children.next()
+                                                && let Some(key_expr) = Expression::cast(key_node) {
+                                                    let key_id = self.lower_expression(&key_expr, scope_idx);
+                                                    if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
+                                                        && !table_idx.is_external() {
+                                                            self.ir.bracket_key_fields
+                                                                .entry(table_idx)
+                                                                .or_default()
+                                                                .push((key_id, expr_id));
+                                                    } else {
+                                                        // Table not resolvable in Phase 1 (e.g. field-chain-derived
+                                                        // local like `local NPCs = private.Data.NPCs`). Defer to
+                                                        // Phase 2 where resolved_type is available.
+                                                        self.ir.pending_bracket_assigns.push((
+                                                            root_name.clone(), scope_idx, expr_id,
+                                                        ));
                                                     }
-                                            }
+                                                }
+                                        }
                                     }
                                 } else {
                                     // Simple assignment: x = expr

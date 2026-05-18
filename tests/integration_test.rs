@@ -2013,6 +2013,16 @@ fn crossfile_table_kv() {
 }
 
 #[test]
+fn crossfile_ns_bracket_comp() {
+    // Cross-file bracket assignment completions on namespace table<K,V>
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/ns_bracket_comp_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_ns_typed_table() {
     // Cross-file @type table<K,V> on addon namespace fields (no @class)
     run_annotation_tests(&TestConfig {

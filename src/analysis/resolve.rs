@@ -1539,8 +1539,10 @@ impl<'a> Analysis<'a> {
         let injections = std::mem::take(&mut self.deep_field_injections);
         for inj in injections {
             let mut current_table = self.ir.find_table_for_symbol(&inj.root_name, inj.scope_idx);
-            // Fallback: if the root symbol's table isn't found via type_source (e.g.
-            // `self` in a colon method), try looking at the symbol's resolved_type.
+            // Fallback: if the root symbol's table isn't found via type_source
+            // or resolved_type (both checked by find_table_for_symbol), try
+            // Union/Intersection resolved_type (e.g. `self` in a colon method
+            // whose type is an intersection of mixins).
             if current_table.is_none()
                 && let Some(sym_idx) = self.ir.get_symbol(
                     &SymbolIdentifier::Name(inj.root_name.clone()),
@@ -1549,7 +1551,6 @@ impl<'a> Analysis<'a> {
             {
                 let ver_idx = self.ir.version_for_scope(sym_idx, inj.scope_idx);
                 current_table = match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
-                    Some(ValueType::Table(Some(idx))) => Some(*idx),
                     Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
                         ValueType::Table(Some(idx)) => Some(*idx),
                         _ => None,

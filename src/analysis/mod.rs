@@ -156,6 +156,10 @@ pub(crate) struct Ir {
     /// Populated during type resolution from `@type`, function call arguments,
     /// and bracket assignments on `table<K, V>` typed tables.
     pub(crate) tc_expected_class: HashMap<TableIndex, TableIndex>,
+    /// Bracket assignments where the target table couldn't be resolved in Phase 1
+    /// (e.g. `local NPCs = private.Data.NPCs; NPCs[1] = { ... }`). Deferred to
+    /// Phase 2 where resolved_type is available. (root_name, scope_idx, val_expr)
+    pub(crate) pending_bracket_assigns: Vec<(String, ScopeIndex, ExprId)>,
 }
 
 /// Metadata for a string literal argument annotated as `expression<C, R>`.
@@ -532,14 +536,15 @@ impl Ir {
         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx)?;
         let ver_idx = self.version_for_scope(symbol_idx, scope_idx);
         let ver = &self.sym(symbol_idx).versions[ver_idx];
-        if let Some(type_source) = ver.type_source {
-            self.find_table_index(type_source)
-        } else {
-            // External symbols may not have type_source but have resolved_type
-            match &ver.resolved_type {
-                Some(ValueType::Table(Some(idx))) => Some(*idx),
-                _ => None,
-            }
+        if let Some(type_source) = ver.type_source
+            && let Some(idx) = self.find_table_index(type_source) {
+                return Some(idx);
+        }
+        // Fallback: resolved_type (available during Phase 2 fixpoint loop,
+        // handles field-chain-derived locals like `local x = ns.Data.NPCs`)
+        match &ver.resolved_type {
+            Some(ValueType::Table(Some(idx))) => Some(*idx),
+            _ => None,
         }
     }
 
@@ -1545,6 +1550,7 @@ impl<'a> Analysis<'a> {
                 expression_args: HashMap::new(),
                 synthesized_overload_funcs: HashSet::new(),
                 tc_expected_class: HashMap::new(),
+                pending_bracket_assigns: Vec::new(),
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),
