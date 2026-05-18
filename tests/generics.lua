@@ -271,10 +271,10 @@ local sv = SelfTest:chain():value()
 local function makeGetter(x) return function() return x end end
 
 local getter = makeGetter(42)
---      ^ hover: (local) function getter()
+--      ^ hover: (local) function getter()\n-> number
 
 local getStr = makeGetter("hello")
---      ^ hover: (local) function getStr()
+--      ^ hover: (local) function getStr()\n-> string
 
 -- fun() with param types containing generic
 ---@generic T
@@ -283,7 +283,7 @@ local getStr = makeGetter("hello")
 local function makeIdentity(x) return function(v) return v end end
 
 local idNum = makeIdentity(42)
---      ^ hover: (local) function idNum(v: number)
+--      ^ hover: (local) function idNum(v: number)\n-> number
 
 -- ── Recursive generic substitution: T[] return types ──────────────────
 
@@ -636,7 +636,7 @@ local FieldFunService = {}
 
 function FieldFunService:ProbeFun()
     local v = self.pool:GetFun()
-    --    ^ hover: (local) function v(x: number)
+    --    ^ hover: (local) function v(x: number)\n-> string
     return v
 end
 
@@ -657,7 +657,7 @@ local tblFun = {
     pool = {},
 }
 local vFun = tblFun.pool:GetFun()
---    ^ hover: (local) function vFun(k: string)
+--    ^ hover: (local) function vFun(k: string)\n-> boolean
 
 _G.useGap1 = { FieldFunService, FieldPrimService, tblFun }
 
