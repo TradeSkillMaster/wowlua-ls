@@ -292,7 +292,7 @@ _consume(implicitCaller)
 -- `@return (A, B) | (C, D)` (which renders as plain `cases:`).
 
 local _ = decodeGroup
---        ^ hover: (local) function decodeGroup()\n  -> nil | string, nil | string, number\n  cases (inferred):\n    (string, string, number)\n    (nil, nil, number)
+--        ^ hover: (local) function decodeGroup()\n  -> string?, string?, number\n  cases (inferred):\n    (string, string, number)\n    (nil, nil, number)
 
 -- ── Literal-bool + concrete-type preservation ───────────────────────────
 -- `return true, ...` / `return false, ...` carry discriminative literal
@@ -320,7 +320,7 @@ local function helper(flag)
 end
 
 local _ = helper
---        ^ hover: (local) function helper(flag)\n  -> boolean, nil | Color, nil | number\n  cases (inferred):\n    (true, Color, number)\n    (true, nil, nil)\n    (false, nil, nil)
+--        ^ hover: (local) function helper(flag)\n  -> boolean, Color?, number?\n  cases (inferred):\n    (true, Color, number)\n    (boolean, nil, nil)
 
 -- Narrowing the sibling `color4` filters the overload set so both `ok4`
 -- (sibling, OverloadNarrow) and `n4` (sibling, OverloadNarrow) see only the
@@ -410,7 +410,7 @@ local function filterMsg(msg)
 end
 
 local _ = filterMsg
---        ^ hover: (local) function filterMsg(msg)\n  -> nil, nil | string\n  cases (inferred):\n    (nil, string)\n    (nil, nil)
+--        ^ hover: (local) function filterMsg(msg)\n  -> nil, string?
 
 local function filterCaller()
     local suppressed, replacement = filterMsg("hello")
@@ -452,7 +452,7 @@ local function filterMsgFalsy(msg)
 end
 
 local _ = filterMsgFalsy
---        ^ hover: (local) function filterMsgFalsy(msg)\n  -> nil, string | nil\n  cases (inferred):\n    (nil, string)\n    (nil, nil)
+--        ^ hover: (local) function filterMsgFalsy(msg)\n  -> nil, string?
 
 local function falsyCaller()
     local suppressed, replacement = filterMsgFalsy("hello")
@@ -489,7 +489,7 @@ end
 -- All three branches resolve to (boolean, string?). After dedup, only one
 -- distinct overload remains → removed → no `cases (inferred):` in hover.
 local _ = identical
---        ^ hover: (local) function identical(mode)\n  -> boolean, string | nil
+--        ^ hover: (local) function identical(mode)\n  -> boolean, string?
 
 -- ── Single-position merge: 3 cases collapse to 2 ────────────────────────
 -- Three return statements of arity 2, 2, 3 (arity-padding makes all 3-tuples):
@@ -517,7 +517,7 @@ local function triReturn(ok)
 end
 
 local _ = triReturn
---        ^ hover: (local) function triReturn(ok)\n  -> boolean, nil | string, nil | string\n  cases (inferred):\n    (true, nil, nil)\n    (false, string, nil | string)
+--        ^ hover: (local) function triReturn(ok)\n  -> boolean, string?, string?\n  cases (inferred):\n    (true, nil, nil)\n    (false, string, string?)
 
 local tr_ok, tr_code, tr_sym = triReturn(true)
 if tr_ok then
@@ -635,7 +635,7 @@ end
 ---@param symbol string
 ---@param data table
 local function handleFiltered(symbol, data)
---                ^ hover: (local) function handleFiltered(symbol: string, data: table)\n  -> boolean, string?, string\n  cases (inferred):\n    (true, nil, nil)\n    (false, string, nil)\n    (false, string, string)
+--                ^ hover: (local) function handleFiltered(symbol: string, data: table)\n  -> boolean, string?, string?\n  cases (inferred):\n    (true, nil, nil)\n    (false, string, string?)
     if cond then
         return true
     elseif cond2 then

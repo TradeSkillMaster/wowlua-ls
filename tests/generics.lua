@@ -246,7 +246,7 @@ local SelfTest = {}
 
 ---@return self
 function SelfTest:chain() return self end
---                ^ hover: (method) function SelfTest:chain()  -> self
+--                ^ hover: (method) function SelfTest:chain()\n  -> self
 
 ---@return number
 function SelfTest:value() return self.prop end

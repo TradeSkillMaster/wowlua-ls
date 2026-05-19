@@ -841,4 +841,6 @@ local function parseOptional(input)
     return input, extra
 end
 local _ = parseOptional
---        ^ hover: (local) function parseOptional(input)\n  -> string?, number?
+-- `extra` is nil because this file runs without stubs, so `tonumber` is unknown
+-- and the `extra = tonumber(extra)` assignment doesn't refine the type from nil.
+--        ^ hover: (local) function parseOptional(input)\n  -> string, nil

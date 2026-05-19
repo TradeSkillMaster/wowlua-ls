@@ -829,7 +829,7 @@ local checkFn = nil
 ---@param filter? string An optional filter string
 ---@return boolean
 function withDescs(cb, filter)
---       ^ hover: (global) function withDescs(\n  cb: fun(event: string, data: number): boolean,\n  filter?: string\n)  def: local
+--       ^ hover: (global) function withDescs(\n  cb: fun(event: string, data: number): boolean,\n  filter?: string\n)\n  -> boolean  def: local
     return true
 end
 

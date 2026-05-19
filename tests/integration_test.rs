@@ -218,7 +218,10 @@ fn run_annotation_tests(config: &TestConfig) {
             let actual = match result.hover_at(&tree, offset) {
                 Some(hover) => {
                     // Trim each line to match old test-query behavior where
-                    // continuation lines (e.g. "  -> boolean") were trimmed
+                    // continuation lines (e.g. "  -> boolean") were trimmed.
+                    // Note: this means indentation differences in hover output
+                    // are not tested — an intentional trade-off so that test
+                    // annotations don't need to exactly reproduce leading spaces.
                     hover.type_str.lines()
                         .map(|l| l.trim())
                         .collect::<Vec<_>>()
@@ -226,11 +229,13 @@ fn run_annotation_tests(config: &TestConfig) {
                 }
                 None => "<missing>".to_string(),
             };
-            // Expand \n escape sequences in the assertion, then strip any
-            // trailing newline that may appear when a `\n  …` annotation is
-            // truncated by extract_field's double-space field separator.
-            let expected_resolved = expected.replace("\\n", "\n");
-            let expected_resolved = expected_resolved.trim_end_matches('\n').to_string();
+            // Expand \n escape sequences in the assertion and trim each line
+            // to match the actual hover processing (which trims every line).
+            let expected_resolved = expected.replace("\\n", "\n")
+                .lines()
+                .map(|l| l.trim())
+                .collect::<Vec<_>>()
+                .join("\n");
             // Matching rules:
             // - If the expected assertion is multi-line (contains \n): exact match.
             //   The test author deliberately wrote out the full hover, so it must match.
@@ -586,11 +591,51 @@ fn normalize_tok(s: &str) -> Vec<String> {
     parts
 }
 
+/// Known field prefixes used in test annotations.
+/// Keep in sync with the `extract_field` call sites above and the annotation
+/// format documented in CLAUDE.md ("Supported fields: hover:, def:, …").
+const FIELD_PREFIXES: &[&str] = &[
+    "hover:", "doc:", "def:", "sig:", "diag:", "refs:",
+    "linked:", "comp:", "tok:", "highlight:", "hint:", "lens:",
+];
+
 /// Extract value for a field like "hover: x: number" from an annotation string.
-/// Fields are separated by double-space.
+/// Fields are separated by double-space followed by a known field prefix.
+/// Plain double-spaces inside values (e.g. `\n  ->` in multiline hovers) are
+/// preserved.
 fn extract_field(s: &str, prefix: &str) -> Option<String> {
-    for part in s.split("  ") {
-        let trimmed = part.trim();
+    // Find positions where "  " acts as a field separator: it must be followed
+    // (after optional whitespace) by a known field prefix.
+    let mut split_positions: Vec<usize> = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b' ' && bytes[i + 1] == b' ' {
+            let after = &s[i + 2..];
+            let trimmed = after.trim_start();
+            if FIELD_PREFIXES.iter().any(|p| trimmed.starts_with(p)) {
+                split_positions.push(i);
+                // Skip past the separator so 3+ consecutive spaces don't
+                // produce overlapping matches (which would cause start > end
+                // panics when building segments).
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // Build segments from the split positions.
+    let mut segments = Vec::new();
+    let mut start = 0;
+    for &pos in &split_positions {
+        segments.push(&s[start..pos]);
+        start = pos + 2; // skip the "  " separator
+    }
+    segments.push(&s[start..]);
+
+    for segment in segments {
+        let trimmed = segment.trim();
         if let Some(rest) = trimmed.strip_prefix(prefix) {
             return Some(rest.trim().to_string());
         }
