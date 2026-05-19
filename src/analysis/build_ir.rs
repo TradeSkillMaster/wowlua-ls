@@ -386,14 +386,50 @@ impl<'a> Analysis<'a> {
                         self.synthesize_correlated_return_overloads(fid);
                     }
                 // Apply pending while-loop exit narrowings when a while body scope pops.
-                // Creates StripNil/StripFalsy versions in the parent scope so that code
-                // after the loop sees the narrowed type. Does NOT add to narrowed_symbols
-                // to avoid leaking into the while body during resolution (the version's
-                // temporal ordering already prevents body-scope visibility).
+                // First, reset body-reassigned symbols to their pre-loop types by
+                // creating forwarding versions. The loop body may not execute (condition
+                // false on entry), so body-scope versions must not leak to the parent.
+                // Then apply exit narrowings (StripNil/StripFalsy) on top.
                 let mut wi = 0;
                 while wi < pending_while_narrowings.len() {
                     if pending_while_narrowings[wi].body_scope == popped_scope {
                         let narrowing = pending_while_narrowings.swap_remove(wi);
+                        // Step 1: Create forwarding versions for symbols reassigned
+                        // in the body, resetting them to their pre-loop types.
+                        // Skip the scan when all body-reassigned symbols are already
+                        // covered by exit narrowings (the common single-variable case).
+                        let has_uncovered_body_ver = self.ir.symbols.iter().enumerate().any(|(i, sym)| {
+                            sym.scope_idx != popped_scope
+                                && !narrowing.symbols.iter().any(|(s, _)| s.val() == i)
+                                && sym.versions.iter().any(|ver| ver.created_in_scope == popped_scope)
+                        });
+                        if has_uncovered_body_ver {
+                            for sym_idx_raw in 0..self.ir.symbols.len() {
+                                if self.ir.symbols[sym_idx_raw].scope_idx == popped_scope {
+                                    continue; // local to the body scope
+                                }
+                                let sym_idx = SymbolIndex(sym_idx_raw);
+                                if narrowing.symbols.iter().any(|(s, _)| *s == sym_idx) { continue; }
+                                let has_body_ver = self.ir.symbols[sym_idx_raw].versions.iter()
+                                    .any(|ver| ver.created_in_scope == popped_scope);
+                                if has_body_ver {
+                                    let pre_loop_ver = self.ir.version_for_scope_ancestors_only(sym_idx, narrowing.parent_scope);
+                                    let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, pre_loop_ver));
+                                    let node = self.ir.symbols[sym_idx_raw].versions[pre_loop_ver].def_node;
+                                    let order = self.ir.next_order();
+                                    self.ir.symbols[sym_idx_raw].versions.push(SymbolVersion {
+                                        def_node: node,
+                                        type_source: Some(prev_ref),
+                                        resolved_type: None,
+                                        type_args: Vec::new(),
+                                        created_in_scope: narrowing.parent_scope,
+                                        creation_order: order,
+                                        original_type_source: None,
+                                    });
+                                }
+                            }
+                        }
+                        // Step 2: Apply exit narrowings on top of the reset versions.
                         for (sym_idx, strip_falsy) in &narrowing.symbols {
                             if *strip_falsy {
                                 self.push_strip_falsy_version(*sym_idx, narrowing.parent_scope);
@@ -784,13 +820,11 @@ impl<'a> Analysis<'a> {
                                 Expression::Literal(lit) if lit.get_bool() == Some(true));
                             if !is_literal_true && !Self::block_contains_break(&inner_block) {
                                 let symbols = self.collect_while_exit_narrowings(&cond, scope_idx);
-                                if !symbols.is_empty() {
-                                    pending_while_narrowings.push(PendingWhileNarrowing {
-                                        body_scope: new_scope_idx,
-                                        parent_scope: scope_idx,
-                                        symbols,
-                                    });
-                                }
+                                pending_while_narrowings.push(PendingWhileNarrowing {
+                                    body_scope: new_scope_idx,
+                                    parent_scope: scope_idx,
+                                    symbols,
+                                });
                             }
                         }
                         stack.push(Frame {

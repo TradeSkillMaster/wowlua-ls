@@ -1534,9 +1534,25 @@ while whileAndA == nil and whileAndB == nil do
     whileAndB = 1
 end
 local wna = whileAndA
---    ^ hover: (local) wna: string
+--    ^ hover: (local) wna: string?
 local wnb = whileAndB
---    ^ hover: (local) wnb: number
+--    ^ hover: (local) wnb: number?
+
+-- Mixed: exit-narrowed symbol + non-exit-narrowed body reassignment
+-- `x` gets exit narrowing (strip nil), `counter` only gets forwarding reset.
+
+---@type string?
+local whileMixedX = nil
+---@type number?
+local whileMixedCounter = nil
+while whileMixedX == nil do
+    whileMixedX = "done"
+    whileMixedCounter = 1
+end
+local wmx = whileMixedX
+--    ^ hover: (local) wmx: string
+local wmc = whileMixedCounter
+--    ^ hover: (local) wmc: number?
 
 -- ── @param function type not contaminated by nullable field assignment ───
 
