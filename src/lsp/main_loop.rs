@@ -322,6 +322,45 @@ impl WorkspaceState {
         self.cached_ws_diagnostics = None;
     }
 
+    /// Pre-compute workspace diagnostics for all unopened files so the next
+    /// `workspace/diagnostic` request is a cache hit. Call after a workspace
+    /// rebuild (Phase 4) to avoid a 10+ second synchronous recompute in the
+    /// request handler (Phase 3) that blocks hover/completion/etc.
+    fn warm_ws_diagnostic_cache(&mut self) {
+        use rayon::prelude::*;
+        let all_ws_paths: Vec<&PathBuf> = self
+            .ws_file_globals
+            .keys()
+            .filter(|p| p.extension().is_some_and(|e| e == "lua"))
+            .collect();
+        let plugin_codes = self.plugin_codes();
+        let pre_globals = &self.pre_globals;
+        let configs = &self.configs;
+
+        let disk_results: Vec<(String, Vec<lsp_types::Diagnostic>)> = all_ws_paths
+            .par_iter()
+            .filter_map(|&path| {
+                let text = std::fs::read_to_string(path).ok()?;
+                if crate::has_shebang(&text) {
+                    return None;
+                }
+                let uri = abs_path_to_uri(path)?;
+                if is_ignored_uri(&uri, configs) {
+                    return None;
+                }
+                let tree = parse_lua(&text);
+                let mut result = analyze_lua_parsed(&uri, pre_globals, configs, &tree);
+                result.plugin_diag_codes = plugin_codes.clone();
+                let root = crate::syntax::SyntaxNode::new_root(&tree);
+                let suppressions = scan_diagnostic_directives(root);
+                let diag_items = build_file_diagnostics_with(&uri, &tree, &result, &text, &[], configs, &suppressions);
+                Some((uri.to_string(), diag_items))
+            })
+            .collect();
+
+        self.cached_ws_diagnostics = Some((self.ws_generation, disk_results));
+    }
+
     /// Run plugins against an analysis result and return diagnostics.
     /// Returns empty vec when no plugins are loaded.
     fn run_plugins(&mut self, result: &AnalysisResult, text: &str, uri: &lsp_types::Uri, file_path: &Path) -> Vec<diagnostics::PluginDiag> {
@@ -1286,6 +1325,22 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     ws.rebuild();
     log::debug!("Rebuilt workspace index in {:.1?}", rebuild_start.elapsed());
 
+    // Pre-warm workspace diagnostic cache during startup so the first
+    // `workspace/diagnostic` request from the editor is a cache hit.
+    if !ws.ws_file_globals.is_empty() {
+        if supports_progress {
+            let file_count = ws.ws_file_globals.len();
+            send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
+                message: Some(format!("Checking {} workspace files\u{2026}", file_count)),
+                percentage: Some(90),
+                cancellable: Some(false),
+            }));
+        }
+        let cache_start = std::time::Instant::now();
+        ws.warm_ws_diagnostic_cache();
+        log::debug!("Warmed workspace diagnostic cache at startup in {:.1?}", cache_start.elapsed());
+    }
+
     if supports_progress {
         send_progress(&connection, &progress_token, WorkDoneProgress::End(WorkDoneProgressEnd {
             message: Some("Ready".to_string()),
@@ -1699,6 +1754,25 @@ fn main_loop(
                         }
                     }
                 }
+            }
+
+            // Pre-warm the workspace diagnostic cache after a rebuild so the
+            // subsequent `workspace/diagnostic` request (triggered by the refresh
+            // below) is a cache hit.  Without this, the request handler (Phase 3)
+            // synchronously re-parses + re-analyzes ALL workspace files, blocking
+            // hover/completion for 10+ seconds on large projects.
+            if had_workspace_rebuild {
+                if let Some(ref token) = analysis_token {
+                    let file_count = ws.ws_file_globals.len();
+                    send_progress(&connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
+                        message: Some(format!("Checking {} workspace files\u{2026}", file_count)),
+                        percentage: None,
+                        cancellable: Some(false),
+                    }));
+                }
+                let cache_start = std::time::Instant::now();
+                ws.warm_ws_diagnostic_cache();
+                log::debug!("Warmed workspace diagnostic cache in {:.1?}", cache_start.elapsed());
             }
 
             log::debug!("Phase 4 complete in {:.1?}", phase4_start.elapsed());
@@ -4541,7 +4615,7 @@ fn build_file_diagnostics(
 ) -> Vec<lsp_types::Diagnostic> {
     let root = crate::syntax::SyntaxNode::new_root(tree);
     let suppressions = scan_diagnostic_directives(root);
-    build_file_diagnostics_with(uri, tree, analysis, text, plugin_diags, ws, &suppressions)
+    build_file_diagnostics_with(uri, tree, analysis, text, plugin_diags, &ws.configs, &suppressions)
 }
 
 /// Like `build_file_diagnostics` but accepts pre-computed suppressions.
@@ -4553,7 +4627,7 @@ fn build_file_diagnostics_with(
     analysis: &AnalysisResult,
     text: &str,
     plugin_diags: &[diagnostics::PluginDiag],
-    ws: &WorkspaceState,
+    configs: &crate::config::ProjectConfigs,
     suppressions: &[DiagnosticSuppression],
 ) -> Vec<lsp_types::Diagnostic> {
     if analysis.is_meta() {
@@ -4561,8 +4635,8 @@ fn build_file_diagnostics_with(
     }
     let file_path = uri_to_abs_path(uri).unwrap_or_default();
     let diags = analysis.run_diagnostics(tree);
-    let disabled = ws.configs.disabled_diagnostics_for(&file_path);
-    let severity = ws.configs.severity_overrides_for(&file_path);
+    let disabled = configs.disabled_diagnostics_for(&file_path);
+    let severity = configs.severity_overrides_for(&file_path);
     diagnostics::build_lsp_diagnostics(uri, text, &tree.errors, &diags, plugin_diags, suppressions, &disabled, &severity)
 }
 
@@ -4710,34 +4784,7 @@ fn handle_workspace_diagnostic(
         None => true,
     };
     if needs_recompute {
-        use rayon::prelude::*;
-        let all_ws_paths: Vec<&PathBuf> = ws
-            .ws_file_globals
-            .keys()
-            .filter(|p| p.extension().is_some_and(|e| e == "lua"))
-            .collect();
-        let plugin_codes = ws.plugin_codes();
-
-        let disk_results: Vec<(String, Vec<lsp_types::Diagnostic>)> = all_ws_paths
-            .par_iter()
-            .filter_map(|&path| {
-                let text = std::fs::read_to_string(path).ok()?;
-                if crate::has_shebang(&text) {
-                    return None;
-                }
-                let uri = abs_path_to_uri(path)?;
-                if is_ignored_uri(&uri, &ws.configs) {
-                    return None;
-                }
-                let tree = parse_lua(&text);
-                let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-                result.plugin_diag_codes = plugin_codes.clone();
-                let diag_items = build_file_diagnostics(&uri, &tree, &result, &text, &[], ws);
-                Some((uri.to_string(), diag_items))
-            })
-            .collect();
-
-        ws.cached_ws_diagnostics = Some((current_gen, disk_results));
+        ws.warm_ws_diagnostic_cache();
     }
 
     if let Some((_, ref cached)) = ws.cached_ws_diagnostics {
