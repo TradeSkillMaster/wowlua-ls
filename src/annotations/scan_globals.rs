@@ -726,24 +726,49 @@ pub(crate) fn scan_file_globals_with_synth(
                     // Derive primary return types from body when no @return
                     // annotations exist.  Picks the max-arity explicit return to
                     // determine the number of return slots and their coarse types.
-                    // When multiple returns share max arity, the last in source
-                    // order wins — this is fine because multi-path functions with
-                    // ≥2 return paths get proper correlated overloads above, which
-                    // provide per-path type info. Body-derived returns primarily
-                    // serve single-return-path functions (the common case).
+                    // When multiple returns share max arity, widen each position:
+                    // positions where all paths agree keep that type, positions
+                    // where paths disagree (e.g. nil vs any) widen to `any`.
                     // Must be computed before `body_returns` is consumed below.
                     let body_derived_returns: Vec<AnnotationType> = body_returns.as_ref()
                         .and_then(|returns| {
-                            returns.iter()
+                            let non_bare: Vec<_> = returns.iter()
                                 .filter(|(_, is_bare)| !*is_bare)
-                                .max_by_key(|(exprs, _)| exprs.len())
-                                .map(|(exprs, _)| exprs.clone())
+                                .collect();
+                            let max_arity = non_bare.iter()
+                                .map(|(exprs, _)| exprs.len())
+                                .max()?;
+                            let max_returns: Vec<&Vec<AnnotationType>> = non_bare.iter()
+                                .filter(|(exprs, _)| exprs.len() == max_arity)
+                                .map(|(exprs, _)| exprs)
+                                .collect();
+                            if max_returns.len() == 1 {
+                                return Some(max_returns[0].clone());
+                            }
+                            // Multiple returns with same max arity: widen types
+                            // at each position so cross-file callers see the
+                            // combined return type.
+                            let mut result = Vec::with_capacity(max_arity);
+                            for i in 0..max_arity {
+                                let first = &max_returns[0][i];
+                                if max_returns[1..].iter().all(|r| r[i] == *first) {
+                                    result.push(first.clone());
+                                } else {
+                                    result.push(AnnotationType::Simple("any".to_string()));
+                                }
+                            }
+                            Some(result)
                         })
                         .unwrap_or_default();
                     // When the body-derived return ends with `any` (typically from
                     // a tail-call function call), the actual return arity is unknown
                     // at scan time.  Try to resolve the callee within the same file
                     // to get concrete return types; otherwise fall back to VarArgs.
+                    // NOTE: The widening above can also produce a trailing `any`
+                    // when paths disagree at the last position, but that is
+                    // harmless — `tail_call_callee_name` gates on the AST actually
+                    // ending with a tail call, so a widened `any` won't trigger
+                    // the VarArgs fallback spuriously.
                     let tail_callee = if body_derived_returns.last()
                         .is_some_and(|t| matches!(t, AnnotationType::Simple(s) if s == "any"))
                     {

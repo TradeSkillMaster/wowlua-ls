@@ -38,6 +38,15 @@ function ns.Core.TryGet(key)
     return nil, false
 end
 
+-- Multi-path with different concrete types at the same position
+-- (should widen first return to any since string ~= number)
+function ns.Core.Classify(key)
+    if cache[key] then
+        return "found", true
+    end
+    return 0, false
+end
+
 -- Comparison in parenthesized expression
 function ns.Core.CheckWrapped(a, b)
     return (a == b)

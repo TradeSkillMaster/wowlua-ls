@@ -25,8 +25,13 @@ local d1, d2, d3 = ns.Core.GetDefaults()
 
 -- Multi-path returns via correlated overloads
 local val, ok = ns.Core.TryGet("x")
---    ^ hover: (local) val: nil  def: local
+--    ^ hover: (local) val: any  def: local
 --         ^ hover: (local) ok: boolean  def: local
+
+-- Different concrete types widened: (string vs number → any, boolean)
+local cls, cfound = ns.Core.Classify("x")
+--    ^ hover: (local) cls: any  def: local
+--          ^ hover: (local) cfound: boolean  def: local
 
 -- Parenthesized comparison
 local eq = ns.Core.CheckWrapped(1, 2)
