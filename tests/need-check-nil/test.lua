@@ -1939,7 +1939,7 @@ _consume(_andOrNilAssertType)
 local function _andOrNilOrTermUnion(kind)
     local idx = kind and 5 or nil
     if idx == 5 or idx == 6 then
-        -- idx narrowed to `5 | 6` (no nil) → kind also narrowed truthy.
+        -- idx narrowed to `5 | 6` (no nil), but kind is not narrowed here.
         return _takeString(kind)
         --                    ^ hover: (param) kind: "a" | "b" | "c"?
     end

@@ -94,7 +94,7 @@ local function _withAnyLen(x)
     --   ^ diag: none
 end
 
--- Table with __len metamethod — no diagnostic
+-- @class table — operator checks suppressed (metamethods possible)
 ---@type Vec
 local v3
 local _u = #v3
@@ -140,7 +140,7 @@ local function _withAnyCmp(x)
     --   ^ diag: none
 end
 
--- Table operand (may have __lt) — no diagnostic
+-- @class table — operator checks suppressed (metamethods possible)
 ---@type Vec
 local v4
 _use(v4 < v4)
