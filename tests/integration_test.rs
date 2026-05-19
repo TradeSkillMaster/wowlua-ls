@@ -171,7 +171,8 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Parse expectations
         let caret_offset = after_dashes.find('^').unwrap();
-        let annotation = after_dashes[caret_offset + 1..].trim();
+        let caret_end = after_dashes[caret_offset..].find(|c| c != '^').map_or(after_dashes.len(), |n| caret_offset + n);
+        let annotation = after_dashes[caret_end..].trim();
         let expected_hover = extract_field(annotation, "hover:");
         let expected_doc = extract_field(annotation, "doc:");
         let expected_def = extract_field(annotation, "def:");

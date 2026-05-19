@@ -1635,10 +1635,10 @@ local function cachedTypeGuard(val)
     local t = type(val)
     if t == "string" then
         needsStr(val)
---               ^^^ diag: none
+--               ^ diag: none
     elseif t == "number" then
         needsNum(val)
---               ^^^ diag: none
+--               ^ diag: none
     end
 end
 _consume(cachedTypeGuard)
@@ -1648,16 +1648,17 @@ _consume(cachedTypeGuard)
 local function directTypeGuard(val)
     if type(val) == "string" then
         needsStr(val)
---               ^^^ diag: none
+--               ^ diag: none
     elseif type(val) == "number" then
         needsNum(val)
---               ^^^ diag: none
+--               ^ diag: none
     end
 end
 _consume(directTypeGuard)
 
 -- inverse type() guard narrows else-branch by stripping matched type
 ---@class InverseGuardClass
+---@field SomeMethod fun(self: InverseGuardClass)
 ---@param val boolean|InverseGuardClass
 local function inverseTypeGuard(val)
     if type(val) == "boolean" then
@@ -1665,7 +1666,7 @@ local function inverseTypeGuard(val)
     end
     -- val should be narrowed to InverseGuardClass here
     val:SomeMethod()
---  ^^^ diag: none
+--  ^ diag: none
 end
 _consume(inverseTypeGuard)
 
@@ -1674,10 +1675,10 @@ _consume(inverseTypeGuard)
 local function inverseTypeGuardElse(val)
     if type(val) == "string" then
         needsStr(val)
---               ^^^ diag: none
+--               ^ diag: none
     else
         needsNum(val)
---               ^^^ diag: none
+--               ^ diag: none
     end
 end
 _consume(inverseTypeGuardElse)
@@ -1687,9 +1688,9 @@ _consume(inverseTypeGuardElse)
 local function cachedTypeGuardAnd(val)
     local t = type(val)
     if t == "string" and needsStr(val) then
---                               ^^^ diag: none
+--                               ^ diag: none
         needsStr(val)
---               ^^^ diag: none
+--               ^ diag: none
     end
 end
 _consume(cachedTypeGuardAnd)
