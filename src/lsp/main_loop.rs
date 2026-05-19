@@ -3614,6 +3614,10 @@ fn handle_notification(
             if let Ok(params) = cast_not::<notification::DidCloseTextDocument>(not) {
                 let uri_str = params.text_document.uri.to_string();
                 documents.remove(&uri_str);
+                // Stub files never participate in workspace diagnostics.
+                if is_stub_path(&params.text_document.uri) {
+                    return;
+                }
                 // Update cached workspace diagnostics for this file by re-reading
                 // from disk. Without this, closing a file after fixing a warning
                 // serves stale diagnostics from the pre-fix cache.
@@ -4615,9 +4619,25 @@ fn reanalyze_open_documents(
 /// Check if a URI points to a file inside the built-in stubs directory
 /// or the temp stubs directory used for go-to-definition on stub symbols.
 fn is_stub_path(uri: &lsp_types::Uri) -> bool {
-    let stubs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stubs");
-    let tmp_stubs_dir = std::env::temp_dir().join("wowlua-ls-stubs");
-    uri_to_abs_path(uri).is_some_and(|p| p.starts_with(&stubs_dir) || p.starts_with(&tmp_stubs_dir))
+    static STUB_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    let dirs = STUB_DIRS.get_or_init(|| {
+        #[allow(unused_mut)]
+        let mut v = vec![
+            // Dev builds: source-tree stubs directory (CARGO_MANIFEST_DIR is
+            // baked at compile time; harmless no-op if the path doesn't exist
+            // on the deployed machine).
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stubs"),
+            // Temp directory where embedded stubs are extracted for go-to-def.
+            std::env::temp_dir().join("wowlua-ls-stubs"),
+        ];
+        // Non-embedded-stubs deployments: stubs directory next to the executable.
+        #[cfg(not(feature = "embedded-stubs"))]
+        if let Some(dir) = stubs_dir() {
+            v.push(dir);
+        }
+        v
+    });
+    uri_to_abs_path(uri).is_some_and(|p| dirs.iter().any(|d| p.starts_with(d)))
 }
 
 /// Check if a URI points to a file that should be ignored by project config.
@@ -4769,6 +4789,11 @@ fn build_file_diagnostics(
     plugin_diags: &[diagnostics::PluginDiag],
     ws: &WorkspaceState,
 ) -> Vec<lsp_types::Diagnostic> {
+    // Defense-in-depth: callers should already filter stub files, but guard
+    // here too so any future call site inherits the suppression.
+    if is_stub_path(uri) {
+        return Vec::new();
+    }
     let root = crate::syntax::SyntaxNode::new_root(tree);
     let suppressions = scan_diagnostic_directives(root);
     build_file_diagnostics_with(uri, tree, analysis, text, plugin_diags, &ws.configs, &suppressions)
@@ -4803,6 +4828,18 @@ fn handle_document_diagnostic(
     documents: &mut HashMap<String, Document>,
     ws: &WorkspaceState,
 ) -> DocumentDiagnosticReportResult {
+    // Stub files should never produce diagnostics in the Problems panel.
+    if is_stub_path(uri) {
+        return DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
+            RelatedFullDocumentDiagnosticReport {
+                related_documents: None,
+                full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                    result_id: None,
+                    items: Vec::new(),
+                },
+            },
+        ));
+    }
     // Consume pending_text for TOC documents before running diagnostics,
     // so positions match the editor's current text.
     let uri_str = uri.to_string();
@@ -4912,9 +4949,11 @@ fn handle_workspace_diagnostic(
 ) -> (WorkspaceDiagnosticReportResult, bool) {
     let mut items: Vec<WorkspaceDocumentDiagnosticReport> = Vec::new();
 
-    // Open documents: use cached analysis.
+    // Open documents: use cached analysis. Skip stub files — they should
+    // never contribute diagnostics to the Problems panel.
     for (uri_str, doc) in documents {
         let Ok(uri) = lsp_types::Uri::from_str(uri_str) else { continue };
+        if is_stub_path(&uri) { continue; }
         if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
             let diag_items = build_file_diagnostics(&uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
             items.push(WorkspaceDocumentDiagnosticReport::Full(
@@ -5390,5 +5429,34 @@ mod tests {
             merged[0].field_built_names.get("key").map(|s| s.as_str()),
             Some("BuiltType"),
         );
+    }
+
+    #[test]
+    fn is_stub_path_detects_temp_stubs() {
+        let tmp_dir = std::env::temp_dir().join("wowlua-ls-stubs");
+        let stub_file = tmp_dir
+            .join("vendor")
+            .join("Annotations")
+            .join("FrameXML")
+            .join("GameTooltip.lua.annotated.lua");
+        let uri = abs_path_to_uri(&stub_file).unwrap();
+        assert!(is_stub_path(&uri), "temp stub path should be detected");
+    }
+
+    #[test]
+    fn is_stub_path_detects_dev_stubs() {
+        let dev_stubs = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("stubs")
+            .join("overrides")
+            .join("foo.lua");
+        let uri = abs_path_to_uri(&dev_stubs).unwrap();
+        assert!(is_stub_path(&uri), "dev stubs path should be detected");
+    }
+
+    #[test]
+    fn is_stub_path_rejects_user_files() {
+        let user_file = std::env::temp_dir().join("my-addon").join("Main.lua");
+        let uri = abs_path_to_uri(&user_file).unwrap();
+        assert!(!is_stub_path(&uri), "user file should not be detected as stub");
     }
 }
