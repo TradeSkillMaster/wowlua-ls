@@ -34,7 +34,7 @@ use lsp_types::{PositionEncodingKind, TextDocumentSyncCapability, TextDocumentSy
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, DiagnosticSuppression, scan_all_annotations, scan_diagnostic_directives, scan_built_name_calls, DefclassContext, BuiltNameContext, scan_defclass_calls_with_context, scan_built_name_calls_with_context};
+use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, DiagnosticSuppression, TypedSelfField, scan_all_annotations, scan_diagnostic_directives, scan_built_name_calls, DefclassContext, BuiltNameContext, scan_defclass_calls_with_context, scan_built_name_calls_with_context};
 use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, ValueType};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
@@ -114,6 +114,10 @@ struct WorkspaceState {
     ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>>,
     ws_file_defclasses: HashMap<PathBuf, Vec<ClassDecl>>,
     ws_file_events: HashMap<PathBuf, Vec<crate::annotations::EventDecl>>,
+    /// Per-file typed + bare self-field scan results (self.field = expr in methods).
+    ws_file_self_fields: HashMap<PathBuf, Vec<crate::annotations::TypedSelfField>>,
+    /// Per-file funcall self-field globals (self.field = SomeCall() in methods).
+    ws_file_self_field_globals: HashMap<PathBuf, Vec<ExternalGlobal>>,
     pre_globals: Arc<PreResolvedGlobals>,
     /// Cached merged stubs + workspace globals (avoids ~100K clones per keystroke).
     /// Rebuilt only when a file's exported globals actually change.
@@ -143,6 +147,44 @@ struct WorkspaceState {
     /// Populated lazily on first `workspace/diagnostic` request and invalidated
     /// when `ws_generation` changes (i.e. workspace is rebuilt).
     cached_ws_diagnostics: Option<CachedWsDiagnostics>,
+}
+
+/// Collect (class_name, field_name) pairs from all @field entries on the given classes.
+/// Used to tell the self-field scan which fields are already declared.
+fn collect_typed_field_names<'a>(classes: impl Iterator<Item = &'a ClassDecl>) -> HashSet<(String, String)> {
+    let mut names = HashSet::new();
+    for class in classes {
+        for (field_name, _, _) in &class.fields {
+            names.insert((class.name.clone(), field_name.clone()));
+        }
+    }
+    names
+}
+
+/// Merge typed + bare self-fields, skipping bare fields when a funcall field
+/// covers the same (class, field) pair. Funcall fields take priority because
+/// build_on_stubs resolves their return type through the normal call chain.
+fn merge_self_field_results(
+    typed: Vec<TypedSelfField>,
+    funcall: &[ExternalGlobal],
+    bare: Vec<TypedSelfField>,
+) -> Vec<TypedSelfField> {
+    let funcall_field_names: HashSet<(String, String)> = funcall.iter()
+        .filter_map(|g| {
+            if let ExternalGlobalKind::TableField(_, fn_name, _) = &g.kind {
+                Some((g.name.clone(), fn_name.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut result = typed;
+    for tsf in bare {
+        if !funcall_field_names.contains(&(tsf.class_name.clone(), tsf.field_name.clone())) {
+            result.push(tsf);
+        }
+    }
+    result
 }
 
 /// Merge `@defclass` / `@built-name`-discovered `ClassDecl`s into an input set
@@ -268,7 +310,7 @@ impl WorkspaceState {
 
     fn rebuild(&mut self) {
         // Collect only workspace data (stubs are already in stub_pre_globals)
-        let ws_globals: Vec<ExternalGlobal> = self.ws_file_globals.values().flatten()
+        let mut ws_globals: Vec<ExternalGlobal> = self.ws_file_globals.values().flatten()
             .cloned()
             .collect();
         let ws_classes_input: Vec<ClassDecl> = self.ws_file_classes.values().flatten()
@@ -282,7 +324,31 @@ impl WorkspaceState {
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
         let defclass_decls: Vec<&ClassDecl> = self.ws_file_defclasses.values().flatten().collect();
-        let ws_classes = merge_defclass_into_overlays(ws_classes_input, &self.stub_classes, defclass_decls);
+        let mut ws_classes = merge_defclass_into_overlays(ws_classes_input, &self.stub_classes, defclass_decls);
+
+        // Merge self-field scan results into classes and globals.
+        // Typed + bare self-fields are added to ClassDecl.fields; funcall self-fields
+        // become globals so build_on_stubs can resolve return types through the normal
+        // funcall chain.
+        if !self.ws_file_self_fields.is_empty() || !self.ws_file_self_field_globals.is_empty() {
+            let class_index: HashMap<String, usize> = ws_classes.iter()
+                .enumerate()
+                .map(|(i, c)| (c.name.clone(), i))
+                .collect();
+            for (source_path, self_fields) in &self.ws_file_self_fields {
+                for tsf in self_fields {
+                    if let Some(&idx) = class_index.get(&tsf.class_name) {
+                        let already_has = ws_classes[idx].fields.iter().any(|(n, _, _)| n == &tsf.field_name);
+                        if !already_has {
+                            ws_classes[idx].fields.push((tsf.field_name.clone(), tsf.annotation_type.clone(), tsf.visibility));
+                            ws_classes[idx].field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
+                            ws_classes[idx].field_paths.entry(tsf.field_name.clone()).or_insert_with(|| source_path.clone());
+                        }
+                    }
+                }
+            }
+            ws_globals.extend(self.ws_file_self_field_globals.values().flatten().cloned());
+        }
 
         let implicit_protected = self.root.as_ref()
             .map(|r| self.configs.implicit_protected_prefix_for(r))
@@ -786,6 +852,10 @@ struct DirectoryScanResult {
     file_events: HashMap<PathBuf, Vec<crate::annotations::EventDecl>>,
     addon_ns_class: HashMap<PathBuf, String>,
     file_callable_classes: HashMap<PathBuf, HashSet<String>>,
+    /// Per-file typed + bare self-field scan results (self.field = expr in methods).
+    file_self_fields: HashMap<PathBuf, Vec<crate::annotations::TypedSelfField>>,
+    /// Per-file funcall self-field globals (self.field = SomeCall() in methods).
+    file_self_field_globals: HashMap<PathBuf, Vec<ExternalGlobal>>,
 }
 
 /// Intermediate result from Pass 1 of workspace scanning (no stubs dependency).
@@ -908,6 +978,45 @@ fn complete_directory_scan(
             out.file_defclasses.insert(path, decls);
         }
     }
+
+    // Pass 3: self-field scan (typed, funcall, bare).
+    // Discovers `self.field = expr` assignments inside methods and adds them
+    // to the per-file self-field maps for merging during rebuild().
+    {
+        use crate::annotations::{scan_method_typed_self_fields, scan_method_funcall_self_fields, scan_method_bare_self_fields};
+        let known_classes: HashSet<String> = out.file_classes.values()
+            .flatten()
+            .map(|c| c.name.clone())
+            .chain(stub_classes.iter().map(|c| c.name.clone()))
+            .collect();
+        if !known_classes.is_empty() {
+            let typed_field_names = collect_typed_field_names(
+                out.file_classes.values().flatten().chain(stub_classes.iter()),
+            );
+            let per_file: Vec<_> = pass1.results.par_iter()
+                .filter_map(|(p, cached)| {
+                    let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
+                    let ipp = configs.implicit_protected_prefix_for(p);
+                    let typed = scan_method_typed_self_fields(root, &known_classes, ipp);
+                    let funcall = scan_method_funcall_self_fields(
+                        root, &known_classes, ipp, &typed_field_names, Some(p.clone()),
+                    );
+                    let bare = scan_method_bare_self_fields(root, &known_classes, ipp, &typed_field_names);
+                    if typed.is_empty() && funcall.is_empty() && bare.is_empty() { None } else { Some((p.clone(), typed, funcall, bare)) }
+                })
+                .collect();
+            for (path, file_typed, file_funcall, file_bare) in per_file {
+                let self_fields = merge_self_field_results(file_typed, &file_funcall, file_bare);
+                if !self_fields.is_empty() {
+                    out.file_self_fields.insert(path.clone(), self_fields);
+                }
+                if !file_funcall.is_empty() {
+                    out.file_self_field_globals.insert(path, file_funcall);
+                }
+            }
+        }
+    }
+
     out
 }
 
@@ -1302,6 +1411,8 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ws_file_aliases: scan_result.file_aliases,
         ws_file_defclasses: scan_result.file_defclasses,
         ws_file_events: scan_result.file_events,
+        ws_file_self_fields: scan_result.file_self_fields,
+        ws_file_self_field_globals: scan_result.file_self_field_globals,
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
         cached_all_globals: Vec::new(),
         cached_all_classes: Vec::new(),
@@ -3569,6 +3680,8 @@ fn reload_config(
         file_events,
         addon_ns_class,
         file_callable_classes,
+        file_self_fields,
+        file_self_field_globals,
     } = scan_directory_tracked(root, &mut ws.configs, &ws.stub_classes, &ws.stub_globals);
     ws.ws_file_globals = file_globals;
     ws.ws_file_classes = file_classes;
@@ -3577,6 +3690,8 @@ fn reload_config(
     ws.ws_file_events = file_events;
     ws.ws_file_addon_ns_class = addon_ns_class;
     ws.ws_file_callable_classes = file_callable_classes;
+    ws.ws_file_self_fields = file_self_fields;
+    ws.ws_file_self_field_globals = file_self_field_globals;
     ws.rebuild_caches();
     ws.rebuild();
     reanalyze_open_documents(documents, &ws.pre_globals, &ws.configs, ws.ws_generation);
@@ -3703,14 +3818,55 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
         changed
     };
 
-    if globals_changed || classes_changed || aliases_changed || defclasses_changed {
+    // Re-scan for self-field assignments (self.field = expr in methods).
+    // Quick text check: only scan if the file contains "self." as a substring.
+    let self_fields_changed = if !has_syntax_errors && source.contains("self.") {
+        use crate::annotations::{scan_method_typed_self_fields, scan_method_funcall_self_fields, scan_method_bare_self_fields};
+        let known_classes: HashSet<String> = ws.cached_all_classes.iter().map(|c| c.name.clone()).collect();
+        if known_classes.is_empty() {
+            false
+        } else {
+            let typed_field_names = collect_typed_field_names(ws.cached_all_classes.iter());
+            let typed = scan_method_typed_self_fields(root, &known_classes, ipp);
+            let funcall = scan_method_funcall_self_fields(
+                root, &known_classes, ipp, &typed_field_names, Some(file_path.clone()),
+            );
+            let bare = scan_method_bare_self_fields(root, &known_classes, ipp, &typed_field_names);
+
+            let new_self_fields = merge_self_field_results(typed, &funcall, bare);
+
+            let sf_changed = ws.ws_file_self_fields.get(&file_path)
+                .map_or(!new_self_fields.is_empty(), |old| old != &new_self_fields);
+            let sfg_changed = ws.ws_file_self_field_globals.get(&file_path)
+                .map_or(!funcall.is_empty(), |old| !globals_match(old, &funcall));
+            if new_self_fields.is_empty() {
+                ws.ws_file_self_fields.remove(&file_path);
+            } else {
+                ws.ws_file_self_fields.insert(file_path.clone(), new_self_fields);
+            }
+            if funcall.is_empty() {
+                ws.ws_file_self_field_globals.remove(&file_path);
+            } else {
+                ws.ws_file_self_field_globals.insert(file_path.clone(), funcall);
+            }
+            sf_changed || sfg_changed
+        }
+    } else {
+        // If file no longer contains "self.", clear any previous results
+        let had_sf = ws.ws_file_self_fields.remove(&file_path).is_some();
+        let had_sfg = ws.ws_file_self_field_globals.remove(&file_path).is_some();
+        had_sf || had_sfg
+    };
+
+    if globals_changed || classes_changed || aliases_changed || defclasses_changed || self_fields_changed {
         log::info!(
-            "Workspace rebuild triggered by didOpen: {} (globals={} classes={} aliases={} defclasses={})",
+            "Workspace rebuild triggered by didOpen: {} (globals={} classes={} aliases={} defclasses={} self_fields={})",
             file_path.display(),
             globals_changed,
             classes_changed,
             aliases_changed,
             defclasses_changed,
+            self_fields_changed,
         );
         ws.rebuild();
         true
@@ -5186,6 +5342,8 @@ mod tests {
             ws_file_aliases: HashMap::new(),
             ws_file_defclasses: HashMap::new(),
             ws_file_events: HashMap::new(),
+            ws_file_self_fields: HashMap::new(),
+            ws_file_self_field_globals: HashMap::new(),
             pre_globals: Arc::new(PreResolvedGlobals::empty()),
             cached_all_globals: Vec::new(),
             cached_all_classes: Vec::new(),

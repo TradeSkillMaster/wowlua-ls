@@ -92,7 +92,7 @@ pub(crate) struct SelfFieldEntry {
     pub(crate) byte_range: Option<(u32, u32)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TypedSelfField {
     pub(crate) class_name: String,
     pub(crate) field_name: String,
