@@ -1048,16 +1048,16 @@ impl BuildContext {
                     // Duplicate method definition — synthesize an overload from
                     // the duplicate so both signatures participate in resolution.
                     // Skip unannotated duplicates: they carry no additional type
-                    // info and would just produce a spurious `-> any` overload
+                    // info and would just produce a spurious `-> any`/`-> nil` overload
                     // (common when FrameXML source stubs overlap Ketho stubs).
                     // Params auto-extracted from the function signature have empty
-                    // type strings; body-derived returns are "any".
+                    // type strings; body-derived returns are "any" or "nil".
                     let has_typed_params = g.params.iter().any(|p| {
                         !matches!(&p.typ, AnnotationType::Simple(s) if s.is_empty())
                     });
                     let has_typed_returns = g.returns.iter().any(|r| match r {
-                        AnnotationType::Simple(s) if s == "any" => false,
-                        AnnotationType::VarArgs(inner) => !matches!(inner.as_ref(), AnnotationType::Simple(s) if s == "any"),
+                        AnnotationType::Simple(s) if s == "any" || s == "nil" => false,
+                        AnnotationType::VarArgs(inner) => !matches!(inner.as_ref(), AnnotationType::Simple(s) if s == "any" || s == "nil"),
                         _ => true,
                     });
                     if !has_typed_params && !has_typed_returns {
