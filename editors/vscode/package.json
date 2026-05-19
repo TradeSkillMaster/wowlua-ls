@@ -79,6 +79,12 @@
         "url": "./wowluarc.schema.json"
       }
     ],
+    "commands": [
+      {
+        "command": "wowlua-ls.restart",
+        "title": "WoW Lua LS: Restart Language Server"
+      }
+    ],
     "configurationDefaults": {
       "[lua]": {
         "editor.stickyScroll.defaultModel": "foldingProviderModel"

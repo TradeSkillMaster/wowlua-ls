@@ -77,6 +77,15 @@ function activate(context) {
     )
   );
 
+  context.subscriptions.push(
+    commands.registerCommand("wowlua-ls.restart", async () => {
+      if (client) {
+        await client.stop();
+        await client.start();
+      }
+    })
+  );
+
   client = new LanguageClient("wowluals", "WoW Lua LS", serverOptions, clientOptions);
   client.start();
 }
