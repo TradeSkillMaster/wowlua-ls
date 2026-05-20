@@ -2628,7 +2628,7 @@ impl<'a> Analysis<'a> {
         // Apply @builds-field annotation
         if let Some((param_idx, ref field_ann)) = annotations.builds_field {
             let is_lateinit = matches!(field_ann, crate::annotations::AnnotationType::NonNil(_));
-            if let Some(vt) = self.resolve_annotation_type_gen(field_ann, generics) {
+            if let Some(vt) = self.resolve_annotation_type_mut_gen(field_ann, generics) {
                 self.ir.functions[func_idx.val()].builds_field = Some((param_idx, vt, is_lateinit));
             }
         }

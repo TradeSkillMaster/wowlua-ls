@@ -2840,6 +2840,25 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Resolve @builds-field before pushing the Function, since materialize_fun_type
+        // needs mutable access to `functions` which would conflict with the push.
+        let resolved_builds_field = builds_field_raw.and_then(|(idx, at)| {
+            let is_lateinit = matches!(at, crate::annotations::AnnotationType::NonNil(_));
+            let inner = match at {
+                crate::annotations::AnnotationType::NonNil(inner) => inner.as_ref(),
+                other => other,
+            };
+            let vt = if let AnnotationType::Fun(fun_params, fun_returns, fun_is_vararg) = inner {
+                Some(Self::materialize_fun_type(
+                    fun_params, fun_returns, *fun_is_vararg, generic_annotations, dummy_node,
+                    scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                ))
+            } else {
+                Self::resolve_annotation_gen(inner, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+            };
+            vt.map(|vt| (*idx, vt, is_lateinit))
+        });
+
         functions.push(Function {
             def_node: dummy_node,
             scope: func_scope,
@@ -2870,11 +2889,7 @@ impl PreResolvedGlobals {
             implicit_nil_return,
 
             constructor: false,
-            builds_field: builds_field_raw.and_then(|(idx, at)| {
-                let is_lateinit = matches!(at, crate::annotations::AnnotationType::NonNil(_));
-                Self::resolve_annotation_gen(at, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
-                    .map(|vt| (*idx, vt, is_lateinit))
-            }),
+            builds_field: resolved_builds_field,
             built_name: built_name_raw,
             built_extends,
             returns_built,

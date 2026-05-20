@@ -117,10 +117,10 @@ local obj = inst6.obj
 --    ^ hover: (local) obj: FieldClass {
 
 local cb = inst6.callback
---    ^ hover: (local) cb: function
+--    ^ hover: (local) function cb(x: number)\n-> string
 
 local arr = inst6.names
---    ^ hover: (local) arr: table
+--    ^ hover: (local) arr: string[]
 
 -- ── Direct chain without intermediate variable ──────────────────────
 
