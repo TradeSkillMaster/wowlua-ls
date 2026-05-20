@@ -15,7 +15,7 @@
 //! Lua keywords as `keyword`, number literals as `number`, and operators as
 //! `operator`.
 
-use crate::diagnostics::expression_type::{compute_content_start, strip_long_brackets};
+use crate::diagnostics::expression_type::compute_content_start;
 use crate::syntax::parser::Parser;
 use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
@@ -97,7 +97,7 @@ impl AnalysisResult {
         for (&expr_id, arg_info) in &self.ir.expression_args {
             let table_idxs = &arg_info.table_idxs;
             let Some(raw_content) = self.ir.string_literals.get(&expr_id) else { continue };
-            let content = strip_long_brackets(raw_content);
+            let content = raw_content.as_str();
             let (str_start, str_end) = arg_info.str_range;
             let content_start = compute_content_start(content.len(), str_start, str_end);
 

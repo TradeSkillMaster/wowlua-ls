@@ -1363,7 +1363,7 @@ impl AnalysisResult {
     /// Check whether the token at `offset` is a string literal passed to an
     /// `expression<C, R>` parameter, and return the context if so.
     fn resolve_expression_context_at(&self, tree: &SyntaxTree, offset: u32) -> Option<ExpressionStringContext> {
-        use crate::diagnostics::expression_type::{compute_content_start, strip_long_brackets};
+        use crate::diagnostics::expression_type::compute_content_start;
 
         let text_size = TextSize::from(offset);
         let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
@@ -1378,7 +1378,7 @@ impl AnalysisResult {
             .find(|(_, info)| info.str_range.0 == tok_start && info.str_range.1 == tok_end)?;
 
         let raw_content = self.ir.string_literals.get(&expr_id)?;
-        let content = strip_long_brackets(raw_content);
+        let content = raw_content.as_str();
         let content_start = compute_content_start(content.len(), tok_start, tok_end);
 
         Some(ExpressionStringContext {

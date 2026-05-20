@@ -14,9 +14,9 @@ impl DiagnosticPass for ExpressionType {
             let expected_return = &arg_info.return_type;
             let (str_start, str_end) = arg_info.str_range;
             let Some(raw_content) = analysis.ir.string_literals.get(&expr_id) else { continue };
-            // string_literals stores trimmed content for "..." and '...' strings,
-            // but for [[...]] long bracket strings, the brackets are still present.
-            let content = strip_long_brackets(raw_content);
+            // string_literals stores content with all delimiters already stripped
+            // (quotes, long brackets) — see strip_string_delimiters in lower_expression.rs.
+            let content = raw_content.as_str();
             let content_start = compute_content_start(content.len(), str_start, str_end);
 
             // Parse the expression as "return <expr>"
@@ -76,20 +76,6 @@ fn format_class_names(analysis: &AnalysisResult, table_idxs: &[TableIndex]) -> S
         .map(|&idx| analysis.table(idx).class_name.as_deref().unwrap_or("?"))
         .collect();
     names.join(" & ")
-}
-
-/// Strip long bracket delimiters from string content.
-/// `string_literals` stores `[[...]]` and `[=[...]=]` with their brackets intact.
-pub fn strip_long_brackets(s: &str) -> &str {
-    if let Some(rest) = s.strip_prefix("[[") {
-        rest.strip_suffix("]]").unwrap_or(rest)
-    } else if s.starts_with("[=") {
-        let eq_count = s[1..].bytes().take_while(|&b| b == b'=').count();
-        let open_len = 2 + eq_count;
-        &s[open_len..s.len().saturating_sub(open_len)]
-    } else {
-        s
-    }
 }
 
 /// Compute the byte offset where the string content starts in the file.

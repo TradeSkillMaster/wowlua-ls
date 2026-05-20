@@ -37,7 +37,7 @@ impl<'a> Analysis<'a> {
                 };
                 let expr_id = self.ir.push_expr(Expr::Literal(vt));
                 if let Some(raw) = string_raw {
-                    let stripped = raw.trim_matches(|c| c == '"' || c == '\'');
+                    let stripped = strip_string_delimiters(&raw);
                     self.ir.string_literals.insert(expr_id, stripped.to_string());
                 }
                 if let Some(num) = l.get_number() {
@@ -1194,5 +1194,28 @@ impl<'a> Analysis<'a> {
         let range = call.syntax().text_range();
         let call_range = (u32::from(range.start()), u32::from(range.end()));
         self.ir.push_expr(Expr::FunctionCall { func: func_id, args, arg_ranges, ret_index, call_range, discarded, is_method_call })
+    }
+}
+
+/// Strip string delimiters from a raw Lua string literal.
+/// Handles `"..."`, `'...'`, `[[...]]`, and `[=*[...]=*]`.
+fn strip_string_delimiters(raw: &str) -> &str {
+    let bytes = raw.as_bytes();
+    if bytes.first() == Some(&b'"') || bytes.first() == Some(&b'\'') {
+        // Regular quoted string: strip first and last character.
+        // Clamp end to >= start to avoid panic on unterminated single-char tokens.
+        &raw[1..raw.len().saturating_sub(1).max(1)]
+    } else if bytes.first() == Some(&b'[') {
+        // Long bracket string: find the opening `[=*[` and closing `]=*]`
+        let level = bytes.iter().skip(1).take_while(|&&b| b == b'=').count();
+        let open_len = 2 + level; // `[` + `=`*level + `[`
+        let close_len = 2 + level; // `]` + `=`*level + `]`
+        if raw.len() >= open_len + close_len {
+            &raw[open_len..raw.len() - close_len]
+        } else {
+            raw
+        }
+    } else {
+        raw
     }
 }

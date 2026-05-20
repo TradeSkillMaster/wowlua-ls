@@ -28,10 +28,10 @@ local dotFloat2 = .25
 -- ── Long bracket strings ────────────────────────────────────────────────────
 
 local longStr = [[hello world]]
---    ^ hover: (local) longStr: string = "[[hello world]]"  def: local
+--    ^ hover: (local) longStr: string = "hello world"  def: local
 
 local longStrL1 = [=[has ]] inside]=]
---    ^ hover: (local) longStrL1: string = "[=[has ]] inside]=]"  def: local
+--    ^ hover: (local) longStrL1: string = "has ]] inside"  def: local
 
 -- ── Unary operators ─────────────────────────────────────────────────────────
 
@@ -190,7 +190,7 @@ local esc1 = "\n\t\r"
 --    ^ def: local
 
 local esc2 = '\''
---    ^ hover: (local) esc2: string = "\"  def: local
+--    ^ hover: (local) esc2: string = "\'"  def: local
 
 -- ── Concatenation operator on mixed expressions ─────────────────────────────
 
