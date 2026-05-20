@@ -22,9 +22,9 @@ local function bar(a, b, c)
 end
 
 bar("hello")
---  ^ sig: fun(a: string, b: string, c: string): boolean
+--  ^ sig: fun(a: string): string
 bar(1, 2)
---  ^ sig: fun(a: string, b: string, c: string): boolean
+--  ^ sig: fun(a: number, b: number): number
 bar("a", "b", "c")
 --  ^ sig: fun(a: string, b: string, c: string): boolean
 
@@ -37,4 +37,4 @@ btn:GetText()
 -- Test global function
 local t = {}
 table.insert(t, "hello")
---           ^ sig: fun(list: T[], pos: integer, value: T)
+--           ^ sig: fun(list: T[], value: T)

@@ -4989,17 +4989,18 @@ impl AnalysisResult {
         if text_size < arg_list.text_range().start() {
             return None;
         }
-        let active_parameter = {
-            let mut commas = 0u32;
+        let (active_parameter, total_commas) = {
+            let mut commas_before = 0u32;
+            let mut total = 0u32;
             for child in arg_list.children_with_tokens() {
-                if child.text_range().start() >= text_size {
-                    break;
-                }
                 if child.kind() == SyntaxKind::Comma {
-                    commas += 1;
+                    total += 1;
+                    if child.text_range().start() < text_size {
+                        commas_before += 1;
+                    }
                 }
             }
-            commas
+            (commas_before, total)
         };
 
         // Resolve the function being called
@@ -5045,17 +5046,37 @@ impl AnalysisResult {
 
         // Build signatures: primary + overloads
         let mut signatures = Vec::new();
+        let mut param_counts: Vec<(usize, bool)> = Vec::new(); // (param_count, is_vararg)
 
         // Primary signature
         let primary = self.build_signature_info(func, is_colon);
+        let primary_param_count = primary.params.len();
+        let primary_is_vararg = func.is_vararg;
         signatures.push(primary);
+        param_counts.push((primary_param_count, primary_is_vararg));
 
-        // Overload signatures
+        // Overload signatures (skip return-only overloads)
         for overload in &func.overloads {
-            signatures.push(self.build_overload_signature_info(overload));
+            if overload.is_return_only { continue; }
+            let sig = self.build_overload_signature_info(overload);
+            let param_count = sig.params.len();
+            let is_vararg = overload.is_vararg;
+            signatures.push(sig);
+            param_counts.push((param_count, is_vararg));
         }
 
-        let active_signature = Some(0);
+        // Select best-matching signature based on total argument count at the call site.
+        // Use total commas (not cursor position) so we match the full call's arity.
+        // .children() yields only expression nodes (not paren/comma tokens), so
+        // this checks whether any argument expressions exist.
+        let has_args = arg_list.children().next().is_some();
+        let arg_count = if has_args { (total_commas + 1) as usize } else { 0 };
+        // When no args typed yet (empty parens), default to showing the primary signature
+        let active_signature = if arg_count == 0 {
+            Some(0)
+        } else {
+            Some(Self::best_matching_signature(&param_counts, arg_count) as u32)
+        };
 
         Some(SignatureHelpResult {
             signatures,
@@ -5160,6 +5181,36 @@ impl AnalysisResult {
 
         let param_docs = vec![None; params.len()];
         SignatureInfo { label, params, param_docs, doc: None }
+    }
+
+    /// Pick the signature index whose parameter count best matches the number of
+    /// arguments being typed. Prefers exact non-vararg match, then vararg match,
+    /// then smallest count >= arg_count, then falls back to the largest count.
+    fn best_matching_signature(param_counts: &[(usize, bool)], arg_count: usize) -> usize {
+        if param_counts.len() <= 1 {
+            return 0;
+        }
+        let mut best = 0usize;
+        let mut best_score = u32::MAX;
+        for (i, &(count, is_vararg)) in param_counts.iter().enumerate() {
+            let score = if is_vararg && arg_count >= count {
+                // Vararg can accept extra args, but prefer exact non-vararg matches
+                1
+            } else if count == arg_count {
+                0 // exact match
+            } else if count > arg_count {
+                // Can accept all args — prefer closer counts
+                (count - arg_count) as u32
+            } else {
+                // Too few params — heavily penalize
+                1000 + (arg_count - count) as u32
+            };
+            if score < best_score {
+                best_score = score;
+                best = i;
+            }
+        }
+        best
     }
 
     /// Find the version whose `def_node` range contains `token_start`.
