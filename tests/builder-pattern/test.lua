@@ -630,6 +630,7 @@ local MIXED = MixedBuiltSchema.Create("MixedState")
 function assignMixedBuilt(state)
     state.dynamicField = 42
     -- ^ diag: none
+end
 
 -- ── @class overlay on @built-name types ─────────────────────────────
 -- A @class declaration that re-uses a @built-name class name should
