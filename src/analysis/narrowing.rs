@@ -3082,34 +3082,6 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Extract the bare-name symbol from an `and` LHS (for ternary idiom suppression).
-    /// Given `BinaryExpr(And, [x, ...])`, returns the symbol for `x` if it's a single name.
-    pub(super) fn extract_and_lhs_symbol(expr: &Expression<'_>, resolve: impl Fn(String) -> Option<SymbolIndex>) -> Option<SymbolIndex> {
-        if let Expression::BinaryExpression(bin) = expr {
-            if matches!(bin.kind(), Operator::And) {
-                let terms = bin.get_terms();
-                if let Some(Expression::Identifier(ident)) = terms.first() {
-                    let names = ident.names();
-                    if names.len() == 1 {
-                        return resolve(names[0].clone());
-                    }
-                }
-            }
-            // Parser flat form: BinaryExpr(None, [x, BinaryExpr(And, ...)])
-            if matches!(bin.kind(), Operator::None) {
-                let terms = bin.get_terms();
-                if let [Expression::Identifier(ident), Expression::BinaryExpression(rhs_bin)] = terms.as_slice()
-                    && matches!(rhs_bin.kind(), Operator::And) {
-                        let names = ident.names();
-                        if names.len() == 1 {
-                            return resolve(names[0].clone());
-                        }
-                    }
-            }
-        }
-        None
-    }
-
     /// Detect field access guards in `and` LHS (e.g. `self.field and ...` or
     /// `self.field ~= nil and ...`). Returns `(sym_idx, field_chain, strip_falsy)`
     /// where `strip_falsy` is true for bare truthiness guards and false for

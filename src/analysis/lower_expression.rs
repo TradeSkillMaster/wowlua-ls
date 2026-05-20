@@ -305,7 +305,7 @@ impl<'a> Analysis<'a> {
                             self.type_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx, n);
                         }
                     }
-                    // Mark and-guarded call/access exprs for all field guards + bare-name + ternary.
+                    // Mark and-guarded call/access exprs for all field guards + bare-name.
                     {
                         let mut all_field_guards: Vec<(SymbolIndex, &Vec<String>)> = Vec::new();
                         if let Some((guard_sym, ref guard_fields, _)) = field_guard {
@@ -314,9 +314,6 @@ impl<'a> Analysis<'a> {
                         for (sym_idx, chain, _) in &extra_field_guards {
                             all_field_guards.push((*sym_idx, chain));
                         }
-                        let ternary_guard_sym = if matches!(op, Operator::Or) {
-                            Self::extract_and_lhs_symbol(lhs, |name| self.get_symbol(&SymbolIdentifier::Name(name), scope_idx))
-                        } else { None };
                         for eid in expr_start..self.ir.exprs.len() {
                             let expr_id = ExprId(eid);
                             match self.ir.expr(expr_id) {
@@ -358,12 +355,6 @@ impl<'a> Analysis<'a> {
                                         && let Some(gsi) = guard_sym
                                         && self.ir.extract_field_chain(table)
                                             .is_some_and(|(sym, _)| sym == gsi) {
-                                        guarded = true;
-                                    }
-                                    if !guarded
-                                        && let Some(tgs) = ternary_guard_sym
-                                        && self.ir.extract_field_chain(table)
-                                            .is_some_and(|(sym, _)| sym == tgs) {
                                         guarded = true;
                                     }
                                     if guarded {

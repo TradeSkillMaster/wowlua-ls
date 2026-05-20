@@ -492,12 +492,17 @@ local _ = f32 and f32.name ~= "" and f32.name
 --                ^ diag: none
 -- ^ diag: none
 
--- Ternary idiom: `x and x.a or x.b` suppresses nil-checks on x in or-branch
+-- Ternary idiom: middle operand is guarded by `and`
 ---@type NilCheckFrame|nil
 local f33 = nil
-local _ = f33 and f33.name or f33.name
+local _ = f33 and f33.name or "fallback"
 --                ^ diag: none
--- ^ diag: none
+
+-- Ternary idiom: `or` fallback is NOT guarded — `x` is nil in the `or` branch
+---@type NilCheckFrame|nil
+local f34 = nil
+local _ = f34 and "safe" or f34.name
+--                          ^ diag: need-check-nil
 
 -- ── All-branch-assign narrows post-chain ──────────────────────────────
 -- When every branch of if/elseif/else assigns to a variable, the type
