@@ -372,7 +372,7 @@ local vn = v:GetName()
 --    ^ hover: (local) vn: string
 
 -- ============================================================================
--- 14. __call metamethod — return type inferred from body
+-- 18. __call metamethod — return type inferred from body
 -- ============================================================================
 
 -- Basic __call: self.field access resolves through setmetatable's first arg
@@ -428,7 +428,7 @@ local anVal = CallAnnotated()
 --    ^ hover: (local) anVal: number
 
 -- ============================================================================
--- 15. __call arity checking: missing and redundant parameters
+-- 19. __call arity checking: missing and redundant parameters
 -- ============================================================================
 
 -- __call with annotated params: missing args should warn

@@ -2711,6 +2711,7 @@ impl AnalysisResult {
             ("diagnostic",     "Control diagnostic suppression",          F|C|S,     Some("diagnostic ${1|enable,disable|}:${2:code}")),
             ("type-narrows",   "Type guard that narrows target param",    F,         None),
             ("flavor-narrows", "Flavor guard that narrows WoW API availability", F,  None),
+            ("narrows-arg",    "In-place argument type narrowing",        F,         Some("narrows-arg ${1:N}")),
             ("correlated",     "Declare fields that are always nil/non-nil together", C, None),
             ("see",            "Cross-reference link to related symbol or URL", F|C|S, None),
         ];
@@ -2780,7 +2781,8 @@ impl AnalysisResult {
                         let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
                         match tag {
                             "param" | "return" | "generic" | "builds-field" | "built-name"
-                            | "built-extends" | "type-narrows" | "defclass" | "flavor-narrows" => {
+                            | "built-extends" | "type-narrows" | "defclass" | "flavor-narrows"
+                            | "narrows-arg" => {
                                 has_function_tag = true;
                             }
                             "class" | "enum" | "field" | "accessor" | "correlated" => {

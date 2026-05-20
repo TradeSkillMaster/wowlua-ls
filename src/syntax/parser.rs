@@ -739,7 +739,11 @@ impl<'a> Parser<'a> {
                     self.error_here("expected `)`".to_string());
                 }
             }
-            SK::String => { self.bump(); }
+            SK::String => {
+                self.builder.start_node(SK::Literal);
+                self.bump();
+                self.builder.finish_node();
+            }
             SK::LeftCurlyBracket => { self.parse_table_constructor(); }
             _ => { self.error_here("expected function arguments".to_string()); }
         }
