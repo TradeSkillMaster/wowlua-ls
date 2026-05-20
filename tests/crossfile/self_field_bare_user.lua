@@ -14,4 +14,11 @@ function Child:Use()
     --              ^ hover: (field) data: table  def: external
     local c = self.count
     --               ^ hover: (field) count: number  def: external
+    local o = self.options
+    --               ^ hover: (field) options: {\nname: string,\nscale: any\n}  def: external
+    -- method call RHS falls back to any (pre-analysis scan can't resolve)
+    local s = self.options.scale
+    --                      ^ hover: (field) scale: any  def: external
+    local n = self.options.name
+    --                      ^ hover: (field) name: string  def: external
 end

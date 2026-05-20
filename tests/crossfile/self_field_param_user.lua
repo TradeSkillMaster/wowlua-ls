@@ -7,7 +7,7 @@ local function useBuilder(builder)
     local l = builder.label
     --                  ^ hover: (field) label: string  def: external
     local o = builder.opts
-    --                  ^ hover: (field) opts: table  def: external
+    --                  ^ hover: (field) opts: {\nscale: number\n}  def: external
     builder:DoWork()
     --       ^ hover: (method) function ParamFieldClass:DoWork()
 end

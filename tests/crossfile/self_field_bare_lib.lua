@@ -15,4 +15,14 @@ function BFC:Init(db, label)
     self.ready = true
     self.data = {}
     self.count = 0
+    -- Table literal assigned to self-field: field names should be preserved
+    self.options = {
+        scale = self:MakeOptions(),
+        name = "hello",
+    }
+end
+
+--- @return BareDB
+function BFC:MakeOptions()
+    return {}
 end

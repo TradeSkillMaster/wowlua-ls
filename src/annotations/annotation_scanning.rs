@@ -736,8 +736,9 @@ fn scan_bare_self_fields_inner(
                                         AnnotationType::Simple("any".into())
                                     }
                                 }
-                                Some(Expression::TableConstructor(_)) => {
-                                    AnnotationType::Simple("table".into())
+                                Some(Expression::TableConstructor(tc)) => {
+                                    super::scan_globals::extract_table_literal_annotation(tc)
+                                        .unwrap_or_else(|| AnnotationType::Simple("table".into()))
                                 }
                                 Some(Expression::Identifier(rhs_ident)) => {
                                     let rhs_names = rhs_ident.names();

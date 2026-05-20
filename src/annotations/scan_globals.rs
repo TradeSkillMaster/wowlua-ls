@@ -1306,10 +1306,10 @@ fn extract_first_string_arg(call: &FunctionCall<'_>) -> Option<String> {
 
 /// Extract named fields from a table constructor as a `TableLiteral` annotation.
 /// Returns `None` if the table has no named fields.  Used by the global scanner
-/// to preserve table shape across files (e.g. `ns.ITEMS = { A = 1, B = 2 }`).
+/// and bare self-field scanner to preserve table shape across files.
 /// Positional and bracket-keyed entries are intentionally skipped — only
 /// `Name = expr` fields map to `TableLiteral` field entries.
-fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor<'_>) -> Option<AnnotationType> {
+pub(crate) fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor<'_>) -> Option<AnnotationType> {
     let mut fields = Vec::new();
     for field in tc.fields() {
         if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
