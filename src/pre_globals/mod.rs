@@ -2289,6 +2289,10 @@ impl PreResolvedGlobals {
         aliases: &HashMap<String, ValueType>,
         param_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
     ) -> Option<ValueType> {
+        // Handle NonNil by recursing on inner type (so Parameterized etc. get proper handling)
+        if let AnnotationType::NonNil(inner) = at {
+            return Self::resolve_annotation(inner, classes, aliases, param_aliases);
+        }
         // Handle parameterized alias instantiation (e.g. MyAlias<string, number>)
         if let AnnotationType::Parameterized(base, args) = at
             && let Some((type_params, body)) = param_aliases.get(base)
@@ -2371,6 +2375,10 @@ impl PreResolvedGlobals {
                 }
             }
             return Some(ValueType::Table(Some(table_idx)));
+        }
+        // Handle NonNil by recursing on inner type (so Parameterized etc. get proper handling)
+        if let AnnotationType::NonNil(inner) = at {
+            return Self::resolve_annotation_gen(inner, classes, aliases, param_aliases, generics, tables, exprs);
         }
         // Handle intersections to recurse into TableLiteral members
         if let AnnotationType::Intersection(parts) = at {

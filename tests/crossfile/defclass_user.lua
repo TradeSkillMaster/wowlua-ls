@@ -91,7 +91,7 @@ MyComp2():AddDep("a"):AddDep("b")
 -- with nil (overlay must inherit external field annotations).
 local obj = DefineClass("MyObj")
 local od = obj._data
---              ^ hover: (field) _data: table!  diag: unused-local
+--              ^ hover: (field) _data: table<string, number>!  diag: unused-local
 local ol = obj._label
 --              ^ hover: (field) _label: string!  diag: unused-local
 local og = obj:GetData()
