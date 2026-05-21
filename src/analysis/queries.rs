@@ -1127,15 +1127,34 @@ impl AnalysisResult {
             return None;
         }
         let bytes = tok_text.as_bytes();
-        if !(bytes[cursor_in_tok].is_ascii_alphanumeric() || bytes[cursor_in_tok] == b'_') {
+        let is_word_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        if !is_word_byte(bytes[cursor_in_tok]) {
             return None;
         }
-        let start = tok_text[..cursor_in_tok]
-            .rfind(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .map_or(0, |i| i + 1);
-        let end = tok_text[cursor_in_tok..]
-            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .map_or(tok_text.len(), |i| cursor_in_tok + i);
+        // Scan left: consume word chars, and also '-'/'.' when sandwiched between word chars
+        // (handles names like `LibQTip-2.0.Column`).
+        let mut start = cursor_in_tok;
+        while start > 0 {
+            let prev = start - 1;
+            if is_word_byte(bytes[prev])
+                || ((bytes[prev] == b'-' || bytes[prev] == b'.') && prev > 0 && is_word_byte(bytes[prev - 1]))
+            {
+                start = prev;
+            } else {
+                break;
+            }
+        }
+        // Scan right: same logic forward.
+        let mut end = cursor_in_tok;
+        while end < tok_text.len() {
+            if is_word_byte(bytes[end])
+                || ((bytes[end] == b'-' || bytes[end] == b'.') && end + 1 < tok_text.len() && is_word_byte(bytes[end + 1]))
+            {
+                end += 1;
+            } else {
+                break;
+            }
+        }
         let word = &tok_text[start..end];
         if word.is_empty() {
             return None;

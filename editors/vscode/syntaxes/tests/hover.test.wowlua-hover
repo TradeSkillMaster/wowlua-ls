@@ -22,6 +22,7 @@ function Simple(x: number) -> boolean
   cases:
     (true, number, nil)  -- success
     (false, nil, string) -- failure
+(param) col: LibQTip-2.0.Column
 (field) function Baz.Qux(k: string)
   -> result: boolean, data: MyClass | nil
   cases:

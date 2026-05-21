@@ -247,6 +247,13 @@
 #                        ^ source.wowlua-hover
 #                         ^^ source.wowlua-hover punctuation.definition.comment.wowlua-hover
 #                           ^^^^^^^^ source.wowlua-hover comment.line.double-dash.wowlua-hover
+>(param) col: LibQTip-2.0.Column
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^ source.wowlua-hover
+#        ^^^ source.wowlua-hover variable.parameter.wowlua-hover
+#           ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#            ^ source.wowlua-hover
+#             ^^^^^^^^^^^^^^^^^^ source.wowlua-hover entity.name.type.wowlua-hover
 >(field) function Baz.Qux(k: string)
 #^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
 #       ^ source.wowlua-hover
