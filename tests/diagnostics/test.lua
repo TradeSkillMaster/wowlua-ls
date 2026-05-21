@@ -2010,6 +2010,18 @@ local function _diagReturnNumber()
     --     ^ diag: none
 end
 
+-- Enum with negative values should show literal values in hover
+---@enum TestEnum.Priority
+local TestPriority = {
+    Low = -1,
+    Normal = 0,
+    High = 1,
+}
+local _negEnum = TestPriority.Low
+--                            ^ hover: (field) Low: number = -1
+local _zeroEnum = TestPriority.Normal
+--                             ^ hover: (field) Normal: number = 0
+
 -- @class Enum.X (WoW stub pattern) should also accept number
 ---@class Enum.TestPowerType
 ---@field Mana number

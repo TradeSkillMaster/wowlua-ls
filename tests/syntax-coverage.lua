@@ -43,7 +43,7 @@ local lenLit = #"hello"
 --    ^ hover: (local) lenLit: number  def: local
 
 local neg = -42
---    ^ hover: (local) neg: number  def: local
+--    ^ hover: (local) neg: number = -42  def: local
 
 local negVar = -len
 --    ^ hover: (local) negVar: number  def: local

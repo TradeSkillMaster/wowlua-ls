@@ -88,6 +88,23 @@ pub(crate) fn func_path(g: &ExternalGlobal) -> Option<String> {
     }
 }
 
+/// Extract a number literal string from an expression, handling both positive
+/// literals (`1`) and unary-minus negated literals (`-1`).
+pub(crate) fn extract_number_from_expr(expr: &Expression<'_>) -> Option<String> {
+    match expr {
+        Expression::Literal(lit) => lit.get_number(),
+        Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
+            let terms = u.get_terms();
+            if let Some(Expression::Literal(lit)) = terms.first() {
+                lit.get_number().map(|n| format!("-{}", n))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FieldValueKind { String(Option<std::string::String>), Number(Option<std::string::String>), Boolean, Nil, Table(Vec<(std::string::String, FieldValueKind)>), Function, FunctionCall(Vec<std::string::String>, Option<std::string::String>), FieldRef(Vec<std::string::String>), Unknown }
 
@@ -732,6 +749,13 @@ fn scan_bare_self_fields_inner(
                                         AnnotationType::Simple("string".into())
                                     } else if lit.get_bool().is_some() {
                                         AnnotationType::Simple("boolean".into())
+                                    } else {
+                                        AnnotationType::Simple("any".into())
+                                    }
+                                }
+                                Some(expr @ Expression::UnaryExpression(u)) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
+                                    if extract_number_from_expr(expr).is_some() {
+                                        AnnotationType::Simple("number".into())
                                     } else {
                                         AnnotationType::Simple("any".into())
                                     }

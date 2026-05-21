@@ -735,12 +735,23 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
                 AnnotationType::Simple(class_name)
             } else if let Some(t) = infer_literal_type(&value) {
                 // Capture literal text for enum value display in hover
-                if let Expression::Literal(lit) = &value {
-                    if let Some(num) = lit.get_number() {
-                        new_literals.insert(name.clone(), num);
-                    } else if let Some(s) = lit.get_string() {
-                        new_literals.insert(name.clone(), s);
+                match &value {
+                    Expression::Literal(lit) => {
+                        if let Some(num) = lit.get_number() {
+                            new_literals.insert(name.clone(), num);
+                        } else if let Some(s) = lit.get_string() {
+                            new_literals.insert(name.clone(), s);
+                        }
                     }
+                    Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
+                        let terms = u.get_terms();
+                        if let Some(Expression::Literal(lit)) = terms.first()
+                            && let Some(num) = lit.get_number()
+                        {
+                            new_literals.insert(name.clone(), format!("-{}", num));
+                        }
+                    }
+                    _ => {}
                 }
                 t
             } else {
@@ -868,6 +879,14 @@ fn infer_literal_type(expr: &crate::ast::Expression<'_>) -> Option<AnnotationTyp
                 // Exhaustive for Lua literals; VarArgs is a separate Expression variant.
                 None
             }
+        }
+        Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
+            let terms = u.get_terms();
+            if let Some(Expression::Literal(lit)) = terms.first()
+                && lit.get_number().is_some() {
+                    return Some(AnnotationType::Simple("number".into()));
+                }
+            None
         }
         Expression::Function(_) => Some(AnnotationType::Simple("function".into())),
         Expression::TableConstructor(_) => Some(AnnotationType::Simple("table".into())),

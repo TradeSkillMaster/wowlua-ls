@@ -37,23 +37,34 @@ fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>) -> Vec<(Stri
     let mut fields = Vec::new();
     for field in tc.fields() {
         if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
-            let kind = match &value {
-                Expression::Literal(lit) => {
-                    if let Some(s) = lit.get_string() { FieldValueKind::String(Some(s)) }
-                    else if lit.get_bool().is_some() { FieldValueKind::Boolean }
-                    else if let Some(n) = lit.get_number() { FieldValueKind::Number(Some(n)) }
-                    else if lit.is_nil() { FieldValueKind::Nil }
-                    else { FieldValueKind::Unknown }
-                }
-                Expression::TableConstructor(inner_tc) => FieldValueKind::Table(extract_table_field_kinds(inner_tc)),
-                Expression::Function(_) => FieldValueKind::Function,
-                Expression::FunctionCall(_) => FieldValueKind::Unknown,
-                _ => FieldValueKind::Unknown,
-            };
+            let kind = classify_literal_value_kind(&value)
+                .unwrap_or_else(|| match &value {
+                    Expression::TableConstructor(inner_tc) => FieldValueKind::Table(extract_table_field_kinds(inner_tc)),
+                    Expression::Function(_) => FieldValueKind::Function,
+                    _ => FieldValueKind::Unknown,
+                });
             fields.push((name, kind));
         }
     }
     fields
+}
+
+/// Classify a literal expression (including negated number literals) into a `FieldValueKind`.
+fn classify_literal_value_kind(expr: &Expression<'_>) -> Option<FieldValueKind> {
+    match expr {
+        Expression::Literal(lit) => {
+            if let Some(s) = lit.get_string() { Some(FieldValueKind::String(Some(s))) }
+            else if lit.get_bool().is_some() { Some(FieldValueKind::Boolean) }
+            else if let Some(n) = lit.get_number() { Some(FieldValueKind::Number(Some(n))) }
+            else if lit.is_nil() { Some(FieldValueKind::Nil) }
+            else { None }
+        }
+        Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
+            super::annotation_scanning::extract_number_from_expr(expr)
+                .map(|n| FieldValueKind::Number(Some(n)))
+        }
+        _ => None,
+    }
 }
 
 // ── Synthesized return-only overloads (workspace scan) ──────────────────────
@@ -81,6 +92,12 @@ fn synth_coarse_return_type(expr: &Expression<'_>) -> AnnotationType {
         // `not x` always produces boolean.
         Expression::UnaryExpression(un) if matches!(un.kind(), Operator::Not) => {
             return AnnotationType::Simple("boolean".to_string());
+        }
+        // `-N` (negated number literal) is number.
+        Expression::UnaryExpression(un) if matches!(un.kind(), Operator::Subtract) => {
+            if super::annotation_scanning::extract_number_from_expr(expr).is_some() {
+                return AnnotationType::Simple("number".to_string());
+            }
         }
         // Parenthesized expression: unwrap.
         Expression::GroupedExpression(g) => {
@@ -950,21 +967,14 @@ pub(crate) fn scan_file_globals_with_synth(
                         if names.len() == 1 {
                             let range = assign.syntax().text_range();
                             let effective = unwrap_logical_chain(exprs[0]);
-                            let (kind, string_value, number_value) = match &effective {
+                            let (kind, string_value, number_value) = if let Some(vk) = classify_literal_value_kind(&effective) {
+                                let sv = if let Expression::Literal(lit) = &effective {
+                                    lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+                                } else { None };
+                                let nv = super::annotation_scanning::extract_number_from_expr(&effective);
+                                (ExternalGlobalKind::Variable(vk), sv, nv)
+                            } else { match &effective {
                                 Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None, None),
-                                Expression::Literal(lit) => {
-                                    let sv = lit.get_string().map(|s| {
-                                        let stripped = s.trim_matches(|c| c == '"' || c == '\'');
-                                        stripped.to_string()
-                                    });
-                                    let nv = lit.get_number();
-                                    let vk = if let Some(s) = lit.get_string() { FieldValueKind::String(Some(s)) }
-                                        else if lit.get_bool().is_some() { FieldValueKind::Boolean }
-                                        else if let Some(n) = lit.get_number() { FieldValueKind::Number(Some(n)) }
-                                        else if lit.is_nil() { FieldValueKind::Nil }
-                                        else { FieldValueKind::Unknown };
-                                    (ExternalGlobalKind::Variable(vk), sv, nv)
-                                }
                                 Expression::Function(_) => (ExternalGlobalKind::Variable(FieldValueKind::Function), None, None),
                                 Expression::Identifier(ident) => {
                                     let mut rhs_names = ident.names();
@@ -1031,7 +1041,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                     (ExternalGlobalKind::Variable(vk), None, None)
                                 }
                                 _ => (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None),
-                            };
+                            }};
                             // Extract @type or @class annotation for the variable
                             let annotations = extract_annotations(assign.syntax());
                             let returns: Vec<AnnotationType> = if let Some(class_name) = class_vars.get(&names[0]) {
@@ -1083,14 +1093,9 @@ pub(crate) fn scan_file_globals_with_synth(
                             // Unwrap `and`/`or` chains so `ns.B = X and X.Y`
                             // infers from the effective operand (Y), not the whole chain.
                             let effective = unwrap_logical_chain(exprs[0]);
-                            let value_kind = match &effective {
-                                Expression::Literal(lit) => {
-                                    if let Some(s) = lit.get_string() { FieldValueKind::String(Some(s)) }
-                                    else if lit.get_bool().is_some() { FieldValueKind::Boolean }
-                                    else if let Some(n) = lit.get_number() { FieldValueKind::Number(Some(n)) }
-                                    else if lit.is_nil() { FieldValueKind::Nil }
-                                    else { FieldValueKind::Unknown }
-                                }
+                            let value_kind = if let Some(vk) = classify_literal_value_kind(&effective) {
+                                vk
+                            } else { match &effective {
                                 Expression::TableConstructor(tc) => FieldValueKind::Table(extract_table_field_kinds(tc)),
                                 Expression::Function(_) => FieldValueKind::Function,
                                 Expression::FunctionCall(call) => {
@@ -1178,7 +1183,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                     }
                                 }
                                 _ => FieldValueKind::Unknown,
-                            };
+                            }};
                             let returns = if let Some(ref var_type) = annotations.var_type {
                                 vec![var_type.clone()]
                             } else if let Some(ref class_name) = annotations.class {
@@ -1324,6 +1329,13 @@ pub(crate) fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor
                         else if lit.get_bool().is_some() { AnnotationType::Simple("boolean".into()) }
                         else if lit.is_nil() { AnnotationType::Simple("nil".into()) }
                         else { AnnotationType::Simple("any".into()) }
+                    }
+                    Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
+                        if super::annotation_scanning::extract_number_from_expr(&value).is_some() {
+                            AnnotationType::Simple("number".into())
+                        } else {
+                            AnnotationType::Simple("any".into())
+                        }
                     }
                     Expression::TableConstructor(nested) => {
                         extract_table_literal_annotation(nested)

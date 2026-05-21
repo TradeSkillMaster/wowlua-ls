@@ -5,6 +5,12 @@
 local x = 5
 --    ^ hover: (local) x: number = 5  def: local
 
+local neg = -1
+--    ^ hover: (local) neg: number = -1  def: local
+
+local neg100 = -100
+--    ^ hover: (local) neg100: number = -100  def: local
+
 local y = x + 2
 --    ^ hover: (local) y: number  def: local
 

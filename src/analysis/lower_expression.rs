@@ -437,6 +437,12 @@ impl<'a> Analysis<'a> {
                         let r = u.syntax().text_range();
                         self.ir.unary_op_sites.push((expr_id, u32::from(r.start()), u32::from(r.end())));
                     }
+                    // Store negated number literal for hover display (e.g. `-1`).
+                    if op == Operator::Subtract
+                        && let Some(num) = self.ir.number_literals.get(&operand_id).cloned()
+                    {
+                        self.ir.number_literals.insert(expr_id, format!("-{}", num));
+                    }
                     expr_id
                 } else {
                     self.ir.push_expr(Expr::Unknown)

@@ -549,6 +549,13 @@ fn infer_type_from_expression(expr: &Expression<'_>, global_returns: &HashMap<St
                 AnnotationType::Simple("any".to_string())
             }
         }
+        Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
+            if super::annotation_scanning::extract_number_from_expr(expr).is_some() {
+                AnnotationType::Simple("number".to_string())
+            } else {
+                AnnotationType::Simple("any".to_string())
+            }
+        }
         Expression::TableConstructor(_) => AnnotationType::Simple("table".to_string()),
         Expression::Function(_) => AnnotationType::Simple("function".to_string()),
         Expression::FunctionCall(call) => {
