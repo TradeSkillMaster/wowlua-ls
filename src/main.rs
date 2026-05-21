@@ -376,59 +376,47 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let discover_dur = t.elapsed();
         info!("file discovery:    {:>8.1?}  ({} .lua files)", discover_dur, lua_files.len());
 
-        // Phase 5: Parse + analyze every file (in a thread with larger stack)
+        // Phase 5: Parse + analyze every file
         let t = std::time::Instant::now();
-        let dir2 = dir.clone();
-        let pre_globals2 = Arc::clone(&pre_globals);
-        let (file_times, total_parse, total_analysis, total_diagnostics, analyze_dur) =
-            std::thread::Builder::new()
-                .stack_size(1024 * 1024 * 1024)
-                .spawn(move || {
-                    let pre_globals = pre_globals2;
-                    let mut file_times: Vec<(std::path::PathBuf, std::time::Duration, std::time::Duration)> = Vec::new();
-                    let mut total_parse = std::time::Duration::ZERO;
-                    let mut total_analysis = std::time::Duration::ZERO;
-                    let mut total_diagnostics = 0usize;
+        let mut file_times: Vec<(std::path::PathBuf, std::time::Duration, std::time::Duration)> = Vec::new();
+        let mut total_parse = std::time::Duration::ZERO;
+        let mut total_analysis = std::time::Duration::ZERO;
+        let mut total_diagnostics = 0usize;
 
-                    for (i, path) in lua_files.iter().enumerate() {
-                        let text = match std::fs::read_to_string(path) {
-                            Ok(t) => t,
-                            Err(_) => continue,
-                        };
-                        if wowlua_ls::has_shebang(&text) { continue; }
-                        let name = path.strip_prefix(&dir2).unwrap_or(path);
-                        eprint!("\r  [{}/{}] {}\x1b[K", i + 1, lua_files.len(), name.display());
+        for (i, path) in lua_files.iter().enumerate() {
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if wowlua_ls::has_shebang(&text) { continue; }
+            let name = path.strip_prefix(&dir).unwrap_or(path);
+            eprint!("\r  [{}/{}] {}\x1b[K", i + 1, lua_files.len(), name.display());
 
-                        let pt = std::time::Instant::now();
-                        let tree2 = syntax::parser::parse(&text);
-                        let parse_dur = pt.elapsed();
+            let pt = std::time::Instant::now();
+            let tree2 = syntax::parser::parse(&text);
+            let parse_dur = pt.elapsed();
 
-                        let at = std::time::Instant::now();
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut analysis = Analysis::new_with_tree(&tree2, Arc::clone(&pre_globals), AnalysisConfig::default());
-                            analysis.resolve_types();
-                            let ar = analysis.into_result();
-                            ar.run_diagnostics(&tree2).len()
-                        }));
-                        let analysis_dur = at.elapsed();
+            let at = std::time::Instant::now();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut analysis = Analysis::new_with_tree(&tree2, Arc::clone(&pre_globals), AnalysisConfig::default());
+                analysis.resolve_types();
+                let ar = analysis.into_result();
+                ar.run_diagnostics(&tree2).len()
+            }));
+            let analysis_dur = at.elapsed();
 
-                        match result {
-                            Ok(count) => total_diagnostics += count,
-                            Err(_) => {
-                                let name = path.strip_prefix(&dir2).unwrap_or(path);
-                                error!("PANIC: {}", name.display());
-                            }
-                        }
-                        total_parse += parse_dur;
-                        total_analysis += analysis_dur;
-                        file_times.push((path.clone(), parse_dur, analysis_dur));
-                    }
-                    let dur = t.elapsed();
-                    (file_times, total_parse, total_analysis, total_diagnostics, dur)
-                })
-                .expect("thread spawn")
-                .join()
-                .expect("analysis thread panicked");
+            match result {
+                Ok(count) => total_diagnostics += count,
+                Err(_) => {
+                    let name = path.strip_prefix(&dir).unwrap_or(path);
+                    error!("PANIC: {}", name.display());
+                }
+            }
+            total_parse += parse_dur;
+            total_analysis += analysis_dur;
+            file_times.push((path.clone(), parse_dur, analysis_dur));
+        }
+        let analyze_dur = t.elapsed();
 
         info!("analyze all files: {:>8.1?}  (parse: {:.1?}, analysis: {:.1?}, {} diagnostics)",
             analyze_dur, total_parse, total_analysis, total_diagnostics);
@@ -580,72 +568,65 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         lua_files.sort();
 
         // Analyze every file and dump hover types for all Name tokens
-        std::thread::Builder::new()
-            .stack_size(1024 * 1024 * 1024)
-            .spawn(move || {
-                for path in &lua_files {
-                    let text = match std::fs::read_to_string(path) {
-                        Ok(t) => t,
-                        Err(_) => continue,
-                    };
-                    if wowlua_ls::has_shebang(&text) { continue; }
-                    let name = path.strip_prefix(&dir).unwrap_or(path);
+        for path in &lua_files {
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if wowlua_ls::has_shebang(&text) { continue; }
+            let name = path.strip_prefix(&dir).unwrap_or(path);
 
-                    let tree = syntax::parser::parse(&text);
-                    let numbers = line_numbers::LinePositions::from(text.as_str());
+            let tree = syntax::parser::parse(&text);
+            let numbers = line_numbers::LinePositions::from(text.as_str());
 
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let addon_table_override = pre_globals.addon_table_for_root(project_configs.addon_root_for(path));
-                        let mut analysis = Analysis::new_with_tree(
-                            &tree, Arc::clone(&pre_globals), AnalysisConfig {
-                                framexml_enabled: project_configs.framexml_enabled_for(path),
-                                allowed_read_globals: project_configs.allowed_read_globals_for(path),
-                                allowed_write_globals: project_configs.allowed_write_globals_for(path),
-                                allow_slash_commands: project_configs.allow_slash_commands_for(path),
-                                project_flavors: project_configs.flavors_for(path),
-                                backward_param_types: project_configs.backward_param_types_for(path),
-                                correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
-                                implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),
-                                addon_table_override,
-                            },
-                        );
-                        analysis.resolve_types();
-                        analysis.into_result()
-                    }));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let addon_table_override = pre_globals.addon_table_for_root(project_configs.addon_root_for(path));
+                let mut analysis = Analysis::new_with_tree(
+                    &tree, Arc::clone(&pre_globals), AnalysisConfig {
+                        framexml_enabled: project_configs.framexml_enabled_for(path),
+                        allowed_read_globals: project_configs.allowed_read_globals_for(path),
+                        allowed_write_globals: project_configs.allowed_write_globals_for(path),
+                        allow_slash_commands: project_configs.allow_slash_commands_for(path),
+                        project_flavors: project_configs.flavors_for(path),
+                        backward_param_types: project_configs.backward_param_types_for(path),
+                        correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
+                        implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),
+                        addon_table_override,
+                    },
+                );
+                analysis.resolve_types();
+                analysis.into_result()
+            }));
 
-                    let ar = match result {
-                        Ok(ar) => ar,
-                        Err(_) => {
-                            error!("PANIC: {}", name.display());
-                            continue;
-                        }
-                    };
+            let ar = match result {
+                Ok(ar) => ar,
+                Err(_) => {
+                    error!("PANIC: {}", name.display());
+                    continue;
+                }
+            };
 
-                    // Walk all Name tokens and output hover results
-                    for tok in tree.all_tokens() {
-                        if tok.kind != syntax::SyntaxKind::Name {
-                            continue;
-                        }
-                        let token_text = &text[tok.start as usize..tok.end as usize];
-                        let pos = numbers.from_offset(tok.start as usize);
-                        let line = pos.0.0 + 1;
-                        let col = pos.1 + 1;
+            // Walk all Name tokens and output hover results
+            for tok in tree.all_tokens() {
+                if tok.kind != syntax::SyntaxKind::Name {
+                    continue;
+                }
+                let token_text = &text[tok.start as usize..tok.end as usize];
+                let pos = numbers.from_offset(tok.start as usize);
+                let line = pos.0.0 + 1;
+                let col = pos.1 + 1;
 
-                        match ar.hover_at(&tree, tok.start) {
-                            Some(hover) => {
-                                let type_str = hover.type_str.replace('\n', " ");
-                                println!("{}:{}:{} {} → {}", name.display(), line, col, token_text, type_str);
-                            }
-                            None => {
-                                println!("{}:{}:{} {} → <none>", name.display(), line, col, token_text);
-                            }
-                        }
+                match ar.hover_at(&tree, tok.start) {
+                    Some(hover) => {
+                        let type_str = hover.type_str.replace('\n', " ");
+                        println!("{}:{}:{} {} → {}", name.display(), line, col, token_text, type_str);
+                    }
+                    None => {
+                        println!("{}:{}:{} {} → <none>", name.display(), line, col, token_text);
                     }
                 }
-            })
-            .expect("thread spawn")
-            .join()
-            .expect("dump-types thread panicked");
+            }
+        }
 
         Ok(())
     } else if args.len() > 1 && args[1] == "check" {
@@ -703,124 +684,116 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         // Analyze every file and collect diagnostics
         let started = std::time::Instant::now();
-        let stats = std::thread::Builder::new()
-            .stack_size(1024 * 1024 * 1024)
-            .spawn(move || {
-                let mut plugin_engine = {
-                    let plugin_paths = project_configs.all_plugins();
-                    if plugin_paths.is_empty() {
-                        None
-                    } else {
-                        Some(wowlua_ls::plugins::PluginEngine::new(&plugin_paths))
+        let mut plugin_engine = {
+            let plugin_paths = project_configs.all_plugins();
+            if plugin_paths.is_empty() {
+                None
+            } else {
+                Some(wowlua_ls::plugins::PluginEngine::new(&plugin_paths))
+            }
+        };
+        let mut stats = CheckStats::default();
+        for path in &lua_files {
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if wowlua_ls::has_shebang(&text) { continue; }
+            let name = path.strip_prefix(&dir).unwrap_or(path);
+
+            stats.total_files += 1;
+            stats.total_lines += text.lines().count();
+
+            let tree = syntax::parser::parse(&text);
+            let root = syntax::SyntaxNode::new_root(&tree);
+            let suppressions = annotations::scan_diagnostic_directives(root);
+            let numbers = line_numbers::LinePositions::from(text.as_str());
+
+            // Syntax errors
+            for e in &tree.errors {
+                let start = numbers.from_offset(e.start as usize);
+                let start_line = start.0.0;
+                if !lsp::diagnostics::is_suppressed("syntax", start_line, &suppressions) {
+                    println!("{}:{}:{}: error[syntax] {}", name.display(), start_line + 1, start.1 + 1, e.message);
+                    stats.errors += 1;
+                }
+            }
+
+            // Semantic diagnostics
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let addon_table_override = pre_globals.addon_table_for_root(project_configs.addon_root_for(path));
+                let mut analysis = Analysis::new_with_tree(
+                    &tree, Arc::clone(&pre_globals), AnalysisConfig {
+                        framexml_enabled: project_configs.framexml_enabled_for(path),
+                        allowed_read_globals: project_configs.allowed_read_globals_for(path),
+                        allowed_write_globals: project_configs.allowed_write_globals_for(path),
+                        allow_slash_commands: project_configs.allow_slash_commands_for(path),
+                        project_flavors: project_configs.flavors_for(path),
+                        backward_param_types: project_configs.backward_param_types_for(path),
+                        correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
+                        implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),
+                        addon_table_override,
+                    },
+                );
+                analysis.resolve_types();
+                let mut ar = analysis.into_result();
+                if let Some(ref engine) = plugin_engine {
+                    ar.plugin_diag_codes = engine.plugin_codes().iter().map(|s| s.to_string()).collect();
+                }
+
+                // Collect analysis stats
+                let file_stats = ar.stats();
+                stats.total_functions += file_stats.functions;
+                stats.annotated_functions += file_stats.annotated_functions;
+                stats.total_classes += file_stats.classes;
+                stats.total_symbols += file_stats.symbols;
+                stats.resolved_symbols += file_stats.resolved_symbols;
+
+                let diags = ar.run_diagnostics(&tree);
+                let file_disabled = project_configs.disabled_diagnostics_for(path);
+                let file_severity = project_configs.severity_overrides_for(path);
+
+                let mut emit_diag = |code: &str, severity: lsp_types::DiagnosticSeverity, start_offset: usize, message: &str| {
+                    if file_disabled.contains(code) { return; }
+                    let effective_severity = file_severity.get(code).copied().unwrap_or(severity);
+                    let start = numbers.from_offset(start_offset);
+                    let start_line = start.0.0;
+                    if lsp::diagnostics::is_suppressed(code, start_line, &suppressions) { return; }
+                    let is_hint = effective_severity == lsp_types::DiagnosticSeverity::HINT;
+                    if is_hint {
+                        stats.hints += 1;
+                        if !include_hints { return; }
                     }
-                };
-                let mut stats = CheckStats::default();
-                for path in &lua_files {
-                    let text = match std::fs::read_to_string(path) {
-                        Ok(t) => t,
-                        Err(_) => continue,
-                    };
-                    if wowlua_ls::has_shebang(&text) { continue; }
-                    let name = path.strip_prefix(&dir).unwrap_or(path);
-
-                    stats.total_files += 1;
-                    stats.total_lines += text.lines().count();
-
-                    let tree = syntax::parser::parse(&text);
-                    let root = syntax::SyntaxNode::new_root(&tree);
-                    let suppressions = annotations::scan_diagnostic_directives(root);
-                    let numbers = line_numbers::LinePositions::from(text.as_str());
-
-                    // Syntax errors
-                    for e in &tree.errors {
-                        let start = numbers.from_offset(e.start as usize);
-                        let start_line = start.0.0;
-                        if !lsp::diagnostics::is_suppressed("syntax", start_line, &suppressions) {
-                            println!("{}:{}:{}: error[syntax] {}", name.display(), start_line + 1, start.1 + 1, e.message);
-                            stats.errors += 1;
-                        }
-                    }
-
-                    // Semantic diagnostics
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let addon_table_override = pre_globals.addon_table_for_root(project_configs.addon_root_for(path));
-                        let mut analysis = Analysis::new_with_tree(
-                            &tree, Arc::clone(&pre_globals), AnalysisConfig {
-                                framexml_enabled: project_configs.framexml_enabled_for(path),
-                                allowed_read_globals: project_configs.allowed_read_globals_for(path),
-                                allowed_write_globals: project_configs.allowed_write_globals_for(path),
-                                allow_slash_commands: project_configs.allow_slash_commands_for(path),
-                                project_flavors: project_configs.flavors_for(path),
-                                backward_param_types: project_configs.backward_param_types_for(path),
-                                correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
-                                implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),
-                                addon_table_override,
-                            },
-                        );
-                        analysis.resolve_types();
-                        let mut ar = analysis.into_result();
-                        if let Some(ref engine) = plugin_engine {
-                            ar.plugin_diag_codes = engine.plugin_codes().iter().map(|s| s.to_string()).collect();
-                        }
-
-                        // Collect analysis stats
-                        let file_stats = ar.stats();
-                        stats.total_functions += file_stats.functions;
-                        stats.annotated_functions += file_stats.annotated_functions;
-                        stats.total_classes += file_stats.classes;
-                        stats.total_symbols += file_stats.symbols;
-                        stats.resolved_symbols += file_stats.resolved_symbols;
-
-                        let diags = ar.run_diagnostics(&tree);
-                        let file_disabled = project_configs.disabled_diagnostics_for(path);
-                        let file_severity = project_configs.severity_overrides_for(path);
-
-                        let mut emit_diag = |code: &str, severity: lsp_types::DiagnosticSeverity, start_offset: usize, message: &str| {
-                            if file_disabled.contains(code) { return; }
-                            let effective_severity = file_severity.get(code).copied().unwrap_or(severity);
-                            let start = numbers.from_offset(start_offset);
-                            let start_line = start.0.0;
-                            if lsp::diagnostics::is_suppressed(code, start_line, &suppressions) { return; }
-                            let is_hint = effective_severity == lsp_types::DiagnosticSeverity::HINT;
-                            if is_hint {
-                                stats.hints += 1;
-                                if !include_hints { return; }
-                            }
-                            let severity_str = if effective_severity == lsp_types::DiagnosticSeverity::ERROR {
-                                stats.errors += 1;
-                                "error"
-                            } else if is_hint {
-                                "hint"
-                            } else {
-                                stats.warnings += 1;
-                                "warning"
-                            };
-                            println!("{}:{}:{}: {}[{}] {}", name.display(), start_line + 1, start.1 + 1, severity_str, code, message);
-                        };
-
-                        for d in &diags {
-                            emit_diag(d.code, d.severity, d.start, &d.message);
-                        }
-                        // Plugin diagnostics
-                        if let Some(ref mut engine) = plugin_engine {
-                            let uri_str = format!("file://{}", path.display());
-                            let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-                            let pdiags = engine.run_plugins(&ar, &text, &uri_str, &file_name);
-                            for d in &pdiags {
-                                emit_diag(&d.code, d.severity, d.start, &d.message);
-                            }
-                        }
-                    }));
-                    if result.is_err() {
-                        error!("PANIC analyzing: {}", name.display());
+                    let severity_str = if effective_severity == lsp_types::DiagnosticSeverity::ERROR {
                         stats.errors += 1;
+                        "error"
+                    } else if is_hint {
+                        "hint"
+                    } else {
+                        stats.warnings += 1;
+                        "warning"
+                    };
+                    println!("{}:{}:{}: {}[{}] {}", name.display(), start_line + 1, start.1 + 1, severity_str, code, message);
+                };
+
+                for d in &diags {
+                    emit_diag(d.code, d.severity, d.start, &d.message);
+                }
+                // Plugin diagnostics
+                if let Some(ref mut engine) = plugin_engine {
+                    let uri_str = format!("file://{}", path.display());
+                    let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                    let pdiags = engine.run_plugins(&ar, &text, &uri_str, &file_name);
+                    for d in &pdiags {
+                        emit_diag(&d.code, d.severity, d.start, &d.message);
                     }
                 }
-                stats
-            })
-            .expect("thread spawn")
-            .join()
-            .expect("analysis thread panicked");
+            }));
+            if result.is_err() {
+                error!("PANIC analyzing: {}", name.display());
+                stats.errors += 1;
+            }
+        }
         let elapsed = started.elapsed();
 
         // Print summary

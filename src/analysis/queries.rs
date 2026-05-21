@@ -4756,6 +4756,9 @@ impl AnalysisResult {
     }
 
     pub(crate) fn format_value_type_depth(&self, vt: &ValueType, depth: usize) -> String {
+        // Safety net: prevent stack overflow from recursive types (e.g. table
+        // whose value_type contains the same table via a recursive function).
+        if depth > 8 { return "?".to_string(); }
         match vt {
             ValueType::Any => "any".to_string(),
             ValueType::Nil => "nil".to_string(),
@@ -4848,6 +4851,11 @@ impl AnalysisResult {
                 // Array/map types: table has value_type and no class_name
                 if table.class_name.is_none()
                     && let Some(ref val_vt) = table.value_type {
+                        // Tighter limit than the outer depth > 8 guard: recursive
+                        // functions (e.g. deep-copy) commonly produce tables whose
+                        // value_type contains the same table, so cap early to avoid
+                        // deep expansion before the general safety net kicks in.
+                        if depth > 4 { return "table".to_string(); }
                         let val_str = self.format_value_type_depth(val_vt, depth + 1);
                         return match &table.key_type {
                             Some(ValueType::Number) | None if !table.is_explicit_map => {

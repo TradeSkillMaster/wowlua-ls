@@ -3715,6 +3715,38 @@ _useNestedFieldItem(_nestedFieldDb.entry)
 local _nestedTag = _nestedFieldDb.entry.tag
 --                                      ^ hover: (field) tag: string  diag: none
 
+-- ── recursive deep-copy: return-mismatch on recursive table type ──────────────
+-- Regression test: a recursive function whose return type includes a table
+-- whose value_type contains the return type (via bracket assignment from the
+-- recursive call) used to cause stack overflow in format_value_type_depth.
+
+local _deepCopyLib = {}
+
+---@return table
+function _deepCopyLib.CopyTable(tbl)
+    return _deepCopyLib.CleanValue(tbl, {})
+    --     ^ diag: return-mismatch
+end
+
+function _deepCopyLib.CleanValue(value, seen)
+    local valueType = type(value)
+    if valueType == "table" then
+        if seen[value] then return "<<circular>>" end
+        local result = {}
+        for k, v in pairs(value) do
+            if type(k) == "string" or type(k) == "number" then
+                result[k] = _deepCopyLib.CleanValue(v, seen)
+            end
+        end
+        return result
+    elseif valueType == "string" or valueType == "number" or valueType == "boolean" then
+        return value
+    else
+        return "unknown"
+    end
+end
+_consume(_deepCopyLib)
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function

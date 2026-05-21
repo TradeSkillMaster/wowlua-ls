@@ -29,9 +29,8 @@ pub struct Node {
     pub(crate) parent: Option<NodeId>,
     /// Range into the children array: children[children_start..children_start+children_count]
     pub(crate) children_start: u32,
-    /// Number of direct children. Limited to u16 (65,535 max).
-    /// Sufficient for Lua syntax; deeply nested constructs are rare.
-    pub(crate) children_count: u16,
+    /// Number of direct children.
+    pub(crate) children_count: u32,
 }
 
 /// A child entry can be either a sub-node or a token.
@@ -335,8 +334,7 @@ impl TreeBuilder {
     pub(crate) fn finish_node(&mut self) {
         let (id, local_children, already_registered) = self.node_stack.pop().expect("finish_node without matching start_node");
         let children_start = self.children.len() as u32;
-        debug_assert!(local_children.len() <= u16::MAX as usize, "node has too many children ({})", local_children.len());
-        let children_count = local_children.len() as u16;
+        let children_count = local_children.len() as u32;
 
         // Compute node start/end from children
         let mut start = u32::MAX;

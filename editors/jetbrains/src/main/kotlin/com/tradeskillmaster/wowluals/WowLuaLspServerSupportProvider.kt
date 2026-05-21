@@ -47,7 +47,7 @@ private class WowLuaLspServerDescriptor(project: Project) : ProjectWideLspServer
         )?.pluginPath
         if (pluginPath != null) {
             val bundled = pluginPath.resolve("server").resolve(platform).resolve(binaryName)
-            if (Files.isExecutable(bundled)) return bundled.toString()
+            if (Files.isRegularFile(bundled)) return bundled.toString()
         }
 
         val pathDirs = System.getenv("PATH")?.split(File.pathSeparator).orEmpty()

@@ -3531,8 +3531,6 @@ fn toc_completions() {
 #[test]
 fn toc_definition() {
     use wowlua_ls::toc;
-    use std::path::Path;
-
     let text = "existing.lua\n";
     let doc = toc::parse_toc(text);
     let toc_dir = std::env::current_dir().unwrap().join("tests/toc");
