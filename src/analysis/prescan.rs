@@ -308,8 +308,14 @@ impl<'a> Analysis<'a> {
                     // When the local class has explicit @field annotations, skip
                     // workspace-scan discoveries (no annotation_type_raw) to preserve
                     // inject-field checking.  Author-declared @field entries (with
-                    // annotation_type_raw) are still imported for cross-file access.
-                    if local_has_field_contract && fi.annotation_type_raw.is_none() {
+                    // annotation_type_raw) and cross-file method definitions are still
+                    // imported for cross-file access.  FunctionDef fields are exempt
+                    // because they are explicit author-written definitions (colon or
+                    // dot syntax), not speculative workspace-scan artifacts, so the
+                    // field-contract gate should never suppress them.
+                    if local_has_field_contract && fi.annotation_type_raw.is_none()
+                        && !matches!(self.ir.expr(fi.expr), Expr::FunctionDef(..))
+                    {
                         continue;
                     }
                     if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[local_idx.val()].fields.entry(fname) {
