@@ -278,6 +278,7 @@ fn populate_table_fields(
             def_range: None,
             extra_exprs: Vec::new(),
             flavor_guard: 0,
+            from_scan: false,
         });
     }
 }
@@ -374,6 +375,7 @@ fn walk_deep_path(
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        from_scan: false,
                     });
                     record_field_location(field_locations, current_idx, seg, g);
                     sub_tables.insert(key.clone(), new_idx);
@@ -866,6 +868,7 @@ impl BuildContext {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        from_scan: false,
                     });
                 } else if annotation_type_references_type_params(annotation_type, &self.tables[local_idx].class_type_params) {
                     // Field type references a class type param (e.g., @field __super S?)
@@ -882,6 +885,7 @@ impl BuildContext {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        from_scan: false,
                     });
                 }
             }
@@ -1140,6 +1144,7 @@ impl BuildContext {
                     def_range: None,
                     extra_exprs: Vec::new(),
                     flavor_guard: 0,
+                    from_scan: false,
                 };
                 if g.is_override {
                     self.tables[local_idx].fields.insert(method_name.clone(), field_info);
@@ -1208,6 +1213,7 @@ impl BuildContext {
                     def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: g.flavor_guard,
+                        from_scan: true,
                     });
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                 }
@@ -1248,6 +1254,7 @@ impl BuildContext {
                     def_range: None,
                     extra_exprs: Vec::new(),
                     flavor_guard: g.flavor_guard,
+                    from_scan: true,
                 });
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
             }
@@ -1764,6 +1771,7 @@ impl BuildContext {
                     def_range: None,
                             extra_exprs: Vec::new(),
                             flavor_guard: 0,
+                            from_scan: true,
                         });
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
@@ -1806,6 +1814,7 @@ impl BuildContext {
                     def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        from_scan: true,
                     });
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
@@ -1877,6 +1886,7 @@ impl BuildContext {
                             def_range: None,
                             extra_exprs: Vec::new(),
                             flavor_guard: 0,
+                            from_scan: true,
                         });
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
@@ -1938,6 +1948,7 @@ impl BuildContext {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        from_scan: true,
                     });
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
@@ -2371,6 +2382,7 @@ impl PreResolvedGlobals {
                         lateinit: false,
                         def_range: None,
                         flavor_guard: 0,
+                        from_scan: false,
                     });
                 }
             }

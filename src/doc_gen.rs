@@ -521,6 +521,7 @@ mod tests {
             lateinit: false,
             def_range: None,
             flavor_guard: 0,
+            from_scan: false,
         }
     }
 
@@ -608,6 +609,7 @@ mod tests {
             lateinit: false,
             def_range: None,
             flavor_guard: 0,
+            from_scan: false,
         }
     }
 
@@ -663,6 +665,7 @@ mod tests {
             lateinit: false,
             def_range: None,
             flavor_guard: 0,
+            from_scan: false,
         };
         register_class(&mut pg, "MyClass", vec![
             ("classInfo", inferred_field),

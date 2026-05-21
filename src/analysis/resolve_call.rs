@@ -1663,6 +1663,7 @@ impl<'a> Analysis<'a> {
                 lateinit,
                 def_range: None,
                 flavor_guard: 0,
+                from_scan: false,
             });
         }
 
@@ -2203,6 +2204,7 @@ impl<'a> Analysis<'a> {
                         lateinit: fi.lateinit,
                         def_range: fi.def_range,
                         flavor_guard: fi.flavor_guard,
+                        from_scan: false,
                     })
                 }).collect();
 
@@ -2220,6 +2222,7 @@ impl<'a> Analysis<'a> {
                         lateinit: fi.lateinit,
                         def_range: fi.def_range,
                         flavor_guard: fi.flavor_guard,
+                        from_scan: false,
                     })
                 }).collect();
                 let new_table_idx = TableIndex(self.ir.tables.len());

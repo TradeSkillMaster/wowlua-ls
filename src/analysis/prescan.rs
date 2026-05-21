@@ -178,6 +178,7 @@ impl<'a> Analysis<'a> {
                         lateinit: is_lateinit,
                         def_range,
                         flavor_guard: 0,
+                        from_scan: false,
                     });
                 } else {
                     let class_tps = &self.ir.tables[table_idx.val()].class_type_params;
@@ -194,6 +195,7 @@ impl<'a> Analysis<'a> {
                             lateinit: is_lateinit,
                             def_range,
                             flavor_guard: 0,
+                            from_scan: false,
                         });
                     }
                 }
@@ -292,30 +294,25 @@ impl<'a> Analysis<'a> {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 let local_has_field_contract = self.ir.tables[local_idx.val()].has_source_fields;
+                // Two complementary filters control which external fields are imported:
+                //
+                // Filter 1 (unconditional): Skips unannotated table-typed fields —
+                // speculative table placeholders from workspace scanning. These would
+                // suppress inject-field checks if imported. Applies to all classes.
+                //
+                // Filter 2 (conditional on @field contract): When the local class has
+                // explicit @field annotations, skips ALL workspace-scan discoveries
+                // (strings, numbers, etc.) via the `from_scan` flag, preserving
+                // inject-field diagnostics for undeclared fields. Authored fields
+                // (annotations, function definitions) are always imported.
                 for (fname, fi) in ext_fields {
-                    // Skip unannotated table-typed fields — these are speculative entries
-                    // from workspace scanning (both Table(None) placeholders and Table(Some(idx))
-                    // from class-name matching in build_on_stubs second pass). Importing them
-                    // would set field_existed_at_build=true and suppress inject-field checks.
-                    // Annotated fields and non-table fields (String, Number, Function, etc.)
-                    // are imported normally for cross-file field resolution.
                     if fi.annotation.is_none()
                         && fi.annotation_type_raw.is_none()
                         && matches!(self.ir.expr(fi.expr), Expr::Literal(ValueType::Table(..)))
                     {
                         continue;
                     }
-                    // When the local class has explicit @field annotations, skip
-                    // workspace-scan discoveries (no annotation_type_raw) to preserve
-                    // inject-field checking.  Author-declared @field entries (with
-                    // annotation_type_raw) and cross-file method definitions are still
-                    // imported for cross-file access.  FunctionDef fields are exempt
-                    // because they are explicit author-written definitions (colon or
-                    // dot syntax), not speculative workspace-scan artifacts, so the
-                    // field-contract gate should never suppress them.
-                    if local_has_field_contract && fi.annotation_type_raw.is_none()
-                        && !matches!(self.ir.expr(fi.expr), Expr::FunctionDef(..))
-                    {
+                    if local_has_field_contract && fi.from_scan {
                         continue;
                     }
                     if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[local_idx.val()].fields.entry(fname) {
@@ -646,6 +643,7 @@ impl<'a> Analysis<'a> {
                             lateinit: false,
                             def_range: None,
                             flavor_guard: 0,
+                            from_scan: false,
                         });
                     } else {
                         let expr_id = self.ir.push_expr(Expr::Literal(default_type.clone()));
@@ -660,6 +658,7 @@ impl<'a> Analysis<'a> {
                             lateinit: false,
                             def_range: None,
                             flavor_guard: 0,
+                            from_scan: false,
                         });
                     }
                 }
@@ -967,6 +966,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    from_scan: false,
                 });
             } else {
                 let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
@@ -981,6 +981,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    from_scan: false,
                 });
             }
         }
@@ -1015,6 +1016,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    from_scan: false,
                 });
             } else {
                 let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
@@ -1029,6 +1031,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    from_scan: false,
                 });
             }
         }
@@ -1772,6 +1775,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    from_scan: false,
                 });
             }
         }

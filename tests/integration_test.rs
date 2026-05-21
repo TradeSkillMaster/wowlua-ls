@@ -1800,6 +1800,18 @@ fn crossfile_inject_classname_field() {
 }
 
 #[test]
+fn crossfile_from_scan_filter() {
+    // Regression test: workspace-scanned string/number field assignments must
+    // not suppress inject-field when the local class has @field annotations.
+    // The from_scan flag on FieldInfo ensures prescan.rs filters these out.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/from_scan_filter_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_nested_enum() {
     // Test nested enum pattern: defclass with nested table constructors
     // creates sub-tables with fields typed from index signature.

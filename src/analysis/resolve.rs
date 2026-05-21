@@ -1625,6 +1625,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    from_scan: false,
                 };
                 if !current_table.is_external() {
                     self.ir.tables[current_table.val()].fields.insert(inj.field_name, fi);
@@ -1711,6 +1712,7 @@ impl<'a> Analysis<'a> {
                         lateinit: false,
                         def_range: None,
                         flavor_guard: 0,
+                        from_scan: false,
                     });
                 }
             } else if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, &assign.field_name) {
@@ -1753,6 +1755,7 @@ impl<'a> Analysis<'a> {
                     lateinit,
                     def_range: None,
                     flavor_guard: 0,
+                    from_scan: false,
                 });
             }
         }

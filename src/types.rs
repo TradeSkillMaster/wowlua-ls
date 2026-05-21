@@ -792,6 +792,13 @@ pub(crate) struct FieldInfo {
     /// narrows the active flavor set to this mask.
     #[serde(default)]
     pub(crate) flavor_guard: u8,
+    /// True when this field was speculatively discovered by workspace scanning
+    /// (runtime field assignments, table placeholders, class-name-matched fields)
+    /// rather than authored (annotations, function definitions). Used by
+    /// prescan.rs cross-file field import to skip scan discoveries when the
+    /// local class has explicit `@field` annotations.
+    #[serde(skip)]
+    pub(crate) from_scan: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
