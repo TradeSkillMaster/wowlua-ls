@@ -26,8 +26,6 @@ pub struct TocFieldDef {
     pub doc: &'static str,
     pub required: bool,
     pub value_kind: TocValueKind,
-    /// WoW version when the field was introduced (None = original).
-    pub since: Option<&'static str>,
     /// Alternative names for this field (e.g. "RequiredDeps" for "Dependencies").
     pub aliases: &'static [&'static str],
 }
@@ -39,7 +37,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "The WoW client interface version this addon is compatible with. Multiple versions can be comma-separated for multi-flavor TOCs. Examples: `110002` (retail 11.0.2), `11503` (classic 1.15.3).",
         required: true,
         value_kind: TocValueKind::InterfaceVersion,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -47,7 +44,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "The display name of the addon shown in the addon list.",
         required: false,
         value_kind: TocValueKind::FreeText,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -55,7 +51,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "A short description of the addon shown as a tooltip in the addon list.",
         required: false,
         value_kind: TocValueKind::FreeText,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -63,7 +58,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "The author(s) of the addon.",
         required: false,
         value_kind: TocValueKind::FreeText,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -71,7 +65,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "The version string of the addon. Free-form (e.g. `1.0.0`, `v2.3`, `@project-version@`).",
         required: false,
         value_kind: TocValueKind::FreeText,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -79,7 +72,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Comma-separated list of global variable names that persist across sessions (account-wide). These globals are saved to `WTF/Account/<name>/SavedVariables/<addon>.lua`.",
         required: false,
         value_kind: TocValueKind::VariableList,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -87,7 +79,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Comma-separated list of global variable names that persist per-character. These globals are saved to `WTF/Account/<name>/<realm>/<char>/SavedVariables/<addon>.lua`.",
         required: false,
         value_kind: TocValueKind::VariableList,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -95,7 +86,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Comma-separated list of addon names that must be loaded before this addon. The addon will not load if any dependency is missing or disabled.",
         required: false,
         value_kind: TocValueKind::AddonList,
-        since: None,
         aliases: &["RequiredDeps"],
     },
     TocFieldDef {
@@ -103,7 +93,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Comma-separated list of addon names that should load before this addon if present, but are not required. Used to establish load order when the dependency is optional.",
         required: false,
         value_kind: TocValueKind::AddonList,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -111,7 +100,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "If set to `1`, the addon is not loaded automatically at login. It must be loaded explicitly via `LoadAddOn()` or by another addon's dependency declaration.",
         required: false,
         value_kind: TocValueKind::BooleanLike,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -119,7 +107,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Whether the addon is enabled by default when first installed. Values: `enabled` (default) or `disabled`.",
         required: false,
         value_kind: TocValueKind::BooleanLike,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -127,7 +114,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "The texture path for the addon's icon, shown in the addon compartment (minimap button menu). Example: `Interface\\Icons\\INV_Misc_QuestionMark`.",
         required: false,
         value_kind: TocValueKind::TexturePath,
-        since: Some("10.1.0"),
         aliases: &["IconAtlas"],
     },
     TocFieldDef {
@@ -135,7 +121,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Global function name called when the addon's compartment button is clicked.",
         required: false,
         value_kind: TocValueKind::FunctionName,
-        since: Some("10.1.0"),
         aliases: &[],
     },
     TocFieldDef {
@@ -143,7 +128,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Global function name called when the mouse enters the addon's compartment button (for tooltip display).",
         required: false,
         value_kind: TocValueKind::FunctionName,
-        since: Some("10.1.0"),
         aliases: &[],
     },
     TocFieldDef {
@@ -151,15 +135,13 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Global function name called when the mouse leaves the addon's compartment button.",
         required: false,
         value_kind: TocValueKind::FunctionName,
-        since: Some("10.1.0"),
         aliases: &[],
     },
     TocFieldDef {
         name: "AllowLoadGameType",
-        doc: "Restricts which game flavors can load this addon. Comma-separated list of: `mainline`, `cata`, `classic`, `wrath`, `mists`. If omitted, the addon loads on all flavors.",
+        doc: "Restricts which game flavors can load this addon. Comma-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`. If omitted, the addon loads on all flavors.",
         required: false,
         value_kind: TocValueKind::GameTypeList,
-        since: Some("10.2.0"),
         aliases: &[],
     },
     TocFieldDef {
@@ -167,7 +149,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Comma-separated list of addon names. When *any* listed addon loads, this addon loads too (for LoadOnDemand addons).",
         required: false,
         value_kind: TocValueKind::AddonList,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -175,7 +156,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Comma-separated list of addon names that manage loading this addon. Only one needs to be present for this addon to be loadable.",
         required: false,
         value_kind: TocValueKind::AddonList,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -183,7 +163,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "If set to `1`, the addon only loads on Beta and PTR realms.",
         required: false,
         value_kind: TocValueKind::BooleanLike,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -191,7 +170,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "If set to `1`, marks the addon as Blizzard-signed secure code. Only applicable to Blizzard's own addons.",
         required: false,
         value_kind: TocValueKind::BooleanLike,
-        since: None,
         aliases: &[],
     },
     TocFieldDef {
@@ -199,7 +177,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "The addon category shown in the addon list for organization. Localizable with `Category-<locale>` variants.",
         required: false,
         value_kind: TocValueKind::FreeText,
-        since: Some("11.0.2"),
         aliases: &[],
     },
     TocFieldDef {
@@ -207,7 +184,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "Groups related addons together in the addon list under a shared collapsible header.",
         required: false,
         value_kind: TocValueKind::FreeText,
-        since: Some("11.0.2"),
         aliases: &[],
     },
     TocFieldDef {
@@ -215,7 +191,6 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         doc: "If set to `1`, saved variables are loaded before the addon's Lua files execute (rather than after).",
         required: false,
         value_kind: TocValueKind::BooleanLike,
-        since: None,
         aliases: &[],
     },
 ];
@@ -223,15 +198,17 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
 /// Known values for `AllowLoadGameType` and the `[AllowLoadGameType ...]` directive.
 pub static GAME_TYPE_VALUES: &[(&str, &str)] = &[
     ("mainline", "Retail (The War Within, etc.)"),
+    ("classic", "All Classic flavors (Classic Era, Cata, Wrath, TBC, Mists)"),
+    ("vanilla", "Classic Era (Vanilla only)"),
     ("cata", "Cataclysm Classic"),
-    ("classic", "Classic Era (Vanilla)"),
     ("wrath", "Wrath of the Lich King Classic"),
+    ("tbc", "The Burning Crusade Classic"),
     ("mists", "Mists of Pandaria Classic"),
 ];
 
 /// Known `[Directive]` names for file path lines.
 pub static FILE_DIRECTIVES: &[(&str, &str)] = &[
-    ("AllowLoadGameType", "Restricts this file to specific game flavors (comma-separated: mainline, cata, classic, wrath, mists)."),
+    ("AllowLoadGameType", "Restricts this file to specific game flavors (comma-separated: mainline, classic, vanilla, cata, wrath, tbc, mists)."),
     ("Family", "Path variable that expands to the game family subdirectory."),
     ("Game", "Path variable that expands to the specific game subdirectory."),
 ];

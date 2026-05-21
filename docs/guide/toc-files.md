@@ -58,11 +58,11 @@ wowlua-ls recognizes all standard TOC fields:
 | `DefaultState` | Whether enabled by default (`enabled`/`disabled`) |
 | `LoadWith` | Load this addon when any listed addon loads |
 | `LoadManagers` | Addons that manage loading this addon |
-| `IconTexture` | Addon compartment icon (since 10.1) |
-| `AddonCompartmentFunc` | Compartment click handler (since 10.1) |
-| `AddonCompartmentFuncOnEnter` | Compartment hover-enter handler (since 10.1) |
-| `AddonCompartmentFuncOnLeave` | Compartment hover-leave handler (since 10.1) |
-| `AllowLoadGameType` | Restrict to specific game flavors (since 10.2) |
+| `IconTexture` | Addon compartment icon |
+| `AddonCompartmentFunc` | Compartment click handler |
+| `AddonCompartmentFuncOnEnter` | Compartment hover-enter handler |
+| `AddonCompartmentFuncOnLeave` | Compartment hover-leave handler |
+| `AllowLoadGameType` | Restrict to specific game flavors: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists` |
 | `OnlyBetaAndPTR` | Restrict to test realms only |
 | `Secure` | Blizzard-signed secure code marker |
 

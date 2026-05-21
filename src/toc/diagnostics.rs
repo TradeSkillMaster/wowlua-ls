@@ -287,6 +287,12 @@ mod tests {
     }
 
     #[test]
+    fn valid_game_type_vanilla_tbc() {
+        let diags = run("## Interface: 110002\n## AllowLoadGameType: vanilla, tbc\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-invalid-value"));
+    }
+
+    #[test]
     fn nonexistent_file() {
         let diags = run("## Interface: 110002\nSomeFile.lua\n");
         assert!(diags.iter().any(|d| d.code == "toc-nonexistent-file"));

@@ -58,10 +58,7 @@ pub fn hover_at(doc: &TocDocument, offset: u32) -> Option<TocHover> {
 
 fn hover_field_key(key: &str) -> Option<TocHover> {
     if let Some(field) = schema::lookup_field(key) {
-        let mut type_str = format!("## {}", field.name);
-        if let Some(since) = field.since {
-            type_str.push_str(&format!(" (since {})", since));
-        }
+        let type_str = format!("## {}", field.name);
         Some(TocHover {
             type_str,
             doc: Some(field.doc.to_string()),
@@ -186,7 +183,7 @@ fn complete_field_names(doc: &TocDocument, _prefix: &str) -> Vec<TocCompletion> 
             let detail = if f.required {
                 Some("(required)".to_string())
             } else {
-                f.since.map(|s| format!("(since {})", s))
+                None
             };
             TocCompletion {
                 label: f.name.to_string(),
