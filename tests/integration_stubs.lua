@@ -918,3 +918,7 @@ local function maybeGetStr() return "hi" end
 local optStr = maybeGetStr()
 optStr:upper()
 --     ^ hover: (method) function stringlib:upper(s: string | number)  def: external
+
+-- ── Enum value hover should show literal values ────────────────────────────
+local _mana = Enum.PowerType.Mana
+--                           ^ hover: (field) Mana: number = 0

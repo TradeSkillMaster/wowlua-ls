@@ -920,6 +920,11 @@ impl AnalysisResult {
                     formatted
                 };
                 let mut type_str = format!("(field) {}: {}", field_name, formatted);
+                if self.table(table_idx).enum_kind.is_enum()
+                    && let Some(val) = self.get_field_literal_value(field_info)
+                {
+                    type_str.push_str(&format!(" = {}", val));
+                }
                 let doc = effective_type.as_ref().and_then(|r| self.doc_for_type(r));
                 let doc = if let Some(ValueType::Table(Some(table_idx))) = &effective_type {
                     self.append_call_hover(*table_idx, &mut type_str, doc)
@@ -1591,6 +1596,35 @@ impl AnalysisResult {
             .and_then(|v| v.type_source)
             .and_then(|expr_id| self.ir.number_literals.get(&expr_id))
             .map(|s| s.as_str())
+    }
+
+    /// Get the literal display value for a field's expression (number or quoted string),
+    /// checking both local and external sources.
+    fn get_field_literal_value(&self, field_info: &FieldInfo) -> Option<String> {
+        let (num_map, str_map) = if field_info.expr.is_external() {
+            (&self.ir.ext.number_literals, &self.ir.ext.string_literals)
+        } else {
+            (&self.ir.number_literals, &self.ir.string_literals)
+        };
+        if let Some(val) = num_map.get(&field_info.expr) {
+            return Some(val.clone());
+        }
+        if let Some(val) = str_map.get(&field_info.expr) {
+            return Some(format!("\"{}\"", val));
+        }
+        None
+    }
+
+    /// Format a single field line for enum or regular table display.
+    /// Enum fields show `name = value`, non-enum fields show `name: type`.
+    fn format_enum_field_line(&self, indent: &str, name: &str, field_info: &FieldInfo, is_enum: bool, depth: usize) -> String {
+        if is_enum
+            && let Some(val) = self.get_field_literal_value(field_info)
+        {
+            return format!("{}{} = {}", indent, name, val);
+        }
+        let type_str = self.format_field_type(field_info, depth);
+        format!("{}{}: {}", indent, name, type_str)
     }
 
     fn narrow_type_for_display(&self, resolved: &ValueType, symbol_idx: SymbolIndex, offset: u32) -> Option<ValueType> {
@@ -4563,19 +4597,18 @@ impl AnalysisResult {
                         }
                     }
                 };
+                let is_enum = table.enum_kind.is_enum();
                 let mut seen: HashSet<&str> = HashSet::new();
                 let mut fields: Vec<String> = table.fields.iter()
                     .filter(|(_, fi)| is_accessible(fi))
                     .map(|(name, field_info)| {
                         seen.insert(name.as_str());
-                        let type_str = self.format_field_type(field_info, 0);
-                        format!("{}{}: {}", indent, name, type_str)
+                        self.format_enum_field_line(indent, name, field_info, is_enum, 0)
                     }).collect();
                 if let Some(ov) = overlay {
                     for (name, field_info) in ov.iter() {
                         if seen.insert(name.as_str()) && is_accessible(field_info) {
-                            let type_str = self.format_field_type(field_info, 0);
-                            fields.push(format!("{}{}: {}", indent, name, type_str));
+                            fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
                         }
                     }
                 }
@@ -4584,8 +4617,7 @@ impl AnalysisResult {
                     let parent_table = self.table(parent_idx);
                     for (name, field_info) in &parent_table.fields {
                         if seen.insert(name.as_str()) && is_accessible(field_info) {
-                            let type_str = self.format_field_type(field_info, 0);
-                            fields.push(format!("{}{}: {}", indent, name, type_str));
+                            fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
                         }
                     }
                 }
@@ -4894,17 +4926,16 @@ impl AnalysisResult {
                         return class_name.clone();
                     }
                     let indent = "  ".repeat(depth + 1);
+                    let is_enum = table.enum_kind.is_enum();
                     let mut seen: HashSet<&str> = HashSet::new();
                     let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
                         seen.insert(name.as_str());
-                        let type_str = self.format_field_type(field_info, depth);
-                        format!("{}{}: {}", indent, name, type_str)
+                        self.format_enum_field_line(&indent, name, field_info, is_enum, depth)
                     }).collect();
                     if let Some(ov) = overlay {
                         for (name, field_info) in ov.iter() {
                             if seen.insert(name.as_str()) {
-                                let type_str = self.format_field_type(field_info, depth);
-                                fields.push(format!("{}{}: {}", indent, name, type_str));
+                                fields.push(self.format_enum_field_line(&indent, name, field_info, is_enum, depth));
                             }
                         }
                     }
@@ -4913,8 +4944,7 @@ impl AnalysisResult {
                         let parent_table = self.table(parent_idx);
                         for (name, field_info) in &parent_table.fields {
                             if seen.insert(name.as_str()) {
-                                let type_str = self.format_field_type(field_info, depth);
-                                fields.push(format!("{}{}: {}", indent, name, type_str));
+                                fields.push(self.format_enum_field_line(&indent, name, field_info, is_enum, depth));
                             }
                         }
                     }

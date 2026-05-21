@@ -184,6 +184,14 @@ pub struct PreResolvedGlobals {
     pub(crate) string_values: HashMap<SymbolIndex, String>,
     /// Number literal values for global symbols (SymbolIndex → number text)
     pub(crate) number_values: HashMap<SymbolIndex, String>,
+    /// Number literal values for external field expressions (ExprId → number text).
+    /// Used to display actual values in enum field hover tooltips.
+    #[serde(default)]
+    pub(crate) number_literals: HashMap<ExprId, String>,
+    /// String literal values for external field expressions (ExprId → quoted string text).
+    /// Used to display actual values in string enum field hover tooltips.
+    #[serde(default)]
+    pub(crate) string_literals: HashMap<ExprId, String>,
     pub(crate) addon_table_idx: Option<TableIndex>,
     /// Per-addon-root addon namespace tables for multi-addon workspaces.
     /// When `addon_root: true` is set in per-directory `.wowluarc.json`,
@@ -247,12 +255,16 @@ fn populate_table_fields(
     fields: &[(String, crate::annotations::FieldValueKind)],
     tables: &mut Vec<TableInfo>,
     exprs: &mut Vec<Expr>,
+    number_literals: &mut HashMap<ExprId, String>,
+    string_literals: &mut HashMap<ExprId, String>,
 ) {
     use crate::annotations::FieldValueKind;
     for (name, kind) in fields {
+        let num_val = if let FieldValueKind::Number(Some(v)) = kind { Some(v.clone()) } else { None };
+        let str_val = if let FieldValueKind::String(Some(v)) = kind { Some(v.clone()) } else { None };
         let vt = match kind {
-            FieldValueKind::String => ValueType::String(None),
-            FieldValueKind::Number => ValueType::Number,
+            FieldValueKind::String(_) => ValueType::String(None),
+            FieldValueKind::Number(_) => ValueType::Number,
             FieldValueKind::Boolean => ValueType::Boolean(None),
             FieldValueKind::Nil => ValueType::Nil,
             FieldValueKind::Function => ValueType::Function(None),
@@ -260,7 +272,7 @@ fn populate_table_fields(
                 let sub_idx = TableIndex(EXT_BASE + tables.len());
                 tables.push(TableInfo::default());
                 let sub_local = sub_idx.ext_offset();
-                populate_table_fields(sub_local, sub_fields, tables, exprs);
+                populate_table_fields(sub_local, sub_fields, tables, exprs, number_literals, string_literals);
                 ValueType::Table(Some(sub_idx))
             }
             // Create field with Any type so it exists for field-chain resolution
@@ -268,6 +280,12 @@ fn populate_table_fields(
         };
         let expr_idx = ExprId(EXT_BASE + exprs.len());
         exprs.push(Expr::Literal(vt.clone()));
+        if let Some(val) = num_val {
+            number_literals.insert(expr_idx, val);
+        }
+        if let Some(val) = str_val {
+            string_literals.insert(expr_idx, val);
+        }
         tables[table_local_idx].fields.insert(name.clone(), FieldInfo {
             expr: expr_idx,
             visibility: crate::annotations::Visibility::Public,
@@ -641,6 +659,8 @@ struct BuildContext {
     getmetatable_func_idx: Option<FunctionIndex>,
     string_values: HashMap<SymbolIndex, String>,
     number_values: HashMap<SymbolIndex, String>,
+    number_literals: HashMap<ExprId, String>,
+    string_literals: HashMap<ExprId, String>,
     framexml_names: HashSet<String>,
     constructor_method_names: HashSet<String>,
     declared_class_fields: HashMap<String, HashSet<String>>,
@@ -677,6 +697,8 @@ impl BuildContext {
             getmetatable_func_idx: None,
             string_values: HashMap::new(),
             number_values: HashMap::new(),
+            number_literals: HashMap::new(),
+            string_literals: HashMap::new(),
             framexml_names: HashSet::new(),
             constructor_method_names: HashSet::new(),
             declared_class_fields: HashMap::new(),
@@ -858,6 +880,14 @@ impl BuildContext {
                 if let Some(vt) = vt {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
+                    // Store literal from enriched constructor fields for enum hover display
+                    if let Some(val) = class.field_literals.get(field_name) {
+                        if val.starts_with('"') || val.starts_with('\'') {
+                            self.string_literals.insert(expr_idx, val.trim_matches(|c| c == '"' || c == '\'').to_string());
+                        } else {
+                            self.number_literals.insert(expr_idx, val.clone());
+                        }
+                    }
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
                         visibility: *visibility,
@@ -1175,21 +1205,35 @@ impl BuildContext {
                 let local_idx = leaf_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
                 // so that globals with better type info can upgrade them.
-                if self.tables[local_idx].fields.get(field_name)
-                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
+                if let Some(existing_fi) = self.tables[local_idx].fields.get(field_name)
+                    .filter(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
+                        // Field already has a typed annotation (from @field), but the
+                        // constructor may carry a literal value — copy it so hover can
+                        // show enum values like `= 0` or `= "value"`.
+                        match value_kind {
+                            FieldValueKind::Number(Some(val)) => {
+                                self.number_literals.insert(existing_fi.expr, val.clone());
+                            }
+                            FieldValueKind::String(Some(val)) => {
+                                self.string_literals.insert(existing_fi.expr, val.clone());
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
                 let value_type = if !g.returns.is_empty() {
                     self.resolve_annotation(&g.returns[0])
                 } else {
                     match value_kind {
-                        FieldValueKind::String => Some(ValueType::String(None)),
-                        FieldValueKind::Number => Some(ValueType::Number),
+                        FieldValueKind::String(_) => Some(ValueType::String(None)),
+                        FieldValueKind::Number(_) => Some(ValueType::Number),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table(sub_fields) => {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             let sub_local = sub_idx.ext_offset();
-                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs);
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -1202,6 +1246,9 @@ impl BuildContext {
                 if let Some(vt) = value_type {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
+                    if let FieldValueKind::Number(Some(val)) = value_kind {
+                        self.number_literals.insert(expr_idx, val.clone());
+                    }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
@@ -1630,8 +1677,8 @@ impl BuildContext {
                     crate::annotations::resolve_annotation_type(at, &[], &self.classes, &self.aliases)
                 } else {
                     match vk {
-                        FieldValueKind::Number => Some(ValueType::Number),
-                        FieldValueKind::String => Some(ValueType::String(None)),
+                        FieldValueKind::Number(_) => Some(ValueType::Number),
+                        FieldValueKind::String(_) => Some(ValueType::String(None)),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         _ => None,
@@ -1918,15 +1965,15 @@ impl BuildContext {
                     self.resolve_annotation(&g.returns[0])
                 } else {
                     match value_kind {
-                        FieldValueKind::String => Some(ValueType::String(None)),
-                        FieldValueKind::Number => Some(ValueType::Number),
+                        FieldValueKind::String(_) => Some(ValueType::String(None)),
+                        FieldValueKind::Number(_) => Some(ValueType::Number),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table(sub_fields) => {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             let sub_local = sub_idx.ext_offset();
-                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs);
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -1937,6 +1984,9 @@ impl BuildContext {
                 if let Some(vt) = value_type {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
+                    if let FieldValueKind::Number(Some(val)) = value_kind {
+                        self.number_literals.insert(expr_idx, val.clone());
+                    }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
@@ -1983,6 +2033,7 @@ impl BuildContext {
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
             string_values: self.string_values, number_values: self.number_values,
+            number_literals: self.number_literals, string_literals: self.string_literals,
             addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),
             constructor_method_names: self.constructor_method_names,
             class_locations: self.class_locations,
@@ -2076,6 +2127,8 @@ impl PreResolvedGlobals {
             function_locations: HashMap::new(),
             string_values: HashMap::new(),
             number_values: HashMap::new(),
+            number_literals: HashMap::new(),
+            string_literals: HashMap::new(),
             addon_table_idx: None, addon_tables: HashMap::new(),
             constructor_method_names: HashSet::new(),
             class_locations: HashMap::new(),
@@ -2952,6 +3005,7 @@ mod tests {
             field_paths: std::collections::HashMap::new(),
             see: Vec::new(),
             declared_field_names: std::collections::HashSet::new(),
+            field_literals: std::collections::HashMap::new(),
         }
     }
 

@@ -385,6 +385,7 @@ pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameC
                     field_paths: HashMap::new(),
                     see: Vec::new(),
                     declared_field_names: HashSet::new(),
+                    field_literals: HashMap::new(),
                 });
             }
     }

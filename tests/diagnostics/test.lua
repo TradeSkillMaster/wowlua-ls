@@ -1972,12 +1972,15 @@ local TestQuality = {
     Common = 1,
     Rare = 3,
 }
-
 ---@param quality TestEnum.Quality
 local function _diagTakeEnum(quality) return quality end
 
 ---@param n number
 local function _diagTakeNumber(n) return n end
+
+-- Enum value hover should show literal value
+local _enumVal = TestQuality.Poor
+--                           ^ hover: (field) Poor: number = 0
 
 -- Enum value passed where number expected: should be OK
 _diagTakeNumber(TestQuality.Poor)

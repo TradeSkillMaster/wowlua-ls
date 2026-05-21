@@ -280,6 +280,10 @@ pub struct ClassDecl {
     /// Used by doc generation to distinguish documented API fields from internal implementation fields.
     #[serde(default)]
     pub declared_field_names: HashSet<String>,
+    /// Literal text for fields enriched from table constructors (e.g. `Poor = 0` → "0", `Red = "RED"` → `"RED"`).
+    /// Used to show enum values in hover like `(field) Poor: number = 0`.
+    #[serde(default)]
+    pub field_literals: HashMap<String, String>,
 }
 
 impl ClassDecl {
@@ -719,6 +723,7 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
 
         let mut new_fields: Vec<(String, AnnotationType, Visibility)> = Vec::new();
         let mut new_field_ranges: HashMap<String, (u32, u32)> = HashMap::new();
+        let mut new_literals: HashMap<String, String> = HashMap::new();
         for field in tc.fields() {
             let Some(FieldKind::Named { name, value }) = field.kind() else { continue };
             if existing_fields.contains(name.as_str()) { continue; }
@@ -729,6 +734,14 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
             let typ = if let Some((class_name, _)) = extract_class_from_field_comments(field.syntax()) {
                 AnnotationType::Simple(class_name)
             } else if let Some(t) = infer_literal_type(&value) {
+                // Capture literal text for enum value display in hover
+                if let Expression::Literal(lit) = &value {
+                    if let Some(num) = lit.get_number() {
+                        new_literals.insert(name.clone(), num);
+                    } else if let Some(s) = lit.get_string() {
+                        new_literals.insert(name.clone(), s);
+                    }
+                }
                 t
             } else {
                 continue;
@@ -754,6 +767,7 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
             let class = &mut result.classes[class_idx];
             class.fields.extend(new_fields);
             class.field_ranges.extend(new_field_ranges);
+            class.field_literals.extend(new_literals);
         }
     }
 }
@@ -886,7 +900,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {

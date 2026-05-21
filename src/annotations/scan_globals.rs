@@ -39,9 +39,9 @@ fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>) -> Vec<(Stri
         if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
             let kind = match &value {
                 Expression::Literal(lit) => {
-                    if lit.get_string().is_some() { FieldValueKind::String }
+                    if let Some(s) = lit.get_string() { FieldValueKind::String(Some(s)) }
                     else if lit.get_bool().is_some() { FieldValueKind::Boolean }
-                    else if lit.get_number().is_some() { FieldValueKind::Number }
+                    else if let Some(n) = lit.get_number() { FieldValueKind::Number(Some(n)) }
                     else if lit.is_nil() { FieldValueKind::Nil }
                     else { FieldValueKind::Unknown }
                 }
@@ -958,9 +958,9 @@ pub(crate) fn scan_file_globals_with_synth(
                                         stripped.to_string()
                                     });
                                     let nv = lit.get_number();
-                                    let vk = if lit.get_string().is_some() { FieldValueKind::String }
+                                    let vk = if let Some(s) = lit.get_string() { FieldValueKind::String(Some(s)) }
                                         else if lit.get_bool().is_some() { FieldValueKind::Boolean }
-                                        else if lit.get_number().is_some() { FieldValueKind::Number }
+                                        else if let Some(n) = lit.get_number() { FieldValueKind::Number(Some(n)) }
                                         else if lit.is_nil() { FieldValueKind::Nil }
                                         else { FieldValueKind::Unknown };
                                     (ExternalGlobalKind::Variable(vk), sv, nv)
@@ -1015,8 +1015,8 @@ pub(crate) fn scan_file_globals_with_synth(
                                 }
                                 Expression::BinaryExpression(bin) => {
                                     let vk = match bin.kind() {
-                                        Operator::Concatenate => FieldValueKind::String,
-                                        op if op.is_arithmetic() => FieldValueKind::Number,
+                                        Operator::Concatenate => FieldValueKind::String(None),
+                                        op if op.is_arithmetic() => FieldValueKind::Number(None),
                                         op if op.is_comparison() => FieldValueKind::Boolean,
                                         _ => FieldValueKind::Unknown,
                                     };
@@ -1024,7 +1024,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 }
                                 Expression::UnaryExpression(un) => {
                                     let vk = match un.kind() {
-                                        Operator::ArrayLength | Operator::Subtract => FieldValueKind::Number,
+                                        Operator::ArrayLength | Operator::Subtract => FieldValueKind::Number(None),
                                         Operator::Not => FieldValueKind::Boolean,
                                         _ => FieldValueKind::Unknown,
                                     };
@@ -1085,9 +1085,9 @@ pub(crate) fn scan_file_globals_with_synth(
                             let effective = unwrap_logical_chain(exprs[0]);
                             let value_kind = match &effective {
                                 Expression::Literal(lit) => {
-                                    if lit.get_string().is_some() { FieldValueKind::String }
+                                    if let Some(s) = lit.get_string() { FieldValueKind::String(Some(s)) }
                                     else if lit.get_bool().is_some() { FieldValueKind::Boolean }
-                                    else if lit.get_number().is_some() { FieldValueKind::Number }
+                                    else if let Some(n) = lit.get_number() { FieldValueKind::Number(Some(n)) }
                                     else if lit.is_nil() { FieldValueKind::Nil }
                                     else { FieldValueKind::Unknown }
                                 }
@@ -1164,15 +1164,15 @@ pub(crate) fn scan_file_globals_with_synth(
                                 }
                                 Expression::BinaryExpression(bin) => {
                                     match bin.kind() {
-                                        Operator::Concatenate => FieldValueKind::String,
-                                        op if op.is_arithmetic() => FieldValueKind::Number,
+                                        Operator::Concatenate => FieldValueKind::String(None),
+                                        op if op.is_arithmetic() => FieldValueKind::Number(None),
                                         op if op.is_comparison() => FieldValueKind::Boolean,
                                         _ => FieldValueKind::Unknown,
                                     }
                                 }
                                 Expression::UnaryExpression(un) => {
                                     match un.kind() {
-                                        Operator::ArrayLength | Operator::Subtract => FieldValueKind::Number,
+                                        Operator::ArrayLength | Operator::Subtract => FieldValueKind::Number(None),
                                         Operator::Not => FieldValueKind::Boolean,
                                         _ => FieldValueKind::Unknown,
                                     }

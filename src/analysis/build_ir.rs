@@ -695,8 +695,22 @@ impl<'a> Analysis<'a> {
                                                                 .map(|(k, v)| (k.clone(), v.clone()))
                                                                 .collect();
                                                         for (name, field_info) in runtime_fields {
-                                                            self.ir.tables[class_table_idx.val()].fields
-                                                                .entry(name).or_insert(field_info);
+                                                            match self.ir.tables[class_table_idx.val()].fields.entry(name) {
+                                                                std::collections::hash_map::Entry::Occupied(e) => {
+                                                                    // Prescan-created fields don't have literals;
+                                                                    // copy from the constructor field so hover can show
+                                                                    // enum values like `= 0` or `= "value"`.
+                                                                    if let Some(val) = self.ir.number_literals.get(&field_info.expr).cloned() {
+                                                                        self.ir.number_literals.insert(e.get().expr, val);
+                                                                    }
+                                                                    if let Some(val) = self.ir.string_literals.get(&field_info.expr).cloned() {
+                                                                        self.ir.string_literals.insert(e.get().expr, val);
+                                                                    }
+                                                                }
+                                                                std::collections::hash_map::Entry::Vacant(e) => {
+                                                                    e.insert(field_info);
+                                                                }
+                                                            }
                                                         }
                                                     }
                                         // Only override the variable type when @type is absent;

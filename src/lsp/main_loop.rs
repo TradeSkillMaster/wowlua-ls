@@ -5250,6 +5250,7 @@ mod tests {
             field_paths: HashMap::new(),
             see: Vec::new(),
             declared_field_names: HashSet::new(),
+            field_literals: HashMap::new(),
         }
     }
 

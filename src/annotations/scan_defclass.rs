@@ -333,6 +333,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                             field_paths: HashMap::new(),
                             see: Vec::new(),
                             declared_field_names: HashSet::new(),
+                            field_literals: HashMap::new(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name, implicit_protected_prefix)));
                     } else {
@@ -370,6 +371,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                 field_paths: HashMap::new(),
                 see: Vec::new(),
                 declared_field_names: HashSet::new(),
+                field_literals: HashMap::new(),
             });
         }
     }

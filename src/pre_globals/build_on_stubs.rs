@@ -35,6 +35,8 @@ struct BuildOnStubsContext<'a> {
     // Values
     string_values: HashMap<SymbolIndex, String>,
     number_values: HashMap<SymbolIndex, String>,
+    number_literals: HashMap<ExprId, String>,
+    string_literals: HashMap<ExprId, String>,
     addon_table_idx: Option<TableIndex>,
 
     // Build-specific state
@@ -90,6 +92,8 @@ impl<'a> BuildOnStubsContext<'a> {
             alias_locations,
             string_values: stubs_base.string_values.clone(),
             number_values: stubs_base.number_values.clone(),
+            number_literals: stubs_base.number_literals.clone(),
+            string_literals: stubs_base.string_literals.clone(),
             addon_table_idx: stubs_base.addon_table_idx,
             non_class_tables: HashMap::new(),
             table_source_locations: HashMap::new(),
@@ -551,15 +555,15 @@ impl<'a> BuildOnStubsContext<'a> {
                     ).or_else(|| self.resolve_annotation(&g.returns[0]))
                 } else {
                     match value_kind {
-                        FieldValueKind::String => Some(ValueType::String(None)),
-                        FieldValueKind::Number => Some(ValueType::Number),
+                        FieldValueKind::String(_) => Some(ValueType::String(None)),
+                        FieldValueKind::Number(_) => Some(ValueType::Number),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table(sub_fields) => {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             let sub_local = sub_idx.ext_offset();
-                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs);
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -572,6 +576,9 @@ impl<'a> BuildOnStubsContext<'a> {
                 if let Some(vt) = value_type {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
+                    if let FieldValueKind::Number(Some(val)) = value_kind {
+                        self.number_literals.insert(expr_idx, val.clone());
+                    }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
@@ -989,8 +996,8 @@ impl<'a> BuildOnStubsContext<'a> {
                     crate::annotations::resolve_annotation_type(at, &[], &self.classes, &self.aliases)
                 } else {
                     match vk {
-                        FieldValueKind::Number => Some(ValueType::Number),
-                        FieldValueKind::String => Some(ValueType::String(None)),
+                        FieldValueKind::Number(_) => Some(ValueType::Number),
+                        FieldValueKind::String(_) => Some(ValueType::String(None)),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         _ => None,
@@ -1275,15 +1282,15 @@ impl<'a> BuildOnStubsContext<'a> {
                     ).or_else(|| self.resolve_annotation(&g.returns[0]))
                 } else {
                     match value_kind {
-                        FieldValueKind::String => Some(ValueType::String(None)),
-                        FieldValueKind::Number => Some(ValueType::Number),
+                        FieldValueKind::String(_) => Some(ValueType::String(None)),
+                        FieldValueKind::Number(_) => Some(ValueType::Number),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table(sub_fields) => {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             let sub_local = sub_idx.ext_offset();
-                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs);
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -1294,6 +1301,9 @@ impl<'a> BuildOnStubsContext<'a> {
                 if let Some(vt) = value_type {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
+                    if let FieldValueKind::Number(Some(val)) = value_kind {
+                        self.number_literals.insert(expr_idx, val.clone());
+                    }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
@@ -1370,6 +1380,7 @@ impl<'a> BuildOnStubsContext<'a> {
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols: self.framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
             string_values: self.string_values, number_values: self.number_values,
+            number_literals: self.number_literals, string_literals: self.string_literals,
             addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),
             constructor_method_names, class_locations,
             alias_locations: self.alias_locations, field_locations: self.field_locations,

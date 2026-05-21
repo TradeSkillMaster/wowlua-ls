@@ -168,6 +168,14 @@ impl<'a> Analysis<'a> {
                     });
                     let def_range = class.field_ranges.get(field_name.as_str()).copied();
                     let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
+                    // Store literal from enriched constructor fields for enum hover display
+                    if let Some(val) = class.field_literals.get(field_name) {
+                        if val.starts_with('"') || val.starts_with('\'') {
+                            self.ir.string_literals.insert(expr_id, val.trim_matches(|c| c == '"' || c == '\'').to_string());
+                        } else {
+                            self.ir.number_literals.insert(expr_id, val.clone());
+                        }
+                    }
                     self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_id,
                         visibility: *visibility,
