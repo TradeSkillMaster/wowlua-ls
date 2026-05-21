@@ -3488,61 +3488,57 @@ impl AnalysisResult {
         last_sep
     }
 
-    /// Given a table and a method name, resolve the method's first return type to a table index.
-    fn resolve_method_return_table(&self, table_idx: TableIndex, method_name: &str) -> Option<TableIndex> {
-        // Find the method field in this table or parent classes
-        let field_expr = self.get_field(table_idx, method_name).map(|fi| fi.expr)
+    /// Resolve a method call's return type to a table index: look up the method on
+    /// `receiver_table` (including parent classes), handle `@return self`, then delegate
+    /// to `resolve_func_return_table` for backtick-generic / `@defclass` / annotation
+    /// resolution. `call_node` is the MethodCall/FunctionCall syntax node — required so
+    /// that `resolve_func_return_table` can extract string literal arguments.
+    fn resolve_method_call_return_table(&self, receiver_table: TableIndex, method_name: &str, call_node: &SyntaxNode) -> Option<TableIndex> {
+        let field_expr = self.get_field(receiver_table, method_name).map(|fi| fi.expr)
             .or_else(|| {
-                self.table(table_idx).parent_classes.clone().iter()
+                self.table(receiver_table).parent_classes.clone().iter()
                     .find_map(|&p| self.get_field(p, method_name).map(|fi| fi.expr))
             })?;
-        // Resolve to function type
         let func_type = self.resolve_expr_type(field_expr)?;
         let func_idx = match func_type {
             ValueType::Function(Some(idx)) => idx,
             _ => return None,
         };
-        // @return self: return the receiver's table
         if self.func(func_idx).returns_self {
-            return Some(table_idx);
+            return Some(receiver_table);
         }
-        self.resolve_func_return_table(func_idx)
+        self.resolve_func_return_table(func_idx, call_node)
     }
 
     /// Resolve a function call's return type to a table index.
-    /// Given a func_idx, gets the first return type and extracts the table index.
-    fn resolve_func_return_table(&self, func_idx: FunctionIndex) -> Option<TableIndex> {
-        self.resolve_func_return_table_with_node(func_idx, None)
-    }
-
-    fn resolve_func_return_table_with_node(&self, func_idx: FunctionIndex, call_node: Option<&SyntaxNode>) -> Option<TableIndex> {
+    /// `call_node` is the syntax node of the call — needed for backtick generic and
+    /// `@defclass` resolution (both extract string literal arguments from the call site).
+    fn resolve_func_return_table(&self, func_idx: FunctionIndex, call_node: &SyntaxNode) -> Option<TableIndex> {
         // For @defclass functions, resolve the class from the string literal argument
         let func_info = self.func(func_idx);
         if func_info.defclass.is_some()
-            && let Some(node) = call_node
-                && let Some(arg_list) = node.children().find(|c| c.kind() == SyntaxKind::ArgumentList) {
-                    // Get first string literal argument
-                    for child in arg_list.descendants_with_tokens() {
-                        if let NodeOrToken::Token(t) = child
-                            && t.kind() == SyntaxKind::String {
-                                let class_name = t.text().trim_matches(|c| c == '"' || c == '\'').to_string();
-                                if let Some(&idx) = self.ir.classes.get(&class_name) {
-                                    return Some(idx);
-                                }
-                                // Check external classes
-                                if let Some(&idx) = self.ir.ext.classes.get(&class_name) {
-                                    return Some(idx);
-                                }
+            && let Some(arg_list) = call_node.children().find(|c| c.kind() == SyntaxKind::ArgumentList) {
+                // Get first string literal argument
+                for child in arg_list.descendants_with_tokens() {
+                    if let NodeOrToken::Token(t) = child
+                        && t.kind() == SyntaxKind::String {
+                            let class_name = t.text().trim_matches(|c| c == '"' || c == '\'').to_string();
+                            if let Some(&idx) = self.ir.classes.get(&class_name) {
+                                return Some(idx);
                             }
-                    }
+                            // Check external classes
+                            if let Some(&idx) = self.ir.ext.classes.get(&class_name) {
+                                return Some(idx);
+                            }
+                        }
                 }
+            }
         // For backtick generic functions (e.g. `@generic T` + `@param name \`T\`` + `@return T`),
         // resolve the class from the string literal at the backtick parameter position.
         if !func_info.generics.is_empty()
-            && let Some(node) = call_node
-                && let Some(result) = self.resolve_backtick_generic_return(func_idx, node) {
-                    return Some(result);
-                }
+            && let Some(result) = self.resolve_backtick_generic_return(func_idx, call_node) {
+                return Some(result);
+            }
         let ret_id = SymbolIdentifier::FunctionRet(func_idx, 0);
         let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
         let ret_type = self.sym(ret_sym_idx).versions.first()?.resolved_type.as_ref()?;
@@ -3635,7 +3631,7 @@ impl AnalysisResult {
             } else {
                 return None;
             };
-            return self.resolve_method_return_table(receiver_table, &method_name);
+            return self.resolve_method_call_return_table(receiver_table, &method_name, node);
         }
 
         if let Some(ident_node) = node.children().find(|c| c.kind() .is_identifier()) {
@@ -3672,7 +3668,7 @@ impl AnalysisResult {
                 } else {
                     return None;
                 };
-                return self.resolve_method_return_table(receiver_table, &method_name);
+                return self.resolve_method_call_return_table(receiver_table, &method_name, node);
             } else {
                 // Dot-call or simple call: func(args) or obj.func(args)
                 // Resolve the identifier as a dot chain to find the function
@@ -3716,7 +3712,7 @@ impl AnalysisResult {
                         ValueType::Function(Some(idx)) => idx,
                         _ => return None,
                     };
-                    return self.resolve_func_return_table_with_node(func_idx, Some(node));
+                    return self.resolve_func_return_table(func_idx, node);
                 } else {
                     // Simple function call: func(args)
                     let root_name = names[0].text().to_string();
@@ -3726,12 +3722,12 @@ impl AnalysisResult {
                     let resolved = ver.resolved_type.as_ref()?;
                     match resolved {
                         ValueType::Function(Some(func_idx)) => {
-                            return self.resolve_func_return_table_with_node(*func_idx, Some(node));
+                            return self.resolve_func_return_table(*func_idx, node);
                         }
                         ValueType::Table(Some(table_idx)) => {
                             // Constructor call: class table called as function
                             if let Some(call_func_idx) = self.table(*table_idx).call_func {
-                                return self.resolve_func_return_table_with_node(call_func_idx, Some(node));
+                                return self.resolve_func_return_table(call_func_idx, node);
                             }
                             // @constructor: class table is callable, returns the class type
                             if self.has_constructor(*table_idx) {
@@ -3763,7 +3759,7 @@ impl AnalysisResult {
         } else {
             return None;
         };
-        self.resolve_method_return_table(receiver_table, &method_name)
+        self.resolve_method_call_return_table(receiver_table, &method_name, node)
     }
 
     /// Resolve an Identifier syntax node to the table it represents.

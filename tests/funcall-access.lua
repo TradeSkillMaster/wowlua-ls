@@ -95,6 +95,57 @@ local bt2 = newEl("BtChild", "x")
     :SetMgr({})
 --   ^ hover: (method) function BtElement:SetMgr(mgr: table)  def: local
 
+-- ── Chained method on backtick-generic return: receiver:method(`T`):field ────
+
+---@class WidgetRegistry
+---@field New fun(self: WidgetRegistry, target: table): WidgetMixin
+---@field Version number
+
+---@class WidgetMixin
+---@field name string
+
+---@class RegistryProviderBt
+local RegistryProviderBt = {}
+
+---@generic T
+---@param name `T`
+---@return T
+function RegistryProviderBt:GetRegistry(name) return {} end
+
+-- Backtick-generic: method return resolves to `WidgetRegistry` class
+-- Hover on chained method after backtick-generic call
+local bg = RegistryProviderBt:GetRegistry("WidgetRegistry"):New({})
+--                                                           ^ hover: (method) function WidgetRegistry:New(target: table)  def: local
+
+-- Dot access on backtick-generic return
+local bgf = RegistryProviderBt:GetRegistry("WidgetRegistry").Version
+--                                                            ^ hover: (field) Version: number  def: local
+
+-- Chained method + dot on its return
+local bgc = RegistryProviderBt:GetRegistry("WidgetRegistry"):New({}).name
+--                                                                    ^ hover: (field) name: string  def: local
+
+-- 3-level chain: backtick-generic → @return self method → field access
+---@class WidgetMixinSelf
+---@field label string
+local WidgetMixinSelf = {}
+
+---@param opts table
+---@return self
+function WidgetMixinSelf:Configure(opts) return self end
+
+---@class WidgetRegistrySelf
+---@field Create fun(self: WidgetRegistrySelf, target: table): WidgetMixinSelf
+
+local bg3 = RegistryProviderBt:GetRegistry("WidgetRegistrySelf"):Create({}):Configure({}).label
+--                                                                                        ^ hover: (field) label: string  def: local
+
+-- Backtick-generic return in `or` expression
+---@type WidgetMixin
+local existing = {}
+local bgor = existing or RegistryProviderBt:GetRegistry("WidgetRegistry"):New({})
+--    ^ hover: (local) bgor: WidgetMixin
+
 -- ── Chained function call: method():call() — return value is called ──────────
 
 ---@class ScriptFrame
