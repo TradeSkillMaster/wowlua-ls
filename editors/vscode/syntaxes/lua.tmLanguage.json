@@ -456,7 +456,7 @@
           "end": "(?=[\\n@#])",
           "patterns": [
             {
-              "comment": "Index signature: @field [type] Type",
+              "comment": "Index signature: @field [type] Type [description]",
               "begin": "(?:\\b(private|protected|public)\\s+)?(\\[)([a-zA-Z_][a-zA-Z0-9_\\.]*)(\\])(\\??)",
               "beginCaptures": {
                 "1": {"name": "storage.modifier.lua"},
@@ -467,11 +467,11 @@
               },
               "end": "(?=[\\n#])",
               "patterns": [
-                {"include": "#emmydoc.type"}
+                {"include": "#field-type-desc"}
               ]
             },
             {
-              "comment": "Named field: @field name Type",
+              "comment": "Named field: @field name Type [description]",
               "begin": "(?:\\b(private|protected|public)\\s+)?(\\b[a-zA-Z_][a-zA-Z0-9_]*\\b)(\\??)",
               "beginCaptures": {
                 "1": {"name": "storage.modifier.lua"},
@@ -480,8 +480,7 @@
               },
               "end": "(?=[\\n#])",
               "patterns": [
-                {"include": "#string"},
-                {"include": "#emmydoc.type"}
+                {"include": "#field-type-desc"}
               ]
             }
           ]
@@ -649,6 +648,75 @@
             {"match": "[\\{\\}\\:\\,\\?\\!\\|\\`][ \\t]*", "name": "keyword.operator.lua"},
             {"match": "([a-zA-Z0-9_\\.\\*\\<\\>\\,\\-]+)(?<!,)[ \\t]*", "name": "support.type.lua"}
           ]
+        }
+      ]
+    },
+
+    "field-type-desc": {
+      "comment": "Type expression followed by optional description for @field annotations",
+      "patterns": [
+        {
+          "comment": "fun() type: balanced parens, return type, then description",
+          "begin": "\\s+(fun)\\s*(\\()",
+          "beginCaptures": {
+            "1": {"name": "keyword.control.lua"},
+            "2": {"name": "keyword.operator.lua"}
+          },
+          "end": "(\\))([\\[\\]\\?\\!]*)(?:\\s*(:)\\s*((?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|&\\[\\]?!<>]*(?:\\s*,\\s*(?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|&\\[\\]?!<>]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
+          "endCaptures": {
+            "1": {"name": "keyword.operator.lua"},
+            "2": {"name": "keyword.operator.lua"},
+            "3": {"name": "keyword.operator.lua"},
+            "4": {"name": "support.type.lua"},
+            "5": {"name": "comment.block.documentation.lua"}
+          },
+          "patterns": [
+            {"match": "([a-zA-Z_][a-zA-Z0-9_]*)(?=\\??\\s*:)", "name": "entity.name.variable.lua"},
+            {"match": "[:\\?,]\\s*", "name": "keyword.operator.lua"},
+            {"include": "#emmydoc.type"},
+            {"include": "#string"}
+          ]
+        },
+        {
+          "comment": "Parameterized type (e.g. Map<K, V>) with description",
+          "begin": "\\s+([a-zA-Z_*][a-zA-Z0-9_.]*)(\\<)",
+          "beginCaptures": {
+            "1": {"name": "support.type.lua"},
+            "2": {"name": "keyword.operator.lua"}
+          },
+          "end": "(\\>)([\\[\\]\\?\\!]*)(?:\\s+(.+))?|(?=[\\n#])",
+          "endCaptures": {
+            "1": {"name": "keyword.operator.lua"},
+            "2": {"name": "keyword.operator.lua"},
+            "3": {"name": "comment.block.documentation.lua"}
+          },
+          "patterns": [
+            {"include": "#emmydoc.type"}
+          ]
+        },
+        {
+          "comment": "Type with parenthesized group (e.g. Type|(fun(): R, T)). Limited to one level of paren nesting; deeper nesting like (fun(x: (A|B)): R) may mis-split the description boundary.",
+          "match": "\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)(?:\\s+(.+))?",
+          "captures": {
+            "1": {"name": "support.type.lua"},
+            "2": {"name": "comment.block.documentation.lua"}
+          }
+        },
+        {
+          "comment": "{…} table literal type with description (one level of brace nesting)",
+          "match": "\\s+(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})(?:\\s+(.+))?",
+          "captures": {
+            "1": {"name": "support.type.lua"},
+            "2": {"name": "comment.block.documentation.lua"}
+          }
+        },
+        {
+          "comment": "Simple/union type with optional description (allows spaces around | and &). Uses a flat match so string literal types lose individual string highlighting — consistent with @param behavior.",
+          "match": "\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`]*(?:\\s*[|&]\\s*[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`]*)*)(?:\\s+(.+))?",
+          "captures": {
+            "1": {"name": "support.type.lua"},
+            "2": {"name": "comment.block.documentation.lua"}
+          }
         }
       ]
     },
