@@ -18,6 +18,331 @@ struct ClassicOnlyItems {
     enums: Vec<(String, Vec<(String, i64)>)>,
 }
 
+// ── Blizzard APIDocumentationGenerated full parser ───────────────────────────
+
+#[derive(Debug)]
+struct BlizzardParam {
+    name: String,
+    type_name: String,
+    nilable: bool,
+    inner_type: Option<String>,
+    /// `Mixin = "FooMixin"` — the Lua mixin class name, used instead of `type_name`
+    /// when present. Blizzard's `Type` is a C++ type while `Mixin` is the actual
+    /// Lua class (e.g. `Type = "ItemLocation", Mixin = "ItemLocationMixin"`).
+    mixin: Option<String>,
+}
+
+#[derive(Debug)]
+struct BlizzardFunction {
+    name: String,
+    namespace: Option<String>,
+    arguments: Vec<BlizzardParam>,
+    returns: Vec<BlizzardParam>,
+    may_return_nothing: bool,
+}
+
+#[derive(Debug)]
+struct BlizzardEvent {
+    literal_name: String,
+    payload: Vec<BlizzardParam>,
+}
+
+#[derive(Debug)]
+struct BlizzardStructure {
+    name: String,
+    fields: Vec<BlizzardParam>,
+}
+
+#[derive(Debug)]
+struct BlizzardApiDocs {
+    functions: Vec<BlizzardFunction>,
+    events: Vec<BlizzardEvent>,
+    structures: Vec<BlizzardStructure>,
+}
+
+/// Resolve a Blizzard param to its Lua type string.
+/// When `mixin` is present, it takes priority — it's the actual Lua class name
+/// (e.g. `ItemLocationMixin`), while `type_name` is Blizzard's internal C++ type.
+/// Only normalizes C-type names with no `@alias` in Ketho's BlizzardType.lua:
+/// `bool`→`boolean`, `cstring`→`string`, `luaIndex`→`number`.
+fn resolve_blizzard_param_type(p: &BlizzardParam) -> String {
+    if let Some(mixin) = &p.mixin {
+        return mixin.clone();
+    }
+    normalize_blizzard_type(&p.type_name, p.inner_type.as_deref())
+}
+
+fn normalize_blizzard_type(t: &str, inner_type: Option<&str>) -> String {
+    let base = match t {
+        "bool" => "boolean",
+        "cstring" => "string",
+        "luaIndex" => "number",
+        _ => t,
+    };
+    if t == "table"
+        && let Some(inner) = inner_type {
+            let inner_norm = normalize_blizzard_type(inner, None);
+            return format!("{inner_norm}[]");
+        }
+    base.to_string()
+}
+
+/// Compiled regexes for parsing Blizzard APIDocumentation files.
+/// Built once per `parse_blizzard_api_docs` invocation, shared across all files.
+struct BlizzardDocRegexes {
+    script_object: regex_lite::Regex,
+    ns: regex_lite::Regex,
+    name: regex_lite::Regex,
+    type_field: regex_lite::Regex,
+    param: regex_lite::Regex,
+    inner_type: regex_lite::Regex,
+    mixin: regex_lite::Regex,
+    may_return_nothing: regex_lite::Regex,
+    literal_name: regex_lite::Regex,
+    section: regex_lite::Regex,
+}
+
+impl BlizzardDocRegexes {
+    fn new() -> Self {
+        Self {
+            script_object: regex_lite::Regex::new(r#"Type\s*=\s*"ScriptObject""#).unwrap(),
+            ns: regex_lite::Regex::new(r#"Namespace\s*=\s*"(\w+)""#).unwrap(),
+            name: regex_lite::Regex::new(r#"Name\s*=\s*"(\w+)""#).unwrap(),
+            type_field: regex_lite::Regex::new(r#"Type\s*=\s*"(\w+)""#).unwrap(),
+            // Match `, Type = "..."` (preceded by comma) to avoid capturing `InnerType` instead.
+            // Without the comma anchor, `[^}]*Type` greedily skips past `Type = "table", Inner`
+            // and matches the `Type` inside `InnerType`.
+            param: regex_lite::Regex::new(
+                r#"Name\s*=\s*"(\w+)"[^}]*,\s*Type\s*=\s*"(\w+)"[^}]*Nilable\s*=\s*(true|false)"#,
+            ).unwrap(),
+            inner_type: regex_lite::Regex::new(r#"InnerType\s*=\s*"(\w+)""#).unwrap(),
+            mixin: regex_lite::Regex::new(r#"Mixin\s*=\s*"(\w+)""#).unwrap(),
+            may_return_nothing: regex_lite::Regex::new(r"MayReturnNothing\s*=\s*true").unwrap(),
+            literal_name: regex_lite::Regex::new(r#"LiteralName\s*=\s*"([A-Z_][A-Z0-9_]*)""#).unwrap(),
+            section: regex_lite::Regex::new(r"(?m)^\t(Functions|Events|Tables)\s*=\s*$").unwrap(),
+        }
+    }
+}
+
+/// Parse all `*Documentation.lua` files in `Blizzard_APIDocumentationGenerated`.
+fn parse_blizzard_api_docs(ui_source_dir: &Path) -> BlizzardApiDocs {
+    let api_doc_dir = ui_source_dir.join("Interface/AddOns/Blizzard_APIDocumentationGenerated");
+    let mut docs = BlizzardApiDocs {
+        functions: Vec::new(),
+        events: Vec::new(),
+        structures: Vec::new(),
+    };
+    if !api_doc_dir.is_dir() {
+        log::warn!("Blizzard_APIDocumentationGenerated not found at {}", api_doc_dir.display());
+        return docs;
+    }
+
+    let re = BlizzardDocRegexes::new();
+    for entry in std::fs::read_dir(&api_doc_dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "lua")
+            && let Ok(content) = std::fs::read_to_string(&path) {
+                parse_blizzard_api_doc_file(&content, &mut docs, &re);
+            }
+    }
+
+    log::info!(
+        "  Parsed Blizzard API docs: {} functions, {} events, {} structures",
+        docs.functions.len(), docs.events.len(), docs.structures.len(),
+    );
+    docs
+}
+
+/// Parse a single Blizzard APIDocumentation Lua file for Functions, Events, and Structures.
+/// Skips `Type = "ScriptObject"` files — those are widget/frame method APIs (e.g.
+/// SimpleFrameAPI, HousingCatalogSearcherAPI) whose functions are methods on
+/// frame objects, not top-level globals.
+fn parse_blizzard_api_doc_file(content: &str, docs: &mut BlizzardApiDocs, re: &BlizzardDocRegexes) {
+    // Skip ScriptObject files (widget method APIs, not game globals)
+    if re.script_object.is_match(content) {
+        return;
+    }
+
+    // Extract namespace (may be absent for global APIs)
+    let namespace = re.ns.captures(content).map(|c| c.get(1).unwrap().as_str().to_string());
+
+    // Parse Functions, Events, and Structure Tables using block-based extraction.
+    // The file format is very regular: each block starts with `Name = "X"` followed
+    // by `Type = "Function"|"Event"|"Structure"`.
+
+    for (section_name, section_content) in extract_sections(content, &re.section) {
+        match section_name {
+            "Functions" => {
+                for block in extract_blocks(section_content) {
+                    if let Some(name) = extract_field(&re.name, block)
+                        && re.type_field.captures(block).is_some_and(|c| c.get(1).unwrap().as_str() == "Function") {
+                            let arguments = extract_params(block, "Arguments", &re.param, &re.inner_type, &re.mixin);
+                            let returns = extract_params(block, "Returns", &re.param, &re.inner_type, &re.mixin);
+                            let may_return_nothing = re.may_return_nothing.is_match(block);
+                            docs.functions.push(BlizzardFunction {
+                                name,
+                                namespace: namespace.clone(),
+                                arguments,
+                                returns,
+                                may_return_nothing,
+                            });
+                        }
+                }
+            }
+            "Events" => {
+                for block in extract_blocks(section_content) {
+                    if let Some(lit_name) = extract_field(&re.literal_name, block) {
+                        let payload = extract_params(block, "Payload", &re.param, &re.inner_type, &re.mixin);
+                        docs.events.push(BlizzardEvent {
+                            literal_name: lit_name,
+                            payload,
+                        });
+                    }
+                }
+            }
+            "Tables" => {
+                for block in extract_blocks(section_content) {
+                    if let Some(name) = extract_field(&re.name, block) {
+                        // Only parse Structure blocks, skip Enumeration (already handled by parse_api_doc_file)
+                        if re.type_field.captures(block).is_some_and(|c| c.get(1).unwrap().as_str() == "Structure") {
+                            let fields = extract_params(block, "Fields", &re.param, &re.inner_type, &re.mixin);
+                            docs.structures.push(BlizzardStructure { name, fields });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Extract named top-level sections (Functions, Events, Tables) from a documentation file.
+/// Returns (section_name, section_content) pairs.
+fn extract_sections<'a>(content: &'a str, section_re: &regex_lite::Regex) -> Vec<(&'a str, &'a str)> {
+    let mut sections = Vec::new();
+
+    let matches: Vec<_> = section_re.captures_iter(content).collect();
+    for (i, cap) in matches.iter().enumerate() {
+        let name = cap.get(1).unwrap().as_str();
+        let start = cap.get(0).unwrap().end();
+        // Section ends at the next section start or at end of content
+        let end = matches.get(i + 1)
+            .map(|next| next.get(0).unwrap().start())
+            .unwrap_or(content.len());
+        sections.push((name, &content[start..end]));
+    }
+
+    sections
+}
+
+/// Extract top-level `{ ... }` blocks within a section.
+/// Each block is one function/event/structure entry.
+fn extract_blocks(section: &str) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut depth = 0i32;
+    let mut block_start = None;
+
+    for (i, ch) in section.char_indices() {
+        match ch {
+            '{' => {
+                if depth == 1 {
+                    block_start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 1
+                    && let Some(start) = block_start {
+                        blocks.push(&section[start..=i]);
+                        block_start = None;
+                    }
+            }
+            _ => {}
+        }
+    }
+
+    blocks
+}
+
+/// Extract a named field value using a regex.
+fn extract_field(re: &regex_lite::Regex, block: &str) -> Option<String> {
+    re.captures(block).map(|c| c.get(1).unwrap().as_str().to_string())
+}
+
+/// Extract parameter entries from a named sub-array (Arguments, Returns, Payload, Fields).
+fn extract_params(
+    block: &str,
+    array_name: &str,
+    param_re: &regex_lite::Regex,
+    inner_type_re: &regex_lite::Regex,
+    mixin_re: &regex_lite::Regex,
+) -> Vec<BlizzardParam> {
+    // Find the array: `ArrayName =\n\t\t{`
+    let marker = format!("{array_name} =");
+    let Some(marker_pos) = block.find(&marker) else { return Vec::new() };
+    let after = &block[marker_pos..];
+
+    // Find the matching closing brace for the array
+    let mut depth = 0i32;
+    let mut array_end = after.len();
+    let mut started = false;
+    for (i, ch) in after.char_indices() {
+        match ch {
+            '{' => { depth += 1; started = true; }
+            '}' => {
+                depth -= 1;
+                if started && depth == 0 {
+                    array_end = i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let array_content = &after[..array_end];
+
+    // Extract individual param entries (each is `{ Name = "...", Type = "...", Nilable = ... }`)
+    let mut params = Vec::new();
+    // Split into individual param blocks
+    let mut param_depth = 0i32;
+    let mut param_start = None;
+    for (i, ch) in array_content.char_indices() {
+        match ch {
+            '{' => {
+                if param_depth == 1 {
+                    param_start = Some(i);
+                }
+                param_depth += 1;
+            }
+            '}' => {
+                param_depth -= 1;
+                if param_depth == 1
+                    && let Some(start) = param_start {
+                        let param_text = &array_content[start..=i];
+                        if let Some(cap) = param_re.captures(param_text) {
+                            let inner = inner_type_re.captures(param_text)
+                                .map(|c| c.get(1).unwrap().as_str().to_string());
+                            let mixin = mixin_re.captures(param_text)
+                                .map(|c| c.get(1).unwrap().as_str().to_string());
+                            params.push(BlizzardParam {
+                                name: cap.get(1).unwrap().as_str().to_string(),
+                                type_name: cap.get(2).unwrap().as_str().to_string(),
+                                nilable: cap.get(3).unwrap().as_str() == "true",
+                                inner_type: inner,
+                                mixin,
+                            });
+                        }
+                        param_start = None;
+                    }
+            }
+            _ => {}
+        }
+    }
+
+    params
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 const VSCODE_WOW_API_REPO: &str = "https://github.com/Ketho/vscode-wow-api.git";
@@ -277,95 +602,6 @@ fn parse_enum_ts(content: &str) -> HashMap<String, i64> {
     map
 }
 
-struct ParsedEventParam {
-    name: String,
-    type_name: String,
-    nilable: bool,
-}
-
-struct ParsedEvent {
-    name: String,
-    params: Vec<ParsedEventParam>,
-}
-
-fn parse_event_ts(content: &str) -> Vec<ParsedEvent> {
-    let mut events = Vec::new();
-    let mut current_event: Option<String> = None;
-    let mut current_params: Vec<ParsedEventParam> = Vec::new();
-    let mut brace_depth: i32 = 0;
-    let mut in_data = false;
-
-    let event_re = regex_lite::Regex::new(r"^\t([A-Z_][A-Z0-9_]*):\s*\{").unwrap();
-    let param_re = regex_lite::Regex::new(
-        r#"\{Name:\s*"([^"]+)",\s*Type:\s*"([^"]+)"(?:,\s*Nilable:\s*(true))?"#
-    ).unwrap();
-
-    for line in content.lines() {
-        if !in_data {
-            if line.contains("export const data") {
-                in_data = true;
-            }
-            continue;
-        }
-
-        let mut line_open = 0i32;
-        let mut line_close = 0i32;
-        for ch in line.chars() {
-            match ch {
-                '{' => line_open += 1,
-                '}' => line_close += 1,
-                _ => {}
-            }
-        }
-        brace_depth += line_open - line_close;
-
-        // Three steps in order: (1) update brace_depth, (2) close previous event
-        // if depth dropped, (3) open/push new event. The close check at step 2
-        // uses the already-updated depth so a `},` line correctly flushes the
-        // previous event before step 3 starts a new one.
-        if brace_depth <= 1 && current_event.is_some() {
-            events.push(ParsedEvent {
-                name: current_event.take().unwrap(),
-                params: std::mem::take(&mut current_params),
-            });
-        }
-
-        if let Some(caps) = event_re.captures(line) {
-            let name = caps.get(1).unwrap().as_str().to_string();
-            current_params.clear();
-            // Check whether the event body closes on this same line by looking
-            // for `}` after the header's opening `{`. This correctly handles
-            // `EVENT: {},` (empty) without false-triggering on a hypothetical
-            // single-line `EVENT: { {Name: ...} },` (where the event `{` and
-            // the param `{}` would also produce balanced counts).
-            let after_header = &line[caps.get(0).unwrap().end()..];
-            let body_closed = after_header.contains('}');
-            if body_closed && !after_header.contains("Name:") {
-                events.push(ParsedEvent { name, params: Vec::new() });
-            } else {
-                current_event = Some(name);
-                brace_depth = 2;
-            }
-            continue;
-        }
-
-        if current_event.is_some()
-            && let Some(caps) = param_re.captures(line)
-        {
-            let name = caps.get(1).unwrap().as_str().to_string();
-            let typ = caps.get(2).unwrap().as_str().to_string();
-            let nilable = caps.get(3).is_some();
-            current_params.push(ParsedEventParam { name, type_name: typ, nilable });
-        }
-    }
-
-    if let Some(name) = current_event {
-        events.push(ParsedEvent { name, params: current_params });
-    }
-
-    events
-}
-
 /// Parse event names from a `---@alias FrameEvent string` definition in Event.lua.
 /// Returns the set of all `---|"EVENT_NAME"` entries.
 fn parse_event_alias_names(content: &str) -> HashSet<String> {
@@ -380,54 +616,206 @@ fn parse_event_alias_names(content: &str) -> HashSet<String> {
     names
 }
 
-/// Generate a Lua annotation file with `@event FrameEvent "EVENT_NAME"` blocks.
-/// Uses `FrameEvent` to match Ketho's existing type on `Frame:RegisterEvent(eventName: FrameEvent)`.
-/// `all_event_names` is the complete set of event names from the FrameEvent alias;
-/// events not in `events` get an empty-payload entry so they still show hover.
-fn generate_events_lua(
-    events: &[ParsedEvent],
-    all_event_names: &HashSet<String>,
-    output_path: &Path,
-) {
+// ── Blizzard API doc stub generators ─────────────────────────────────────────
+
+/// Generate LuaLS-annotated function stubs from parsed Blizzard API docs.
+/// `existing_names` is used to skip functions already covered by Ketho's richer annotations.
+fn generate_blizzard_api_stubs(
+    docs: &BlizzardApiDocs,
+    existing_names: &HashSet<String>,
+) -> String {
     use std::fmt::Write;
-    let mut content = String::new();
-    writeln!(content, "-- Auto-generated WoW event payload annotations").unwrap();
-    writeln!(content, "-- Source: Ketho/vscode-wow-api event.ts + Event.lua alias").unwrap();
-    writeln!(content).unwrap();
+    let mut out = String::new();
+    writeln!(out, "---@meta _").unwrap();
+    writeln!(out, "-- WoW API function stubs (auto-generated from Blizzard_APIDocumentationGenerated)").unwrap();
+    writeln!(out).unwrap();
 
-    let events_with_payload: HashSet<&str> = events.iter().map(|e| e.name.as_str()).collect();
+    // Collect namespaces that need table declarations
+    let mut namespaces: HashSet<&str> = HashSet::new();
+    let mut generated_count = 0usize;
 
-    for ev in events {
-        writeln!(content, "---[Documentation](https://warcraft.wiki.gg/wiki/{})", ev.name).unwrap();
-        writeln!(content, "---@event FrameEvent \"{}\"", ev.name).unwrap();
-        for p in &ev.params {
-            if p.nilable {
-                writeln!(content, "---@param {}? {}", p.name, p.type_name).unwrap();
-            } else {
-                writeln!(content, "---@param {} {}", p.name, p.type_name).unwrap();
-            }
+    // Group functions by namespace for cleaner output
+    let mut ns_functions: HashMap<Option<&str>, Vec<&BlizzardFunction>> = HashMap::new();
+    for func in &docs.functions {
+        let ns = func.namespace.as_deref();
+        // Check if this function is already covered by existing stubs
+        let qualified = match ns {
+            Some(n) => format!("{n}.{}", func.name),
+            None => func.name.clone(),
+        };
+        if existing_names.contains(&qualified) {
+            continue;
         }
-        writeln!(content).unwrap();
+        if let Some(n) = ns {
+            namespaces.insert(n);
+        }
+        ns_functions.entry(ns).or_default().push(func);
     }
 
-    let mut extra: Vec<&str> = all_event_names.iter()
-        .filter(|n| !events_with_payload.contains(n.as_str()))
+    // Emit namespace declarations
+    let mut ns_sorted: Vec<&str> = namespaces.into_iter().collect();
+    ns_sorted.sort();
+    for ns in &ns_sorted {
+        // Only emit the table assignment if this namespace isn't already defined
+        if !existing_names.contains(*ns) {
+            writeln!(out, "{ns} = {{}}").unwrap();
+        }
+    }
+    if !ns_sorted.is_empty() {
+        writeln!(out).unwrap();
+    }
+
+    // Emit global functions first, then namespaced
+    let mut ns_keys: Vec<Option<&str>> = ns_functions.keys().copied().collect();
+    ns_keys.sort_by_key(|k| (k.is_some(), *k));
+
+    for ns_key in ns_keys {
+        let funcs = &ns_functions[&ns_key];
+        for func in funcs {
+            write_blizzard_function_stub(&mut out, func);
+            generated_count += 1;
+        }
+    }
+
+    log::info!("  BlizzardAPI: {} function stubs generated", generated_count);
+    out
+}
+
+fn write_blizzard_function_stub(out: &mut String, func: &BlizzardFunction) {
+    use std::fmt::Write;
+    let qualified = match &func.namespace {
+        Some(ns) => format!("{ns}.{}", func.name),
+        None => func.name.clone(),
+    };
+    let wiki_name = match &func.namespace {
+        Some(ns) => format!("API_{ns}.{}", func.name),
+        None => format!("API_{}", func.name),
+    };
+    writeln!(out, "---[Documentation](https://warcraft.wiki.gg/wiki/{wiki_name})").unwrap();
+
+    for arg in &func.arguments {
+        let typ = resolve_blizzard_param_type(arg);
+        if arg.nilable {
+            writeln!(out, "---@param {}? {}", arg.name, typ).unwrap();
+        } else {
+            writeln!(out, "---@param {} {}", arg.name, typ).unwrap();
+        }
+    }
+    for ret in &func.returns {
+        let typ = resolve_blizzard_param_type(ret);
+        if ret.nilable || func.may_return_nothing {
+            writeln!(out, "---@return {}? {}", typ, ret.name).unwrap();
+        } else {
+            writeln!(out, "---@return {} {}", typ, ret.name).unwrap();
+        }
+    }
+
+    let params: Vec<&str> = func.arguments.iter().map(|a| a.name.as_str()).collect();
+    writeln!(out, "function {qualified}({}) end", params.join(", ")).unwrap();
+    writeln!(out).unwrap();
+}
+
+/// Generate LuaLS `@class` + `@field` stubs from parsed Blizzard Structure definitions.
+fn generate_blizzard_structure_stubs(
+    docs: &BlizzardApiDocs,
+    existing_names: &HashSet<String>,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "---@meta _").unwrap();
+    writeln!(out, "-- WoW API structure types (auto-generated from Blizzard_APIDocumentationGenerated)").unwrap();
+    writeln!(out).unwrap();
+
+    let mut count = 0usize;
+    let mut sorted: Vec<&BlizzardStructure> = docs.structures.iter()
+        .filter(|s| !existing_names.contains(&s.name))
+        .collect();
+    sorted.sort_by_key(|s| &s.name);
+
+    for st in &sorted {
+        writeln!(out, "---@class {}", st.name).unwrap();
+        for field in &st.fields {
+            let typ = resolve_blizzard_param_type(field);
+            if field.nilable {
+                writeln!(out, "---@field {} {}?", field.name, typ).unwrap();
+            } else {
+                writeln!(out, "---@field {} {}", field.name, typ).unwrap();
+            }
+        }
+        writeln!(out).unwrap();
+        count += 1;
+    }
+
+    log::info!("  BlizzardStructures: {} structure types generated", count);
+    out
+}
+
+/// Internal helper: generate `@event` stubs from parsed Blizzard Events only.
+/// Called by `generate_blizzard_event_stubs_merged()` which adds extra events from Ketho's alias.
+fn generate_blizzard_event_stubs(docs: &BlizzardApiDocs) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "---@meta _").unwrap();
+    writeln!(out, "-- WoW event payload annotations (auto-generated from Blizzard_APIDocumentationGenerated)").unwrap();
+    writeln!(out).unwrap();
+
+    let mut sorted: Vec<&BlizzardEvent> = docs.events.iter().collect();
+    sorted.sort_by_key(|e| &e.literal_name);
+
+    for ev in &sorted {
+        writeln!(out, "---[Documentation](https://warcraft.wiki.gg/wiki/{})", ev.literal_name).unwrap();
+        writeln!(out, "---@event FrameEvent \"{}\"", ev.literal_name).unwrap();
+        for p in &ev.payload {
+            let typ = resolve_blizzard_param_type(p);
+            if p.nilable {
+                writeln!(out, "---@param {}? {}", p.name, typ).unwrap();
+            } else {
+                writeln!(out, "---@param {} {}", p.name, typ).unwrap();
+            }
+        }
+        writeln!(out).unwrap();
+    }
+
+    log::info!("  BlizzardEvents: {} events generated", sorted.len());
+    out
+}
+
+/// Generate merged event stubs: Blizzard-sourced events with payloads + extra event names
+/// from Ketho's Event.lua alias (for events not in APIDocumentation, e.g. FrameXML-only).
+fn generate_blizzard_event_stubs_merged(
+    docs: &BlizzardApiDocs,
+    ketho_event_names: &HashSet<String>,
+) -> String {
+    use std::fmt::Write;
+    let mut out = generate_blizzard_event_stubs(docs);
+
+    // Add events from Ketho's alias that aren't in the Blizzard docs
+    let blizzard_event_names: HashSet<&str> = docs.events.iter()
+        .map(|e| e.literal_name.as_str())
+        .collect();
+
+    let mut extra: Vec<&str> = ketho_event_names.iter()
+        .filter(|n| !blizzard_event_names.contains(n.as_str()))
         .map(|s| s.as_str())
         .collect();
     extra.sort();
-    for name in extra {
-        writeln!(content, "---[Documentation](https://warcraft.wiki.gg/wiki/{})", name).unwrap();
-        writeln!(content, "---@event FrameEvent \"{}\"", name).unwrap();
-        writeln!(content).unwrap();
+
+    for name in &extra {
+        writeln!(out, "---[Documentation](https://warcraft.wiki.gg/wiki/{name})").unwrap();
+        writeln!(out, "---@event FrameEvent \"{name}\"").unwrap();
+        writeln!(out).unwrap();
+    }
+    if !extra.is_empty() {
+        log::info!("  BlizzardEvents: {} extra events from Ketho alias", extra.len());
     }
 
-    std::fs::write(output_path, content).unwrap();
+    out
 }
 
 /// Find names already defined in existing Lua stub files.
-/// Uses `\w+` (no dots) to match flat global names for dedup against globals.ts.
+/// Matches both flat names (`FuncName`) and dotted names (`C_Foo.BarMethod`).
 fn get_existing_names(stubs_dir: &Path, exclude_files: &[&str]) -> HashSet<String> {
-    let func_re = regex_lite::Regex::new(r"(?m)^function (\w+)").unwrap();
+    let func_re = regex_lite::Regex::new(r"(?m)^function ([\w.]+)").unwrap();
     let assign_re = regex_lite::Regex::new(r"(?m)^(\w+)\s*=").unwrap();
     let class_re = regex_lite::Regex::new(r"---@class\s+(\w+)").unwrap();
     let mut existing = HashSet::new();
@@ -2511,6 +2899,15 @@ pub fn regenerate_stubs() {
         all_ui_dirs.push(retail_ui_dir.clone());
     }
 
+    // Step 2c: Parse Blizzard APIDocumentationGenerated directly from wow-ui-source
+    let blizzard_docs = if has_retail_ui {
+        log::info!("Parsing Blizzard APIDocumentationGenerated (retail)...");
+        parse_blizzard_api_docs(&retail_ui_dir)
+    } else {
+        log::warn!("Skipping Blizzard API doc parsing (no retail clone)");
+        BlizzardApiDocs { functions: Vec::new(), events: Vec::new(), structures: Vec::new() }
+    };
+
     // Vendor stubs from clone (Core + FrameXML)
     let vendor_dirs = [
         clone_dir.join("Annotations/Core"),
@@ -2568,19 +2965,30 @@ pub fn regenerate_stubs() {
     std::fs::write(gen_dir.join("ClassicGlobals.lua"), &classic_lua).unwrap();
     std::fs::write(gen_dir.join("WikiGlobals.lua"), &wiki_globals_lua).unwrap();
 
-    // Step 4b: Generate event payload annotations from event.ts + Event.lua alias
-    let event_ts_path = data_dir.join("event.ts");
+    // Step 4b: Generate Blizzard API stubs (functions, structures, events) from parsed docs
+    // Collect existing names from Ketho's annotations + overrides for deduplication.
+    // Blizzard-sourced stubs only fill gaps where Ketho's richer annotations don't exist.
+    let existing_for_dedup = get_existing_names(&combined_stubs, &[
+        "GlobalStrings.lua", "GlobalVariables.lua",
+    ]);
+    log::info!("  Existing names for dedup: {}", existing_for_dedup.len());
+
+    let blizzard_api_lua = generate_blizzard_api_stubs(&blizzard_docs, &existing_for_dedup);
+    std::fs::write(gen_dir.join("BlizzardAPI.lua"), &blizzard_api_lua).unwrap();
+
+    let blizzard_structures_lua = generate_blizzard_structure_stubs(&blizzard_docs, &existing_for_dedup);
+    std::fs::write(gen_dir.join("BlizzardStructures.lua"), &blizzard_structures_lua).unwrap();
+
+    // Events: merge Blizzard-parsed events with Ketho's Event.lua alias for completeness
+    // (alias may include events not in APIDocumentation, e.g. FrameXML-only events)
     let event_lua_path = clone_dir.join("Annotations/Core/Data/Event.lua");
     let alias_content = std::fs::read_to_string(&event_lua_path)
         .unwrap_or_else(|e| panic!("Failed to read Event.lua from cloned repo at {}: {e}", event_lua_path.display()));
-    let all_event_names = parse_event_alias_names(&alias_content);
-    log::info!("Parsed Event.lua alias: {} event names", all_event_names.len());
+    let ketho_event_names = parse_event_alias_names(&alias_content);
+    log::info!("Parsed Event.lua alias: {} event names", ketho_event_names.len());
 
-    let event_content = std::fs::read_to_string(&event_ts_path)
-        .unwrap_or_else(|e| panic!("Failed to read event.ts from cloned repo at {}: {e}", event_ts_path.display()));
-    let events = parse_event_ts(&event_content);
-    log::info!("Parsed event.ts: {} events", events.len());
-    generate_events_lua(&events, &all_event_names, &gen_dir.join("Events.lua"));
+    let blizzard_events_lua = generate_blizzard_event_stubs_merged(&blizzard_docs, &ketho_event_names);
+    std::fs::write(gen_dir.join("BlizzardEvents.lua"), &blizzard_events_lua).unwrap();
 
     // Step 5: Collect all stub file paths for scanning
     log::info!("Scanning stubs...");
@@ -3252,89 +3660,314 @@ function TooltipMixin:ShowTooltip() end
     }
 
     #[test]
-    fn test_parse_event_ts_empty_and_payload() {
+    fn test_parse_blizzard_api_doc_functions() {
         let content = r#"
-export const data = {
-	PLAYER_LOGIN: {},
-	PLAYER_LOGOUT: {},
-	ENCOUNTER_END: {
-		Payload: [
-			{Name: "encounterID", Type: "number"},
-			{Name: "success", Type: "number"},
-		],
+local TestDoc =
+{
+	Name = "TestDoc",
+	Type = "System",
+	Namespace = "C_Test",
+
+	Functions =
+	{
+		{
+			Name = "GetValue",
+			Type = "Function",
+
+			Arguments =
+			{
+				{ Name = "id", Type = "number", Nilable = false },
+			},
+
+			Returns =
+			{
+				{ Name = "value", Type = "cstring", Nilable = true },
+			},
+		},
+		{
+			Name = "DoStuff",
+			Type = "Function",
+			MayReturnNothing = true,
+
+			Returns =
+			{
+				{ Name = "result", Type = "bool", Nilable = false },
+			},
+		},
+		{
+			Name = "GetItems",
+			Type = "Function",
+
+			Returns =
+			{
+				{ Name = "items", Type = "table", InnerType = "ItemInfo", Nilable = false },
+			},
+		},
 	},
-	ADDON_LOADED: {
-		Payload: [
-			{Name: "addOnName", Type: "string"},
-		],
+
+	Events =
+	{
 	},
-	ACCOUNT_MONEY: {},
+
+	Tables =
+	{
+	},
 };
+APIDocumentation:AddDocumentationTable(TestDoc);
 "#;
-        let events = parse_event_ts(content);
-        assert_eq!(events.len(), 5);
+        let mut docs = BlizzardApiDocs {
+            functions: Vec::new(),
+            events: Vec::new(),
+            structures: Vec::new(),
+        };
+        parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
+        assert_eq!(docs.functions.len(), 3);
 
-        let login = events.iter().find(|e| e.name == "PLAYER_LOGIN").unwrap();
-        assert!(login.params.is_empty());
+        let get_val = &docs.functions[0];
+        assert_eq!(get_val.name, "GetValue");
+        assert_eq!(get_val.namespace.as_deref(), Some("C_Test"));
+        assert_eq!(get_val.arguments.len(), 1);
+        assert_eq!(get_val.arguments[0].name, "id");
+        assert_eq!(get_val.arguments[0].type_name, "number");
+        assert!(!get_val.arguments[0].nilable);
+        assert_eq!(get_val.returns.len(), 1);
+        assert_eq!(get_val.returns[0].type_name, "cstring");
+        assert!(get_val.returns[0].nilable);
+        assert!(!get_val.may_return_nothing);
 
-        let logout = events.iter().find(|e| e.name == "PLAYER_LOGOUT").unwrap();
-        assert!(logout.params.is_empty());
+        let do_stuff = &docs.functions[1];
+        assert_eq!(do_stuff.name, "DoStuff");
+        assert!(do_stuff.may_return_nothing);
 
-        let encounter = events.iter().find(|e| e.name == "ENCOUNTER_END").unwrap();
-        assert_eq!(encounter.params.len(), 2);
-        assert_eq!(encounter.params[0].name, "encounterID");
-        assert_eq!(encounter.params[1].name, "success");
-
-        let addon = events.iter().find(|e| e.name == "ADDON_LOADED").unwrap();
-        assert_eq!(addon.params.len(), 1);
-        assert_eq!(addon.params[0].name, "addOnName");
-
-        let money = events.iter().find(|e| e.name == "ACCOUNT_MONEY").unwrap();
-        assert!(money.params.is_empty());
+        // Array return type: Type = "table", InnerType = "ItemInfo"
+        let get_items = &docs.functions[2];
+        assert_eq!(get_items.name, "GetItems");
+        assert_eq!(get_items.returns.len(), 1);
+        assert_eq!(get_items.returns[0].type_name, "table");
+        assert_eq!(get_items.returns[0].inner_type.as_deref(), Some("ItemInfo"));
     }
 
     #[test]
-    fn test_parse_event_ts_consecutive_empty_events() {
+    fn test_parse_blizzard_api_doc_events() {
         let content = r#"
-export const data = {
-	EVENT_A: {},
-	EVENT_B: {},
-	EVENT_C: {},
-	EVENT_D: {
-		Payload: [
-			{Name: "x", Type: "number"},
-		],
+local TestDoc =
+{
+	Name = "TestDoc",
+	Type = "System",
+	Namespace = "C_Test",
+
+	Functions =
+	{
 	},
-	EVENT_E: {},
+
+	Events =
+	{
+		{
+			Name = "TestEvent",
+			Type = "Event",
+			LiteralName = "TEST_EVENT",
+			Payload =
+			{
+				{ Name = "id", Type = "number", Nilable = false },
+				{ Name = "name", Type = "cstring", Nilable = true },
+			},
+		},
+		{
+			Name = "ArrayEvent",
+			Type = "Event",
+			LiteralName = "ARRAY_EVENT",
+			Payload =
+			{
+				{ Name = "changes", Type = "table", InnerType = "SomeStruct", Nilable = false },
+			},
+		},
+		{
+			Name = "EmptyEvent",
+			Type = "Event",
+			LiteralName = "EMPTY_EVENT",
+		},
+	},
+
+	Tables =
+	{
+	},
 };
 "#;
-        let events = parse_event_ts(content);
-        let names: Vec<&str> = events.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["EVENT_A", "EVENT_B", "EVENT_C", "EVENT_D", "EVENT_E"]);
-        assert!(events[0].params.is_empty());
-        assert!(events[1].params.is_empty());
-        assert!(events[2].params.is_empty());
-        assert_eq!(events[3].params.len(), 1);
-        assert!(events[4].params.is_empty());
+        let mut docs = BlizzardApiDocs {
+            functions: Vec::new(),
+            events: Vec::new(),
+            structures: Vec::new(),
+        };
+        parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
+        assert_eq!(docs.events.len(), 3);
+        assert_eq!(docs.events[0].literal_name, "TEST_EVENT");
+        assert_eq!(docs.events[0].payload.len(), 2);
+
+        // Array type: Type = "table", InnerType = "SomeStruct" → should produce SomeStruct[]
+        let array_ev = &docs.events[1];
+        assert_eq!(array_ev.literal_name, "ARRAY_EVENT");
+        assert_eq!(array_ev.payload.len(), 1);
+        assert_eq!(array_ev.payload[0].name, "changes");
+        assert_eq!(array_ev.payload[0].type_name, "table");
+        assert_eq!(array_ev.payload[0].inner_type.as_deref(), Some("SomeStruct"));
+
+        assert_eq!(docs.events[2].literal_name, "EMPTY_EVENT");
+        assert!(docs.events[2].payload.is_empty());
     }
 
     #[test]
-    fn test_parse_event_ts_single_line_with_payload_not_treated_as_empty() {
-        // Hypothetical: single-line event with inline payload should NOT be
-        // treated as empty (the `Name:` guard prevents it). The event is
-        // captured but params aren't extracted from the same line (the
-        // `continue` skips param scanning). Acceptable since this format
-        // doesn't exist in Ketho's actual data.
+    fn test_parse_blizzard_api_doc_structures() {
         let content = r#"
-export const data = {
-	INLINE_EVENT: { Payload: [{Name: "val", Type: "string"}] },
+local TestDoc =
+{
+	Name = "TestDoc",
+	Type = "System",
+
+	Functions =
+	{
+	},
+
+	Events =
+	{
+	},
+
+	Tables =
+	{
+		{
+			Name = "TestInfo",
+			Type = "Structure",
+			Fields =
+			{
+				{ Name = "id", Type = "number", Nilable = false },
+				{ Name = "items", Type = "table", InnerType = "number", Nilable = false },
+				{ Name = "label", Type = "cstring", Nilable = true },
+			},
+		},
+		{
+			Name = "TestEnum",
+			Type = "Enumeration",
+			NumValues = 2,
+			Fields =
+			{
+				{ Name = "Foo", Type = "TestEnum", EnumValue = 0 },
+				{ Name = "Bar", Type = "TestEnum", EnumValue = 1 },
+			},
+		},
+	},
 };
 "#;
-        let events = parse_event_ts(content);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].name, "INLINE_EVENT");
-        // Params not captured from single-line format (only multi-line is supported)
-        assert!(events[0].params.is_empty());
+        let mut docs = BlizzardApiDocs {
+            functions: Vec::new(),
+            events: Vec::new(),
+            structures: Vec::new(),
+        };
+        parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
+        // Only Structure is parsed, not Enumeration
+        assert_eq!(docs.structures.len(), 1);
+        assert_eq!(docs.structures[0].name, "TestInfo");
+        assert_eq!(docs.structures[0].fields.len(), 3);
+        assert_eq!(docs.structures[0].fields[1].inner_type.as_deref(), Some("number"));
+    }
+
+    #[test]
+    fn test_normalize_blizzard_type() {
+        // C-type names that need normalization (no @alias in BlizzardType.lua)
+        assert_eq!(normalize_blizzard_type("bool", None), "boolean");
+        assert_eq!(normalize_blizzard_type("cstring", None), "string");
+        assert_eq!(normalize_blizzard_type("luaIndex", None), "number");
+        // Named aliases kept as-is (defined in BlizzardType.lua)
+        assert_eq!(normalize_blizzard_type("time_t", None), "time_t");
+        assert_eq!(normalize_blizzard_type("fileID", None), "fileID");
+        assert_eq!(normalize_blizzard_type("WOWGUID", None), "WOWGUID");
+        assert_eq!(normalize_blizzard_type("ClubId", None), "ClubId");
+        assert_eq!(normalize_blizzard_type("BigUInteger", None), "BigUInteger");
+        assert_eq!(normalize_blizzard_type("textureKit", None), "textureKit");
+        // Array types
+        assert_eq!(normalize_blizzard_type("table", Some("number")), "number[]");
+        assert_eq!(normalize_blizzard_type("table", Some("ItemInfo")), "ItemInfo[]");
+        assert_eq!(normalize_blizzard_type("table", Some("WOWGUID")), "WOWGUID[]");
+        assert_eq!(normalize_blizzard_type("table", None), "table");
+        // Pass-through
+        assert_eq!(normalize_blizzard_type("ItemInfo", None), "ItemInfo");
+    }
+
+    #[test]
+    fn test_resolve_blizzard_param_type_mixin_priority() {
+        // When Mixin is present, it should be used instead of Type
+        let p = BlizzardParam {
+            name: "location".into(),
+            type_name: "ItemLocation".into(),
+            nilable: false,
+            inner_type: None,
+            mixin: Some("ItemLocationMixin".into()),
+        };
+        assert_eq!(resolve_blizzard_param_type(&p), "ItemLocationMixin");
+
+        // Without Mixin, Type is used (and normalized if needed)
+        let p2 = BlizzardParam {
+            name: "ok".into(),
+            type_name: "bool".into(),
+            nilable: false,
+            inner_type: None,
+            mixin: None,
+        };
+        assert_eq!(resolve_blizzard_param_type(&p2), "boolean");
+
+        // Mixin with array type — Mixin takes priority, InnerType ignored
+        let p3 = BlizzardParam {
+            name: "items".into(),
+            type_name: "table".into(),
+            nilable: false,
+            inner_type: Some("ItemLocation".into()),
+            mixin: Some("ItemLocationMixin".into()),
+        };
+        assert_eq!(resolve_blizzard_param_type(&p3), "ItemLocationMixin");
+    }
+
+    #[test]
+    fn test_parse_blizzard_api_doc_skips_script_object() {
+        let content = r#"
+local SimpleFrameAPI =
+{
+	Name = "SimpleFrameAPI",
+	Type = "ScriptObject",
+
+	Functions =
+	{
+		{
+			Name = "GetName",
+			Type = "Function",
+
+			Arguments =
+			{
+			},
+
+			Returns =
+			{
+				{ Name = "name", Type = "cstring", Nilable = false },
+			},
+		},
+	},
+
+	Events =
+	{
+	},
+
+	Tables =
+	{
+	},
+};
+"#;
+        let mut docs = BlizzardApiDocs {
+            functions: Vec::new(),
+            events: Vec::new(),
+            structures: Vec::new(),
+        };
+        parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
+        // ScriptObject files should be completely skipped
+        assert!(docs.functions.is_empty());
+        assert!(docs.events.is_empty());
+        assert!(docs.structures.is_empty());
     }
 
     #[test]
