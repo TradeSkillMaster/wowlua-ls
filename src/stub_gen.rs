@@ -574,16 +574,77 @@ fn parse_globals_ts(content: &str) -> HashSet<String> {
         .collect()
 }
 
-/// Parse enUS.ts to extract global string constants.
-fn parse_globalstrings_ts(content: &str) -> HashMap<String, String> {
-    let re = regex_lite::Regex::new(r#"(?:"([^"]+)"|(\w+)):\s*String\.raw`([^`]*)`"#).unwrap();
+/// Parse a single RFC 4180 CSV record into fields.
+/// Handles quoted fields with embedded commas and doubled-quote escapes.
+fn parse_csv_record(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut remaining = line;
+
+    loop {
+        if remaining.starts_with('"') {
+            // Quoted field
+            remaining = &remaining[1..]; // skip opening quote
+            let mut s = String::new();
+            loop {
+                if let Some(pos) = remaining.find('"') {
+                    s.push_str(&remaining[..pos]);
+                    remaining = &remaining[pos + 1..];
+                    if remaining.starts_with('"') {
+                        s.push('"'); // escaped quote ""
+                        remaining = &remaining[1..];
+                    } else {
+                        break; // closing quote
+                    }
+                } else {
+                    s.push_str(remaining); // malformed: no closing quote
+                    remaining = "";
+                    break;
+                }
+            }
+            fields.push(s);
+            if remaining.starts_with(',') {
+                remaining = &remaining[1..];
+            }
+        } else {
+            // Unquoted field
+            let end = remaining.find(',').unwrap_or(remaining.len());
+            fields.push(remaining[..end].to_string());
+            remaining = if end < remaining.len() { &remaining[end + 1..] } else { "" };
+        }
+
+        if remaining.is_empty() {
+            break;
+        }
+    }
+
+    fields
+}
+
+/// Parse a GlobalStrings CSV (from wago.tools) into a BaseTag → TagText_lang map.
+fn parse_globalstrings_csv(content: &str) -> HashMap<String, String> {
+    let mut lines = content.lines();
+
+    let header = match lines.next() {
+        Some(h) => parse_csv_record(h),
+        None => return HashMap::new(),
+    };
+    let base_tag_col = header.iter().position(|h| h == "BaseTag")
+        .unwrap_or_else(|| panic!("GlobalStrings CSV missing 'BaseTag' column (got: {header:?})"));
+    let text_col = header.iter().position(|h| h == "TagText_lang")
+        .unwrap_or_else(|| panic!("GlobalStrings CSV missing 'TagText_lang' column (got: {header:?})"));
+
     let ident_re = regex_lite::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
     let mut map = HashMap::new();
-    for c in re.captures_iter(content) {
-        let name = c.get(1).or_else(|| c.get(2)).map(|m| m.as_str()).unwrap_or("");
-        let value = c.get(3).map(|m| m.as_str()).unwrap_or("");
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let fields = parse_csv_record(line);
+        let name = fields.get(base_tag_col).map(|s| s.as_str()).unwrap_or("");
+        let value = fields.get(text_col).map(|s| s.as_str()).unwrap_or("");
         if ident_re.is_match(name) {
-            map.insert(name.to_string(), value.to_string());
+            // DB2 stores CRLF line endings; normalise to LF for consistency.
+            map.insert(name.to_string(), value.replace("\r\n", "\n").replace('\r', "\n"));
         }
     }
     map
@@ -893,6 +954,19 @@ fn escape_lua_string(s: &str) -> String {
     result
 }
 
+/// Fetch the latest build string for a wago.tools product (e.g. "wow", "wow_classic").
+fn fetch_wago_latest_build(product: &str) -> String {
+    let url = format!("https://wago.tools/api/builds/{product}/latest");
+    let body = fetch_url(&url, None)
+        .unwrap_or_else(|e| panic!("Failed to fetch wago build for {product}: {e}"));
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("Failed to parse wago build JSON for {product}: {e}"));
+    json["version"]
+        .as_str()
+        .unwrap_or_else(|| panic!("No 'version' field in wago build response for {product}: {body}"))
+        .to_string()
+}
+
 /// Generate GlobalStrings.lua and GlobalVariables.lua content in memory.
 fn generate_global_stubs(
     data_dir: &Path,
@@ -900,34 +974,56 @@ fn generate_global_stubs(
 ) -> (String, String) {
     let globals_ts = std::fs::read_to_string(data_dir.join("globals.ts"))
         .unwrap_or_else(|e| panic!("Failed to read globals.ts from cloned repo: {e}"));
-    let enus_ts = std::fs::read_to_string(data_dir.join("globalstring/enUS.ts"))
-        .unwrap_or_else(|e| panic!("Failed to read globalstring/enUS.ts from cloned repo: {e}"));
     let enum_ts = std::fs::read_to_string(data_dir.join("enum.ts"))
         .unwrap_or_else(|e| panic!("Failed to read enum.ts from cloned repo: {e}"));
 
     let all_globals = parse_globals_ts(&globals_ts);
-    let globalstrings = parse_globalstrings_ts(&enus_ts);
     let globalenums = parse_enum_ts(&enum_ts);
 
+    // Fetch GlobalStrings directly from wago.tools DB2 (more authoritative than enUS.ts).
+    log::info!("  Fetching GlobalStrings from wago.tools...");
+    let retail_build = fetch_wago_latest_build("wow");
+    log::info!("  Using retail build: {retail_build}");
+    let csv_url = format!(
+        "https://wago.tools/db2/GlobalStrings/csv?build={retail_build}&locale=enUS"
+    );
+    let csv_content = fetch_url(&csv_url, None)
+        .unwrap_or_else(|e| panic!("Failed to fetch GlobalStrings CSV from wago.tools: {e}"));
+    let globalstrings = parse_globalstrings_csv(&csv_content);
+
     let existing = get_existing_names(stubs_dir, &["GlobalStrings.lua", "GlobalVariables.lua"]);
-    let mut missing: Vec<_> = all_globals.difference(&existing).cloned().collect();
-    missing.sort();
+
+    // GlobalStrings.lua: emit all entries from wago.tools not already covered by hand-written stubs.
+    let mut string_names: Vec<&String> = globalstrings.keys()
+        .filter(|name| !existing.contains(*name))
+        .collect();
+    string_names.sort();
 
     let mut strings_lines = vec![
         "---@meta _".to_string(),
-        "-- WoW global string constants (auto-generated from vscode-wow-api enUS data)".to_string(),
+        format!("-- WoW global string constants (auto-generated from wago.tools build {retail_build})"),
         String::new(),
     ];
+    for name in &string_names {
+        let value = &globalstrings[*name];
+        strings_lines.push(format!("{name} = \"{}\"", escape_lua_string(value)));
+    }
+
+    // GlobalVariables.lua: emit globals not covered by wago strings or existing stubs.
+    let mut missing: Vec<_> = all_globals
+        .difference(&existing)
+        .filter(|name| !globalstrings.contains_key(*name))
+        .cloned()
+        .collect();
+    missing.sort();
+
     let mut vars_lines = vec![
         "---@meta _".to_string(),
         "-- WoW global variables (auto-generated from vscode-wow-api globals data)".to_string(),
         String::new(),
     ];
-
     for name in &missing {
-        if let Some(value) = globalstrings.get(name) {
-            strings_lines.push(format!("{name} = \"{}\"", escape_lua_string(value)));
-        } else if let Some(val) = globalenums.get(name) {
+        if let Some(val) = globalenums.get(name) {
             vars_lines.push(format!("{name} = {val}"));
         } else {
             vars_lines.push("---@type any".to_string());
