@@ -3625,19 +3625,25 @@ fn handle_notification(
                 // mutate the cache — this avoids a borrow-split issue.
                 let new_diags = if ws.cached_ws_diagnostics.is_some() {
                     uri_to_abs_path(&params.text_document.uri)
-                        .and_then(|path| std::fs::read_to_string(&path).ok())
-                        .map(|text| {
+                        .and_then(|path| {
+                            let text = std::fs::read_to_string(&path).ok()?;
+                            if is_toc_extension(&path) {
+                                let toc = crate::toc::parse_toc(&text);
+                                let toc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                                let toc_diags = crate::toc::diagnostics::run_diagnostics(&toc, &toc_dir);
+                                return Some(convert_toc_diagnostics(toc_diags, &text));
+                            }
                             if crate::has_shebang(&text) || is_ignored_uri(&params.text_document.uri, &ws.configs) {
-                                return Vec::new();
+                                return Some(Vec::new());
                             }
                             let tree = parse_lua(&text);
                             let mut result = analyze_lua_parsed(
                                 &params.text_document.uri, &ws.pre_globals, &ws.configs, &tree,
                             );
                             result.plugin_diag_codes = ws.plugin_codes();
-                            build_file_diagnostics(
+                            Some(build_file_diagnostics(
                                 &params.text_document.uri, &tree, &result, &text, &[], ws,
-                            )
+                            ))
                         })
                 } else {
                     None
@@ -4823,6 +4829,32 @@ fn build_file_diagnostics_with(
 
 /// Handle a `textDocument/diagnostic` pull request (LSP 3.17).
 /// Returns diagnostics for one document, using cached analysis when available.
+fn is_toc_extension(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("toc"))
+}
+
+fn convert_toc_diagnostics(
+    toc_diags: Vec<crate::toc::diagnostics::TocDiagnostic>,
+    text: &str,
+) -> Vec<lsp_types::Diagnostic> {
+    let numbers = super::SafeLinePositions::new(text);
+    toc_diags.into_iter().map(|d| {
+        let severity = match d.severity {
+            crate::toc::diagnostics::TocSeverity::Error => lsp_types::DiagnosticSeverity::ERROR,
+            crate::toc::diagnostics::TocSeverity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+            crate::toc::diagnostics::TocSeverity::Hint => lsp_types::DiagnosticSeverity::HINT,
+        };
+        lsp_types::Diagnostic {
+            range: numbers.lsp_range(d.start as usize, d.end as usize, use_utf8()),
+            severity: Some(severity),
+            code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+            source: Some("wowlua_ls".to_string()),
+            message: d.message,
+            ..Default::default()
+        }
+    }).collect()
+}
+
 fn handle_document_diagnostic(
     uri: &lsp_types::Uri,
     documents: &mut HashMap<String, Document>,
@@ -4859,22 +4891,7 @@ fn handle_document_diagnostic(
                 .and_then(|p| p.parent().map(|pp| pp.to_path_buf()))
                 .unwrap_or_default();
             let toc_diags = crate::toc::diagnostics::run_diagnostics(toc, &toc_dir);
-            let numbers = super::SafeLinePositions::new(&doc.text);
-            toc_diags.into_iter().map(|d| {
-                let severity = match d.severity {
-                    crate::toc::diagnostics::TocSeverity::Error => lsp_types::DiagnosticSeverity::ERROR,
-                    crate::toc::diagnostics::TocSeverity::Warning => lsp_types::DiagnosticSeverity::WARNING,
-                    crate::toc::diagnostics::TocSeverity::Hint => lsp_types::DiagnosticSeverity::HINT,
-                };
-                lsp_types::Diagnostic {
-                    range: numbers.lsp_range(d.start as usize, d.end as usize, use_utf8()),
-                    severity: Some(severity),
-                    code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
-                    source: Some("wowlua_ls".to_string()),
-                    message: d.message,
-                    ..Default::default()
-                }
-            }).collect()
+            convert_toc_diagnostics(toc_diags, &doc.text)
         }
         // Open document: use cached tree and analysis.
         else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
@@ -4907,18 +4924,31 @@ fn handle_document_diagnostic(
         }
     } else if let Some(path) = uri_to_abs_path(uri) {
         // Not open: read from disk, parse, and analyze on demand.
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                if crate::has_shebang(&text) {
-                    Vec::new()
-                } else {
-                    let tree = parse_lua(&text);
-                    let mut analysis = analyze_lua_parsed(uri, &ws.pre_globals, &ws.configs, &tree);
-                    analysis.plugin_diag_codes = ws.plugin_codes();
-                    build_file_diagnostics(uri, &tree, &analysis, &text, &[], ws)
+        if is_toc_extension(&path) {
+            // TOC file not currently open — parse as TOC and run TOC diagnostics.
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let toc = crate::toc::parse_toc(&text);
+                    let toc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                    let toc_diags = crate::toc::diagnostics::run_diagnostics(&toc, &toc_dir);
+                    convert_toc_diagnostics(toc_diags, &text)
                 }
+                Err(_) => Vec::new(),
             }
-            Err(_) => Vec::new(),
+        } else {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    if crate::has_shebang(&text) {
+                        Vec::new()
+                    } else {
+                        let tree = parse_lua(&text);
+                        let mut analysis = analyze_lua_parsed(uri, &ws.pre_globals, &ws.configs, &tree);
+                        analysis.plugin_diag_codes = ws.plugin_codes();
+                        build_file_diagnostics(uri, &tree, &analysis, &text, &[], ws)
+                    }
+                }
+                Err(_) => Vec::new(),
+            }
         }
     } else {
         Vec::new()
