@@ -899,3 +899,22 @@ function OverlayPanel:Init()
     --                       ^ hover: (method) function Frame:SetSize(x: uiUnit, y: uiUnit)
     --                       ^ diag: none
 end
+
+-- ── String method calls on variables ─────────────────────────────────────────
+-- String variables have an implicit metatable with __index = string library,
+-- so :method() calls should resolve to string library methods.
+
+local strVar = "hello"
+strVar:upper()
+--     ^ hover: (method) function stringlib:upper(s: string | number)  def: external
+
+local columnRange = "1-100"
+local left, right = columnRange:match("^(%d+)%-(%d+)$")
+--                              ^ hover: (method) function stringlib:match(  def: external
+
+-- String methods on string|nil (union containing string)
+---@return string?
+local function maybeGetStr() return "hi" end
+local optStr = maybeGetStr()
+optStr:upper()
+--     ^ hover: (method) function stringlib:upper(s: string | number)  def: external

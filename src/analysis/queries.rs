@@ -3881,7 +3881,10 @@ impl AnalysisResult {
         // Try resolving the receiver's full type for intersection-aware lookup
         if let Some(ident_node) = parent.children().find(|c| c.kind().is_identifier())
             && let Some(resolved) = self.resolve_identifier_to_type(&ident_node, scope_offset) {
-                let indices = Self::extract_all_table_indices(&resolved);
+                let mut indices = Self::extract_all_table_indices(&resolved);
+                // Primitive types with implicit metatables (e.g. string → string library).
+                // Handles bare String and String inside unions (e.g. string | nil).
+                self.ir.collect_library_table_indices(&resolved, &mut indices);
                 if !indices.is_empty() {
                     return indices;
                 }

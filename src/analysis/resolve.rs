@@ -2116,12 +2116,17 @@ impl<'a> Analysis<'a> {
                                         }
                                     }
                                 }
-                                _ => {}
+                                other => {
+                                    if let Some(lib_idx) = self.ir.library_table_for_type(other) {
+                                        indices.push(lib_idx);
+                                    }
+                                }
                             }
                         }
                         indices
                     }
-                    _ => return None,
+                    // Primitive types with implicit metatables (e.g. string → string library)
+                    vt => self.ir.library_table_for_type(vt).into_iter().collect(),
                 };
                 if table_indices.is_empty() { return None; }
 

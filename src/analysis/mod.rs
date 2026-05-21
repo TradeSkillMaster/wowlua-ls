@@ -272,6 +272,48 @@ impl Ir {
         None
     }
 
+    /// Look up the library table for a primitive type.
+    /// In Lua, strings have a metatable with `__index = string`, so `s:match()`
+    /// resolves to `string.match(s, ...)`.
+    /// Currently only handles String; no other Lua type has an implicit metatable.
+    pub(crate) fn library_table_for_type(&self, vt: &ValueType) -> Option<TableIndex> {
+        // Only String has an implicit metatable in Lua. The allocation for
+        // SymbolIdentifier::Name only happens when vt is String (narrow case).
+        let lib_name = match vt {
+            ValueType::String(_) => "string",
+            _ => return None,
+        };
+        let sym_id = SymbolIdentifier::Name(lib_name.to_string());
+        let sym_idx = self.scopes.first()?.symbols.get(&sym_id).copied()
+            .or_else(|| self.ext.scope0_symbols.get(&sym_id).copied());
+        let sym = self.sym(sym_idx?);
+        match sym.versions.last()?.resolved_type.as_ref()? {
+            ValueType::Table(Some(idx)) => Some(*idx),
+            _ => None,
+        }
+    }
+
+    /// Collect library table indices from a type, handling unions/intersections.
+    /// Appends to `indices` so callers can combine with table indices.
+    pub(crate) fn collect_library_table_indices(&self, vt: &ValueType, indices: &mut Vec<TableIndex>) {
+        match vt {
+            ValueType::Union(types) | ValueType::Intersection(types) => {
+                for t in types {
+                    if let Some(lib_idx) = self.library_table_for_type(t)
+                        && !indices.contains(&lib_idx) {
+                            indices.push(lib_idx);
+                    }
+                }
+            }
+            other => {
+                if let Some(lib_idx) = self.library_table_for_type(other)
+                    && !indices.contains(&lib_idx) {
+                        indices.push(lib_idx);
+                }
+            }
+        }
+    }
+
     pub(crate) fn push_expr(&mut self, expr: Expr) -> ExprId {
         self.exprs.push(expr);
         ExprId(self.exprs.len() - 1)
