@@ -2644,6 +2644,9 @@ fn handle_request(
         "textDocument/codeLens" => {
             if let Ok((id, params)) = cast_req::<request::CodeLensRequest>(req) {
                 let uri = params.text_document.uri;
+                let file_path = uri_to_abs_path(&uri).unwrap_or_default();
+                let cl_config = ws.configs.code_lens_config_for(&file_path);
+
                 let result: Option<Vec<CodeLens>> = documents.get(&uri.to_string())
                     .and_then(|doc| {
                         let tree = doc.tree.as_ref()?;
@@ -2652,51 +2655,58 @@ fn handle_request(
                         let mut lenses = Vec::new();
 
                         // "N usages" lenses (unresolved — resolved via codeLens/resolve)
-                        for t in analysis.code_lens_targets(tree) {
-                            let pos = numbers.lsp_position(t.def_start as usize, use_utf8());
-                            let range = Range { start: pos, end: pos };
-                            lenses.push(CodeLens {
-                                range,
-                                command: None,
-                                data: Some(serde_json::json!({
-                                    "uri": uri.to_string(),
-                                    "name": t.name,
-                                    "nameOffset": t.name_offset,
-                                })),
-                            });
+                        if cl_config.references {
+                            for t in analysis.code_lens_targets(tree) {
+                                let pos = numbers.lsp_position(t.def_start as usize, use_utf8());
+                                let range = Range { start: pos, end: pos };
+                                lenses.push(CodeLens {
+                                    range,
+                                    command: None,
+                                    data: Some(serde_json::json!({
+                                        "uri": uri.to_string(),
+                                        "name": t.name,
+                                        "nameOffset": t.name_offset,
+                                    })),
+                                });
+                            }
                         }
 
                         // "N implementations" / "overrides Parent" lenses
-                        for e in analysis.code_lens() {
-                            let range = numbers.lsp_range(e.range_start as usize, e.range_end as usize, use_utf8());
-                            match &e.kind {
-                                crate::types::CodeLensKind::Implementations { class_name, .. } => {
-                                    // Two-stage resolve: locations computed in codeLens/resolve
-                                    lenses.push(CodeLens {
-                                        range,
-                                        command: None,
-                                        data: Some(serde_json::json!({
-                                            "kind": "implementations",
-                                            "uri": uri.to_string(),
-                                            "className": class_name,
-                                        })),
-                                    });
-                                }
-                                crate::types::CodeLensKind::Overrides { parent_class, .. } => {
-                                    let title = format!("overrides {}", parent_class);
-                                    let args = vec![
-                                        serde_json::to_value(uri.to_string()).unwrap(),
-                                        serde_json::to_value(range.start).unwrap(),
-                                    ];
-                                    lenses.push(CodeLens {
-                                        range,
-                                        command: Some(Command {
-                                            title,
-                                            command: "wowlua-ls.showSuperDefinition".to_string(),
-                                            arguments: Some(args),
-                                        }),
-                                        data: None,
-                                    });
+                        if cl_config.implementations || cl_config.overrides {
+                            for e in analysis.code_lens() {
+                                let range = numbers.lsp_range(e.range_start as usize, e.range_end as usize, use_utf8());
+                                match &e.kind {
+                                    crate::types::CodeLensKind::Implementations { class_name, .. } if cl_config.implementations => {
+                                        // Two-stage resolve: locations computed in codeLens/resolve
+                                        lenses.push(CodeLens {
+                                            range,
+                                            command: None,
+                                            data: Some(serde_json::json!({
+                                                "kind": "implementations",
+                                                "uri": uri.to_string(),
+                                                "className": class_name,
+                                            })),
+                                        });
+                                    }
+                                    crate::types::CodeLensKind::Overrides { parent_class, .. } if cl_config.overrides => {
+                                        let title = format!("overrides {}", parent_class);
+                                        let args = vec![
+                                            serde_json::to_value(uri.to_string()).unwrap(),
+                                            serde_json::to_value(range.start).unwrap(),
+                                        ];
+                                        lenses.push(CodeLens {
+                                            range,
+                                            command: Some(Command {
+                                                title,
+                                                command: "wowlua-ls.showSuperDefinition".to_string(),
+                                                arguments: Some(args),
+                                            }),
+                                            data: None,
+                                        });
+                                    }
+                                    // Skipped: disabled by config
+                                    crate::types::CodeLensKind::Implementations { .. }
+                                    | crate::types::CodeLensKind::Overrides { .. } => {}
                                 }
                             }
                         }

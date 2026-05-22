@@ -150,6 +150,12 @@ pub struct InlayHintConfig {
     pub chained_return_types: bool,
 }
 
+pub struct CodeLensConfig {
+    pub references: bool,
+    pub implementations: bool,
+    pub overrides: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExternalLocation {
     pub path: PathBuf,

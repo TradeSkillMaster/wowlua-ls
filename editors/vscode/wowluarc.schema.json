@@ -123,6 +123,33 @@
         }
       }
     },
+    "codeLens": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Control code lens display.",
+      "properties": {
+        "enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master switch for all code lenses. When false, no code lenses are shown regardless of individual category settings."
+        },
+        "references": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show 'N usages' lenses on function definitions."
+        },
+        "implementations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show 'N implementations' lenses on @class declarations."
+        },
+        "overrides": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show 'overrides Parent' lenses on methods that override a parent class method."
+        }
+      }
+    },
     "plugins": {
       "type": "array",
       "items": { "type": "string" },

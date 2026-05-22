@@ -40,6 +40,12 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
     "parameterTypes": false,
     "chainedReturnTypes": false
   },
+  "codeLens": {
+    "enable": true,
+    "references": true,
+    "implementations": true,
+    "overrides": true
+  },
   "plugins": ["string"],
   "diagnostics": {
     "disable": ["string"],
@@ -206,6 +212,34 @@ Show inferred type hints on function parameters that have no `@param` annotation
 
 Show intermediate return type hints in method chains. When a method call's return value is immediately used as the receiver of another method/field access, the return type is shown after the closing `)`. Suppressed when the return type is `any`, `nil`, or `?`.
 
+### `codeLens.enable`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Master switch for code lenses. When `false`, no code lenses are shown regardless of individual category settings.
+
+### `codeLens.references`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Show "N usages" lenses on function definitions.
+
+### `codeLens.implementations`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Show "N implementations" lenses on `@class` declarations.
+
+### `codeLens.overrides`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Show "overrides Parent" lenses on methods that override a parent class method.
+
 ### `diagnostics.disable`
 
 - **Type:** `string[]`
@@ -241,6 +275,7 @@ Override severity for specific diagnostic codes.
 | `globals.allow_slash_commands` | Nearest (deepest) config wins |
 | `inference.*` | Nearest (deepest) config wins |
 | `hint.*` | Nearest (deepest) config wins |
+| `codeLens.*` | Nearest (deepest) config wins |
 | `diagnostics.disable` | Unioned across ancestors |
 | `diagnostics.enable` | Applied after `disable` at each level |
 | `diagnostics.severity` | Deeper configs take precedence |

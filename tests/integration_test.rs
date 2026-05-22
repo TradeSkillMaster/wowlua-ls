@@ -147,9 +147,21 @@ fn run_annotation_tests(config: &TestConfig) {
         Vec::new()
     };
 
-    // Collect code lens targets once.
-    let code_lens_targets: Vec<CodeLensTarget> = result.code_lens_targets(&tree);
-    let code_lenses = result.code_lens();
+    // Collect code lens targets once, respecting config.
+    let cl_config = project_configs.code_lens_config_for(&file_path);
+    let code_lens_targets: Vec<CodeLensTarget> = if cl_config.references {
+        result.code_lens_targets(&tree)
+    } else {
+        Vec::new()
+    };
+    let code_lenses = if cl_config.implementations || cl_config.overrides {
+        result.code_lens().into_iter().filter(|l| match &l.kind {
+            CodeLensKind::Implementations { .. } => cl_config.implementations,
+            CodeLensKind::Overrides { .. } => cl_config.overrides,
+        }).collect()
+    } else {
+        Vec::new()
+    };
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -3011,6 +3023,15 @@ fn workspace_symbol_with_stubs_excludes_api() {
 fn code_lens() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/code-lens.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn code_lens_disabled() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/code-lens-disabled/test.lua",
         with_stubs: false,
         scan_dir: None,
     });

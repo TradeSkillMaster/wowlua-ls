@@ -128,6 +128,10 @@ pub struct ProjectConfig {
     pub hint_for_variable_types: Option<bool>,
     pub hint_parameter_types: Option<bool>,
     pub hint_chained_return_types: Option<bool>,
+    pub code_lens_enable: Option<bool>,
+    pub code_lens_references: Option<bool>,
+    pub code_lens_implementations: Option<bool>,
+    pub code_lens_overrides: Option<bool>,
     /// When true, this directory is treated as a separate addon root with its own
     /// addon namespace (`local _, ns = ...`). Files under different addon roots
     /// get isolated namespace tables.
@@ -435,6 +439,15 @@ impl ProjectConfigs {
         self.deepest_bool(file_path, |c| c.hint_chained_return_types, false)
     }
 
+    pub fn code_lens_config_for(&self, file_path: &Path) -> crate::types::CodeLensConfig {
+        let enabled = self.deepest_bool(file_path, |c| c.code_lens_enable, true);
+        crate::types::CodeLensConfig {
+            references: enabled && self.deepest_bool(file_path, |c| c.code_lens_references, true),
+            implementations: enabled && self.deepest_bool(file_path, |c| c.code_lens_implementations, true),
+            overrides: enabled && self.deepest_bool(file_path, |c| c.code_lens_overrides, true),
+        }
+    }
+
     /// Get the addon root directory for a file. Returns the deepest ancestor
     /// directory whose `.wowluarc.json` has `addon_root: true`, or `None` if
     /// no such config exists (entire workspace is one addon). Deepest-wins
@@ -484,6 +497,8 @@ struct RawConfig {
     flavors: Option<Vec<String>>,
     inference: Option<RawInferenceConfig>,
     hint: Option<RawHintConfig>,
+    #[serde(rename = "codeLens")]
+    code_lens: Option<RawCodeLensConfig>,
     completion: Option<RawCompletionConfig>,
     addon_root: Option<bool>,
     plugins: Option<Vec<String>>,
@@ -525,6 +540,14 @@ struct RawHintConfig {
     for_variable_types: Option<bool>,
     parameter_types: Option<bool>,
     chained_return_types: Option<bool>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawCodeLensConfig {
+    enable: Option<bool>,
+    references: Option<bool>,
+    implementations: Option<bool>,
+    overrides: Option<bool>,
 }
 
 fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
@@ -853,6 +876,12 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let hint_parameter_types = hint.as_ref().and_then(|h| h.parameter_types);
     let hint_chained_return_types = hint.and_then(|h| h.chained_return_types);
 
+    let cl = raw.code_lens;
+    let code_lens_enable = cl.as_ref().and_then(|c| c.enable);
+    let code_lens_references = cl.as_ref().and_then(|c| c.references);
+    let code_lens_implementations = cl.as_ref().and_then(|c| c.implementations);
+    let code_lens_overrides = cl.and_then(|c| c.overrides);
+
     let plugins: Vec<PathBuf> = raw.plugins.unwrap_or_default()
         .into_iter()
         .map(|p| dir.join(p).components().collect::<PathBuf>())
@@ -870,6 +899,8 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         hint_enable, hint_parameter_names, hint_variable_types,
         hint_function_return_types, hint_for_variable_types, hint_parameter_types,
         hint_chained_return_types,
+        code_lens_enable, code_lens_references, code_lens_implementations,
+        code_lens_overrides,
         addon_root: raw.addon_root.unwrap_or(false),
         plugins,
         completion_snippets,
