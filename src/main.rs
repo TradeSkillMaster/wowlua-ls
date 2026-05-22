@@ -24,6 +24,7 @@ struct CheckStats {
     errors: usize,
     warnings: usize,
     hints: usize,
+    library_files: usize,
 }
 
 fn format_number(n: usize) -> String {
@@ -668,7 +669,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if configs.is_ignored(&path) {
+                    if configs.is_ignored(&path) && !configs.is_library(&path) {
                         continue;
                     }
                     if path.is_dir() {
@@ -699,6 +700,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 Err(_) => continue,
             };
             if wowlua_ls::has_shebang(&text) { continue; }
+            if project_configs.is_library(path) { stats.library_files += 1; continue; }
             let name = path.strip_prefix(&dir).unwrap_or(path);
 
             stats.total_files += 1;
@@ -799,7 +801,13 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Print summary
         eprintln!();
         let lines_str = format_number(stats.total_lines);
-        eprintln!("Checked {} files ({} lines) in {:.1}s", stats.total_files, lines_str, elapsed.as_secs_f64());
+        if stats.library_files > 0 {
+            eprintln!("Checked {} files ({} lines) in {:.1}s ({} library {} skipped)",
+                stats.total_files, lines_str, elapsed.as_secs_f64(),
+                stats.library_files, if stats.library_files == 1 { "file" } else { "files" });
+        } else {
+            eprintln!("Checked {} files ({} lines) in {:.1}s", stats.total_files, lines_str, elapsed.as_secs_f64());
+        }
         eprintln!();
         eprintln!("  Functions:     {} ({} annotated)", format_number(stats.total_functions), format_number(stats.annotated_functions));
         eprintln!("  Classes:       {}", format_number(stats.total_classes));

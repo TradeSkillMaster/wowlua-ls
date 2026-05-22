@@ -483,7 +483,7 @@ fn collect_lua_paths_filtered(
         .collect();
     sorted.sort_unstable();
     for path in sorted {
-        if configs.is_ignored(&path) {
+        if configs.is_ignored(&path) && !configs.is_library(&path) {
             continue;
         }
         if path.is_dir() {
@@ -804,6 +804,12 @@ pub fn scan_workspace_with_stubs(
             collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
         }
     }
+    // Scan external library directories (absolute paths in `library` config)
+    for lib_dir in configs.external_library_dirs() {
+        if lib_dir.is_dir() {
+            collect_lua_paths_filtered(&lib_dir, &mut paths, &mut xml_paths, configs);
+        }
+    }
     let mut result = scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs), stub_globals, stub_classes);
     scan_xml_paths_into(&xml_paths, &mut result);
     result
@@ -874,6 +880,12 @@ fn scan_directory_pass1(
     let mut paths = Vec::new();
     let mut xml_paths = Vec::new();
     collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
+    // Scan external library directories (absolute paths in `library` config)
+    for lib_dir in configs.external_library_dirs() {
+        if lib_dir.is_dir() {
+            collect_lua_paths_filtered(&lib_dir, &mut paths, &mut xml_paths, configs);
+        }
+    }
 
     // XML pass: scan XML files for frame/template declarations
     let xml_results: Vec<_> = xml_paths.par_iter()
@@ -4831,6 +4843,9 @@ fn build_file_diagnostics_with(
         return Vec::new();
     }
     let file_path = uri_to_abs_path(uri).unwrap_or_default();
+    if configs.is_library(&file_path) {
+        return Vec::new();
+    }
     let diags = analysis.run_diagnostics(tree);
     let disabled = configs.disabled_diagnostics_for(&file_path);
     let severity = configs.severity_overrides_for(&file_path);

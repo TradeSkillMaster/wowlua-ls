@@ -19,6 +19,7 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
 {
   "addon_root": false,
   "ignore": ["string"],
+  "library": ["string"],
   "framexml": true,
   "flavors": ["retail", "classic", "classic_era"],
   "globals": {
@@ -93,6 +94,21 @@ Path prefixes to exclude from scanning. Relative to the config file's directory.
 ```json
 { "ignore": ["Libs/", "External/*.lua", "Generated/**/*.lua"] }
 ```
+
+### `library`
+
+- **Type:** `string[]`
+- **Default:** `[]`
+
+Paths to scan for type information but with all diagnostics suppressed. Useful for third-party libraries where you want classes, globals, and type information available to the rest of your project, but can't fix any diagnostic issues in the library code. Relative entries use the same pattern syntax as `ignore`. Absolute paths are also supported for libraries outside the workspace.
+
+```json
+{ "library": ["Libs/", "/home/user/shared-libs/"] }
+```
+
+Unlike `ignore` (which skips files entirely), `library` files are fully scanned and analyzed — their `@class`, `@alias`, global functions, and other type information are available throughout the workspace. Only diagnostic output is suppressed.
+
+Absolute paths are automatically added as extra scan directories, so external libraries don't need to be inside your workspace.
 
 ### `framexml`
 
@@ -268,6 +284,7 @@ Override severity for specific diagnostic codes.
 | `addon_root` | Nearest (deepest) config wins |
 | `plugins` | Nearest (deepest) config wins |
 | `ignore` | Relative to containing directory |
+| `library` | Relative to containing directory |
 | `framexml` | Nearest (deepest) config wins |
 | `flavors` | Nearest (deepest) config wins |
 | `globals.read` | Unioned across ancestors |

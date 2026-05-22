@@ -21,6 +21,12 @@
       "default": [],
       "description": "Path prefixes to exclude from scanning. Relative to this config file's directory. Supports glob wildcards: * (any characters within a path component), ? (single character), ** (any number of directory levels)."
     },
+    "library": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Paths to scan for types but suppress diagnostics. Useful for third-party libraries where you want type information but can't fix diagnostic issues. Relative entries use the same pattern syntax as ignore. Absolute paths are also supported for libraries outside the workspace."
+    },
     "framexml": {
       "type": "boolean",
       "default": true,

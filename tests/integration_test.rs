@@ -127,7 +127,12 @@ fn run_annotation_tests(config: &TestConfig) {
     // `diagnostics.enable` entry.
     let numbers = line_numbers::LinePositions::from(contents.as_str());
     let disabled = project_configs.disabled_diagnostics_for(&file_path);
-    let diag_lines = collect_diagnostics_inprocess(&tree, &result, &suppressions, &numbers, &disabled);
+    let is_library_file = project_configs.is_library(&file_path);
+    let diag_lines = if is_library_file {
+        Vec::new()
+    } else {
+        collect_diagnostics_inprocess(&tree, &result, &suppressions, &numbers, &disabled)
+    };
 
     // Collect semantic tokens once (indexed by byte offset).
     let sem_tokens = result.semantic_tokens(&tree);
@@ -3615,4 +3620,52 @@ fn snippet_suppressed_when_parens_follow() {
     // the function name, but here we test with snippets=false as baseline).
     // The real validation that snippets work without '(' is covered by the annotation
     // completion tests (which pass snippets=false and verify label-based completions).
+}
+
+#[test]
+fn library_dirs_user() {
+    // User file should see types from library directory
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/library-dirs/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/library-dirs"),
+    });
+}
+
+#[test]
+fn library_dirs_suppressed() {
+    // Library file should have diagnostics suppressed
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/library-dirs/libs/helper.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/library-dirs"),
+    });
+}
+
+#[test]
+fn library_dirs_external() {
+    // Drop guard ensures cleanup even if the test panics
+    struct CleanupGuard(std::path::PathBuf);
+    impl Drop for CleanupGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    // Generate .wowluarc.json with absolute path to the external library directory
+    let cwd = std::env::current_dir().unwrap();
+    let extlib_abs = cwd.join("tests/library-dirs-external/extlib");
+    let addon_dir = cwd.join("tests/library-dirs-external/addon");
+    let config_path = addon_dir.join(".wowluarc.json");
+    std::fs::write(&config_path, format!(
+        r#"{{"library": ["{}/"] }}"#,
+        extlib_abs.to_string_lossy().replace('\\', "/")
+    )).unwrap();
+    let _guard = CleanupGuard(config_path);
+
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/library-dirs-external/addon/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/library-dirs-external/addon"),
+    });
 }

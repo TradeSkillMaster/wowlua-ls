@@ -108,6 +108,10 @@ impl AllowedGlobals {
 #[derive(Default)]
 pub struct ProjectConfig {
     pub ignore: Vec<String>,
+    /// Relative library patterns (scanned but diagnostics suppressed).
+    pub library_relative: Vec<String>,
+    /// Absolute library patterns (external directories, scanned but diagnostics suppressed).
+    pub library_absolute: Vec<String>,
     pub disabled_diagnostics: HashSet<String>,
     pub enabled_diagnostics: HashSet<String>,
     pub severity_overrides: HashMap<String, DiagnosticSeverity>,
@@ -143,37 +147,61 @@ pub struct ProjectConfig {
 }
 
 
-impl ProjectConfig {
-    /// Check if a relative path should be ignored based on this config's ignore patterns.
-    /// Supports glob patterns (`*`, `?`, `**`) in addition to prefix matching.
-    pub fn is_ignored(&self, relative_path: &Path) -> bool {
-        let raw = relative_path.to_string_lossy();
-        // Normalize backslashes so patterns using `/` match on Windows.
-        let path_str = raw.replace('\\', "/");
-        let path_str: &str = &path_str;
-        for pattern in &self.ignore {
-            if is_glob_pattern(pattern) {
-                if path_glob_match(pattern, path_str) {
-                    return true;
-                }
-            } else if pattern.ends_with('/') {
-                // Directory prefix: "Libs/" matches "Libs/foo.lua", "Libs/bar/baz.lua"
-                if path_str.starts_with(pattern.as_str()) {
-                    return true;
-                }
-                // Also match without trailing slash as a component prefix
-                let without_slash = &pattern[..pattern.len() - 1];
-                if path_str == without_slash || path_str.starts_with(&format!("{}/", without_slash)) {
-                    return true;
-                }
-            } else {
-                // Exact prefix match on path components
-                if path_str == pattern.as_str() || path_str.starts_with(&format!("{}/", pattern)) {
-                    return true;
-                }
+/// Check if a path matches any of the given patterns.
+/// Supports glob patterns (`*`, `?`, `**`), directory prefixes (`Libs/`),
+/// and exact prefix matching.
+fn matches_path_patterns(patterns: &[String], path: &Path) -> bool {
+    let raw = path.to_string_lossy();
+    // Normalize backslashes so patterns using `/` match on Windows.
+    let path_str = raw.replace('\\', "/");
+    let path_str: &str = &path_str;
+    for pattern in patterns {
+        if is_glob_pattern(pattern) {
+            if path_glob_match(pattern, path_str) {
+                return true;
+            }
+        } else if pattern.ends_with('/') {
+            // Directory prefix: "Libs/" matches "Libs/foo.lua", "Libs/bar/baz.lua"
+            if path_str.starts_with(pattern.as_str()) {
+                return true;
+            }
+            // Also match without trailing slash as a component prefix
+            let without_slash = &pattern[..pattern.len() - 1];
+            if path_str == without_slash || path_str.starts_with(&format!("{}/", without_slash)) {
+                return true;
+            }
+        } else {
+            // Exact prefix match on path components
+            if path_str == pattern.as_str() || path_str.starts_with(&format!("{}/", pattern)) {
+                return true;
             }
         }
-        false
+    }
+    false
+}
+
+impl ProjectConfig {
+    /// Check if a relative path should be ignored based on this config's ignore patterns.
+    pub fn is_ignored(&self, relative_path: &Path) -> bool {
+        matches_path_patterns(&self.ignore, relative_path)
+    }
+
+    /// Check if a relative path is a library path (scanned but diagnostics suppressed).
+    pub fn is_library(&self, relative_path: &Path) -> bool {
+        matches_path_patterns(&self.library_relative, relative_path)
+    }
+
+    /// Check if an absolute file path matches any absolute library patterns.
+    pub fn matches_absolute_library(&self, absolute_path: &Path) -> bool {
+        if self.library_absolute.is_empty() { return false; }
+        matches_path_patterns(&self.library_absolute, absolute_path)
+    }
+
+    /// Return absolute paths from library entries (external scan directories).
+    pub fn absolute_library_dirs(&self) -> Vec<PathBuf> {
+        self.library_absolute.iter()
+            .map(|p| PathBuf::from(p.trim_end_matches('/')))
+            .collect()
     }
 }
 
@@ -253,6 +281,42 @@ impl ProjectConfigs {
                     }
         }
         false
+    }
+
+    /// Check if a path is a library path (scanned but diagnostics suppressed).
+    /// Checks both relative patterns (relative to each config's directory) and
+    /// absolute patterns (matched directly against the full path).
+    pub fn is_library(&self, absolute_path: &Path) -> bool {
+        // Check absolute library patterns from any config
+        for (_, config) in &self.entries {
+            if config.matches_absolute_library(absolute_path) {
+                return true;
+            }
+        }
+        // Check relative patterns against ancestor configs
+        for (config_dir, config) in &self.entries {
+            if absolute_path.starts_with(config_dir)
+                && let Ok(relative) = absolute_path.strip_prefix(config_dir)
+                    && config.is_library(relative) {
+                        return true;
+                    }
+        }
+        false
+    }
+
+    /// Collect all absolute library directory paths from all configs.
+    /// These are external directories that should be scanned for types.
+    pub fn external_library_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (_, config) in &self.entries {
+            for dir in config.absolute_library_dirs() {
+                if seen.insert(dir.clone()) {
+                    dirs.push(dir);
+                }
+            }
+        }
+        dirs
     }
 
     /// Collect all plugin paths from configs applicable to a file.
@@ -491,6 +555,7 @@ impl ProjectConfigs {
 #[derive(Deserialize, Default)]
 struct RawConfig {
     ignore: Option<Vec<String>>,
+    library: Option<Vec<String>>,
     diagnostics: Option<RawDiagnosticsConfig>,
     framexml: Option<bool>,
     globals: Option<RawGlobalsConfig>,
@@ -823,6 +888,9 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     };
 
     let ignore = raw.ignore.unwrap_or_default();
+    let library = raw.library.unwrap_or_default();
+    let (library_relative, library_absolute): (Vec<String>, Vec<String>) =
+        library.into_iter().partition(|p| !Path::new(p).is_absolute());
     let diag = raw.diagnostics.unwrap_or_default();
     let disabled_diagnostics: HashSet<String> = diag.disable.unwrap_or_default().into_iter().collect();
     let enabled_diagnostics: HashSet<String> = diag.enable.unwrap_or_default().into_iter().collect();
@@ -890,7 +958,8 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let completion_snippets = raw.completion.and_then(|c| c.snippets);
 
     Some(ProjectConfig {
-        ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides,
+        ignore, library_relative, library_absolute,
+        disabled_diagnostics, enabled_diagnostics, severity_overrides,
         framexml: raw.framexml, allowed_read_globals, allowed_write_globals,
         allow_slash_commands, flavors,
         backward_param_types,
@@ -964,6 +1033,102 @@ mod tests {
         assert!(!config.is_ignored(Path::new("anything.lua")));
     }
 
+    fn config_with_library(patterns: &[&str]) -> ProjectConfig {
+        let (rel, abs): (Vec<String>, Vec<String>) = patterns.iter()
+            .map(|s| s.to_string())
+            .partition(|p| !Path::new(p).is_absolute());
+        ProjectConfig {
+            library_relative: rel,
+            library_absolute: abs,
+            ..ProjectConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_library_directory_prefix() {
+        let config = config_with_library(&["Libs/"]);
+        assert!(config.is_library(Path::new("Libs/LibStub.lua")));
+        assert!(config.is_library(Path::new("Libs/AceAddon/AceAddon.lua")));
+        assert!(!config.is_library(Path::new("Core/init.lua")));
+        assert!(!config.is_library(Path::new("LibsExtra/foo.lua")));
+    }
+
+    #[test]
+    fn test_library_glob_pattern() {
+        let config = config_with_library(&["External/**/*.lua"]);
+        assert!(config.is_library(Path::new("External/foo.lua")));
+        assert!(config.is_library(Path::new("External/sub/bar.lua")));
+        assert!(!config.is_library(Path::new("src/main.lua")));
+    }
+
+    #[test]
+    fn test_library_does_not_affect_ignore() {
+        let config = config_with_library(&["Libs/"]);
+        // library patterns should not cause is_ignored to return true
+        assert!(!config.is_ignored(Path::new("Libs/LibStub.lua")));
+    }
+
+    #[test]
+    fn test_library_absolute_path() {
+        let config = config_with_library(&["/usr/share/lua/libs/"]);
+        // Absolute patterns should match via matches_absolute_library
+        assert!(config.matches_absolute_library(Path::new("/usr/share/lua/libs/foo.lua")));
+        assert!(config.matches_absolute_library(Path::new("/usr/share/lua/libs/sub/bar.lua")));
+        assert!(!config.matches_absolute_library(Path::new("/other/path/foo.lua")));
+        // Relative is_library should NOT match absolute patterns
+        assert!(!config.is_library(Path::new("libs/foo.lua")));
+    }
+
+    #[test]
+    fn test_library_absolute_dirs() {
+        let config = config_with_library(&["Libs/", "/usr/share/lua/libs/", "/opt/wow-libs"]);
+        let abs_dirs = config.absolute_library_dirs();
+        assert_eq!(abs_dirs.len(), 2);
+        assert_eq!(abs_dirs[0], PathBuf::from("/usr/share/lua/libs"));
+        assert_eq!(abs_dirs[1], PathBuf::from("/opt/wow-libs"));
+    }
+
+    #[test]
+    fn test_library_mixed_relative_and_absolute() {
+        let config = config_with_library(&["Libs/", "/external/libs/"]);
+        // Relative patterns still work
+        assert!(config.is_library(Path::new("Libs/foo.lua")));
+        assert!(!config.is_library(Path::new("src/main.lua")));
+        // Absolute patterns match via matches_absolute_library
+        assert!(config.matches_absolute_library(Path::new("/external/libs/bar.lua")));
+    }
+
+    #[test]
+    fn test_configs_is_library_absolute() {
+        let mut configs = ProjectConfigs::default();
+        let dir = std::env::temp_dir().join("wowlua_ls_test_abs_lib");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "library": ["/shared/libs/"]
+        }"#).unwrap();
+        configs.try_load(&dir);
+        // Absolute library path matches regardless of where the file is
+        assert!(configs.is_library(Path::new("/shared/libs/foo.lua")));
+        assert!(configs.is_library(Path::new("/shared/libs/sub/bar.lua")));
+        assert!(!configs.is_library(Path::new("/other/path.lua")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_external_library_dirs() {
+        let mut configs = ProjectConfigs::default();
+        let dir = std::env::temp_dir().join("wowlua_ls_test_ext_lib");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "library": ["Libs/", "/shared/wow-libs/"]
+        }"#).unwrap();
+        configs.try_load(&dir);
+        let ext_dirs = configs.external_library_dirs();
+        assert_eq!(ext_dirs.len(), 1);
+        assert_eq!(ext_dirs[0], PathBuf::from("/shared/wow-libs"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn test_load_missing_file() {
         let config = load(Path::new("/nonexistent/path"));
@@ -1004,6 +1169,25 @@ mod tests {
         assert_eq!(config.disabled_diagnostics.len(), 2);
         assert_eq!(config.severity_overrides.get("undefined-global"), Some(&DiagnosticSeverity::ERROR));
         assert_eq!(config.severity_overrides.get("unused-function"), Some(&DiagnosticSeverity::WARNING));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_library_config() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_config_library");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "library": ["Libs/", "External/"]
+        }"#).unwrap();
+
+        let config = load(&dir);
+        assert_eq!(config.library_relative, vec!["Libs/", "External/"]);
+        assert!(config.is_library(Path::new("Libs/foo.lua")));
+        assert!(config.is_library(Path::new("External/bar.lua")));
+        assert!(!config.is_library(Path::new("src/main.lua")));
+        // library should not affect ignore
+        assert!(!config.is_ignored(Path::new("Libs/foo.lua")));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
