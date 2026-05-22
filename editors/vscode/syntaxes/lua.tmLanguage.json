@@ -344,7 +344,7 @@
                 "3": {"name": "keyword.control.lua"},
                 "4": {"name": "keyword.operator.lua"}
               },
-              "end": "(\\))(?:\\s*(:)\\s*((?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|\\[\\]?!<>]*(?:\\s*,\\s*(?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|\\[\\]?!<>]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
+              "end": "(\\))(?:\\s*(:)\\s*((?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|\\[\\]?!<>\\-]*(?:\\s*,\\s*(?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|\\[\\]?!<>\\-]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
               "endCaptures": {
                 "1": {"name": "keyword.operator.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -360,7 +360,7 @@
             },
             {
               "comment": "@param with parameterized type (delegates to emmydoc.type for balanced angle brackets)",
-              "begin": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+([a-zA-Z_*][a-zA-Z0-9_.]*)(\\<)",
+              "begin": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+([a-zA-Z_*][a-zA-Z0-9_.\\-]*)(\\<)",
               "beginCaptures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -379,7 +379,7 @@
             },
             {
               "comment": "@param with type containing parenthesized group (e.g. Type|(fun(): R, T))",
-              "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)(?:\\s+(.+))?",
+              "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`\\-]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?!\"'`\\-]*)(?:\\s+(.+))?",
               "captures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -405,7 +405,7 @@
             },
             {
               "comment": "@param with simple/union type and optional description (allows spaces around | and &)",
-              "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`]*(?:\\s*[|&]\\s*[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`]*)*)(?:\\s+(.+))?",
+              "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*(?:\\s*[|&]\\s*[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?",
               "captures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -427,7 +427,7 @@
                 "1": {"name": "keyword.control.lua"},
                 "2": {"name": "keyword.operator.lua"}
               },
-              "end": "(\\))(?:\\s*(:)\\s*((?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|\\[\\]?!<>]*(?:\\s*,\\s*(?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|\\[\\]?!<>]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
+              "end": "(\\))(?:\\s*(:)\\s*((?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|\\[\\]?!<>\\-]*(?:\\s*,\\s*(?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|\\[\\]?!<>\\-]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
               "endCaptures": {
                 "1": {"name": "keyword.operator.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -457,7 +457,7 @@
           "patterns": [
             {
               "comment": "Index signature: @field [type] Type [description]",
-              "begin": "(?:\\b(private|protected|public)\\s+)?(\\[)([a-zA-Z_][a-zA-Z0-9_\\.]*)(\\])(\\??)",
+              "begin": "(?:\\b(private|protected|public)\\s+)?(\\[)([a-zA-Z_][a-zA-Z0-9_\\.\\-]*)(\\])(\\??)",
               "beginCaptures": {
                 "1": {"name": "storage.modifier.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -515,7 +515,7 @@
           "beginCaptures": {"0": {"name": "storage.type.annotation.lua"}},
           "end": "(?=[\\n@#])",
           "patterns": [
-            {"match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)", "name": "support.class.lua"},
+            {"match": "\\b([a-zA-Z_][a-zA-Z0-9_\\-]*)", "name": "support.class.lua"},
             {"match": ":", "name": "keyword.operator.lua"}
           ]
         },
@@ -611,7 +611,7 @@
             },
             {
               "comment": "Class#member or Class:Method or Class.field reference",
-              "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)([#:.])([a-zA-Z_][a-zA-Z0-9_]*)",
+              "match": "\\b([a-zA-Z_][a-zA-Z0-9_\\-]*)([#:.])([a-zA-Z_][a-zA-Z0-9_\\-]*)",
               "captures": {
                 "1": {"name": "support.class.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -620,7 +620,7 @@
             },
             {
               "comment": "Bare name target",
-              "match": "\\b[a-zA-Z_][a-zA-Z0-9_.]*",
+              "match": "\\b[a-zA-Z_][a-zA-Z0-9_.\\-]*",
               "name": "support.class.lua"
             }
           ]
@@ -662,7 +662,7 @@
             "1": {"name": "keyword.control.lua"},
             "2": {"name": "keyword.operator.lua"}
           },
-          "end": "(\\))([\\[\\]\\?\\!]*)(?:\\s*(:)\\s*((?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|&\\[\\]?!<>]*(?:\\s*,\\s*(?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|&\\[\\]?!<>]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
+          "end": "(\\))([\\[\\]\\?\\!]*)(?:\\s*(:)\\s*((?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|&\\[\\]?!<>\\-]*(?:\\s*,\\s*(?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|&\\[\\]?!<>\\-]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
           "endCaptures": {
             "1": {"name": "keyword.operator.lua"},
             "2": {"name": "keyword.operator.lua"},
@@ -679,7 +679,7 @@
         },
         {
           "comment": "Parameterized type (e.g. Map<K, V>) with description",
-          "begin": "\\s+([a-zA-Z_*][a-zA-Z0-9_.]*)(\\<)",
+          "begin": "\\s+([a-zA-Z_*][a-zA-Z0-9_.\\-]*)(\\<)",
           "beginCaptures": {
             "1": {"name": "support.type.lua"},
             "2": {"name": "keyword.operator.lua"}
@@ -696,7 +696,7 @@
         },
         {
           "comment": "Type with parenthesized group (e.g. Type|(fun(): R, T)). Limited to one level of paren nesting; deeper nesting like (fun(x: (A|B)): R) may mis-split the description boundary.",
-          "match": "\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)(?:\\s+(.+))?",
+          "match": "\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`\\-]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?!\"'`\\-]*)(?:\\s+(.+))?",
           "captures": {
             "1": {"name": "support.type.lua"},
             "2": {"name": "comment.block.documentation.lua"}
@@ -712,7 +712,7 @@
         },
         {
           "comment": "Simple/union type with optional description (allows spaces around | and &). Uses a flat match so string literal types lose individual string highlighting — consistent with @param behavior.",
-          "match": "\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`]*(?:\\s*[|&]\\s*[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`]*)*)(?:\\s+(.+))?",
+          "match": "\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*(?:\\s*[|&]\\s*[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?",
           "captures": {
             "1": {"name": "support.type.lua"},
             "2": {"name": "comment.block.documentation.lua"}
@@ -768,7 +768,7 @@
           "begin": "(?=[a-zA-Z_\\.\\*\"'\\[])",
           "end": "(?=[\\s\\)\\,\\?\\!\\:\\}\\|\\&\\`\\<\\>@#])",
           "patterns": [
-            {"match": "(\\.\\.\\.)([a-zA-Z_][a-zA-Z0-9_\\.]*)?[ \\t]*", "captures": {"1": {"name": "keyword.operator.lua"}, "2": {"name": "support.type.lua"}}},
+            {"match": "(\\.\\.\\.)([a-zA-Z_][a-zA-Z0-9_\\.\\-]*)?[ \\t]*", "captures": {"1": {"name": "keyword.operator.lua"}, "2": {"name": "support.type.lua"}}},
             {"match": "([a-zA-Z0-9_\\.\\*\\[\\]\\-]+)[ \\t]*", "name": "support.type.lua"},
             {"include": "#string"}
           ]
