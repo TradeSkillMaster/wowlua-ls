@@ -522,8 +522,14 @@ pub(crate) fn scan_file_globals_with_synth(
                 if let Some(class_name) = class_name {
                     if names.len() == 1 {
                         class_vars.insert(names[0].clone(), class_name);
-                    } else if names.len() >= 2 && addon_ns_var.as_deref() == Some(names.last().unwrap().as_str()) {
-                        class_vars.insert(names.last().unwrap().clone(), class_name);
+                    } else if names.len() >= 2 {
+                        // @class on multi-assignment annotates the first variable
+                        // (e.g. `---@class Lib \n local Lib, oldMinor = LibStub:NewLibrary(...)`)
+                        // Also handle addon namespace in last position.
+                        if addon_ns_var.as_deref() == Some(names.last().unwrap().as_str()) {
+                            class_vars.insert(names.last().unwrap().clone(), class_name.clone());
+                        }
+                        class_vars.insert(names[0].clone(), class_name);
                     }
                 } else if names.len() == 1 && !class_vars.contains_key(&names[0]) {
                     // @type annotation → track as local_type_vars for overlay field emission.
