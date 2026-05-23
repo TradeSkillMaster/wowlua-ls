@@ -193,6 +193,21 @@ for k, v in pairs(flags) do
 --      ^ hint: : boolean
 end
 
+-- Nil in element types is stripped for iteration variables
+---@type (number|nil)[]
+local sparseNums = {}
+for i, v in ipairs(sparseNums) do
+--   ^ hint: : number
+--      ^ hint: : number
+end
+
+---@type table<string|nil, boolean|nil>
+local sparseFlags = {}
+for k, v in pairs(sparseFlags) do
+--   ^ hint: : string
+--      ^ hint: : boolean
+end
+
 -- ── Parameter type hints ─────────────────────────────────────────────────────
 
 -- Annotated params: no hint (user already wrote the type)

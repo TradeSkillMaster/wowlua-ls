@@ -2416,3 +2416,43 @@ local _tblLen = #maybeTbl
 local andStr = nil
 local _andLen = andStr and #andStr or 0
 --                         ^ diag: none
+
+-- ── pairs/ipairs nil-stripping ───────────────────────────────────────────
+-- Iterating a nullable-element array or table with pairs()/ipairs() should
+-- NOT raise need-check-nil, because Lua tables cannot store nil values.
+
+---@class NilStripRow
+---@field id number
+
+---@type (NilStripRow|nil)[]
+local nilRows = {}
+
+-- ipairs: value is NilStripRow, not NilStripRow?  (row starts at col 8)
+for _, row in ipairs(nilRows) do
+--     ^ hover: (local) row: NilStripRow
+    local _ = row.id
+    -- ^ diag: none
+end
+
+-- pairs: value is NilStripRow, not NilStripRow?  (row starts at col 8)
+for _, row in pairs(nilRows) do
+--     ^ hover: (local) row: NilStripRow
+    local _ = row.id
+    -- ^ diag: none
+end
+
+-- Direct index access is still nullable  (_directRow starts at col 7)
+local _directRow = nilRows[1]
+--    ^ hover: (local) _directRow: NilStripRow?
+
+-- table<K|nil, V|nil>: iteration strips nil from both key and value
+---@type table<string|nil, number|nil>
+local mixedTbl = {}
+for k, v in pairs(mixedTbl) do
+--  ^ hover: (local) k: string
+--     ^ hover: (local) v: number
+    local _ = k .. "x"
+    -- ^ diag: none
+    local _ = v + 1
+    -- ^ diag: none
+end

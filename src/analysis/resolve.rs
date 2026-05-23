@@ -7,6 +7,15 @@ use super::build_ir::OverloadCheck;
 
 // ── Type Resolution (Phase 2) ──────────────────────────────────────────────────
 
+/// Check if a function's return annotation at `ret_idx` was declared with `!`
+/// (non-nil assertion, e.g. `V!`). Used by for-in resolution to strip nil from
+/// iteration variables when the iterator stub explicitly marks returns as non-nil.
+fn is_forin_non_nil_return(func: &Function, ret_idx: usize) -> bool {
+    func.return_annotations_raw
+        .get(ret_idx)
+        .is_some_and(|raw| matches!(raw, crate::annotations::AnnotationType::NonNil(_)))
+}
+
 impl<'a> Analysis<'a> {
     pub fn resolve_types(&mut self) {
         // Pre-size the expression cache and cycle-detection bitmap as dense Vecs.
@@ -2430,6 +2439,11 @@ impl<'a> Analysis<'a> {
                         let ret_vt = self.func(func_idx).return_annotations.get(effective_var_idx).cloned();
                         if let Some(ref vt) = ret_vt
                             && !vt.contains_type_variable() {
+                                // var_idx 0: nil terminates the for-in loop (language guarantee).
+                                // Other positions: strip nil when annotated with ! (e.g. V!).
+                                if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective_var_idx) {
+                                    return Some(vt.strip_nil());
+                                }
                                 return ret_vt;
                             }
                         // Try return symbol
@@ -2440,6 +2454,9 @@ impl<'a> Analysis<'a> {
                                 .and_then(|v| v.resolved_type.clone());
                             if let Some(ref vt) = ret_type
                                 && !vt.contains_type_variable() {
+                                    if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective_var_idx) {
+                                        return Some(vt.strip_nil());
+                                    }
                                     return ret_type;
                                 }
                         }
@@ -2464,7 +2481,9 @@ impl<'a> Analysis<'a> {
                                             return Some(kt.strip_nil());
                                         },
                                         1 => if let Some(vt) = self.table(table_idx).value_type.clone() {
-                                            return Some(vt);
+                                            // Lua tables cannot store nil values, so iteration
+                                            // never yields nil — strip nil from the value type.
+                                            return Some(vt.strip_nil());
                                         },
                                         _ => {}
                                     }
@@ -2472,9 +2491,10 @@ impl<'a> Analysis<'a> {
                             }
                             // Fall back to generic resolution (handles tables with only named fields)
                             if let Some(substituted) = self.resolve_forin_generic_iterator(func_idx, var_idx, state_eid) {
-                                // In a for-in loop, the control variable (var_idx 0) is never nil
-                                // inside the body — nil terminates the loop.
-                                if var_idx == 0 {
+                                // var_idx 0: nil terminates the loop (language guarantee).
+                                // Other positions: strip nil when annotated with ! (e.g. V!).
+                                let effective = self.func(func_idx).effective_return_index(var_idx);
+                                if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective) {
                                     return Some(substituted.strip_nil());
                                 }
                                 return Some(substituted);
@@ -2548,8 +2568,11 @@ impl<'a> Analysis<'a> {
                         };
                         if let Some(table_idx) = table_idx {
                             match var_idx {
-                                0 => return self.table(table_idx).key_type.clone(),
-                                1 => return self.table(table_idx).value_type.clone(),
+                                // Lua tables cannot store nil keys or nil values — strip nil
+                                // so that iterating a `(T|nil)[]` or `table<K|nil, V|nil>`
+                                // gives T/K/V instead of T?/K?/V? in the loop variables.
+                                0 => return self.table(table_idx).key_type.clone().map(|t| t.strip_nil()),
+                                1 => return self.table(table_idx).value_type.clone().map(|t| t.strip_nil()),
                                 _ => {}
                             }
                         }
