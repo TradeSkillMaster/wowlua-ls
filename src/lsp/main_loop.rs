@@ -3526,11 +3526,12 @@ fn handle_notification(
                         // is modified, so without this push diagnostics vanish
                         // until Phase 4 completes.
                         //
-                        // For same-line edits (delta == 0), keep all diagnostics
-                        // as-is — line numbers are still correct and the editor
-                        // needs them re-pushed to stay visible. Only drop/shift
-                        // diagnostics on the edited line when lines are actually
-                        // added or removed (delta != 0).
+                        // Always drop diagnostics on the edited line — even for
+                        // same-line edits (delta == 0) — because the diagnostic
+                        // message text may reference old code (e.g. after undo).
+                        // Phase 4 will re-publish correct diagnostics after the
+                        // debounce. Only shift lines below the edit when lines
+                        // are actually added or removed (delta != 0).
                         if !client.diagnostic_refresh
                             && let Ok(uri) = lsp_types::Uri::from_str(&uri_str)
                         {
@@ -3547,31 +3548,32 @@ fn handle_notification(
                             } else {
                                 Vec::new()
                             };
-                            if let Some((fl, delta)) = doc.pending_line_delta
-                                && delta != 0
-                            {
+                            if let Some((fl, delta)) = doc.pending_line_delta {
                                 items.retain_mut(|d| {
-                                    // Drop diagnostics on the edited line when
-                                    // lines were added/removed — they're likely
-                                    // stale. Keep them for same-line edits.
+                                    // Always drop diagnostics on the edited line —
+                                    // the text changed so diagnostic messages
+                                    // referencing old code (e.g. after undo) are
+                                    // stale. Phase 4 will re-publish correct ones.
                                     if d.range.start.line == fl || d.range.end.line == fl {
                                         return false;
                                     }
-                                    if d.range.start.line > fl {
-                                        let new_start = d.range.start.line as i64 + delta as i64;
-                                        let new_end = d.range.end.line as i64 + delta as i64;
-                                        if new_start < 0 || new_end < 0 {
-                                            return false;
+                                    if delta != 0 {
+                                        if d.range.start.line > fl {
+                                            let new_start = d.range.start.line as i64 + delta as i64;
+                                            let new_end = d.range.end.line as i64 + delta as i64;
+                                            if new_start < 0 || new_end < 0 {
+                                                return false;
+                                            }
+                                            d.range.start.line = new_start as u32;
+                                            d.range.end.line = new_end as u32;
                                         }
-                                        d.range.start.line = new_start as u32;
-                                        d.range.end.line = new_end as u32;
-                                    }
-                                    // Multi-line diagnostic spanning the edit point:
-                                    // starts before fl but ends after fl.
-                                    if d.range.start.line < fl && d.range.end.line > fl {
-                                        let new_end = d.range.end.line as i64 + delta as i64;
-                                        if new_end < 0 { return false; }
-                                        d.range.end.line = new_end as u32;
+                                        // Multi-line diagnostic spanning the edit
+                                        // point: starts before fl but ends after fl.
+                                        if d.range.start.line < fl && d.range.end.line > fl {
+                                            let new_end = d.range.end.line as i64 + delta as i64;
+                                            if new_end < 0 { return false; }
+                                            d.range.end.line = new_end as u32;
+                                        }
                                     }
                                     true
                                 });
