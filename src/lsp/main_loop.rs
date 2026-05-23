@@ -93,6 +93,11 @@ struct Document {
     /// Byte-level edit mapping for translating stale inlay hint positions into
     /// `pending_text` coordinates.  See [`PendingEditMap`].
     pending_edit_map: Option<PendingEditMap>,
+    /// Last-published diagnostics for this document, cached to avoid
+    /// recomputing all ~40 diagnostic passes on every `didChange` push.
+    /// Populated by Phase 4 and didOpen pushes, used by didChange
+    /// line-shifting for push-only clients.
+    cached_diagnostics: Option<Vec<lsp_types::Diagnostic>>,
 }
 
 /// Cached workspace diagnostics: (generation, vec of (uri_string, diagnostics)).
@@ -1305,12 +1310,16 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         code_lens_provider: Some(lsp_types::CodeLensOptions {
             resolve_provider: Some(true),
         }),
-        diagnostic_provider: Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
-            identifier: Some("wowlua-ls".to_string()),
-            inter_file_dependencies: true,
-            workspace_diagnostics: true,
-            work_done_progress_options: Default::default(),
-        })),
+        diagnostic_provider: if supports_diagnostic_refresh_raw {
+            Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
+                identifier: Some("wowlua-ls".to_string()),
+                inter_file_dependencies: true,
+                workspace_diagnostics: true,
+                work_done_progress_options: Default::default(),
+            }))
+        } else {
+            None
+        },
         ..ServerCapabilities::default()
     };
 
@@ -1450,7 +1459,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     // Pre-warm workspace diagnostic cache during startup so the first
     // `workspace/diagnostic` request from the editor is a cache hit.
-    if !ws.ws_file_globals.is_empty() {
+    if supports_diagnostic_refresh_raw && !ws.ws_file_globals.is_empty() {
         if supports_progress {
             let file_count = ws.ws_file_globals.len();
             send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -1596,9 +1605,6 @@ fn main_loop(
             }
         };
 
-        // Track whether a message arrived (before `first` is moved).
-        let got_message = first.is_some();
-
         // Drain all additional pending messages without blocking
         let batch: Vec<Message> = if let Some(first) = first {
             std::iter::once(first)
@@ -1704,7 +1710,7 @@ fn main_loop(
                             let result = Some(analyze_lua_parsed(
                                 &uri, &ws.pre_globals, &ws.configs, &tree,
                             ));
-                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
                         }
                     }
                 }
@@ -1719,11 +1725,18 @@ fn main_loop(
             handle_request(&connection, &mut documents, &mut ws, req, client.snippets, client.progress, &mut progress_counter);
         }
 
-        // Phase 4: Re-analyze any dirty documents. Only run when the
-        // debounce timer expired (has_dirty was true AND no new messages
-        // arrived during the DEBOUNCE_MS window), so we skip intermediate
-        // states while the user is actively typing.
-        let debounce_expired = has_dirty && !got_message;
+        // Phase 4: Re-analyze any dirty documents once the debounce
+        // period has elapsed since the last didChange.  Previously this
+        // checked `!got_message` (no messages arrived during the wait),
+        // but that prevented Phase 4 from ever firing when the client
+        // sends continuous requests (e.g. Neovim sending semanticTokens,
+        // inlayHint, codeLens while idle in insert mode).  Now we check
+        // actual elapsed time so Phase 4 runs even if non-edit messages
+        // are still arriving.
+        let debounce_elapsed = last_dirty_at
+            .map(|t| t.elapsed() >= Duration::from_millis(DEBOUNCE_MS))
+            .unwrap_or(true);
+        let debounce_expired = has_dirty && debounce_elapsed && !has_did_change;
         let dirty_uris: Vec<String> = if debounce_expired {
             documents.iter()
                 .filter(|(_, doc)| doc.dirty)
@@ -1797,7 +1810,7 @@ fn main_loop(
                     if doc.toc.is_some() {
                         let text = doc.pending_text.unwrap_or(doc.text);
                         let toc = crate::toc::parse_toc(&text);
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
                         continue;
                     }
                     {
@@ -1817,7 +1830,7 @@ fn main_loop(
                         let text = doc.pending_text.unwrap_or(doc.text);
 
                         if is_ignored_uri(&uri, &ws.configs) {
-                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
                             continue;
                         }
 
@@ -1854,7 +1867,7 @@ fn main_loop(
 
                         let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                         let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
                         if rebuilt {
                             had_workspace_rebuild = true;
                             if let Some(ref token) = analysis_token {
@@ -1884,7 +1897,7 @@ fn main_loop(
             // below) is a cache hit.  Without this, the request handler (Phase 3)
             // synchronously re-parses + re-analyzes ALL workspace files, blocking
             // hover/completion for 10+ seconds on large projects.
-            if had_workspace_rebuild {
+            if had_workspace_rebuild && client.diagnostic_refresh {
                 if let Some(ref token) = analysis_token {
                     let file_count = ws.ws_file_globals.len();
                     send_progress(&connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -1935,20 +1948,10 @@ fn main_loop(
             // so the editor shows updated results after re-analysis.
             if !client.diagnostic_refresh {
                 for uri_str in &dirty_uris {
-                    if let Some(doc) = documents.get(uri_str)
-                        && let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis)
-                        && let Ok(uri) = lsp_types::Uri::from_str(uri_str)
+                    if let Ok(uri) = lsp_types::Uri::from_str(uri_str)
+                        && let Some(doc) = documents.get_mut(uri_str)
                     {
-                        let items = build_file_diagnostics(&uri, tree, analysis, &doc.text, &doc.plugin_diags, &ws);
-                        let params = lsp_types::PublishDiagnosticsParams {
-                            uri,
-                            diagnostics: items,
-                            version: None,
-                        };
-                        let _ = connection.sender.send(Message::Notification(Notification::new(
-                            "textDocument/publishDiagnostics".to_string(),
-                            params,
-                        )));
+                        push_fresh_diagnostics(&connection, &uri, doc, &ws);
                     }
                 }
             }
@@ -3516,6 +3519,73 @@ fn handle_notification(
                         doc.pending_edit_map = edit_map;
                         doc.pending_text = Some(text);
                         doc.dirty = true;
+
+                        // For push-only clients, immediately push line-shifted
+                        // diagnostics so they stay visible during typing. Neovim
+                        // invalidates diagnostic extmarks when the underlying text
+                        // is modified, so without this push diagnostics vanish
+                        // until Phase 4 completes.
+                        //
+                        // For same-line edits (delta == 0), keep all diagnostics
+                        // as-is — line numbers are still correct and the editor
+                        // needs them re-pushed to stay visible. Only drop/shift
+                        // diagnostics on the edited line when lines are actually
+                        // added or removed (delta != 0).
+                        if !client.diagnostic_refresh
+                            && let Ok(uri) = lsp_types::Uri::from_str(&uri_str)
+                        {
+                            // Use cached diagnostics from the last Phase 4 / didOpen
+                            // push to avoid rerunning all ~40 diagnostic passes on
+                            // every keystroke. Fall back to fresh computation when
+                            // the cache is empty (e.g. after Phase 2 re-analysis).
+                            let mut items = if let Some(cached) = &doc.cached_diagnostics {
+                                cached.clone()
+                            } else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
+                                let fresh = build_file_diagnostics(&uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
+                                doc.cached_diagnostics = Some(fresh.clone());
+                                fresh
+                            } else {
+                                Vec::new()
+                            };
+                            if let Some((fl, delta)) = doc.pending_line_delta
+                                && delta != 0
+                            {
+                                items.retain_mut(|d| {
+                                    // Drop diagnostics on the edited line when
+                                    // lines were added/removed — they're likely
+                                    // stale. Keep them for same-line edits.
+                                    if d.range.start.line == fl || d.range.end.line == fl {
+                                        return false;
+                                    }
+                                    if d.range.start.line > fl {
+                                        let new_start = d.range.start.line as i64 + delta as i64;
+                                        let new_end = d.range.end.line as i64 + delta as i64;
+                                        if new_start < 0 || new_end < 0 {
+                                            return false;
+                                        }
+                                        d.range.start.line = new_start as u32;
+                                        d.range.end.line = new_end as u32;
+                                    }
+                                    // Multi-line diagnostic spanning the edit point:
+                                    // starts before fl but ends after fl.
+                                    if d.range.start.line < fl && d.range.end.line > fl {
+                                        let new_end = d.range.end.line as i64 + delta as i64;
+                                        if new_end < 0 { return false; }
+                                        d.range.end.line = new_end as u32;
+                                    }
+                                    true
+                                });
+                            }
+                            let params = lsp_types::PublishDiagnosticsParams {
+                                uri,
+                                diagnostics: items,
+                                version: None,
+                            };
+                            let _ = connection.sender.send(Message::Notification(Notification::new(
+                                "textDocument/publishDiagnostics".to_string(),
+                                params,
+                            )));
+                        }
                     }
                 }
             }
@@ -3527,7 +3597,7 @@ fn handle_notification(
                 if params.text_document.language_id == "lua" {
                     if crate::has_shebang(&text) {
                         // Store with analysis: None so didChange ignores subsequent edits.
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
                         return;
                     }
                     // Stub files: run analysis (so hover/go-to-definition work)
@@ -3535,11 +3605,11 @@ fn handle_notification(
                     if is_stub_path(&uri) {
                         let tree = parse_lua(&text);
                         let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
                         return;
                     }
                     if is_ignored_uri(&uri, &ws.configs) {
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
                         return;
                     }
                     // Show progress while analyzing the newly opened file
@@ -3573,7 +3643,7 @@ fn handle_notification(
                     result.plugin_diag_codes = ws.plugin_codes();
                     let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                     let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
                     if rebuilt {
                         if let Some(ref token) = open_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -3599,6 +3669,15 @@ fn handle_notification(
                             message: Some("Ready".to_string()),
                         }));
                     }
+                    // Push diagnostics on open for clients that don't use pull-model
+                    // diagnostics (e.g. Neovim). Pull-model clients (VS Code) will
+                    // auto-request textDocument/diagnostic after didOpen.
+                    if !client.diagnostic_refresh {
+                        let uri_str = uri.to_string();
+                        if let Some(doc) = documents.get_mut(&uri_str) {
+                            push_fresh_diagnostics(connection, &uri, doc, ws);
+                        }
+                    }
                     // VS Code auto-pulls textDocument/diagnostic on open, so we only
                     // need a workspace refresh when a rebuild occurred (other docs
                     // were marked dirty and need to re-pull).
@@ -3609,10 +3688,10 @@ fn handle_notification(
                 }
                 if params.text_document.language_id == "toc" {
                     let toc = crate::toc::parse_toc(&text);
-                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
                     return;
                 }
-                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
             }
         }
         "textDocument/didSave" => {
@@ -4636,11 +4715,11 @@ fn reanalyze_open_documents(
         let Ok(uri) = lsp_types::Uri::from_str(&uri_str) else { continue };
         let text = doc.pending_text.as_ref().unwrap_or(&doc.text).clone();
         if is_ignored_uri(&uri, configs) {
-            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None });
+            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
             continue;
         }
         let (tree, result) = analyze_lua(&uri, &text, pre_globals, configs);
-        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None });
+        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
     }
 }
 
@@ -4790,10 +4869,10 @@ fn try_batch_analyze(
 
     for f in parsed {
         if f.ignored {
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
         } else {
             let analysis = result_map.remove(&f.uri_str);
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
         }
     }
 
@@ -4850,6 +4929,28 @@ fn build_file_diagnostics_with(
     let disabled = configs.disabled_diagnostics_for(&file_path);
     let severity = configs.severity_overrides_for(&file_path);
     diagnostics::build_lsp_diagnostics(uri, text, &tree.errors, &diags, plugin_diags, suppressions, &disabled, &severity)
+}
+
+/// Build diagnostics for a push-only client, cache them on the document,
+/// and send a `textDocument/publishDiagnostics` notification.
+fn push_fresh_diagnostics(
+    connection: &Connection,
+    uri: &lsp_types::Uri,
+    doc: &mut Document,
+    ws: &WorkspaceState,
+) {
+    let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) else { return };
+    let items = build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
+    doc.cached_diagnostics = Some(items.clone());
+    let params = lsp_types::PublishDiagnosticsParams {
+        uri: uri.clone(),
+        diagnostics: items,
+        version: None,
+    };
+    let _ = connection.sender.send(Message::Notification(Notification::new(
+        "textDocument/publishDiagnostics".to_string(),
+        params,
+    )));
 }
 
 /// Handle a `textDocument/diagnostic` pull request (LSP 3.17).
