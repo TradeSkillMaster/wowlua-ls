@@ -4,6 +4,8 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
 
 For deep architecture internals (type inference, narrowing, generics, builder pattern, cross-file references, metatable inference, flavor filtering, etc.), see [ARCHITECTURE.md](.claude/ARCHITECTURE.md).
 
+For Neovim diagnostic integration details (push/pull namespaces, `workspace_diagnostics` flag, line-shifting, edit zone handling), see [NEOVIM_DIAGNOSTICS.md](.claude/NEOVIM_DIAGNOSTICS.md).
+
 ## Architecture
 
 ### Source files

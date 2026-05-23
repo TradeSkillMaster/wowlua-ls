@@ -1344,7 +1344,8 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
                 identifier: Some("wowlua-ls".to_string()),
                 inter_file_dependencies: true,
-                workspace_diagnostics: true,
+                // Must be false — see .claude/NEOVIM_DIAGNOSTICS.md for why.
+                workspace_diagnostics: false,
                 work_done_progress_options: Default::default(),
             }))
         } else {
@@ -1973,22 +1974,24 @@ fn main_loop(
                 );
             }
 
-            // Always push diagnostics after Phase 4 via publishDiagnostics.
-            // Even when the client supports pull-model diagnostics
-            // (workspace/diagnostic/refresh), Neovim only re-pulls
-            // workspace/diagnostic in response — not textDocument/diagnostic
-            // — so in-buffer diagnostics go stale. Push ensures the editor
-            // shows fresh results immediately after re-analysis.
-            for uri_str in &dirty_uris {
-                if let Ok(uri) = lsp_types::Uri::from_str(uri_str)
-                    && let Some(doc) = documents.get_mut(uri_str)
-                    // Skip if a didChange arrived during Phase 4 processing
-                    // (via drain_pending_requests). That handler already pushed
-                    // line-shifted diagnostics; overwriting with unshifted
-                    // Phase 4 positions would briefly show wrong locations.
-                    && doc.pending_line_delta.is_none()
-                {
-                    push_fresh_diagnostics(&connection, &uri, doc, &ws);
+            // Push diagnostics after Phase 4 for push-only clients.
+            // Pull-model clients (Neovim, VS Code) get fresh diagnostics
+            // via the workspace/diagnostic/refresh request above, which
+            // triggers them to re-pull textDocument/diagnostic. Pushing
+            // publishDiagnostics as well would cause doubled diagnostics
+            // because push and pull use separate namespaces in Neovim.
+            if !client.diagnostic_refresh {
+                for uri_str in &dirty_uris {
+                    if let Ok(uri) = lsp_types::Uri::from_str(uri_str)
+                        && let Some(doc) = documents.get_mut(uri_str)
+                        // Skip if a didChange arrived during Phase 4 processing
+                        // (via drain_pending_requests). That handler already pushed
+                        // line-shifted diagnostics; overwriting with unshifted
+                        // Phase 4 positions would briefly show wrong locations.
+                        && doc.pending_line_delta.is_none()
+                    {
+                        push_fresh_diagnostics(&connection, &uri, doc, &ws);
+                    }
                 }
             }
         }
@@ -3539,7 +3542,18 @@ fn handle_notification(
                                 // The resulting edit zone is an approximation —
                                 // Phase 4 will re-publish correct diagnostics.
                                 min_line = min_line.min(range.start.line);
-                                max_line = max_line.max(range.start.line).max(range.end.line);
+                                // When end.character == 0 and end.line > start.line,
+                                // the end position is at the start of the next line —
+                                // an exclusive boundary. That line isn't modified, so
+                                // exclude it from the drop zone. Otherwise diagnostics
+                                // on the line below a deleted line get dropped instead
+                                // of shifted.
+                                let edit_end_line = if range.end.character == 0 && range.end.line > range.start.line {
+                                    range.end.line - 1
+                                } else {
+                                    range.end.line
+                                };
+                                max_line = max_line.max(range.start.line).max(edit_end_line);
                                 let delta = change.text.len() as isize - (end - start) as isize;
                                 edit_map = Some(match edit_map {
                                     // First edit with no prior pending: exact Single.
@@ -3568,10 +3582,12 @@ fn handle_notification(
                         doc.dirty = true;
 
                         // For push-only clients, immediately push line-shifted
-                        // diagnostics so they stay visible during typing. Neovim
-                        // invalidates diagnostic extmarks when the underlying text
-                        // is modified, so without this push diagnostics vanish
-                        // until Phase 4 completes.
+                        // diagnostics so they stay visible during typing.
+                        // Pull-model clients (Neovim, VS Code) re-request
+                        // textDocument/diagnostic on didChange via the
+                        // LspNotify autocmd, so they don't need this push —
+                        // and sending it would cause doubled diagnostics
+                        // (push and pull use separate namespaces in Neovim).
                         //
                         // Always drop diagnostics on the edited line — even for
                         // same-line edits (delta == 0) — because the diagnostic
@@ -4963,12 +4979,16 @@ fn build_file_diagnostics_with(
 /// therefore an approximation — it may be slightly too narrow or too wide
 /// for multi-edit batches. Phase 4 re-publishes correct diagnostics, so this
 /// only affects the brief interim display.
+///
+/// Parse errors (code: None) are dropped first — they can appear on lines far
+/// from the actual mistake and can't be reliably line-shifted.
 fn shift_diagnostics_for_pending_edit(
     items: &mut Vec<lsp_types::Diagnostic>,
     min_l: u32,
     max_l: u32,
     delta: i32,
 ) {
+    items.retain(|d| d.code.is_some());
     items.retain_mut(|d| {
         let sl = d.range.start.line;
         let el = d.range.end.line;
