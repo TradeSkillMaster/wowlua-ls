@@ -23,6 +23,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `undefined-field` | Accessing nonexistent field on `@class` |
 | `need-check-nil` | Field/method access on possibly-nil value **(off by default)** |
 | `nil-index` | Bracket-indexing a table with a possibly-nil key **(off by default)** |
+| `nil-table-key` | Table key type annotation includes nil (`table<string?, V>`) |
 | `access-private` | Accessing `@field private` from outside |
 | `access-protected` | Accessing `@field protected` from outside hierarchy (also `_`-prefixed fields when `implicit_protected_prefix` is enabled) |
 | `duplicate-index` | Duplicate keys in table constructors |

@@ -26,6 +26,7 @@ mod missing_return_value;
 mod multi_return_projection;
 mod need_check_nil;
 mod nil_index;
+mod nil_table_key;
 mod not_precedence;
 mod redefined_local;
 mod return_mismatch;
@@ -150,6 +151,7 @@ pub(crate) const SHADOWED_LOCAL: DiagnosticDef           = DiagnosticDef { code:
 pub(crate) const MIXED_ENUM_VALUES: DiagnosticDef       = DiagnosticDef { code: "mixed-enum-values",        severity: DiagnosticSeverity::WARNING };
 pub(crate) const INVALID_CLASS_PARENT: DiagnosticDef     = DiagnosticDef { code: "invalid-class-parent",     severity: DiagnosticSeverity::WARNING };
 pub(crate) const INVALID_OP: DiagnosticDef               = DiagnosticDef { code: "invalid-op",               severity: DiagnosticSeverity::WARNING };
+pub(crate) const NIL_TABLE_KEY: DiagnosticDef            = DiagnosticDef { code: "nil-table-key",            severity: DiagnosticSeverity::WARNING };
 pub(crate) const SAFETY_LIMIT: DiagnosticDef            = DiagnosticDef { code: "safety-limit",             severity: DiagnosticSeverity::ERROR };
 
 const CATALOG: &[&DiagnosticDef] = &[
@@ -169,7 +171,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &TRAILING_SPACE, &REDUNDANT_RETURN, &NOT_PRECEDENCE, &WRONG_FLAVOR_API,
     &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
     &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SHADOWED_LOCAL,
-    &MIXED_ENUM_VALUES, &INVALID_CLASS_PARENT, &INVALID_OP, &SAFETY_LIMIT,
+    &MIXED_ENUM_VALUES, &INVALID_CLASS_PARENT, &INVALID_OP, &NIL_TABLE_KEY, &SAFETY_LIMIT,
 ];
 
 pub(crate) fn append_structural_mismatch_suffix(
@@ -292,6 +294,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &doc_func_no_function::DocFuncNoFunction,
         &trailing_space::TrailingSpace,
         &annotation_metadata::AnnotationMetadata,
+        &nil_table_key::NilTableKey,
         &expression_type::ExpressionType,
         &mixed_enum_values::MixedEnumValues,
         &destructure_arity::DestructureArity,

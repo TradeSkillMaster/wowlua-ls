@@ -121,6 +121,7 @@ Diagnostic modules under `src/diagnostics/` (40 modules implementing `Diagnostic
 - `access.rs` — `@private`/`@protected` visibility violations (`access-private`, `access-protected`)
 - `need_check_nil.rs` — field/method access on possibly-nil values (`need-check-nil`, default-disabled)
 - `nil_index.rs` — possibly-nil table key in bracket access (`nil-index`)
+- `nil_table_key.rs` — nil in table key type annotations, e.g. `table<string?, V>` (`nil-table-key`)
 - `wrong_flavor_api.rs` — calls to APIs not available in project-declared flavors (`wrong-flavor-api`)
 - `expression_type.rs` — undefined variables and return type mismatches in `expression<C, R>` string arguments (`undefined-field`, `type-mismatch`)
 
@@ -235,7 +236,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/overloads.lua` — Overload resolution (--with-stubs)
 - `tests/deep-inheritance.lua` — 5-level class hierarchy (--with-stubs)
 - `tests/signature-help.lua` — Signature help with `sig:` assertions (--with-stubs)
-- `tests/diagnostics/` — Semantic diagnostics with `diag:` assertions and @diagnostic suppression; `.wowluarc.json` enables `need-check-nil` + `implicit-nil-return`. Includes `invalid_op.lua` for `invalid-op` (arithmetic/concatenation on incompatible types)
+- `tests/diagnostics/` — Semantic diagnostics with `diag:` assertions and @diagnostic suppression; `.wowluarc.json` enables `need-check-nil` + `implicit-nil-return`. Includes `invalid_op.lua` for `invalid-op` (arithmetic/concatenation on incompatible types) and `nil_table_key.lua` for `nil-table-key` (nil in table key type annotations)
 - `tests/need-check-nil/` — Nil-checking diagnostics with nil-guard narrowing; `.wowluarc.json` enables the default-off `need-check-nil` code
 - `tests/nil-index.lua` — Nil table key diagnostics (`nil-index`): read/write nil keys, narrowing suppression, literal keys, key type inference nil-stripping
 - `tests/access-modifiers/` — Private/protected field access diagnostics; `.wowluarc.json` enables `inference.implicit_protected_prefix`

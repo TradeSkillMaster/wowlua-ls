@@ -849,6 +849,15 @@ fn invalid_op() {
 }
 
 #[test]
+fn nil_table_key() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/diagnostics/nil_table_key.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn generics() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/generics.lua",
