@@ -101,6 +101,13 @@ local function plainVararg(...)
 --                         ^ hover: (param) ...
 end
 
+-- ── Alias referencing event type (regression: alias ordering) ──
+
+---@param ev AnyGameEvent
+local function handleEvent(ev) end
+local _h = handleEvent
+--    ^ hover: (local) function _h(ev: AnyGameEvent)  diag: none
+
 -- ── Event string hover in equality comparison ──
 
 f:SetScript("OnEvent", function(self, event, ...)

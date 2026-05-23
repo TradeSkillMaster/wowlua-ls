@@ -373,11 +373,17 @@ pub struct EventDecl {
 }
 
 pub fn register_event_type_aliases(aliases: &mut Vec<AliasDecl>, events: &[EventDecl]) {
+    // Collect event type aliases to insert at the front of the list.
+    // These always resolve to the primitive `string` (no further alias
+    // dependencies), so front-insertion is sufficient to guarantee they
+    // are available when later aliases reference them (e.g. `WowEvent →
+    // FrameEvent`). Deeper alias chains would need multi-pass resolution.
+    let mut to_insert = Vec::new();
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for ev in events {
         if !seen.insert(&ev.event_type) { continue; }
         if aliases.iter().any(|a| a.name == ev.event_type) { continue; }
-        aliases.push(AliasDecl {
+        to_insert.push(AliasDecl {
             name: ev.event_type.clone(),
             type_params: Vec::new(),
             typ: AnnotationType::Simple("string".to_string()),
@@ -385,6 +391,9 @@ pub fn register_event_type_aliases(aliases: &mut Vec<AliasDecl>, events: &[Event
             def_path: None,
             is_opaque: false,
         });
+    }
+    if !to_insert.is_empty() {
+        aliases.splice(0..0, to_insert);
     }
 }
 

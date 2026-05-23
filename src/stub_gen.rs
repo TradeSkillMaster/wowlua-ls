@@ -3144,7 +3144,7 @@ pub fn regenerate_stubs() {
             .is_none_or(|n| n != "GlobalStrings.lua" && n != "GlobalVariables.lua")
     }));
 
-    let (classes, aliases, mut globals, _addon_ns_class_names, stub_events, _callable_classes) =
+    let (classes, mut aliases, mut globals, _addon_ns_class_names, stub_events, _callable_classes) =
         crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
 
     // Step 6b: Apply flavor bitmask data derived from BlizzardInterfaceResources branch diffs
@@ -3154,8 +3154,10 @@ pub fn regenerate_stubs() {
     // FrameXML-internal and should not leak into user addon namespaces.
     globals.retain(|g| g.name != crate::annotations::ADDON_NS_NAME);
 
-    // Step 5c: Merge event declarations from @event annotations
-    // (events generated in step 5a are scanned as .lua files alongside other stubs)
+    // Register event type aliases (e.g. FrameEvent → string) before building
+    // PreResolvedGlobals so that aliases referencing event types (e.g. WowEvent →
+    // FrameEvent from BlizzardType.lua) can resolve during the build phase.
+    crate::annotations::register_event_type_aliases(&mut aliases, &stub_events);
 
     // Step 6: Build PreResolvedGlobals
     log::info!("Building PreResolvedGlobals...");

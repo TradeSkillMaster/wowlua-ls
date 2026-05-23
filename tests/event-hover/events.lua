@@ -20,6 +20,10 @@
 ---@param version string
 ---@param isDebug boolean
 
+-- Alias referencing an event type name — tests that event type aliases
+-- (e.g. WowEvent → string) are resolved before dependent aliases.
+---@alias AnyGameEvent WowEvent
+
 ---@class EventFrame
 local EventFrame = {}
 
