@@ -114,10 +114,12 @@ struct Document {
     /// than `WorkspaceState::ws_generation`, the analysis is stale and must be
     /// rebuilt even if no new text arrived for this document.
     ws_generation: u64,
-    /// Line adjustment from pending edits: (first_affected_line, net_line_delta).
-    /// Used to shift stale diagnostic positions when serving from cached analysis
-    /// so that diagnostics below the edit point stay aligned with the new text.
-    pending_line_delta: Option<(u32, i32)>,
+    /// Line adjustment from pending edits: (min_edit_line, max_edit_line, net_line_delta).
+    /// Used to shift stale diagnostic positions when serving from cached analysis.
+    /// Diagnostics inside the edit zone (min..=max) are dropped because the shift
+    /// model can't determine their correct position; diagnostics below max are
+    /// shifted by net_line_delta.
+    pending_line_delta: Option<(u32, u32, i32)>,
     /// Byte-level edit mapping for translating stale inlay hint positions into
     /// `pending_text` coordinates.  See [`PendingEditMap`].
     pending_edit_map: Option<PendingEditMap>,
@@ -1971,16 +1973,22 @@ fn main_loop(
                 );
             }
 
-            // Fallback for clients that don't support workspace/diagnostic/refresh
-            // (e.g. Neovim): push diagnostics via textDocument/publishDiagnostics
-            // so the editor shows updated results after re-analysis.
-            if !client.diagnostic_refresh {
-                for uri_str in &dirty_uris {
-                    if let Ok(uri) = lsp_types::Uri::from_str(uri_str)
-                        && let Some(doc) = documents.get_mut(uri_str)
-                    {
-                        push_fresh_diagnostics(&connection, &uri, doc, &ws);
-                    }
+            // Always push diagnostics after Phase 4 via publishDiagnostics.
+            // Even when the client supports pull-model diagnostics
+            // (workspace/diagnostic/refresh), Neovim only re-pulls
+            // workspace/diagnostic in response — not textDocument/diagnostic
+            // — so in-buffer diagnostics go stale. Push ensures the editor
+            // shows fresh results immediately after re-analysis.
+            for uri_str in &dirty_uris {
+                if let Ok(uri) = lsp_types::Uri::from_str(uri_str)
+                    && let Some(doc) = documents.get_mut(uri_str)
+                    // Skip if a didChange arrived during Phase 4 processing
+                    // (via drain_pending_requests). That handler already pushed
+                    // line-shifted diagnostics; overwriting with unshifted
+                    // Phase 4 positions would briefly show wrong locations.
+                    && doc.pending_line_delta.is_none()
+                {
+                    push_fresh_diagnostics(&connection, &uri, doc, &ws);
                 }
             }
         }
@@ -3507,11 +3515,12 @@ fn handle_notification(
                     // etc.) from cache without position mismatches.
                     if let Some(doc) = documents.get_mut(&uri_str) {
                         let mut text = doc.pending_text.take().unwrap_or_else(|| doc.text.clone());
-                        // Track the cumulative line delta from pending edits so that
-                        // stale diagnostic positions can be shifted to stay aligned.
-                        // Start from any existing delta (multiple didChange batches
-                        // before Phase 4 runs).
-                        let (mut first_line, mut line_delta) = doc.pending_line_delta.unwrap_or((u32::MAX, 0));
+                        // Track the cumulative line delta and edit zone from
+                        // pending edits so that stale diagnostic positions can be
+                        // shifted to stay aligned. The edit zone (min_line..=max_line)
+                        // marks the region where diagnostics can't be accurately
+                        // shifted and are dropped instead.
+                        let (mut min_line, mut max_line, mut line_delta) = doc.pending_line_delta.unwrap_or((u32::MAX, 0, 0));
                         // Build a byte-level edit map so inlay hints can remap
                         // stale offsets into pending_text coordinates.
                         let mut edit_map = doc.pending_edit_map.take();
@@ -3522,8 +3531,15 @@ fn handle_notification(
                                 let end = super::lsp_position_to_offset(&text, range.end.line, range.end.character, use_utf8()) as usize;
                                 let old_newlines = text[start..end].matches('\n').count() as i32;
                                 let new_newlines = change.text.matches('\n').count() as i32;
-                                line_delta += new_newlines - old_newlines;
-                                first_line = first_line.min(range.start.line);
+                                let change_delta = new_newlines - old_newlines;
+                                line_delta += change_delta;
+                                // Note: in multi-edit batches, later edits' line
+                                // coordinates are in the post-edit space of earlier
+                                // edits, not the original analysis coordinates.
+                                // The resulting edit zone is an approximation —
+                                // Phase 4 will re-publish correct diagnostics.
+                                min_line = min_line.min(range.start.line);
+                                max_line = max_line.max(range.start.line).max(range.end.line);
                                 let delta = change.text.len() as isize - (end - start) as isize;
                                 edit_map = Some(match edit_map {
                                     // First edit with no prior pending: exact Single.
@@ -3541,11 +3557,12 @@ fn handle_notification(
                             } else {
                                 text = change.text;
                                 line_delta = 0;
-                                first_line = 0;
+                                min_line = 0;
+                                max_line = u32::MAX;
                                 edit_map = Some(PendingEditMap::Prefix(0));
                             }
                         }
-                        doc.pending_line_delta = Some((first_line, line_delta));
+                        doc.pending_line_delta = Some((min_line, max_line, line_delta));
                         doc.pending_edit_map = edit_map;
                         doc.pending_text = Some(text);
                         doc.dirty = true;
@@ -3578,35 +3595,8 @@ fn handle_notification(
                             } else {
                                 Vec::new()
                             };
-                            if let Some((fl, delta)) = doc.pending_line_delta {
-                                items.retain_mut(|d| {
-                                    // Always drop diagnostics on the edited line —
-                                    // the text changed so diagnostic messages
-                                    // referencing old code (e.g. after undo) are
-                                    // stale. Phase 4 will re-publish correct ones.
-                                    if d.range.start.line == fl || d.range.end.line == fl {
-                                        return false;
-                                    }
-                                    if delta != 0 {
-                                        if d.range.start.line > fl {
-                                            let new_start = d.range.start.line as i64 + delta as i64;
-                                            let new_end = d.range.end.line as i64 + delta as i64;
-                                            if new_start < 0 || new_end < 0 {
-                                                return false;
-                                            }
-                                            d.range.start.line = new_start as u32;
-                                            d.range.end.line = new_end as u32;
-                                        }
-                                        // Multi-line diagnostic spanning the edit
-                                        // point: starts before fl but ends after fl.
-                                        if d.range.start.line < fl && d.range.end.line > fl {
-                                            let new_end = d.range.end.line as i64 + delta as i64;
-                                            if new_end < 0 { return false; }
-                                            d.range.end.line = new_end as u32;
-                                        }
-                                    }
-                                    true
-                                });
+                            if let Some((min_l, max_l, delta)) = doc.pending_line_delta {
+                                shift_diagnostics_for_pending_edit(&mut items, min_l, max_l, delta);
                             }
                             let params = lsp_types::PublishDiagnosticsParams {
                                 uri,
@@ -4963,8 +4953,60 @@ fn build_file_diagnostics_with(
     diagnostics::build_lsp_diagnostics(uri, text, &tree.errors, &diags, plugin_diags, suppressions, &disabled, &severity)
 }
 
-/// Build diagnostics for a push-only client, cache them on the document,
-/// and send a `textDocument/publishDiagnostics` notification.
+/// Adjust cached diagnostic positions for a pending edit that hasn't been
+/// re-analyzed yet. Drops diagnostics inside the edit zone (where positions
+/// are unreliable) and shifts diagnostics below the zone by the net line delta.
+///
+/// Note: when multiple incremental edits are batched in a single `didChange`,
+/// later edits' line coordinates are in the post-edit space of earlier edits,
+/// not the original analysis coordinates. The edit zone (min_l..=max_l) is
+/// therefore an approximation — it may be slightly too narrow or too wide
+/// for multi-edit batches. Phase 4 re-publishes correct diagnostics, so this
+/// only affects the brief interim display.
+fn shift_diagnostics_for_pending_edit(
+    items: &mut Vec<lsp_types::Diagnostic>,
+    min_l: u32,
+    max_l: u32,
+    delta: i32,
+) {
+    items.retain_mut(|d| {
+        let sl = d.range.start.line;
+        let el = d.range.end.line;
+        // Drop diagnostics inside the edit zone — the single-delta model
+        // can't determine their correct position when edits span multiple
+        // lines. Phase 4 will re-publish correct ones.
+        if sl >= min_l && sl <= max_l {
+            return false;
+        }
+        if el >= min_l && el <= max_l {
+            return false;
+        }
+        if delta != 0 {
+            if sl > max_l {
+                let new_start = sl as i64 + delta as i64;
+                let new_end = el as i64 + delta as i64;
+                if new_start < 0 || new_end < 0 {
+                    return false;
+                }
+                d.range.start.line = new_start as u32;
+                d.range.end.line = new_end as u32;
+            }
+            // Multi-line diagnostic spanning the edit zone: starts before
+            // it, ends after it.
+            if sl < min_l && el > max_l {
+                let new_end = el as i64 + delta as i64;
+                if new_end < 0 { return false; }
+                d.range.end.line = new_end as u32;
+            }
+        }
+        true
+    });
+}
+
+/// Build diagnostics, cache them on the document, and send a
+/// `textDocument/publishDiagnostics` notification. Called after Phase 4
+/// for all clients (push-only and pull-model) to ensure in-buffer
+/// diagnostics update promptly.
 fn push_fresh_diagnostics(
     connection: &Connection,
     uri: &lsp_types::Uri,
@@ -5054,27 +5096,11 @@ fn handle_document_diagnostic(
         // Open document: use cached tree and analysis.
         else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
             let mut items = build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
-            if let Some((first_line, delta)) = doc.pending_line_delta {
+            if let Some((min_l, max_l, delta)) = doc.pending_line_delta {
                 // Text has changed but analysis hasn't run yet (Phase 4
                 // debounce pending).  Shift diagnostic positions by the net
-                // line delta (same approach as inlay hints) so they stay
-                // roughly aligned with the new text.  Drop diagnostics that
-                // touch the edited line — they're the most likely to be stale.
-                items.retain_mut(|d| {
-                    if d.range.start.line == first_line || d.range.end.line == first_line {
-                        return false;
-                    }
-                    if d.range.start.line > first_line {
-                        let new_start = d.range.start.line as i64 + delta as i64;
-                        let new_end = d.range.end.line as i64 + delta as i64;
-                        if new_start < 0 || new_end < 0 {
-                            return false;
-                        }
-                        d.range.start.line = new_start as u32;
-                        d.range.end.line = new_end as u32;
-                    }
-                    true
-                });
+                // line delta so they stay roughly aligned with the new text.
+                shift_diagnostics_for_pending_edit(&mut items, min_l, max_l, delta);
             }
             items
         } else {
