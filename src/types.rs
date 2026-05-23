@@ -714,9 +714,9 @@ pub(crate) struct Function {
     #[serde(default)]
     pub(crate) see: Vec<String>,
     /// WoW game-flavor availability bitmask — 3-bit `crate::flavor` mask
-    /// (retail / classic / classic_era). Stub-gen translates Ketho's 4-bit
-    /// format via `flavor::from_ketho_mask` before storing. A value of `0`
-    /// means "no flavor data" and is treated as available in all flavors.
+    /// (retail / classic / classic_era). Derived from BlizzardInterfaceResources
+    /// branch presence diffs during stub generation. A value of `0` means
+    /// "no flavor data" and is treated as available in all flavors.
     #[serde(default)]
     pub(crate) flavors: u8,
     /// When non-zero, calling this function acts as a flavor guard: the

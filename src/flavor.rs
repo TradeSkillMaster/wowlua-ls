@@ -7,10 +7,8 @@
 //!   - `classic` (0x2) — the rolling Classic progression, including MoP Classic
 //!   - `classic_era` (0x4) — Classic Era (vanilla)
 //!
-//! Ketho's `vscode-wow-api` repo tracks API availability with a 4-bit mask
-//! (mainline / mists / bcc / classic_era). During stub generation we collapse
-//! mists and bcc into a single `classic` bit — users who ship a classic addon
-//! don't need to distinguish those at the API level.
+//! During stub generation, flavor bitmasks are derived from API presence across
+//! BlizzardInterfaceResources branches (live / classic / classic_era).
 //!
 //! A mask of `0` means "no flavor data known" and is treated as available
 //! in all flavors to avoid false positives on unclassified APIs.
@@ -19,16 +17,6 @@ pub(crate) const FLAVOR_RETAIL: u8 = 0x1;
 pub(crate) const FLAVOR_CLASSIC: u8 = 0x2;
 pub(crate) const FLAVOR_CLASSIC_ERA: u8 = 0x4;
 pub(crate) const FLAVOR_ALL: u8 = 0x7;
-
-/// Ketho's raw 4-bit flavor mask (mainline / mists / bcc / classic_era)
-/// → our 3-bit mask. Mists and bcc both map to our `classic` bit.
-pub(crate) fn from_ketho_mask(ketho: u8) -> u8 {
-    let mut out = 0u8;
-    if ketho & 0x1 != 0 { out |= FLAVOR_RETAIL; }
-    if ketho & 0x6 != 0 { out |= FLAVOR_CLASSIC; } // mists | bcc
-    if ketho & 0x8 != 0 { out |= FLAVOR_CLASSIC_ERA; }
-    out
-}
 
 /// Parse a user-provided flavor name to its bitmask bit. Returns `None` for
 /// unknown names. Only the three canonical names + `mainline` are accepted —
@@ -184,24 +172,6 @@ mod tests {
         assert_eq!(parse_flavor_name("mop"), None);
         assert_eq!(parse_flavor_name("cataclysm"), None);
         assert_eq!(parse_flavor_name("vanilla"), None);
-    }
-
-    #[test]
-    fn ketho_translation() {
-        // Ketho 0xF (all four bits) → all three of ours
-        assert_eq!(from_ketho_mask(0xF), FLAVOR_ALL);
-        // Ketho 0x1 (mainline only) → our retail
-        assert_eq!(from_ketho_mask(0x1), FLAVOR_RETAIL);
-        // Ketho 0x2 (mists only) → our classic
-        assert_eq!(from_ketho_mask(0x2), FLAVOR_CLASSIC);
-        // Ketho 0x4 (bcc only) → our classic
-        assert_eq!(from_ketho_mask(0x4), FLAVOR_CLASSIC);
-        // Ketho 0x6 (mists + bcc) → our classic
-        assert_eq!(from_ketho_mask(0x6), FLAVOR_CLASSIC);
-        // Ketho 0x8 (classic_era) → our classic_era
-        assert_eq!(from_ketho_mask(0x8), FLAVOR_CLASSIC_ERA);
-        // Ketho 0xE (everything but retail) → classic + classic_era
-        assert_eq!(from_ketho_mask(0xE), FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA);
     }
 
     #[test]

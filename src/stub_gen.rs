@@ -508,29 +508,8 @@ fn manual_overrides() -> HashMap<&'static str, &'static str> {
 
 // ── Flavor bitmask data (from Ketho's flavor.ts) ──────────────────────────────
 
-/// Parse `["Name"]: 0xNN` entries from Ketho's flavor.ts data file.
-/// Ketho's bitmask is a 4-bit mask (0x1 mainline, 0x2 mists, 0x4 bcc/classic,
-/// 0x8 classic_era) which we collapse into our 3-bit flavor representation.
-fn parse_flavor_ts(content: &str) -> HashMap<String, u8> {
-    let re = regex_lite::Regex::new(r#"\["([^"]+)"\]:\s*(0[xX][0-9a-fA-F]+|\d+)"#).unwrap();
-    let mut map = HashMap::new();
-    for c in re.captures_iter(content) {
-        let name = c.get(1).unwrap().as_str().to_string();
-        let val_str = c.get(2).unwrap().as_str();
-        let ketho = if let Some(hex) = val_str.strip_prefix("0x").or_else(|| val_str.strip_prefix("0X")) {
-            u8::from_str_radix(hex, 16).ok()
-        } else {
-            val_str.parse::<u8>().ok()
-        };
-        if let Some(v) = ketho {
-            map.insert(name, crate::flavor::from_ketho_mask(v));
-        }
-    }
-    map
-}
-
-/// Apply Ketho flavor bitmask data to the scanned globals.
-/// Top-level key is the function or `Table.Method` name.
+/// Apply flavor bitmask data (derived from BlizzardInterfaceResources branch diffs)
+/// to the scanned globals. Top-level key is the function or `Table.Method` name.
 fn apply_flavor_data(globals: &mut [crate::annotations::ExternalGlobal], flavors: &HashMap<String, u8>) {
     use crate::annotations::ExternalGlobalKind;
     if flavors.is_empty() { return; }
@@ -539,7 +518,7 @@ fn apply_flavor_data(globals: &mut [crate::annotations::ExternalGlobal], flavors
         let lookup_key = match &g.kind {
             ExternalGlobalKind::Function => g.name.clone(),
             ExternalGlobalKind::Method(path, method_name, _) => {
-                // Ketho keys are "ClassName.Method" — join any intermediates with dots.
+                // Keys are "ClassName.Method" — join any intermediates with dots.
                 if path.is_empty() {
                     format!("{}.{}", g.name, method_name)
                 } else {
@@ -557,22 +536,6 @@ fn apply_flavor_data(globals: &mut [crate::annotations::ExternalGlobal], flavors
 }
 
 // ── Global stubs generation (replaces generate_global_stubs.py) ────────────────
-
-/// Parse globals.ts to extract known global names.
-fn parse_globals_ts(content: &str) -> HashSet<String> {
-    let re = regex_lite::Regex::new(r#""([^"]+)":\s*true"#).unwrap();
-    let ident_re = regex_lite::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
-    re.captures_iter(content)
-        .filter_map(|c| {
-            let name = c.get(1)?.as_str();
-            if ident_re.is_match(name) {
-                Some(name.to_string())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
 
 /// Parse a single RFC 4180 CSV record into fields.
 /// Handles quoted fields with embedded commas and doubled-quote escapes.
@@ -648,33 +611,6 @@ fn parse_globalstrings_csv(content: &str) -> HashMap<String, String> {
         }
     }
     map
-}
-
-/// Parse enum.ts to extract numeric enum constants.
-fn parse_enum_ts(content: &str) -> HashMap<String, i64> {
-    let re = regex_lite::Regex::new(r"(\w+):\s*(-?\d+)").unwrap();
-    let mut map = HashMap::new();
-    for c in re.captures_iter(content) {
-        let name = c.get(1).unwrap().as_str();
-        if let Ok(val) = c.get(2).unwrap().as_str().parse::<i64>() {
-            map.insert(name.to_string(), val);
-        }
-    }
-    map
-}
-
-/// Parse event names from a `---@alias FrameEvent string` definition in Event.lua.
-/// Returns the set of all `---|"EVENT_NAME"` entries.
-fn parse_event_alias_names(content: &str) -> HashSet<String> {
-    let mut names = HashSet::new();
-    let re = regex_lite::Regex::new(r#"^\|\s*"([A-Z_][A-Z0-9_]*)""#).unwrap();
-    for line in content.lines() {
-        let trimmed = line.trim_start_matches('-');
-        if let Some(caps) = re.captures(trimmed) {
-            names.insert(caps.get(1).unwrap().as_str().to_string());
-        }
-    }
-    names
 }
 
 // ── Blizzard API doc stub generators ─────────────────────────────────────────
@@ -811,8 +747,21 @@ fn generate_blizzard_structure_stubs(
     out
 }
 
-/// Internal helper: generate `@event` stubs from parsed Blizzard Events only.
-/// Called by `generate_blizzard_event_stubs_merged()` which adds extra events from Ketho's alias.
+/// Parse event names from a `---@alias FrameEvent string` definition in Event.lua.
+/// Returns the set of all `---|"EVENT_NAME"` entries.
+fn parse_event_alias_names(content: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let re = regex_lite::Regex::new(r#"^\|\s*"([A-Z_][A-Z0-9_]*)""#).unwrap();
+    for line in content.lines() {
+        let trimmed = line.trim_start_matches('-');
+        if let Some(caps) = re.captures(trimmed) {
+            names.insert(caps.get(1).unwrap().as_str().to_string());
+        }
+    }
+    names
+}
+
+/// Generate `@event` stubs from parsed Blizzard Events.
 fn generate_blizzard_event_stubs(docs: &BlizzardApiDocs) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -838,38 +787,6 @@ fn generate_blizzard_event_stubs(docs: &BlizzardApiDocs) -> String {
     }
 
     log::info!("  BlizzardEvents: {} events generated", sorted.len());
-    out
-}
-
-/// Generate merged event stubs: Blizzard-sourced events with payloads + extra event names
-/// from Ketho's Event.lua alias (for events not in APIDocumentation, e.g. FrameXML-only).
-fn generate_blizzard_event_stubs_merged(
-    docs: &BlizzardApiDocs,
-    ketho_event_names: &HashSet<String>,
-) -> String {
-    use std::fmt::Write;
-    let mut out = generate_blizzard_event_stubs(docs);
-
-    // Add events from Ketho's alias that aren't in the Blizzard docs
-    let blizzard_event_names: HashSet<&str> = docs.events.iter()
-        .map(|e| e.literal_name.as_str())
-        .collect();
-
-    let mut extra: Vec<&str> = ketho_event_names.iter()
-        .filter(|n| !blizzard_event_names.contains(n.as_str()))
-        .map(|s| s.as_str())
-        .collect();
-    extra.sort();
-
-    for name in &extra {
-        writeln!(out, "---[Documentation](https://warcraft.wiki.gg/wiki/{name})").unwrap();
-        writeln!(out, "---@event FrameEvent \"{name}\"").unwrap();
-        writeln!(out).unwrap();
-    }
-    if !extra.is_empty() {
-        log::info!("  BlizzardEvents: {} extra events from Ketho alias", extra.len());
-    }
-
     out
 }
 
@@ -968,18 +885,13 @@ fn fetch_wago_latest_build(product: &str) -> String {
 }
 
 /// Generate GlobalStrings.lua and GlobalVariables.lua content in memory.
+/// `all_globals` is the universe of known global names (from BlizzardInterfaceResources).
+/// `global_constants` maps constant names to their numeric values (from APIDocumentation + FrameXML).
 fn generate_global_stubs(
-    data_dir: &Path,
+    all_globals: &HashSet<String>,
+    global_constants: &HashMap<String, i64>,
     stubs_dir: &Path,
 ) -> (String, String) {
-    let globals_ts = std::fs::read_to_string(data_dir.join("globals.ts"))
-        .unwrap_or_else(|e| panic!("Failed to read globals.ts from cloned repo: {e}"));
-    let enum_ts = std::fs::read_to_string(data_dir.join("enum.ts"))
-        .unwrap_or_else(|e| panic!("Failed to read enum.ts from cloned repo: {e}"));
-
-    let all_globals = parse_globals_ts(&globals_ts);
-    let globalenums = parse_enum_ts(&enum_ts);
-
     // Fetch GlobalStrings directly from wago.tools DB2 (more authoritative than enUS.ts).
     log::info!("  Fetching GlobalStrings from wago.tools...");
     let retail_build = fetch_wago_latest_build("wow");
@@ -1019,11 +931,11 @@ fn generate_global_stubs(
 
     let mut vars_lines = vec![
         "---@meta _".to_string(),
-        "-- WoW global variables (auto-generated from vscode-wow-api globals data)".to_string(),
+        "-- WoW global variables (auto-generated from BlizzardInterfaceResources)".to_string(),
         String::new(),
     ];
     for name in &missing {
-        if let Some(val) = globalenums.get(name) {
+        if let Some(val) = global_constants.get(name) {
             vars_lines.push(format!("{name} = {val}"));
         } else {
             vars_lines.push("---@type any".to_string());
@@ -2249,8 +2161,49 @@ struct ClassicApiDiff {
     existing_globals: HashSet<String>,
 }
 
-/// Fetch BlizzardInterfaceResources lists and compute the classic-only API diff.
-fn compute_classic_api_diff(stubs_dir: &Path) -> ClassicApiDiff {
+/// Per-branch API name sets from BlizzardInterfaceResources, plus derived data.
+struct BranchResourceData {
+    /// Classic-only API diff for wiki stub generation.
+    classic_diff: ClassicApiDiff,
+    /// All retail global API + FrameXML names (for GlobalVariables.lua universe).
+    retail_all_names: HashSet<String>,
+    /// Flavor map derived from branch presence diffs.
+    flavor_map: HashMap<String, u8>,
+}
+
+/// Compute flavor bitmasks from per-branch API name sets.
+/// Only stores entries where the API is NOT available on all flavors.
+///
+/// Flavor is determined by `GlobalAPI.lua` presence only — `FrameXML.lua` entries
+/// are implementation-level functions that may exist as compatibility shims across
+/// branches (e.g. `AbbreviateLargeNumbers` is a retail API but has a FrameXML
+/// shim in classic). Using FrameXML presence would incorrectly mark retail-only
+/// APIs as available everywhere.
+fn compute_flavor_map(
+    retail_api: &HashSet<String>, classic_api: &HashSet<String>, classic_era_api: &HashSet<String>,
+) -> HashMap<String, u8> {
+    use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_ALL};
+    let mut map = HashMap::new();
+    let all_names: HashSet<&str> = retail_api.iter()
+        .chain(classic_api.iter()).chain(classic_era_api.iter())
+        .map(|s| s.as_str()).collect();
+
+    for name in all_names {
+        let mut mask = 0u8;
+        if retail_api.contains(name) { mask |= FLAVOR_RETAIL; }
+        if classic_api.contains(name) { mask |= FLAVOR_CLASSIC; }
+        if classic_era_api.contains(name) { mask |= FLAVOR_CLASSIC_ERA; }
+        if mask != FLAVOR_ALL && mask != 0 {
+            map.insert(name.to_string(), mask);
+        }
+    }
+    map
+}
+
+/// Fetch BlizzardInterfaceResources lists, compute the classic-only API diff,
+/// derive the retail global name universe, and compute flavor bitmasks from
+/// branch presence.
+fn fetch_branch_resources(stubs_dir: &Path) -> BranchResourceData {
     log::info!("Downloading BlizzardInterfaceResources (parallel)...");
 
     // Fetch resources in parallel: 3 branches × 2 file types (GlobalAPI, FrameXML)
@@ -2269,6 +2222,15 @@ fn compute_classic_api_diff(stubs_dir: &Path) -> ClassicApiDiff {
          retail_fxml, classic_era_fxml, classic_fxml]: [_; 6] =
         results.try_into().unwrap();
 
+    // Retail global name universe: GlobalAPI ∪ FrameXML
+    let retail_all_names: HashSet<String> = retail.union(&retail_fxml).cloned().collect();
+    log::info!("  Retail globals from BlizzardInterfaceResources: {} names", retail_all_names.len());
+
+    // Flavor map from GlobalAPI.lua branch presence (not FrameXML — see doc comment)
+    let flavor_map = compute_flavor_map(&retail, &classic, &classic_era);
+    log::info!("  Flavor map: {} non-universal entries", flavor_map.len());
+
+    // Classic-only API diff
     let mut all_classic_only: Vec<_> = classic_era.union(&classic).cloned().collect::<HashSet<_>>()
         .difference(&retail).cloned().collect();
     all_classic_only.sort();
@@ -2290,7 +2252,11 @@ fn compute_classic_api_diff(stubs_dir: &Path) -> ClassicApiDiff {
 
     log::info!("  {} APIs to generate, {} FrameXML", missing.len(), missing_fxml.len());
 
-    ClassicApiDiff { missing, missing_fxml, existing_globals }
+    BranchResourceData {
+        classic_diff: ClassicApiDiff { missing, missing_fxml, existing_globals },
+        retail_all_names,
+        flavor_map,
+    }
 }
 
 fn generate_classic_stubs(
@@ -2939,9 +2905,6 @@ pub fn regenerate_stubs() {
     let _ = std::fs::remove_dir_all(&scan_tmp);
     std::fs::create_dir_all(&scan_tmp).unwrap();
 
-    // Step 2: Generate global stubs (parse .ts files from clone)
-    log::info!("Generating global stubs from TypeScript data...");
-    let data_dir = clone_dir.join("src/data");
     // For filtering existing names, we need the clone's Lua annotations + overrides
     // Build a combined view
     let combined_stubs = tmp_dir.join("combined-stubs");
@@ -2961,10 +2924,8 @@ pub fn regenerate_stubs() {
         copy_dir_recursive(&overrides_dir, &combined_stubs.join("overrides"));
     }
 
-    let (global_strings_lua, global_vars_lua) = generate_global_stubs(&data_dir, &combined_stubs);
-
-    // Step 2b: Clone wow-ui-source branches for constant/enum extraction
-    log::info!("Cloning wow-ui-source for constant/enum extraction...");
+    // Step 2: Clone wow-ui-source branches
+    log::info!("Cloning wow-ui-source branches...");
     let mut classic_ui_dirs = Vec::new();
     for branch in CLASSIC_UI_BRANCHES {
         let dest = tmp_dir.join(format!("wow-ui-source-{branch}"));
@@ -2995,7 +2956,7 @@ pub fn regenerate_stubs() {
         all_ui_dirs.push(retail_ui_dir.clone());
     }
 
-    // Step 2c: Parse Blizzard APIDocumentationGenerated directly from wow-ui-source
+    // Step 2b: Parse Blizzard APIDocumentationGenerated directly from wow-ui-source
     let blizzard_docs = if has_retail_ui {
         log::info!("Parsing Blizzard APIDocumentationGenerated (retail)...");
         parse_blizzard_api_docs(&retail_ui_dir)
@@ -3004,6 +2965,44 @@ pub fn regenerate_stubs() {
         BlizzardApiDocs { functions: Vec::new(), events: Vec::new(), structures: Vec::new() }
     };
 
+    // Step 2c: Fetch BlizzardInterfaceResources lists (all 3 branches), compute classic API
+    // diff, derive retail global name universe, and compute flavor bitmasks from branch presence.
+    log::info!("Fetching BlizzardInterfaceResources and computing branch diffs...");
+    let branch_data = fetch_branch_resources(&combined_stubs);
+    let classic_diff = branch_data.classic_diff;
+
+    // Step 2d: Extract retail constants from wow-ui-source for GlobalVariables.lua values.
+    // These replace Ketho's enum.ts — derived directly from Blizzard's APIDocumentation.
+    let global_constants: HashMap<String, i64> = if has_retail_ui {
+        log::info!("Extracting retail constants from APIDocumentation + FrameXML...");
+        let api_doc = parse_api_doc_dir(&retail_ui_dir);
+        let fxml_consts = scan_framexml_constants(&retail_ui_dir);
+        let mut constants = HashMap::new();
+        // Chain FrameXML first so APIDocumentation values win on duplicates.
+        for (name, (typ, val)) in fxml_consts.iter().chain(api_doc.constants.iter()) {
+            if typ == "number" {
+                if let Ok(v) = val.parse::<i64>() {
+                    constants.insert(name.clone(), v);
+                } else if let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X"))
+                    && let Ok(v) = i64::from_str_radix(hex, 16) {
+                    constants.insert(name.clone(), v);
+                }
+            }
+        }
+        log::info!("  Extracted {} numeric constants", constants.len());
+        constants
+    } else {
+        HashMap::new()
+    };
+
+    // Step 3: Generate global stubs (from BlizzardInterfaceResources + APIDocumentation constants)
+    log::info!("Generating global stubs...");
+    let (global_strings_lua, global_vars_lua) = generate_global_stubs(
+        &branch_data.retail_all_names,
+        &global_constants,
+        &combined_stubs,
+    );
+
     // Vendor stubs from clone (Core + FrameXML)
     let vendor_dirs = [
         clone_dir.join("Annotations/Core"),
@@ -3011,9 +3010,8 @@ pub fn regenerate_stubs() {
     ];
     let vendor_dir_paths: Vec<PathBuf> = vendor_dirs.to_vec();
 
-    // Step 3: Collect all wiki page names from the three passes, then batch-fetch once
+    // Step 4: Collect all wiki page names from the three passes, then batch-fetch once
     log::info!("Collecting wiki page names...");
-    let classic_diff = compute_classic_api_diff(&combined_stubs);
     let wiki_lua_path = clone_dir.join("Annotations/Core/Data/Wiki.lua");
     let wiki_names = collect_wiki_stub_names(&wiki_lua_path);
     let widget_methods = collect_widget_enrichment_methods(&vendor_dir_paths);
@@ -3034,7 +3032,7 @@ pub fn regenerate_stubs() {
         (HashMap::new(), HashMap::new())
     };
 
-    // Step 3a: Generate classic stubs (wiki + constant/enum + LE_* + XML frames)
+    // Step 4a: Generate classic stubs (wiki + constant/enum + LE_* + XML frames)
     log::info!("Generating classic stubs...");
     let classic_lua = generate_classic_stubs(
         &classic_diff,
@@ -3045,15 +3043,15 @@ pub fn regenerate_stubs() {
         &all_ui_dirs,
     );
 
-    // Step 3b: Generate wiki-documented global stubs (replaces Ketho's Wiki.lua)
+    // Step 4b: Generate wiki-documented global stubs (replaces Ketho's Wiki.lua)
     log::info!("Generating wiki-documented global stubs...");
     let wiki_globals_lua = generate_wiki_stubs(&wiki_names, &wiki_pages, &wiki_redirects);
 
-    // Step 3c: Enrich widget stubs with wiki-scraped annotations
+    // Step 4c: Enrich widget stubs with wiki-scraped annotations
     log::info!("Enriching widget stubs with wiki annotations...");
     enrich_widget_stubs(&widget_methods, &wiki_pages, &wiki_redirects);
 
-    // Step 4: Write generated stubs to temp dir for scanning
+    // Step 5: Write generated stubs to temp dir for scanning
     let gen_dir = scan_tmp.join("generated");
     std::fs::create_dir_all(&gen_dir).unwrap();
     std::fs::write(gen_dir.join("GlobalStrings.lua"), &global_strings_lua).unwrap();
@@ -3061,7 +3059,7 @@ pub fn regenerate_stubs() {
     std::fs::write(gen_dir.join("ClassicGlobals.lua"), &classic_lua).unwrap();
     std::fs::write(gen_dir.join("WikiGlobals.lua"), &wiki_globals_lua).unwrap();
 
-    // Step 4b: Generate Blizzard API stubs (functions, structures, events) from parsed docs
+    // Step 5b: Generate Blizzard API stubs (functions, structures, events) from parsed docs
     // Collect existing names from Ketho's annotations + overrides for deduplication.
     // Blizzard-sourced stubs only fill gaps where Ketho's richer annotations don't exist.
     let existing_for_dedup = get_existing_names(&combined_stubs, &[
@@ -3075,18 +3073,28 @@ pub fn regenerate_stubs() {
     let blizzard_structures_lua = generate_blizzard_structure_stubs(&blizzard_docs, &existing_for_dedup);
     std::fs::write(gen_dir.join("BlizzardStructures.lua"), &blizzard_structures_lua).unwrap();
 
-    // Events: merge Blizzard-parsed events with Ketho's Event.lua alias for completeness
-    // (alias may include events not in APIDocumentation, e.g. FrameXML-only events)
-    let event_lua_path = clone_dir.join("Annotations/Core/Data/Event.lua");
-    let alias_content = std::fs::read_to_string(&event_lua_path)
-        .unwrap_or_else(|e| panic!("Failed to read Event.lua from cloned repo at {}: {e}", event_lua_path.display()));
-    let ketho_event_names = parse_event_alias_names(&alias_content);
-    log::info!("Parsed Event.lua alias: {} event names", ketho_event_names.len());
-
-    let blizzard_events_lua = generate_blizzard_event_stubs_merged(&blizzard_docs, &ketho_event_names);
+    // Events: use only Blizzard APIDocumentation events.
+    // Ketho's Event.lua merges FrameXML-only events not in APIDocumentation — we intentionally
+    // skip those because they lack payload annotations and can be added as overrides if needed.
+    let blizzard_events_lua = generate_blizzard_event_stubs(&blizzard_docs);
     std::fs::write(gen_dir.join("BlizzardEvents.lua"), &blizzard_events_lua).unwrap();
 
-    // Step 5: Collect all stub file paths for scanning
+    // Log coverage gap vs Ketho's Event.lua alias for visibility.
+    let event_lua_path = clone_dir.join("Annotations/Core/Data/Event.lua");
+    if let Ok(alias_content) = std::fs::read_to_string(&event_lua_path) {
+        let ketho_events = parse_event_alias_names(&alias_content);
+        let blizzard_event_names: HashSet<&str> = blizzard_docs.events.iter()
+            .map(|e| e.literal_name.as_str()).collect();
+        let dropped: Vec<&str> = ketho_events.iter()
+            .filter(|name| !blizzard_event_names.contains(name.as_str()))
+            .map(|s| s.as_str()).collect();
+        if !dropped.is_empty() {
+            log::info!("  Skipped {} FrameXML-only events from Ketho Event.lua (not in APIDocumentation)", dropped.len());
+            log::debug!("  Skipped events: {:?}", dropped);
+        }
+    }
+
+    // Step 6: Collect all stub file paths for scanning
     log::info!("Scanning stubs...");
     let mut paths = Vec::new();
     let mut override_set = std::collections::HashSet::new();
@@ -3100,8 +3108,9 @@ pub fn regenerate_stubs() {
             override_stems.insert(stem.to_string());
         }
     }
-    // Skip Ketho's Wiki.lua — we generate our own WikiGlobals.lua from wiki scraping
+    // Skip Ketho's Wiki.lua and Event.lua — we generate our own from upstream sources
     override_stems.insert("Wiki".to_string());
+    override_stems.insert("Event".to_string());
 
     for vendor_dir in &vendor_dirs {
         let mut vendor_paths = Vec::new();
@@ -3138,13 +3147,8 @@ pub fn regenerate_stubs() {
     let (classes, aliases, mut globals, _addon_ns_class_names, stub_events, _callable_classes) =
         crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
 
-    // Step 5b: Merge Ketho flavor bitmask data into globals
-    let flavor_ts_path = data_dir.join("flavor.ts");
-    let flavor_content = std::fs::read_to_string(&flavor_ts_path)
-        .unwrap_or_else(|e| panic!("Failed to read flavor.ts from cloned repo at {}: {e}", flavor_ts_path.display()));
-    let flavor_map = parse_flavor_ts(&flavor_content);
-    log::info!("Parsed flavor.ts: {} entries", flavor_map.len());
-    apply_flavor_data(&mut globals, &flavor_map);
+    // Step 6b: Apply flavor bitmask data derived from BlizzardInterfaceResources branch diffs
+    apply_flavor_data(&mut globals, &branch_data.flavor_map);
 
     // Filter out addon-namespace globals from FrameXML files — those are
     // FrameXML-internal and should not leak into user addon namespaces.
@@ -4067,39 +4071,6 @@ local SimpleFrameAPI =
     }
 
     #[test]
-    fn test_parse_event_alias_names() {
-        let content = r#"---@meta _
----@alias FrameEvent string
----|"PLAYER_LOGIN"
----|"PLAYER_LOGOUT"
----|"ENCOUNTER_END"
----|"ADDON_LOADED"
-"#;
-        let names = parse_event_alias_names(content);
-        assert_eq!(names.len(), 4);
-        assert!(names.contains("PLAYER_LOGIN"));
-        assert!(names.contains("PLAYER_LOGOUT"));
-        assert!(names.contains("ENCOUNTER_END"));
-        assert!(names.contains("ADDON_LOADED"));
-    }
-
-    #[test]
-    fn test_parse_event_alias_names_ignores_non_events() {
-        let content = r#"---@meta _
----@alias FrameEvent string
----|"PLAYER_LOGIN"
---- Some random comment
----@class SomeClass
----|"PLAYER_LOGOUT"
-local x = "not an event"
-"#;
-        let names = parse_event_alias_names(content);
-        assert_eq!(names.len(), 2);
-        assert!(names.contains("PLAYER_LOGIN"));
-        assert!(names.contains("PLAYER_LOGOUT"));
-    }
-
-    #[test]
     fn test_parse_wikitext_underscore_api() {
         // Wiki export returns titles with spaces where API names have underscores
         // (MediaWiki normalizes _ to space). Verify parse_wikitext produces correct
@@ -4233,6 +4204,33 @@ Does something with the tooltip."#;
 Gets the item."#;
         let result = parse_widget_wiki_annotations(wikitext, &[]).unwrap();
         assert_eq!(result, vec!["---@return string name", "---@return number id"]);
+    }
+
+    #[test]
+    fn test_compute_flavor_map_from_branch_sets() {
+        use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA};
+
+        let retail: HashSet<String> = ["GetItemInfo", "C_Map.GetBestMapForUnit", "RetailOnly", "SharedRetailClassicEra"]
+            .iter().map(|s| s.to_string()).collect();
+        let classic: HashSet<String> = ["GetItemInfo", "ClassicOnly"]
+            .iter().map(|s| s.to_string()).collect();
+        let classic_era: HashSet<String> = ["GetItemInfo", "ClassicEraOnly", "SharedRetailClassicEra"]
+            .iter().map(|s| s.to_string()).collect();
+
+        let map = compute_flavor_map(&retail, &classic, &classic_era);
+
+        // GetItemInfo is in all three → FLAVOR_ALL → not stored
+        assert!(!map.contains_key("GetItemInfo"));
+        // RetailOnly → only retail
+        assert_eq!(map["RetailOnly"], FLAVOR_RETAIL);
+        // ClassicOnly → only classic
+        assert_eq!(map["ClassicOnly"], FLAVOR_CLASSIC);
+        // ClassicEraOnly → only classic_era
+        assert_eq!(map["ClassicEraOnly"], FLAVOR_CLASSIC_ERA);
+        // C_Map.GetBestMapForUnit → retail only
+        assert_eq!(map["C_Map.GetBestMapForUnit"], FLAVOR_RETAIL);
+        // SharedRetailClassicEra → two-flavor mask (retail + classic_era)
+        assert_eq!(map["SharedRetailClassicEra"], FLAVOR_RETAIL | FLAVOR_CLASSIC_ERA);
     }
 }
 
