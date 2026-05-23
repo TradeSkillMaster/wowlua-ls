@@ -119,3 +119,25 @@ _G.ExplicitNewFunc = function(x) return tostring(x) end
 -- ^ diag: none
 _consume(ExplicitNewFunc)
 --       ^ hover: (global) function ExplicitNewFunc(x: number)  diag: none
+
+-- Bracket-index expressions inside assignment targets are value reads,
+-- not assignment targets themselves — they should fire undefined-global.
+local tbl = {}
+tbl[undefinedKey] = 1
+--  ^ diag: undefined-global
+-- Nested bracket access — inner index is also a value read:
+local k = "x"
+tbl[tbl[undefinedNested]] = 1
+--      ^ diag: undefined-global
+-- Dot-access chain with bracket index:
+---@class UGTestObj
+---@field sub table
+local obj = {} ---@type UGTestObj
+obj.sub[undefinedDeep] = 1
+--      ^ diag: undefined-global
+-- The base of the bracket access is still an assignment target (no warning):
+tbl[print] = 2
+--  ^ diag: none
+-- Known local used as nested bracket index — no warning:
+tbl[tbl[k]] = 3
+--      ^ diag: none

@@ -1,5 +1,5 @@
 use crate::analysis::AnalysisResult;
-use crate::analysis::checks::has_ancestor_of_kind;
+use crate::analysis::checks::is_assignment_target_position;
 use crate::syntax::SyntaxKind;
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::SyntaxTree;
@@ -13,8 +13,9 @@ impl DiagnosticPass for UndefinedGlobal {
         let root = SyntaxNode::new_root(tree);
         for node in root.descendants() {
             if node.kind() != SyntaxKind::NameRef { continue; }
-            // Skip NameRefs in non-expression positions (assignment LHS, local-decl name list).
-            if has_ancestor_of_kind(&node, &[SyntaxKind::VariableList, SyntaxKind::NameList]) { continue; }
+            // Skip NameRefs in assignment-target positions (assignment LHS, local-decl
+            // name list), but not bracket-index expressions within those targets.
+            if is_assignment_target_position(&node) { continue; }
             let Some(token) = node.children_with_tokens()
                 .filter_map(|t| t.into_token())
                 .find(|t| t.kind() == SyntaxKind::Name)

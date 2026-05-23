@@ -462,14 +462,30 @@ impl AnalysisResult {
 
 }
 
-/// True when any ancestor of `node` matches one of `kinds`.
-pub(crate) fn has_ancestor_of_kind(node: &SyntaxNode, kinds: &[SyntaxKind]) -> bool {
-    let mut cur = node.parent();
-    while let Some(n) = cur {
-        if kinds.contains(&n.kind()) { return true; }
-        cur = n.parent();
+/// True when `node` is in an assignment-target position (inside `VariableList` or
+/// `NameList`), but NOT when it's a bracket-index value expression within an
+/// assignment target chain (e.g. `key` in `tbl[key] = val`).
+pub(crate) fn is_assignment_target_position(node: &SyntaxNode) -> bool {
+    let mut cur = *node;
+    loop {
+        let Some(parent) = cur.parent() else { return false };
+        match parent.kind() {
+            SyntaxKind::VariableList | SyntaxKind::NameList => return true,
+            SyntaxKind::BracketAccess => {
+                // If `cur` appears after the `[` token it is in the index
+                // (value-expression) position, not the base/target position.
+                let cur_start = cur.text_range().start();
+                let in_index = parent.children_with_tokens()
+                    .filter_map(|c| c.into_token())
+                    .any(|t| t.kind() == SyntaxKind::LeftSquareBracket && cur_start > t.text_range().start());
+                if in_index {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        cur = parent;
     }
-    false
 }
 
 /// True when the byte offset `def_start` falls inside a `LocalAssignStatement`
