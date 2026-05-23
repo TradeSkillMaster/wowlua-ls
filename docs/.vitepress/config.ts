@@ -78,6 +78,7 @@ export default defineConfig({
         text: 'Contributing',
         items: [
           { text: 'Development', link: '/guide/development' },
+          { text: 'Stub Generation', link: '/guide/stub-generation' },
           { text: 'Adding a Diagnostic', link: '/guide/adding-diagnostics' },
           { text: 'Testing', link: '/guide/testing' },
         ],
