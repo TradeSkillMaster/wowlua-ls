@@ -733,11 +733,16 @@ impl<'a> Analysis<'a> {
             } else {
                 None
             };
-            // Apply generic substitutions and filter out unresolved type variables
+            // Apply generic substitutions and filter out unresolved type variables.
+            // Exclude generics bound from THIS argument — checking an argument
+            // against a type derived from itself is circular and produces false
+            // positives when the argument's type is later widened (e.g. table
+            // mutation inside a `for ... in pairs(t)` loop body).
             let expected_type = expected_type.map(|et| {
                 if !substitutable_generic_names.is_empty() {
                     let structural_subs: HashMap<String, ValueType> = generic_subs.iter()
                         .filter(|(k, _)| substitutable_generic_names.contains(k.as_str()))
+                        .filter(|(k, _)| generic_arg_indices.get(k.as_str()).copied() != Some(i))
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
                     if !structural_subs.is_empty() {
@@ -748,7 +753,8 @@ impl<'a> Analysis<'a> {
                 } else {
                     et
                 }
-            }).filter(|et| !matches!(et, ValueType::TypeVariable(_)));
+            }).filter(|et| !matches!(et, ValueType::TypeVariable(_)))
+            .filter(|et| !self.type_contains_type_variable_deep(et));
             // When multiple overloads tied at 0 mismatches, we know the call is
             // valid against at least one overload — suppress type-mismatch checks.
             let expected_type = if ambiguous_overload_ret_type.is_some() { None } else { expected_type };

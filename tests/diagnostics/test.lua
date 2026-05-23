@@ -3762,6 +3762,20 @@ function _deepCopyLib.CleanValue(value, seen)
 end
 _consume(_deepCopyLib)
 
+-- ── Regression: pairs() over table mutated in loop body ──────────────────────
+-- When a table's value type is widened by assignment inside a pairs() loop,
+-- the pairs() call itself should not trigger type-mismatch (the generic
+-- binding comes from the same argument being checked — circular).
+local _mutateMap = { a = "one", b = "two" }
+---@param key string
+---@return table
+local function _transformValue(key) return {} end
+for part, key in pairs(_mutateMap) do
+    _mutateMap[part] = _transformValue(key)
+--                     ^ diag: none
+end
+--             ^ diag: none
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function
