@@ -931,3 +931,39 @@ optStr:upper()
 -- ── Enum value hover should show literal values ────────────────────────────
 local _mana = Enum.PowerType.Mana
 --                           ^ hover: (field) Mana: number = 0
+
+-- ── AceAddon-3.0 type stubs ─────────────────────────────────────────────────
+
+---@type AceAddon-3.0
+local AceAddonLib
+
+local myAddon = AceAddonLib:NewAddon("MyAddon", "AceEvent-3.0")
+--    ^ hover: (local) myAddon: MyAddon {
+
+local addonName = myAddon:GetName()
+--    ^ hover: (local) addonName: string
+
+local myMod = myAddon:NewModule("MyModule")
+--    ^ hover: (local) myMod: MyModule {
+
+local gotMod = myAddon:GetModule("MyModule")
+--    ^ hover: (local) gotMod: MyModule {
+
+-- IterateModules returns typed iterator for for-in loops
+for modName, mod in myAddon:IterateModules() do
+    local _mn = modName
+    --    ^ hover: (local) _mn: string
+    local _m = mod
+    --    ^ hover: (local) _m: AceAddon {
+end
+
+-- IterateAddons on the library object
+for addonN, addon in AceAddonLib:IterateAddons() do
+    local _an = addonN
+    --    ^ hover: (local) _an: string
+    local _a = addon
+    --    ^ hover: (local) _a: AceAddon {
+end
+
+local isOn = myAddon:IsEnabled()
+--    ^ hover: (local) isOn: boolean
