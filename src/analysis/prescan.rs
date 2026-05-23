@@ -2232,19 +2232,25 @@ impl<'a> Analysis<'a> {
     }
 
     /// Compute the element type of an array-like table from its positional fields.
+    /// Resolve each expression in `fields` and collect unique types using structural
+    /// deduplication (so two anonymous tables with identical shapes collapse to one).
+    fn collect_unique_element_types(&mut self, fields: &[ExprId]) -> Vec<ValueType> {
+        let mut types: Vec<ValueType> = Vec::new();
+        for &field_expr in fields {
+            if let Some(vt) = self.resolve_expr(field_expr)
+                && !self.is_structurally_duplicate_type(&types, &vt) {
+                    types.push(vt);
+                }
+        }
+        types
+    }
+
     pub(super) fn infer_array_element_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
         // Try direct table index first (needed for table constructors with literal elements)
         if let Some(table_idx) = self.ir.find_table_index(expr_id) {
             let array_fields: Vec<ExprId> = self.ir.table(table_idx).array_fields.clone();
             if !array_fields.is_empty() {
-                let mut types: Vec<ValueType> = Vec::new();
-                for &field_expr in &array_fields {
-                    if let Some(vt) = self.resolve_expr(field_expr)
-                        && !types.contains(&vt) {
-                            types.push(vt);
-                        }
-                }
-                return Self::union_of(types);
+                return Self::union_of(self.collect_unique_element_types(&array_fields));
             }
             // Fall back to annotated value_type (e.g. ---@type string[])
             if self.ir.table(table_idx).value_type.is_some() {
@@ -2258,14 +2264,7 @@ impl<'a> Analysis<'a> {
             ValueType::Table(Some(idx)) => {
                 let array_fields: Vec<ExprId> = self.ir.table(idx).array_fields.clone();
                 if !array_fields.is_empty() {
-                    let mut types: Vec<ValueType> = Vec::new();
-                    for &field_expr in &array_fields {
-                        if let Some(vt) = self.resolve_expr(field_expr)
-                            && !types.contains(&vt) {
-                                types.push(vt);
-                            }
-                    }
-                    return Self::union_of(types);
+                    return Self::union_of(self.collect_unique_element_types(&array_fields));
                 }
                 self.ir.table(idx).value_type.clone()
             }
@@ -2276,7 +2275,7 @@ impl<'a> Analysis<'a> {
                     if let ValueType::Table(Some(idx)) = member
                         && !self.table(*idx).is_explicit_map
                         && let Some(vt) = self.table(*idx).value_type.clone()
-                            && !elem_types.contains(&vt) {
+                            && !self.is_structurally_duplicate_type(&elem_types, &vt) {
                                 elem_types.push(vt);
                             }
                 }

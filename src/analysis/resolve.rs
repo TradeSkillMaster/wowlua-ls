@@ -369,7 +369,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    fn is_structurally_duplicate_type(&mut self, types: &[ValueType], new: &ValueType) -> bool {
+    pub(super) fn is_structurally_duplicate_type(&mut self, types: &[ValueType], new: &ValueType) -> bool {
         types.iter().any(|existing| {
             if existing == new { return true; }
             self.types_structurally_match(existing, new, 0)

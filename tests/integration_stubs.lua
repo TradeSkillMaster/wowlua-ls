@@ -222,6 +222,15 @@ for ii, iv in ipairs(numArr) do
 --                 ^ hover: (local) iv: number
 end
 
+-- Nested array: ipairs over string[][] should yield string[], not string[] | string[]
+local nestedArr = {{"a", "b"}, {"c", "d"}}
+for ni, nv in ipairs(nestedArr) do
+    local _useni = ni
+--                 ^ hover: (local) ni: number
+    local _usenv = nv
+--                 ^ hover: (local) nv: string[]
+end
+
 -- ── for-in with `next, tbl` (multi-expression generic for protocol) ─────────
 
 for nk, nv in next, kvTable do
