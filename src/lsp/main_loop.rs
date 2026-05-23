@@ -55,7 +55,7 @@ pub(crate) fn use_utf8() -> bool {
 
 /// Maps stale analysis byte offsets (relative to `Document::text`) into
 /// `pending_text` coordinates so inlay hints stay stable during edits.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 enum PendingEditMap {
     /// Single contiguous edit: content before `start` and from `old_end` onward
     /// is identical (modulo a byte shift of `delta`).  Hints in `[start, old_end)`
@@ -64,6 +64,34 @@ enum PendingEditMap {
     /// Multiple or compounded edits: only content before `safe_prefix` is known
     /// to be identical; everything else is dropped.
     Prefix(usize),
+}
+
+impl PendingEditMap {
+    /// Compose an existing `Single` map with a new edit (given in pending_text
+    /// coordinates).  Returns an updated `Single` when the new edit is within
+    /// or adjacent to the existing replacement region, otherwise falls back to
+    /// `Prefix`.
+    fn compose_single(
+        s: usize, oe: usize, d: isize,
+        edit_start: usize, edit_end: usize, new_text_len: usize,
+    ) -> PendingEditMap {
+        // In pending_text the replacement region occupies [s, pt_end).
+        debug_assert!(oe as isize + d >= 0, "edit map: pt_end underflow");
+        let pt_end = (oe as isize + d) as usize;
+        if edit_start >= s && edit_start <= pt_end {
+            // New edit is within or adjacent to the existing replacement —
+            // extend the Single map.
+            let extra = edit_end.saturating_sub(pt_end);
+            let new_oe = oe + extra;
+            // Total replacement length in pending_text:
+            //   kept prefix + new text + kept suffix
+            let new_repl_len = (edit_start - s) + new_text_len + pt_end.saturating_sub(edit_end);
+            let new_d = new_repl_len as isize - (new_oe - s) as isize;
+            PendingEditMap::Single { start: s, old_end: new_oe, delta: new_d }
+        } else {
+            PendingEditMap::Prefix(s.min(edit_start))
+        }
+    }
 }
 
 /// Holds a parsed document and its cached analysis.
@@ -3500,10 +3528,12 @@ fn handle_notification(
                                 edit_map = Some(match edit_map {
                                     // First edit with no prior pending: exact Single.
                                     None if edit_count == 0 => PendingEditMap::Single { start, old_end: end, delta },
-                                    // Second+ edit in this batch or prior pending exists:
+                                    // Second+ edit in this batch with no prior pending:
                                     // downgrade to conservative prefix.
                                     None => PendingEditMap::Prefix(start),
-                                    Some(PendingEditMap::Single { start: s, .. }) => PendingEditMap::Prefix(s.min(start)),
+                                    Some(PendingEditMap::Single { start: s, old_end: oe, delta: d }) => {
+                                        PendingEditMap::compose_single(s, oe, d, start, end, change.text.len())
+                                    }
                                     Some(PendingEditMap::Prefix(p)) => PendingEditMap::Prefix(p.min(start)),
                                 });
                                 edit_count += 1;
@@ -5617,5 +5647,71 @@ mod tests {
         let user_file = std::env::temp_dir().join("my-addon").join("Main.lua");
         let uri = abs_path_to_uri(&user_file).unwrap();
         assert!(!is_stub_path(&uri), "user file should not be detected as stub");
+    }
+
+    // -- PendingEditMap::compose_single tests --
+
+    #[test]
+    fn compose_sequential_single_char_inserts() {
+        // Type 'a' at position 10 → Single { 10, 10, +1 }
+        // Type 'b' at position 11 (end of replacement) → should extend to delta +2
+        let result = PendingEditMap::compose_single(10, 10, 1, 11, 11, 1);
+        assert_eq!(result, PendingEditMap::Single { start: 10, old_end: 10, delta: 2 });
+
+        // Type 'c' at position 12 → delta +3
+        let result = PendingEditMap::compose_single(10, 10, 2, 12, 12, 1);
+        assert_eq!(result, PendingEditMap::Single { start: 10, old_end: 10, delta: 3 });
+    }
+
+    #[test]
+    fn compose_replacement_within_existing_region() {
+        // Original: replaced 3 chars at [10,13) with 3 chars → delta 0, pt_end=13
+        // New edit: replace [11,12) (1 char inside replacement) with "XY" (2 chars)
+        let result = PendingEditMap::compose_single(10, 13, 0, 11, 12, 2);
+        // old_end unchanged (edit is contained), delta +1
+        assert_eq!(result, PendingEditMap::Single { start: 10, old_end: 13, delta: 1 });
+    }
+
+    #[test]
+    fn compose_edit_extending_past_replacement() {
+        // Inserted 1 char at 10 → Single { 10, 10, +1 }, pt_end=11
+        // Delete 3 chars at [10,13) — extends 2 chars past pt_end into shifted region
+        let result = PendingEditMap::compose_single(10, 10, 1, 10, 13, 0);
+        // extra = 13 - 11 = 2, new_oe = 10 + 2 = 12
+        // new_repl_len = 0 + 0 + 0 = 0, new_d = 0 - 2 = -2
+        assert_eq!(result, PendingEditMap::Single { start: 10, old_end: 12, delta: -2 });
+    }
+
+    #[test]
+    fn compose_edit_exactly_at_pt_end() {
+        // Replaced [10,12) with 4 chars → delta +2, pt_end=14
+        // Insert 1 char at position 14 (exactly at pt_end boundary)
+        let result = PendingEditMap::compose_single(10, 12, 2, 14, 14, 1);
+        assert_eq!(result, PendingEditMap::Single { start: 10, old_end: 12, delta: 3 });
+    }
+
+    #[test]
+    fn compose_edit_before_start_downgrades_to_prefix() {
+        // Single { 10, 10, +1 }
+        // Edit at position 5 (before start) → must downgrade
+        let result = PendingEditMap::compose_single(10, 10, 1, 5, 5, 1);
+        assert_eq!(result, PendingEditMap::Prefix(5));
+    }
+
+    #[test]
+    fn compose_edit_after_pt_end_with_gap_downgrades_to_prefix() {
+        // Single { 10, 10, +1 }, pt_end=11
+        // Edit at position 20 (gap between 11 and 20) → must downgrade
+        let result = PendingEditMap::compose_single(10, 10, 1, 20, 20, 1);
+        assert_eq!(result, PendingEditMap::Prefix(10));
+    }
+
+    #[test]
+    fn compose_backspace_undoes_insertion() {
+        // Inserted 'a' at 10 → Single { 10, 10, +1 }, pt_end=11
+        // Delete [10,11) (backspace the inserted char)
+        let result = PendingEditMap::compose_single(10, 10, 1, 10, 11, 0);
+        // Net zero change
+        assert_eq!(result, PendingEditMap::Single { start: 10, old_end: 10, delta: 0 });
     }
 }
