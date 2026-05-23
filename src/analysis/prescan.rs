@@ -26,6 +26,76 @@ struct DefclassFuncInfo {
     constraint_raw: Option<String>,
     parent_generic_name: Option<String>,
     param_annotations: Option<Vec<crate::annotations::AnnotationType>>,
+    /// Call-argument positions (0-based, self excluded) where the backtick
+    /// class-name string may appear — covers the primary signature and all overloads.
+    backtick_param_positions: Vec<usize>,
+}
+
+/// Collect the call-argument positions (0-based, self excluded) at which the
+/// backtick class-name string may appear for a `@defclass`-annotated function.
+/// Covers both the primary signature (`func.param_annotations`) and all overloads
+/// (`func.overloads`).
+///
+/// # Self-offset accounting
+///
+/// For colon-syntax functions, `pre_globals::build_function` prepends a synthetic
+/// self entry at `param_annotations[0]`:
+/// - `Simple("")` for non-generic class methods
+/// - `Parameterized(class_name, type_params)` for methods on generic classes
+///
+/// Neither pattern appears naturally as a non-self first parameter, so when
+/// `is_method_call` is true and the first annotation matches either pattern we
+/// subtract 1 from annotation indices to obtain call-argument indices.
+///
+/// Overload params already carry an explicit `"self"` name when self is present,
+/// so the overload offset is detected via `p.name == "self"`.
+///
+/// Positions are returned sorted in ascending call-argument index order.
+fn collect_defclass_backtick_positions(
+    func: &Function,
+    is_method_call: bool,
+    generic_name: &str,
+) -> Vec<usize> {
+    // Determine whether param_annotations[0] is the synthetic self entry.
+    let pa_self_offset = usize::from(
+        is_method_call
+        && func.param_annotations.first().map(|a|
+            matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty())
+            || matches!(a, crate::annotations::AnnotationType::Parameterized(..))
+        ).unwrap_or(false)
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    // Primary signature: check param_annotations[pa_self_offset..].
+    for (i, ann) in func.param_annotations.iter().enumerate() {
+        if i < pa_self_offset { continue; }
+        if crate::annotations::annotation_contains_backtick(ann) {
+            seen.insert(i - pa_self_offset);
+        }
+    }
+    // Overloads: params are resolved ValueType; backtick resolves to TypeVariable.
+    // We check for TypeVariable(generic_name) rather than AnnotationType::Backtick
+    // because ResolvedOverloadParam.typ is already a resolved ValueType.
+    for ov in &func.overloads {
+        if ov.is_return_only { continue; }
+        let ov_self_offset = usize::from(
+            is_method_call
+            && ov.params.first().map(|p| p.name == "self").unwrap_or(false)
+        );
+        for (i, param) in ov.params.iter().skip(ov_self_offset)
+            .filter(|p| p.name != "...")
+            .enumerate()
+        {
+            let is_bt = match &param.typ {
+                Some(ValueType::TypeVariable(n)) => n == generic_name,
+                Some(ValueType::Union(types)) => types.iter().any(|t|
+                    matches!(t, ValueType::TypeVariable(n) if n == generic_name)
+                ),
+                _ => false,
+            };
+            if is_bt { seen.insert(i); }
+        }
+    }
+    seen.into_iter().collect()
 }
 
 impl<'a> Analysis<'a> {
@@ -486,16 +556,26 @@ impl<'a> Analysis<'a> {
                     .filter(|p| p.name != "...")
                     .map(|p| p.typ.clone())
                     .collect();
+                // Collect positions where the backtick class-name string may appear.
+                // For local functions, annotations.params never includes self, so
+                // index i in param_annotations equals call-arg index i directly.
+                let backtick_param_positions: Vec<usize> = param_annotations.iter().enumerate()
+                    .filter_map(|(i, ann)| {
+                        if crate::annotations::annotation_contains_backtick(ann) { Some(i) } else { None }
+                    })
+                    .collect();
                 local_defclass_funcs.insert(func_name, DefclassFuncInfo {
                     generic_name: defclass_name, constraint_table, parent_param_idx,
                     constraint_raw, parent_generic_name,
                     param_annotations: Some(param_annotations),
+                    backtick_param_positions,
                 });
             }
         }
         let Some(block) = Block::cast(self.root()) else { return };
         for stmt in block.statements() {
-            // Match: local X = func("ClassName") or ADDON.X = func("ClassName"):method()
+            // Match: local X = func("ClassName"), ADDON.X = func("ClassName"):method(),
+            // or bare func("ClassName") statement.
             let (var_name, call) = match &stmt {
                 Statement::LocalAssign(la) => {
                     let Some(name_list) = la.name_list() else { continue };
@@ -513,6 +593,9 @@ impl<'a> Analysis<'a> {
                     let Expression::FunctionCall(c) = &exprs[0] else { continue };
                     (None, *c)
                 }
+                // Bare function-call statement: `addon:NewAddon("Name")` — no LHS variable.
+                // @defclass still fires; the class is registered but not bound to a local.
+                Statement::FunctionCall(fc) => (None, *fc),
                 _ => continue,
             };
 
@@ -522,19 +605,14 @@ impl<'a> Analysis<'a> {
             let func_names = ident.names();
             if func_names.is_empty() { continue; }
 
-            // Get the string literal argument (first arg)
+            // Collect the call arguments; class-name extraction is deferred until after
+            // we know the backtick positions from the function's annotation and overloads.
             let Some(arg_list) = call.arguments() else { continue };
             let call_args = arg_list.expressions();
-            if call_args.is_empty() { continue; }
-            let class_name = match &call_args[0] {
-                Expression::Literal(lit) => lit.get_string()
-                    .map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string()),
-                _ => None,
-            };
-            let Some(class_name) = class_name else { continue };
 
             // Resolve the function to get constraint_table, parent_param_idx, and constraint_raw
             // (needed for both existing and new classes)
+            let is_method_call = call.syntax().kind() == crate::syntax::syntax_kind::SyntaxKind::MethodCall;
             let dc_info = if func_names.len() == 1 {
                 if let Some(info) = local_defclass_funcs.get(&func_names[0]) {
                     DefclassFuncInfo {
@@ -544,6 +622,7 @@ impl<'a> Analysis<'a> {
                         constraint_raw: info.constraint_raw.clone(),
                         parent_generic_name: info.parent_generic_name.clone(),
                         param_annotations: info.param_annotations.clone(),
+                        backtick_param_positions: info.backtick_param_positions.clone(),
                     }
                 } else {
                     let func_sym_id = SymbolIdentifier::Name(func_names[0].clone());
@@ -580,6 +659,8 @@ impl<'a> Analysis<'a> {
                             }
                         })
                     });
+                    let backtick_param_positions =
+                        collect_defclass_backtick_positions(func, is_method_call, dc_name);
                     DefclassFuncInfo {
                         generic_name: dc_name.clone(),
                         constraint_table: ct,
@@ -587,11 +668,24 @@ impl<'a> Analysis<'a> {
                         constraint_raw: cr,
                         parent_generic_name: func.defclass_parent.clone(),
                         param_annotations: Some(func.param_annotations.clone()),
+                        backtick_param_positions,
                     }
                 }
             } else {
                 continue; // For dotted paths, handled in the second loop below
             };
+
+            // Extract the class name from whichever call-argument position carries
+            // the backtick class-name string (primary or overload position).
+            let class_name = dc_info.backtick_param_positions.iter().find_map(|&pos| {
+                if let Some(Expression::Literal(lit)) = call_args.get(pos) {
+                    lit.get_string()
+                        .map(|s| s.trim_matches(|c: char| c == '"' || c == '\'').to_string())
+                } else {
+                    None
+                }
+            });
+            let Some(class_name) = class_name else { continue };
 
             // Resolve specific parent from the call argument (if @defclass T : P)
             let specific_parent = dc_info.parent_param_idx.and_then(|idx| {
@@ -757,7 +851,8 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        // Also handle dotted paths: local X = tbl.func("ClassName") or ADDON.X = tbl.func("ClassName"):method()
+        // Also handle dotted paths: local X = tbl.func("ClassName"), ADDON.X = tbl.func("ClassName"):method(),
+        // or bare tbl.func("ClassName") / tbl:func("ClassName") statements.
         for stmt in block.statements() {
             let (var_name, call) = match &stmt {
                 Statement::LocalAssign(la) => {
@@ -776,6 +871,8 @@ impl<'a> Analysis<'a> {
                     let Expression::FunctionCall(c) = &exprs[0] else { continue };
                     (None, *c)
                 }
+                // Bare function-call statement — @defclass still fires.
+                Statement::FunctionCall(fc) => (None, *fc),
                 _ => continue,
             };
 
@@ -787,13 +884,6 @@ impl<'a> Analysis<'a> {
 
             let Some(arg_list) = call.arguments() else { continue };
             let call_args = arg_list.expressions();
-            if call_args.is_empty() { continue; }
-            let class_name = match &call_args[0] {
-                Expression::Literal(lit) => lit.get_string()
-                    .map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string()),
-                _ => None,
-            };
-            let Some(class_name) = class_name else { continue };
 
             // Resolve root to a table — check external globals, local_class_vars, and local classes
             let root_name = &func_names[0];
@@ -826,6 +916,20 @@ impl<'a> Analysis<'a> {
             let Some(ref defclass_name) = func.defclass else {
                 continue;
             };
+
+            let is_method_call = call.syntax().kind() == crate::syntax::syntax_kind::SyntaxKind::MethodCall;
+            let backtick_positions =
+                collect_defclass_backtick_positions(func, is_method_call, defclass_name);
+
+            let class_name = backtick_positions.iter().find_map(|&pos| {
+                if let Some(Expression::Literal(lit)) = call_args.get(pos) {
+                    lit.get_string()
+                        .map(|s| s.trim_matches(|c: char| c == '"' || c == '\'').to_string())
+                } else {
+                    None
+                }
+            });
+            let Some(class_name) = class_name else { continue };
 
             // If the class already exists, just register defclass_vars for access checks
             if let Some(&existing_idx) = self.ir.classes.get(&class_name) {

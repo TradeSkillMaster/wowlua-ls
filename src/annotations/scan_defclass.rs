@@ -25,6 +25,10 @@ struct DefclassFuncInfo {
     parent_generic_name: Option<String>,
     /// Index signature type from parent class (e.g. EnumValue from @field [string] EnumValue)
     index_sig_type: Option<AnnotationType>,
+    /// All call-argument positions (0-based) where the backtick class-name string may appear.
+    /// Includes the position from the primary signature plus positions derived from each
+    /// `@overload` (with the implicit `self` param stripped so indices match call-site args).
+    backtick_param_positions: Vec<usize>,
 }
 
 /// Pre-built lookup tables for defclass scanning, constructed once from all_globals/all_classes
@@ -86,8 +90,31 @@ impl DefclassContext {
                 .position(|p| matches!(&p.typ, AnnotationType::Simple(name) if name == defclass_name));
             let index_sig_type = parents.iter()
                 .find_map(|p| class_index_sigs.get(p.as_str()).copied().cloned());
+            // Collect all call-arg positions where the backtick class-name string may appear.
+            // Primary signature: self is NOT in g.params, so index is direct.
+            let mut backtick_seen = std::collections::BTreeSet::new();
+            if let Some(pos) = g.params.iter()
+                .filter(|p| p.name != "...")
+                .position(|p| super::annotation_contains_backtick(&p.typ))
+            {
+                backtick_seen.insert(pos);
+            }
+            // Overloads: self IS the first param when present, so subtract 1.
+            for ov in &g.overloads {
+                let has_self = ov.params.first().map(|p| p.name == "self").unwrap_or(false);
+                let skip = usize::from(has_self);
+                if let Some(pos) = ov.params.iter()
+                    .skip(skip)
+                    .filter(|p| p.name != "...")
+                    .position(|p| super::annotation_contains_backtick(&p.typ))
+                {
+                    backtick_seen.insert(pos);
+                }
+            }
+            let backtick_param_positions: Vec<usize> = backtick_seen.into_iter().collect();
             defclass_funcs.insert(fp, DefclassFuncInfo {
-                parents, parent_param_idx, values_param_idx, constraint_type_args, parent_generic_name, index_sig_type,
+                parents, parent_param_idx, values_param_idx, constraint_type_args,
+                parent_generic_name, index_sig_type, backtick_param_positions,
             });
         }
 
@@ -171,9 +198,17 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
         if let Some(info) = matched {
             let arg_list = call.arguments()?;
             let call_args = arg_list.expressions();
-            if let Some(Expression::Literal(lit)) = call_args.first()
-                && let Some(s) = lit.get_string() {
-                    let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
+            // Find the class-name string at any of the known backtick positions (primary or
+            // overloads).  Positions are tried in ascending call-argument index order.
+            let class_name_str = info.backtick_param_positions.iter().find_map(|&pos| {
+                if let Some(Expression::Literal(lit)) = call_args.get(pos) {
+                    lit.get_string()
+                        .map(|s| s.trim_matches(|c: char| c == '"' || c == '\'').to_string())
+                } else {
+                    None
+                }
+            });
+            if let Some(name) = class_name_str {
                     let mut parents = info.parents.clone();
                     let mut constraint_type_arg_subs = Vec::new();
                     // Extract specific parent from the call argument
@@ -259,6 +294,9 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                 });
                 (call, var_name)
             }
+            // Bare function-call statements: `addon:NewAddon("Name")` — no LHS variable.
+            // @defclass still fires; the class is registered but not bound to a local.
+            Statement::FunctionCall(call) => (Some(*call), None),
             _ => (None, None),
         };
         let Some(call) = rhs_call else { continue };

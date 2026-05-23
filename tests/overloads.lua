@@ -239,19 +239,18 @@ local _agBtnUserdata = _agBtn.userdata
 -- breaking annotation extraction. Fixed via local override.
 local _aceAddon = LibStub("AceAddon-3.0")
 --     ^ hover: (local) _aceAddon: AceAddon-3.0
--- NewAddon with table-first overload: @defclass doesn't fire through overloads,
--- so no "TestAddon" class is created. The result is discarded anyway.
+-- NewAddon with table-first overload: @defclass fires through the overload
+-- fun(self, object: table, name: `T`, ...: string): T, creating "TestAddon".
 _aceAddon:NewAddon({}, "TestAddon")
 -- ^ diag: none
--- GetAddon("TestAddon") uses backtick generic, but "TestAddon" was not
--- @defclass'd in this file (the table-first NewAddon call above doesn't
--- trigger @defclass), so backtick resolution falls back to `any`.
+-- GetAddon("TestAddon") uses backtick generic; "TestAddon" was @defclass'd
+-- via the table-first overload above, so backtick resolution returns TestAddon.
 local _aceAddonByName = _aceAddon:GetAddon("TestAddon")
---     ^ hover: (local) _aceAddonByName: any
+--     ^ hover: (local) _aceAddonByName: TestAddon
 _aceAddonByName:GetName()
 -- ^ diag: none
 local _aceModule = _aceAddonByName:NewModule("TestModule")
---     ^ hover: (local) _aceModule: ?
+--     ^ hover: (local) _aceModule: TestModule
 _aceModule:GetName()
 -- ^ diag: none
 
@@ -338,7 +337,7 @@ local _caimOne = CreateAndInitFromMixin(MixinAlpha)
 -- Field access on Mixin result: hover/def on intersection method
 local _mxAccess = Mixin(_mxFrame, MixinAlpha)
 _mxAccess:alphaMethod()
---        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 290:1  diag: none
+--        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 289:1  diag: none
 
 -- Field access on CreateFromMixins intersection
 local _cfmAccess = CreateFromMixins(MixinAlpha, MixinBeta)
