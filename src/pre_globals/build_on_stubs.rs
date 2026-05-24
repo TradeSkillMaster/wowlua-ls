@@ -554,10 +554,12 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
-                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                // and None-annotated fields (auto-created by walk_deep_path during method processing).
                 // Even when skipping, record the source location for go-to-definition.
                 if self.tables[local_idx].fields.get(field_name)
-                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
+                    .is_some_and(|fi| fi.annotation.as_ref()
+                        .is_some_and(|a| !matches!(a, ValueType::Any | ValueType::Table(None)))) {
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                     continue;
                 }
@@ -590,6 +592,28 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                 };
                 if let Some(vt) = value_type {
+                    // When overriding a field auto-created by walk_deep_path (annotation=None),
+                    // copy self-scanned fields from the existing sub-table to the class table
+                    // so they remain accessible through the class type. Uses or_insert so
+                    // class-declared fields (@field annotations) take precedence.
+                    if let ValueType::Table(Some(class_idx)) = &vt
+                        && let Some(existing_fi) = self.tables[local_idx].fields.get(field_name)
+                        && existing_fi.annotation.is_none() && existing_fi.expr.is_external()
+                        && let Expr::Literal(ValueType::Table(Some(sub_idx))) = &self.exprs[existing_fi.expr.ext_offset()]
+                    {
+                        let sub_idx = *sub_idx;
+                        let class_idx = *class_idx;
+                        if sub_idx != class_idx {
+                            let sub_fields: Vec<(String, FieldInfo)> = self.tables[sub_idx.ext_offset()].fields.iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
+                            for (name, fi) in sub_fields {
+                                self.tables[class_idx.ext_offset()].fields.entry(name).or_insert(fi);
+                            }
+                            // Update sub_tables so deeper paths resolve against the class table.
+                            self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), class_idx);
+                        }
+                    }
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
                     if let FieldValueKind::Number(Some(val)) = value_kind {

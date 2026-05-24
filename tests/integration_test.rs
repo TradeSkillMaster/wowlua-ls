@@ -2375,6 +2375,15 @@ fn crossfile_ns_class_field_on_bare_ns() {
 }
 
 #[test]
+fn crossfile_ns_mixin_class_name() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/ns_mixin_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn metatable_type_inference() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/metatable-type-i.lua",
