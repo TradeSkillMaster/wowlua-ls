@@ -63,25 +63,30 @@ struct BlizzardApiDocs {
 /// Resolve a Blizzard param to its Lua type string.
 /// When `mixin` is present, it takes priority — it's the actual Lua class name
 /// (e.g. `ItemLocationMixin`), while `type_name` is Blizzard's internal C++ type.
-/// Only normalizes C-type names with no `@alias` in Ketho's BlizzardType.lua:
-/// `bool`→`boolean`, `cstring`→`string`, `luaIndex`→`number`.
-fn resolve_blizzard_param_type(p: &BlizzardParam) -> String {
+/// Normalizes C-type names (`bool`→`boolean`, `cstring`→`string`, `luaIndex`→`number`)
+/// and prefixes known enum types with `Enum.` to match generated `@enum Enum.*` stubs.
+fn resolve_blizzard_param_type(p: &BlizzardParam, known_enums: &HashSet<String>) -> String {
     if let Some(mixin) = &p.mixin {
         return mixin.clone();
     }
-    normalize_blizzard_type(&p.type_name, p.inner_type.as_deref())
+    normalize_blizzard_type(&p.type_name, p.inner_type.as_deref(), known_enums)
 }
 
-fn normalize_blizzard_type(t: &str, inner_type: Option<&str>) -> String {
+fn normalize_blizzard_type(t: &str, inner_type: Option<&str>, known_enums: &HashSet<String>) -> String {
     let base = match t {
         "bool" => "boolean",
         "cstring" => "string",
         "luaIndex" => "number",
-        _ => t,
+        _ => {
+            if known_enums.contains(t) {
+                return format!("Enum.{t}");
+            }
+            t
+        }
     };
     if t == "table"
         && let Some(inner) = inner_type {
-            let inner_norm = normalize_blizzard_type(inner, None);
+            let inner_norm = normalize_blizzard_type(inner, None, known_enums);
             return format!("{inner_norm}[]");
         }
     base.to_string()
@@ -617,9 +622,11 @@ fn parse_globalstrings_csv(content: &str) -> HashMap<String, String> {
 
 /// Generate LuaLS-annotated function stubs from parsed Blizzard API docs.
 /// `existing_names` is used to skip functions already covered by Ketho's richer annotations.
+/// `known_enums` maps bare enum names to `Enum.*` prefixed types.
 fn generate_blizzard_api_stubs(
     docs: &BlizzardApiDocs,
     existing_names: &HashSet<String>,
+    known_enums: &HashSet<String>,
 ) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -669,7 +676,7 @@ fn generate_blizzard_api_stubs(
     for ns_key in ns_keys {
         let funcs = &ns_functions[&ns_key];
         for func in funcs {
-            write_blizzard_function_stub(&mut out, func);
+            write_blizzard_function_stub(&mut out, func, known_enums);
             generated_count += 1;
         }
     }
@@ -678,7 +685,7 @@ fn generate_blizzard_api_stubs(
     out
 }
 
-fn write_blizzard_function_stub(out: &mut String, func: &BlizzardFunction) {
+fn write_blizzard_function_stub(out: &mut String, func: &BlizzardFunction, known_enums: &HashSet<String>) {
     use std::fmt::Write;
     let qualified = match &func.namespace {
         Some(ns) => format!("{ns}.{}", func.name),
@@ -691,7 +698,7 @@ fn write_blizzard_function_stub(out: &mut String, func: &BlizzardFunction) {
     writeln!(out, "---[Documentation](https://warcraft.wiki.gg/wiki/{wiki_name})").unwrap();
 
     for arg in &func.arguments {
-        let typ = resolve_blizzard_param_type(arg);
+        let typ = resolve_blizzard_param_type(arg, known_enums);
         if arg.nilable {
             writeln!(out, "---@param {}? {}", arg.name, typ).unwrap();
         } else {
@@ -699,7 +706,7 @@ fn write_blizzard_function_stub(out: &mut String, func: &BlizzardFunction) {
         }
     }
     for ret in &func.returns {
-        let typ = resolve_blizzard_param_type(ret);
+        let typ = resolve_blizzard_param_type(ret, known_enums);
         if ret.nilable || func.may_return_nothing {
             writeln!(out, "---@return {}? {}", typ, ret.name).unwrap();
         } else {
@@ -716,6 +723,7 @@ fn write_blizzard_function_stub(out: &mut String, func: &BlizzardFunction) {
 fn generate_blizzard_structure_stubs(
     docs: &BlizzardApiDocs,
     existing_names: &HashSet<String>,
+    known_enums: &HashSet<String>,
 ) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -732,7 +740,7 @@ fn generate_blizzard_structure_stubs(
     for st in &sorted {
         writeln!(out, "---@class {}", st.name).unwrap();
         for field in &st.fields {
-            let typ = resolve_blizzard_param_type(field);
+            let typ = resolve_blizzard_param_type(field, known_enums);
             if field.nilable {
                 writeln!(out, "---@field {} {}?", field.name, typ).unwrap();
             } else {
@@ -821,6 +829,20 @@ fn generate_blizzard_enum_stubs(
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
+
+    // Emit bare name aliases so vendor stubs referencing e.g. `UISoundSubType`
+    // (without the `Enum.` prefix) still resolve to the correct enum type.
+    // `sorted` is already deduped against existing Enum.* names, so only enums
+    // we generated above get aliases. Skip bare names that collide with existing
+    // class/alias definitions in vendor stubs.
+    writeln!(out, "-- Bare name aliases for enum types").unwrap();
+    for (enum_name, _) in &sorted {
+        if existing_names.contains(enum_name.as_str()) {
+            continue;
+        }
+        writeln!(out, "---@alias {enum_name} Enum.{enum_name}").unwrap();
+    }
+    writeln!(out).unwrap();
 
     log::info!("  BlizzardEnums: {} enum types generated", sorted.len());
     out
@@ -918,7 +940,7 @@ fn parse_event_alias_names(content: &str) -> HashSet<String> {
 }
 
 /// Generate `@event` stubs from parsed Blizzard Events.
-fn generate_blizzard_event_stubs(docs: &BlizzardApiDocs) -> String {
+fn generate_blizzard_event_stubs(docs: &BlizzardApiDocs, known_enums: &HashSet<String>) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     writeln!(out, "---@meta _").unwrap();
@@ -932,7 +954,7 @@ fn generate_blizzard_event_stubs(docs: &BlizzardApiDocs) -> String {
         writeln!(out, "---[Documentation](https://warcraft.wiki.gg/wiki/{})", ev.literal_name).unwrap();
         writeln!(out, "---@event FrameEvent \"{}\"", ev.literal_name).unwrap();
         for p in &ev.payload {
-            let typ = resolve_blizzard_param_type(p);
+            let typ = resolve_blizzard_param_type(p, known_enums);
             if p.nilable {
                 writeln!(out, "---@param {}? {}", p.name, typ).unwrap();
             } else {
@@ -2517,11 +2539,17 @@ fn fetch_branch_resources(stubs_dir: &Path) -> BranchResourceData {
     classic_only_fxml.sort();
     log::info!("  Found {} classic-only FrameXML functions", classic_only_fxml.len());
 
-    // Filter already-covered APIs
+    // Filter already-covered APIs.
+    // Exclude vendor files we replace with generated versions — otherwise functions
+    // found in e.g. Ketho's Wiki.lua would be filtered out here, but Wiki.lua itself
+    // is excluded from the final scan, leaving the APIs uncovered.
+    let replaced_vendor_files: &[&str] = &[
+        "ClassicGlobals.lua", "Wiki.lua", "Enum.lua", "CVar.lua", "Event.lua",
+    ];
     let func_re = regex_lite::Regex::new(r"(?m)^function ([\w.]+)\s*\(").unwrap();
     let assign_re = regex_lite::Regex::new(r"(?m)^([\w.]+)\s*=\s*").unwrap();
-    let existing_funcs = get_existing_names_with(stubs_dir, &func_re, &["ClassicGlobals.lua"]);
-    let existing_globals = get_existing_names_with2(stubs_dir, &func_re, &assign_re, &["ClassicGlobals.lua"]);
+    let existing_funcs = get_existing_names_with(stubs_dir, &func_re, replaced_vendor_files);
+    let existing_globals = get_existing_names_with2(stubs_dir, &func_re, &assign_re, replaced_vendor_files);
 
     let missing: Vec<_> = all_classic_only.iter().filter(|n| !existing_funcs.contains(*n)).cloned().collect();
     let missing_fxml: Vec<_> = classic_only_fxml.iter().filter(|n| !existing_funcs.contains(*n)).cloned().collect();
@@ -3327,15 +3355,18 @@ pub fn regenerate_stubs() {
         (HashMap::new(), HashMap::new())
     };
 
-    // Supplement wiki category names with retail API globals that have wiki pages.
-    // This captures real API functions not in any wiki category.
+    // Supplement wiki category names with retail API globals not in any wiki category.
+    // Functions with wiki pages get full annotations; those without get bare stubs.
     let wiki_names_set: HashSet<&str> = wiki_names.iter().map(|s| s.as_str()).collect();
     let retail_extras: Vec<String> = branch_data.retail_api_names.iter()
-        .filter(|name| !wiki_names_set.contains(name.as_str()) && wiki_pages.contains_key(name.as_str()))
+        .filter(|name| !wiki_names_set.contains(name.as_str()))
         .cloned()
         .collect();
+    let retail_with_wiki = retail_extras.iter().filter(|n| wiki_pages.contains_key(n.as_str())).count();
+    let retail_without_wiki = retail_extras.len() - retail_with_wiki;
     if !retail_extras.is_empty() {
-        log::info!("  Supplemented wiki names with {} retail API globals (have wiki pages but not categorized)", retail_extras.len());
+        log::info!("  Supplemented wiki names with {} retail API globals ({} with wiki pages, {} bare stubs)",
+            retail_extras.len(), retail_with_wiki, retail_without_wiki);
         wiki_names.extend(retail_extras);
     }
 
@@ -3403,10 +3434,13 @@ pub fn regenerate_stubs() {
     std::fs::write(gen_dir.join("CVars.lua"), &cvar_lua).unwrap();
     log::info!("  Existing names for dedup: {}", existing_for_dedup.len());
 
-    let blizzard_api_lua = generate_blizzard_api_stubs(&blizzard_docs, &existing_for_dedup);
+    // Build set of known enum names for Blizzard type resolution (bare name → Enum.*)
+    let known_enum_names: HashSet<String> = retail_enums.keys().cloned().collect();
+
+    let blizzard_api_lua = generate_blizzard_api_stubs(&blizzard_docs, &existing_for_dedup, &known_enum_names);
     std::fs::write(gen_dir.join("BlizzardAPI.lua"), &blizzard_api_lua).unwrap();
 
-    let blizzard_structures_lua = generate_blizzard_structure_stubs(&blizzard_docs, &existing_for_dedup);
+    let blizzard_structures_lua = generate_blizzard_structure_stubs(&blizzard_docs, &existing_for_dedup, &known_enum_names);
     std::fs::write(gen_dir.join("BlizzardStructures.lua"), &blizzard_structures_lua).unwrap();
 
     // Fetch LuaEnum.lua once for both Enum.* categories and Constants.* sub-tables.
@@ -3450,7 +3484,7 @@ pub fn regenerate_stubs() {
     // Events: use only Blizzard APIDocumentation events.
     // Ketho's Event.lua merges FrameXML-only events not in APIDocumentation — we intentionally
     // skip those because they lack payload annotations and can be added as overrides if needed.
-    let blizzard_events_lua = generate_blizzard_event_stubs(&blizzard_docs);
+    let blizzard_events_lua = generate_blizzard_event_stubs(&blizzard_docs, &known_enum_names);
     std::fs::write(gen_dir.join("BlizzardEvents.lua"), &blizzard_events_lua).unwrap();
 
     // Log coverage gap vs Ketho's Event.lua alias for visibility.
@@ -4361,28 +4395,38 @@ local TestDoc =
 
     #[test]
     fn test_normalize_blizzard_type() {
+        let no_enums = HashSet::new();
         // C-type names that need normalization (no @alias in BlizzardType.lua)
-        assert_eq!(normalize_blizzard_type("bool", None), "boolean");
-        assert_eq!(normalize_blizzard_type("cstring", None), "string");
-        assert_eq!(normalize_blizzard_type("luaIndex", None), "number");
+        assert_eq!(normalize_blizzard_type("bool", None, &no_enums), "boolean");
+        assert_eq!(normalize_blizzard_type("cstring", None, &no_enums), "string");
+        assert_eq!(normalize_blizzard_type("luaIndex", None, &no_enums), "number");
         // Named aliases kept as-is (defined in BlizzardType.lua)
-        assert_eq!(normalize_blizzard_type("time_t", None), "time_t");
-        assert_eq!(normalize_blizzard_type("fileID", None), "fileID");
-        assert_eq!(normalize_blizzard_type("WOWGUID", None), "WOWGUID");
-        assert_eq!(normalize_blizzard_type("ClubId", None), "ClubId");
-        assert_eq!(normalize_blizzard_type("BigUInteger", None), "BigUInteger");
-        assert_eq!(normalize_blizzard_type("textureKit", None), "textureKit");
+        assert_eq!(normalize_blizzard_type("time_t", None, &no_enums), "time_t");
+        assert_eq!(normalize_blizzard_type("fileID", None, &no_enums), "fileID");
+        assert_eq!(normalize_blizzard_type("WOWGUID", None, &no_enums), "WOWGUID");
+        assert_eq!(normalize_blizzard_type("ClubId", None, &no_enums), "ClubId");
+        assert_eq!(normalize_blizzard_type("BigUInteger", None, &no_enums), "BigUInteger");
+        assert_eq!(normalize_blizzard_type("textureKit", None, &no_enums), "textureKit");
         // Array types
-        assert_eq!(normalize_blizzard_type("table", Some("number")), "number[]");
-        assert_eq!(normalize_blizzard_type("table", Some("ItemInfo")), "ItemInfo[]");
-        assert_eq!(normalize_blizzard_type("table", Some("WOWGUID")), "WOWGUID[]");
-        assert_eq!(normalize_blizzard_type("table", None), "table");
+        assert_eq!(normalize_blizzard_type("table", Some("number"), &no_enums), "number[]");
+        assert_eq!(normalize_blizzard_type("table", Some("ItemInfo"), &no_enums), "ItemInfo[]");
+        assert_eq!(normalize_blizzard_type("table", Some("WOWGUID"), &no_enums), "WOWGUID[]");
+        assert_eq!(normalize_blizzard_type("table", None, &no_enums), "table");
         // Pass-through
-        assert_eq!(normalize_blizzard_type("ItemInfo", None), "ItemInfo");
+        assert_eq!(normalize_blizzard_type("ItemInfo", None, &no_enums), "ItemInfo");
+
+        // Enum prefixing
+        let enums: HashSet<String> = ["UISoundSubType", "BagIndex"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(normalize_blizzard_type("UISoundSubType", None, &enums), "Enum.UISoundSubType");
+        assert_eq!(normalize_blizzard_type("BagIndex", None, &enums), "Enum.BagIndex");
+        assert_eq!(normalize_blizzard_type("ItemInfo", None, &enums), "ItemInfo"); // not an enum
+        // Enum inside array
+        assert_eq!(normalize_blizzard_type("table", Some("BagIndex"), &enums), "Enum.BagIndex[]");
     }
 
     #[test]
     fn test_resolve_blizzard_param_type_mixin_priority() {
+        let no_enums = HashSet::new();
         // When Mixin is present, it should be used instead of Type
         let p = BlizzardParam {
             name: "location".into(),
@@ -4391,7 +4435,7 @@ local TestDoc =
             inner_type: None,
             mixin: Some("ItemLocationMixin".into()),
         };
-        assert_eq!(resolve_blizzard_param_type(&p), "ItemLocationMixin");
+        assert_eq!(resolve_blizzard_param_type(&p, &no_enums), "ItemLocationMixin");
 
         // Without Mixin, Type is used (and normalized if needed)
         let p2 = BlizzardParam {
@@ -4401,7 +4445,7 @@ local TestDoc =
             inner_type: None,
             mixin: None,
         };
-        assert_eq!(resolve_blizzard_param_type(&p2), "boolean");
+        assert_eq!(resolve_blizzard_param_type(&p2, &no_enums), "boolean");
 
         // Mixin with array type — Mixin takes priority, InnerType ignored
         let p3 = BlizzardParam {
@@ -4411,7 +4455,18 @@ local TestDoc =
             inner_type: Some("ItemLocation".into()),
             mixin: Some("ItemLocationMixin".into()),
         };
-        assert_eq!(resolve_blizzard_param_type(&p3), "ItemLocationMixin");
+        assert_eq!(resolve_blizzard_param_type(&p3, &no_enums), "ItemLocationMixin");
+
+        // Enum type gets prefixed
+        let enums: HashSet<String> = ["UISoundSubType"].iter().map(|s| s.to_string()).collect();
+        let p4 = BlizzardParam {
+            name: "subType".into(),
+            type_name: "UISoundSubType".into(),
+            nilable: false,
+            inner_type: None,
+            mixin: None,
+        };
+        assert_eq!(resolve_blizzard_param_type(&p4, &enums), "Enum.UISoundSubType");
     }
 
     #[test]

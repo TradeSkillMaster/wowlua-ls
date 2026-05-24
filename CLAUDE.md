@@ -326,6 +326,9 @@ WoW API stubs live in `stubs/`. Scanned at startup by `scan_workspace()` / `scan
 
 Stub generation (including Classic-only globals from the wiki and BlizzardInterfaceResources) is handled by `src/stub_gen.rs`. Run `cargo run -- regenerate-stubs` to regenerate precomputed stubs. **Any change to `src/stub_gen.rs` or `stubs/overrides/` requires regenerating stubs and committing the updated `stubs/precomputed.bin.zst` and `stubs/precomputed-files.bin.zst`.** After resolving rebase/merge conflicts on the precomputed stub binaries (accepting either side), always re-run `cargo run -- regenerate-stubs` to ensure the blob is consistent with the current `stubs/overrides/` content.
 
+### Fixing missing or incorrect API stubs
+When a WoW API function is missing or has wrong types, **always fix the root cause in `stub_gen.rs`** rather than adding a one-off override in `stubs/overrides/`. There are thousands of WoW API functions; adding overrides for individual missing APIs doesn't scale and masks systemic discovery bugs. Trace the function through the stub generation pipeline (wiki categories, BlizzardInterfaceResources GlobalAPI.lua branches, Blizzard APIDocumentationGenerated, dedup filters) to find where it's being dropped or mistyped. Overrides in `stubs/overrides/` are reserved for cases where the upstream source data is fundamentally wrong (e.g. Blizzard's documentation declares a numeric enum type but the Lua API actually accepts strings) — not for patching gaps in the generation pipeline.
+
 ### Embedded vs external stubs (`embedded-stubs` feature)
 The `embedded-stubs` Cargo feature (default on) controls how the binary loads precomputed stubs:
 - **With feature (default):** Stubs are baked into the binary via `include_bytes!`. Produces a self-contained executable for standalone release downloads.

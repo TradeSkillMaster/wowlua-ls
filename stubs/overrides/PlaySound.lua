@@ -1,0 +1,13 @@
+---@meta _
+-- Override: Blizzard documents uiSoundSubType as Enum.UISoundSubType (numeric),
+-- but the actual Lua API accepts string channel names ("Master", "SFX", etc.).
+-- The string default "g_defaultSI3UISoundSubTypeForLua" in SoundDocumentation.lua
+-- confirms the Lua binding takes strings, not numeric enum values.
+---[Documentation](https://warcraft.wiki.gg/wiki/API_C_Sound.PlaySound)
+---@param soundKitID number
+---@param uiSoundSubType? string
+---@param forceNoDuplicates? boolean
+---@param runFinishCallback? boolean
+---@param overridePriority? number
+---@return boolean success, number soundHandle
+function PlaySound(soundKitID, uiSoundSubType, forceNoDuplicates, runFinishCallback, overridePriority) end
