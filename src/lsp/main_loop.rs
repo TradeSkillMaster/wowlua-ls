@@ -4815,7 +4815,17 @@ fn is_stub_path(uri: &lsp_types::Uri) -> bool {
         }
         v
     });
-    uri_to_abs_path(uri).is_some_and(|p| dirs.iter().any(|d| p.starts_with(d)))
+    let result = uri_to_abs_path(uri).is_some_and(|p| dirs.iter().any(|d| p.starts_with(d)));
+    if !result && uri.as_str().contains("wowlua-ls-stubs") {
+        // Path contains the stubs marker but starts_with didn't match — likely
+        // a Windows path normalization issue. Log to help diagnose.
+        log::debug!(
+            "is_stub_path: URI contains 'wowlua-ls-stubs' but path check failed: uri={}, temp_dir={:?}",
+            uri.as_str(),
+            std::env::temp_dir(),
+        );
+    }
+    result
 }
 
 /// Check if a URI points to a file that should be ignored by project config.
@@ -5068,6 +5078,22 @@ fn push_fresh_diagnostics(
     ws: &WorkspaceState,
 ) {
     let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) else { return };
+    // @meta files (declaration-only stubs) never produce diagnostics.
+    // Clear cached diagnostics and publish an empty list so push-only clients
+    // don't retain stale diagnostics from a previous analysis.
+    if analysis.is_meta() {
+        doc.cached_diagnostics = Some(Vec::new());
+        let params = lsp_types::PublishDiagnosticsParams {
+            uri: uri.clone(),
+            diagnostics: Vec::new(),
+            version: None,
+        };
+        let _ = connection.sender.send(Message::Notification(Notification::new(
+            "textDocument/publishDiagnostics".to_string(),
+            params,
+        )));
+        return;
+    }
     let items = build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
     doc.cached_diagnostics = Some(items.clone());
     let params = lsp_types::PublishDiagnosticsParams {
@@ -5115,7 +5141,16 @@ fn handle_document_diagnostic(
     ws: &WorkspaceState,
 ) -> DocumentDiagnosticReportResult {
     // Stub files should never produce diagnostics in the Problems panel.
-    if is_stub_path(uri) {
+    // Defense-in-depth: check both the path (temp stubs dir) and the content
+    // (@meta annotation). On Windows, path normalization differences between
+    // std::env::temp_dir() and uri_to_abs_path() can cause is_stub_path() to
+    // miss the match, so we also check the analysis result's is_meta flag.
+    let uri_str = uri.to_string();
+    if is_stub_path(uri)
+        || documents.get(&uri_str)
+            .and_then(|d| d.analysis.as_ref())
+            .is_some_and(|a| a.is_meta())
+    {
         return DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
             RelatedFullDocumentDiagnosticReport {
                 related_documents: None,
@@ -5128,7 +5163,6 @@ fn handle_document_diagnostic(
     }
     // Consume pending_text for TOC documents before running diagnostics,
     // so positions match the editor's current text.
-    let uri_str = uri.to_string();
     if let Some(doc) = documents.get_mut(&uri_str)
         && doc.toc.is_some()
         && let Some(new_text) = doc.pending_text.take()
