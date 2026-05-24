@@ -404,8 +404,8 @@
               ]
             },
             {
-              "comment": "@param with simple/union type and optional description (allows spaces around | and &)",
-              "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*(?:\\s*[|&]\\s*[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?",
+              "comment": "@param with simple/union type and optional description (allows spaces around | and &, and ...M variadic generic types)",
+              "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+((?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*(?:\\s*[|&]\\s*(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?",
               "captures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -711,8 +711,8 @@
           }
         },
         {
-          "comment": "Simple/union type with optional description (allows spaces around | and &). Uses a flat match so string literal types lose individual string highlighting — consistent with @param behavior.",
-          "match": "\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*(?:\\s*[|&]\\s*[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?",
+          "comment": "Simple/union type with optional description (allows spaces around | and &, and ...M variadic generic types). Uses a flat match so string literal types lose individual string highlighting — consistent with @param behavior.",
+          "match": "\\s+((?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*(?:\\s*[|&]\\s*(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?",
           "captures": {
             "1": {"name": "support.type.lua"},
             "2": {"name": "comment.block.documentation.lua"}

@@ -437,14 +437,38 @@ pub(super) fn resolve_expr_type_impl(
 /// Format a single return annotation, prefixing `...` if it's the last entry and vararg.
 fn format_vararg_return(formatted: String, index: usize, func: &Function) -> String {
     if index == func.return_annotations.len() - 1 && func.has_vararg_return {
-        format!("...{}", formatted)
+        if formatted.starts_with("...") {
+            formatted
+        } else {
+            format!("...{}", formatted)
+        }
+    } else if is_intersection_of_varargs_raw(func, index) {
+        format!("& {}", formatted)
     } else {
         formatted
     }
 }
 
+/// Check whether a return annotation at `index` was written as `& ...M`
+/// (intersection-of-varargs).  The raw annotation is `Intersection([VarArgs(_)])`
+/// — a single-element intersection wrapping a VarArgs.
+fn is_intersection_of_varargs_raw(func: &Function, index: usize) -> bool {
+    func.return_annotations_raw.get(index).is_some_and(|raw| {
+        matches!(raw, crate::annotations::AnnotationType::Intersection(parts) if parts.len() == 1 && matches!(&parts[0], crate::annotations::AnnotationType::VarArgs(_)))
+    })
+}
 
-
+/// Format a vararg parameter for display.  When the type annotation already
+/// starts with `...` (e.g. `...M` from a variadic generic), the name `...` is
+/// redundant so we show just the type.  Otherwise show `...: type`.
+fn format_vararg_param(ann: &crate::annotations::AnnotationType) -> String {
+    let type_text = crate::annotations::format_annotation_type(ann);
+    if type_text.starts_with("...") {
+        type_text
+    } else {
+        format!("...: {}", type_text)
+    }
+}
 
 // ── LSP Queries ──────────────────────────────────────────────────────────────
 
@@ -4836,10 +4860,7 @@ impl AnalysisResult {
         let mut all_args = args;
         if func.is_vararg {
             let vararg_str = match &func.vararg_annotation {
-                Some(ann) => {
-                    let type_text = crate::annotations::format_annotation_type(ann);
-                    format!("...: {}", type_text)
-                }
+                Some(ann) => format_vararg_param(ann),
                 None => "...".to_string(),
             };
             all_args.push(vararg_str);
@@ -4934,10 +4955,7 @@ impl AnalysisResult {
                 let mut all_args = args;
                 if func.is_vararg {
                     let vararg_str = match &func.vararg_annotation {
-                        Some(ann) => {
-                            let type_text = crate::annotations::format_annotation_type(ann);
-                            format!("...: {}", type_text)
-                        }
+                        Some(ann) => format_vararg_param(ann),
                         None => "...".to_string(),
                     };
                     all_args.push(vararg_str);
@@ -5285,10 +5303,7 @@ impl AnalysisResult {
         let mut param_docs: Vec<Option<String>> = args.iter().map(|(_, _, desc)| desc.clone()).collect();
         if func.is_vararg {
             let vararg_str = match &func.vararg_annotation {
-                Some(ann) => {
-                    let type_text = crate::annotations::format_annotation_type(ann);
-                    format!("...: {}", type_text)
-                }
+                Some(ann) => format_vararg_param(ann),
                 None => "...".to_string(),
             };
             params.push(vararg_str);
@@ -5668,10 +5683,7 @@ impl AnalysisResult {
         let mut all_args = args;
         if func.is_vararg {
             let vararg_str = match &func.vararg_annotation {
-                Some(ann) => {
-                    let type_text = crate::annotations::format_annotation_type(ann);
-                    format!("...: {}", type_text)
-                }
+                Some(ann) => format_vararg_param(ann),
                 None => "...".to_string(),
             };
             all_args.push(vararg_str);
@@ -6349,8 +6361,8 @@ impl AnalysisResult {
 
         if is_param_decl {
             if let Some(ref ann) = func.vararg_annotation {
-                let type_text = crate::annotations::format_annotation_type(ann);
-                let type_str = format!("(param) ...: {}", type_text);
+                let vararg_text = format_vararg_param(ann);
+                let type_str = format!("(param) {}", vararg_text);
                 return Some(HoverResult { type_str, doc: func.vararg_description.clone() });
             }
             return Some(HoverResult { type_str: "(param) ...".to_string(), doc: None });
@@ -6367,8 +6379,8 @@ impl AnalysisResult {
         }
 
         if let Some(ref ann) = func.vararg_annotation {
-            let type_text = crate::annotations::format_annotation_type(ann);
-            let type_str = format!("(varargs) ...: {}", type_text);
+            let vararg_text = format_vararg_param(ann);
+            let type_str = format!("(varargs) {}", vararg_text);
             return Some(HoverResult { type_str, doc: func.vararg_description.clone() });
         }
 
@@ -6922,7 +6934,7 @@ impl AnalysisResult {
         let mut all_args = args;
         if func.is_vararg {
             let vararg_str = match &func.vararg_annotation {
-                Some(ann) => format!("...: {}", crate::annotations::format_annotation_type(ann)),
+                Some(ann) => format_vararg_param(ann),
                 None => "...".to_string(),
             };
             all_args.push(vararg_str);

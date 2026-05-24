@@ -31,10 +31,19 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
         }
         AnnotationType::Backtick(inner) => format_annotation_type(inner),
         AnnotationType::NonNil(inner) => format!("{}!", format_annotation_type(inner)),
-        AnnotationType::Intersection(types) => types.iter()
-            .map(format_annotation_type)
-            .collect::<Vec<_>>()
-            .join(" & "),
+        AnnotationType::Intersection(types) => {
+            let formatted = types.iter()
+                .map(format_annotation_type)
+                .collect::<Vec<_>>()
+                .join(" & ");
+            // Single-element intersection from `& ...M` syntax — preserve the
+            // leading `&` so it round-trips correctly.
+            if types.len() == 1 && matches!(&types[0], AnnotationType::VarArgs(_)) {
+                format!("& {}", formatted)
+            } else {
+                formatted
+            }
+        }
         AnnotationType::Fun(params, returns, is_vararg) => {
             let mut args: Vec<String> = params.iter().map(|p| {
                 let suffix = if p.optional { "?" } else { "" };
@@ -181,6 +190,17 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     if s.is_empty() { return AnnotationType::Simple(s.to_string()); }
     if s.len() >= 2 && s.starts_with('`') && s.ends_with('`') {
         return AnnotationType::Backtick(Box::new(parse_type(&s[1..s.len()-1])));
+    }
+    // `& ...M` — intersection-of-varargs: a single value that is the intersection
+    // of all types collected by the variadic generic `...M`.  Parses as
+    // `Intersection([VarArgs(M)])` so the VarArgs expands inside the intersection
+    // during generic substitution, just like `T & ...M`.
+    if let Some(rest) = s.strip_prefix('&') {
+        let rest = rest.trim();
+        if rest.starts_with("...") {
+            let inner = parse_type(rest);
+            return AnnotationType::Intersection(vec![inner]);
+        }
     }
     // Handle `...` prefix before `!`/`?` suffixes so that `...T?` parses as
     // `VarArgs(T?)` rather than `Union(VarArgs(T), nil)`.  This keeps the

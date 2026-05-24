@@ -328,8 +328,9 @@ local _mxTwo = Mixin(_mxFrame, MixinAlpha, MixinBeta)
 local _mxThree = Mixin(_mxFrame, MixinAlpha, MixinBeta, MixinGamma)
 --     ^ hover: (local) _mxThree: Frame & MixinAlpha & MixinBeta & MixinGamma
 
--- CreateFromMixins: single mixin
+-- CreateFromMixins: hover on the function itself shows ...M (not ......M)
 local _cfmOne = CreateFromMixins(MixinAlpha)
+--              ^ hover: (global) function CreateFromMixins(...M)\n  -> & ...M
 --     ^ hover: (local) _cfmOne: MixinAlpha
 --     ^ diag: none
 

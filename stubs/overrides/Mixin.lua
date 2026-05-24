@@ -10,15 +10,15 @@
 ---@generic T, ...M
 ---@narrows-arg 1
 ---@param object T
----@param ... any
+---@param ... ...M
 ---@return T & ...M
 function Mixin(object, ...) end
 
 -- CreateFromMixins(...) creates a new empty table and copies from N mixins.
 -- The return type is mixin1 & mixin2 & ...
 ---@generic ...M
----@param ... any
----@return ...M
+---@param ... ...M
+---@return & ...M
 function CreateFromMixins(...) end
 
 -- CreateAndInitFromMixin(mixin, ...) creates from a single mixin, calls

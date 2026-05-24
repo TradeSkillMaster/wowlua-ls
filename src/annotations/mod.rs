@@ -1187,6 +1187,17 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     optional: is_optional,
                     description,
                 });
+            } else if rest.starts_with("...") && rest.len() > 3 {
+                // Shorthand: `@param ...M` → name "...", type "...M".
+                // Descriptions require the explicit `@param ... ...M description` form;
+                // this shorthand path only handles the bare `@param ...M` case.
+                let typ = parse_type(rest);
+                block.params.push(ParamInfo {
+                    name: "...".to_string(),
+                    typ,
+                    optional: false,
+                    description: None,
+                });
             }
         } else if let Some(rest) = content.strip_prefix("@return") {
             let rest = rest.trim();
