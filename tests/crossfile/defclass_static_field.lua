@@ -31,7 +31,7 @@ local act = inst.active
 -- @return built : Parent — test parent class inheritance on built types
 local inst2 = Element._SCHEMA:CreateInstanceWithParent()
 local gv_top = inst2.GetValue
---    ^ hover: (local) gv_top: function
+--    ^ hover: (local) function gv_top(self: any, key: string)
 
 function Element:__init()
     local inst = Element._SCHEMA:CreateInstance()

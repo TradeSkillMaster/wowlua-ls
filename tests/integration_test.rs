@@ -2266,6 +2266,17 @@ fn crossfile_callable_field() {
 }
 
 #[test]
+fn crossfile_field_fun_completion() {
+    // @field fun() types from workspace-scanned classes should be fully materialized,
+    // enabling string literal completions and call resolution
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/field_fun_comp_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_and_chain() {
     // And-chaining on addon namespace fields should infer RHS type (not union)
     run_annotation_tests(&TestConfig {

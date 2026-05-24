@@ -268,8 +268,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 } else {
                     let gen_context: Vec<(String, Option<String>)> = self.tables[local_idx].class_type_params.iter()
                         .map(|tp| (tp.clone(), None)).collect();
-                    PreResolvedGlobals::resolve_annotation_gen(annotation_type, &self.classes, &self.aliases, &self.parameterized_aliases, &gen_context, &mut self.tables, &mut self.exprs)
-                        .or_else(|| self.resolve_annotation(annotation_type))
+                    self.resolve_field_annotation(annotation_type, &gen_context, dummy_node)
                 };
                 let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
                 if let Some(vt) = vt {
@@ -323,6 +322,69 @@ impl<'a> BuildOnStubsContext<'a> {
             self.tables[local_idx].call_func = Some(func_idx);
         }
 
+    }
+
+    /// Resolve a field annotation type, materializing `Fun(...)` types into proper
+    /// Function entries with parameter symbols. Without this, `@field name fun(...)`
+    /// from workspace-scanned classes would resolve to `Function(None)`, preventing
+    /// call resolution, string literal completions, and diagnostics.
+    fn resolve_field_annotation(
+        &mut self,
+        annotation_type: &AnnotationType,
+        gen_context: &[(String, Option<String>)],
+        dummy_node: DefNode,
+    ) -> Option<ValueType> {
+        match annotation_type {
+            AnnotationType::Fun(params, returns, is_vararg) => {
+                Some(PreResolvedGlobals::materialize_fun_type(
+                    params, returns, *is_vararg, gen_context,
+                    dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
+                    &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                ))
+            }
+            AnnotationType::Union(members) => {
+                let converted: Vec<ValueType> = members.iter()
+                    .filter_map(|m| self.resolve_field_annotation(m, gen_context, dummy_node))
+                    .collect();
+                if converted.is_empty() {
+                    None
+                } else if converted.len() == 1 {
+                    converted.into_iter().next()
+                } else {
+                    Some(ValueType::Union(converted))
+                }
+            }
+            AnnotationType::NonNil(inner) => {
+                self.resolve_field_annotation(inner, gen_context, dummy_node)
+            }
+            AnnotationType::Intersection(parts) => {
+                let converted: Vec<ValueType> = parts.iter()
+                    .filter_map(|p| self.resolve_field_annotation(p, gen_context, dummy_node))
+                    .collect();
+                match converted.len() {
+                    0 => None,
+                    1 => converted.into_iter().next(),
+                    _ => Some(ValueType::Intersection(converted)),
+                }
+            }
+            AnnotationType::Array(inner) => {
+                if let Some(elem_vt) = self.resolve_field_annotation(inner, gen_context, dummy_node) {
+                    let table_idx = TableIndex(EXT_BASE + self.tables.len());
+                    self.tables.push(TableInfo {
+                        key_type: Some(ValueType::Number),
+                        value_type: Some(elem_vt),
+                        ..Default::default()
+                    });
+                    Some(ValueType::Table(Some(table_idx)))
+                } else {
+                    Some(ValueType::Table(None))
+                }
+            }
+            _ => {
+                PreResolvedGlobals::resolve_annotation_gen(annotation_type, &self.classes, &self.aliases, &self.parameterized_aliases, gen_context, &mut self.tables, &mut self.exprs)
+                    .or_else(|| self.resolve_annotation(annotation_type))
+            }
+        }
     }
 
     fn build_methods_and_table_fields(&mut self, ws_globals: &[crate::annotations::ExternalGlobal], ws_classes: &[ClassDecl]) {

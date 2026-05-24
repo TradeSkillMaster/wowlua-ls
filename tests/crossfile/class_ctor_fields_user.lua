@@ -17,7 +17,7 @@ local _d = StatusType.Inactive
 local _e = ItemKind.Weapon
 --                  ^ hover: (field) Weapon: string  diag: none
 local _f = ItemKind.Special
---                  ^ hover: (field) Special: function  diag: none
+--                  ^ hover: (field) function ItemKind.Special()  diag: none
 
 -- Global assignment class constructor fields should also work
 ---@type GlobalClassCtor
