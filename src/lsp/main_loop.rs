@@ -124,9 +124,10 @@ struct Document {
     /// `pending_text` coordinates.  See [`PendingEditMap`].
     pending_edit_map: Option<PendingEditMap>,
     /// Last-published diagnostics for this document, cached to avoid
-    /// recomputing all ~40 diagnostic passes on every `didChange` push.
-    /// Populated by Phase 4 and didOpen pushes, used by didChange
-    /// line-shifting for push-only clients.
+    /// recomputing all ~40 diagnostic passes on every `didChange` push or
+    /// `textDocument/diagnostic` pull request.  Populated by Phase 4 pushes,
+    /// didOpen pushes, and the pull handler; used by didChange line-shifting
+    /// for push-only clients.
     cached_diagnostics: Option<Vec<lsp_types::Diagnostic>>,
 }
 
@@ -1280,8 +1281,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // clients that handle it correctly (VS Code).
     let is_neovim = init_params.client_info.as_ref()
         .is_some_and(|info| info.name.to_lowercase().contains("neovim"));
-    log::info!("Client: {:?}, workspace_diagnostics: {}",
-        init_params.client_info.as_ref().map(|i| &i.name), !is_neovim);
+    log::info!("Client: {:?}, diagnostic_refresh: {}, workspace_diagnostics: {}",
+        init_params.client_info.as_ref().map(|i| &i.name),
+        supports_diagnostic_refresh_raw, !is_neovim);
 
     let supports_progress = client_capabilities.window
         .as_ref()
@@ -1351,18 +1353,14 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         code_lens_provider: Some(lsp_types::CodeLensOptions {
             resolve_provider: Some(true),
         }),
-        diagnostic_provider: if supports_diagnostic_refresh_raw {
-            Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
-                identifier: Some("wowlua-ls".to_string()),
-                inter_file_dependencies: true,
-                // Must be false for Neovim — see .claude/NEOVIM_DIAGNOSTICS.md.
-                // VS Code needs true to populate the Problems panel for unopened files.
-                workspace_diagnostics: !is_neovim,
-                work_done_progress_options: Default::default(),
-            }))
-        } else {
-            None
-        },
+        diagnostic_provider: Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
+            identifier: Some("wowlua-ls".to_string()),
+            inter_file_dependencies: true,
+            // Must be false for Neovim — see .claude/NEOVIM_DIAGNOSTICS.md.
+            // VS Code needs true to populate the Problems panel for unopened files.
+            workspace_diagnostics: !is_neovim,
+            work_done_progress_options: Default::default(),
+        })),
         ..ServerCapabilities::default()
     };
 
@@ -1502,7 +1500,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     // Pre-warm workspace diagnostic cache during startup so the first
     // `workspace/diagnostic` request from the editor is a cache hit.
-    if supports_diagnostic_refresh_raw && !ws.ws_file_globals.is_empty() {
+    // Skip for Neovim — it uses push-only diagnostics (workspace_diagnostics
+    // is false) so this cache would never be consumed.
+    if !is_neovim && !ws.ws_file_globals.is_empty() {
         if supports_progress {
             let file_count = ws.ws_file_globals.len();
             send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -5138,7 +5138,7 @@ fn handle_document_diagnostic(
         doc.toc = Some(toc);
         doc.dirty = false;
     }
-    let items = if let Some(doc) = documents.get(&uri_str) {
+    let items = if let Some(doc) = documents.get_mut(&uri_str) {
         // TOC document: run TOC-specific diagnostics.
         if let Some(toc) = &doc.toc {
             let toc_dir = uri_to_abs_path(uri)
@@ -5147,9 +5147,19 @@ fn handle_document_diagnostic(
             let toc_diags = crate::toc::diagnostics::run_diagnostics(toc, &toc_dir);
             convert_toc_diagnostics(toc_diags, &doc.text)
         }
-        // Open document: use cached tree and analysis.
+        // Open document: use cached diagnostics when available to avoid
+        // rerunning all ~40 diagnostic passes on every pull request.
+        // The cache is cleared when Phase 4 re-analyzes — it replaces the
+        // entire Document via documents.insert(), resetting cached_diagnostics
+        // to None — or when the file is re-opened.
         else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
-            let mut items = build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
+            let mut items = if let Some(ref cached) = doc.cached_diagnostics {
+                cached.clone()
+            } else {
+                let fresh = build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
+                doc.cached_diagnostics = Some(fresh.clone());
+                fresh
+            };
             if let Some((min_l, max_l, delta)) = doc.pending_line_delta {
                 // Text has changed but analysis hasn't run yet (Phase 4
                 // debounce pending).  Shift diagnostic positions by the net
@@ -5204,7 +5214,11 @@ fn handle_document_diagnostic(
 }
 
 /// Handle a `workspace/diagnostic` pull request (LSP 3.17).
-/// Returns diagnostics for every known file in the workspace.
+/// Returns diagnostics for workspace files that are NOT currently open.
+/// Open documents are served exclusively by `handle_document_diagnostic`
+/// (via `textDocument/diagnostic`) to avoid duplicate diagnostics — editors
+/// display workspace and document diagnostic results as separate entries.
+///
 /// Unopened files use a cache keyed by `ws_generation` to avoid re-analyzing
 /// hundreds of files on every request (which blocks the server and causes
 /// "Loading..." delays on hover).
@@ -5217,29 +5231,10 @@ fn handle_workspace_diagnostic(
 ) -> (WorkspaceDiagnosticReportResult, bool) {
     let mut items: Vec<WorkspaceDocumentDiagnosticReport> = Vec::new();
 
-    // Open documents: use cached analysis. Skip stub files — they should
-    // never contribute diagnostics to the Problems panel.
-    for (uri_str, doc) in documents {
-        let Ok(uri) = lsp_types::Uri::from_str(uri_str) else { continue };
-        if is_stub_path(&uri) { continue; }
-        if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
-            let diag_items = build_file_diagnostics(&uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
-            items.push(WorkspaceDocumentDiagnosticReport::Full(
-                WorkspaceFullDocumentDiagnosticReport {
-                    uri,
-                    version: None,
-                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                        result_id: None,
-                        items: diag_items,
-                    },
-                },
-            ));
-        }
-    }
-
-    // Workspace files not currently open: use cached diagnostics when available.
-    // The cache stores diagnostics for ALL workspace files (not just unopened ones),
-    // so we filter against currently-open documents when serving to avoid duplicates.
+    // Skip open documents — they are served by textDocument/diagnostic.
+    // Including them here would cause duplicate diagnostics because editors
+    // pull from both workspace/diagnostic and textDocument/diagnostic and
+    // display both sets independently.
     let open_uri_strs: HashSet<&str> = documents.keys().map(|s| s.as_str()).collect();
     let current_gen = ws.ws_generation;
     let needs_recompute = match ws.cached_ws_diagnostics {
@@ -5252,9 +5247,8 @@ fn handle_workspace_diagnostic(
 
     if let Some((_, ref cached)) = ws.cached_ws_diagnostics {
         for (uri_str, diag_items) in cached {
-            // Skip files that are currently open — they were already handled above
-            // with fresh analysis. Without this filter, opening/closing files between
-            // requests would produce duplicate entries.
+            // Skip files that are currently open — they are served by
+            // textDocument/diagnostic instead.
             if open_uri_strs.contains(uri_str.as_str()) {
                 continue;
             }
