@@ -1859,7 +1859,7 @@ impl BuildContext {
                 }).or_else(|| {
                     if g.name == crate::annotations::ADDON_NS_NAME {
                         let sub_idx = TableIndex(EXT_BASE + self.tables.len());
-                        self.tables.push(TableInfo::default());
+                        self.tables.push(TableInfo { placeholder: true, ..TableInfo::default() });
                         self.sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
                     } else {

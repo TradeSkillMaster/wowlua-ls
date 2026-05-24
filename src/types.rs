@@ -866,6 +866,12 @@ pub(crate) struct TableInfo {
     /// assignments or workspace scanning.
     #[serde(skip)]
     pub(crate) has_source_fields: bool,
+    /// True when this table is a workspace-scan placeholder created because a
+    /// function call return type could not be resolved (e.g. variadic generics).
+    /// Used by `is_table_subtype_impl` to accept any table value for such fields,
+    /// avoiding false `field-type-mismatch` diagnostics.
+    #[serde(skip)]
+    pub(crate) placeholder: bool,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────

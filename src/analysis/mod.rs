@@ -1928,6 +1928,12 @@ pub(crate) fn is_table_subtype_impl(
             if ir.is_subclass_of(*a, *b) { return true; }
             let at = ir.table(*a);
             let bt = ir.table(*b);
+            // Workspace-scan placeholder tables accept any table value.  These
+            // arise when a function call return type couldn't be resolved during
+            // cross-file scanning (e.g. variadic generics on CreateFromMixins).
+            if bt.placeholder {
+                return true;
+            }
             // Enum-like value-type compatibility: when the expected type is a class
             // with @field [string] V (directly or inherited), actual type V is
             // considered assignable. This is an intentional loosening for the common

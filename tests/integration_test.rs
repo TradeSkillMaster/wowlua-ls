@@ -1388,6 +1388,15 @@ fn crossfile_funcall_return() {
 }
 
 #[test]
+fn crossfile_generic_funcall_no_false_positive() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/generic_funcall_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_ns_alias_funcall() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/ns_alias_user.lua",
