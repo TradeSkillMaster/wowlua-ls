@@ -416,7 +416,7 @@ function _annot_def_test(f) end
 
 -- CreateFrame("Frame", nil, nil, "BackdropTemplate") returns Frame & BackdropTemplate
 local _bdFrame = CreateFrame("Frame", nil, nil, "BackdropTemplate")
---    ^ hover: (local) _bdFrame: Frame & BackdropTemplate
+--    ^ hover: (local) _bdFrame: BackdropTemplate {
 --    ^ diag: none
 
 -- CreateFrame("Frame", nil, parent) with 3 args should resolve generics, not show T & Tp | T

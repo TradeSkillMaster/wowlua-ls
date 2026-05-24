@@ -74,10 +74,10 @@ local panelTitle = host.Panel.Title
 --    ^ hover: (local) panelTitle: FontString
 -- Child with both inherits and mixin: intersection of template + mixin
 local abtn = host.ActionBtn
---    ^ hover: (local) abtn: MyButtonTemplate & MyBaseMixin
+--    ^ hover: (local) abtn: MyButtonTemplate {
 -- Mixin-only child: intersection of base element type + mixin
 local extra = host.Extra
---    ^ hover: (local) extra: Frame & MyBaseMixin
+--    ^ hover: (local) extra: MyBaseMixin {
 
 -- parentArray with inherits: array element type uses template
 ---@type ListFrame

@@ -4574,6 +4574,56 @@ impl AnalysisResult {
         formatted.to_string()
     }
 
+    /// Collect accessible fields from one or more tables, deduplicating by name.
+    /// Returns sorted, formatted field lines (e.g. `"  name: type"`).
+    fn collect_accessible_fields(
+        &self,
+        table_indices: &[TableIndex],
+        enclosing_class: Option<TableIndex>,
+    ) -> Vec<String> {
+        let indent = "  ";
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut fields: Vec<String> = Vec::new();
+        for &table_idx in table_indices {
+            let table = self.table(table_idx);
+            let overlay = self.ir.overlay_fields.get(&table_idx);
+            let is_enum = table.enum_kind.is_enum();
+            let is_accessible = |fi: &FieldInfo| -> bool {
+                match fi.visibility {
+                    crate::annotations::Visibility::Public => true,
+                    crate::annotations::Visibility::Private => {
+                        enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
+                    }
+                    crate::annotations::Visibility::Protected => {
+                        enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
+                    }
+                }
+            };
+            for (name, field_info) in &table.fields {
+                if seen.insert(name.as_str()) && is_accessible(field_info) {
+                    fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
+                }
+            }
+            if let Some(ov) = overlay {
+                for (name, field_info) in ov.iter() {
+                    if seen.insert(name.as_str()) && is_accessible(field_info) {
+                        fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
+                    }
+                }
+            }
+            for &parent_idx in &table.parent_classes {
+                let parent_table = self.table(parent_idx);
+                for (name, field_info) in &parent_table.fields {
+                    if seen.insert(name.as_str()) && is_accessible(field_info) {
+                        fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
+                    }
+                }
+            }
+        }
+        fields.sort();
+        fields
+    }
+
     /// Format a type for hover display, filtering out inaccessible private/protected fields.
     fn format_type_accessible(&self, vt: &ValueType, enclosing_class: Option<TableIndex>) -> String {
         if let ValueType::Table(Some(table_idx)) = vt {
@@ -4585,50 +4635,77 @@ impl AnalysisResult {
                 if !has_fields && !has_parents {
                     return class_name.clone();
                 }
-                let indent = "  ";
-                let is_accessible = |fi: &FieldInfo| -> bool {
-                    match fi.visibility {
-                        crate::annotations::Visibility::Public => true,
-                        crate::annotations::Visibility::Private => {
-                            enclosing_class.is_some_and(|ec| self.same_class(ec, *table_idx))
-                        }
-                        crate::annotations::Visibility::Protected => {
-                            enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, *table_idx))
-                        }
-                    }
-                };
-                let is_enum = table.enum_kind.is_enum();
-                let mut seen: HashSet<&str> = HashSet::new();
-                let mut fields: Vec<String> = table.fields.iter()
-                    .filter(|(_, fi)| is_accessible(fi))
-                    .map(|(name, field_info)| {
-                        seen.insert(name.as_str());
-                        self.format_enum_field_line(indent, name, field_info, is_enum, 0)
-                    }).collect();
-                if let Some(ov) = overlay {
-                    for (name, field_info) in ov.iter() {
-                        if seen.insert(name.as_str()) && is_accessible(field_info) {
-                            fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
-                        }
-                    }
-                }
-                // Include inherited fields from parent classes
-                for &parent_idx in &table.parent_classes {
-                    let parent_table = self.table(parent_idx);
-                    for (name, field_info) in &parent_table.fields {
-                        if seen.insert(name.as_str()) && is_accessible(field_info) {
-                            fields.push(self.format_enum_field_line(indent, name, field_info, is_enum, 0));
-                        }
-                    }
-                }
+                let fields = self.collect_accessible_fields(&[*table_idx], enclosing_class);
                 if fields.is_empty() {
                     return class_name.clone();
                 }
-                fields.sort();
                 return format!("{} {{\n{}\n}}", class_name, fields.join(",\n"));
             }
         }
+        if let ValueType::Intersection(types) = vt {
+            // Flatten nested intersections.
+            let flat = Self::flatten_intersection(types);
+
+            // Collect table indices from members.
+            let table_indices: Vec<TableIndex> = flat.iter()
+                .filter_map(|t| if let ValueType::Table(Some(idx)) = t { Some(*idx) } else { None })
+                .collect();
+
+            if !table_indices.is_empty() {
+                // Dedup: remove members that are ancestors of another member.
+                // e.g. if MixinClass : Frame, then Frame & MixinClass → MixinClass
+                let deduped: Vec<&ValueType> = flat.iter().copied().filter(|t| {
+                    if let ValueType::Table(Some(idx)) = t {
+                        // Drop this member if some OTHER table member is a subclass of it
+                        !table_indices.iter().any(|&other| other != *idx && self.is_subclass_of(other, *idx))
+                    } else {
+                        true
+                    }
+                }).collect();
+
+                // Build header line with deduped member names (depth 1 → class names only).
+                // Skip anonymous tables with fields — they'd expand inline in the header
+                // but their fields are already shown in the vertical block below.
+                let header_parts: Vec<String> = deduped.iter()
+                    .filter(|t| {
+                        if let ValueType::Table(Some(idx)) = t {
+                            let tbl = self.table(*idx);
+                            // Keep: named classes, array/map tables. Skip: anonymous field tables.
+                            tbl.class_name.is_some() || tbl.value_type.is_some() || tbl.fields.is_empty()
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|t| self.format_value_type_depth(t, 1))
+                    .collect();
+                let header = header_parts.join(" & ");
+
+                // If all members were filtered from the header, fall back to compact format.
+                if header.is_empty() {
+                    return self.format_type(vt);
+                }
+
+                let fields = self.collect_accessible_fields(&table_indices, enclosing_class);
+                if fields.is_empty() {
+                    return header;
+                }
+                return format!("{} {{\n{}\n}}", header, fields.join(",\n"));
+            }
+        }
         self.format_type(vt)
+    }
+
+    /// Flatten nested `Intersection` types into a single flat list.
+    fn flatten_intersection(types: &[ValueType]) -> Vec<&ValueType> {
+        let mut flat = Vec::new();
+        for t in types {
+            if let ValueType::Intersection(inner) = t {
+                flat.extend(Self::flatten_intersection(inner));
+            } else {
+                flat.push(t);
+            }
+        }
+        flat
     }
 
     pub(crate) fn format_type_depth(&self, vt: &ValueType, depth: usize) -> String {

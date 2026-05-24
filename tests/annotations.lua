@@ -487,7 +487,32 @@ end
 -- {[K]: V} with additional named fields
 ---@type {[string]: number, count: number}
 local _mixedTable = {}
---    ^ hover: (local) _mixedTable: table<string, number> & {count: number}
+--    ^ hover: (local) _mixedTable: table<string, number> {\n  count: number\n}
+
+-- Intersection hover: two named classes expand fields vertically
+---@class IHoverA
+---@field alpha number
+---@class IHoverB
+---@field beta string
+---@type IHoverA & IHoverB
+local _iHoverAB = {}
+--    ^ hover: (local) _iHoverAB: IHoverA & IHoverB {\n  alpha: number,\n  beta: string\n}
+
+-- Intersection hover: no fields stays compact
+---@class IHoverEmpty1
+---@class IHoverEmpty2
+---@type IHoverEmpty1 & IHoverEmpty2
+local _iHoverEmpty = {}
+--    ^ hover: (local) _iHoverEmpty: IHoverEmpty1 & IHoverEmpty2
+
+-- Intersection hover: parent class dedup (MixinChild inherits ParentBase)
+---@class IHoverParent
+---@field parentField number
+---@class IHoverChild : IHoverParent
+---@field childField string
+---@type IHoverParent & IHoverChild
+local _iHoverDedup = {}
+--    ^ hover: (local) _iHoverDedup: IHoverChild {\n  childField: string,\n  parentField: number\n}
 
 -- Inline @type inside table constructor opening brace: { ---@type Foo ... }
 ---@class InlineTCType
