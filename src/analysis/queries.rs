@@ -1936,10 +1936,26 @@ impl AnalysisResult {
             // Handle function call return completions: func(). or func():
             // The token before the dot is ')' (RightBracket), so resolve the FunctionCall
             let table_idx = if token.kind() == SyntaxKind::RightBracket {
-                let funcall_node = token.parent().filter(|p| p.kind() == SyntaxKind::ArgumentList)
+                if let Some(funcall_node) = token.parent().filter(|p| p.kind() == SyntaxKind::ArgumentList)
                     .and_then(|al| al.parent())
-                    .filter(|p| p.kind() == SyntaxKind::FunctionCall || p.kind() == SyntaxKind::MethodCall)?;
-                Some(self.resolve_funcall_node_to_table(&funcall_node, text_size)?)
+                    .filter(|p| p.kind() == SyntaxKind::FunctionCall || p.kind() == SyntaxKind::MethodCall)
+                {
+                    Some(self.resolve_funcall_node_to_table(&funcall_node, text_size)?)
+                } else if let Some(grouped) = token.parent().filter(|p| p.kind() == SyntaxKind::GroupedExpression) {
+                    // ("str"). or ("str"):  — grouped expression containing a string literal
+                    let vt = Self::resolve_literal_receiver_type(&grouped)?;
+                    let mut indices = Vec::new();
+                    self.ir.collect_library_table_indices(&vt, &mut indices);
+                    Some(*indices.first()?)
+                } else {
+                    return None;
+                }
+            } else if token.kind() == SyntaxKind::String {
+                // "str". or "str":  — bare string literal
+                let vt = ValueType::String(None);
+                let mut indices = Vec::new();
+                self.ir.collect_library_table_indices(&vt, &mut indices);
+                Some(*indices.first()?)
             } else if token.kind() != SyntaxKind::Name {
                 return None;
             } else if let Some(parent) = token.parent() {
@@ -3705,6 +3721,11 @@ impl AnalysisResult {
                 self.resolve_funcall_node_to_table(&funcall_node, scope_offset)?
             } else if let Some(ident_node) = node.children().find(|c| c.kind().is_identifier()) {
                 self.resolve_identifier_to_table(&ident_node, scope_offset)?
+            } else if let Some(vt) = Self::resolve_literal_receiver_type(node) {
+                // String literal receiver: "str":method() or ("str"):method()
+                let mut indices = Vec::new();
+                self.ir.collect_library_table_indices(&vt, &mut indices);
+                *indices.first()?
             } else {
                 return None;
             };
@@ -3947,7 +3968,8 @@ impl AnalysisResult {
         ver.resolved_type.clone()
     }
 
-    /// Resolve a receiver (identifier or funcall) to all table indices (intersection-aware).
+    /// Resolve a receiver (identifier, funcall, grouped expression, or string literal)
+    /// to all table indices (intersection-aware).
     /// Returns all table members from the resolved type, not just the first.
     fn resolve_receiver_to_all_tables(&self, parent: &SyntaxNode, scope_offset: TextSize) -> Vec<TableIndex> {
         let is_call_node = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
@@ -3962,6 +3984,14 @@ impl AnalysisResult {
                     return indices;
                 }
             }
+        // Handle string literal receivers: ("str"):method() or "str":method()
+        if let Some(vt) = Self::resolve_literal_receiver_type(parent) {
+            let mut indices = Vec::new();
+            self.ir.collect_library_table_indices(&vt, &mut indices);
+            if !indices.is_empty() {
+                return indices;
+            }
+        }
         // Fallback: single table from existing resolution
         let table_idx = if let Some(funcall_node) = parent.children().find(|c| is_call_node(c.kind())) {
             self.resolve_funcall_node_to_table(&funcall_node, scope_offset)
@@ -3971,6 +4001,26 @@ impl AnalysisResult {
             None
         };
         table_idx.into_iter().collect()
+    }
+
+    /// Check if a node contains a string literal (directly or inside a GroupedExpression).
+    /// Returns `Some(ValueType::String(None))` for string literal receivers.
+    fn resolve_literal_receiver_type(node: &SyntaxNode) -> Option<ValueType> {
+        for child in node.children() {
+            match child.kind() {
+                SyntaxKind::Literal => {
+                    if child.children_with_tokens().any(|t|
+                        t.as_token().is_some_and(|tok| tok.kind() == SyntaxKind::String)) {
+                        return Some(ValueType::String(None));
+                    }
+                }
+                SyntaxKind::GroupedExpression => {
+                    return Self::resolve_literal_receiver_type(&child);
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Resolve a field name inside a table constructor (e.g. `components` in `{ components = {} }`).
@@ -5172,7 +5222,32 @@ impl AnalysisResult {
         }
 
         let scope_idx = self.scope_at_offset(text_size)?;
-        let func_idx = if names.len() == 1 {
+
+        // String literal method call: "str":method() or ("str"):method()
+        // names will be just ["method"] with no preceding identifier to look up.
+        let string_literal_method = if names.len() == 1
+            && call_node.kind() == SyntaxKind::MethodCall
+            && Self::resolve_literal_receiver_type(&call_node).is_some()
+        {
+            let method_name = &names[0];
+            let vt = ValueType::String(None);
+            let mut indices = Vec::new();
+            self.ir.collect_library_table_indices(&vt, &mut indices);
+            indices.first().and_then(|&table_idx| {
+                let field_expr = self.get_field(table_idx, method_name)?.expr;
+                let ft = self.resolve_expr_type(field_expr)?;
+                match ft {
+                    ValueType::Function(Some(idx)) => Some(idx),
+                    _ => None,
+                }
+            })
+        } else {
+            None
+        };
+
+        let func_idx = if let Some(idx) = string_literal_method {
+            idx
+        } else if names.len() == 1 {
             // Simple function call: foo()
             let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
             let ver = self.sym(symbol_idx).versions.iter().rev()

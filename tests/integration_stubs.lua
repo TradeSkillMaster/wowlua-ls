@@ -928,6 +928,16 @@ local optStr = maybeGetStr()
 optStr:upper()
 --     ^ hover: (method) function stringlib:upper(s: string | number)  def: external
 
+-- ── String method calls on string literals ──────────────────────────────────
+-- Parenthesized string literal: ("str"):method()
+local fmtResult = ("|T%s:%d|t"):format("icon", 16)
+--                              ^ hover: (method) function stringlib:format(  def: external
+--                                      ^ sig: fun(s: string | number, ...: any): string
+
+-- Bare string literal: "str":method()
+local upperResult = "hello":upper()
+--                          ^ hover: (method) function stringlib:upper(s: string | number)  def: external
+
 -- ── Enum value hover should show literal values ────────────────────────────
 local _mana = Enum.PowerType.Mana
 --                           ^ hover: (field) Mana: number = 0
