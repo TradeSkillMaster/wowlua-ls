@@ -1,4 +1,12 @@
 -- Test: .toc SavedVariables treated as allowed globals
+
+-- Addon folder name inferred from .toc file location.
+-- The literal "saved-variables" comes from this test's directory name
+-- (the directory containing TestAddon.toc), matching WoW's runtime behavior
+-- where the addon name is always the containing folder name.
+local addonName, ns = ...
+--    ^ hover: (local) addonName: "saved-variables"
+
 local function _consume(...) end
 
 -- Should NOT warn: SavedVariables declared in TestAddon.toc

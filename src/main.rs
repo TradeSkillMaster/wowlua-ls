@@ -204,6 +204,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 correlated_return_overloads: project_configs.correlated_return_overloads_for(&file_path),
                 implicit_protected_prefix: project_configs.implicit_protected_prefix_for(&file_path),
                 addon_table_override,
+                addon_folder_name: project_configs.addon_name_for(&file_path),
             },
         );
         analysis.resolve_types();
@@ -593,6 +594,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
                         implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),
                         addon_table_override,
+                        addon_folder_name: project_configs.addon_name_for(path),
                     },
                 );
                 analysis.resolve_types();
@@ -747,6 +749,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
                         implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),
                         addon_table_override,
+                        addon_folder_name: project_configs.addon_name_for(path),
                     },
                 );
                 analysis.resolve_types();

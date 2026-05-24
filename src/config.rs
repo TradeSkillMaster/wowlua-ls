@@ -216,6 +216,9 @@ pub struct ProjectConfigs {
     /// Files listed in multiple TOCs get the union. Intersected with the
     /// project-level `flavors` from `.wowluarc.json` in `flavors_for()`.
     toc_file_flavors: HashMap<PathBuf, u8>,
+    /// Directories that contain at least one `.toc` file. Used to infer the
+    /// addon folder name for file-level `...` vararg typing.
+    toc_directories: HashSet<PathBuf>,
 }
 
 
@@ -238,6 +241,10 @@ impl ProjectConfigs {
     /// existing entry for `dir` if one exists, otherwise creates a new entry.
     pub fn try_load_toc(&mut self, dir: &Path) {
         let toc_data = parse_toc_files(dir);
+
+        if toc_data.has_toc {
+            self.toc_directories.insert(dir.to_path_buf());
+        }
 
         if !toc_data.saved_variables.is_empty() {
             let saved_vars = toc_data.saved_variables;
@@ -533,6 +540,38 @@ impl ProjectConfigs {
             .collect()
     }
 
+    /// Infer the addon folder name for a file. Returns the directory name
+    /// of the addon root (from `addon_root` config or `.toc` file location).
+    /// This is used to type the first file-level `...` vararg as a string literal.
+    pub fn addon_name_for(&self, file_path: &Path) -> Option<String> {
+        // 1. Explicit addon_root config takes priority
+        if let Some(root) = self.addon_root_for(file_path) {
+            return root.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string());
+        }
+        // 2. Walk ancestors looking for a directory with .toc files.
+        //    Bound the walk to the shallowest known project root (entries dir)
+        //    so we don't traverse all the way to `/` on deep paths.
+        let project_root = self.entries.iter()
+            .filter(|(dir, _)| file_path.starts_with(dir))
+            .min_by_key(|(dir, _)| dir.components().count())
+            .map(|(dir, _)| dir.as_path());
+        let mut dir = file_path.parent();
+        while let Some(d) = dir {
+            if self.toc_directories.contains(d) {
+                return d.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string());
+            }
+            if project_root.is_some_and(|root| d == root) {
+                break;
+            }
+            dir = d.parent();
+        }
+        None
+    }
+
     /// Returns whether snippet completions are enabled for the given file (default: true).
     pub fn completion_snippets_for(&self, file_path: &Path) -> bool {
         self.deepest_bool(file_path, |c| c.completion_snippets, true)
@@ -628,6 +667,7 @@ fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
 struct TocParseResult {
     saved_variables: HashSet<String>,
     file_flavors: HashMap<PathBuf, u8>,
+    has_toc: bool,
 }
 
 /// Extract the flavor suffix from a TOC filename stem. Returns `(base_name, flavor_mask)`
@@ -650,7 +690,7 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
 
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return TocParseResult { saved_variables, file_flavors: HashMap::new() },
+        Err(_) => return TocParseResult { saved_variables, file_flavors: HashMap::new(), has_toc: false },
     };
 
     // Collect all TOC files, classifying them by base addon name and suffix.
@@ -799,7 +839,7 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
     // Don't store entries where the effective flavor is FLAVOR_ALL — no restriction
     file_flavors.retain(|_, v| *v != crate::flavor::FLAVOR_ALL);
 
-    TocParseResult { saved_variables, file_flavors }
+    TocParseResult { saved_variables, file_flavors, has_toc: !toc_entries.is_empty() }
 }
 
 /// Expand `[Family]` and `[Game]` variables in a TOC file path. Each expansion

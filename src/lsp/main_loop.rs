@@ -1596,6 +1596,7 @@ fn analyze_lua_parsed(
             correlated_return_overloads: configs.correlated_return_overloads_for(&file_path),
             implicit_protected_prefix: configs.implicit_protected_prefix_for(&file_path),
             addon_table_override,
+            addon_folder_name: configs.addon_name_for(&file_path),
         },
     );
     analysis.resolve_types();
@@ -4164,6 +4165,7 @@ fn find_references_across_workspace(
                     correlated_return_overloads: ws.configs.correlated_return_overloads_for(path),
                     implicit_protected_prefix: ws.configs.implicit_protected_prefix_for(path),
                     addon_table_override,
+                    addon_folder_name: ws.configs.addon_name_for(path),
                 },
             );
             analysis.resolve_types();
@@ -4567,6 +4569,7 @@ fn handle_incoming_calls(
                         correlated_return_overloads: ws.configs.correlated_return_overloads_for(path),
                         implicit_protected_prefix: ws.configs.implicit_protected_prefix_for(path),
                         addon_table_override,
+                        addon_folder_name: ws.configs.addon_name_for(path),
                     },
                 );
                 analysis.resolve_types();
@@ -4919,6 +4922,7 @@ fn try_batch_analyze(
                     correlated_return_overloads: configs.correlated_return_overloads_for(&file_path),
                     implicit_protected_prefix: configs.implicit_protected_prefix_for(&file_path),
                     addon_table_override,
+                    addon_folder_name: configs.addon_name_for(&file_path),
                 },
             );
             analysis.resolve_types();

@@ -144,6 +144,9 @@ pub(crate) struct Ir {
     /// workspace), this file uses its own addon's table instead of the global
     /// `ext.addon_table_idx`. Set via `AnalysisConfig::addon_table_override`.
     pub(crate) addon_table_override: Option<TableIndex>,
+    /// Addon folder name for typing the first file-level `...` vararg as a
+    /// string literal (e.g. `"MyAddon"` instead of `string`).
+    pub(crate) addon_folder_name: Option<String>,
     /// Maps string-literal ExprIds to their `expression<C, R>` context.
     /// Populated during call resolution when a string arg matches an
     /// `expression<C, R>` parameter annotation.
@@ -1501,6 +1504,10 @@ pub struct AnalysisConfig {
     /// Per-file addon namespace table override for multi-addon workspaces.
     /// When set, this file sees only its own addon's namespace table.
     pub addon_table_override: Option<TableIndex>,
+    /// Addon folder name inferred from `.toc` file location or `addon_root` config.
+    /// When set, the first file-level `...` vararg is typed as this string literal
+    /// instead of plain `string`.
+    pub addon_folder_name: Option<String>,
 }
 
 impl Default for AnalysisConfig {
@@ -1515,6 +1522,7 @@ impl Default for AnalysisConfig {
             correlated_return_overloads: true,
             implicit_protected_prefix: false,
             addon_table_override: None,
+            addon_folder_name: None,
         }
     }
 }
@@ -1536,6 +1544,7 @@ impl<'a> Analysis<'a> {
             correlated_return_overloads,
             implicit_protected_prefix,
             addon_table_override,
+            addon_folder_name,
         } = config;
 
         // Compute _G table index from PreResolvedGlobals for field-to-global redirect
@@ -1589,6 +1598,7 @@ impl<'a> Analysis<'a> {
                 varargs_scope: HashMap::new(),
                 event_type_display: HashMap::new(),
                 addon_table_override,
+                addon_folder_name,
                 expression_args: HashMap::new(),
                 synthesized_overload_funcs: HashSet::new(),
                 tc_expected_class: HashMap::new(),

@@ -2280,7 +2280,7 @@ impl<'a> Analysis<'a> {
                 if *file_level {
                     // WoW passes (addonName: string, addonTable: table) at file scope
                     match ret_index {
-                        0 => Some(ValueType::String(None)),
+                        0 => Some(ValueType::String(self.ir.addon_folder_name.clone())),
                         1 => {
                             if let Some(addon_idx) = self.ir.addon_table_idx() {
                                 Some(ValueType::Table(Some(addon_idx)))

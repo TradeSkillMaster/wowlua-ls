@@ -116,6 +116,7 @@ fn run_annotation_tests(config: &TestConfig) {
             correlated_return_overloads: project_configs.correlated_return_overloads_for(&file_path),
             implicit_protected_prefix: project_configs.implicit_protected_prefix_for(&file_path),
             addon_table_override,
+            addon_folder_name: project_configs.addon_name_for(&file_path),
         },
     );
     analysis.resolve_types();
@@ -2571,6 +2572,7 @@ fn analyze_source_with_tree(source: &str) -> (wowlua_ls::syntax::tree::SyntaxTre
             correlated_return_overloads: true,
             implicit_protected_prefix: false,
             addon_table_override: None,
+            addon_folder_name: None,
         },
     );
     analysis.resolve_types();
