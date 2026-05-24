@@ -26,6 +26,7 @@ The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Ann
 
 - **`api/builds/{product}/latest`** — Fetched to discover the latest build number for a given WoW product (e.g. `wow` for retail). Returns JSON with a `version` field (e.g. `12.0.5.67602`).
 - **`db2/GlobalStrings/csv?build={build}&locale=enUS`** — Full CSV export of the `GlobalStrings` DB2 table for the given build. Columns: `ID`, `BaseTag` (variable name), `TagText_lang` (English string value), `Flags`. Used to generate `GlobalStrings.lua`. CRLF line endings in values are normalised to LF. All valid identifier names not already covered by hand-written stubs are emitted directly.
+- **`db2/GlobalColor/csv`** — Full CSV export of the `GlobalColor` DB2 table (no build filter — uses latest available data for maximum coverage). Columns: `ID`, `LuaConstantName`, `Color` (signed int32, packed ARGB). Used to generate `GlobalColors.lua`. For each entry, two globals are emitted: the color object itself (typed `colorRGBA`) and a `_CODE` string variant (e.g. `GREEN_FONT_COLOR` and `GREEN_FONT_COLOR_CODE`). The `_CODE` variants are color escape strings generated at runtime by WoW's FrameXML via `GenerateHexColorMarkup()`.
 
 ### 3. Ketho/BlizzardInterfaceResources
 
@@ -59,7 +60,7 @@ Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments 
 
 ### 6. Local overrides
 
-Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). Currently 24 files:
+Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). Currently 26 files:
 
 | File | Purpose |
 |------|---------|
@@ -68,6 +69,7 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `CreateFrame.lua` | Intersection types: `CreateFrame(..., template) → T & Tp` |
 | `GetCursorInfo.lua` | Cursor info return type overloads |
 | `HookScript.lua` | Event handler hook typing |
+| `IsObjectType.lua` | `@type-narrows` for `IsObjectType()` → frame subclass narrowing |
 | `LibStub.lua` | Library version management |
 | `Mixin.lua` | Variadic generics: `Mixin(T, ...M) → T & ...M` |
 | `NamePlateBaseMixin.lua` | Base mixin for name plates |
@@ -80,6 +82,7 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `newproxy.lua` | Userdata proxy creation |
 | `next.lua` | Generic next iterator with `K!, V!` |
 | `pairs.lua` | Generic iterator with `K!, V!` (non-nil keys/values) |
+| `PlaySound.lua` | String channel override for `uiSoundSubType` (Blizzard docs say enum, Lua takes strings) |
 | `pcall.lua` | Generic success/error tuple returns |
 | `pcallwithenv.lua` | Generic pcall variant with environment |
 | `plugin_api.lua` | Plugin diagnostic API types |
@@ -90,12 +93,13 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 
 ## Generated stub files
 
-The pipeline produces these intermediate Lua files (held in memory, not written to disk):
+The pipeline produces these intermediate Lua files (written to a temp directory for scanning, not persisted):
 
 | File | Source |
 |------|--------|
 | `GlobalStrings.lua` | wago.tools `db2/GlobalStrings` (latest retail build, `enUS` locale) |
-| `GlobalVariables.lua` | BlizzardInterfaceResources global name lists (names not covered by GlobalStrings) |
+| `GlobalColors.lua` | wago.tools `db2/GlobalColor` (~360 `colorRGBA` objects + `_CODE` string variants) |
+| `GlobalVariables.lua` | BlizzardInterfaceResources global name lists (names not covered by GlobalStrings or GlobalColors) |
 | `ClassicGlobals.lua` | BlizzardInterfaceResources diff + wiki scraping + APIDocumentation + `LE_*` constants + XML frame globals |
 | `WikiGlobals.lua` | Wiki category query function names + wiki scraping |
 | `BlizzardAPI.lua` | Blizzard `APIDocumentationGenerated` functions (deduped against Ketho) |
@@ -115,7 +119,7 @@ The pipeline produces these intermediate Lua files (held in memory, not written 
 
 The main blob contains the fully resolved type database (~150k symbols, ~45k functions, ~24k tables, ~21k classes, ~103k globals). The files blob contains the source text of all referenced stub files (~2,800 files) so the LSP can support go-to-definition into stub code.
 
-Blob version is currently **24** and is incremented whenever `PreResolvedGlobals`, `ClassDecl`, `ExternalGlobal`, or any serialized type changes shape.
+The blob version is incremented whenever `PreResolvedGlobals`, `ClassDecl`, `ExternalGlobal`, or any serialized type changes shape.
 
 ## Loading
 

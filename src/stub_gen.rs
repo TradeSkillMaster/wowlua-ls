@@ -618,6 +618,84 @@ fn parse_globalstrings_csv(content: &str) -> HashMap<String, String> {
     map
 }
 
+/// Parse GlobalColor DB2 CSV from wago.tools.
+/// Returns a sorted vec of `(name, packed_argb)` pairs. The packed value is a
+/// signed i32 reinterpreted as unsigned 0xAARRGGBB — used to emit real `_CODE`
+/// color escape strings (e.g. `"|cff19ff19"`).
+/// Skips entries with non-identifier names (e.g. names containing spaces)
+/// and entries where the Color column doesn't parse as a number.
+fn parse_globalcolors_csv(content: &str) -> Vec<(String, i32)> {
+    let mut lines = content.lines();
+
+    let header = match lines.next() {
+        Some(h) => parse_csv_record(h),
+        None => return Vec::new(),
+    };
+    let name_col = header.iter().position(|h| h == "LuaConstantName")
+        .unwrap_or_else(|| panic!("GlobalColor CSV missing 'LuaConstantName' column (got: {header:?})"));
+    let color_col = header.iter().position(|h| h == "Color")
+        .unwrap_or_else(|| panic!("GlobalColor CSV missing 'Color' column (got: {header:?})"));
+
+    let ident_re = regex_lite::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
+    let mut entries = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let fields = parse_csv_record(line);
+        let name = fields.get(name_col).map(|s| s.as_str()).unwrap_or("");
+        let color_str = fields.get(color_col).map(|s| s.as_str()).unwrap_or("");
+        if ident_re.is_match(name)
+            && let Ok(v) = color_str.parse::<i32>() {
+                entries.push((name.to_string(), v));
+            }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
+
+/// Convert a packed ARGB i32 to a WoW color escape string (e.g. `|cff19ff19`).
+fn packed_argb_to_color_code(packed: i32) -> String {
+    let u = packed as u32;
+    let r = (u >> 16) & 0xFF;
+    let g = (u >> 8) & 0xFF;
+    let b = u & 0xFF;
+    format!("|cff{r:02x}{g:02x}{b:02x}")
+}
+
+/// Generate GlobalColors.lua content: `colorRGBA` objects and `_CODE` string variants.
+fn generate_globalcolors_lua(
+    colors: &[(String, i32)],
+    existing: &HashSet<String>,
+    globalstrings: &HashMap<String, String>,
+) -> String {
+    let mut lines = vec![
+        "---@meta _".to_string(),
+        "-- WoW global color constants (auto-generated from wago.tools GlobalColor DB2)".to_string(),
+        String::new(),
+    ];
+    let mut emitted = 0usize;
+    for (name, packed) in colors {
+        // Skip colors already defined in GlobalStrings (unlikely but avoids conflicting types).
+        if globalstrings.contains_key(name) {
+            continue;
+        }
+        if !existing.contains(name) {
+            lines.push("---@type colorRGBA".to_string());
+            lines.push(format!("{name} = nil"));
+        }
+        let code_name = format!("{name}_CODE");
+        if !existing.contains(&code_name) && !globalstrings.contains_key(&code_name) {
+            let code_value = packed_argb_to_color_code(*packed);
+            lines.push("---@type string".to_string());
+            lines.push(format!("{code_name} = \"{code_value}\""));
+        }
+        emitted += 1;
+    }
+    log::info!("  GlobalColors: {emitted} emitted ({} total in DB2)", colors.len());
+    lines.join("\n") + "\n"
+}
+
 // ── Blizzard API doc stub generators ─────────────────────────────────────────
 
 /// Generate LuaLS-annotated function stubs from parsed Blizzard API docs.
@@ -1062,15 +1140,15 @@ fn fetch_wago_latest_build(product: &str) -> String {
         .to_string()
 }
 
-/// Generate GlobalStrings.lua and GlobalVariables.lua content in memory.
+/// Generate GlobalStrings.lua, GlobalVariables.lua, and GlobalColors.lua content in memory.
 /// `all_globals` is the universe of known global names (from BlizzardInterfaceResources).
 /// `global_constants` maps constant names to their numeric values (from APIDocumentation + FrameXML).
 fn generate_global_stubs(
     all_globals: &HashSet<String>,
     global_constants: &HashMap<String, i64>,
     stubs_dir: &Path,
-) -> (String, String) {
-    // Fetch GlobalStrings directly from wago.tools DB2 (more authoritative than enUS.ts).
+) -> (String, String, String) {
+    // Fetch from wago.tools DB2 (more authoritative than enUS.ts / Ketho's repo).
     log::info!("  Fetching GlobalStrings from wago.tools...");
     let retail_build = fetch_wago_latest_build("wow");
     log::info!("  Using retail build: {retail_build}");
@@ -1081,7 +1159,23 @@ fn generate_global_stubs(
         .unwrap_or_else(|e| panic!("Failed to fetch GlobalStrings CSV from wago.tools: {e}"));
     let globalstrings = parse_globalstrings_csv(&csv_content);
 
-    let existing = get_existing_names(stubs_dir, &["GlobalStrings.lua", "GlobalVariables.lua"]);
+    // Fetch GlobalColor DB2 for color objects + _CODE string variants.
+    // No build filter — GlobalColor is stable data and we want the most complete coverage
+    // (newer builds on PTR/beta may add entries before they reach live).
+    log::info!("  Fetching GlobalColor from wago.tools...");
+    let color_csv_url = "https://wago.tools/db2/GlobalColor/csv".to_string();
+    let color_csv_content = fetch_url(&color_csv_url, None)
+        .unwrap_or_else(|e| panic!("Failed to fetch GlobalColor CSV from wago.tools: {e}"));
+    let globalcolors = parse_globalcolors_csv(&color_csv_content);
+
+    let existing = get_existing_names(stubs_dir, &[
+        "GlobalStrings.lua", "GlobalVariables.lua", "GlobalColors.lua",
+    ]);
+
+    // Build set of color names (+ _CODE variants) to exclude from GlobalVariables.lua.
+    let color_names: HashSet<String> = globalcolors.iter()
+        .flat_map(|(name, _)| [name.clone(), format!("{name}_CODE")])
+        .collect();
 
     // GlobalStrings.lua: emit all entries from wago.tools not already covered by hand-written stubs.
     let mut string_names: Vec<&String> = globalstrings.keys()
@@ -1099,10 +1193,10 @@ fn generate_global_stubs(
         strings_lines.push(format!("{name} = \"{}\"", escape_lua_string(value)));
     }
 
-    // GlobalVariables.lua: emit globals not covered by wago strings or existing stubs.
+    // GlobalVariables.lua: emit globals not covered by wago strings, colors, or existing stubs.
     let mut missing: Vec<_> = all_globals
         .difference(&existing)
-        .filter(|name| !globalstrings.contains_key(*name))
+        .filter(|name| !globalstrings.contains_key(*name) && !color_names.contains(*name))
         .cloned()
         .collect();
     missing.sort();
@@ -1121,10 +1215,13 @@ fn generate_global_stubs(
         }
     }
 
+    // GlobalColors.lua: emit colorRGBA objects and _CODE string variants.
+    let colors_lua = generate_globalcolors_lua(&globalcolors, &existing, &globalstrings);
+
     log::info!("  GlobalStrings: {} constants", strings_lines.len().saturating_sub(3));
     log::info!("  GlobalVariables: {} globals", vars_lines.len().saturating_sub(3));
 
-    (strings_lines.join("\n") + "\n", vars_lines.join("\n") + "\n")
+    (strings_lines.join("\n") + "\n", vars_lines.join("\n") + "\n", colors_lua)
 }
 
 // ── Classic stubs generation (replaces generate_classic_stubs.py) ──────────────
@@ -3312,7 +3409,7 @@ pub fn regenerate_stubs() {
 
     // Step 3: Generate global stubs (from BlizzardInterfaceResources + APIDocumentation constants)
     log::info!("Generating global stubs...");
-    let (global_strings_lua, global_vars_lua) = generate_global_stubs(
+    let (global_strings_lua, global_vars_lua, global_colors_lua) = generate_global_stubs(
         &branch_data.retail_all_names,
         &global_constants,
         &combined_stubs,
@@ -3398,7 +3495,7 @@ pub fn regenerate_stubs() {
     // Generated file names (BlizzardEnums.lua, Constants.lua, etc.) are intentionally
     // absent — they only exist in the generated output directory, not in vendor/overrides.
     let existing_for_dedup = get_existing_names(&combined_stubs, &[
-        "GlobalStrings.lua", "GlobalVariables.lua",
+        "GlobalStrings.lua", "GlobalVariables.lua", "GlobalColors.lua",
         "Enum.lua", "CVar.lua", "Wiki.lua",
     ]);
 
@@ -3429,6 +3526,7 @@ pub fn regenerate_stubs() {
     std::fs::create_dir_all(&gen_dir).unwrap();
     std::fs::write(gen_dir.join("GlobalStrings.lua"), &global_strings_lua).unwrap();
     std::fs::write(gen_dir.join("GlobalVariables.lua"), &global_vars_lua).unwrap();
+    std::fs::write(gen_dir.join("GlobalColors.lua"), &global_colors_lua).unwrap();
     std::fs::write(gen_dir.join("ClassicGlobals.lua"), &classic_lua).unwrap();
     std::fs::write(gen_dir.join("WikiGlobals.lua"), &wiki_globals_lua).unwrap();
     std::fs::write(gen_dir.join("CVars.lua"), &cvar_lua).unwrap();
@@ -3542,16 +3640,16 @@ pub fn regenerate_stubs() {
 
     // Add overrides last (same logic as collect_stub_paths)
     for p in &override_paths {
-        // Skip GlobalStrings.lua and GlobalVariables.lua from overrides since we generated fresh ones
+        // Skip generated files from overrides since we generated fresh ones
         if let Some(fname) = p.file_name().and_then(|n| n.to_str())
-            && (fname == "GlobalStrings.lua" || fname == "GlobalVariables.lua") {
+            && matches!(fname, "GlobalStrings.lua" | "GlobalVariables.lua" | "GlobalColors.lua") {
                 continue;
             }
         override_set.insert(p.clone());
     }
     paths.extend(override_paths.into_iter().filter(|p| {
         p.file_name().and_then(|n| n.to_str())
-            .is_none_or(|n| n != "GlobalStrings.lua" && n != "GlobalVariables.lua")
+            .is_none_or(|n| !matches!(n, "GlobalStrings.lua" | "GlobalVariables.lua" | "GlobalColors.lua"))
     }));
 
     let (classes, mut aliases, mut globals, _addon_ns_class_names, stub_events, _callable_classes) =

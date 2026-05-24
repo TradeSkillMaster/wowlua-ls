@@ -17,7 +17,3 @@ LE_GAME_ERR_ITEM_MAX_COUNT = 0
 LE_GAME_ERR_TRADE_COMPLETE = 0
 LE_ITEM_BIND_ON_ACQUIRE = 1
 LE_ITEM_BIND_QUEST = 4
-
--- Color escape codes (string)
----@type string
-NORMAL_FONT_COLOR_CODE = ""
