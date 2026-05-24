@@ -2504,7 +2504,6 @@ impl PreResolvedGlobals {
         let mut event_params_info: Option<(String, usize)> = None;
         let mut vararg_proj: Option<crate::types::ProjectionKind> = None;
         let mut vararg_ann: Option<AnnotationType> = None;
-        let generic_names: Vec<&str> = generics.iter().map(|(n, _)| n.as_str()).collect();
         let generic_names_owned: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
         for p in params {
             if p.name == "..." {
@@ -2512,19 +2511,8 @@ impl PreResolvedGlobals {
                 // Detect `params<F>` projection on vararg slot when F is a generic
                 if let Some(proj) = crate::annotations::match_projection(&p.typ, &generic_names_owned) {
                     vararg_proj = Some(proj);
-                } else if let AnnotationType::Parameterized(base, args) = &p.typ
-                    && base == "params" && args.len() == 1
-                    && let AnnotationType::Simple(name) = &args[0]
-                    && !generic_names.contains(&name.as_str())
-                {
-                    let event_param_idx = params.iter()
-                        .filter(|pp| pp.name != "...")
-                        .position(|pp| {
-                            matches!(&pp.typ, AnnotationType::Simple(n) if n == name)
-                        });
-                    if let Some(idx) = event_param_idx {
-                        event_params_info = Some((name.clone(), idx));
-                    }
+                } else if let Some(ep) = crate::annotations::detect_event_params(&p.typ, params, &generic_names_owned) {
+                    event_params_info = Some(ep);
                 }
                 continue;
             }

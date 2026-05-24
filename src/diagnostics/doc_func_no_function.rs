@@ -10,6 +10,7 @@ const FUNCTION_LEVEL_TAGS: &[&str] = &[
 ];
 
 const CLASS_VALID_TAGS: &[&str] = &["overload", "deprecated", "constructor"];
+const EVENT_VALID_TAGS: &[&str] = &["param"];
 
 pub(crate) struct DocFuncNoFunction;
 
@@ -19,6 +20,7 @@ impl DiagnosticPass for DocFuncNoFunction {
 
         let mut func_tags: Vec<(u32, u32, &str)> = Vec::new();
         let mut has_class = false;
+        let mut has_event = false;
         let mut prev_was_newline = false;
 
         for event in root.descendants_with_tokens() {
@@ -32,6 +34,8 @@ impl DiagnosticPass for DocFuncNoFunction {
                     let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
                     if tag == "class" {
                         has_class = true;
+                    } else if tag == "event" {
+                        has_event = true;
                     } else if FUNCTION_LEVEL_TAGS.contains(&tag) {
                         let r = tok.text_range();
                         func_tags.push((u32::from(r.start()), u32::from(r.end()), tag));
@@ -40,9 +44,10 @@ impl DiagnosticPass for DocFuncNoFunction {
                 prev_was_newline = false;
             } else if kind == SyntaxKind::Newline {
                 if prev_was_newline && !func_tags.is_empty() {
-                    flush(&func_tags, has_class, diags);
+                    flush(&func_tags, has_class, has_event, diags);
                     func_tags.clear();
                     has_class = false;
+                    has_event = false;
                 }
                 prev_was_newline = true;
             } else if kind == SyntaxKind::Whitespace {
@@ -50,16 +55,17 @@ impl DiagnosticPass for DocFuncNoFunction {
             } else {
                 if !func_tags.is_empty() {
                     if !token_precedes_function(&tok) {
-                        flush(&func_tags, has_class, diags);
+                        flush(&func_tags, has_class, has_event, diags);
                     }
                     func_tags.clear();
                     has_class = false;
+                    has_event = false;
                 }
                 prev_was_newline = false;
             }
         }
         if !func_tags.is_empty() {
-            flush(&func_tags, has_class, diags);
+            flush(&func_tags, has_class, has_event, diags);
         }
     }
 }
@@ -149,9 +155,12 @@ fn call_has_function_argument(call: &SyntaxNode<'_>) -> bool {
     false
 }
 
-fn flush(func_tags: &[(u32, u32, &str)], has_class: bool, diags: &mut Vec<WowDiagnostic>) {
+fn flush(func_tags: &[(u32, u32, &str)], has_class: bool, has_event: bool, diags: &mut Vec<WowDiagnostic>) {
     for &(start, end, tag) in func_tags {
         if has_class && CLASS_VALID_TAGS.contains(&tag) {
+            continue;
+        }
+        if has_event && EVENT_VALID_TAGS.contains(&tag) {
             continue;
         }
         super::DOC_FUNC_NO_FUNCTION.emit(

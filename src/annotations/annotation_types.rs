@@ -185,6 +185,26 @@ pub(crate) fn match_projection(
     None
 }
 
+/// Detect `params<EventType>` on a vararg annotation where EventType is NOT a
+/// generic but matches a sibling parameter's type. Returns `(event_type_name, param_index)`.
+pub(crate) fn detect_event_params(
+    vararg_type: &AnnotationType,
+    all_params: &[super::ParamInfo],
+    generic_names: &[impl AsRef<str>],
+) -> Option<(String, usize)> {
+    if let AnnotationType::Parameterized(base, args) = vararg_type
+        && base == "params" && args.len() == 1
+        && let AnnotationType::Simple(name) = &args[0]
+        && !generic_names.iter().any(|g| g.as_ref() == name)
+    {
+        let idx = all_params.iter()
+            .filter(|p| p.name != "...")
+            .position(|p| matches!(&p.typ, AnnotationType::Simple(n) if n == name))?;
+        return Some((name.clone(), idx));
+    }
+    None
+}
+
 pub(crate) fn parse_type(s: &str) -> AnnotationType {
     let s = s.trim();
     if s.is_empty() { return AnnotationType::Simple(s.to_string()); }

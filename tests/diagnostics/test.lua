@@ -1425,10 +1425,18 @@ local malformed10 = nil
 -- ^ diag: none
 local malformed11 = nil
 
+-- @event with @param should NOT warn doc-func-no-function
+---@event MyEvent "SOME_OTHER_EVENT"
+---@param someId number
+-- ^ diag: none
+---@param someName string
+-- ^ diag: none
+local malformed12 = nil
+
 _consume(mdobj, boolParam, _dfncObj, mf1, mf2, mf3, mf4, mf5, mf6, mf7, mf8, mf9)
 _consume(malformed1, malformed2, malformed3, malformed4, malformed5, malformed5b, malformed5c)
 _consume(notMalformedReturn1, notMalformedReturn2, notMalformedReturn3, notMalformedReturn4)
-_consume(malformed6, malformed7, malformed8, malformed9, malformed10, malformed11, validFunc, validVar, validDepr)
+_consume(malformed6, malformed7, malformed8, malformed9, malformed10, malformed11, malformed12, validFunc, validVar, validDepr)
 
 -- ── type() guard narrows in and-condition ──────────────────────────────
 

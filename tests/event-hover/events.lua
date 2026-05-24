@@ -20,6 +20,14 @@
 ---@param version string
 ---@param isDebug boolean
 
+---@event ActionEvent "DO_PROCESS"
+---@param success boolean
+---@param canRetry boolean
+
+---@event ActionEvent "DO_SKIP"
+
+---@event ActionEvent "DO_RESET"
+
 -- Alias referencing an event type name — tests that event type aliases
 -- (e.g. WowEvent → string) are resolved before dependent aliases.
 ---@alias AnyGameEvent WowEvent

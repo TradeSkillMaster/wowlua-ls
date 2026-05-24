@@ -108,6 +108,41 @@ local function handleEvent(ev) end
 local _h = handleEvent
 --    ^ hover: (local) function _h(ev: AnyGameEvent)  diag: none
 
+-- ── Standalone function with params<EventType> (no callback/SetScript) ──
+
+---@param action ActionEvent
+---@param ... params<ActionEvent>
+local function handleAction(action, ...)
+--                          ^ hover: (param) action: ActionEvent
+    if action == "DO_PROCESS" then
+        local success, canRetry = ...
+        local s = success
+--            ^ hover: (local) s: boolean
+        local c = canRetry
+--            ^ hover: (local) c: boolean
+    end
+    if action == "DO_SKIP" then
+        local test = ...
+--            ^ hover: (local) test: ?
+    end
+    if action == "DO_RESET" then
+        local test = ...
+--            ^ hover: (local) test: ?
+    end
+end
+
+-- Event hover in standalone function equality comparison
+handleAction("DO_PROCESS")
+--            ^ hover: (event) DO_PROCESS → success: boolean, canRetry: boolean
+
+handleAction("DO_SKIP")
+--            ^ hover: (event) DO_SKIP
+
+-- No doc-func-no-function on @param inside @event blocks (regression test)
+---@event ActionEvent "DO_REFRESH"
+---@param count number
+-- ^ diag: none
+
 -- ── Event string hover in equality comparison ──
 
 f:SetScript("OnEvent", function(self, event, ...)

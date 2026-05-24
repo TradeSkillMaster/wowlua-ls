@@ -2445,6 +2445,8 @@ impl<'a> Analysis<'a> {
                 // Detect `params<F>` / `returns<F>` projection on the vararg slot.
                 if let Some(proj) = crate::annotations::match_projection(&p.typ, &generic_names) {
                     self.ir.functions[func_idx.val()].vararg_projection = Some(proj);
+                } else if let Some(ep) = crate::annotations::detect_event_params(&p.typ, &annotations.params, &generic_names) {
+                    self.ir.functions[func_idx.val()].event_params = Some(ep);
                 }
                 self.ir.functions[func_idx.val()].vararg_annotation = Some(p.typ.clone());
                 self.ir.functions[func_idx.val()].vararg_description = p.description.clone();
