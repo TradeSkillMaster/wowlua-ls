@@ -68,11 +68,27 @@ f:SetPoint("BOTTOMLEFT", 10, 10)
 -- ^ diag: none
 
 -- hooksecurefunc has overloads:
---   fun(name: string, hook: function) — the 2-arg form
+--   fun(name: `F`, hook: F) — the 2-arg generic form
 --   primary: fun(tbl: table, name: string, hook: function)
 -- When calling with 3 args, the base signature should match, not the 2-arg overload.
 hooksecurefunc(f, "SetPoint", function() end)
 -- ^ diag: none
+
+-- hooksecurefunc 2-arg form: callback params inferred from hooked function.
+-- The @generic F: function + @overload fun(name: `F`, hook: F) resolves the
+-- string literal to the global function's type, then propagates its param types.
+hooksecurefunc("UnitName", function(unit)
+    local _hsUnit = unit
+    --    ^ hover: (local) _hsUnit: string
+end)
+-- ^ diag: none
+
+-- hooksecurefunc with unknown function name: params stay untyped, no false diagnostics.
+hooksecurefunc("NonExistentFunction", function(x)
+-- ^ diag: none
+    local _hsUnknown = x
+    --    ^ hover: (local) _hsUnknown: ?
+end)
 
 -- @overload on @class: callable table (e.g. LibStub)
 -- LibStub is defined as @class with @overload fun(major: `T`, silent?: boolean): T, number?
@@ -350,7 +366,7 @@ local _caimOne = CreateAndInitFromMixin(MixinAlpha)
 -- Field access on Mixin result: hover/def on intersection method
 local _mxAccess = Mixin(_mxFrame, MixinAlpha)
 _mxAccess:alphaMethod()
---        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 301:1  diag: none
+--        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 317:1  diag: none
 
 -- Field access on CreateFromMixins intersection
 local _cfmAccess = CreateFromMixins(MixinAlpha, MixinBeta)

@@ -218,6 +218,17 @@ impl<'a> Analysis<'a> {
         // — safe to use for type-mismatch substitution (vs. promotional patterns
         // like backtick/defclass where the arg type intentionally differs)
         let mut substitutable_generic_names: HashSet<String> = HashSet::new();
+        // Track generics set by constraint fallback so overload re-inference can
+        // override them. Lifecycle:
+        //  1. Populated at constraint fallback (~line 400): unbound generics get
+        //     their constraint type and their name is recorded here.
+        //  2. Consumed at overload re-inference (~line 600): when the matched
+        //     overload maps args to different positions than the primary, bindings
+        //     from phase 1 can be overridden with actual call-site arg types.
+        //  3. After string→function resolution (~line 630): if a function-
+        //     constrained generic was re-bound to a string but couldn't resolve
+        //     to a global function, it is restored to the constraint type.
+        let mut constraint_fallback_names: HashSet<String> = HashSet::new();
         if !generics.is_empty() {
             let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
             // Receiver binding runs FIRST so that class-generic parameters
@@ -388,11 +399,14 @@ impl<'a> Analysis<'a> {
                 }
             }
 
-            // Fallback: for any generic not inferred, use its constraint type
+            // Fallback: for any generic not inferred, use its constraint type.
+            // Track which generics were set by this fallback so overload
+            // re-inference can override them with actual call-site bindings.
             for (name, constraint) in &generics {
                 if !generic_subs.contains_key(name)
                     && let Some(ct) = constraint {
                         generic_subs.insert(name.clone(), ct.clone());
+                        constraint_fallback_names.insert(name.clone());
                     }
             }
         }
@@ -587,10 +601,16 @@ impl<'a> Analysis<'a> {
                     let param_type = overload.params.get(i + overload_self_offset)
                         .and_then(|p| p.typ.as_ref());
                     let Some(param_type) = param_type else { continue };
-                    // Direct TypeVariable: T → infer T = arg_type
+                    // Direct TypeVariable: T → infer T = arg_type.
+                    // Allow overriding constraint-fallback bindings since
+                    // the overload may map args to different positions than
+                    // the primary (e.g. 2-arg overload vs 3-arg primary).
                     if let ValueType::TypeVariable(name) = param_type
-                        && generic_names.contains(name) && !generic_subs.contains_key(name) {
+                        && generic_names.contains(name)
+                        && (!generic_subs.contains_key(name) || constraint_fallback_names.contains(name))
+                    {
                             generic_subs.insert(name.clone(), arg_type.clone());
+                            constraint_fallback_names.remove(name);
                             generic_arg_indices.insert(name.clone(), i);
                             substitutable_generic_names.insert(name.clone());
                         }
@@ -607,6 +627,37 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
+
+        // Resolve string-bound function-constrained generics to global function types.
+        // When a generic with constraint `function` is bound to a string literal
+        // (e.g. via `@overload fun(name: `F`, hook: F)` matching a call like
+        // hooksecurefunc("FuncName", callback)), look up the string as a global
+        // function name and re-bind the generic to the actual function type.
+        // If the lookup fails (unknown function name), restore the constraint
+        // type to avoid false-positive type-mismatch / generic-constraint-mismatch.
+        if has_generics {
+            for (name, constraint) in &generics {
+                if matches!(constraint, Some(ValueType::Function(None)))
+                    && matches!(generic_subs.get(name), Some(ValueType::String(_)))
+                    && let Some(&arg_idx) = generic_arg_indices.get(name)
+                    && let Some(&arg_expr) = args.get(arg_idx)
+                {
+                    let fn_name = self.ir.string_literals.get(&arg_expr)
+                        .cloned()
+                        .or_else(|| self.resolve_string_literal_through_expr(&arg_expr));
+                    if let Some(fn_name) = fn_name
+                        && let Some(func_type) = self.resolve_global_function_type(&fn_name)
+                    {
+                        generic_subs.insert(name.clone(), func_type);
+                    } else {
+                        // Unknown function name — restore the constraint type
+                        // so F stays as `function` (not `string`), preventing
+                        // generic-constraint-mismatch and type-mismatch false positives.
+                        generic_subs.insert(name.clone(), constraint.clone().unwrap());
+                    }
+                }
+            }
+        }
 
         // Propagate matched overload's fun() callback types into inline function params.
         // This enables contextual typing for patterns like:
@@ -626,7 +677,12 @@ impl<'a> Analysis<'a> {
                 if inline_func_idx.is_external() { continue; }
                 let param_idx = i + overload_self_offset;
                 let Some(param) = overload.params.get(param_idx) else { continue };
-                let expected_fn_idx = match &param.typ {
+                // Apply generic substitution so TypeVariable("F") → Function(idx)
+                let param_type = param.typ.as_ref().map(|t| {
+                    if generic_subs.is_empty() { t.clone() }
+                    else { self.substitute_generics_deep(t, &generic_subs) }
+                });
+                let expected_fn_idx = match &param_type {
                     Some(ValueType::Function(Some(idx))) => *idx,
                     // Unwrap optional fun types: fun(...)? → Union([Fun(...), nil])
                     Some(ValueType::Union(members)) => {
@@ -2933,6 +2989,20 @@ impl<'a> Analysis<'a> {
                     Some(ValueType::make_union(resolved))
                 }
             }
+            _ => None,
+        }
+    }
+
+    /// Look up a global function by name. Returns `ValueType::Function(Some(_))`
+    /// if the name resolves to a function in scope 0 (file-level or external stubs).
+    fn resolve_global_function_type(&self, name: &str) -> Option<ValueType> {
+        let id = SymbolIdentifier::Name(name.to_string());
+        let scope0 = ScopeIndex::from(0);
+        let sym_idx = self.ir.get_symbol(&id, scope0)?;
+        let sym = self.sym(sym_idx);
+        let vt = sym.versions.last()?.resolved_type.as_ref()?;
+        match vt {
+            ValueType::Function(Some(_)) => Some(vt.clone()),
             _ => None,
         }
     }
