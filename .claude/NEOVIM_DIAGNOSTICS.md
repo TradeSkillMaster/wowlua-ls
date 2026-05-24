@@ -8,9 +8,13 @@ Since Neovim PR #37938 (Feb 2026, v0.12.2+), push (`publishDiagnostics`) and pul
 
 **Implication**: A server that advertises `diagnosticProvider` (pull) must NOT also push `publishDiagnostics` to Neovim for the same files, or diagnostics will be doubled. Gate all push calls behind `!client.diagnostic_refresh`.
 
-## `workspace_diagnostics` Must Be `false`
+## `workspace_diagnostics` — Per-Client
 
-This is the critical finding. In Neovim's `diagnostic.lua`, the `on_refresh()` handler (triggered by `workspace/diagnostic/refresh`) has a branch:
+The server detects the client via `clientInfo.name` and sets `workspace_diagnostics` accordingly:
+- **Neovim**: `false` — see below for why.
+- **VS Code / other clients**: `true` — required to populate the Problems panel for unopened files via `workspace/diagnostic` pulls.
+
+In Neovim's `diagnostic.lua`, the `on_refresh()` handler (triggered by `workspace/diagnostic/refresh`) has a branch:
 
 ```lua
 if client:supports_method('workspace/diagnostic') then
@@ -33,7 +37,7 @@ When the server advertises `workspace_diagnostics: false`:
 - Neovim takes the `else` branch and calls `_refresh(bufnr)` for each attached buffer
 - This triggers `textDocument/diagnostic` re-pulls, updating in-buffer diagnostics
 
-**Our server does not implement `workspace/diagnostic`** (we return an error for that request). So `workspace_diagnostics: true` was doubly wrong — Neovim tried to pull workspace diagnostics, got an error, and never fell back to per-buffer pulls.
+Since we spent significant effort getting Neovim diagnostics working correctly with `false`, we keep it that way for Neovim and only enable `true` for VS Code.
 
 ## When Neovim Pulls `textDocument/diagnostic`
 

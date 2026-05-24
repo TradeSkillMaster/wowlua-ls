@@ -1272,6 +1272,17 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let init_params: InitializeParams = serde_json::from_value(params)?;
     let client_capabilities: ClientCapabilities = init_params.capabilities;
+
+    // Neovim's pull-diagnostic implementation has a dual-namespace problem
+    // (see .claude/NEOVIM_DIAGNOSTICS.md): when workspace_diagnostics is true,
+    // Neovim only calls workspace/diagnostic on refresh and skips per-buffer
+    // textDocument/diagnostic re-pulls. Enable workspace_diagnostics only for
+    // clients that handle it correctly (VS Code).
+    let is_neovim = init_params.client_info.as_ref()
+        .is_some_and(|info| info.name.to_lowercase().contains("neovim"));
+    log::info!("Client: {:?}, workspace_diagnostics: {}",
+        init_params.client_info.as_ref().map(|i| &i.name), !is_neovim);
+
     let supports_progress = client_capabilities.window
         .as_ref()
         .and_then(|w| w.work_done_progress)
@@ -1344,8 +1355,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
                 identifier: Some("wowlua-ls".to_string()),
                 inter_file_dependencies: true,
-                // Must be false — see .claude/NEOVIM_DIAGNOSTICS.md for why.
-                workspace_diagnostics: false,
+                // Must be false for Neovim — see .claude/NEOVIM_DIAGNOSTICS.md.
+                // VS Code needs true to populate the Problems panel for unopened files.
+                workspace_diagnostics: !is_neovim,
                 work_done_progress_options: Default::default(),
             }))
         } else {
@@ -3752,17 +3764,20 @@ fn handle_notification(
         "textDocument/didClose" => {
             if let Ok(params) = cast_not::<notification::DidCloseTextDocument>(not) {
                 let uri_str = params.text_document.uri.to_string();
-                documents.remove(&uri_str);
                 // Stub files never participate in workspace diagnostics.
                 if is_stub_path(&params.text_document.uri) {
+                    documents.remove(&uri_str);
                     return;
                 }
-                // Update cached workspace diagnostics for this file by re-reading
-                // from disk. Without this, closing a file after fixing a warning
-                // serves stale diagnostics from the pre-fix cache.
-                // Compute fresh diagnostics first (immutable borrow of ws), then
-                // mutate the cache — this avoids a borrow-split issue.
-                let new_diags = if ws.cached_ws_diagnostics.is_some() {
+                // Capture the document's last-known diagnostics before removing.
+                // If the document is dirty (pending Phase 4 reanalysis, e.g. user
+                // saved and closed within the 500ms debounce window), fall back to
+                // re-analyzing from disk so the cache reflects the saved content.
+                // Otherwise use cached diagnostics to preserve plugin results that
+                // disk re-analysis can't reproduce.
+                let is_dirty = documents.get(&uri_str).is_some_and(|d| d.dirty);
+                let doc_diags = if is_dirty {
+                    // Re-analyze from disk to pick up the saved changes.
                     uri_to_abs_path(&params.text_document.uri)
                         .and_then(|path| {
                             let text = std::fs::read_to_string(&path).ok()?;
@@ -3785,17 +3800,32 @@ fn handle_notification(
                             ))
                         })
                 } else {
-                    None
+                    documents.get(&uri_str).and_then(|doc| {
+                        if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
+                            doc.cached_diagnostics.clone().or_else(|| {
+                                Some(build_file_diagnostics(
+                                    &params.text_document.uri, tree, analysis,
+                                    &doc.text, &doc.plugin_diags, ws,
+                                ))
+                            })
+                        } else {
+                            doc.cached_diagnostics.clone()
+                        }
+                    })
                 };
-                if let (Some(new_diags), Some((_, cached))) = (new_diags, ws.cached_ws_diagnostics.as_mut()) {
+                documents.remove(&uri_str);
+                // Update cached workspace diagnostics with the document's
+                // last-known diagnostics so the Problems panel stays accurate
+                // after the file is closed.
+                if let (Some(diags), Some((_, cached))) = (&doc_diags, ws.cached_ws_diagnostics.as_mut()) {
                     if let Some(entry) = cached.iter_mut().find(|(u, _)| *u == uri_str) {
-                        entry.1 = new_diags;
+                        entry.1 = diags.clone();
                     } else {
-                        cached.push((uri_str, new_diags));
+                        cached.push((uri_str, diags.clone()));
                     }
                 }
-                // Tell the client to re-pull diagnostics so the Problems panel
-                // reflects the updated state for this now-closed file.
+                // Tell the client to re-pull workspace diagnostics so the
+                // Problems panel reflects the updated cache for this file.
                 if client.diagnostic_refresh {
                     send_refresh_requests(connection, progress_counter, false, false, false, true);
                 }
