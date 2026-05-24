@@ -1164,9 +1164,27 @@ impl<'a> Analysis<'a> {
         // (Use `self.func(func_idx).return_annotations` directly because the
         // local `return_annotations` is only cloned when the function has
         // generics — see line ~1249.)
-        let synthesized_return_only = self.func(func_idx).return_annotations.is_empty()
+
+        // When `@return` annotations exist and no overload matched, use the
+        // annotation directly. The body's `FunctionRet` symbols may also exist
+        // in `func.rets` (from build_ir walking the body), but the annotation
+        // is authoritative — mixing body-inferred types in would widen the
+        // declared return type.
+        let func_return_annotations = &self.func(func_idx).return_annotations;
+        let has_return_annotations = !func_return_annotations.is_empty();
+        let synthesized_return_only = !has_return_annotations
             && self.func(func_idx).overloads.iter().any(|o| o.is_return_only);
-        let ret_type = if synthesized_return_only {
+        let ret_type = if has_return_annotations {
+            let has_vararg_return = self.func(func_idx).has_vararg_return;
+            func_return_annotations.get(ret_index).cloned()
+                .or_else(|| {
+                    if has_vararg_return {
+                        func_return_annotations.last().cloned()
+                    } else {
+                        None
+                    }
+                })
+        } else if synthesized_return_only {
             // Use `return_type_at` so `has_vararg_tail` cases fall
             // through to the vararg element type. (Today this branch
             // only fires when `return_annotations.is_empty()`, which

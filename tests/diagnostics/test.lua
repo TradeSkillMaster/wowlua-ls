@@ -3776,6 +3776,32 @@ for part, key in pairs(_mutateMap) do
 end
 --             ^ diag: none
 
+-- Regression: @return annotation should not be widened by body-inferred types.
+-- A function annotated `@return Foo|nil` whose body returns a supertype (Bar)
+-- should use the annotation at call sites, not union in Bar.
+
+---@class _RetAnnBase
+---@field x number
+
+---@class _RetAnnChild : _RetAnnBase
+---@field y string
+
+---@return _RetAnnChild|nil
+local function _getChild()
+    ---@type _RetAnnBase?
+    local base = nil
+    return base ---@diagnostic disable-line: return-type-mismatch
+end
+
+---@param c _RetAnnChild
+local function _needChild(c) return c end
+
+local child = _getChild()
+if child then
+    _needChild(child)
+    -- ^ diag: none
+end
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function
