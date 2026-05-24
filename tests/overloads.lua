@@ -103,6 +103,18 @@ local unknownLib = LibStub:GetLibrary("UnknownLib-1.0")
 local unknownLib2 = LibStub("UnknownLib-1.0")
 --    ^ hover: (local) unknownLib2: any
 
+-- Backtick generic through a variable (not a string literal)
+local libName = "CallableTestLib"
+local ctvar = LibStub:GetLibrary(libName)
+--    ^ hover: (local) ctvar: CallableTestLib  diag: none
+print(ctvar)
+
+-- Unknown library name through a variable: should resolve to any, not string
+local unknownName = "UnknownLib-1.0"
+local unknownVar = LibStub:GetLibrary(unknownName)
+--    ^ hover: (local) unknownVar: any
+print(unknownVar)
+
 -- String-literal-based overload dispatch:
 -- Same arity, different string literal first param → different return types.
 ---@overload fun(kind: "number", value: number): number
@@ -337,7 +349,7 @@ local _caimOne = CreateAndInitFromMixin(MixinAlpha)
 -- Field access on Mixin result: hover/def on intersection method
 local _mxAccess = Mixin(_mxFrame, MixinAlpha)
 _mxAccess:alphaMethod()
---        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 289:1  diag: none
+--        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 301:1  diag: none
 
 -- Field access on CreateFromMixins intersection
 local _cfmAccess = CreateFromMixins(MixinAlpha, MixinBeta)

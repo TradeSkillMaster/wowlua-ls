@@ -265,11 +265,7 @@ impl<'a> Analysis<'a> {
                             } else {
                             // For backtick params (`T` or unions containing `T`), resolve the string literal to a type
                             let inferred = if param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick) {
-                                if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
-                                    self.resolve_backtick_class_name(class_name)
-                                } else {
-                                    self.resolve_string_type_as_class(&arg_type).unwrap_or_else(|| arg_type.clone())
-                                }
+                                self.resolve_backtick_arg(arg_expr_id, &arg_type)
                             } else {
                                 arg_type.clone()
                             };
@@ -312,16 +308,10 @@ impl<'a> Analysis<'a> {
                                 if !is_nil_like {
                                     // Check if any member of the param annotation is a Backtick type —
                                     // if so, try to resolve a string literal argument as a type.
-                                    let inferred = if let Some(annotation) = param_annotations.get(i + self_offset) {
-                                        if crate::annotations::annotation_contains_backtick(annotation) {
-                                            if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
-                                                self.resolve_backtick_class_name(class_name)
-                                            } else {
-                                                self.resolve_string_type_as_class(&stripped).unwrap_or(stripped)
-                                            }
-                                        } else {
-                                            stripped
-                                        }
+                                    let inferred = if param_annotations.get(i + self_offset)
+                                        .is_some_and(crate::annotations::annotation_contains_backtick)
+                                    {
+                                        self.resolve_backtick_arg(arg_expr_id, &stripped)
                                     } else {
                                         stripped
                                     };
@@ -2853,6 +2843,58 @@ impl<'a> Analysis<'a> {
                 .or_else(|| self.ir.ext.classes.get(class_name).copied())
                 .map(|idx| ValueType::Table(Some(idx))))
             .unwrap_or(ValueType::Any)
+    }
+
+    /// Trace through a single SymbolRef expression to find its string literal value.
+    /// When a variable like `MAJOR` holds `"SomeLib-1.0"`, its type_source
+    /// expression points to the original string literal in `string_literals`.
+    ///
+    /// Only follows one level of indirection (one SymbolRef hop). Chained
+    /// assignments (`local A = "Lib"; local B = A; f(B)`) are not traced.
+    fn resolve_string_literal_through_expr(&self, expr_id: &ExprId) -> Option<String> {
+        let expr = if expr_id.is_external() {
+            self.ir.ext.exprs.get(expr_id.ext_offset())?
+        } else {
+            self.ir.exprs.get(expr_id.val())?
+        };
+        match expr {
+            Expr::SymbolRef(sym_idx, ver_idx) => {
+                let symbol = self.sym(*sym_idx);
+                let version = symbol.versions.get(*ver_idx)?;
+                let type_source = version.type_source?;
+                if type_source.is_external() {
+                    self.ir.ext.string_literals.get(&type_source).cloned()
+                } else {
+                    self.ir.string_literals.get(&type_source).cloned()
+                }
+            }
+            Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
+                self.resolve_string_literal_through_expr(inner)
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve a backtick generic argument to a type. Three-step resolution:
+    /// 1. Direct string literal lookup on the expression
+    /// 2. Trace through SymbolRef to find the variable's string literal value
+    /// 3. Fall back to `resolve_string_type_as_class`, or `Any` for bare strings
+    fn resolve_backtick_arg(&self, arg_expr_id: &ExprId, arg_type: &ValueType) -> ValueType {
+        if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
+            self.resolve_backtick_class_name(class_name)
+        } else if let Some(class_name) = self.resolve_string_literal_through_expr(arg_expr_id) {
+            self.resolve_backtick_class_name(&class_name)
+        } else {
+            // For string args that can't be resolved to a class, use Any (the backtick
+            // says "type name" — if unknown, Any is better than string). For non-string
+            // args (e.g. table variable passed to `T|\`T\``), preserve the original type.
+            let fallback = if matches!(arg_type, ValueType::String(_)) {
+                ValueType::Any
+            } else {
+                arg_type.clone()
+            };
+            self.resolve_string_type_as_class(arg_type).unwrap_or(fallback)
+        }
     }
 
     fn resolve_string_type_as_class(&self, vt: &ValueType) -> Option<ValueType> {
