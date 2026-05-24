@@ -1367,7 +1367,7 @@ pub mod scan_built_name;
 
 pub(crate) use annotation_types::{
     format_annotation_type, substitute_alias_type_params, match_projection,
-    detect_event_params, parse_type, parse_return_line,
+    detect_event_params, detect_event_params_from_generic, parse_type, parse_return_line,
 };
 pub use annotation_types::OverloadSig;
 pub(crate) use annotation_types::parse_overload;

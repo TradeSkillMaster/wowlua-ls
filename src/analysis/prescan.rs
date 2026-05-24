@@ -1917,6 +1917,10 @@ impl<'a> Analysis<'a> {
                 vararg_ann = Some(p.typ.clone());
                 // Detect `params<F>` projection on vararg slot when F is a generic
                 if let Some(proj) = crate::annotations::match_projection(&p.typ, &generic_names_owned) {
+                    // Also set event_params when the generic's constraint is an event type.
+                    if let Some(ep) = crate::annotations::detect_event_params_from_generic(&proj, generics, params, &self.ir.ext.event_types) {
+                        event_params_info = Some(ep);
+                    }
                     vararg_proj = Some(proj);
                 } else if let Some(ep) = crate::annotations::detect_event_params(&p.typ, params, &generic_names_owned) {
                     event_params_info = Some(ep);

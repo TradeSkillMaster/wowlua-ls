@@ -2444,6 +2444,11 @@ impl<'a> Analysis<'a> {
             if p.name == "..." {
                 // Detect `params<F>` / `returns<F>` projection on the vararg slot.
                 if let Some(proj) = crate::annotations::match_projection(&p.typ, &generic_names) {
+                    // Also set event_params when the generic's constraint is an event type,
+                    // so event narrowing works with `@generic T: EventType` + `params<T>`.
+                    if let Some(ep) = crate::annotations::detect_event_params_from_generic(&proj, generics, &annotations.params, &self.ir.ext.event_types) {
+                        self.ir.functions[func_idx.val()].event_params = Some(ep);
+                    }
                     self.ir.functions[func_idx.val()].vararg_projection = Some(proj);
                 } else if let Some(ep) = crate::annotations::detect_event_params(&p.typ, &annotations.params, &generic_names) {
                     self.ir.functions[func_idx.val()].event_params = Some(ep);

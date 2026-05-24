@@ -205,6 +205,25 @@ pub(crate) fn detect_event_params(
     None
 }
 
+/// Detect event_params from a `params<T>` projection where T is a generic whose
+/// constraint names a registered event type. Returns `(constraint_name, param_index)`.
+pub(crate) fn detect_event_params_from_generic(
+    proj: &crate::types::ProjectionKind,
+    generics: &[(String, Option<String>)],
+    all_params: &[super::ParamInfo],
+    event_types: &std::collections::HashMap<String, std::collections::HashMap<String, crate::pre_globals::EventPayload>>,
+) -> Option<(String, usize)> {
+    let crate::types::ProjectionKind::Params(gen_name) = proj else { return None };
+    let constraint = generics.iter()
+        .find(|(n, _)| n == gen_name)
+        .and_then(|(_, c)| c.as_ref())?;
+    if !event_types.contains_key(constraint) { return None; }
+    let param_idx = all_params.iter()
+        .filter(|pp| pp.name != "...")
+        .position(|pp| matches!(&pp.typ, AnnotationType::Simple(n) if n == gen_name))?;
+    Some((constraint.clone(), param_idx))
+}
+
 pub(crate) fn parse_type(s: &str) -> AnnotationType {
     let s = s.trim();
     if s.is_empty() { return AnnotationType::Simple(s.to_string()); }

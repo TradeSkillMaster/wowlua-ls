@@ -113,7 +113,7 @@ local _h = handleEvent
 ---@param action ActionEvent
 ---@param ... params<ActionEvent>
 local function handleAction(action, ...)
---                          ^ hover: (param) action: ActionEvent
+--                          ^ hover: (param) action: ActionEvent  diag: none
     if action == "DO_PROCESS" then
         local success, canRetry = ...
         local s = success
@@ -137,6 +137,29 @@ handleAction("DO_PROCESS")
 
 handleAction("DO_SKIP")
 --            ^ hover: (event) DO_SKIP
+
+-- ── Generic function with params<T> where T: EventType ──
+
+---@generic A: ActionEvent
+---@param action A
+---@param ... params<A>
+local function handleActionGeneric(action, ...)
+--                                 ^ hover: (param) action: A  diag: none
+    if action == "DO_PROCESS" then
+        local success, canRetry = ...
+        local s = success
+--            ^ hover: (local) s: boolean
+        local c = canRetry
+--            ^ hover: (local) c: boolean
+    end
+    if action == "DO_SKIP" then
+        local test = ...
+--            ^ hover: (local) test: ?
+    end
+end
+handleActionGeneric("DO_PROCESS", true, false)
+-- NOTE: call-site event hover not yet supported for generic functions
+-- (the non-generic handleAction path at line 135 covers this)
 
 -- No doc-func-no-function on @param inside @event blocks (regression test)
 ---@event ActionEvent "DO_REFRESH"
