@@ -630,6 +630,18 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
 
         Ok(())
+
+    } else if args.len() > 1 && args[1] == "dump-stubs" {
+        // Usage: cargo run -- dump-stubs
+        // Outputs every global name from precomputed stubs with its resolved type.
+        // Sorted, tab-separated, deterministic — suitable for diffing across versions.
+        let stubs = lsp::load_precomputed_stubs()
+            .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+        let entries = doc_gen::dump_stub_globals(&stubs.pre_globals);
+        for (name, ty) in &entries {
+            println!("{name}\t{ty}");
+        }
+        Ok(())
     } else if args.len() > 1 && args[1] == "check" {
         // Usage: cargo run -- check /path/to/addon [--severity warning|hint]
         if args.len() < 3 {

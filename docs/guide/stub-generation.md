@@ -17,7 +17,6 @@ The pipeline integrates six major sources into a single type database.
 [Ketho/vscode-wow-api](https://github.com/Ketho/vscode-wow-api) is shallow-cloned with its submodules (which pulls in [NumyAddon/FramexmlAnnotations](https://github.com/nicemods/FramexmlAnnotations) into `Annotations/FrameXML/`).
 
 - **`Annotations/Core/` and `Annotations/FrameXML/`** — Pre-written LuaLS-style annotation `.lua` files containing type stubs for classes, functions, and fields related to frames and widgets. These are scanned directly as Lua. Widget stubs with a `---[Documentation](...)` link but no `@param`/`@return` annotations are enriched by fetching the linked wiki page and injecting parsed type annotations into the vendor files before scanning.
-- **`Annotations/Core/Data/Wiki.lua`** — Function names extracted as the source list for wiki-documented global stubs (the file itself is skipped; we generate our own `WikiGlobals.lua` from wiki scraping).
 
 The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Annotations/FrameXML/`. **Ketho/BlizzardInterfaceResources** data is accessed via GitHub raw URLs rather than the local clone.
 
@@ -33,7 +32,8 @@ The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Ann
 [Ketho/BlizzardInterfaceResources](https://github.com/AreWeReadyYet/BlizzardInterfaceResources) is fetched via raw GitHub URLs across three branches: `live`, `classic_era`, `classic`.
 
 - **`Resources/GlobalAPI.lua` and `Resources/FrameXML.lua`** — Simple name lists used to compute the classic-only API diff by identifying names present in classic branches but absent from retail/`live`. Also used as the source of global variable names for `GlobalVariables.lua` and per-API flavor bitmasks (derived from which branches contain each name).
-- **`Resources/LuaEnum.lua`** — Parsed for `LE_*` legacy enum constant values; nested `Enum = { Category = { ValueName = N } }` structures are converted from CamelCase to `LE_UPPER_SNAKE` format. Names are cross-referenced against `LE_*` references found in wow-ui-source FrameXML Lua files.
+- **`Resources/LuaEnum.lua`** — Parsed for `LE_*` legacy enum constant values (nested `Enum = { Category = { ValueName = N } }` structures converted from CamelCase to `LE_UPPER_SNAKE` format, cross-referenced against wow-ui-source FrameXML `LE_*` references); `Enum.*` enum category stubs (merged with APIDocumentation enumerations); and the `Constants` global table (sub-tables with typed number/boolean/string fields).
+- **`Resources/CVars.lua`** — Parsed for `["cvarName"] = { ... }` entries to generate the `CVar` string literal union type alias.
 
 ### 4. Gethe/wow-ui-source
 
@@ -47,10 +47,12 @@ The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Ann
 
 [warcraft.wiki.gg](https://warcraft.wiki.gg/) provides community-maintained API documentation.
 
+Function names are discovered by querying the MediaWiki API for the `API_functions`, `API_functions/Removed`, `API_functions/deprecated`, and `API_functions/Noflavor` categories. Names that duplicate a Blizzard API namespace function (e.g. `GetAddOnMetadata` shadowed by `C_AddOns.GetAddOnMetadata`) are filtered unless they still exist as bare globals in BlizzardInterfaceResources' `GlobalAPI.lua`.
+
 Page names from all three passes are collected upfront and batch-fetched in a single HTTP POST to `Special:Export`, then distributed to each processor:
 
 - **Classic-only APIs** — Wiki pages for APIs in `(classic_era ∪ classic) \ retail` are parsed to extract parameter types, names, and return types, generating typed stubs in `ClassicGlobals.lua`.
-- **Wiki-documented globals** — Function names from Ketho's `Wiki.lua` are parsed with `parse_wikitext()`, replacing Ketho's pre-parsed stubs with our own `WikiGlobals.lua`. Functions without a wiki page or whose markup can't be parsed get a bare `function name(...) end` stub with a doc link.
+- **Wiki-documented globals** — Function names from the wiki category query are parsed with `parse_wikitext()` to generate `WikiGlobals.lua`. Functions without a wiki page or whose markup can't be parsed get a bare `function name(...) end` stub with a doc link.
 - **Widget method enrichment** — Vendor widget stubs that have a doc link but no annotations are enriched by parsing type annotations via `parse_widget_wiki_annotations()`.
 
 Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments ==` / `== Returns ==` sections, <code v-pre>{{apitype|type|nilable}}</code> type annotations, embedded `<!-- luals ... -->` blocks, optional parameters `[, param]`, and redirect resolution.
@@ -95,10 +97,13 @@ The pipeline produces these intermediate Lua files (held in memory, not written 
 | `GlobalStrings.lua` | wago.tools `db2/GlobalStrings` (latest retail build, `enUS` locale) |
 | `GlobalVariables.lua` | BlizzardInterfaceResources global name lists (names not covered by GlobalStrings) |
 | `ClassicGlobals.lua` | BlizzardInterfaceResources diff + wiki scraping + APIDocumentation + `LE_*` constants + XML frame globals |
-| `WikiGlobals.lua` | `Wiki.lua` function names + wiki scraping |
+| `WikiGlobals.lua` | Wiki category query function names + wiki scraping |
 | `BlizzardAPI.lua` | Blizzard `APIDocumentationGenerated` functions (deduped against Ketho) |
 | `BlizzardStructures.lua` | Blizzard `APIDocumentationGenerated` structure types (deduped against Ketho) |
 | `BlizzardEvents.lua` | Blizzard `APIDocumentationGenerated` events |
+| `Enum.lua` | APIDocumentation enumerations merged with LuaEnum.lua categories |
+| `CVar.lua` | BlizzardInterfaceResources `CVars.lua` string literal union |
+| `Constants.lua` | LuaEnum.lua `Constants` table (57 sub-tables with typed fields) |
 
 ## Output artifacts
 
@@ -119,3 +124,14 @@ The `embedded-stubs` Cargo feature (default on) bakes both blobs into the binary
 ## Validation
 
 Before writing, the pipeline validates minimum counts (symbols ≥ 50k, functions ≥ 20k, tables ≥ 10k, files ≥ 1k, globals ≥ 50k, classes ≥ 10k) to catch truncated data from network failures or upstream structure changes.
+
+The `dump-stubs` CLI subcommand outputs every global name and its resolved type as a tab-separated list, sorted alphabetically. This is useful for diffing before and after stub regeneration to catch regressions:
+
+```bash
+# Save baseline before changes
+wowlua_ls dump-stubs > before.txt
+
+# After regenerating stubs, diff
+wowlua_ls dump-stubs > after.txt
+diff before.txt after.txt
+```

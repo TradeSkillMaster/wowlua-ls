@@ -24,6 +24,17 @@ Exit code is `1` if any diagnostics are found, making it suitable for CI:
   run: wowlua_ls check . --severity warning
 ```
 
+## `dump-stubs` — Dump global stub types
+
+Output every global name from the precomputed stubs and its resolved type, one per line (tab-separated). Useful for diffing before and after stub regeneration:
+
+```bash
+wowlua_ls dump-stubs > before.txt
+# ... regenerate stubs ...
+wowlua_ls dump-stubs > after.txt
+diff before.txt after.txt
+```
+
 ## `doc` — Generate API documentation
 
 Generate markdown API documentation snippets from annotated Lua source:

@@ -747,6 +747,162 @@ fn generate_blizzard_structure_stubs(
     out
 }
 
+/// Find the position of the matching closing `}` for a block that starts right after
+/// an opening `{`. Returns 0 if no match is found.
+fn find_matching_brace(s: &str) -> usize {
+    let mut depth = 1i32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => { depth -= 1; if depth == 0 { return i; } }
+            _ => {}
+        }
+    }
+    0
+}
+
+/// Parse tab-indented `Name = { ... }` sub-tables from Lua source content.
+/// Calls `field_parser` on each sub-table's inner content to extract fields.
+/// Returns `{ "SubTableName" → fields }`, excluding sub-tables with no fields.
+fn parse_lua_subtables<T>(content: &str, field_parser: impl Fn(&str) -> Vec<T>) -> HashMap<String, Vec<T>> {
+    let sub_re = regex_lite::Regex::new(r"\t(\w+)\s*=\s*\{").unwrap();
+    let mut result = HashMap::new();
+    let mut search_from = 0;
+
+    while let Some(cap) = sub_re.captures(&content[search_from..]) {
+        let m = cap.get(0).unwrap();
+        let sub_name = cap.get(1).unwrap().as_str().to_string();
+        let abs_start = search_from + m.start() + m.as_str().len();
+
+        let end = find_matching_brace(&content[abs_start..]);
+        if end > 0 {
+            let block = &content[abs_start..abs_start + end];
+            let fields = field_parser(block);
+            if !fields.is_empty() {
+                result.insert(sub_name, fields);
+            }
+        }
+
+        search_from = abs_start + end.max(1);
+    }
+
+    result
+}
+
+/// Generate `@enum Enum.*` stubs from parsed Blizzard APIDocumentation enumerations.
+/// Replaces Ketho's vendor `Enum.lua` with data from Blizzard's own source.
+fn generate_blizzard_enum_stubs(
+    enums: &HashMap<String, Vec<(String, i64)>>,
+    existing_names: &HashSet<String>,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "---@meta _").unwrap();
+    writeln!(out, "Enum = {{}}").unwrap();
+    writeln!(out).unwrap();
+
+    let existing_enum_names: HashSet<String> = existing_names.iter()
+        .filter_map(|n| n.strip_prefix("Enum.").map(|s| s.to_string()))
+        .collect();
+    let mut sorted: Vec<(&String, &Vec<(String, i64)>)> = enums.iter()
+        .filter(|(name, _)| !existing_enum_names.contains(name.as_str()))
+        .collect();
+    sorted.sort_by_key(|(name, _)| name.as_str());
+
+    for (enum_name, fields) in &sorted {
+        writeln!(out, "---@enum Enum.{enum_name}").unwrap();
+        write!(out, "Enum.{enum_name} = {{").unwrap();
+        for (i, (field_name, value)) in fields.iter().enumerate() {
+            if i > 0 {
+                write!(out, ", ").unwrap();
+            }
+            write!(out, "{field_name} = {value}").unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    log::info!("  BlizzardEnums: {} enum types generated", sorted.len());
+    out
+}
+
+/// Extract `Constants.*` sub-tables with their typed fields from LuaEnum.lua content.
+/// Returns `{ "SubTableName" → [(FieldName, type_str)] }` for generating `@class` stubs.
+/// Values are inspected to determine types: number (int/float), boolean, or string.
+fn parse_constants_tables(content: &str) -> HashMap<String, Vec<(String, String)>> {
+    // Find the Constants = { ... } top-level block
+    let Some(start) = content.find("\nConstants = {") else {
+        log::warn!("No Constants block found in LuaEnum.lua");
+        return HashMap::new();
+    };
+    let block_start = start + "\nConstants = {".len();
+    let block_end = find_matching_brace(&content[block_start..]);
+    if block_end == 0 {
+        log::warn!("Could not find closing brace for Constants block");
+        return HashMap::new();
+    }
+    let constants_block = &content[block_start..block_start + block_end];
+
+    // The upstream LuaEnum.lua always uses trailing commas on every field,
+    // so matching `value,` is safe here.
+    let field_re = regex_lite::Regex::new(r#"(\w+)\s*=\s*(.+?),"#).unwrap();
+
+    let result = parse_lua_subtables(constants_block, |block| {
+        let mut fields = Vec::new();
+        for fc in field_re.captures_iter(block) {
+            let fname = fc.get(1).unwrap().as_str().to_string();
+            let val = fc.get(2).unwrap().as_str().trim();
+            let typ = if val == "true" || val == "false" {
+                "boolean"
+            } else if val.starts_with('"') {
+                "string"
+            } else {
+                "number"
+            };
+            fields.push((fname, typ.to_string()));
+        }
+        fields
+    });
+
+    log::info!("  Constants: {} sub-tables", result.len());
+    result
+}
+
+/// Generate `@class` stubs for the `Constants` global table and its sub-tables.
+fn generate_constants_stubs(
+    tables: &HashMap<String, Vec<(String, String)>>,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "---@meta _").unwrap();
+    writeln!(out).unwrap();
+
+    let mut sorted: Vec<_> = tables.iter().collect();
+    sorted.sort_by_key(|(name, _)| name.as_str());
+
+    // Root Constants class with a @field per sub-table
+    writeln!(out, "---@class Constants").unwrap();
+    for (sub_name, _) in &sorted {
+        writeln!(out, "---@field {sub_name} Constants.{sub_name}").unwrap();
+    }
+    writeln!(out, "Constants = {{}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Each sub-table as its own class
+    for (sub_name, fields) in &sorted {
+        writeln!(out, "---@class Constants.{sub_name}").unwrap();
+        for (fname, typ) in *fields {
+            writeln!(out, "---@field {fname} {typ}").unwrap();
+        }
+        writeln!(out).unwrap();
+    }
+
+    log::info!("  Constants stubs: {} sub-tables, {} total fields",
+        sorted.len(),
+        sorted.iter().map(|(_, f)| f.len()).sum::<usize>());
+    out
+}
+
 /// Parse event names from a `---@alias FrameEvent string` definition in Event.lua.
 /// Returns the set of all `---|"EVENT_NAME"` entries.
 fn parse_event_alias_names(content: &str) -> HashSet<String> {
@@ -1011,14 +1167,21 @@ fn fetch_resource(branch: &str, file: &str) -> HashSet<String> {
 /// Fetch wiki pages for a list of API names in a single `Special:Export` POST request,
 /// resolving redirects so callers can map redirect sources to canonical page names.
 /// Returns `(pages, redirects)` where `redirects` maps source → canonical target name.
-/// Panics on HTTP failure (rate limiting, server down, etc.).
+/// Returns `(pages, redirects)` where `pages` maps API name → wikitext and
+/// `redirects` maps source → canonical target name.
+/// Returns empty maps on HTTP failure.
 fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<String, String>, HashMap<String, String>) {
     let pages_text: String = api_names.iter()
         .map(|n| format!("API {n}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let xml_text = fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text), ("curonly", "1")]))
-        .unwrap_or_else(|e| panic!("Wiki export failed: {e}"));
+    let xml_text = match fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text), ("curonly", "1")])) {
+        Ok(text) => text,
+        Err(e) => {
+            log::error!("Wiki export failed: {e} — wiki pages will be empty");
+            return (HashMap::new(), HashMap::new());
+        }
+    };
     let mut pages = HashMap::new();
     let mut redirects = HashMap::new();
     for page_text in xml_text.split("<page>").skip(1) {
@@ -1601,28 +1764,83 @@ fn enrich_widget_stubs(
 
 // ── Wiki-documented global stubs (replaces Ketho's Wiki.lua) ──────────────────
 
-/// Generate stubs for non-Blizzard-documented global functions by scraping
-/// warcraft.wiki.gg directly, replacing Ketho's pre-parsed Wiki.lua.
-///
-/// Uses the function names from Ketho's Wiki.lua as the source list, then
-/// fetches and parses each wiki page with our own `parse_wikitext()`.
-/// Functions without a wiki page or whose markup can't be parsed get a bare
-/// Extract function names from Ketho's Wiki.lua as the source list for wiki stub generation.
-fn collect_wiki_stub_names(wiki_lua_path: &Path) -> Vec<String> {
-    let wiki_content = std::fs::read_to_string(wiki_lua_path)
-        .unwrap_or_else(|e| panic!("Failed to read Wiki.lua from cloned repo at {}: {e}", wiki_lua_path.display()));
+const WIKI_API_URL: &str = "https://warcraft.wiki.gg/api.php";
 
-    let func_re = regex_lite::Regex::new(r"(?m)^function ([\w.]+)\(").unwrap();
-    let mut names: Vec<String> = func_re.captures_iter(&wiki_content)
-        .filter_map(|c| Some(c.get(1)?.as_str().to_string()))
-        .collect();
+/// Discover wiki-documented API function names by querying the MediaWiki category API,
+/// replacing the former dependency on Ketho's Wiki.lua.
+///
+/// Queries `Category:API_functions` and its subcategories (Removed, deprecated, Noflavor)
+/// to capture the full set of documented functions including deprecated/removed ones
+/// that addons may still reference.
+fn fetch_wiki_function_names() -> Vec<String> {
+    let categories = [
+        "Category:API_functions",
+        "Category:API_functions/Removed",
+        "Category:API_functions/deprecated",
+        "Category:API_functions/Noflavor",
+    ];
+
+    let mut names = Vec::new();
+
+    for category in &categories {
+        let mut cmcontinue: Option<String> = None;
+        let mut cat_count = 0usize;
+
+        loop {
+            let mut url = format!(
+                "{WIKI_API_URL}?action=query&list=categorymembers\
+                 &cmtitle={}&cmlimit=500&format=json",
+                urlencoding(category),
+            );
+            if let Some(cont) = &cmcontinue {
+                url.push_str(&format!("&cmcontinue={}", urlencoding(cont)));
+            }
+
+            let body = match fetch_url(&url, None) {
+                Ok(text) => text,
+                Err(e) => {
+                    log::error!("Wiki category query failed for {category}: {e} — wiki names will be incomplete");
+                    break;
+                }
+            };
+            let json: serde_json::Value = match serde_json::from_str(&body) {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!("Failed to parse wiki category JSON for {category}: {e}");
+                    break;
+                }
+            };
+
+            if let Some(members) = json["query"]["categorymembers"].as_array() {
+                for member in members {
+                    if let Some(title) = member["title"].as_str() {
+                        // Pages are "API FunctionName"; skip non-API pages like "Global functions"
+                        if let Some(name) = title.strip_prefix("API ") {
+                            names.push(name.replace(' ', "_"));
+                            cat_count += 1;
+                        }
+                    }
+                }
+            }
+
+            // Check for continuation token
+            if let Some(cont) = json["continue"]["cmcontinue"].as_str() {
+                cmcontinue = Some(cont.to_string());
+            } else {
+                break;
+            }
+        }
+        log::info!("  {category}: {cat_count} functions");
+    }
+
     names.sort();
     names.dedup();
-    log::info!("  Found {} function names in Wiki.lua", names.len());
+    log::info!("  Discovered {} unique function names from wiki categories", names.len());
     names
 }
 
 /// Generate stubs for non-Blizzard-documented global functions using pre-fetched wiki data.
+/// Functions with a wiki page are parsed for parameter/return annotations.
 /// Functions without a wiki page or whose markup can't be parsed get a bare
 /// `function name(...) end` stub with just a doc link.
 fn generate_wiki_stubs(
@@ -1655,6 +1873,41 @@ fn generate_wiki_stubs(
     log::info!("  Wiki stubs: {documented} documented, {undocumented} undocumented");
 
     out.join("\n")
+}
+
+// ── CVar alias generation (replaces Ketho's CVar.lua) ─────────────────────────
+
+/// Fetch CVar names from BlizzardInterfaceResources and generate a `---@alias CVar` stub.
+fn fetch_and_generate_cvar_stubs() -> String {
+    let url = RESOURCE_URL_TEMPLATE
+        .replace("{branch}", "live")
+        .replace("{file}", "CVars.lua");
+    let content = match fetch_url(&url, None) {
+        Ok(text) => text,
+        Err(e) => {
+            log::error!("FAILED to fetch CVars.lua: {e} — CVar alias will be empty");
+            return String::new();
+        }
+    };
+
+    // Parse CVar names from the Lua table: ["cvarName"] = {...}
+    let name_re = regex_lite::Regex::new(r#"\["(\w+)"\]\s*="#).unwrap();
+    let mut names: Vec<String> = name_re.captures_iter(&content)
+        .filter_map(|c| Some(c.get(1)?.as_str().to_string()))
+        .collect();
+    names.sort();
+    names.dedup();
+
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "---@meta _").unwrap();
+    writeln!(out, "---@alias CVar string").unwrap();
+    for name in &names {
+        writeln!(out, "---|\"{}\"", name).unwrap();
+    }
+
+    log::info!("  CVars: {} CVar names generated", names.len());
+    out
 }
 
 // ── Phase 1: LE_* legacy constants from FrameXML scanning ─────────────────────
@@ -1754,6 +2007,27 @@ fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<String, i64> {
             }
     }
 
+    result
+}
+
+/// Extract `Enum.*` categories with CamelCase field names from LuaEnum.lua content.
+/// Returns `{ "CategoryName" → [(FieldName, value)] }` for generating `@enum Enum.*` stubs.
+/// This supplements APIDocumentation enums, which don't cover all categories.
+fn parse_lua_enum_categories(content: &str) -> HashMap<String, Vec<(String, i64)>> {
+    let field_re = regex_lite::Regex::new(r"(\w+)\s*=\s*(-?\d+)").unwrap();
+
+    let result = parse_lua_subtables(content, |block| {
+        let mut fields = Vec::new();
+        for field_cap in field_re.captures_iter(block) {
+            let val_name = field_cap.get(1).unwrap().as_str().to_string();
+            if let Ok(num) = field_cap.get(2).unwrap().as_str().parse::<i64>() {
+                fields.push((val_name, num));
+            }
+        }
+        fields
+    });
+
+    log::info!("  LuaEnum.lua: {} Enum.* categories", result.len());
     result
 }
 
@@ -2167,6 +2441,8 @@ struct BranchResourceData {
     classic_diff: ClassicApiDiff,
     /// All retail global API + FrameXML names (for GlobalVariables.lua universe).
     retail_all_names: HashSet<String>,
+    /// Retail GlobalAPI.lua names only (no FrameXML).
+    retail_api_names: HashSet<String>,
     /// Flavor map derived from branch presence diffs.
     flavor_map: HashMap<String, u8>,
 }
@@ -2255,6 +2531,7 @@ fn fetch_branch_resources(stubs_dir: &Path) -> BranchResourceData {
     BranchResourceData {
         classic_diff: ClassicApiDiff { missing, missing_fxml, existing_globals },
         retail_all_names,
+        retail_api_names: retail,
         flavor_map,
     }
 }
@@ -2641,10 +2918,10 @@ fn parse_api_doc_file(
     }
 
     // Parse Enumeration blocks: find Type = "Enumeration", look back for Name, extract Fields.
-    // Limit the Fields search to the region before the next Type = marker to avoid
-    // matching Fields from a later unrelated block.
+    // Use the enclosing `{ ... }` block (tracked via brace depth) to bound the search,
+    // since field entries also contain `Type = "EnumName"` which would falsely truncate
+    // a simpler string-based region boundary.
     let enum_marker = "Type = \"Enumeration\"";
-    let type_marker = "Type = \"";
 
     let mut search_from = 0;
     while let Some(marker_offset) = content[search_from..].find(enum_marker) {
@@ -2655,13 +2932,12 @@ fn parse_api_doc_file(
         if let Some(name_cap) = name_re.captures_iter(before).last() {
             let enum_name = name_cap.get(1).unwrap().as_str().to_string();
 
-            // Bound the search region: from the marker to the next Type = marker (or EOF)
+            // Find the enclosing block's closing brace by tracking depth from just
+            // before the Name = line (walk backwards to the opening `{`).
             let after_marker = &content[abs_pos + enum_marker.len()..];
-            let region_end = after_marker.find(type_marker).unwrap_or(after_marker.len());
-            let region = &after_marker[..region_end];
 
-            if let Some(fields_start) = region.find("Fields") {
-                let fields_section = &region[fields_start..];
+            if let Some(fields_start) = after_marker.find("Fields") {
+                let fields_section = &after_marker[fields_start..];
                 // Find matching closing brace for the Fields array
                 let mut depth = 0i32;
                 let mut fields_end = 0;
@@ -2850,6 +3126,11 @@ pub fn regenerate_stubs() {
     let overrides_dir = stubs_dir.join("overrides");
     let output_path = stubs_dir.join("precomputed.bin.zst");
 
+    // Track per-source data collection failures. Each source validates its output
+    // and appends an error if the count is suspiciously low (likely a network failure).
+    // Checked at the end alongside aggregate thresholds before writing blobs.
+    let mut source_errors: Vec<String> = Vec::new();
+
     // Step 1: Shallow-clone vscode-wow-api into a temp directory
     let tmp_dir = std::env::temp_dir().join("wowlua-ls-stub-gen");
     let clone_dir = tmp_dir.join("vscode-wow-api");
@@ -2961,23 +3242,29 @@ pub fn regenerate_stubs() {
         log::info!("Parsing Blizzard APIDocumentationGenerated (retail)...");
         parse_blizzard_api_docs(&retail_ui_dir)
     } else {
-        log::warn!("Skipping Blizzard API doc parsing (no retail clone)");
+        source_errors.push("Blizzard APIDocumentation: no retail wow-ui-source clone".to_string());
         BlizzardApiDocs { functions: Vec::new(), events: Vec::new(), structures: Vec::new() }
     };
+    if blizzard_docs.functions.len() < 500 {
+        source_errors.push(format!("Blizzard API functions: {} (expected ≥500)", blizzard_docs.functions.len()));
+    }
 
     // Step 2c: Fetch BlizzardInterfaceResources lists (all 3 branches), compute classic API
     // diff, derive retail global name universe, and compute flavor bitmasks from branch presence.
     log::info!("Fetching BlizzardInterfaceResources and computing branch diffs...");
     let branch_data = fetch_branch_resources(&combined_stubs);
+    if branch_data.retail_all_names.is_empty() {
+        source_errors.push("BlizzardInterfaceResources retail names: empty (fetch failed)".to_string());
+    }
     let classic_diff = branch_data.classic_diff;
 
-    // Step 2d: Extract retail constants from wow-ui-source for GlobalVariables.lua values.
-    // These replace Ketho's enum.ts — derived directly from Blizzard's APIDocumentation.
-    let global_constants: HashMap<String, i64> = if has_retail_ui {
-        log::info!("Extracting retail constants from APIDocumentation + FrameXML...");
+    // Step 2d: Extract retail constants and enumerations from wow-ui-source.
+    // Constants → GlobalVariables.lua values; enumerations → BlizzardEnums.lua.
+    let (global_constants, retail_enums) = if has_retail_ui {
+        log::info!("Extracting retail constants and enums from APIDocumentation + FrameXML...");
         let api_doc = parse_api_doc_dir(&retail_ui_dir);
         let fxml_consts = scan_framexml_constants(&retail_ui_dir);
-        let mut constants = HashMap::new();
+        let mut constants: HashMap<String, i64> = HashMap::new();
         // Chain FrameXML first so APIDocumentation values win on duplicates.
         for (name, (typ, val)) in fxml_consts.iter().chain(api_doc.constants.iter()) {
             if typ == "number" {
@@ -2989,10 +3276,10 @@ pub fn regenerate_stubs() {
                 }
             }
         }
-        log::info!("  Extracted {} numeric constants", constants.len());
-        constants
+        log::info!("  Extracted {} numeric constants, {} enumerations", constants.len(), api_doc.enums.len());
+        (constants, api_doc.enums)
     } else {
-        HashMap::new()
+        (HashMap::new(), HashMap::new())
     };
 
     // Step 3: Generate global stubs (from BlizzardInterfaceResources + APIDocumentation constants)
@@ -3012,8 +3299,10 @@ pub fn regenerate_stubs() {
 
     // Step 4: Collect all wiki page names from the three passes, then batch-fetch once
     log::info!("Collecting wiki page names...");
-    let wiki_lua_path = clone_dir.join("Annotations/Core/Data/Wiki.lua");
-    let wiki_names = collect_wiki_stub_names(&wiki_lua_path);
+    let mut wiki_names = fetch_wiki_function_names();
+    if wiki_names.len() < 1000 {
+        source_errors.push(format!("wiki function names: {} (expected ≥1000)", wiki_names.len()));
+    }
     let widget_methods = collect_widget_enrichment_methods(&vendor_dir_paths);
     log::info!("  Widget methods needing enrichment: {}", widget_methods.len());
 
@@ -3021,16 +3310,34 @@ pub fn regenerate_stubs() {
     all_wiki_names.extend(classic_diff.missing.iter().cloned());
     all_wiki_names.extend(wiki_names.iter().cloned());
     all_wiki_names.extend(widget_methods.iter().map(|m| m.api_name.clone()));
+    // Also fetch wiki pages for retail API globals — catches functions that exist
+    // but aren't categorized on the wiki (e.g. InCombatLockdown, GetText).
+    all_wiki_names.extend(branch_data.retail_api_names.iter().cloned());
     let all_wiki_names_vec: Vec<String> = all_wiki_names.into_iter().collect();
 
     let (wiki_pages, wiki_redirects) = if !all_wiki_names_vec.is_empty() {
         log::info!("Batch-fetching {} wiki pages...", all_wiki_names_vec.len());
         let (pages, redirects) = fetch_wiki_pages(&all_wiki_names_vec);
         log::info!("  Got {} wiki pages, {} redirects", pages.len(), redirects.len());
+        if pages.is_empty() {
+            source_errors.push("wiki pages: empty (export fetch failed)".to_string());
+        }
         (pages, redirects)
     } else {
         (HashMap::new(), HashMap::new())
     };
+
+    // Supplement wiki category names with retail API globals that have wiki pages.
+    // This captures real API functions not in any wiki category.
+    let wiki_names_set: HashSet<&str> = wiki_names.iter().map(|s| s.as_str()).collect();
+    let retail_extras: Vec<String> = branch_data.retail_api_names.iter()
+        .filter(|name| !wiki_names_set.contains(name.as_str()) && wiki_pages.contains_key(name.as_str()))
+        .cloned()
+        .collect();
+    if !retail_extras.is_empty() {
+        log::info!("  Supplemented wiki names with {} retail API globals (have wiki pages but not categorized)", retail_extras.len());
+        wiki_names.extend(retail_extras);
+    }
 
     // Step 4a: Generate classic stubs (wiki + constant/enum + LE_* + XML frames)
     log::info!("Generating classic stubs...");
@@ -3043,28 +3350,57 @@ pub fn regenerate_stubs() {
         &all_ui_dirs,
     );
 
-    // Step 4b: Generate wiki-documented global stubs (replaces Ketho's Wiki.lua)
-    log::info!("Generating wiki-documented global stubs...");
-    let wiki_globals_lua = generate_wiki_stubs(&wiki_names, &wiki_pages, &wiki_redirects);
-
-    // Step 4c: Enrich widget stubs with wiki-scraped annotations
+    // Step 4b: Enrich widget stubs with wiki-scraped annotations
     log::info!("Enriching widget stubs with wiki annotations...");
     enrich_widget_stubs(&widget_methods, &wiki_pages, &wiki_redirects);
 
-    // Step 5: Write generated stubs to temp dir for scanning
+    // Step 4c: Generate CVar alias (replaces Ketho's CVar.lua)
+    log::info!("Generating CVar alias from BlizzardInterfaceResources...");
+    let cvar_lua = fetch_and_generate_cvar_stubs();
+    if cvar_lua.is_empty() {
+        source_errors.push("CVar alias: empty (fetch failed)".to_string());
+    }
+
+    // Step 5: Collect existing names from vendor annotations + overrides for deduplication.
+    // Generated stubs only fill gaps where richer hand-written annotations don't exist.
+    // Exclude vendor files we generate replacements for from the dedup set.
+    // Generated file names (BlizzardEnums.lua, Constants.lua, etc.) are intentionally
+    // absent — they only exist in the generated output directory, not in vendor/overrides.
+    let existing_for_dedup = get_existing_names(&combined_stubs, &[
+        "GlobalStrings.lua", "GlobalVariables.lua",
+        "Enum.lua", "CVar.lua", "Wiki.lua",
+    ]);
+
+    // Step 5a: Generate wiki-documented global stubs, skipping functions already in vendor stubs.
+    // Also skip bare names that match a Blizzard API namespace function (e.g. GetAddOnMetadata
+    // → C_AddOns.GetAddOnMetadata) UNLESS the bare name is still a real global in GlobalAPI.lua.
+    // Functions like InCombatLockdown exist both as bare globals and under C_* namespaces.
+    log::info!("Generating wiki-documented global stubs...");
+    let api_doc_base_names: HashSet<String> = blizzard_docs.functions.iter()
+        .filter(|f| f.namespace.is_some())
+        .map(|f| f.name.clone())
+        .collect();
+    let wiki_names_filtered: Vec<String> = wiki_names
+        .into_iter()
+        .filter(|name| {
+            if existing_for_dedup.contains(name) { return false; }
+            // Skip namespace function aliases that no longer exist as bare globals
+            if api_doc_base_names.contains(name)
+                && !branch_data.retail_api_names.contains(name) { return false; }
+            true
+        })
+        .collect();
+    log::info!("  Wiki names after dedup: {} (filtered from vendor stubs)", wiki_names_filtered.len());
+    let wiki_globals_lua = generate_wiki_stubs(&wiki_names_filtered, &wiki_pages, &wiki_redirects);
+
+    // Step 5b: Write generated stubs to temp dir for scanning
     let gen_dir = scan_tmp.join("generated");
     std::fs::create_dir_all(&gen_dir).unwrap();
     std::fs::write(gen_dir.join("GlobalStrings.lua"), &global_strings_lua).unwrap();
     std::fs::write(gen_dir.join("GlobalVariables.lua"), &global_vars_lua).unwrap();
     std::fs::write(gen_dir.join("ClassicGlobals.lua"), &classic_lua).unwrap();
     std::fs::write(gen_dir.join("WikiGlobals.lua"), &wiki_globals_lua).unwrap();
-
-    // Step 5b: Generate Blizzard API stubs (functions, structures, events) from parsed docs
-    // Collect existing names from Ketho's annotations + overrides for deduplication.
-    // Blizzard-sourced stubs only fill gaps where Ketho's richer annotations don't exist.
-    let existing_for_dedup = get_existing_names(&combined_stubs, &[
-        "GlobalStrings.lua", "GlobalVariables.lua",
-    ]);
+    std::fs::write(gen_dir.join("CVars.lua"), &cvar_lua).unwrap();
     log::info!("  Existing names for dedup: {}", existing_for_dedup.len());
 
     let blizzard_api_lua = generate_blizzard_api_stubs(&blizzard_docs, &existing_for_dedup);
@@ -3072,6 +3408,44 @@ pub fn regenerate_stubs() {
 
     let blizzard_structures_lua = generate_blizzard_structure_stubs(&blizzard_docs, &existing_for_dedup);
     std::fs::write(gen_dir.join("BlizzardStructures.lua"), &blizzard_structures_lua).unwrap();
+
+    // Fetch LuaEnum.lua once for both Enum.* categories and Constants.* sub-tables.
+    log::info!("Fetching LuaEnum.lua for Enum.* and Constants...");
+    let lua_enum_content = {
+        let url = RESOURCE_URL_TEMPLATE
+            .replace("{branch}", "live")
+            .replace("{file}", "LuaEnum.lua");
+        match fetch_url(&url, None) {
+            Ok(text) => text,
+            Err(e) => {
+                source_errors.push(format!("LuaEnum.lua (live): fetch failed — {e}"));
+                String::new()
+            }
+        }
+    };
+
+    // Enums: merge APIDocumentation enums with LuaEnum.lua categories, replacing Ketho's Enum.lua.
+    // APIDocumentation has 825 enums; LuaEnum.lua fills ~120 gaps (shop, housing, etc.).
+    let lua_enum_cats = parse_lua_enum_categories(&lua_enum_content);
+    let mut all_enums = lua_enum_cats;
+    // APIDocumentation enums take precedence over LuaEnum.lua
+    for (name, fields) in retail_enums {
+        all_enums.insert(name, fields);
+    }
+    log::info!("  Combined Enum.* sources: {} total", all_enums.len());
+    if all_enums.len() < 500 {
+        source_errors.push(format!("Enum.* stubs: {} (expected ≥500)", all_enums.len()));
+    }
+    let blizzard_enums_lua = generate_blizzard_enum_stubs(&all_enums, &existing_for_dedup);
+    std::fs::write(gen_dir.join("BlizzardEnums.lua"), &blizzard_enums_lua).unwrap();
+
+    // Constants: extract Constants.* sub-tables from LuaEnum.lua
+    let constants_tables = parse_constants_tables(&lua_enum_content);
+    if constants_tables.len() < 20 {
+        source_errors.push(format!("Constants sub-tables: {} (expected ≥20)", constants_tables.len()));
+    }
+    let constants_lua = generate_constants_stubs(&constants_tables);
+    std::fs::write(gen_dir.join("Constants.lua"), &constants_lua).unwrap();
 
     // Events: use only Blizzard APIDocumentation events.
     // Ketho's Event.lua merges FrameXML-only events not in APIDocumentation — we intentionally
@@ -3108,9 +3482,11 @@ pub fn regenerate_stubs() {
             override_stems.insert(stem.to_string());
         }
     }
-    // Skip Ketho's Wiki.lua and Event.lua — we generate our own from upstream sources
+    // Skip Ketho's vendor files that we now generate from upstream sources
     override_stems.insert("Wiki".to_string());
     override_stems.insert("Event".to_string());
+    override_stems.insert("Enum".to_string());
+    override_stems.insert("CVar".to_string());
 
     for vendor_dir in &vendor_dirs {
         let mut vendor_paths = Vec::new();
@@ -3237,9 +3613,21 @@ pub fn regenerate_stubs() {
 
     let file_count = stub_file_contents.len();
 
-    // Validate counts before writing — catch truncated blobs from partial failures.
-    // Thresholds are well below actual counts (symbols ~132k, functions ~45k, tables ~29k,
-    // files ~2800, globals ~103k, classes ~21k) but high enough to detect major data loss.
+    // Check per-source data collection failures first.
+    if !source_errors.is_empty() {
+        for e in &source_errors {
+            log::error!("Data source failure: {e}");
+        }
+        panic!(
+            "Stub regeneration aborted — {} data source(s) failed or returned insufficient data. \
+             This usually indicates a network failure or upstream repo structure change. \
+             Check the log output above for errors.",
+            source_errors.len(),
+        );
+    }
+
+    // Validate aggregate counts — catch truncated blobs from partial failures
+    // that individual source checks might not cover.
     validate_stub_counts(
         pre_globals.symbols_len(),
         pre_globals.functions_len(),

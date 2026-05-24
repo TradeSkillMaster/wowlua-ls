@@ -20,12 +20,12 @@ cargo build --release --no-default-features
 
 ```
 src/
-├── main.rs              # CLI entry point (check, evaluate, test-query, LSP)
+├── main.rs              # CLI entry point (check, evaluate, test-query, dump-stubs, LSP)
 ├── types.rs             # Core IR: ValueType, Expr, Symbol, Scope, Function, TableInfo
 ├── ast.rs               # AST node definitions and casts over SyntaxNode
 ├── config.rs            # .wowluarc.json loading
 ├── flavor.rs            # Retail/classic/classic_era flavor bitmask
-├── stub_gen.rs          # Stub generation from Ketho's vscode-wow-api
+├── stub_gen.rs          # Stub generation from WoW API primary sources
 ├── annotations/
 │   ├── mod.rs           # Core types (AnnotationType, ClassDecl, AliasDecl, etc.)
 │   ├── annotation_types.rs    # Type expression parsing and formatting

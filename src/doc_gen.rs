@@ -64,6 +64,28 @@ pub(crate) struct DocParam {
     pub desc: Option<String>,
 }
 
+// ── Stub dumping (for diffable output) ───────────────────────────────────────
+
+/// Dump every global name from precomputed stubs with its resolved type.
+/// Returns sorted `(name, type_string)` pairs for deterministic diffing.
+pub fn dump_stub_globals(pg: &PreResolvedGlobals) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    for maps in [&pg.scope0_symbols, &pg.framexml_scope0_symbols] {
+        for (sym_id, sym_idx) in maps {
+            let SymbolIdentifier::Name(name) = sym_id else { continue };
+            let Some(local_idx) = sym_idx.0.checked_sub(EXT_BASE) else { continue };
+            let sym = &pg.symbols[local_idx];
+            let type_str = match sym.versions.last().and_then(|v| v.resolved_type.as_ref()) {
+                Some(vt) => format_value_type(vt, pg),
+                None => "?".to_string(),
+            };
+            entries.push((name.clone(), type_str));
+        }
+    }
+    entries.sort();
+    entries
+}
+
 // ── Type formatting (standalone, operates on PreResolvedGlobals) ─────────────
 
 /// Format a `ValueType` to a display string using `PreResolvedGlobals` for lookups.
