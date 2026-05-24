@@ -1,19 +1,32 @@
 ### New
 
-- **`nil-table-key` diagnostic** — warns when a table key type annotation includes nil, e.g. `table<string?, V>` ([docs](https://tradeskillmaster.github.io/wowlua-ls/reference/diagnostics.html#nil-table-key))
-- **`library` config field** — mark directories as libraries: types are imported but diagnostics are suppressed. Supports relative and absolute paths ([docs](https://tradeskillmaster.github.io/wowlua-ls/reference/configuration.html#library))
-- **`codeLens` config** — granular control to disable "N usages", "N implementations", and "overrides Parent" code lenses ([docs](https://tradeskillmaster.github.io/wowlua-ls/reference/configuration.html#codelens))
-- **`@defclass` through overload dispatch** — `@defclass` now works on functions with `@overload` annotations, enabling typed class factories like AceAddon's `NewAddon`/`GetAddon` ([docs](https://tradeskillmaster.github.io/wowlua-ls/reference/annotations.html))
-- **AceAddon-3.0 stub overrides** — built-in type definitions for `LibStub("AceAddon-3.0")`, including `NewAddon` and `GetAddon` with `@defclass` support
+- **IsObjectType() narrowing** — calling `frame:IsObjectType("Button")` in an `if` guard now narrows the frame variable to the `Button` subclass in the then-branch ([docs](https://tradeskillmaster.github.io/wowlua-ls/guide/type-guards.html))
+- **hooksecurefunc callback inference** — `hooksecurefunc` callbacks automatically receive parameter types from the hooked function's signature
+- **`@param` on call statement callbacks** — `@param` annotations placed above a call statement apply to the callback argument, giving you named typed parameters without a separate function definition
+- **Hover for string literal method calls** — hovering `("hello"):upper()` or `str:format(...)` on a string literal now shows the resolved method signature
+- **Addon folder name inference** — the first file-level vararg (`addonName`) is inferred as the string-literal addon folder name (e.g. `"MyAddon"`)
+- **Intersection type hover expansion** — fields from intersection types (`A & B`) are now displayed vertically in hover, matching the class field layout
 
 ### Bug Fixes
 
-- Fix stale, duplicate, and lagging diagnostics across Neovim (pull-model) and other push-only LSP clients
-- Fix inlay hints flickering during typing
-- Fix `undefined-field` false positive on multi-assignment `@class` methods
-- Fix `pairs`/`ipairs` iteration types: strip nil from key and value types, remove duplicate `string[]|string[]` in `ipairs`
-- Fix annotation type highlighting for dashed names (e.g. `@class my-addon`)
+- Fix duplicate diagnostics and stale parse errors in Neovim
+- Fix `undefined-global` not catching typos in bracket access (e.g. `_G["typo"]`)
+- Fix `type-mismatch` false positive when `@return` annotation exists
+- Fix `field-type-mismatch` false positive for class assigned to a table field
+- Fix `@type` on `self.field` not resolving during workspace scan
+- Fix addon namespace class name being lost during generic binding
+- Fix cross-file scan dropping non-literal table fields
+- Fix hover display for variadic generic return types
+- Fix backtick generic resolving to string when the argument is a variable
+- Fix deep dot chains on global non-class tables producing wrong hover
+- Fix `@event` / `@param` diagnostics and standalone `params<EventType>` resolution
+- Suppress diagnostics in stub files opened via go-to-definition
 
 ### Improvements
 
-- Narrow stub generation dependencies on the Ketho repo for faster and more resilient builds
+- Replace Ketho Wiki/Enum/CVar stubs with primary Blizzard sources for more accurate and complete data
+- Add missing FrameXML color constants to stubs
+
+### Docs
+
+- Move stub generation gist to a docs page
