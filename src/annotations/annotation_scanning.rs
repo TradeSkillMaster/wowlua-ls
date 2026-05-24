@@ -105,6 +105,71 @@ pub(crate) fn extract_number_from_expr(expr: &Expression<'_>) -> Option<String> 
     }
 }
 
+/// Coarse type category inferred from an expression's AST shape.
+/// Shared by `infer_expression_type` (mod.rs) and `classify_expression_value_kind`
+/// (scan_globals.rs) so operator-to-type mappings are defined in one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InferredTypeCategory {
+    String,
+    Number,
+    Boolean,
+    Nil,
+    Function,
+    Table,
+}
+
+/// Infer a coarse type category from an expression's AST shape.
+///
+/// Handles literals, binary operators (arithmetic → number, comparison → boolean,
+/// concatenation → string), unary operators (`not` → boolean, `#` → number,
+/// `-` → number), `and`/`or` chains (infer from the last operand, which is the
+/// effective type in the common `nil or default` / `guard and value` patterns),
+/// grouped expressions, function literals, and table constructors.
+///
+/// Returns `None` for non-inferable expressions (function calls, variable
+/// references, etc.) so those are left for Phase 1 runtime resolution.
+pub(crate) fn infer_type_category(expr: &Expression<'_>) -> Option<InferredTypeCategory> {
+    use crate::ast::Operator;
+    match expr {
+        Expression::Literal(lit) => {
+            if lit.get_string().is_some() { Some(InferredTypeCategory::String) }
+            else if lit.get_number().is_some() { Some(InferredTypeCategory::Number) }
+            else if lit.get_bool().is_some() { Some(InferredTypeCategory::Boolean) }
+            else if lit.is_nil() { Some(InferredTypeCategory::Nil) }
+            else { None }
+        }
+        Expression::UnaryExpression(u) => {
+            match u.kind() {
+                Operator::Not => Some(InferredTypeCategory::Boolean),
+                Operator::ArrayLength | Operator::Subtract => Some(InferredTypeCategory::Number),
+                _ => None,
+            }
+        }
+        Expression::BinaryExpression(bin) => {
+            match bin.kind() {
+                op if op.is_comparison() => Some(InferredTypeCategory::Boolean),
+                op if op.is_arithmetic() => Some(InferredTypeCategory::Number),
+                Operator::Concatenate => Some(InferredTypeCategory::String),
+                Operator::And | Operator::Or => {
+                    // Heuristic for the common `guard and value` / `nil or default`
+                    // fallback patterns — infer from the last operand. Not strictly
+                    // correct in general (`"hello" or 42` is actually string) but
+                    // matches the typical usage in addon code.
+                    let terms = bin.get_terms();
+                    terms.last().and_then(|last| infer_type_category(last))
+                }
+                _ => None,
+            }
+        }
+        Expression::GroupedExpression(g) => {
+            g.get_expression().and_then(|inner| infer_type_category(&inner))
+        }
+        Expression::Function(_) => Some(InferredTypeCategory::Function),
+        Expression::TableConstructor(_) => Some(InferredTypeCategory::Table),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FieldValueKind { String(Option<std::string::String>), Number(Option<std::string::String>), Boolean, Nil, Table(Vec<(std::string::String, FieldValueKind)>), Function, FunctionCall(Vec<std::string::String>, Option<std::string::String>), FieldRef(Vec<std::string::String>), Unknown }
 

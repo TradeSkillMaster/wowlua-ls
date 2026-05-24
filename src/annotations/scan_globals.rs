@@ -9,8 +9,8 @@ use super::{
 };
 use super::annotation_types::{parse_overload, OverloadSig};
 use super::annotation_scanning::{
-    ADDON_NS_NAME, ExternalGlobal, ExternalGlobalKind, FieldValueKind,
-    is_select_varargs, collect_statements_recursive,
+    ADDON_NS_NAME, ExternalGlobal, ExternalGlobalKind, FieldValueKind, InferredTypeCategory,
+    is_select_varargs, collect_statements_recursive, infer_type_category,
 };
 
 /// Unwrap `and`/`or` chains to the effective operand for type inference.
@@ -37,19 +37,15 @@ fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>) -> Vec<(Stri
     let mut fields = Vec::new();
     for field in tc.fields() {
         if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
-            let kind = classify_literal_value_kind(&value)
-                .unwrap_or_else(|| match &value {
-                    Expression::TableConstructor(inner_tc) => FieldValueKind::Table(extract_table_field_kinds(inner_tc)),
-                    Expression::Function(_) => FieldValueKind::Function,
-                    _ => FieldValueKind::Unknown,
-                });
+            let kind = classify_expression_value_kind(&value);
             fields.push((name, kind));
         }
     }
     fields
 }
 
-/// Classify a literal expression (including negated number literals) into a `FieldValueKind`.
+/// Classify a literal expression (including negated number literals) into a `FieldValueKind`,
+/// preserving literal values (string text, number text) when available.
 fn classify_literal_value_kind(expr: &Expression<'_>) -> Option<FieldValueKind> {
     match expr {
         Expression::Literal(lit) => {
@@ -65,6 +61,39 @@ fn classify_literal_value_kind(expr: &Expression<'_>) -> Option<FieldValueKind> 
         }
         _ => None,
     }
+}
+
+/// Classify any expression into a `FieldValueKind`, using the shared
+/// `infer_type_category` for operator-to-type mappings. Falls back to
+/// `classify_literal_value_kind` first to preserve literal values (e.g. string
+/// text, number text), then to `infer_type_category` for expression shapes, and
+/// finally handles `Table`/`Function` structurally.
+fn classify_expression_value_kind(expr: &Expression<'_>) -> FieldValueKind {
+    // Try literal classification first to preserve exact values.
+    if let Some(kind) = classify_literal_value_kind(expr) {
+        return kind;
+    }
+    // Delegate to the shared helper for operator-based inference. Table and
+    // Function are handled structurally below (Table needs recursive sub-field
+    // extraction; Function is a simple tag).
+    if let Some(cat) = infer_type_category(expr) {
+        return match cat {
+            InferredTypeCategory::String => FieldValueKind::String(None),
+            InferredTypeCategory::Number => FieldValueKind::Number(None),
+            InferredTypeCategory::Boolean => FieldValueKind::Boolean,
+            InferredTypeCategory::Nil => FieldValueKind::Nil,
+            InferredTypeCategory::Function => FieldValueKind::Function,
+            // For tables we need recursive field extraction, handled below.
+            InferredTypeCategory::Table => {
+                if let Expression::TableConstructor(tc) = expr {
+                    FieldValueKind::Table(extract_table_field_kinds(tc))
+                } else {
+                    FieldValueKind::Unknown
+                }
+            }
+        };
+    }
+    FieldValueKind::Unknown
 }
 
 // ── Synthesized return-only overloads (workspace scan) ──────────────────────

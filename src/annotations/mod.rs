@@ -742,7 +742,7 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
             // subclass type rather than a bare "table".
             let typ = if let Some((class_name, _)) = extract_class_from_field_comments(field.syntax()) {
                 AnnotationType::Simple(class_name)
-            } else if let Some(t) = infer_literal_type(&value) {
+            } else if let Some(t) = infer_expression_type(&value) {
                 // Capture literal text for enum value display in hover
                 match &value {
                     Expression::Literal(lit) => {
@@ -869,38 +869,21 @@ fn detect_setmetatable_call(root: SyntaxNode<'_>, result: &mut ScanResult) {
     }
 }
 
-/// Infer a basic `AnnotationType` from a literal expression.
+/// Infer a basic `AnnotationType` from an expression's AST shape.
+/// Delegates to the shared `infer_type_category` helper and converts the result.
 /// Returns `None` for non-inferable expressions (function calls, variable
 /// references, etc.) so those fields are left for Phase 1 runtime resolution.
-fn infer_literal_type(expr: &crate::ast::Expression<'_>) -> Option<AnnotationType> {
-    use crate::ast::Expression;
-    match expr {
-        Expression::Literal(lit) => {
-            if lit.get_string().is_some() {
-                Some(AnnotationType::Simple("string".into()))
-            } else if lit.get_number().is_some() {
-                Some(AnnotationType::Simple("number".into()))
-            } else if lit.get_bool().is_some() {
-                Some(AnnotationType::Simple("boolean".into()))
-            } else if lit.is_nil() {
-                Some(AnnotationType::Simple("nil".into()))
-            } else {
-                // Exhaustive for Lua literals; VarArgs is a separate Expression variant.
-                None
-            }
-        }
-        Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {
-            let terms = u.get_terms();
-            if let Some(Expression::Literal(lit)) = terms.first()
-                && lit.get_number().is_some() {
-                    return Some(AnnotationType::Simple("number".into()));
-                }
-            None
-        }
-        Expression::Function(_) => Some(AnnotationType::Simple("function".into())),
-        Expression::TableConstructor(_) => Some(AnnotationType::Simple("table".into())),
-        _ => None,
-    }
+fn infer_expression_type(expr: &crate::ast::Expression<'_>) -> Option<AnnotationType> {
+    use annotation_scanning::InferredTypeCategory;
+    let cat = annotation_scanning::infer_type_category(expr)?;
+    Some(AnnotationType::Simple(match cat {
+        InferredTypeCategory::String => "string",
+        InferredTypeCategory::Number => "number",
+        InferredTypeCategory::Boolean => "boolean",
+        InferredTypeCategory::Nil => "nil",
+        InferredTypeCategory::Function => "function",
+        InferredTypeCategory::Table => "table",
+    }.into()))
 }
 
 fn flush_group(
