@@ -706,6 +706,12 @@ impl BuildContext {
         }
     }
 
+    /// Returns true if this global entry has a deep path rooted at a class global,
+    /// meaning it should be skipped to avoid fabricating sub-tables on class tables.
+    fn is_deep_class_global(&self, name: &str, path: &[String]) -> bool {
+        !path.is_empty() && self.class_globals.contains(name)
+    }
+
     fn register_global(&mut self, name: &str, resolved_type: Option<ValueType>) -> SymbolIndex {
         let sym_idx = SymbolIndex(EXT_BASE + self.symbols.len());
         self.symbols.push(Symbol {
@@ -1018,6 +1024,13 @@ impl BuildContext {
             }
         }
 
+        // Invariant: a name must not appear in both classes and non_class_tables.
+        // The Method handler relies on this to decide whether to use deep paths.
+        debug_assert!(
+            self.non_class_tables.keys().all(|n| !self.classes.contains_key(n)),
+            "name in both classes and non_class_tables"
+        );
+
         // Create shared addon namespace table if any files contribute to it
         self.addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             let table_idx = TableIndex(EXT_BASE + self.tables.len());
@@ -1057,7 +1070,9 @@ impl BuildContext {
         for g in globals {
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
                 let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
-                let target_idx = if !path.is_empty() && is_addon_ns {
+                let is_non_class_table = self.non_class_tables.contains_key(&g.name);
+                let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table);
+                let target_idx = if use_deep_path {
                     let Some(&root_idx) = self.non_class_tables.get(&g.name) else { continue };
                     let Some((leaf_idx, _)) = walk_deep_path(
                         root_idx, &g.name, path,
@@ -1073,7 +1088,7 @@ impl BuildContext {
                 // Dedupe by (target table name, method name). For addon sub-tables we
                 // key on the dotted path to avoid collisions between same-named methods
                 // on different sub-tables (e.g. ns.A:Foo vs ns.B:Foo).
-                let dedupe_key = if !path.is_empty() && is_addon_ns {
+                let dedupe_key = if use_deep_path {
                     (format!("{}.{}", g.name, path.join(".")), method_name.clone())
                 } else {
                     (g.name.clone(), method_name.clone())
@@ -1196,6 +1211,7 @@ impl BuildContext {
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if matches!(value_kind, FieldValueKind::Unknown) && g.returns.is_empty() { continue; }
+                if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -1270,6 +1286,7 @@ impl BuildContext {
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if !matches!(value_kind, FieldValueKind::Unknown) || !g.returns.is_empty() { continue; }
+                if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, _leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -1793,6 +1810,7 @@ impl BuildContext {
         // Deferred: resolve FunctionCall table fields now that all functions/tables are built
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg)) = &g.kind {
+                if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -1872,6 +1890,7 @@ impl BuildContext {
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FieldRef(ref_chain)) = &g.kind {
                 if !g.returns.is_empty() { continue; }
+                if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -1951,6 +1970,7 @@ impl BuildContext {
         // Re-process table field globals whose parent table was just created as a sub-table
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
+                if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,

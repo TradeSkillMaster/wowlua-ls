@@ -1080,12 +1080,16 @@ pub(crate) fn scan_file_globals_with_synth(
                             if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && !local_type_vars.contains_key(root_name) && !is_addon_root {
                                 continue;
                             }
-                            // Only emit chains of 3+ parts when rooted at the addon namespace
-                            // or a local @class variable. Non-addon/non-class deep writes (e.g.
-                            // `FrameClass.Inner.x = 1`) are dropped to avoid fabricating
-                            // sub-tables on unrelated external classes. Global @class variables
-                            // are excluded to prevent deep chain fabrication on them.
-                            if names.len() >= 3 && !is_addon_root && !(local_vars.contains(root_name) && class_vars.contains_key(root_name)) { continue; }
+                            // Drop 3+ part chains for local non-class variables to avoid
+                            // fabricating sub-tables on e.g. local Frame instances.
+                            // Allow: addon-ns roots, local @class vars, and non-local
+                            // (global) roots — build_on_stubs/mod.rs decides whether to
+                            // create sub-tables based on class vs non-class status via
+                            // `is_deep_class_global()`. This trades some extra entries
+                            // (global class roots emit deep chains that are later skipped)
+                            // for simpler filter logic here — the downstream guard is the
+                            // single source of truth for class-global deep-path suppression.
+                            if names.len() >= 3 && !is_addon_root && local_vars.contains(root_name) && !class_vars.contains_key(root_name) { continue; }
                             let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
                             let field_name = names[names.len()-1].clone();
                             let canonical_name = if is_addon_root {

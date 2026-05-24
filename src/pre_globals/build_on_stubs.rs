@@ -124,6 +124,12 @@ impl<'a> BuildOnStubsContext<'a> {
         sym_idx
     }
 
+    /// Returns true if this global entry has a deep path rooted at a class global,
+    /// meaning it should be skipped to avoid fabricating sub-tables on class tables.
+    fn is_deep_class_global(&self, name: &str, path: &[String]) -> bool {
+        !path.is_empty() && self.class_globals.contains(name)
+    }
+
     fn resolve_annotation(&self, at: &AnnotationType) -> Option<ValueType> {
         PreResolvedGlobals::resolve_annotation(at, &self.classes, &self.aliases, &self.parameterized_aliases)
     }
@@ -403,11 +409,20 @@ impl<'a> BuildOnStubsContext<'a> {
                 constructor_method_names.insert(cname.as_str());
             }
         }
+        // Invariant: a name must not appear in both classes and non_class_tables.
+        // The Method handler relies on this to decide whether to use deep paths.
+        debug_assert!(
+            self.non_class_tables.keys().all(|n| !self.classes.contains_key(n)),
+            "name in both classes and non_class_tables"
+        );
+
         let mut seen_methods: HashSet<(String, String)> = HashSet::new();
         for g in ws_globals {
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
                 let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
-                let target_idx = if !path.is_empty() && is_addon_ns {
+                let is_non_class_table = self.non_class_tables.contains_key(&g.name);
+                let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table);
+                let target_idx = if use_deep_path {
                     let Some(&root_idx) = self.non_class_tables.get(&g.name) else { continue };
                     let Some((leaf_idx, _)) = walk_deep_path(
                         root_idx, &g.name, path,
@@ -420,7 +435,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     let Some(&idx) = target_table else { continue };
                     idx
                 };
-                let dedupe_key = if !path.is_empty() && is_addon_ns {
+                let dedupe_key = if use_deep_path {
                     (format!("{}.{}", g.name, path.join(".")), method_name.clone())
                 } else {
                     (g.name.clone(), method_name.clone())
@@ -531,6 +546,7 @@ impl<'a> BuildOnStubsContext<'a> {
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if matches!(value_kind, FieldValueKind::Unknown) && g.returns.is_empty() { continue; }
+                if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -600,6 +616,7 @@ impl<'a> BuildOnStubsContext<'a> {
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if !matches!(value_kind, FieldValueKind::Unknown) || !g.returns.is_empty() { continue; }
+                if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -1052,6 +1069,7 @@ impl<'a> BuildOnStubsContext<'a> {
         // Resolve workspace FunctionCall table fields
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg)) = &g.kind {
+                if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -1139,6 +1157,7 @@ impl<'a> BuildOnStubsContext<'a> {
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FieldRef(ref_chain)) = &g.kind {
                 if !g.returns.is_empty() { continue; }
+                if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -1260,6 +1279,7 @@ impl<'a> BuildOnStubsContext<'a> {
         }
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
+                if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,

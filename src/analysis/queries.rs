@@ -4957,7 +4957,15 @@ impl AnalysisResult {
                 if !has_fields || depth > 4 {
                     "table".to_string()
                 } else if depth > 0 {
-                    // Compact inline format for nested anonymous tables
+                    // Collapse sub-tables that contain methods or have many fields
+                    // to keep hover readable (e.g. Auctionator.AH with 25 methods).
+                    let has_methods = table.fields.values().any(|fi| {
+                        matches!(self.expr(fi.expr), Expr::FunctionDef(_))
+                    });
+                    if (has_methods && table.fields.len() > 2) || table.fields.len() > 4 {
+                        return format!("{{... {} fields}}", table.fields.len());
+                    }
+                    // Compact inline format for small nested anonymous tables
                     // (e.g. value_type in arrays: `{id: number, name: string}[]`)
                     let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
                         let type_str = self.format_field_type(field_info, depth);

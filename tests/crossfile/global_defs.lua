@@ -104,3 +104,18 @@ MY_ENABLED_INFO = "some global"
 DataLib = {}
 DataLib.inner = {}
 DataLib.inner.MY_ENABLED_INFO = true
+
+-- Global non-class table with deep method chains (Auctionator-like pattern):
+-- methods defined on sub-tables of a global table without @class.
+GadgetTools = {}
+
+---@param text string
+---@return number
+function GadgetTools.Search.Filter(text)
+    return #text
+end
+
+---@return boolean
+function GadgetTools.Search:IsActive()
+    return true
+end

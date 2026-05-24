@@ -69,9 +69,16 @@ local actBare = DoActionBare()
 local task = UtilLib:RunTask()
 --    ^ hover: (local) task: nil  def: local
 
--- Field-position token must NOT resolve to a same-named global.
--- DataLib.inner resolves as generic "table", so the chain walk for
--- DataLib.inner.MY_ENABLED_INFO fails. MY_ENABLED_INFO must NOT fall
--- back to the global MY_ENABLED_INFO.
+-- Deep chain on a non-class global table: DataLib.inner.MY_ENABLED_INFO
+-- resolves correctly because auto-created sub-tables propagate fields.
 local di = DataLib.inner.MY_ENABLED_INFO
---                       ^ def: None
+--                       ^ hover: (field) MY_ENABLED_INFO: boolean  def: external
+
+-- Global non-class table with deep methods (Auctionator-like pattern):
+-- sub-table access and method calls resolve correctly.
+local sr = GadgetTools.Search
+--                     ^ hover: (field) Search: {\n  Filter: fun(text: string): number,\n  IsActive: fun(self): boolean\n}  def: external
+local fl = GadgetTools.Search.Filter("test")
+--    ^ hover: (local) fl: number  def: local
+local ia = GadgetTools.Search:IsActive()
+--    ^ hover: (local) ia: boolean  def: local
