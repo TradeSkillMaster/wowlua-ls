@@ -320,10 +320,13 @@ pub(super) fn extract_type_annotation_for_assign(node: SyntaxNode<'_>) -> Option
                 break;
             }
             let text = token.text().to_string();
-            if let Some(rest) = text.strip_prefix("---@type ").or_else(|| text.strip_prefix("---@type\t")) {
-                let trimmed = rest.trim();
-                if !trimmed.is_empty() {
-                    return Some(parse_type(trimmed));
+            if let Some(stripped) = text.strip_prefix("---") {
+                let stripped = stripped.trim_start_matches([' ', '\t']);
+                if let Some(rest) = stripped.strip_prefix("@type ").or_else(|| stripped.strip_prefix("@type\t")) {
+                    let trimmed = rest.trim();
+                    if !trimmed.is_empty() {
+                        return Some(parse_type(trimmed));
+                    }
                 }
             }
         }
@@ -388,10 +391,13 @@ pub(super) fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<Ann
             SyntaxKind::Newline => return None,
             SyntaxKind::Comment => {
                 let text = t.text().to_string();
-                if let Some(rest) = text.strip_prefix("---@type ").or_else(|| text.strip_prefix("---@type\t")) {
-                    let trimmed = rest.trim();
-                    if !trimmed.is_empty() {
-                        return Some(parse_type(trimmed));
+                if let Some(stripped) = text.strip_prefix("---") {
+                    let stripped = stripped.trim_start_matches([' ', '\t']);
+                    if let Some(rest) = stripped.strip_prefix("@type ").or_else(|| stripped.strip_prefix("@type\t")) {
+                        let trimmed = rest.trim();
+                        if !trimmed.is_empty() {
+                            return Some(parse_type(trimmed));
+                        }
                     }
                 }
                 return None;

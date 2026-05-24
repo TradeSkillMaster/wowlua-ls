@@ -12,6 +12,9 @@ function SFChild:DoWork()
     -- Access own @field from parent
     local n = self.name
     --             ^ hover: (field) name: string  def: external
+    -- Spaced annotation (--- @type with space after ---)
+    local s = self._spaced
+    --                ^ hover: (field) _spaced: SFQuery  def: external
 end
 
 -- Cross-file self-field test: global variable with @class name different from var name

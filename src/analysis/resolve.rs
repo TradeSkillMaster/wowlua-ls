@@ -1710,15 +1710,28 @@ impl<'a> Analysis<'a> {
             if !table_idx.is_external() {
                 if let Some(fi) = self.ir.tables[table_idx.val()].fields.get_mut(&assign.field_name) {
                     fi.extra_exprs.push(assign.expr_id);
+                    // Propagate inline annotation if the existing field has none
+                    if fi.annotation.is_none() {
+                        if let Some(ref ann) = assign.inline_annotation {
+                            fi.annotation = Some(ann.clone());
+                        }
+                        if assign.inline_annotation_text.is_some() {
+                            fi.annotation_text = assign.inline_annotation_text.clone();
+                        }
+                        if fi.annotation_type_raw.is_none() {
+                            fi.annotation_type_raw = assign.inline_type_raw.clone();
+                        }
+                    }
+                    if assign.inline_is_lateinit { fi.lateinit = true; }
                 } else {
                     self.ir.tables[table_idx.val()].fields.insert(assign.field_name.clone(), FieldInfo {
                         expr: assign.expr_id,
                         extra_exprs: Vec::new(),
                         visibility: vis,
-                        annotation: None,
-                        annotation_text: None,
-                        annotation_type_raw: None,
-                        lateinit: false,
+                        annotation: assign.inline_annotation.clone(),
+                        annotation_text: assign.inline_annotation_text.clone(),
+                        annotation_type_raw: assign.inline_type_raw.clone(),
+                        lateinit: assign.inline_is_lateinit,
                         def_range: None,
                         flavor_guard: 0,
                         from_scan: false,

@@ -1829,7 +1829,12 @@ impl<'a> Analysis<'a> {
                                           } else {
                                             let existing_field = self.ir.get_field(table_idx, field_name);
                                             let field_existed = existing_field.is_some();
-                                            let had_annotation = existing_field.is_some_and(|f| f.annotation.is_some());
+                                            // When the assignment itself has an @type annotation, it acts
+                                            // as a cast — don't check the RHS against the field's own
+                                            // annotation (which may originate from the same @type via
+                                            // workspace scan).
+                                            let had_annotation = inline_annotation.is_none()
+                                                && existing_field.is_some_and(|f| f.annotation.is_some());
                                             let field_lateinit = existing_field.is_some_and(|f| f.lateinit);
                                             if !table_idx.is_external() {
                                                 let existing_vis = self.ir.tables[table_idx.val()].fields.get(field_name).map(|f| f.visibility).unwrap_or_else(|| {

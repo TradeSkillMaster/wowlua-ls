@@ -11,6 +11,8 @@ function SFBase:Initialize()
     self._data = nil ---@type SFQuery!
     ---@type string
     self._label = ""
+    --- @type SFQuery
+    self._spaced = nil
 end
 
 -- Cross-file self-field test: global variable with different @class name

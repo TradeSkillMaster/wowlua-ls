@@ -2433,6 +2433,22 @@ local function testRuntimeOptAlias(self)
 end
 _consume(testRuntimeOptAlias)
 
+-- Spaced --- @type annotation on self.field (space after ---)
+---@class DiagAliasObj5
+local DiagAliasObj5 = {}
+
+function DiagAliasObj5:__init()
+    --- @type DiagTestHandler
+    self.spacedHandler = nil
+end
+
+---@param self DiagAliasObj5
+local function testSpacedRuntimeAlias(self)
+    self.spacedHandler(1, 2)
+    -- ^ diag: redundant-parameter
+end
+_consume(testSpacedRuntimeAlias)
+
 -- ── Stored function field colon-call self offset ─────────────────────────────
 -- When a function-typed field is called via colon syntax, Lua passes
 -- `self` as the implicit first argument. The LS must apply self_offset
@@ -2723,6 +2739,20 @@ _consume(unionVar2)
 function _DiagMapHolder:Reset()
     self.data = {}
     --          ^ diag: none
+end
+
+-- ── field-type-mismatch: @type on assignment acts as cast, not constraint ──
+
+---@class _DiagCastHolder
+local _DiagCastHolder = {}
+
+---@class _DiagCastDB
+---@field name string
+
+function _DiagCastHolder:Init()
+    ---@type _DiagCastDB
+    self.db = {}
+    --       ^ diag: none
 end
 
 -- ── field-type-mismatch: nullable field assigned nil is OK ──
