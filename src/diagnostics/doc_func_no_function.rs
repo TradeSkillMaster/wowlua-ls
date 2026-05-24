@@ -80,6 +80,9 @@ fn token_precedes_function(tok: &SyntaxToken<'_>) -> bool {
             SyntaxKind::Field => {
                 return field_has_function_value(&n);
             }
+            SyntaxKind::FunctionCall | SyntaxKind::MethodCall => {
+                return call_has_function_argument(&n);
+            }
             _ => {}
         }
         node = n.parent();
@@ -125,6 +128,22 @@ fn has_function_in_binary_expr(node: &SyntaxNode<'_>) -> bool {
         }
         if has_function_in_binary_expr(&child) {
             return true;
+        }
+    }
+    false
+}
+
+fn call_has_function_argument(call: &SyntaxNode<'_>) -> bool {
+    for child in call.children() {
+        if child.kind() == SyntaxKind::ArgumentList {
+            for arg in child.children() {
+                if arg.kind() == SyntaxKind::FunctionDefinition {
+                    return true;
+                }
+                if has_function_in_binary_expr(&arg) {
+                    return true;
+                }
+            }
         }
     }
     false

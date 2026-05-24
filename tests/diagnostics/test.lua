@@ -3117,6 +3117,47 @@ local _dfnfFieldAndTbl = {
     end,
 }
 
+-- ── @param on call statement with inline callback ──────────────────────────
+
+-- Should NOT warn: @param above a bare call with inline function
+local function _dfnfHook(tbl, name, fn) end
+---@param tooltip string
+---@param text number
+_dfnfHook({}, 'AddLine', function(tooltip, text)
+--                                ^ hover: (param) tooltip: string
+    local _dfnfCbText = text
+    --    ^ hover: (local) _dfnfCbText: number
+end)
+
+-- Should NOT warn: @param above a method call with inline function
+local _dfnfObj = {}
+function _dfnfObj:SetScript(name, fn) end
+---@param self table
+_dfnfObj:SetScript('OnClick', function(self)
+--                                     ^ hover: (param) self: table
+end)
+
+-- Should warn: @param above a bare call with NO inline function argument
+---@param x string
+-- ^ diag: doc-func-no-function
+_dfnfHook({}, 'test', nil)
+
+-- Should still warn: @param above a call inside assignment (ambiguous)
+---@param a string
+-- ^ diag: doc-func-no-function
+local _dfnfCallAssign = _dfnfHook({}, 'x', function(a) end)
+
+-- Should NOT warn: @param above call with function in binary expression arg
+local function _dfnfRegister(fn) end
+---@param x number
+_dfnfRegister(true and function(x) return x end)
+
+-- Should NOT warn: @param above call with multiple inline function args
+-- (annotations won't apply due to ambiguity, but diagnostic is suppressed)
+local function _dfnfMulti(a, b) end
+---@param x string
+_dfnfMulti(function(x) end, function(x) end)
+
 -- ── Bracket-access narrowing ───────────────────────────────────────────────
 
 ---@param list number[]

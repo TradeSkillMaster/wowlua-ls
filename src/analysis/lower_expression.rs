@@ -466,6 +466,27 @@ impl<'a> Analysis<'a> {
                     .filter(|p| p.kind() == SyntaxKind::Field)
                     .or_else(|| {
                         let parent = func.syntax().parent()?;
+                        // Inline function as a call argument: walk up to the call statement.
+                        // Only apply when this is the sole FunctionDefinition among the args
+                        // to avoid ambiguity with multiple callbacks.
+                        if parent.kind() == SyntaxKind::ArgumentList {
+                            let call = parent.parent()?;
+                            if !matches!(call.kind(), SyntaxKind::FunctionCall | SyntaxKind::MethodCall) {
+                                return None;
+                            }
+                            // Only use statement-level calls (parent is Block)
+                            if call.parent()?.kind() != SyntaxKind::Block {
+                                return None;
+                            }
+                            // Skip if multiple function arguments exist (ambiguous)
+                            let fn_arg_count = parent.children()
+                                .filter(|c| c.kind() == SyntaxKind::FunctionDefinition)
+                                .count();
+                            if fn_arg_count != 1 {
+                                return None;
+                            }
+                            return Some(call);
+                        }
                         if parent.kind() != SyntaxKind::BinaryExpression {
                             return None;
                         }
