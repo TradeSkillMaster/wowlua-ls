@@ -1916,6 +1916,15 @@ fn type_narrows() {
 }
 
 #[test]
+fn isobjecttype_narrows() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/isobjecttype-narrows.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn union_field_narrow() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/union-field-narrow.lua",
