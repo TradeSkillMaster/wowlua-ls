@@ -3717,28 +3717,43 @@ pub fn regenerate_stubs() {
     let mut source_errors: Vec<String> = Vec::new();
 
     // Step 1: Shallow-clone vscode-wow-api into a temp directory
+    // If WOWLUA_LS_KETHO_CLONE env var points to an existing clone, use it directly.
     let tmp_dir = std::env::temp_dir().join("wowlua-ls-stub-gen");
-    let clone_dir = tmp_dir.join("vscode-wow-api");
-    if clone_dir.exists() {
-        log::info!("Cleaning up previous temp dir...");
-        let _ = std::fs::remove_dir_all(&clone_dir);
-    }
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    let clone_dir = if let Ok(existing) = std::env::var("WOWLUA_LS_KETHO_CLONE") {
+        let p = PathBuf::from(existing);
+        if !p.is_dir() {
+            log::error!(
+                "WOWLUA_LS_KETHO_CLONE path does not exist or is not a directory: {}",
+                p.display()
+            );
+            std::process::exit(1);
+        }
+        log::info!("Using existing clone at {}", p.display());
+        p
+    } else {
+        let d = tmp_dir.join("vscode-wow-api");
+        if d.exists() {
+            log::info!("Cleaning up previous temp dir...");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+        let _ = std::fs::create_dir_all(&tmp_dir);
 
-    log::info!("Shallow-cloning vscode-wow-api @ {VSCODE_WOW_API_BRANCH}...");
+        log::info!("Shallow-cloning vscode-wow-api @ {VSCODE_WOW_API_BRANCH}...");
 
-    let status = std::process::Command::new("git")
-        .arg("clone")
-        .args(["--depth", "1"])
-        .args(["--branch", VSCODE_WOW_API_BRANCH])
-        .arg(VSCODE_WOW_API_REPO)
-        .arg(&clone_dir)
-        .status()
-        .expect("Failed to run git clone");
-    if !status.success() {
-        log::error!("git clone failed");
-        std::process::exit(1);
-    }
+        let status = std::process::Command::new("git")
+            .arg("clone")
+            .args(["--depth", "1"])
+            .args(["--branch", VSCODE_WOW_API_BRANCH])
+            .arg(VSCODE_WOW_API_REPO)
+            .arg(&d)
+            .status()
+            .expect("Failed to run git clone");
+        if !status.success() {
+            log::error!("git clone failed");
+            std::process::exit(1);
+        }
+        d
+    };
 
     let rev_parse = std::process::Command::new("git")
         .current_dir(&clone_dir)
