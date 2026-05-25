@@ -6,6 +6,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::flavor::{FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA};
+
 #[derive(Debug)]
 struct ApiDocData {
     constants: HashMap<String, (String, String)>,
@@ -1283,6 +1285,70 @@ fn fetch_resource(branch: &str, file: &str) -> HashSet<String> {
     }
 }
 
+/// Parse `WidgetAPI.lua` from BlizzardInterfaceResources.
+/// Returns a map of widget_type_name → set of method names (excluding handlers/events).
+///
+/// The file uses a regular structure:
+/// ```lua
+/// local WidgetAPI = {
+///     TypeName = {
+///         inherits = {...},
+///         methods = {
+///             "Method1",
+///             ...
+///         },
+///     },
+/// }
+/// ```
+fn parse_widget_api_methods(text: &str) -> HashMap<String, HashSet<String>> {
+    let mut result: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut current_type: Option<String> = None;
+    let mut in_methods = false;
+
+    for line in text.lines() {
+        let tab_count = line.chars().take_while(|&c| c == '\t').count();
+        let content = line.trim();
+
+        if tab_count == 1 && content.ends_with('{') && content.contains(" = ") {
+            // Top-level widget type definition: "\tTypeName = {"
+            let name = content.split_whitespace().next().unwrap_or("").to_string();
+            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                current_type = Some(name.clone());
+                result.entry(name).or_default();
+                in_methods = false;
+            }
+        } else if tab_count == 2 && content == "methods = {" {
+            in_methods = true;
+        } else if tab_count == 2 {
+            // Any other 2-tab line (handlers, inherits, closing brace) ends the methods section
+            in_methods = false;
+        } else if tab_count == 3 && in_methods && content.starts_with('"') {
+            // Method name: '\t\t\t"MethodName",' or '\t\t\t"MethodName"' (last entry, no comma)
+            let method = content.split('"').nth(1).unwrap_or("");
+            if !method.is_empty()
+                && let Some(ref type_name) = current_type
+                && let Some(methods) = result.get_mut(type_name)
+            {
+                methods.insert(method.to_string());
+            }
+        }
+    }
+    result
+}
+
+fn fetch_widget_api(branch: &str) -> HashMap<String, HashSet<String>> {
+    let url = RESOURCE_URL_TEMPLATE
+        .replace("{branch}", branch)
+        .replace("{file}", "WidgetAPI.lua");
+    match fetch_url(&url, None) {
+        Ok(text) => parse_widget_api_methods(&text),
+        Err(e) => {
+            log::warn!("FAILED to fetch WidgetAPI.lua from {branch}: {e} — classic-only widget method diff will be incomplete");
+            HashMap::new()
+        }
+    }
+}
+
 /// Fetch wiki pages for a list of API names in a single `Special:Export` POST request,
 /// resolving redirects so callers can map redirect sources to canonical page names.
 /// Returns `(pages, redirects)` where `redirects` maps source → canonical target name.
@@ -2550,6 +2616,9 @@ struct ClassicApiDiff {
     missing: Vec<String>,
     /// Classic-only FrameXML function names (bare stubs, no wiki needed).
     missing_fxml: Vec<String>,
+    /// Classic-only widget methods not present in vendor stubs: (widget_type, method_name).
+    /// These need new stub entries added to the generated ClassicGlobals file.
+    missing_widget_methods: Vec<(String, String)>,
     /// All existing global names in current stubs (for namespace/constant/frame filtering).
     existing_globals: HashSet<String>,
 }
@@ -2653,8 +2722,83 @@ fn fetch_branch_resources(stubs_dir: &Path) -> BranchResourceData {
 
     log::info!("  {} APIs to generate, {} FrameXML", missing.len(), missing_fxml.len());
 
+    // ── Widget method diff (WidgetAPI.lua) ────────────────────────────────────
+    // Fetch WidgetAPI.lua for all branches to find classic-only widget methods.
+    // WidgetAPI.lua lists per-type method names; methods absent from retail but
+    // present in classic branches need stubs added to the GameTooltip class etc.
+    log::info!("Downloading WidgetAPI.lua for all branches (parallel)...");
+    let (widget_live, widget_classic_era, widget_classic) = std::thread::scope(|s| {
+        let h1 = s.spawn(|| fetch_widget_api("live"));
+        let h2 = s.spawn(|| fetch_widget_api("classic_era"));
+        let h3 = s.spawn(|| fetch_widget_api("classic"));
+        (h1.join().unwrap(), h2.join().unwrap(), h3.join().unwrap())
+    });
+
+    // Find methods defined in colon syntax (TypeName:Method) in existing stubs,
+    // so we can exclude vendor-covered methods from the classic-only diff.
+    let colon_method_re = regex_lite::Regex::new(r"(?m)^function (\w+:\w+)\s*\(").unwrap();
+    let existing_widget_methods = get_existing_names_with(stubs_dir, &colon_method_re, replaced_vendor_files);
+    log::info!("  Existing widget methods in stubs: {}", existing_widget_methods.len());
+
+    // Compute classic-only widget methods: present in (classic_era ∪ classic) but
+    // absent from retail WidgetAPI.lua AND absent from vendor stubs (which cover
+    // retail APIs not listed in retail's WidgetAPI.lua, like GameTooltip:SetHyperlink).
+    //
+    // If the retail fetch failed (empty map), skip the diff entirely — an empty retail
+    // map would cause every classic method to appear classic-only, generating hundreds
+    // of duplicate stubs and corrupting the precomputed blob.
+    let mut missing_widget_methods: Vec<(String, String)> = Vec::new();
+    let mut flavor_map = flavor_map;
+    if widget_live.is_empty() {
+        log::warn!("Retail WidgetAPI.lua fetch failed or returned empty — skipping classic-only widget method diff to avoid over-generation");
+    } else {
+        let all_widget_types: HashSet<String> = widget_classic_era.keys()
+            .chain(widget_classic.keys())
+            .cloned()
+            .collect();
+        let empty_set: HashSet<String> = HashSet::new();
+
+        for type_name in &all_widget_types {
+            let classic_era_methods = widget_classic_era.get(type_name).unwrap_or(&empty_set);
+            let classic_methods = widget_classic.get(type_name).unwrap_or(&empty_set);
+            let retail_methods = widget_live.get(type_name).unwrap_or(&empty_set);
+
+            // Union of both classic branches
+            let all_classic: HashSet<&String> = classic_era_methods.iter()
+                .chain(classic_methods.iter())
+                .collect();
+
+            for method in all_classic {
+                // Compute flavor mask from which classic branches have this method
+                let in_ce = classic_era_methods.contains(method);
+                let in_c = classic_methods.contains(method);
+                let mask = (if in_ce { FLAVOR_CLASSIC_ERA } else { 0 })
+                    | (if in_c { FLAVOR_CLASSIC } else { 0 });
+
+                if retail_methods.contains(method) {
+                    // Also present in retail WidgetAPI.lua — not classic-only, but if the
+                    // vendor stubs don't cover it either, it still needs a flavor entry.
+                    // (Retail coverage is already unrestricted, so no flavor_map insert needed.)
+                    continue;
+                }
+                let stub_key = format!("{type_name}:{method}");
+                // Always update flavor_map for classic-only methods, even if vendor stubs
+                // already define the method (so apply_flavor_data restricts it correctly).
+                flavor_map.insert(format!("{type_name}.{method}"), mask);
+                if existing_widget_methods.contains(&stub_key) {
+                    // Already covered in vendor stubs — flavor mask set above, no new stub needed.
+                    continue;
+                }
+                // Add to flavor map using dot-notation key (matches apply_flavor_data lookup)
+                missing_widget_methods.push((type_name.clone(), method.clone()));
+            }
+        }
+        missing_widget_methods.sort();
+    }
+    log::info!("  Classic-only widget methods needing stubs: {}", missing_widget_methods.len());
+
     BranchResourceData {
-        classic_diff: ClassicApiDiff { missing, missing_fxml, existing_globals },
+        classic_diff: ClassicApiDiff { missing, missing_fxml, missing_widget_methods, existing_globals },
         retail_all_names,
         retail_api_names: retail,
         flavor_map,
@@ -2740,6 +2884,23 @@ fn generate_classic_stubs(
             out.push(format!("function {name}(...) end"));
             out.push(String::new());
         }
+    }
+
+    // Classic-only widget methods: emit method stubs on existing widget classes.
+    // These are C-level widget API methods present in classic but not retail.
+    // Flavor bitmasks are applied post-scan via apply_flavor_data.
+    if !diff.missing_widget_methods.is_empty() {
+        out.push("-- Classic-only widget methods".to_string());
+        out.push(String::new());
+        for (type_name, method_name) in &diff.missing_widget_methods {
+            let wiki_name = format!("{type_name}_{method_name}");
+            let doc_name = wiki_redirects.get(&wiki_name).unwrap_or(&wiki_name);
+            out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
+            out.push("---@return ...any".to_string());
+            out.push(format!("function {type_name}:{method_name}(...) end"));
+            out.push(String::new());
+        }
+        log::info!("  Widget methods: {}", diff.missing_widget_methods.len());
     }
 
     log::info!("  Documented: {documented}, Undocumented: {undocumented}, FrameXML: {}",
@@ -3435,6 +3596,11 @@ pub fn regenerate_stubs() {
     all_wiki_names.extend(classic_diff.missing.iter().cloned());
     all_wiki_names.extend(wiki_names.iter().cloned());
     all_wiki_names.extend(widget_methods.iter().map(|m| m.api_name.clone()));
+    // Fetch wiki pages for classic-only widget methods (e.g. "GameTooltip_SetTradeSkillItem")
+    all_wiki_names.extend(
+        classic_diff.missing_widget_methods.iter()
+            .map(|(t, m)| format!("{t}_{m}"))
+    );
     // Also fetch wiki pages for retail API globals — catches functions that exist
     // but aren't categorized on the wiki (e.g. InCombatLockdown, GetText).
     all_wiki_names.extend(branch_data.retail_api_names.iter().cloned());
@@ -4774,6 +4940,84 @@ Gets the item."#;
         assert_eq!(map["C_Map.GetBestMapForUnit"], FLAVOR_RETAIL);
         // SharedRetailClassicEra → two-flavor mask (retail + classic_era)
         assert_eq!(map["SharedRetailClassicEra"], FLAVOR_RETAIL | FLAVOR_CLASSIC_ERA);
+    }
+
+    #[test]
+    fn test_parse_widget_api_methods() {
+        let text = r#"local WidgetAPI = {
+	GameTooltip = {
+		inherits = {"Frame"},
+		handlers = {
+			"OnTooltipCleared",
+		},
+		methods = {
+			"SetOwner",
+			"SetAuctionItem",
+			"SetCraftItem",
+		},
+	},
+	Frame = {
+		inherits = {"Object"},
+		methods = {
+			"GetName",
+			"SetOwner",
+		},
+	},
+}
+"#;
+        let result = parse_widget_api_methods(text);
+
+        // GameTooltip methods extracted correctly
+        let gt = result.get("GameTooltip").expect("GameTooltip should be present");
+        assert!(gt.contains("SetOwner"), "SetOwner should be in GameTooltip methods");
+        assert!(gt.contains("SetAuctionItem"), "SetAuctionItem should be in GameTooltip methods");
+        assert!(gt.contains("SetCraftItem"), "SetCraftItem should be in GameTooltip methods");
+        // Handlers should NOT be included (only methods)
+        assert!(!gt.contains("OnTooltipCleared"), "handlers should not be in methods");
+
+        // Frame methods extracted correctly
+        let frame = result.get("Frame").expect("Frame should be present");
+        assert!(frame.contains("GetName"), "GetName should be in Frame methods");
+        assert!(frame.contains("SetOwner"), "SetOwner should be in Frame methods");
+    }
+
+    #[test]
+    fn test_parse_widget_api_methods_edge_cases() {
+        // Last method entry has no trailing comma; type with empty methods block;
+        // type with only handlers (no methods section at all).
+        let text = r#"local WidgetAPI = {
+	TypeA = {
+		methods = {
+			"MethodFirst",
+			"MethodLast"
+		},
+	},
+	TypeB = {
+		methods = {
+		},
+	},
+	TypeC = {
+		handlers = {
+			"OnEvent",
+		},
+	},
+}
+"#;
+        let result = parse_widget_api_methods(text);
+
+        // TypeA: both methods parsed, including the last with no trailing comma
+        let a = result.get("TypeA").expect("TypeA should be present");
+        assert!(a.contains("MethodFirst"), "MethodFirst should be in TypeA");
+        assert!(a.contains("MethodLast"), "MethodLast (no comma) should be in TypeA");
+
+        // TypeB: type with empty methods block — present but with no methods
+        let b = result.get("TypeB").expect("TypeB should be present");
+        assert!(b.is_empty(), "TypeB should have no methods");
+
+        // TypeC: type with only handlers — present but with no methods
+        let c = result.get("TypeC").expect("TypeC should be present");
+        assert!(c.is_empty(), "TypeC should have no methods");
+        assert!(!c.contains("OnEvent"), "handlers should not be in methods");
     }
 }
 
