@@ -1329,7 +1329,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             work_done_progress_options: Default::default(),
         })),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
-            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX, CodeActionKind::SOURCE]),
             ..Default::default()
         })),
         document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
@@ -2463,7 +2463,7 @@ fn handle_request(
                 let result: Option<Vec<CodeActionOrCommand>> = documents.get(&uri.to_string())
                     .map(|doc| {
                         let ta = doc.tree.as_ref().zip(doc.analysis.as_ref());
-                        compute_code_actions(&uri, &doc.text, &params.context.diagnostics, ta)
+                        compute_code_actions(&uri, &doc.text, params.range, &params.context.diagnostics, ta)
                     });
                 send_response(connection, id, &result);
             }
@@ -3021,6 +3021,7 @@ fn entry_to_document_symbol(
 pub fn compute_code_actions(
     uri: &lsp_types::Uri,
     text: &str,
+    range: lsp_types::Range,
     context_diagnostics: &[lsp_types::Diagnostic],
     tree_and_analysis: Option<(&SyntaxTree, &AnalysisResult)>,
 ) -> Vec<CodeActionOrCommand> {
@@ -3100,6 +3101,14 @@ pub fn compute_code_actions(
             }),
             ..Default::default()
         }));
+    }
+
+    // Source action: offer annotation stubs for the function at cursor position.
+    let cursor_offset = super::lsp_position_to_offset(
+        text, range.start.line, range.start.character, use_utf8(),
+    );
+    if let Some(action) = make_generate_annotation_stubs_source_action(uri, text, cursor_offset, tree_and_analysis) {
+        actions.push(CodeActionOrCommand::CodeAction(action));
     }
 
     actions
@@ -3365,6 +3374,101 @@ fn make_generate_annotations_action(
         title,
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// Source action: generate all missing `---@param` / `---@return` annotation stubs for the
+/// function enclosing the cursor. Fires regardless of whether any diagnostic is active —
+/// it only requires at least one annotation to be missing.
+#[allow(clippy::mutable_key_type)]
+pub fn make_generate_annotation_stubs_source_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    cursor_offset: u32,
+    tree_and_analysis: Option<(&SyntaxTree, &AnalysisResult)>,
+) -> Option<CodeAction> {
+    let (_, analysis) = tree_and_analysis?;
+
+    // Find the innermost function whose def_node span contains the cursor.
+    // We search by def_node (start..end) rather than enclosing_function_at() because
+    // enclosing_function_at() is scope-based: scopes start inside the body, so a
+    // cursor on the `function` keyword line (which is the most natural place for
+    // this action) would not be covered. def_node.end is an exclusive bound
+    // (TextRange convention), so the comparison is `start <= cursor < end`.
+    let func = analysis.ir.functions.iter()
+        .filter(|f| f.def_node.start <= cursor_offset && cursor_offset < f.def_node.end)
+        .min_by_key(|f| f.def_node.end - f.def_node.start)?;
+
+    // Collect @param lines for unannotated parameters (skip self).
+    // Use the same sentinel-detection pattern as build_ir.rs: an unannotated
+    // parameter slot holds `AnnotationType::Simple("")`.
+    let mut annotation_lines: Vec<String> = Vec::new();
+    for (arg_idx, &sym_idx) in func.args.iter().enumerate() {
+        let name = match &analysis.sym(sym_idx).id {
+            SymbolIdentifier::Name(n) => n.clone(),
+            _ => continue,
+        };
+        if name == "self" { continue; }
+        let is_annotated = func.param_annotations.get(arg_idx)
+            .is_some_and(|a| !matches!(a, AnnotationType::Simple(s) if s.is_empty()));
+        if is_annotated { continue; }
+        let type_str = analysis.sym(sym_idx).versions.last()
+            .and_then(|v| v.resolved_type.as_ref())
+            .filter(|vt| !matches!(vt, ValueType::Any | ValueType::Nil))
+            .map(|vt| analysis.format_type_depth(vt, 1))
+            .unwrap_or_else(|| "any".to_string());
+        annotation_lines.push(format!("---@param {} {}", name, type_str));
+    }
+
+    // Add @param for varargs if unannotated.
+    if func.is_vararg && func.vararg_annotation.is_none() {
+        annotation_lines.push("---@param ... any".to_string());
+    }
+
+    // Add @return stubs when the function has no return annotations and the body
+    // actually returns a value (format_inferred_returns returns empty for void functions).
+    // Use inferred types when available; fall back to "any" for unknown positions.
+    if func.return_annotations.is_empty() && !func.returns_self && !func.returns_built {
+        let inferred = analysis.format_inferred_returns(func, 1);
+        for type_str in &inferred {
+            let display = if type_str == "?" { "any".to_string() } else { type_str.clone() };
+            annotation_lines.push(format!("---@return {}", display));
+        }
+    }
+
+    if annotation_lines.is_empty() { return None; }
+
+    // Get the indentation of the function definition line.
+    let numbers = super::SafeLinePositions::new(text);
+    let (func_start_line, _) = numbers.line_col(func.def_node.start as usize);
+    let indent = text.split('\n')
+        .nth(func_start_line.0 as usize)
+        .map(|l| {
+            let trimmed = l.trim_start();
+            &l[..l.len() - trimmed.len()]
+        })
+        .unwrap_or("");
+
+    let new_text: String = annotation_lines.iter()
+        .map(|l| format!("{}{}\n", indent, l))
+        .collect();
+
+    let insert_pos = Position { line: func_start_line.0, character: 0 };
+    let edit = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text,
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+    Some(CodeAction {
+        title: "Generate annotation stubs".to_string(),
+        kind: Some(CodeActionKind::SOURCE),
         edit: Some(lsp_types::WorkspaceEdit {
             changes: Some(changes),
             ..Default::default()

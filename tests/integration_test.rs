@@ -3578,7 +3578,7 @@ fn fix_all_unused_local_two_instances() {
 
     use lsp_types::Uri;
     let uri: Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, &all_diags, Some((&tree, &analysis)));
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &all_diags, Some((&tree, &analysis)));
 
     // There should be a "Fix all 'unused-local'" bulk action.
     let bulk = actions.iter().find_map(|a| {
@@ -3609,7 +3609,7 @@ fn fix_all_unused_local_one_instance_no_bulk() {
 
     use lsp_types::Uri;
     let uri: Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, &all_diags, Some((&tree, &analysis)));
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &all_diags, Some((&tree, &analysis)));
 
     let bulk = actions.iter().find(|a| {
         if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a {
@@ -3630,7 +3630,7 @@ fn fix_all_type_mismatch_two_instances() {
 
     use lsp_types::Uri;
     let uri: Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, &all_diags, Some((&tree, &analysis)));
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &all_diags, Some((&tree, &analysis)));
 
     let bulk = actions.iter().find_map(|a| {
         if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a {
@@ -3647,6 +3647,133 @@ fn fix_all_type_mismatch_two_instances() {
     // Both arguments should have @as casts inserted.
     assert!(result.contains("\"a\" --[[@as number]]"), "got: {:?}", result);
     assert!(result.contains("\"b\" --[[@as number]]"), "got: {:?}", result);
+}
+
+// ── Source action: generate annotation stubs ─────────────────────────────────
+
+/// Helper: call `make_generate_annotation_stubs_source_action` with the cursor
+/// on line `line` (0-based), character `col` (0-based).
+fn generate_stubs_at(
+    src: &str,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+    line: u32,
+    col: u32,
+) -> Option<lsp_types::CodeAction> {
+    use lsp_types::Uri;
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let cursor_offset = types::position_to_offset(src, line, col);
+    lsp::make_generate_annotation_stubs_source_action(&uri, src, cursor_offset, Some((tree, analysis)))
+}
+
+#[test]
+fn source_action_generate_stubs_no_annotations() {
+    // Function with no annotations at all — action should insert all @param + @return stubs.
+    let src = "local function greet(name, count)\n    return name\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let action = generate_stubs_at(src, &tree, &analysis, 0, 10)
+        .expect("expected source action for unannotated function");
+    assert_eq!(action.kind, Some(lsp_types::CodeActionKind::SOURCE),
+        "kind should be SOURCE");
+    let edit = action.edit.unwrap().changes.unwrap()
+        .into_values().next().unwrap()
+        .into_iter().next().unwrap();
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("---@param name"), "should add @param name");
+    assert!(result.contains("---@param count"), "should add @param count");
+    assert!(result.contains("---@return"), "should add @return");
+    // Annotations should appear before the function definition line
+    let func_line_idx = result.lines().position(|l| l.contains("function greet"))
+        .expect("function greet not found");
+    assert!(func_line_idx > 0);
+    let before = result.lines().nth(func_line_idx - 1).unwrap_or("");
+    assert!(before.contains("---@"), "line before function should be annotation, got: {:?}", before);
+}
+
+#[test]
+fn source_action_generate_stubs_skips_self() {
+    // Method with implicit self — @param self should not be generated.
+    let src = "---@class Greeter\nlocal Greeter = {}\nfunction Greeter:say(msg)\n    return msg\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let action = generate_stubs_at(src, &tree, &analysis, 2, 10)
+        .expect("expected source action for method");
+    let edit = action.edit.unwrap().changes.unwrap()
+        .into_values().next().unwrap()
+        .into_iter().next().unwrap();
+    let result = apply_text_edit(src, &edit);
+    assert!(!result.contains("@param self"), "should not generate @param self");
+    assert!(result.contains("---@param msg"), "should add @param msg");
+}
+
+#[test]
+fn source_action_generate_stubs_fully_annotated_no_action() {
+    // Fully annotated function — no action should be offered.
+    let src = "---@param x number\n---@return number\nfunction double(x)\n    return x * 2\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let action = generate_stubs_at(src, &tree, &analysis, 2, 0);
+    assert!(action.is_none(), "should not offer action when fully annotated");
+}
+
+#[test]
+fn source_action_generate_stubs_partial_annotations() {
+    // Function with one param annotated and one not — only add the missing one.
+    let src = "---@param x number\nfunction add(x, y)\n    return x + y\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let action = generate_stubs_at(src, &tree, &analysis, 1, 0)
+        .expect("expected source action for partially annotated function");
+    let edit = action.edit.unwrap().changes.unwrap()
+        .into_values().next().unwrap()
+        .into_iter().next().unwrap();
+    let result = apply_text_edit(src, &edit);
+    // The original @param x annotation must remain exactly once — not duplicated.
+    let x_count = result.lines().filter(|l| l.contains("---@param x")).count();
+    assert_eq!(x_count, 1, "should keep original @param x exactly once, found {} occurrences", x_count);
+    assert!(result.contains("---@param y"), "should add missing @param y");
+}
+
+#[test]
+fn source_action_generate_stubs_cursor_inside_body() {
+    // Cursor inside the function body (not on the `function` keyword line) should still work.
+    let src = "local function compute(val)\n    local result = val * 2\n    return result\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    // cursor on the `local result` line (line 1)
+    let action = generate_stubs_at(src, &tree, &analysis, 1, 4)
+        .expect("expected source action when cursor is inside function body");
+    let edit = action.edit.unwrap().changes.unwrap()
+        .into_values().next().unwrap()
+        .into_iter().next().unwrap();
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("---@param val"), "should add @param val");
+}
+
+#[test]
+fn source_action_generate_stubs_void_function_no_return() {
+    // Function that doesn't return a value — no @return stub should be generated.
+    let src = "local function setup(name)\n    print(name)\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let action = generate_stubs_at(src, &tree, &analysis, 0, 0)
+        .expect("expected source action for void function with unannotated param");
+    let edit = action.edit.unwrap().changes.unwrap()
+        .into_values().next().unwrap()
+        .into_iter().next().unwrap();
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("---@param name"), "should add @param name");
+    // The function doesn't return, so @return any should not appear.
+    assert!(!result.contains("---@return any"), "should not add @return for void function");
+}
+
+#[test]
+fn source_action_generate_stubs_vararg() {
+    // Function declaring `...` with no @param annotation — action should generate `---@param ... any`.
+    let src = "local function forward(...)\n    return ...\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let action = generate_stubs_at(src, &tree, &analysis, 0, 0)
+        .expect("expected source action for vararg function");
+    let edit = action.edit.unwrap().changes.unwrap()
+        .into_values().next().unwrap()
+        .into_iter().next().unwrap();
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("---@param ... any"), "should add ---@param ... any for varargs");
 }
 
 /// Regression test for a fuzz-discovered timeout: garbled Lua with deeply

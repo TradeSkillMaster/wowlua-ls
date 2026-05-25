@@ -5805,7 +5805,7 @@ impl AnalysisResult {
     /// empty when there are no value-returning return statements (void).
     /// When there are inferred returns and the function has an implicit nil
     /// return, nil is unioned into each resolved position.
-    fn format_inferred_returns(&self, func: &Function, depth: usize) -> Vec<String> {
+    pub(crate) fn format_inferred_returns(&self, func: &Function, depth: usize) -> Vec<String> {
         // When synthesized return-only overloads exist, derive the summary type
         // per position by unioning across the overloads. This is more accurate
         // than reading FunctionRet symbols which may hold stale placeholder types
