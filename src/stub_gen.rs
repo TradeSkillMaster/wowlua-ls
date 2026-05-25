@@ -556,6 +556,104 @@ fn manual_overrides() -> HashMap<&'static str, &'static str> {
          ---@return number spellID\n\
          function GetSpellBookItemName(index, bookType) end",
     );
+    // Classic auction house API — wiki pages lack {{apitype}} annotations on returns
+    m.insert(
+        "GetAuctionItemSubClasses",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetAuctionItemSubClasses)\n\
+         ---@param classID number\n\
+         ---@return ...string\n\
+         function GetAuctionItemSubClasses(classID) end",
+    );
+    m.insert(
+        "GetAuctionItemTimeLeft",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetAuctionItemTimeLeft)\n\
+         ---@param type string\n\
+         ---@param index number\n\
+         ---@return number timeleft\n\
+         function GetAuctionItemTimeLeft(type, index) end",
+    );
+    m.insert(
+        "GetAuctionSellItemInfo",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetAuctionSellItemInfo)\n\
+         ---@return string name\n\
+         ---@return string texture\n\
+         ---@return number count\n\
+         ---@return number quality\n\
+         ---@return boolean canUse\n\
+         ---@return number price\n\
+         ---@return number pricePerUnit\n\
+         ---@return number stackCount\n\
+         ---@return number totalCount\n\
+         ---@return number itemID\n\
+         function GetAuctionSellItemInfo() end",
+    );
+    m.insert(
+        "GetNumAuctionItems",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetNumAuctionItems)\n\
+         ---@param type string\n\
+         ---@return number batch\n\
+         ---@return number count\n\
+         function GetNumAuctionItems(type) end",
+    );
+    m.insert(
+        "PlaceAuctionBid",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_PlaceAuctionBid)\n\
+         ---@param type string\n\
+         ---@param index number\n\
+         ---@param bid number\n\
+         function PlaceAuctionBid(type, index, bid) end",
+    );
+    // Classic craft API — wiki pages lack {{apitype}} annotations on returns
+    m.insert(
+        "GetCraftInfo",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCraftInfo)\n\
+         ---@param index number\n\
+         ---@return string craftName\n\
+         ---@return string craftSubSpellName\n\
+         ---@return string craftType\n\
+         ---@return number numAvailable\n\
+         ---@return boolean? isExpanded\n\
+         ---@return number? trainingPointCost\n\
+         ---@return number? requiredLevel\n\
+         function GetCraftInfo(index) end",
+    );
+    m.insert(
+        "GetCraftNumReagents",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCraftNumReagents)\n\
+         ---@param index number\n\
+         ---@return number numRequiredReagents\n\
+         function GetCraftNumReagents(index) end",
+    );
+    m.insert(
+        "GetCraftReagentInfo",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCraftReagentInfo)\n\
+         ---@param index number\n\
+         ---@param n number\n\
+         ---@return string name\n\
+         ---@return string texturePath\n\
+         ---@return number numRequired\n\
+         ---@return number numHave\n\
+         function GetCraftReagentInfo(index, n) end",
+    );
+    // Classic trade skill API — wiki pages lack {{apitype}} annotations on returns
+    m.insert(
+        "GetTradeSkillNumReagents",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetTradeSkillNumReagents)\n\
+         ---@param tradeSkillRecipeId number\n\
+         ---@return number numReagents\n\
+         function GetTradeSkillNumReagents(tradeSkillRecipeId) end",
+    );
+    m.insert(
+        "GetTradeSkillReagentInfo",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetTradeSkillReagentInfo)\n\
+         ---@param tradeSkillRecipeId number\n\
+         ---@param reagentId number\n\
+         ---@return string reagentName\n\
+         ---@return string reagentTexture\n\
+         ---@return number reagentCount\n\
+         ---@return number playerReagentCount\n\
+         function GetTradeSkillReagentInfo(tradeSkillRecipeId, reagentId) end",
+    );
     m
 }
 
@@ -1718,7 +1816,14 @@ fn parse_wikitext(api_name: &str, wikitext: &str, doc_name: &str) -> Option<Stri
         let has_vararg = ret_part.contains("...");
         let names: Vec<String> = ret_part
             .split(',')
-            .map(|r| r.trim().trim_end_matches(',').to_string())
+            .map(|r| {
+                let s = r.trim().trim_end_matches(',');
+                // Strip Lua `local` keyword that sometimes appears in wiki signatures
+                // e.g. "local tradeSkillIndex = GetTradeSkillSelectionIndex()"
+                // Use "local " (with space) to avoid truncating names like "localIndex".
+                let s = s.strip_prefix("local ").map(|t| t.trim()).unwrap_or(s);
+                s.to_string()
+            })
             .filter(|r| !r.is_empty() && r != "...")
             .collect();
         (names, has_vararg, call.to_string())
@@ -1797,6 +1902,23 @@ fn parse_wikitext(api_name: &str, wikitext: &str, doc_name: &str) -> Option<Stri
             continue;
         }
 
+        // Also detect old-format section headers like ;''Returns'' or ;''Arguments''
+        // (legacy wiki pages use definition-list terms instead of ==Section== headings)
+        if line_stripped.starts_with(';') {
+            let sec = line_stripped.strip_prefix(';').unwrap_or("").trim().trim_matches('\'').trim().to_lowercase();
+            if !sec.is_empty() {
+                if ["arg", "param", "input"].iter().any(|k| sec.contains(k)) {
+                    section = Some("args");
+                } else if sec.contains("ret") || sec.contains("output") || sec.contains("result") {
+                    // Avoid "val" substring match (hits "interval", "retrieval", etc.)
+                    section = Some("returns");
+                } else {
+                    section = None;
+                }
+                continue;
+            }
+        }
+
         if line_stripped.starts_with(":;") {
             // Strip numbering
             let clean = numbering_re.replace(line_stripped, ":;").to_string();
@@ -1845,7 +1967,16 @@ fn parse_wikitext(api_name: &str, wikitext: &str, doc_name: &str) -> Option<Stri
         lines.push("---@param ... any".to_string());
     }
     for ret in &ret_names {
-        let (typ, optional) = return_types.get(ret.as_str()).cloned().unwrap_or(("any".to_string(), false));
+        let (typ, optional) = return_types.get(ret.as_str())
+            .cloned()
+            .unwrap_or_else(|| {
+                // Fall back to name-based type inference when the wiki lacks type annotations
+                if let Some(inferred) = infer_type_from_name(ret) {
+                    (inferred.to_string(), false)
+                } else {
+                    ("any".to_string(), false)
+                }
+            });
         let opt = if optional { "?" } else { "" };
         lines.push(format!("---@return {typ}{opt} {ret}"));
     }
