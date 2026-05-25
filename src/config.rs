@@ -144,6 +144,9 @@ pub struct ProjectConfig {
     pub plugins: Vec<PathBuf>,
     /// Whether to emit LSP snippet completions (InsertTextFormat::Snippet). Default: true.
     pub completion_snippets: Option<bool>,
+    /// Whether to auto-insert `end`/`until` when Enter is pressed after a block-opening
+    /// keyword. Default: true.
+    pub auto_insert_end: Option<bool>,
 }
 
 
@@ -577,6 +580,11 @@ impl ProjectConfigs {
         self.deepest_bool(file_path, |c| c.completion_snippets, true)
     }
 
+    /// Returns whether auto-insert `end`/`until` on Enter is enabled for the given file (default: true).
+    pub fn auto_insert_end_for(&self, file_path: &Path) -> bool {
+        self.deepest_bool(file_path, |c| c.auto_insert_end, true)
+    }
+
     fn deepest_bool(&self, file_path: &Path, field: fn(&ProjectConfig) -> Option<bool>, default: bool) -> bool {
         let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
             .filter(|(dir, _)| file_path.starts_with(dir))
@@ -606,6 +614,7 @@ struct RawConfig {
     completion: Option<RawCompletionConfig>,
     addon_root: Option<bool>,
     plugins: Option<Vec<String>>,
+    editor: Option<RawEditorConfig>,
 }
 
 #[derive(Deserialize, Default)]
@@ -652,6 +661,12 @@ struct RawCodeLensConfig {
     references: Option<bool>,
     implementations: Option<bool>,
     overrides: Option<bool>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawEditorConfig {
+    auto_insert_end: Option<bool>,
 }
 
 fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
@@ -996,6 +1011,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         .collect();
 
     let completion_snippets = raw.completion.and_then(|c| c.snippets);
+    let auto_insert_end = raw.editor.and_then(|e| e.auto_insert_end);
 
     Some(ProjectConfig {
         ignore, library_relative, library_absolute,
@@ -1013,6 +1029,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         addon_root: raw.addon_root.unwrap_or(false),
         plugins,
         completion_snippets,
+        auto_insert_end,
     })
 }
 

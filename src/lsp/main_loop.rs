@@ -25,6 +25,7 @@ use lsp_types::{
     CallHierarchyServerCapability, SymbolInformation, SymbolKind, WorkspaceSymbolResponse,
     CodeLens, Command, TypeHierarchyItem,
     DiagnosticOptions, DiagnosticServerCapabilities,
+    DocumentOnTypeFormattingOptions,
     DocumentDiagnosticReport, DocumentDiagnosticReportResult, FullDocumentDiagnosticReport,
     RelatedFullDocumentDiagnosticReport,
     WorkspaceDiagnosticReport, WorkspaceDiagnosticReportResult,
@@ -1362,6 +1363,10 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             workspace_diagnostics: !is_neovim,
             work_done_progress_options: Default::default(),
         })),
+        document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
+            first_trigger_character: "\n".to_string(),
+            more_trigger_character: None,
+        }),
         ..ServerCapabilities::default()
     };
 
@@ -2944,6 +2949,25 @@ fn handle_request(
                         message: Some("Ready".to_string()),
                     }));
                 }
+                send_response(connection, id, &result);
+            }
+        }
+        "textDocument/onTypeFormatting" => {
+            if let Ok((id, params)) = cast_req::<request::OnTypeFormatting>(req) {
+                let uri = params.text_document_position.text_document.uri;
+                let position = params.text_document_position.position;
+                let file_path = uri_to_abs_path(&uri).unwrap_or_default();
+                if !ws.configs.auto_insert_end_for(&file_path) {
+                    send_response(connection, id, &None::<Vec<lsp_types::TextEdit>>);
+                    return;
+                }
+                let utf8 = use_utf8();
+                let result: Option<Vec<lsp_types::TextEdit>> = documents
+                    .get(&uri.to_string())
+                    .and_then(|doc| {
+                        let text = doc.pending_text.as_deref().unwrap_or(&doc.text);
+                        super::on_type::on_type_formatting(text, position, utf8)
+                    });
                 send_response(connection, id, &result);
             }
         }

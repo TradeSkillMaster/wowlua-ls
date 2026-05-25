@@ -47,6 +47,9 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
     "implementations": true,
     "overrides": true
   },
+  "editor": {
+    "autoInsertEnd": true
+  },
   "plugins": ["string"],
   "diagnostics": {
     "disable": ["string"],
@@ -256,6 +259,17 @@ Show "N implementations" lenses on `@class` declarations.
 
 Show "overrides Parent" lenses on methods that override a parent class method.
 
+### `editor.autoInsertEnd`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Automatically insert `end` or `until` when Enter is pressed after a block-opening keyword (`if … then`, `while … do`, `for … do`, `function`, `repeat`). The closing keyword is only inserted when the block isn't already closed further down in the file.
+
+```json
+{ "editor": { "autoInsertEnd": false } }
+```
+
 ### `diagnostics.disable`
 
 - **Type:** `string[]`
@@ -293,6 +307,7 @@ Override severity for specific diagnostic codes.
 | `inference.*` | Nearest (deepest) config wins |
 | `hint.*` | Nearest (deepest) config wins |
 | `codeLens.*` | Nearest (deepest) config wins |
+| `editor.*` | Nearest (deepest) config wins |
 | `diagnostics.disable` | Unioned across ancestors |
 | `diagnostics.enable` | Applied after `disable` at each level |
 | `diagnostics.severity` | Deeper configs take precedence |

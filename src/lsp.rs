@@ -1,5 +1,6 @@
 mod main_loop;
 mod folding_range;
+mod on_type;
 mod selection_range;
 pub mod diagnostics;
 pub mod uri;
