@@ -11,6 +11,7 @@ pub use main_loop::scan_paths_with_overrides;
 pub use main_loop::load_precomputed_stubs;
 pub use main_loop::search_workspace_symbols;
 pub use main_loop::compute_quick_fixes;
+pub use main_loop::compute_code_actions;
 
 /// Wraps `LinePositions` to clamp out-of-bounds offsets instead of panicking.
 /// This prevents crashes when analysis offsets are stale (from a previous,

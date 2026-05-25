@@ -3521,6 +3521,134 @@ fn quick_fix_as_cast_assign_type_mismatch() {
         "should insert @as cast after the assigned value, got: {:?}", result);
 }
 
+// ── "Fix all in this file" bulk code action tests ─────────────────────────
+
+/// Find all LSP diagnostics with a given code.
+fn find_all_lsp_diagnostics(
+    src: &str,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+    code: &str,
+) -> Vec<lsp_types::Diagnostic> {
+    use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range};
+    let numbers = line_numbers::LinePositions::from(src);
+    analysis.run_diagnostics(tree).into_iter()
+        .filter(|d| d.code == code)
+        .map(|d| {
+            let s = numbers.from_offset(d.start);
+            let e = numbers.from_offset(d.end);
+            lsp_types::Diagnostic {
+                range: Range {
+                    start: Position { line: s.0.0, character: s.1 as u32 },
+                    end:   Position { line: e.0.0, character: e.1 as u32 },
+                },
+                severity: Some(DiagnosticSeverity::WARNING),
+                code: Some(NumberOrString::String(d.code.to_string())),
+                source: Some("wowlua_ls".to_string()),
+                message: d.message.clone(),
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
+/// Apply a sequence of TextEdits to a string.
+///
+/// **Contract**: edits must be sorted in descending position order (bottom-to-top,
+/// i.e. later file positions first). Applying them in that order ensures each
+/// edit's byte positions are still valid when it is processed, because no earlier
+/// (higher) edit has shifted the bytes yet. `merge_edits_for_fix_all` guarantees
+/// this ordering for all edits it produces.
+fn apply_text_edits(text: &str, edits: &[lsp_types::TextEdit]) -> String {
+    let mut result = text.to_string();
+    for edit in edits {
+        let start = types::position_to_offset(&result, edit.range.start.line, edit.range.start.character) as usize;
+        let end   = types::position_to_offset(&result, edit.range.end.line,   edit.range.end.character)   as usize;
+        result = format!("{}{}{}", &result[..start], &edit.new_text, &result[end..]);
+    }
+    result
+}
+
+#[test]
+fn fix_all_unused_local_two_instances() {
+    let src = "local foo = 1\nlocal bar = 2\nreturn 0\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let all_diags = find_all_lsp_diagnostics(src, &tree, &analysis, "unused-local");
+    assert_eq!(all_diags.len(), 2, "expected 2 unused-local diagnostics");
+
+    use lsp_types::Uri;
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, &all_diags, Some((&tree, &analysis)));
+
+    // There should be a "Fix all 'unused-local'" bulk action.
+    let bulk = actions.iter().find_map(|a| {
+        if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a {
+            if ca.title.contains("Fix all 'unused-local'") { Some(ca) } else { None }
+        } else {
+            None
+        }
+    }).expect("expected a 'Fix all unused-local' bulk action");
+
+    assert!(bulk.title.contains("2 occurrences"), "title should mention 2 occurrences, got: {:?}", bulk.title);
+    assert_eq!(bulk.is_preferred, Some(false));
+
+    let changes = bulk.edit.as_ref().unwrap().changes.as_ref().unwrap();
+    let edits = changes.values().next().unwrap();
+    let result = apply_text_edits(src, edits);
+    assert!(result.contains("local _foo"), "should prefix foo with _");
+    assert!(result.contains("local _bar"), "should prefix bar with _");
+}
+
+#[test]
+fn fix_all_unused_local_one_instance_no_bulk() {
+    // Only one instance — no bulk action should be generated.
+    let src = "local foo = 1\nreturn 0\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let all_diags = find_all_lsp_diagnostics(src, &tree, &analysis, "unused-local");
+    assert_eq!(all_diags.len(), 1);
+
+    use lsp_types::Uri;
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, &all_diags, Some((&tree, &analysis)));
+
+    let bulk = actions.iter().find(|a| {
+        if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a {
+            ca.title.contains("Fix all")
+        } else {
+            false
+        }
+    });
+    assert!(bulk.is_none(), "should not emit 'Fix all' action for a single instance");
+}
+
+#[test]
+fn fix_all_type_mismatch_two_instances() {
+    let src = "---@param n number\nfunction f(n) end\nf(\"a\")\nf(\"b\")\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let all_diags = find_all_lsp_diagnostics(src, &tree, &analysis, "type-mismatch");
+    assert_eq!(all_diags.len(), 2, "expected 2 type-mismatch diagnostics");
+
+    use lsp_types::Uri;
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, &all_diags, Some((&tree, &analysis)));
+
+    let bulk = actions.iter().find_map(|a| {
+        if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a {
+            if ca.title.contains("Fix all 'type-mismatch'") { Some(ca) } else { None }
+        } else {
+            None
+        }
+    }).expect("expected a 'Fix all type-mismatch' bulk action");
+
+    assert!(bulk.title.contains("2 occurrences"));
+    let changes = bulk.edit.as_ref().unwrap().changes.as_ref().unwrap();
+    let edits = changes.values().next().unwrap();
+    let result = apply_text_edits(src, edits);
+    // Both arguments should have @as casts inserted.
+    assert!(result.contains("\"a\" --[[@as number]]"), "got: {:?}", result);
+    assert!(result.contains("\"b\" --[[@as number]]"), "got: {:?}", result);
+}
+
 /// Regression test for a fuzz-discovered timeout: garbled Lua with deeply
 /// nested braces and repeated function patterns caused resolve_types() to
 /// perform exponential work. The resolve_expr work limit must terminate

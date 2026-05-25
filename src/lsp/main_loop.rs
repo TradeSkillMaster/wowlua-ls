@@ -1,5 +1,5 @@
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -3013,13 +3013,19 @@ fn entry_to_document_symbol(
     }
 }
 
-fn compute_code_actions(
+pub fn compute_code_actions(
     uri: &lsp_types::Uri,
     text: &str,
     context_diagnostics: &[lsp_types::Diagnostic],
     tree_and_analysis: Option<(&SyntaxTree, &AnalysisResult)>,
 ) -> Vec<CodeActionOrCommand> {
     let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+
+    // Collect the *first* quickfix edit per diagnostic occurrence, grouped by
+    // diagnostic code.  Using only the first action avoids inflating the count
+    // or producing conflicting edits when a single diagnostic yields multiple
+    // alternative fixes.  BTreeMap gives stable, alphabetical emit order.
+    let mut fix_groups: BTreeMap<String, Vec<Vec<lsp_types::TextEdit>>> = BTreeMap::new();
 
     for diag in context_diagnostics {
         let code_str = match &diag.code {
@@ -3031,7 +3037,24 @@ fn compute_code_actions(
         }
 
         // Quick fixes (shown before suppression actions)
-        actions.extend(compute_quick_fixes(uri, text, diag, tree_and_analysis));
+        let quick_fixes = compute_quick_fixes(uri, text, diag, tree_and_analysis);
+
+        // Record the edits from the *first* fix action that targets this file.
+        // Iterating further would count alternative fixes as extra occurrences.
+        for action in &quick_fixes {
+            if let CodeActionOrCommand::CodeAction(ca) = action
+                && let Some(edit) = &ca.edit
+                && let Some(changes) = &edit.changes
+                && let Some(file_edits) = changes.get(uri)
+            {
+                fix_groups.entry(code_str.to_string())
+                    .or_default()
+                    .push(file_edits.clone());
+                break; // one entry per diagnostic occurrence
+            }
+        }
+
+        actions.extend(quick_fixes);
 
         actions.push(CodeActionOrCommand::CodeAction(
             make_disable_line_action(uri, text, diag, code_str),
@@ -3046,7 +3069,88 @@ fn compute_code_actions(
         ));
     }
 
+    // Emit "Fix all 'code' in this file (N occurrences)" for codes with 2+
+    // fixable instances.  BTreeMap iteration is sorted, so the bulk actions
+    // appear in a stable, alphabetical order regardless of diagnostic ordering.
+    for (code_str, edit_groups) in &fix_groups {
+        if edit_groups.len() < 2 {
+            continue;
+        }
+        let n = edit_groups.len();
+        let all_edits: Vec<lsp_types::TextEdit> =
+            edit_groups.iter().flatten().cloned().collect();
+        let Some(merged) = merge_edits_for_fix_all(all_edits) else { continue };
+        // `lsp_types::Uri` contains an `Arc` for reference counting only; it is
+        // never mutated through hash/eq, so using it as a HashMap key is safe.
+        #[allow(clippy::mutable_key_type)]
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), merged);
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: format!("Fix all '{}' in this file ({} occurrences)", code_str, n),
+            kind: Some(CodeActionKind::QUICKFIX),
+            is_preferred: Some(false),
+            edit: Some(lsp_types::WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+    }
+
     actions
+}
+
+/// Merge TextEdits for a "fix all" batch action.
+///
+/// - Pure-insertion edits (`range.start == range.end`) at the same position are
+///   concatenated so that multiple fields injected into the same class land
+///   adjacent to each other.
+/// - All edits are sorted descending by start position (bottom-to-top) so that
+///   applying them does not shift the byte positions of earlier edits in the file.
+/// - Returns `None` if any two replacement edits have overlapping ranges, which
+///   would corrupt the document; the caller skips the bulk action in that case.
+fn merge_edits_for_fix_all(edits: Vec<lsp_types::TextEdit>) -> Option<Vec<lsp_types::TextEdit>> {
+    let (mut insertions, mut replacements): (Vec<_>, Vec<_>) = edits
+        .into_iter()
+        .partition(|e| e.range.start == e.range.end);
+
+    // Sort replacements by start position so we can check for overlaps in one pass.
+    replacements.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+    for pair in replacements.windows(2) {
+        // Two replacements overlap when the earlier one's end is after the later
+        // one's start (comparing line/character lexicographically).
+        let end = pair[0].range.end;
+        let next_start = pair[1].range.start;
+        if (end.line, end.character) > (next_start.line, next_start.character) {
+            return None;
+        }
+    }
+
+    // Sort ascending so same-position insertions are adjacent.
+    insertions.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+
+    // Merge consecutive insertions at the same position.
+    let mut merged: Vec<lsp_types::TextEdit> = Vec::new();
+    for ins in insertions {
+        if let Some(last) = merged.last_mut()
+            && last.range.start == ins.range.start
+        {
+            last.new_text.push_str(&ins.new_text);
+            continue;
+        }
+        merged.push(ins);
+    }
+
+    merged.extend(replacements);
+
+    // Sort bottom-to-top so applying them does not shift preceding edit positions.
+    merged.sort_by(|a, b| {
+        b.range.start.line
+            .cmp(&a.range.start.line)
+            .then(b.range.start.character.cmp(&a.range.start.character))
+    });
+
+    Some(merged)
 }
 
 /// Compute targeted quick fix actions for a single diagnostic.
