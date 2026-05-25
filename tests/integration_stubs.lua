@@ -1019,3 +1019,30 @@ local _qual3 = Enum.ItemQuality.Common
 --                               ^ hover: (field) Common: number = 1
 local _qual4 = Enum.ItemQuality.Uncommon
 --                               ^ hover: (field) Uncommon: number = 2
+
+-- ── Regression: @return Frame?, string? comma-form annotation ────────────────
+-- When @return uses LuaLS comma-separated multi-return on a single line
+-- (e.g. `@return Frame?, string?`), the first return type annotation must be
+-- respected. Previously a parse bug caused `Frame?,` (with comma) to be
+-- treated as an invalid type, leaving return_annotations empty and falling
+-- back to the body's inferred type (ScriptRegion from GetMouseFoci()).
+
+--- @return Frame?, string?
+local function getFrameAndName()
+    for _, frame in ipairs(GetMouseFoci()) do
+        return frame, frame:GetName() ---@diagnostic disable-line: return-type-mismatch
+    end
+end
+
+local commaRetFrame = getFrameAndName()
+--    ^ hover: (local) commaRetFrame: Frame?
+
+-- A nil-guarded call should give a Frame (not ScriptRegion | Frame).
+--- @param f Frame
+local function useFrame(f) end
+
+local commaRetFrame2 = getFrameAndName()
+if commaRetFrame2 then
+    useFrame(commaRetFrame2)
+    -- ^ diag: none
+end

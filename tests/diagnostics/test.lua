@@ -995,7 +995,8 @@ ub_f, ub_g, ub_h = retSingle()
 ---@param fn F
 ---@return returns<F>
 local function ub_wrap(fn) return fn() end
----@return number, string
+---@return number
+---@return string
 local function ub_two_ret() return 1, "hi" end
 local ub_z1, ub_z2 = ub_wrap(ub_two_ret)
 -- ^ diag: none

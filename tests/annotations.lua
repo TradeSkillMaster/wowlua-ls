@@ -1262,3 +1262,19 @@ sendMsg("test", "hello")
 local tableSubsumed
 local _ = tableSubsumed
 --        ^ hover: (local) tableSubsumed: table
+
+-- Regression: @return Type1?, Type2? (LuaLS-style comma-separated multi-return on a
+-- single line) should use the first return type (Type1?) from the annotation, not fall
+-- back to the body-inferred type.
+---@class CommaRetA
+---@class CommaRetB
+
+---@return CommaRetA?, CommaRetB?
+local function commaRetFunc()
+    ---@type CommaRetB?
+    local b = nil
+    return b ---@diagnostic disable-line: return-type-mismatch
+end
+
+local commaRetResult = commaRetFunc()
+--    ^ hover: (local) commaRetResult: CommaRetA?  def: local

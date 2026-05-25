@@ -633,6 +633,11 @@ pub(super) fn extract_type_prefix(s: &str) -> &str {
             '|' if depth == 0 => { after_colon = false; after_comma = false; after_pipe = true; after_ampersand = false; }
             '&' if depth == 0 => { after_colon = false; after_comma = false; after_pipe = false; after_ampersand = true; }
             ',' if depth == 0 && in_fun_ret => { after_comma = true; after_pipe = false; after_ampersand = false; }
+            // A top-level comma outside a fun() return type is not part of any
+            // valid type expression. Stop here so that `@return Frame?, string?`
+            // (LuaLS-style comma-separated multi-return on a single line) correctly
+            // yields `Frame?` as the type prefix rather than the invalid `Frame?,`.
+            ',' if depth == 0 => { return &s[..i]; }
             ':' if depth == 0 => { after_colon = true; after_pipe = false; after_ampersand = false; }
             c if c.is_whitespace() && depth == 0 && !after_colon && !after_comma && !after_pipe && !after_ampersand => {
                 let mut j = i + 1;
