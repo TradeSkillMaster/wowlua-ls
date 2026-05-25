@@ -561,7 +561,7 @@ fn manual_overrides() -> HashMap<&'static str, &'static str> {
         "GetAuctionItemSubClasses",
         "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetAuctionItemSubClasses)\n\
          ---@param classID number\n\
-         ---@return ...string\n\
+         ---@return ...number\n\
          function GetAuctionItemSubClasses(classID) end",
     );
     m.insert(
