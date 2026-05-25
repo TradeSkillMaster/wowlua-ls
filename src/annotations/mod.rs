@@ -437,6 +437,10 @@ pub(crate) struct AnnotationBlock {
     pub(crate) flavor_guard: u8,
     pub(crate) event_type: Option<String>,
     pub(crate) event_name: Option<String>,
+    /// Batch event entries from `---|` continuation lines under `@event TypeName`.
+    /// Each entry: (event_name, params, line_index) where line_index is the
+    /// position within the annotation block for def_range lookup.
+    pub(crate) event_batch_entries: Vec<(String, Vec<crate::pre_globals::EventPayloadParam>, usize)>,
     pub(crate) narrows_arg: Option<usize>,
     /// Byte offset of the `---@class` comment token (for positional disambiguation
     /// when multiple `@class` declarations share the same name in one file).
@@ -927,15 +931,7 @@ fn flush_group(
         };
         result.aliases.push(AliasDecl { name, type_params: block.alias_type_params, typ, def_range: alias_range, def_path: None, is_opaque: block.alias_is_opaque });
     }
-    if let (Some(event_type), Some(event_name)) = (block.event_type, block.event_name) {
-        let params = block.params.iter().map(|p| {
-            crate::pre_globals::EventPayloadParam {
-                name: p.name.clone(),
-                type_name: crate::annotations::format_annotation_type(&p.typ),
-                nilable: p.optional,
-                description: p.description.clone(),
-            }
-        }).collect();
+    if let Some(event_type) = block.event_type {
         let doc_lines: Vec<&str> = lines.iter()
             .map(|(s, _, _)| s.as_str())
             .filter(|s| s.starts_with("---") && !is_annotation_comment(s))
@@ -946,15 +942,87 @@ fn flush_group(
             .filter(|s| !s.is_empty())
             .collect();
         let documentation = if doc_lines.is_empty() { None } else { Some(doc_lines.join("\n")) };
-        result.events.push(EventDecl {
-            event_type,
-            event_name,
-            params,
-            documentation,
-            def_range: event_range,
-            def_path: None,
-        });
+
+        if let Some(event_name) = block.event_name {
+            // Single-event form: @event TypeName "EVENT_NAME" + @param lines
+            let params = block.params.iter().map(|p| {
+                crate::pre_globals::EventPayloadParam {
+                    name: p.name.clone(),
+                    type_name: crate::annotations::format_annotation_type(&p.typ),
+                    nilable: p.optional,
+                    description: p.description.clone(),
+                }
+            }).collect();
+            result.events.push(EventDecl {
+                event_type,
+                event_name,
+                params,
+                documentation,
+                def_range: event_range,
+                def_path: None,
+            });
+        } else if !block.event_batch_entries.is_empty() {
+            // Batch form: @event TypeName + ---| entries with inline params.
+            // Each entry stores its line index for accurate def_range lookup.
+            for (event_name, params, line_idx) in block.event_batch_entries {
+                let entry_range = lines.get(line_idx).map(|(_, s, e)| (*s, *e)).or(event_range);
+                result.events.push(EventDecl {
+                    event_type: event_type.clone(),
+                    event_name,
+                    params,
+                    documentation: documentation.clone(),
+                    def_range: entry_range,
+                    def_path: None,
+                });
+            }
+        }
     }
+}
+
+/// Parse a `---|` batch event line: `"EVENT_NAME"` or `"EVENT_NAME" -> param: type, ...`.
+/// Returns `(event_name, params)` or `None` if the line doesn't contain a valid quoted name.
+fn parse_event_batch_line(s: &str) -> Option<(String, Vec<crate::pre_globals::EventPayloadParam>)> {
+    let s = s.trim();
+    // Extract quoted event name
+    let quote_char = s.chars().next()?;
+    if quote_char != '"' && quote_char != '\'' { return None; }
+    let close = s[1..].find(quote_char)?;
+    let event_name = &s[1..1 + close];
+    if event_name.is_empty() { return None; }
+
+    let after_quote = s[1 + close + 1..].trim();
+    let params = if let Some(rest) = after_quote.strip_prefix("->") {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            Vec::new()
+        } else {
+            annotation_types::split_at_top_level(rest, ',')
+                .iter()
+                .filter_map(|part| {
+                    let part = part.trim();
+                    // First `:` is always the name/type separator — param names
+                    // are Lua identifiers (no colons). Colons inside types
+                    // (e.g. `fun(x: number): string`) fall into type_str.
+                    let (name_raw, type_str) = part.split_once(':')?;
+                    let name_raw = name_raw.trim();
+                    let is_optional = name_raw.ends_with('?');
+                    let name = name_raw.trim_end_matches('?').trim();
+                    let type_str = type_str.trim();
+                    if name.is_empty() || type_str.is_empty() { return None; }
+                    Some(crate::pre_globals::EventPayloadParam {
+                        name: name.to_string(),
+                        type_name: type_str.to_string(),
+                        nilable: is_optional,
+                        description: None,
+                    })
+                })
+                .collect()
+        }
+    } else {
+        Vec::new()
+    };
+
+    Some((event_name.to_string(), params))
 }
 
 /// Parse the header of an `@field` annotation: visibility, field name, and remaining type text.
@@ -990,7 +1058,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
     // it (rather than the `@alias` union). Reset on any other annotation.
     let mut last_tuple_return_idx: Option<usize> = None;
 
-    for line in lines {
+    for (line_idx, line) in lines.iter().enumerate() {
         let content = line.trim_start_matches('-');
         let content = content.trim();
         // Break the `@return → ---|` continuation chain at any unrelated annotation
@@ -1128,7 +1196,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix('|') {
             // ---|  continuation line — merge into the active @return tuple union,
-            // or fall back to the alias union.
+            // fall back to batch event entry, or alias union.
             let rest = rest.trim();
             let rest_no_hash = if let Some(hash_pos) = find_hash_comment(rest) {
                 rest[..hash_pos].trim()
@@ -1147,6 +1215,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                         other => AnnotationType::Union(vec![other, typ]),
                     };
                     block.returns[idx] = merged;
+                    continue;
+                }
+                // Batch event entry: @event TypeName header without event name
+                if block.event_type.is_some() && block.event_name.is_none() {
+                    if let Some((name, params)) = parse_event_batch_line(rest_no_hash) {
+                        block.event_batch_entries.push((name, params, line_idx));
+                    }
                     continue;
                 }
                 if block.alias.is_some() {
@@ -1234,11 +1309,31 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         } else if let Some(rest) = content.strip_prefix("@event") {
             let rest = rest.trim();
             if let Some((type_name, event_name_raw)) = rest.split_once(char::is_whitespace) {
-                let event_name = event_name_raw.trim().trim_matches(|c| c == '"' || c == '\'');
-                if !type_name.is_empty() && !event_name.is_empty() {
-                    block.event_type = Some(type_name.to_string());
-                    block.event_name = Some(event_name.to_string());
+                let event_name_raw = event_name_raw.trim();
+                if !type_name.is_empty() && !event_name_raw.is_empty() {
+                    // Try structured parse: "EVENT_NAME" or "EVENT_NAME" -> params
+                    if let Some((name, params)) = parse_event_batch_line(event_name_raw) {
+                        block.event_type = Some(type_name.to_string());
+                        if params.is_empty() {
+                            // No inline params — single-event path (@param lines fill block.params)
+                            block.event_name = Some(name);
+                        } else {
+                            // Inline params — single entry through batch path
+                            block.event_batch_entries.push((name, params, line_idx));
+                        }
+                    } else {
+                        // Bare (unquoted) event name fallback
+                        let event_name = event_name_raw.trim_matches(|c| c == '"' || c == '\'');
+                        if !event_name.is_empty() {
+                            block.event_type = Some(type_name.to_string());
+                            block.event_name = Some(event_name.to_string());
+                        }
+                    }
                 }
+            } else if !rest.is_empty() {
+                // Batch header: @event TypeName (no event name).
+                // Subsequent ---| lines fill event_batch_entries.
+                block.event_type = Some(rest.to_string());
             }
         } else if let Some(rest) = content.strip_prefix("@enum") {
             let rest = rest.trim();

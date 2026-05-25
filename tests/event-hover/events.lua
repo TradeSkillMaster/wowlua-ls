@@ -28,6 +28,19 @@
 
 ---@event ActionEvent "DO_RESET"
 
+-- Inline params on single-event form
+---@event InlineEvent "INLINE_ONE" -> code: number
+---@event InlineEvent "INLINE_TWO" -> x: string, y: boolean
+---@event InlineEvent "INLINE_NONE"
+
+-- Batch event declarations via ---|
+---@event BatchAction
+---| "BATCH_START" -> scanType: string, scanContext: table
+---| "BATCH_COMPLETED"
+---| "BATCH_RESULT" -> success: boolean, canRetry: boolean
+---| "BATCH_OPTIONAL" -> name: string, count?: number
+---| "BATCH_GENERIC_PARAM" -> iter: IteratorObject<fun(): number, string>
+
 -- Alias referencing an event type name — tests that event type aliases
 -- (e.g. WowEvent → string) are resolved before dependent aliases.
 ---@alias AnyGameEvent WowEvent

@@ -179,3 +179,63 @@ f:SetScript("OnEvent", function(self, event, ...)
 --               ^ hover: (event) PLAYER_LOGIN  doc: warcraft.wiki.gg/wiki/PLAYER_LOGIN  def: external
     end
 end)
+
+-- ── Batch event declarations via ---| ──
+
+---@param action BatchAction
+local function handleBatchHover(action) end
+
+handleBatchHover("BATCH_START")
+--                ^ hover: (event) BATCH_START → scanType: string, scanContext: table  def: external
+
+handleBatchHover("BATCH_COMPLETED")
+--                ^ hover: (event) BATCH_COMPLETED  def: external
+
+handleBatchHover("BATCH_RESULT")
+--                ^ hover: (event) BATCH_RESULT → success: boolean, canRetry: boolean  def: external
+
+handleBatchHover("BATCH_OPTIONAL")
+--                ^ hover: (event) BATCH_OPTIONAL → name: string, count?: number  def: external
+
+-- Completions for batch events
+handleBatchHover("")
+--                ^ comp: BATCH_COMPLETED, BATCH_GENERIC_PARAM, BATCH_OPTIONAL, BATCH_RESULT, BATCH_START
+
+-- params<BatchAction> narrowing
+---@param action BatchAction
+---@param ... params<BatchAction>
+local function handleBatchAction(action, ...)
+    if action == "BATCH_START" then
+        local scanType, scanContext = ...
+        local s = scanType
+--            ^ hover: (local) s: string
+    end
+    if action == "BATCH_RESULT" then
+        local success, canRetry = ...
+        local s = success
+--            ^ hover: (local) s: boolean
+        local c = canRetry
+--            ^ hover: (local) c: boolean
+    end
+    if action == "BATCH_COMPLETED" then
+        local test = ...
+--            ^ hover: (local) test: ?
+    end
+end
+
+-- ── Inline params on single @event ──
+
+---@param ev InlineEvent
+local function handleInlineHover(ev) end
+
+handleInlineHover("INLINE_ONE")
+--                 ^ hover: (event) INLINE_ONE → code: number  def: external
+
+handleInlineHover("INLINE_TWO")
+--                 ^ hover: (event) INLINE_TWO → x: string, y: boolean  def: external
+
+handleInlineHover("INLINE_NONE")
+--                 ^ hover: (event) INLINE_NONE  def: external
+
+handleInlineHover("")
+--                 ^ comp: INLINE_NONE, INLINE_ONE, INLINE_TWO

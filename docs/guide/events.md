@@ -121,6 +121,21 @@ You can declare your own event types for addon-internal messaging systems:
 
 Each `@event` block declares one event entry under a named event type. Subsequent `@param` lines describe the event's payload. Events with no `@param` lines have an empty payload.
 
+### Batch declarations with `---|`
+
+When declaring many events of the same type, you can use a compact batch syntax with `---|` continuation lines:
+
+```lua
+---@event MyAddonEvent
+---| "SCAN_COMPLETE" -> itemCount: number, elapsed: number
+---| "SCAN_FAILED" -> reason: string
+---| "CONFIG_CHANGED"
+```
+
+Each `---|` line declares one event. After the quoted event name, use `->` followed by comma-separated `name: type` pairs to declare inline parameters. Events with no `->` have an empty payload. Optional parameters use `name?: type`.
+
+This is equivalent to writing separate `@event` + `@param` blocks for each event, but much more concise when you have many events under one type. Both forms can coexist in the same file.
+
 ### Using custom event types for hover
 
 Once declared, the event type name can be used as a parameter type for hover info:
@@ -175,15 +190,36 @@ Event names in `@event` declarations should be quoted to match how they appear a
 
 ## Annotation syntax
 
+### Single event
+
 ```
 ---@event TypeName "EVENT_NAME"
 ---@param paramName type
 ---@param optionalParam? type
 ```
 
+Or with inline parameters:
+
+```
+---@event TypeName "EVENT_NAME" -> paramName: type, optionalParam?: type
+```
+
 - **TypeName** — the event type name (e.g. `FrameEvent`, `MyAddonEvent`). Becomes a type that resolves to `string`.
 - **EVENT_NAME** — the event name as a quoted string literal.
-- `@param` lines after `@event` describe the event's payload parameters. These use the same syntax as function `@param` annotations, including `?` for nilable parameters.
+- Parameters can be declared either with subsequent `@param` lines (same syntax as function `@param` annotations, including `?` for nilable) or inline after `->` with comma-separated `name: type` pairs.
+
+### Batch events
+
+```
+---@event TypeName
+---| "EVENT_A" -> param1: type1, param2: type2
+---| "EVENT_B" -> param1: type1
+---| "EVENT_C"
+```
+
+- `@event TypeName` with no event name opens a batch block.
+- Each `---|` line declares one event with an optional `-> param: type, ...` payload.
+- Use `name?: type` for nilable parameters.
 
 ## `params<EventType>` projection
 
