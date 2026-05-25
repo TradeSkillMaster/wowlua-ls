@@ -60,6 +60,20 @@ struct BlizzardApiDocs {
     functions: Vec<BlizzardFunction>,
     events: Vec<BlizzardEvent>,
     structures: Vec<BlizzardStructure>,
+    /// Widget/frame method APIs from `Type = "ScriptObject"` documentation files.
+    /// These are methods on specific frame types, not top-level globals.
+    script_objects: Vec<BlizzardScriptObjectApi>,
+}
+
+/// A ScriptObject API definition from Blizzard_APIDocumentationGenerated.
+/// ScriptObject files define methods for specific widget/frame types (e.g. FontString,
+/// NamePlate) rather than top-level globals. Their functions are emitted as class
+/// method stubs on the mapped Lua class.
+#[derive(Debug)]
+struct BlizzardScriptObjectApi {
+    /// The ScriptObject name from the `Name = "..."` field (e.g. "SimpleFontStringAPI").
+    name: String,
+    functions: Vec<BlizzardFunction>,
 }
 
 /// Resolve a Blizzard param to its Lua type string.
@@ -138,6 +152,7 @@ fn parse_blizzard_api_docs(ui_source_dir: &Path) -> BlizzardApiDocs {
         functions: Vec::new(),
         events: Vec::new(),
         structures: Vec::new(),
+        script_objects: Vec::new(),
     };
     if !api_doc_dir.is_dir() {
         log::warn!("Blizzard_APIDocumentationGenerated not found at {}", api_doc_dir.display());
@@ -154,19 +169,45 @@ fn parse_blizzard_api_docs(ui_source_dir: &Path) -> BlizzardApiDocs {
     }
 
     log::info!(
-        "  Parsed Blizzard API docs: {} functions, {} events, {} structures",
-        docs.functions.len(), docs.events.len(), docs.structures.len(),
+        "  Parsed Blizzard API docs: {} functions, {} events, {} structures, {} script objects",
+        docs.functions.len(), docs.events.len(), docs.structures.len(), docs.script_objects.len(),
     );
     docs
 }
 
 /// Parse a single Blizzard APIDocumentation Lua file for Functions, Events, and Structures.
-/// Skips `Type = "ScriptObject"` files — those are widget/frame method APIs (e.g.
-/// SimpleFrameAPI, HousingCatalogSearcherAPI) whose functions are methods on
-/// frame objects, not top-level globals.
+///
+/// `Type = "ScriptObject"` files define widget/frame method APIs (e.g. SimpleFontStringAPI,
+/// FrameAPINamePlate). Their functions are NOT top-level globals, so they are extracted into
+/// `docs.script_objects` rather than `docs.functions`. `generate_scriptobject_method_stubs`
+/// later maps them to Lua class method stubs via `SCRIPTOBJECT_CLASS_MAP`.
 fn parse_blizzard_api_doc_file(content: &str, docs: &mut BlizzardApiDocs, re: &BlizzardDocRegexes) {
-    // Skip ScriptObject files (widget method APIs, not game globals)
     if re.script_object.is_match(content) {
+        // Extract the ScriptObject name (first top-level Name = "..." field in the file)
+        let Some(name) = extract_field(&re.name, content) else { return };
+        // Extract functions from the ScriptObject's Functions section
+        let mut functions = Vec::new();
+        for (section_name, section_content) in extract_sections(content, &re.section) {
+            if section_name == "Functions" {
+                for block in extract_blocks(section_content) {
+                    if let Some(func_name) = extract_field(&re.name, block)
+                        && re.type_field.captures(block).is_some_and(|c| c.get(1).unwrap().as_str() == "Function")
+                    {
+                        let arguments = extract_params(block, "Arguments", &re.param, &re.inner_type, &re.mixin);
+                        let returns = extract_params(block, "Returns", &re.param, &re.inner_type, &re.mixin);
+                        let may_return_nothing = re.may_return_nothing.is_match(block);
+                        functions.push(BlizzardFunction {
+                            name: func_name,
+                            namespace: None,
+                            arguments,
+                            returns,
+                            may_return_nothing,
+                        });
+                    }
+                }
+            }
+        }
+        docs.script_objects.push(BlizzardScriptObjectApi { name, functions });
         return;
     }
 
@@ -797,6 +838,198 @@ fn write_blizzard_function_stub(out: &mut String, func: &BlizzardFunction, known
     let params: Vec<&str> = func.arguments.iter().map(|a| a.name.as_str()).collect();
     writeln!(out, "function {qualified}({}) end", params.join(", ")).unwrap();
     writeln!(out).unwrap();
+}
+
+/// Maps Blizzard ScriptObject API names to their Lua class names in Ketho's stubs.
+///
+/// ScriptObject files in `Blizzard_APIDocumentationGenerated` define method APIs for
+/// specific frame types. Their `Name` field identifies the API object (e.g.
+/// "SimpleFontStringAPI"), but the Lua class used in addon code is different (e.g.
+/// "FontString"). This table provides the mapping so that new ScriptObject methods
+/// (e.g. added in recent patches) get emitted as class method stubs.
+///
+/// Only ScriptObject APIs that have a known mapping AND whose methods are missing
+/// from Ketho's vendor stubs will produce generated output.
+const SCRIPTOBJECT_CLASS_MAP: &[(&str, &str)] = &[
+    // Base widget types
+    ("SimpleObjectAPI", "Object"),
+    ("SimpleFrameScriptObjectAPI", "FrameScriptObject"),
+    ("SimpleRegionAPI", "Region"),
+    ("SimpleScriptRegionAPI", "ScriptRegion"),
+    ("SimpleScriptRegionResizingAPI", "ScriptRegionResizing"),
+    ("SimpleAnimatableObjectAPI", "AnimatableObject"),
+    ("SimpleTextureBaseAPI", "TextureBase"),
+    ("FrameAPIBlob", "Blob"),
+    ("FrameAPICharacterModelBase", "CharacterModelBase"),
+    ("FrameAPIModelSceneFrameActorBase", "ModelSceneActorBase"),
+    ("FrameAPITabardModelBase", "TabardModelBase"),
+    // Font widgets
+    ("SimpleFontAPI", "Font"),
+    ("SimpleFontStringAPI", "FontString"),
+    // Texture widgets
+    ("SimpleTextureAPI", "Texture"),
+    ("SimpleMaskTextureAPI", "MaskTexture"),
+    ("SimpleLineAPI", "Line"),
+    // Animation widgets
+    ("SimpleAnimAPI", "Animation"),
+    ("SimpleAnimGroupAPI", "AnimationGroup"),
+    ("SimpleAnimAlphaAPI", "Alpha"),
+    ("SimpleAnimFlipBookAPI", "FlipBook"),
+    ("SimpleAnimPathAPI", "Path"),
+    ("SimpleAnimRotationAPI", "Rotation"),
+    ("SimpleAnimScaleAPI", "Scale"),
+    ("SimpleAnimScaleLineAPI", "LineScale"),
+    ("SimpleAnimTextureCoordTranslationAPI", "TextureCoordTranslation"),
+    ("SimpleAnimTranslationAPI", "Translation"),
+    ("SimpleAnimTranslationLineAPI", "LineTranslation"),
+    ("SimpleAnimVertexColorAPI", "VertexColor"),
+    ("SimpleControlPointAPI", "ControlPoint"),
+    // Frame widgets
+    ("SimpleFrameAPI", "Frame"),
+    ("SimpleButtonAPI", "Button"),
+    ("SimpleCheckboxAPI", "CheckButton"),
+    ("SimpleEditBoxAPI", "EditBox"),
+    ("SimpleHTMLAPI", "SimpleHTML"),
+    ("SimpleMessageFrameAPI", "MessageFrame"),
+    ("SimpleModelAPI", "Model"),
+    ("SimpleMovieAPI", "MovieFrame"),
+    ("SimpleScrollFrameAPI", "ScrollFrame"),
+    ("SimpleSliderAPI", "Slider"),
+    ("SimpleStatusBarAPI", "StatusBar"),
+    ("SimpleColorSelectAPI", "ColorSelect"),
+    ("FrameAPICooldown", "Cooldown"),
+    ("FrameAPITooltip", "GameTooltip"),
+    ("FrameAPINamePlate", "NamePlateFrame"),
+    ("FrameAPIModelSceneFrame", "ModelScene"),
+    ("FrameAPIModelSceneFrameActor", "ModelSceneActor"),
+    ("FrameAPICinematicModel", "CinematicModel"),
+    ("FrameAPIDressUpModel", "DressUpModel"),
+    ("FrameAPITabardModel", "TabardModel"),
+    ("FrameAPIFogOfWarFrame", "FogOfWarFrame"),
+    ("FrameAPIUnitPositionFrame", "UnitPositionFrame"),
+    ("FrameAPIArchaeologyDigSiteFrame", "ArchaeologyDigSiteFrame"),
+    ("FrameAPIQuestPOI", "QuestPOIFrame"),
+    ("FrameAPIScenarioPOI", "ScenarioPOIFrame"),
+    ("MinimapFrameAPI", "Minimap"),
+    // ScriptObject (non-widget) types
+    ("LuaCurveObjectBaseAPI", "CurveObjectBase"),
+    ("LuaCurveObjectAPI", "CurveObject"),
+    ("LuaColorCurveObjectAPI", "ColorCurveObject"),
+    ("LuaDurationObjectAPI", "DurationObject"),
+    ("HousingCatalogSearcherAPI", "HousingCatalogSearcher"),
+    ("HousingFixturePointFrameAPI", "HousingFixturePointFrame"),
+    ("HousingLayoutPinFrameAPI", "HousingLayoutPinFrame"),
+    ("UnitHealPredictionCalculatorAPI", "UnitHealPredictionCalculator"),
+    ("AbbreviateConfigAPI", "AbbreviateConfig"),
+    // Formatter types (no Ketho class yet — stubs create implicit methods)
+    ("AbbreviatedNumberFormatterAPI", "AbbreviatedNumberFormatter"),
+    ("NumericFormatterAPI", "NumericFormatter"),
+    ("NumericRuleFormatterAPI", "NumericRuleFormatter"),
+    ("SecondsFormatterAPI", "SecondsFormatter"),
+    // Frame types without Ketho class stubs yet
+    ("SimpleBrowserAPI", "Browser"),
+    ("SimpleMapSceneAPI", "MapScene"),
+    ("SimpleModelFFXAPI", "ModelFFX"),
+    ("SimpleOffScreenFrameAPI", "OffScreenFrame"),
+    ("FrameAPISimpleCheckout", "Checkout"),
+    ("PingPinFrameAPI", "PingPinFrame"),
+];
+
+/// Collect all (class_name, method_name) pairs already defined in Ketho's widget stubs.
+/// Used to avoid generating duplicate ScriptObject stubs for already-annotated methods.
+fn collect_existing_widget_methods(vendor_dirs: &[PathBuf]) -> HashSet<(String, String)> {
+    let method_re = regex_lite::Regex::new(r"^function (\w+):(\w+)\(").unwrap();
+    let mut methods = HashSet::new();
+
+    let mut all_files: Vec<PathBuf> = Vec::new();
+    for dir in vendor_dirs {
+        if dir.is_dir() {
+            collect_lua_paths(dir, &mut all_files);
+        }
+    }
+
+    for path in &all_files {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for line in content.lines() {
+            if let Some(cap) = method_re.captures(line) {
+                let class = cap.get(1).unwrap().as_str().to_string();
+                let method = cap.get(2).unwrap().as_str().to_string();
+                methods.insert((class, method));
+            }
+        }
+    }
+
+    methods
+}
+
+/// Generate Lua method stubs from Blizzard ScriptObject API definitions.
+///
+/// For each ScriptObject with a known `SCRIPTOBJECT_CLASS_MAP` entry, emits
+/// `function ClassName:Method(args) end` stubs (with `@param`/`@return` annotations)
+/// for methods not already present in Ketho's vendor stubs.
+fn generate_scriptobject_method_stubs(
+    docs: &BlizzardApiDocs,
+    known_enums: &HashSet<String>,
+    existing_widget_methods: &HashSet<(String, String)>,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "---@meta _").unwrap();
+    writeln!(out, "-- ScriptObject widget method stubs (auto-generated from Blizzard_APIDocumentationGenerated)").unwrap();
+    writeln!(out, "-- Methods here are missing from Ketho's vscode-wow-api stubs (e.g. new API additions).").unwrap();
+    writeln!(out).unwrap();
+
+    let mut total = 0usize;
+    for script_obj in &docs.script_objects {
+        let Some(class_name) = SCRIPTOBJECT_CLASS_MAP
+            .iter()
+            .find(|(api, _)| *api == script_obj.name)
+            .map(|(_, cls)| *cls)
+        else {
+            log::debug!("Unmapped ScriptObject API: {}", script_obj.name);
+            continue;
+        };
+
+        let class_name_owned = class_name.to_string();
+        let new_methods: Vec<&BlizzardFunction> = script_obj.functions.iter()
+            .filter(|f| !existing_widget_methods.contains(&(class_name_owned.clone(), f.name.clone())))
+            .collect();
+
+        if new_methods.is_empty() {
+            continue;
+        }
+
+        writeln!(out, "-- {class_name} methods from Blizzard ScriptObject API ({api_name})",
+            api_name = script_obj.name).unwrap();
+        for func in new_methods {
+            for arg in &func.arguments {
+                let typ = resolve_blizzard_param_type(arg, known_enums);
+                if arg.nilable {
+                    writeln!(out, "---@param {}? {}", arg.name, typ).unwrap();
+                } else {
+                    writeln!(out, "---@param {} {}", arg.name, typ).unwrap();
+                }
+            }
+            for ret in &func.returns {
+                let typ = resolve_blizzard_param_type(ret, known_enums);
+                if ret.nilable || func.may_return_nothing {
+                    writeln!(out, "---@return {}? {}", typ, ret.name).unwrap();
+                } else {
+                    writeln!(out, "---@return {} {}", typ, ret.name).unwrap();
+                }
+            }
+            let params: Vec<&str> = func.arguments.iter().map(|a| a.name.as_str()).collect();
+            writeln!(out, "function {class_name}:{}({}) end", func.name, params.join(", ")).unwrap();
+            writeln!(out).unwrap();
+            total += 1;
+        }
+    }
+
+    log::info!("  ScriptObjectMethods: {} new widget method stubs generated", total);
+    out
 }
 
 /// Generate LuaLS `@class` + `@field` stubs from parsed Blizzard Structure definitions.
@@ -3595,7 +3828,7 @@ pub fn regenerate_stubs() {
         parse_blizzard_api_docs(&retail_ui_dir)
     } else {
         source_errors.push("Blizzard APIDocumentation: no retail wow-ui-source clone".to_string());
-        BlizzardApiDocs { functions: Vec::new(), events: Vec::new(), structures: Vec::new() }
+        BlizzardApiDocs { functions: Vec::new(), events: Vec::new(), structures: Vec::new(), script_objects: Vec::new() }
     };
     if blizzard_docs.functions.len() < 500 {
         source_errors.push(format!("Blizzard API functions: {} (expected ≥500)", blizzard_docs.functions.len()));
@@ -3755,6 +3988,11 @@ pub fn regenerate_stubs() {
     log::info!("Enriching widget stubs with wiki annotations...");
     enrich_widget_stubs(&widget_methods, &wiki_pages, &wiki_redirects);
 
+    // Step 4b2: Collect the final set of (class, method) pairs from Ketho's vendor stubs
+    // (after wiki enrichment). Used to filter ScriptObject stubs to only new methods.
+    let existing_widget_methods = collect_existing_widget_methods(&vendor_dir_paths);
+    log::info!("  Existing vendor widget methods: {}", existing_widget_methods.len());
+
     // Step 4c: Generate CVar alias (replaces Ketho's CVar.lua)
     log::info!("Generating CVar alias from BlizzardInterfaceResources...");
     let cvar_lua = fetch_and_generate_cvar_stubs();
@@ -3813,6 +4051,11 @@ pub fn regenerate_stubs() {
 
     let blizzard_structures_lua = generate_blizzard_structure_stubs(&blizzard_docs, &existing_for_dedup, &known_enum_names);
     std::fs::write(gen_dir.join("BlizzardStructures.lua"), &blizzard_structures_lua).unwrap();
+
+    // Generate ScriptObject widget method stubs for new frame methods not yet in Ketho's stubs
+    log::info!("Generating ScriptObject widget method stubs...");
+    let script_object_lua = generate_scriptobject_method_stubs(&blizzard_docs, &known_enum_names, &existing_widget_methods);
+    std::fs::write(gen_dir.join("ScriptObjectMethods.lua"), &script_object_lua).unwrap();
 
     // Fetch LuaEnum.lua once for both Enum.* categories and Constants.* sub-tables.
     log::info!("Fetching LuaEnum.lua for Enum.* and Constants...");
@@ -4614,6 +4857,7 @@ APIDocumentation:AddDocumentationTable(TestDoc);
             functions: Vec::new(),
             events: Vec::new(),
             structures: Vec::new(),
+            script_objects: Vec::new(),
         };
         parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
         assert_eq!(docs.functions.len(), 3);
@@ -4692,6 +4936,7 @@ local TestDoc =
             functions: Vec::new(),
             events: Vec::new(),
             structures: Vec::new(),
+            script_objects: Vec::new(),
         };
         parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
         assert_eq!(docs.events.len(), 3);
@@ -4755,6 +5000,7 @@ local TestDoc =
             functions: Vec::new(),
             events: Vec::new(),
             structures: Vec::new(),
+            script_objects: Vec::new(),
         };
         parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
         // Only Structure is parsed, not Enumeration
@@ -4841,7 +5087,7 @@ local TestDoc =
     }
 
     #[test]
-    fn test_parse_blizzard_api_doc_skips_script_object() {
+    fn test_parse_blizzard_api_doc_extracts_script_object() {
         let content = r#"
 local SimpleFrameAPI =
 {
@@ -4878,12 +5124,21 @@ local SimpleFrameAPI =
             functions: Vec::new(),
             events: Vec::new(),
             structures: Vec::new(),
+            script_objects: Vec::new(),
         };
         parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
-        // ScriptObject files should be completely skipped
+        // ScriptObject functions go to script_objects, not the global functions list
         assert!(docs.functions.is_empty());
         assert!(docs.events.is_empty());
         assert!(docs.structures.is_empty());
+        // ScriptObject API should be extracted
+        assert_eq!(docs.script_objects.len(), 1);
+        assert_eq!(docs.script_objects[0].name, "SimpleFrameAPI");
+        assert_eq!(docs.script_objects[0].functions.len(), 1);
+        assert_eq!(docs.script_objects[0].functions[0].name, "GetName");
+        assert_eq!(docs.script_objects[0].functions[0].returns.len(), 1);
+        assert_eq!(docs.script_objects[0].functions[0].returns[0].name, "name");
+        assert_eq!(docs.script_objects[0].functions[0].returns[0].type_name, "cstring");
     }
 
     #[test]
@@ -5125,6 +5380,71 @@ Gets the item."#;
         let c = result.get("TypeC").expect("TypeC should be present");
         assert!(c.is_empty(), "TypeC should have no methods");
         assert!(!c.contains("OnEvent"), "handlers should not be in methods");
+    }
+
+    #[test]
+    fn test_generate_scriptobject_method_stubs() {
+        // Verify that ScriptObject methods are emitted for mapped classes and
+        // that methods already in vendor stubs are filtered out.
+        let docs = BlizzardApiDocs {
+            functions: Vec::new(),
+            events: Vec::new(),
+            structures: Vec::new(),
+            script_objects: vec![
+                BlizzardScriptObjectApi {
+                    name: "SimpleFontStringAPI".to_string(),
+                    functions: vec![
+                        BlizzardFunction {
+                            name: "SetSmoothScaling".to_string(),
+                            namespace: None,
+                            arguments: vec![BlizzardParam {
+                                name: "smoothScaling".to_string(),
+                                type_name: "bool".to_string(),
+                                nilable: false,
+                                inner_type: None,
+                                mixin: None,
+                            }],
+                            returns: Vec::new(),
+                            may_return_nothing: false,
+                        },
+                        // This one simulates a method already in Ketho's stubs (e.g. GetText)
+                        BlizzardFunction {
+                            name: "GetText".to_string(),
+                            namespace: None,
+                            arguments: Vec::new(),
+                            returns: Vec::new(),
+                            may_return_nothing: false,
+                        },
+                    ],
+                },
+                // Unknown ScriptObject (no mapping) — should produce nothing
+                BlizzardScriptObjectApi {
+                    name: "SomeUnknownAPI".to_string(),
+                    functions: vec![BlizzardFunction {
+                        name: "DoSomething".to_string(),
+                        namespace: None,
+                        arguments: Vec::new(),
+                        returns: Vec::new(),
+                        may_return_nothing: false,
+                    }],
+                },
+            ],
+        };
+        let known_enums = HashSet::new();
+        // Simulate GetText already existing in Ketho's stubs
+        let existing: HashSet<(String, String)> = [
+            ("FontString".to_string(), "GetText".to_string()),
+        ].into_iter().collect();
+
+        let out = generate_scriptobject_method_stubs(&docs, &known_enums, &existing);
+
+        // SetSmoothScaling should appear (not in existing)
+        assert!(out.contains("function FontString:SetSmoothScaling(smoothScaling) end"), "missing SetSmoothScaling: {out}");
+        assert!(out.contains("---@param smoothScaling boolean"), "missing @param: {out}");
+        // GetText should NOT appear (already in existing)
+        assert!(!out.contains("GetText"), "GetText should be filtered out: {out}");
+        // Unknown API should not appear
+        assert!(!out.contains("DoSomething"), "unmapped ScriptObject should be filtered: {out}");
     }
 }
 
