@@ -1933,10 +1933,17 @@ pub(crate) fn is_table_subtype_impl(
         (ValueType::Table(Some(a)), ValueType::Number) if ir.table(*a).enum_kind == EnumKind::Number => true,
         (ValueType::Number, ValueType::Table(Some(b))) if ir.table(*b).enum_kind == EnumKind::Number => true,
         // String enum <-> string: @enum types with string values are strings at runtime.
-        // Uses String(None) which matches any string; string literals currently always
-        // lower to String(None) in lower_expression.rs so this covers all cases.
+        // The enum-to-string direction keeps String(None) (only a generic string, not a
+        // specific literal, may widen to "any string enum").
+        // The string-to-enum direction uses String(_) to cover both String(None) (generic
+        // string) and String(Some("literal")) (specific string literal from an @alias
+        // expansion such as `MyAlias = "a" | "b"`).  This means any string literal is
+        // accepted as a string enum value regardless of whether it is actually declared in
+        // the enum — the LS does not perform member-value checking for string enums.
+        // Known limitation: catching `"wrong_value" → StringEnum` mismatches would require
+        // comparing the literal against the enum's declared field values.
         (ValueType::Table(Some(a)), ValueType::String(None)) if ir.table(*a).enum_kind == EnumKind::String => true,
-        (ValueType::String(None), ValueType::Table(Some(b))) if ir.table(*b).enum_kind == EnumKind::String => true,
+        (ValueType::String(_), ValueType::Table(Some(b))) if ir.table(*b).enum_kind == EnumKind::String => true,
         (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => {
             if ir.is_subclass_of(*a, *b) { return true; }
             let at = ir.table(*a);

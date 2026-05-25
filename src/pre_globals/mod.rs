@@ -39,6 +39,20 @@ pub(crate) fn annotation_type_references_type_params(at: &AnnotationType, type_p
     }
 }
 
+/// Finalize `enum_kind` for a single `@enum` class table after its fields have been populated.
+///
+/// `initial_enum_kind()` returns `Number` as a placeholder. Once fields are inserted,
+/// this function inspects their resolved types and sets `EnumKind::String` when all
+/// values are strings, keeping `Number` otherwise.  Both `BuildContext` and
+/// `BuildOnStubsContext` call this after populating each class's fields.
+pub(crate) fn finalize_enum_kind_for_class(tables: &mut [TableInfo], local_idx: usize) {
+    let field_anns: Vec<Option<&ValueType>> = tables[local_idx].fields.values()
+        .map(|f| f.annotation.as_ref())
+        .collect();
+    let classification = EnumFieldClassification::from_types(field_anns.into_iter());
+    tables[local_idx].enum_kind = classification.to_enum_kind();
+}
+
 /// Substitute type parameter references in an annotation type with resolved class names.
 /// `subs` maps type param name → table index; `classes` maps class name → table index (reverse lookup).
 fn substitute_annotation_type(
@@ -986,6 +1000,10 @@ impl BuildContext {
                         from_scan: false,
                     });
                 }
+            }
+
+            if class.is_enum && !class.is_key_enum {
+                finalize_enum_kind_for_class(&mut self.tables, local_idx);
             }
         }
 

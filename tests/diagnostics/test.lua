@@ -2153,6 +2153,34 @@ local _TEST_MIXED_KEY = {
     name = "test",
 }
 
+-- ── String alias union with enum: all alias members are enum values ─────────
+-- Regression: a union of EnumType | StringAlias should be assignable to
+-- EnumType when all alias string literals are valid enum member values.
+
+---@enum TestStringEnum.Color
+local TestColor = {
+    Red = "red",
+    Green = "green",
+    Blue = "blue",
+}
+
+---@alias TestStringEnum.PrimaryColors "red" | "green"
+
+---@param color TestStringEnum.Color
+local function _diagTakeColor(color) return color end
+
+-- Union of enum type and string alias whose values are enum members: no mismatch
+---@type TestStringEnum.Color | TestStringEnum.PrimaryColors
+local _unionColorVar
+_diagTakeColor(_unionColorVar)
+--             ^ diag: none
+
+-- String literal that is a valid enum value: no mismatch (structural subtype)
+---@type "red"
+local _redLiteral
+_diagTakeColor(_redLiteral)
+--             ^ diag: none
+
 -- And-chain narrowing: all operands should be narrowed to non-nil for the RHS
 ---@return number?
 local function _maybeNum() return 1 end

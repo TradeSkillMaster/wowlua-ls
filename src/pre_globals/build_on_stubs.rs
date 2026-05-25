@@ -303,6 +303,10 @@ impl<'a> BuildOnStubsContext<'a> {
                     });
                 }
             }
+
+            if class.is_enum && !class.is_key_enum {
+                super::finalize_enum_kind_for_class(&mut self.tables, local_idx);
+            }
         }
 
         // Build call functions from @overload on workspace @class declarations

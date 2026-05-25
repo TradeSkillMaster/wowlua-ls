@@ -287,7 +287,19 @@ pub struct ClassDecl {
 }
 
 impl ClassDecl {
-    /// Determine the initial `EnumKind` for this class declaration.
+    /// Determine the *initial* `EnumKind` for this class declaration.
+    ///
+    /// **Two-step contract:** This returns a placeholder (`Number`) for regular
+    /// `@enum` classes because the actual field value types (string vs. number)
+    /// are not yet known at parse time.  Callers **must** finalize `enum_kind`
+    /// after inserting the resolved field values — see
+    /// `pre_globals::finalize_enum_kind_for_class` (called from both
+    /// `BuildContext::populate_class_fields` and
+    /// `BuildOnStubsContext::populate_class_fields`), and the per-file path in
+    /// `resolve.rs::finalize_enum_kinds`.
+    ///
+    /// Key enums (`@enum (key)`) are always string-keyed and do not need
+    /// finalization; non-enum classes always return `NotEnum`.
     pub(crate) fn initial_enum_kind(&self) -> crate::types::EnumKind {
         if self.is_key_enum {
             crate::types::EnumKind::String
