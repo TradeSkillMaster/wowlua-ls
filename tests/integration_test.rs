@@ -3841,6 +3841,48 @@ fn library_dirs_suppressed() {
 }
 
 #[test]
+fn string_literal_completion_no_doubled_quote() {
+    // Regression: accepting a string literal completion must not produce a
+    // doubled closing quote (e.g. "Recipe"" instead of "Recipe").
+    let src = "---@class SLCItem\n---@field kind \"Recipe\"|\"Mount\"\nlocal item ---@type SLCItem\nif item.kind == \"\" then end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+
+    // Cursor is between the two quotes of "" — byte offset of the closing "
+    let empty_str_pos = src.find("\"\" then").unwrap();
+    let offset = (empty_str_pos + 1) as u32; // after the opening "
+
+    let items = analysis.completions_at(&tree, offset, src, false)
+        .expect("expected string literal completions");
+    let recipe = items.iter().find(|i| i.label == "Recipe")
+        .expect("expected 'Recipe' completion");
+
+    // Extract replace_start/replace_end from data
+    use wowlua_ls::analysis::queries::{DATA_REPLACE_START, DATA_REPLACE_END};
+    let data = recipe.data.as_ref().unwrap();
+    let replace_start = data.get(DATA_REPLACE_START).unwrap().as_u64().unwrap() as u32;
+    let replace_end = data.get(DATA_REPLACE_END).unwrap().as_u64().unwrap() as u32;
+
+    // Simulate the text_edit that main_loop.rs would construct
+    let new_text = recipe.insert_text.as_ref().unwrap();
+    let result = format!(
+        "{}{}{}",
+        &src[..replace_start as usize],
+        new_text,
+        &src[replace_end as usize..],
+    );
+    assert!(
+        result.contains("\"Recipe\" then"),
+        "completion should produce single closing quote, got: {}",
+        result,
+    );
+    assert!(
+        !result.contains("\"Recipe\"\""),
+        "completion must not produce doubled closing quote, got: {}",
+        result,
+    );
+}
+
+#[test]
 fn library_dirs_external() {
     // Drop guard ensures cleanup even if the test panics
     struct CleanupGuard(std::path::PathBuf);

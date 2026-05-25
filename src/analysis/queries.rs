@@ -7,6 +7,12 @@ use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, TokenAtOffset};
 use crate::ast::{AstNode, Expression, ForInLoop, FunctionCall, FunctionDefinition, Identifier, LocalAssign, Operator};
 
+/// JSON data key: byte offset where the completion's text_edit range starts.
+pub const DATA_REPLACE_START: &str = "replace_start";
+/// JSON data key: byte offset where the completion's text_edit range ends.
+/// When absent, the LSP handler uses the cursor position as the range end.
+pub const DATA_REPLACE_END: &str = "replace_end";
+
 enum AnnotationContext {
     Function,
     Class,
@@ -2035,7 +2041,7 @@ impl AnalysisResult {
                             sort_text: Some(sort_text),
                             insert_text,
                             insert_text_format,
-                            data: Some(serde_json::json!({"member": true, "offset": offset, "replace_start": member_offset})),
+                            data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): member_offset})),
                             ..CompletionItem::default()
                         });
                     }
@@ -2122,7 +2128,7 @@ impl AnalysisResult {
                         sort_text: Some(sort_text),
                         insert_text,
                         insert_text_format,
-                        data: Some(serde_json::json!({"member": true, "offset": offset, "replace_start": member_offset})),
+                        data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): member_offset})),
                         ..CompletionItem::default()
                     })
                 })
@@ -2227,7 +2233,7 @@ impl AnalysisResult {
                                 sort_text: Some(sort_text),
                                 insert_text,
                                 insert_text_format,
-                                data: Some(serde_json::json!({"scope": true, "offset": offset, "replace_start": prefix_start})),
+                                data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
                                 ..CompletionItem::default()
                             });
                         }
@@ -2285,7 +2291,7 @@ impl AnalysisResult {
                                 sort_text: Some(sort_text),
                                 insert_text,
                                 insert_text_format,
-                                data: Some(serde_json::json!({"scope": true, "offset": offset, "replace_start": prefix_start})),
+                                data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
                                 ..CompletionItem::default()
                             });
                         }
@@ -2526,6 +2532,13 @@ impl AnalysisResult {
         let quote_char = tok_text.as_bytes().first().copied().unwrap_or(b'"');
         let closing = if quote_char == b'\'' { "'" } else { "\"" };
 
+        // Replace from after the opening quote to the end of the string token
+        // (including the closing quote, if any). The insert_text includes the
+        // closing quote, so this avoids a double-quote when the string is
+        // already closed (e.g. "" or "partial").
+        let replace_start = u32::from(token.text_range().start()) + 1; // after opening quote
+        let replace_end = u32::from(token.text_range().end()); // after closing quote (or end of unclosed string)
+
         let items: Vec<CompletionItem> = literals.iter().enumerate().map(|(i, lit)| {
             CompletionItem {
                 label: lit.clone(),
@@ -2534,6 +2547,7 @@ impl AnalysisResult {
                 insert_text: Some(format!("{}{}", lit, closing)),
                 insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
                 filter_text: Some(format!("{}{}{}", closing, lit, closing)),
+                data: Some(serde_json::json!({(DATA_REPLACE_START): replace_start, (DATA_REPLACE_END): replace_end})),
                 ..CompletionItem::default()
             }
         }).collect();
@@ -3239,7 +3253,7 @@ impl AnalysisResult {
             insert_text: Some(insert_text),
             insert_text_format: if snippets { Some(InsertTextFormat::SNIPPET) } else { None },
             sort_text: Some("0".to_string()),
-            data: Some(serde_json::json!({"replace_start": tok_start})),
+            data: Some(serde_json::json!({(DATA_REPLACE_START): tok_start})),
             ..CompletionItem::default()
         };
 

@@ -2314,19 +2314,24 @@ fn handle_request(
                         if let Some(ref mut data) = item.data
                             && let Some(obj) = data.as_object_mut() {
                                 obj.insert("uri".to_string(), serde_json::json!(uri_str));
-                                if let Some(replace_start) = obj.get("replace_start").and_then(|v| v.as_u64()) {
+                                if let Some(replace_start) = obj.get(crate::analysis::queries::DATA_REPLACE_START).and_then(|v| v.as_u64()) {
                                     let start_pos = numbers.lsp_position(replace_start as usize, use_utf8());
-                                    // For snippet items, use insert_text as the replacement text
-                                    // so the snippet body (with tabstops) is correctly substituted.
-                                    let new_text = if item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET) {
-                                        item.insert_text.clone().unwrap_or_else(|| item.label.clone())
+                                    let end_pos = if let Some(replace_end) = obj.get(crate::analysis::queries::DATA_REPLACE_END).and_then(|v| v.as_u64()) {
+                                        numbers.lsp_position(replace_end as usize, use_utf8())
                                     } else {
-                                        item.label.clone()
+                                        position
                                     };
+                                    // Use insert_text when available; fall back to label for
+                                    // plain identifier completions where insert_text is None.
+                                    // This is intentional for all completion kinds: string
+                                    // literal completions need insert_text (which includes the
+                                    // closing quote), and "Annotate function" completions need
+                                    // insert_text (the annotation text) rather than the label.
+                                    let new_text = item.insert_text.clone().unwrap_or_else(|| item.label.clone());
                                     item.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
                                         range: Range {
                                             start: start_pos,
-                                            end: position,
+                                            end: end_pos,
                                         },
                                         new_text,
                                     }));
