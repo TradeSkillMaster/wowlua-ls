@@ -801,6 +801,19 @@ if keywordTest then
 end
 --^ comp: none
 
+-- Regression: partial keyword prefix must offer only the required keyword in
+-- unambiguous positions (after if/elseif/while condition, only `then`/`do` fits).
+-- Typing `if expr th` was completing to external globals like THE_ALLIANCE.
+local partialKwCond = true
+if partialKwCond th
+--                 ^ comp: then
+local whileDoTest = 1
+while whileDoTest > 0 d
+--                     ^ comp: do
+local forInTbl = {}
+for _, _ in pairs(forInTbl) d
+--                            ^ comp: do
+
 -- Bracket access on a table whose fields are all the same type should return that type as nilable.
 -- Dynamic key on all-string fields → string?
 local LABEL_MAP = { alpha = "first", beta = "second", gamma = "third" }

@@ -13,6 +13,13 @@ pub const DATA_REPLACE_START: &str = "replace_start";
 /// When absent, the LSP handler uses the cursor position as the range end.
 pub const DATA_REPLACE_END: &str = "replace_end";
 
+/// All Lua reserved keywords, used for keyword completions in scope context.
+const LUA_KEYWORDS: &[&str] = &[
+    "and", "break", "do", "else", "elseif", "end", "false", "for",
+    "function", "if", "in", "local", "nil", "not", "or", "repeat",
+    "return", "then", "true", "until", "while",
+];
+
 enum AnnotationContext {
     Function,
     Class,
@@ -2401,6 +2408,23 @@ impl AnalysisResult {
             let prefix_lower = prefix.to_ascii_lowercase();
             let has_prefix = !prefix.is_empty();
 
+            // When the grammar unambiguously requires a specific keyword at this position
+            // (e.g. `then` after an `if` condition, `do` after `while`), return only that
+            // keyword so the user doesn't see unrelated scope symbols.
+            if let Some(required_kw) = Self::detect_keyword_only_position(tree, prefix_start) {
+                if required_kw.starts_with(&prefix_lower) {
+                    return Some(vec![CompletionItem {
+                        label: required_kw.to_string(),
+                        kind: Some(CompletionItemKind::KEYWORD),
+                        sort_text: Some(format!("0{}", required_kw)),
+                        data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
+                        ..CompletionItem::default()
+                    }]);
+                }
+                // Prefix doesn't match the required keyword — nothing useful to offer.
+                return None;
+            }
+
             let mut seen = HashSet::new();
             let mut items = Vec::new();
             let mut current_scope = Some(scope_idx);
@@ -2514,9 +2538,102 @@ impl AnalysisResult {
                 }
             }
 
+            // Add Lua keyword completions that match the prefix.
+            // This ensures that e.g. `th<TAB>` offers `then` before any external globals
+            // like `THE_ALLIANCE` that happen to match the same prefix.
+            // Keywords can never appear in `seen` (Lua reserves them, so no local can have
+            // a keyword name), so the deduplication guard is omitted here.
+            if has_prefix {
+                for &kw in LUA_KEYWORDS {
+                    if kw.starts_with(&prefix_lower) {
+                        items.push(CompletionItem {
+                            label: kw.to_string(),
+                            kind: Some(CompletionItemKind::KEYWORD),
+                            sort_text: Some(format!("0{}", kw)),
+                            data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
+                            ..CompletionItem::default()
+                        });
+                    }
+                }
+            }
+
             items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
             if items.is_empty() { None } else { Some(items) }
         }
+    }
+
+    /// If the cursor is in a position where the grammar requires exactly one keyword
+    /// (e.g. `then` after an `if`/`elseif` condition, `do` after a `while` condition
+    /// or a `for…in` expression list), return that keyword. The caller can then
+    /// suppress all other completions.
+    ///
+    /// Strategy: find the previous non-whitespace token before the typed prefix,
+    /// then walk up its ancestor chain. If we find an `IfBranch`, `WhileLoop`, or
+    /// `ForInLoop` node that is missing its required keyword child (`then`/`do`),
+    /// the cursor must be in the keyword-only gap between the condition and the block.
+    ///
+    /// Guard: if the previous token IS the opening keyword (`if`, `elseif`, `while`,
+    /// `for`, `in`) the user is still typing the condition/iterator expression —
+    /// don't restrict to keyword-only.
+    ///
+    /// `ForInLoop` is included but only when the `in` keyword is already present
+    /// (i.e. we're past the name-list and the iterable expression); this avoids a
+    /// false positive for `for k d` where `d` might be another iteration variable.
+    fn detect_keyword_only_position(tree: &SyntaxTree, prefix_start: usize) -> Option<&'static str> {
+        if prefix_start == 0 { return None; }
+        let check = TextSize::from((prefix_start - 1) as u32);
+        let mut prev_tok = SyntaxNode::new_root(tree)
+            .token_at_offset(check)
+            .left_biased()?;
+
+        while matches!(prev_tok.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline) {
+            prev_tok = prev_tok.prev_token()?;
+        }
+
+        // If the immediately preceding token is the control keyword itself, the user
+        // is still typing the condition/iterator — don't restrict to keyword-only.
+        if matches!(prev_tok.kind(),
+            SyntaxKind::IfKeyword | SyntaxKind::ElseIfKeyword
+            | SyntaxKind::WhileKeyword | SyntaxKind::ForKeyword | SyntaxKind::InKeyword
+        ) {
+            return None;
+        }
+
+        // Walk up ancestors looking for a statement node that is missing its keyword.
+        let mut node_opt = prev_tok.parent();
+        while let Some(node) = node_opt {
+            match node.kind() {
+                SyntaxKind::IfBranch => {
+                    let has_then = node.children_with_tokens().any(|c| {
+                        matches!(c, NodeOrToken::Token(t) if t.kind() == SyntaxKind::ThenKeyword)
+                    });
+                    return if has_then { None } else { Some("then") };
+                }
+                SyntaxKind::WhileLoop => {
+                    let has_do = node.children_with_tokens().any(|c| {
+                        matches!(c, NodeOrToken::Token(t) if t.kind() == SyntaxKind::DoKeyword)
+                    });
+                    return if has_do { None } else { Some("do") };
+                }
+                SyntaxKind::ForInLoop => {
+                    // Only trigger when `in` is present — otherwise the cursor might be
+                    // inside the name list (e.g. `for k d` where `d` is another var).
+                    let has_in = node.children_with_tokens().any(|c| {
+                        matches!(c, NodeOrToken::Token(t) if t.kind() == SyntaxKind::InKeyword)
+                    });
+                    if !has_in { return None; }
+                    let has_do = node.children_with_tokens().any(|c| {
+                        matches!(c, NodeOrToken::Token(t) if t.kind() == SyntaxKind::DoKeyword)
+                    });
+                    return if has_do { None } else { Some("do") };
+                }
+                // Stop at any block/root boundary — we've gone too far.
+                SyntaxKind::Block => return None,
+                _ => {}
+            }
+            node_opt = node.parent();
+        }
+        None
     }
 
     /// Offer field-name completions when the cursor is inside a table constructor
