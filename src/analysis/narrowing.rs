@@ -644,6 +644,27 @@ impl<'a> Analysis<'a> {
                                     return Some((sym_idx, OrTermEffect::TypeIs(vt)));
                                 }
                     }
+                    // `x == "literal"` or `x == 5` → TypeIs(literal/number)
+                    // Uses extract_literal_eq_sides for strings; for numbers,
+                    // extract inline (Number has no literal variant so it can't
+                    // go through extract_literal_eq_sides which feeds else-branch
+                    // stripping — stripping all numbers on `x ~= 5` is wrong).
+                    if is_eq {
+                        if let Some((ident, lit_vt)) = Self::extract_literal_eq_sides(lhs, rhs) {
+                            let names = ident.names();
+                            if names.len() == 1
+                                && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                                    return Some((sym_idx, OrTermEffect::TypeIs(lit_vt)));
+                                }
+                        } else if let Some((ident, lit_expr)) = Self::extract_ident_and_other(lhs, rhs)
+                            && Self::extract_number_literal(lit_expr).is_some() {
+                                let names = ident.names();
+                                if names.len() == 1
+                                    && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                                        return Some((sym_idx, OrTermEffect::TypeIs(ValueType::Number)));
+                                    }
+                            }
+                    }
                 }
                 None
             }
@@ -2219,11 +2240,7 @@ impl<'a> Analysis<'a> {
     /// never match here. For cached type guards (`local t = type(x); if t == "string"`),
     /// both paths fire but the type() guard's version is more specific and takes precedence.
     fn extract_literal_eq_sides<'b>(lhs: &'b Expression<'_>, rhs: &'b Expression<'_>) -> Option<(&'b crate::ast::Identifier<'b>, ValueType)> {
-        let (ident_expr, lit_expr) = match (lhs, rhs) {
-            (Expression::Identifier(id), _) => (id, rhs),
-            (_, Expression::Identifier(id)) => (id, lhs),
-            _ => return None,
-        };
+        let (ident_expr, lit_expr) = Self::extract_ident_and_other(lhs, rhs)?;
         // Skip empty strings (used for completion triggers, not meaningful narrowing)
         if let Some(s) = Self::extract_string_literal(lit_expr) {
             if s.is_empty() {
@@ -2232,6 +2249,15 @@ impl<'a> Analysis<'a> {
             return Some((ident_expr, ValueType::String(Some(s))));
         }
         None
+    }
+
+    /// Split two sides of a comparison into (identifier, other_expression).
+    fn extract_ident_and_other<'b>(lhs: &'b Expression<'_>, rhs: &'b Expression<'_>) -> Option<(&'b crate::ast::Identifier<'b>, &'b Expression<'b>)> {
+        match (lhs, rhs) {
+            (Expression::Identifier(id), _) => Some((id, rhs)),
+            (_, Expression::Identifier(id)) => Some((id, lhs)),
+            _ => None,
+        }
     }
 
     /// Add a type to strip for a field chain in a scope, combining with any existing strip.

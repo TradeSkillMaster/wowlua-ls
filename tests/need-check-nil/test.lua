@@ -1956,13 +1956,15 @@ end
 _consume(_andOrNilAssertType)
 
 -- `y = x and _ or nil` via `if y == A or y == B` union narrowing.
+-- The or-coalesce derivation (Pattern 2) tracks idx→kind, and literal
+-- equality narrows idx non-nil which propagates to strip nil from kind.
 ---@param kind "a" | "b" | "c" | nil
 local function _andOrNilOrTermUnion(kind)
     local idx = kind and 5 or nil
     if idx == 5 or idx == 6 then
-        -- idx narrowed to `5 | 6` (no nil), but kind is not narrowed here.
+        -- idx narrowed to `number` (no nil), kind narrowed via coalesce.
         return _takeString(kind)
-        --                    ^ hover: (param) kind: "a" | "b" | "c"?
+        --                    ^ hover: (param) kind: "a" | "b" | "c"  diag: none
     end
     return "x"
 end
