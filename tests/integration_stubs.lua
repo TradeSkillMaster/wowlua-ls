@@ -637,6 +637,11 @@ _evFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 _evFrame:RegisterEvent("NONEXISTENT_EVENT_XYZ")
 --                       ^ hover: <missing>
 
+-- Event name completions are filtered by typed prefix (regression: large sets
+-- were truncated by the 100-item cap, hiding events past 'A')
+_evFrame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
+--                         ^ comp: NAME_PLATE_CREATED, NAME_PLATE_UNIT_ADDED, NAME_PLATE_UNIT_BEHIND_CAMERA_CHANGED, NAME_PLATE_UNIT_REMOVED
+
 -- ── SetScript handler contextual typing from overload ──
 do
     local sf = CreateFrame('Frame')

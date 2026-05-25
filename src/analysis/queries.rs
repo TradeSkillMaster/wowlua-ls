@@ -2739,7 +2739,7 @@ impl AnalysisResult {
         let expected_type = self.string_context_type_from_binary(&token, tree)
             .or_else(|| self.string_context_type_from_call_arg(&token));
 
-        let literals = Self::collect_string_literals(&expected_type?);
+        let mut literals = Self::collect_string_literals(&expected_type?);
         if literals.is_empty() {
             return None;
         }
@@ -2747,6 +2747,30 @@ impl AnalysisResult {
         let tok_text = token.text();
         let quote_char = tok_text.as_bytes().first().copied().unwrap_or(b'"');
         let closing = if quote_char == b'\'' { "'" } else { "\"" };
+
+        // For large completion sets (e.g. event names), pre-filter by the prefix
+        // the user has already typed. Without this, the LSP item cap truncates
+        // alphabetically and the client never sees items past 'A'.
+        // Small sets are left unfiltered so the client can do its own fuzzy matching.
+        if literals.len() > crate::MAX_COMPLETIONS {
+            let tok_start = u32::from(token.text_range().start());
+            let content_end = if tok_text.ends_with('"') || tok_text.ends_with('\'') {
+                tok_text.len() - 1
+            } else {
+                tok_text.len()
+            };
+            let max_prefix = content_end.saturating_sub(1);
+            let prefix_len = (offset.saturating_sub(tok_start + 1) as usize).min(max_prefix);
+            if prefix_len > 0
+                && let Some(prefix) = tok_text.get(1..1 + prefix_len)
+            {
+                let prefix_upper = prefix.to_uppercase();
+                literals.retain(|lit| lit.to_uppercase().starts_with(&prefix_upper));
+                if literals.is_empty() {
+                    return None;
+                }
+            }
+        }
 
         // Replace from after the opening quote to the end of the string token
         // (including the closing quote, if any). The insert_text includes the

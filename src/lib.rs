@@ -15,6 +15,12 @@ pub mod doc_gen_md;
 pub mod plugins;
 pub mod toc;
 
+/// Cap for completion lists sent to the IDE. Scope completions can return 60K+
+/// items; truncating with `isIncomplete` lets the client re-request as the user
+/// types. Used by the LSP handler (truncation) and by `string_literal_completions`
+/// (pre-filtering large sets so relevant items survive truncation).
+pub const MAX_COMPLETIONS: usize = 100;
+
 pub fn has_shebang(text: &str) -> bool {
     text.starts_with("#!")
 }

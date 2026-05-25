@@ -2375,11 +2375,7 @@ fn handle_request(
                         item.insert_text = Some(item.label.clone());
                     }
                 }
-                // Cap completion lists to avoid overwhelming the IDE (scope
-                // completions can return 60K+ items including all WoW API globals).
-                // Setting isIncomplete tells the client to re-request as the user
-                // types more characters, which naturally narrows the results.
-                const MAX_COMPLETIONS: usize = 100;
+                use crate::MAX_COMPLETIONS;
                 let is_incomplete = result.len() > MAX_COMPLETIONS;
                 if is_incomplete {
                     result.truncate(MAX_COMPLETIONS);
