@@ -39,6 +39,7 @@ use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, Cla
 use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, ValueType};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
+use crate::analysis::queries::HighlightKind;
 use crate::analysis::semantic_tokens::{
     RawSemanticToken, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
@@ -2412,15 +2413,17 @@ fn handle_request(
                 let uri = params.text_document_position_params.text_document.uri;
                 let position = params.text_document_position_params.position;
                 let result: Option<Vec<DocumentHighlight>> = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
-                    let refs = analysis.references_at(tree, offset, true)?;
+                    let highlights = analysis.document_highlights_at(tree, offset)?;
                     let numbers = super::SafeLinePositions::new(doc.text.as_str());
-                    let highlights: Vec<DocumentHighlight> = refs.iter().map(|r| {
+                    Some(highlights.into_iter().map(|(r, kind)| {
                         DocumentHighlight {
                             range: numbers.lsp_range(u32::from(r.start()) as usize, u32::from(r.end()) as usize, use_utf8()),
-                            kind: Some(DocumentHighlightKind::TEXT),
+                            kind: Some(match kind {
+                                HighlightKind::Write => DocumentHighlightKind::WRITE,
+                                HighlightKind::Text => DocumentHighlightKind::TEXT,
+                            }),
                         }
-                    }).collect();
-                    Some(highlights)
+                    }).collect())
                 });
                 send_response(connection, id, &result);
             }

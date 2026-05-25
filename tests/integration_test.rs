@@ -417,11 +417,11 @@ fn run_annotation_tests(config: &TestConfig) {
             }
         }
 
-        // Check document highlight (same as refs but explicitly named for the feature)
+        // Check document highlight (control-flow keyword groups + reference highlighting)
         if let Some(expected) = &expected_highlight {
-            let actual = match result.references_at(&tree, offset, true) {
-                Some(locations) => {
-                    let mut ref_strs: Vec<String> = locations.iter().map(|r| {
+            let actual = match result.document_highlights_at(&tree, offset) {
+                Some(highlights) => {
+                    let mut ref_strs: Vec<String> = highlights.iter().map(|(r, _kind)| {
                         let start = numbers.from_offset(u32::from(r.start()) as usize);
                         format!("{}:{}", start.0.0 + 1, start.1 + 1)
                     }).collect();
