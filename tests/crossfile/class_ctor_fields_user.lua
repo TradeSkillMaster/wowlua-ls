@@ -27,6 +27,15 @@ local _g = _gobj.Foo
 local _h = _gobj.Bar
 --               ^ hover: (field) Bar: number  diag: none
 
+-- Function-call constructor fields should not produce undefined-field cross-file
+local CallCtorFields = ns.CallCtorFields
+local _call1 = CallCtorFields.FromCall
+--                            ^ hover: (field) FromCall: any  diag: none
+local _call2 = CallCtorFields.FromMethod
+--                            ^ hover: (field) FromMethod: any  diag: none
+local _call3 = CallCtorFields.Literal
+--                            ^ hover: (field) Literal: string  diag: none
+
 -- Expression-based constructor fields should resolve cross-file
 local ExprFields = ns.ExprFields
 local _cmp = ExprFields.CompareResult

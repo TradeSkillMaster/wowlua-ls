@@ -780,7 +780,11 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
                 }
                 t
             } else {
-                continue;
+                // Unknown type (e.g. function call return) — still register the
+                // field as 'any' so undefined-field doesn't fire cross-file.
+                // Note: cross-file callers will see 'any'; the actual type is only
+                // available in per-file analysis of the defining file.
+                AnnotationType::Simple("any".into())
             };
             let vis = default_visibility_for_name(&name, false);
 
@@ -888,7 +892,8 @@ fn detect_setmetatable_call(root: SyntaxNode<'_>, result: &mut ScanResult) {
 /// Infer a basic `AnnotationType` from an expression's AST shape.
 /// Delegates to the shared `infer_type_category` helper and converts the result.
 /// Returns `None` for non-inferable expressions (function calls, variable
-/// references, etc.) so those fields are left for Phase 1 runtime resolution.
+/// references, etc.). Callers may fall back to registering the field as `any`
+/// for cross-file access; per-file analysis (Phase 1) resolves the actual type.
 fn infer_expression_type(expr: &crate::ast::Expression<'_>) -> Option<AnnotationType> {
     use annotation_scanning::InferredTypeCategory;
     let cat = annotation_scanning::infer_type_category(expr)?;

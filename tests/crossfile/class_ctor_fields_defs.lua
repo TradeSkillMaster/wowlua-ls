@@ -25,6 +25,14 @@ GlobalClassCtor = {
     Bar = 42,
 }
 
+-- Function-call-valued constructor fields (should not trigger undefined-field cross-file)
+---@class CallCtorFields
+ns.CallCtorFields = {
+    FromCall = string.len("test"),
+    FromMethod = ("hello"):upper(),
+    Literal = "keep",
+}
+
 -- Expression-based constructor fields (comparisons, logical chains, etc.)
 ---@class ExprFields
 ns.ExprFields = {
