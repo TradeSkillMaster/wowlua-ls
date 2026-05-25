@@ -1145,10 +1145,13 @@ fn fetch_wago_latest_build(product: &str) -> String {
 /// Generate GlobalStrings.lua, GlobalVariables.lua, and GlobalColors.lua content in memory.
 /// `all_globals` is the universe of known global names (from BlizzardInterfaceResources).
 /// `global_constants` maps constant names to their numeric values (from APIDocumentation + FrameXML).
+/// `extra_existing_dirs` are additional directories to scan for already-defined names (e.g. the
+/// clone's Annotations dir and the overrides dir directly, bypassing symlink indirection).
 fn generate_global_stubs(
     all_globals: &HashSet<String>,
     global_constants: &HashMap<String, i64>,
     stubs_dir: &Path,
+    extra_existing_dirs: &[&Path],
 ) -> (String, String, String) {
     // Fetch from wago.tools DB2 (more authoritative than enUS.ts / Ketho's repo).
     log::info!("  Fetching GlobalStrings from wago.tools...");
@@ -1170,9 +1173,16 @@ fn generate_global_stubs(
         .unwrap_or_else(|e| panic!("Failed to fetch GlobalColor CSV from wago.tools: {e}"));
     let globalcolors = parse_globalcolors_csv(&color_csv_content);
 
-    let existing = get_existing_names(stubs_dir, &[
+    let mut existing = get_existing_names(stubs_dir, &[
         "GlobalStrings.lua", "GlobalVariables.lua", "GlobalColors.lua",
     ]);
+    // Also scan extra directories directly (bypasses symlink indirection issues that can cause
+    // names like `strmatch = str.match` from compat.lua to be missed when combined_stubs uses
+    // symlinks that aren't followed in all environments).
+    for dir in extra_existing_dirs {
+        let extra = get_existing_names(dir, &[]);
+        existing.extend(extra);
+    }
 
     // Build set of color names (+ _CODE variants) to exclude from GlobalVariables.lua.
     let color_names: HashSet<String> = globalcolors.iter()
@@ -2965,23 +2975,38 @@ fn generate_classic_stubs(
         }
 
     // ── Phase 1: LE_* legacy constants ──────────────────────────────────────
-    // Scan Classic FrameXML .lua files for LE_* references, resolve values from LuaEnum.lua
-    if !classic_ui_dirs.is_empty() {
-        log::info!("Scanning Classic FrameXML for LE_* constant references...");
-        let mut le_names: HashSet<String> = HashSet::new();
-        for dir in classic_ui_dirs {
-            let names = scan_le_constants(dir);
-            le_names.extend(names);
+    // Derive LE_* constants from LuaEnum.lua (both classic_era and live branches),
+    // supplemented by FrameXML scanning. Using LuaEnum.lua as the primary source
+    // ensures we capture constants that addons reference but Blizzard's own FrameXML
+    // doesn't use directly (e.g. LE_EXPANSION_SHADOWLANDS, LE_ITEM_BIND_*).
+    // FrameXML scanning catches any LE_* globals defined directly in source rather
+    // than derived from LuaEnum.lua enum categories.
+    // Note: some constants (e.g. LE_PET_JOURNAL_FILTER_FAVORITES) are absent from
+    // both LuaEnum.lua and FrameXML and must be added to RuntimeMissingGlobals.lua.
+    {
+        // Fetch LuaEnum.lua from both branches for comprehensive LE_* coverage.
+        // classic_era covers Classic-only constants; live covers retail-only constants
+        // such as LE_EXPANSION_SHADOWLANDS (Shadowlands was retail-only).
+        log::info!("Fetching LuaEnum.lua for LE_* constants (classic_era + live)...");
+        let mut le_values = fetch_and_parse_lua_enum("classic_era");
+        let live_le_values = fetch_and_parse_lua_enum("live");
+        // live supplements classic_era without overriding (classic_era values are
+        // authoritative for constants present in both, e.g. LE_EXPANSION_CLASSIC).
+        for (name, val) in live_le_values {
+            le_values.entry(name).or_insert(val);
         }
-        log::info!("  Found {} unique LE_* references in Classic FrameXML", le_names.len());
+        log::info!("  Combined LE_* map: {} candidate names from LuaEnum.lua", le_values.len());
 
-        // Fetch LuaEnum.lua and build reverse map for value resolution
-        log::info!("  Fetching LuaEnum.lua for value resolution...");
-        let le_values = fetch_and_parse_lua_enum("classic_era");
-        log::info!("  Built reverse index with {} candidate LE_* → value mappings", le_values.len());
+        // Start with all LuaEnum.lua-derived names, then add any additional names
+        // found by scanning FrameXML (Classic + retail) for direct LE_* references.
+        // all_ui_dirs already contains both classic and retail branches.
+        let mut le_names: HashSet<String> = le_values.keys().cloned().collect();
+        for dir in all_ui_dirs {
+            le_names.extend(scan_le_constants(dir));
+        }
+        log::info!("  Found {} unique LE_* names (LuaEnum.lua + FrameXML)", le_names.len());
 
-        // Filter against already-existing stubs (includes stubs/overrides/ClassicLegacyEnums.lua
-        // which provides manually-curated LE_* constants not found in FrameXML)
+        // Filter against already-existing stubs
         let mut le_missing: Vec<_> = le_names.iter()
             .filter(|n| !existing_globals.contains(*n))
             .cloned()
@@ -2989,7 +3014,7 @@ fn generate_classic_stubs(
         le_missing.sort();
 
         if !le_missing.is_empty() {
-            out.push("-- LE_* legacy enum constants (auto-extracted from Classic FrameXML source)".to_string());
+            out.push("-- LE_* legacy enum constants (derived from LuaEnum.lua + FrameXML source)".to_string());
             out.push(String::new());
             for name in &le_missing {
                 if let Some(&val) = le_values.get(name) {
@@ -3642,10 +3667,19 @@ pub fn regenerate_stubs() {
         branch_data.retail_all_names.union(&extra_fxml_globals).cloned().collect()
     };
     log::info!("Generating global stubs...");
+    // Pass the actual annotation directories directly in addition to combined_stubs, so that
+    // names defined in compat.lua (e.g. `strmatch = str.match`) are reliably excluded from
+    // GlobalVariables.lua even if symlink traversal in combined_stubs is unreliable.
+    let annotations_dir = clone_dir.join("Annotations");
+    if !annotations_dir.exists() {
+        log::warn!("annotations_dir does not exist: {} — GlobalVariables dedup may be incomplete", annotations_dir.display());
+    }
+    let extra_dirs = vec![annotations_dir.as_path(), overrides_dir.as_path()];
     let (global_strings_lua, global_vars_lua, global_colors_lua) = generate_global_stubs(
         &extended_retail_names,
         &global_constants,
         &combined_stubs,
+        &extra_dirs,
     );
 
     // Vendor stubs from clone (Core + FrameXML)

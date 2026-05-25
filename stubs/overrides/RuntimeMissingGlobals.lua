@@ -76,3 +76,5 @@ LE_GAME_ERR_ITEM_MAX_COUNT = 0
 LE_GAME_ERR_TRADE_COMPLETE = 0
 LE_ITEM_BIND_ON_ACQUIRE = 1
 LE_ITEM_BIND_QUEST = 4
+-- Pet journal filter not present in current LuaEnum.lua but referenced by addons.
+LE_PET_JOURNAL_FILTER_FAVORITES = 0
