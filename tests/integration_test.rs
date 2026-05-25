@@ -3814,6 +3814,98 @@ fn source_action_generate_stubs_vararg() {
     assert!(result.contains("---@param ... any"), "should add ---@param ... any for varargs");
 }
 
+#[test]
+fn quick_fix_fill_missing_fields_single() {
+    // Single missing field: `hp` is missing, `name` is present.
+    // Use ---@type annotation (same pattern as diagnostics/test.lua mf4) to trigger missing-fields.
+    let src = concat!(
+        "---@class QFEntity\n",
+        "---@field name string\n",
+        "---@field hp number\n",
+        "---@type QFEntity\n",
+        "local e = { name = \"bob\" }\n",
+    );
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "missing-fields")
+        .expect("expected missing-fields diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("hp = 0"), "should insert hp placeholder, got: {:?}", result);
+    // The original `name` field should be present exactly once (not duplicated).
+    assert!(result.contains("name = \"bob\""), "original field should be preserved, got: {:?}", result);
+    assert_eq!(result.matches("name = ").count(), 1, "should not duplicate name field, got: {:?}", result);
+}
+
+#[test]
+fn quick_fix_fill_missing_fields_multiple() {
+    // Multiple missing fields: `hp` and `tag` are missing.
+    let src = concat!(
+        "---@class QFUnit\n",
+        "---@field name string\n",
+        "---@field hp number\n",
+        "---@field tag string\n",
+        "---@type QFUnit\n",
+        "local u = { name = \"alice\" }\n",
+    );
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "missing-fields")
+        .expect("expected missing-fields diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("hp = 0"), "should insert hp placeholder, got: {:?}", result);
+    assert!(result.contains("tag = \"\""), "should insert tag placeholder, got: {:?}", result);
+}
+
+#[test]
+fn quick_fix_fill_missing_fields_type_placeholders() {
+    // Verify placeholders are type-appropriate.
+    let src = concat!(
+        "---@class QFTyped\n",
+        "---@field s string\n",
+        "---@field n number\n",
+        "---@field b boolean\n",
+        "---@field t table\n",
+        "---@type QFTyped\n",
+        "local qt = { s = \"x\" }\n",
+    );
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "missing-fields")
+        .expect("expected missing-fields diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("n = 0"), "number placeholder should be 0, got: {:?}", result);
+    assert!(result.contains("b = false"), "boolean placeholder should be false, got: {:?}", result);
+    assert!(result.contains("t = {}"), "table placeholder should be {{}}, got: {:?}", result);
+}
+
+#[test]
+fn quick_fix_fill_missing_fields_multiline_table() {
+    // Missing field in a table already laid out across multiple lines.
+    let src = concat!(
+        "---@class QFMulti\n",
+        "---@field x number\n",
+        "---@field y number\n",
+        "---@type QFMulti\n",
+        "local m = {\n",
+        "    x = 1,\n",
+        "}\n",
+    );
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "missing-fields")
+        .expect("expected missing-fields diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("y = 0"), "should insert y placeholder, got: {:?}", result);
+    // The closing brace should still be on its own line.
+    let lines: Vec<&str> = result.lines().collect();
+    let brace_line = lines.iter().position(|l| l.trim() == "}").expect("closing brace not found");
+    assert!(brace_line > 0, "closing brace should not be on the first line");
+}
+
 /// Regression test for a fuzz-discovered timeout: garbled Lua with deeply
 /// nested braces and repeated function patterns caused resolve_types() to
 /// perform exponential work. The resolve_expr work limit must terminate

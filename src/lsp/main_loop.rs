@@ -3252,6 +3252,12 @@ pub fn compute_quick_fixes(
                 .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
                 .unwrap_or_default()
         }
+        "missing-fields" => {
+            let Some((_, analysis)) = tree_and_analysis else { return vec![] };
+            make_fill_missing_fields_action(uri, text, diag, analysis)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
         _ => vec![],
     }
 }
@@ -3590,6 +3596,147 @@ fn make_as_cast_action(
         }),
         ..Default::default()
     })
+}
+
+/// Quick fix for `missing-fields`: insert all missing required fields with placeholder values.
+#[allow(clippy::mutable_key_type)]
+fn make_fill_missing_fields_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    analysis: &AnalysisResult,
+) -> Option<CodeAction> {
+    let msg = diag.message.as_str();
+
+    // Parse field names and class name from the diagnostic message:
+    // "missing required field 'NAME' in class 'CLASS'"
+    // "missing required fields 'A', 'B' in class 'CLASS'"
+    let (fields_raw, class_name) = if let Some(after) = msg.strip_prefix("missing required field '") {
+        let (f, r) = after.split_once("' in class '")?;
+        (f, r.strip_suffix('\'')?)
+    } else if let Some(after) = msg.strip_prefix("missing required fields '") {
+        let (f, r) = after.split_once("' in class '")?;
+        (f, r.strip_suffix('\'')?)
+    } else {
+        return None;
+    };
+
+    // Field names are joined as "a', 'b', 'c" in the message.
+    let field_names: Vec<&str> = fields_raw.split("', '").collect();
+    if field_names.is_empty() { return None; }
+
+    // Look up the class table to get field type info for placeholders.
+    let class_table_idx = analysis.ir.classes.get(class_name)
+        .or_else(|| analysis.ir.ext.classes.get(class_name))?;
+    let class_table = analysis.table(*class_table_idx);
+
+    // Convert the diagnostic range to byte offsets.
+    // The diagnostic range spans the entire table constructor `{...}`.
+    // The range end is exclusive, so the `}` is at end_byte - 1.
+    let open_byte = super::lsp_position_to_offset(
+        text, diag.range.start.line, diag.range.start.character, use_utf8(),
+    ) as usize;
+    let end_byte = super::lsp_position_to_offset(
+        text, diag.range.end.line, diag.range.end.character, use_utf8(),
+    ) as usize;
+    if end_byte == 0 || end_byte > text.len() { return None; }
+    let close_byte = end_byte - 1;
+
+    // Determine base indentation from the line that contains the opening `{`.
+    let line_start = text[..open_byte].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_prefix = &text[line_start..open_byte];
+    let base_indent_len = line_prefix.len() - line_prefix.trim_start().len();
+    let base_indent = &text[line_start..line_start + base_indent_len];
+    let field_indent = format!("{}    ", base_indent);
+
+    // Check whether the `}` is already on its own line (multiline table).
+    // Also capture the position of the newline that precedes the `}` line so we
+    // can insert new fields before that newline when brace_on_own_line is true.
+    let brace_nl = text[..close_byte].rfind('\n');
+    let brace_on_own_line = brace_nl.is_some_and(|nl| {
+        text[nl + 1..close_byte].trim().is_empty()
+    });
+
+    // Check whether we need a comma after the last existing field.
+    let content_before_close = text[open_byte + 1..close_byte].trim_end();
+    let needs_leading_comma = !content_before_close.is_empty()
+        && !content_before_close.ends_with(',')
+        && !content_before_close.ends_with(';');
+
+    // Build the field lines shared by both branches.
+    let mut field_lines = String::new();
+    if needs_leading_comma { field_lines.push(','); }
+    for name in &field_names {
+        let placeholder = class_table.fields.get(*name)
+            .and_then(|fi| fi.annotation.as_ref())
+            .map(placeholder_for_type)
+            .unwrap_or("nil");
+        field_lines.push_str(&format!("\n{}{} = {},", field_indent, name, placeholder));
+    }
+
+    // Choose the insertion byte offset and finalize the text.
+    let (insert, insert_byte) = if brace_on_own_line {
+        // The `}` is already on its own line.  Insert new fields before the `\n`
+        // that starts the `}` line so the `}` stays on its own line.
+        let nl = brace_nl.unwrap(); // safe: brace_on_own_line implies brace_nl is Some
+        (field_lines, nl)
+    } else {
+        // Single-line table or `}` on the same line as last field.
+        // Insert new fields followed by a newline and the base indent to move `}` down.
+        field_lines.push('\n');
+        field_lines.push_str(base_indent);
+        (field_lines, close_byte)
+    };
+
+    let numbers = super::SafeLinePositions::new(text);
+    let insert_pos = numbers.lsp_position(insert_byte, use_utf8());
+    let edit = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text: insert,
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+
+    let title = if field_names.len() == 1 {
+        format!("Fill missing field `{}`", field_names[0])
+    } else {
+        "Fill all missing fields".to_string()
+    };
+
+    Some(CodeAction {
+        title,
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// Return a Lua literal placeholder value for the given type.
+fn placeholder_for_type(vt: &ValueType) -> &'static str {
+    match vt {
+        ValueType::String(_) => "\"\"",
+        ValueType::Number => "0",
+        ValueType::Boolean(_) => "false",
+        ValueType::Table(_) => "{}",
+        // missing-fields skips Function-typed fields, but handle it for completeness.
+        ValueType::Function(_) => "function() end",
+        ValueType::Union(types) => {
+            // Pick the placeholder for the first non-nil member.
+            for t in types {
+                if !matches!(t, ValueType::Nil) {
+                    return placeholder_for_type(t);
+                }
+            }
+            "nil"
+        }
+        ValueType::OpaqueAlias(_, inner) => placeholder_for_type(inner),
+        _ => "nil",
+    }
 }
 
 /// Extract the expected type from a type-mismatch family diagnostic message.
