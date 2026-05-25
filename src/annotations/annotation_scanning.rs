@@ -347,6 +347,7 @@ pub(crate) fn extract_inline_class(node: SyntaxNode<'_>) -> Option<String> {
 /// for positional disambiguation when multiple `@class` declarations share the same name.
 pub(crate) fn extract_inline_class_with_offset(node: SyntaxNode<'_>) -> Option<(String, u32)> {
     let mut past_newline = false;
+    let mut last_content: Option<crate::syntax::SyntaxToken<'_>> = None;
     for item in node.descendants_with_tokens() {
         if let NodeOrToken::Token(t) = item {
             if t.kind() == SyntaxKind::Newline {
@@ -362,6 +363,33 @@ pub(crate) fn extract_inline_class_with_offset(node: SyntaxNode<'_>) -> Option<(
                     return rest.split_whitespace().next()
                         .map(|s| (s.trim_end_matches(':').to_string(), offset));
                 }
+            } else if !matches!(t.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline) {
+                last_content = Some(t);
+            }
+        }
+    }
+    // Also handle the pattern `local Foo = {};--- @class Foo` where a semicolon pushes the
+    // trailing `@class` comment outside the node boundary (sibling in Block rather than
+    // descendant of LocalAssignStatement). Walk forward from the last non-trivia token,
+    // skipping whitespace and semicolons, and check the next comment on the same line.
+    if let Some(last) = last_content {
+        let mut tok = last.next_token();
+        while let Some(t) = tok {
+            match t.kind() {
+                SyntaxKind::Whitespace | SyntaxKind::Semicolon => { tok = t.next_token(); }
+                SyntaxKind::Newline => break,
+                SyntaxKind::Comment => {
+                    let text = t.text();
+                    let content = text.trim_start_matches('-').trim();
+                    if let Some(rest) = content.strip_prefix("@class") {
+                        let rest = rest.trim();
+                        let offset = u32::from(t.text_range().start());
+                        return rest.split_whitespace().next()
+                            .map(|s| (s.trim_end_matches(':').to_string(), offset));
+                    }
+                    break;
+                }
+                _ => break,
             }
         }
     }

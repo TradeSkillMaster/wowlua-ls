@@ -977,3 +977,34 @@ end
 
 local isOn = myAddon:IsEnabled()
 --    ^ hover: (local) isOn: boolean
+
+-- ── Pool types (generic FramePool/ObjectPool stubs) ──────────────────────────
+
+-- FramePool and ObjectPool are defined types — no undefined-doc-name
+---@type FramePool<Frame>
+--       ^ diag: none
+local _testFramePool = nil
+
+---@type ObjectPool<Button>
+--       ^ diag: none
+local _testObjPool = nil
+
+-- ObjectPoolBaseMixin methods are accessible on pool objects (regression:
+-- semicolon inline @class pattern `local Foo = {};---@class Foo` was
+-- silently dropping methods — ensure the mixin class still has its methods)
+---@type ObjectPoolBaseMixin
+--       ^ diag: none
+local _mixin = nil
+
+-- CreateObjectPool returns a typed ObjectPool<T> where T comes from the creator
+---@return Button
+local function makeBtn()
+    return CreateFrame("Button")
+end
+local btnPool = CreateObjectPool(makeBtn)
+local acquiredBtn = btnPool:Acquire()
+--    ^ hover: (local) acquiredBtn: Button
+
+-- CreateFramePoolCollection returns a FramePoolCollection
+local poolColl = CreateFramePoolCollection()
+--    ^ hover: (local) poolColl: FramePoolCollection

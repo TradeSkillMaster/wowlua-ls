@@ -1814,7 +1814,16 @@ impl BuildContext {
         // Register field-ref globals (e.g. `strmatch = str.match` → string.match)
         for g in globals {
             if let ExternalGlobalKind::FieldRef(table_name, field_name) = &g.kind {
-                if self.scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone())) { continue; }
+                let sym_id = SymbolIdentifier::Name(g.name.clone());
+                // Skip if already registered with a typed (non-Any) definition.
+                // Allow upgrading an Any-typed placeholder (e.g. from GlobalVariables.lua)
+                // with a properly resolved FieldRef type (e.g. strlen = str.len → string.len).
+                let existing_sym = self.scope0_symbols.get(&sym_id).copied();
+                if let Some(eidx) = existing_sym {
+                    let has_typed = self.symbols[eidx.ext_offset()].versions.last()
+                        .is_some_and(|v| !matches!(v.resolved_type, Some(ValueType::Any) | None));
+                    if has_typed { continue; }
+                }
                 let table_local_idx = self.non_class_tables.get(table_name)
                     .or_else(|| self.classes.get(table_name))
                     .map(|idx| idx.ext_offset());
@@ -1825,12 +1834,25 @@ impl BuildContext {
                             _ => None,
                         };
                         if let Some(resolved_type) = resolved_type {
-                            let sym_idx = self.register_global(&g.name, Some(resolved_type));
-                            if is_framexml_path(&g.source_path) { self.framexml_names.insert(g.name.clone()); }
-                            if let Some(path) = &g.source_path {
-                                self.symbol_locations.insert(sym_idx, ExternalLocation {
-                                    path: path.clone(), start: g.def_start, end: g.def_end,
-                                });
+                            if let Some(eidx) = existing_sym {
+                                // Upgrade the existing Any-typed symbol with the resolved type
+                                if let Some(ver) = self.symbols[eidx.ext_offset()].versions.last_mut() {
+                                    ver.resolved_type = Some(resolved_type);
+                                }
+                                if is_framexml_path(&g.source_path) { self.framexml_names.insert(g.name.clone()); }
+                                if let Some(path) = &g.source_path {
+                                    self.symbol_locations.insert(eidx, ExternalLocation {
+                                        path: path.clone(), start: g.def_start, end: g.def_end,
+                                    });
+                                }
+                            } else {
+                                let sym_idx = self.register_global(&g.name, Some(resolved_type));
+                                if is_framexml_path(&g.source_path) { self.framexml_names.insert(g.name.clone()); }
+                                if let Some(path) = &g.source_path {
+                                    self.symbol_locations.insert(sym_idx, ExternalLocation {
+                                        path: path.clone(), start: g.def_start, end: g.def_end,
+                                    });
+                                }
                             }
                         }
                     }
