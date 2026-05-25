@@ -2102,12 +2102,13 @@ fn fetch_and_generate_cvar_stubs() -> String {
 fn scan_le_constants(ui_source_dir: &Path) -> HashSet<String> {
     let re = regex_lite::Regex::new(r"LE_[A-Z][A-Z_0-9]+").unwrap();
     let mut names = HashSet::new();
-    let addons_dir = ui_source_dir.join("Interface/AddOns");
-    if !addons_dir.is_dir() {
+    // Scan the full Interface/ tree: LE_* references appear in both AddOns/ and FrameXML/.
+    let interface_dir = ui_source_dir.join("Interface");
+    if !interface_dir.is_dir() {
         return names;
     }
     let mut lua_files = Vec::new();
-    collect_lua_paths(&addons_dir, &mut lua_files);
+    collect_lua_paths(&interface_dir, &mut lua_files);
     for path in &lua_files {
         if let Ok(content) = std::fs::read_to_string(path) {
             for m in re.find_iter(&content) {
@@ -2117,6 +2118,7 @@ fn scan_le_constants(ui_source_dir: &Path) -> HashSet<String> {
     }
     names
 }
+
 
 /// Fetch and parse BlizzardInterfaceResources LuaEnum.lua.
 /// Returns a map from flattened LE_*-style name to numeric value.
@@ -2265,13 +2267,16 @@ fn extract_xml_frames_and_mixins(
     let mut direct_mixins: HashMap<String, Vec<String>> = HashMap::new();
     let mut inherits_map: HashMap<String, Vec<String>> = HashMap::new();
 
-    let addons_dir = ui_source_dir.join("Interface/AddOns");
-    if !addons_dir.is_dir() {
+    // Scan the full Interface/ tree: AddOns contains Blizzard addon XML (Blizzard_ObjectiveTracker,
+    // Blizzard_AuctionHouseUI, etc.) while FrameXML contains core XML (AuctionFrame.xml,
+    // Fonts.xml, etc.). Both must be scanned to discover all named frame and font globals.
+    let interface_dir = ui_source_dir.join("Interface");
+    if !interface_dir.is_dir() {
         return (frames, direct_mixins);
     }
 
     let mut xml_files = Vec::new();
-    collect_xml_paths(&addons_dir, &mut xml_files);
+    collect_xml_paths(&interface_dir, &mut xml_files);
 
     for path in &xml_files {
         let Ok(content) = std::fs::read_to_string(path) else { continue };
@@ -2303,7 +2308,7 @@ impl MixinScanRegexes {
         Self {
             comment: regex_lite::Regex::new(r"(?s)<!--.*?-->").unwrap(),
             opener: regex_lite::Regex::new(
-                r#"<\s*(Frame|Button|CheckButton|EditBox|ScrollFrame|StatusBar|Slider|GameTooltip|Model|ModelScene|ColorSelect|Cooldown|MessageFrame|Minimap|SimpleHTML|Browser|MovieFrame|FogOfWarFrame|ModelFFX|CinematicModel|DressUpModel|PlayerModel|TabardModel|WorldFrame|POIFrame)\b([^>]*)>"#
+                r#"<\s*(Frame|Button|CheckButton|EditBox|ScrollFrame|StatusBar|Slider|GameTooltip|Model|ModelScene|ColorSelect|Cooldown|MessageFrame|Minimap|SimpleHTML|Browser|MovieFrame|FogOfWarFrame|ModelFFX|CinematicModel|DressUpModel|PlayerModel|TabardModel|WorldFrame|POIFrame|Font)\b([^>]*)>"#
             ).unwrap(),
             name: regex_lite::Regex::new(r#"\bname\s*=\s*"([^"]+)""#).unwrap(),
             mixin: regex_lite::Regex::new(r#"\bmixin\s*=\s*"([^"]+)""#).unwrap(),
@@ -2608,7 +2613,8 @@ fn infer_rhs_type(rhs: &str) -> String {
 // ── Classic stubs generation ──────────────────────────────────────────────────
 
 /// Generate ClassicGlobals.lua content in memory.
-/// `classic_ui_dirs` and `retail_ui_dir` are optional wow-ui-source clones for constant/enum extraction.
+/// `classic_ui_dirs` is an optional list of wow-ui-source classic clones for constant/enum extraction.
+/// `retail_api_doc` / `retail_fxml_consts` are pre-scanned retail data for diffing classic-only items.
 /// `all_ui_dirs` includes all branches (classic + retail) for XML frame extraction.
 /// Pre-computed classic API diff: which APIs are classic-only and not already covered.
 struct ClassicApiDiff {
@@ -2810,7 +2816,8 @@ fn generate_classic_stubs(
     wiki_pages: &HashMap<String, String>,
     wiki_redirects: &HashMap<String, String>,
     classic_ui_dirs: &[PathBuf],
-    retail_ui_dir: Option<&Path>,
+    retail_api_doc: Option<&ApiDocData>,
+    retail_fxml_consts: &HashMap<String, (String, String)>,
     all_ui_dirs: &[PathBuf],
 ) -> String {
     let missing = &diff.missing;
@@ -2907,11 +2914,11 @@ fn generate_classic_stubs(
         missing_fxml.len());
 
     // Generate classic-only constants and enumerations from wow-ui-source
-    if let Some(retail_dir) = retail_ui_dir
+    if let Some(retail_api) = retail_api_doc
         && !classic_ui_dirs.is_empty() {
             log::info!("Extracting classic-only constants and enums from wow-ui-source...");
             let classic_only =
-                collect_classic_only_constants(classic_ui_dirs, retail_dir);
+                collect_classic_only_constants(classic_ui_dirs, retail_api, retail_fxml_consts);
 
             // Filter against already-existing stubs
             let only_constants: Vec<_> = classic_only.constants
@@ -3261,38 +3268,66 @@ fn parse_api_doc_file(
     }
 }
 
-/// Scan FrameXML .lua files for top-level global constant assignments.
-/// Only includes constants with clearly inferable types (number, string, boolean).
-/// Returns name → (type, value_literal).
-fn scan_framexml_constants(ui_source_dir: &Path) -> HashMap<String, (String, String)> {
-    let mut constants = HashMap::new();
+/// Scan all .lua files under `Interface/` in a single directory walk, collecting both
+/// top-level global constant assignments and standalone global function definitions.
+///
+/// Returns `(constants, global_funcs)` where:
+/// - `constants`: name → (type, value_literal) for ALL_CAPS constant assignments
+/// - `global_funcs`: names of bare `function Name(` top-level definitions
+///
+/// Callers that previously called `scan_framexml_constants` and `scan_framexml_lua_globals`
+/// separately on the same directory should use this function instead to avoid two traversals.
+fn scan_interface_lua_combined(ui_source_dir: &Path) -> (HashMap<String, (String, String)>, HashSet<String>) {
     let assign_re = regex_lite::Regex::new(r"^([A-Z][A-Z_0-9]+)\s*=\s*(.+)$").unwrap();
+    // `^function Name(` at the start of a line = standalone top-level global function.
+    // No dots or colons = not a method or table field.
+    let func_re = regex_lite::Regex::new(r"(?m)^function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap();
 
-    let addons_dir = ui_source_dir.join("Interface/AddOns");
-    if !addons_dir.is_dir() {
-        return constants;
+    let mut constants = HashMap::new();
+    let mut global_funcs = HashSet::new();
+
+    let interface_dir = ui_source_dir.join("Interface");
+    if !interface_dir.is_dir() {
+        return (constants, global_funcs);
     }
 
     let mut lua_files = Vec::new();
-    collect_lua_paths(&addons_dir, &mut lua_files);
+    collect_lua_paths(&interface_dir, &mut lua_files);
 
     for path in &lua_files {
         if let Ok(content) = std::fs::read_to_string(path) {
+            // Collect constant assignments (ALL_CAPS = value at top-level)
             for line in content.lines() {
-                // Only match lines with no leading whitespace (top-level assignments)
                 if let Some(cap) = assign_re.captures(line) {
                     let name = cap.get(1).unwrap().as_str();
                     let value_raw = cap.get(2).unwrap().as_str().trim().trim_end_matches(';');
                     if let Some(typ) = infer_constant_type(value_raw) {
-                        constants
-                            .insert(name.to_string(), (typ.to_string(), value_raw.to_string()));
+                        constants.insert(name.to_string(), (typ.to_string(), value_raw.to_string()));
                     }
+                }
+            }
+            // Collect standalone global function definitions
+            for cap in func_re.captures_iter(&content) {
+                let name = cap.get(1).unwrap().as_str();
+                // Skip very short names (< 3 chars) — single/double-letter names are
+                // almost certainly local helper functions, not addon-visible globals.
+                if name.len() >= 3 {
+                    global_funcs.insert(name.to_string());
                 }
             }
         }
     }
 
-    constants
+    (constants, global_funcs)
+}
+
+/// Scan all .lua files under `Interface/` for top-level global constant assignments only.
+/// Returns name → (type, value_literal).
+///
+/// Use `scan_interface_lua_combined` when you also need global function names, to avoid
+/// a second traversal of the same directory tree.
+fn scan_framexml_constants(ui_source_dir: &Path) -> HashMap<String, (String, String)> {
+    scan_interface_lua_combined(ui_source_dir).0
 }
 
 /// Infer the Lua type of a constant value from its literal representation.
@@ -3304,9 +3339,15 @@ fn infer_constant_type(value: &str) -> Option<&'static str> {
         return None;
     }
 
-    // Skip function definitions and table constructors
-    if v.starts_with("function") || v.starts_with('{') {
+    // Skip function definitions (they're handled separately by scan_framexml_lua_globals)
+    if v.starts_with("function") {
         return None;
+    }
+
+    // Table constructors: type as "table" so the global is discovered (but without a numeric
+    // value — callers that only want numeric values should filter on type == "number").
+    if v.starts_with('{') {
+        return Some("table");
     }
 
     // nil — skip (not useful as a typed constant)
@@ -3352,9 +3393,13 @@ fn infer_constant_type(value: &str) -> Option<&'static str> {
 
 /// Merge API doc constants/enums and FrameXML constants from multiple classic branches,
 /// diff against retail, and return classic-only items.
+///
+/// `retail_api_doc` and `retail_fxml_consts` are pre-scanned retail data passed by the
+/// caller to avoid a redundant Interface/ directory traversal.
 fn collect_classic_only_constants(
     classic_dirs: &[PathBuf],
-    retail_dir: &Path,
+    retail_api_doc: &ApiDocData,
+    retail_fxml_consts: &HashMap<String, (String, String)>,
 ) -> ClassicOnlyItems {
     // Collect from all classic branches (union)
     let mut classic_constants: HashMap<String, (String, String)> = HashMap::new();
@@ -3374,10 +3419,6 @@ fn collect_classic_only_constants(
             classic_enums.entry(k).or_insert(v);
         }
     }
-
-    // Collect retail data
-    let retail_api_doc = parse_api_doc_dir(retail_dir);
-    let retail_fxml_consts = scan_framexml_constants(retail_dir);
 
     // Diff: classic-only = in classic but not in retail
     let retail_const_names: HashSet<&str> = retail_api_doc.constants
@@ -3546,10 +3587,21 @@ pub fn regenerate_stubs() {
 
     // Step 2d: Extract retail constants and enumerations from wow-ui-source.
     // Constants → GlobalVariables.lua values; enumerations → BlizzardEnums.lua.
-    let (global_constants, retail_enums) = if has_retail_ui {
+    // Also collect extra global names from FrameXML source (constants + standalone functions)
+    // that are not in BlizzardInterfaceResources but are accessible to addons at runtime.
+    // Step 2d: Extract retail constants and enumerations from wow-ui-source.
+    // Constants → GlobalVariables.lua values; enumerations → BlizzardEnums.lua.
+    // Also collect extra global names from FrameXML source (constants + standalone functions)
+    // that are not in BlizzardInterfaceResources but are accessible to addons at runtime.
+    //
+    // retail_api_doc and retail_fxml_consts are also threaded into generate_classic_stubs
+    // so collect_classic_only_constants can diff against retail without a second scan.
+    let (global_constants, retail_enums, extra_fxml_globals, retail_api_doc, retail_fxml_consts) = if has_retail_ui {
         log::info!("Extracting retail constants and enums from APIDocumentation + FrameXML...");
         let api_doc = parse_api_doc_dir(&retail_ui_dir);
-        let fxml_consts = scan_framexml_constants(&retail_ui_dir);
+        // Single Interface/ tree walk: collect both constant assignments and standalone
+        // global function definitions rather than making two separate traversals.
+        let (fxml_consts, fxml_funcs) = scan_interface_lua_combined(&retail_ui_dir);
         let mut constants: HashMap<String, i64> = HashMap::new();
         // Chain FrameXML first so APIDocumentation values win on duplicates.
         for (name, (typ, val)) in fxml_consts.iter().chain(api_doc.constants.iter()) {
@@ -3563,15 +3615,35 @@ pub fn regenerate_stubs() {
             }
         }
         log::info!("  Extracted {} numeric constants, {} enumerations", constants.len(), api_doc.enums.len());
-        (constants, api_doc.enums)
+
+        // Collect ALL FrameXML constant names (not just numeric) and standalone function names.
+        // These supplement BlizzardInterfaceResources/FrameXML.lua which only lists functions
+        // that Blizzard explicitly chose to publish (e.g. ENABLE_COLORBLIND_MODE and
+        // FramePool_HideAndClearAnchors are absent from the resources list).
+        log::info!("  Discovered {} standalone FrameXML global functions", fxml_funcs.len());
+        let mut extra: HashSet<String> = fxml_consts.keys().cloned().collect();
+        extra.extend(fxml_funcs);
+
+        let enums = api_doc.enums.clone();
+        (constants, enums, extra, Some(api_doc), fxml_consts)
     } else {
-        (HashMap::new(), HashMap::new())
+        (HashMap::new(), HashMap::new(), HashSet::new(), None, HashMap::new())
     };
 
-    // Step 3: Generate global stubs (from BlizzardInterfaceResources + APIDocumentation constants)
+    // Step 3: Generate global stubs (from BlizzardInterfaceResources + FrameXML globals).
+    // Extend the retail name universe with names discovered directly from wow-ui-source.
+    // This catches globals that Blizzard defined in FrameXML but omitted from their
+    // published resource files (GlobalAPI.lua / FrameXML.lua).
+    let extended_retail_names: HashSet<String> = if extra_fxml_globals.is_empty() {
+        branch_data.retail_all_names.clone()
+    } else {
+        log::info!("  Supplementing {} BlizzardInterfaceResources names with {} extra FrameXML globals",
+            branch_data.retail_all_names.len(), extra_fxml_globals.len());
+        branch_data.retail_all_names.union(&extra_fxml_globals).cloned().collect()
+    };
     log::info!("Generating global stubs...");
     let (global_strings_lua, global_vars_lua, global_colors_lua) = generate_global_stubs(
-        &branch_data.retail_all_names,
+        &extended_retail_names,
         &global_constants,
         &combined_stubs,
     );
@@ -3640,7 +3712,8 @@ pub fn regenerate_stubs() {
         &wiki_pages,
         &wiki_redirects,
         &classic_ui_dirs,
-        if has_retail_ui { Some(&retail_ui_dir) } else { None },
+        retail_api_doc.as_ref(),
+        &retail_fxml_consts,
         &all_ui_dirs,
     );
 
