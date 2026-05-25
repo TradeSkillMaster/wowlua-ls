@@ -4077,6 +4077,8 @@ impl AnalysisResult {
             Some(ReferenceTarget::Symbol { idx: symbol_idx, name })
         } else if let Some((table_idx, field_name, _, _)) = self.resolve_field_chain_at(tree, offset) {
             Some(ReferenceTarget::Field { table_idx, field_name })
+        } else if let Some((sym_idx, name, _)) = self.find_param_in_annotation_at(tree, offset) {
+            Some(ReferenceTarget::Symbol { idx: sym_idx, name })
         } else {
             None
         }
@@ -4356,6 +4358,26 @@ impl AnalysisResult {
                 results.sort_by_key(|r| (r.start(), r.end()));
                 results.dedup();
 
+                // Include @param annotation name ranges for parameter symbols.
+                // Parameters always live in a function body scope (never scope 0),
+                // so skip the O(F) scan for non-parameter symbols.
+                if !symbol_idx.is_external()
+                    && self.sym(symbol_idx).scope_idx != ScopeIndex(0) {
+                    for (fi, func) in self.ir.functions.iter().enumerate() {
+                        if func.args.contains(&symbol_idx) {
+                            for (pname, range) in self.param_annotation_name_ranges(tree, FunctionIndex(fi)) {
+                                if pname == *name {
+                                    results.push(range);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    // Re-sort after adding annotation ranges
+                    results.sort_by_key(|r| (r.start(), r.end()));
+                    results.dedup();
+                }
+
                 // Filter out declaration if not requested. The "declaration" is the
                 // name-token inside the first-version def-node (for local targets, the
                 // symbol itself; for external targets, any shadow local we accepted).
@@ -4514,30 +4536,162 @@ impl AnalysisResult {
         }
     }
 
+    /// Parse a `---@param name ...` comment token and extract the param name with its
+    /// byte range relative to the comment text start. Returns `(name, start, end)`.
+    /// The `?` suffix on optional params is excluded. Skips `self` and `...` params.
+    fn extract_param_from_comment(text: &str) -> Option<(&str, usize, usize)> {
+        if !text.starts_with("---") {
+            return None;
+        }
+        let stripped = text.trim_start_matches('-');
+        let prefix_len = text.len() - stripped.len();
+        let trimmed = stripped.trim_start();
+        let ws_before = stripped.len() - trimmed.len();
+        let rest = trimmed.strip_prefix("@param")?;
+        let rest_trimmed = rest.trim_start();
+        let ws_after_tag = rest.len() - rest_trimmed.len();
+        let name_with_q = rest_trimmed.split(char::is_whitespace).next()?;
+        let name = name_with_q.trim_end_matches('?');
+        if name.is_empty() || name == "..." || name == "self" {
+            return None;
+        }
+        let name_start = prefix_len + ws_before + "@param".len() + ws_after_tag;
+        Some((name, name_start, name_start + name.len()))
+    }
+
+    /// For a given function, find the byte ranges of each `@param` name in the
+    /// preceding annotation comments. Returns `(param_name, TextRange)` pairs.
+    fn param_annotation_name_ranges(
+        &self,
+        tree: &SyntaxTree,
+        func_idx: FunctionIndex,
+    ) -> Vec<(String, TextRange)> {
+        let func = self.func(func_idx);
+        let def_start = func.def_node.start;
+        let Some(start_token) = SyntaxNode::new_root(tree)
+            .token_at_offset(TextSize::from(def_start))
+            .right_biased()
+        else {
+            return Vec::new();
+        };
+        // Walk backward from the function's first token through preceding comments
+        let mut results = Vec::new();
+        let mut tok = start_token.prev_token();
+        while let Some(token) = tok {
+            let kind = token.kind();
+            if kind == SyntaxKind::Whitespace || kind == SyntaxKind::Newline {
+                tok = token.prev_token();
+                continue;
+            }
+            if kind == SyntaxKind::Comment {
+                let text = token.text();
+                if text.starts_with("---") {
+                    if let Some((name, ns, ne)) = Self::extract_param_from_comment(text) {
+                        let token_start = u32::from(token.text_range().start());
+                        let range = TextRange::new(
+                            TextSize::from(token_start + ns as u32),
+                            TextSize::from(token_start + ne as u32),
+                        );
+                        results.push((name.to_string(), range));
+                    }
+                    tok = token.prev_token();
+                    continue;
+                }
+            }
+            break;
+        }
+        results
+    }
+
+    /// If the cursor offset falls inside a `@param` name within a comment preceding
+    /// a function, return the parameter's symbol index, name, and the TextRange of the
+    /// name in the comment. This enables rename-from-annotation.
+    pub(crate) fn find_param_in_annotation_at(
+        &self,
+        tree: &SyntaxTree,
+        offset: u32,
+    ) -> Option<(SymbolIndex, String, TextRange)> {
+        let text_size = TextSize::from(offset);
+        let token = SyntaxNode::new_root(tree).token_at_offset(text_size).right_biased()?;
+        if token.kind() != SyntaxKind::Comment {
+            return None;
+        }
+        let (name, ns, ne) = Self::extract_param_from_comment(token.text())?;
+        let token_start = u32::from(token.text_range().start());
+        let abs_start = token_start + ns as u32;
+        let abs_end = token_start + ne as u32;
+        // Check cursor is within the name range
+        if offset < abs_start || offset >= abs_end {
+            return None;
+        }
+        let name_range = TextRange::new(TextSize::from(abs_start), TextSize::from(abs_end));
+
+        // Walk forward from this comment to find the function it annotates
+        let mut forward = token.next_token();
+        while let Some(t) = forward {
+            let k = t.kind();
+            if k == SyntaxKind::Whitespace || k == SyntaxKind::Newline || k == SyntaxKind::Comment {
+                forward = t.next_token();
+                continue;
+            }
+            // Found a non-trivia token — walk up to find FunctionDefinition
+            let mut node = t.parent();
+            while let Some(n) = node {
+                if n.kind() == SyntaxKind::FunctionDefinition {
+                    let r = n.text_range();
+                    let fn_start = u32::from(r.start());
+                    // Find the function in ir.functions by def_node.start
+                    for func in self.ir.functions.iter() {
+                        if func.def_node.start == fn_start {
+                            // Find matching param symbol
+                            for &sym_idx in &func.args {
+                                if let SymbolIdentifier::Name(ref sym_name) = self.sym(sym_idx).id
+                                    && sym_name == name {
+                                        return Some((sym_idx, name.to_string(), name_range));
+                                }
+                            }
+                            return None;
+                        }
+                    }
+                    return None;
+                }
+                node = n.parent();
+            }
+            return None;
+        }
+        None
+    }
+
     /// Validate that the symbol at offset can be renamed. Returns (token_range, current_name).
     /// Rejects external symbols (WoW API stubs) and external table fields.
     pub(crate) fn prepare_rename_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(TextRange, String)> {
         let text_size = TextSize::from(offset);
         let token = SyntaxNode::new_root(tree).token_at_offset(text_size).right_biased()?;
-        if token.kind() != SyntaxKind::Name && token.kind() != SyntaxKind::Parameter {
-            return None;
-        }
-        let name = token.text().to_string();
 
-        // Try symbol first
-        if let Some((symbol_idx, _, _)) = self.find_symbol_at(tree, offset) {
-            if symbol_idx.is_external() {
-                return None; // Cannot rename external symbols
+        if token.kind() == SyntaxKind::Name || token.kind() == SyntaxKind::Parameter {
+            let name = token.text().to_string();
+            // Try symbol first
+            if let Some((symbol_idx, _, _)) = self.find_symbol_at(tree, offset) {
+                if symbol_idx.is_external() {
+                    return None;
+                }
+                return Some((token.text_range(), name));
             }
-            return Some((token.text_range(), name));
-        }
-        // Try field
-        if let Some((table_idx, _, _, _)) = self.resolve_field_chain_at(tree, offset) {
-            if table_idx.is_external() {
-                return None; // Cannot rename external table fields
+            // Try field
+            if let Some((table_idx, _, _, _)) = self.resolve_field_chain_at(tree, offset) {
+                if table_idx.is_external() {
+                    return None;
+                }
+                return Some((token.text_range(), name));
             }
-            return Some((token.text_range(), name));
         }
+
+        // Try @param name in annotation comment
+        if let Some((sym_idx, name, range)) = self.find_param_in_annotation_at(tree, offset)
+            && !sym_idx.is_external() {
+                return Some((range, name));
+        }
+
         None
     }
 

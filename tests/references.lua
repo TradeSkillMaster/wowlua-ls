@@ -54,3 +54,50 @@ local m = 1
 m = "hello"
 local n = m
 --        ^ refs: 53:7, 54:1, 55:11
+
+-- @param annotation rename: renaming parameter includes @param location
+---@param value number
+local function square(value)
+    return value * value
+    --     ^ refs: 59:11, 60:23, 61:12, 61:20
+end
+
+-- @param rename from annotation: cursor on @param name
+---@param count number
+---@param label string
+local function repeat_label(count, label)
+    return count, label
+    --     ^ refs: 66:11, 68:29, 69:12
+    --            ^ refs: 67:11, 68:36, 69:19
+end
+
+-- Optional @param: ? suffix excluded from rename range
+---@param name? string
+local function greet_opt(name)
+    return name
+    --     ^ refs: 75:11, 76:26, 77:12
+end
+
+-- No @param annotation: works normally without annotation range
+local function plain(arg)
+    return arg
+    --     ^ refs: 82:22, 83:12
+end
+
+-- Multiple @param: only matching one included
+---@param first number
+---@param second number
+local function pair(first, second)
+    return first + second
+    --     ^ refs: 88:11, 90:21, 91:12
+    --             ^ refs: 89:11, 90:28, 91:20
+end
+
+-- Reverse direction: cursor on @param name resolves to parameter symbol.
+-- The -- assertion comment between @param and function breaks the annotation chain,
+-- so the annotation position itself is not in the refs (only code positions).
+---@param target string
+--        ^ refs: 101:28, 102:12
+local function find_target(target)
+    return target
+end
