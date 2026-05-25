@@ -1,14 +1,11 @@
 ---@meta _
--- Override pool types and factory functions to provide generic type parameters.
--- The vendor stubs define ObjectPoolBaseMixin/PoolCollectionBaseMixin as plain
--- (non-generic) mixin classes. The public factory functions return proxy objects
--- whose Acquire() method returns a typed object — expressed here via generics.
+-- Pool types and factory functions with generic type parameters.
+-- ObjectPool/FramePool/FramePoolCollection are FrameXML-defined (not in Blizzard's
+-- APIDocumentationGenerated, Ketho's vscode-wow-api, or BlizzardInterfaceResources),
+-- so they have no upstream source to fix in stub_gen.rs and live here as overrides.
 
 -- ObjectPool<T>: a pool whose Acquire() returns T.
--- Inherits non-generic utility methods (ReleaseAll, GetNumActive, etc.) from
--- ObjectPoolBaseMixin which are registered via the semicolon-fix in
--- extract_inline_class_with_offset (annotation_scanning.rs).
----@class ObjectPool<T>: ObjectPoolBaseMixin
+---@class ObjectPool<T>
 local ObjectPool = {}
 
 ---Acquires an object from the pool, creating one if necessary.
@@ -19,15 +16,31 @@ function ObjectPool:Acquire() end
 ---@param obj T
 function ObjectPool:Release(obj) end
 
+---Releases all active objects back into the pool.
+function ObjectPool:ReleaseAll() end
+
+---Returns the number of currently active objects in the pool.
+---@return number
+function ObjectPool:GetNumActive() end
+
 ---Returns an iterator over all currently active objects in the pool.
 ---@return fun(): T
 function ObjectPool:EnumerateActive() end
+
+---Returns an iterator over all currently inactive objects in the pool.
+---@return fun(): T
+function ObjectPool:EnumerateInactive() end
 
 -- FramePool<T, Tp>: a pool whose Acquire() returns T & Tp (frame + template mixin).
 -- Addon code commonly writes FramePool<Frame, SomeTemplate> (2 params) or
 -- FramePool<Frame> (1 param). When Tp is omitted it resolves to any, and
 -- T & any simplifies to T, which is still a useful type.
----@class FramePool<T, Tp>: ObjectPoolBaseMixin
+--
+-- NOTE: FramePool inherits from ObjectPool<T & Tp> but all methods are re-declared
+-- explicitly because the LS does not substitute generic type parameters through
+-- inheritance chains (e.g. T→T&Tp from the parent), so omitting them would leave
+-- Acquire/Release/Enumerate returning '?' for callers typed as FramePool<T,Tp>.
+---@class FramePool<T, Tp>: ObjectPool<T & Tp>
 local FramePool = {}
 
 ---Acquires a frame from the pool, creating one if necessary.
@@ -38,14 +51,35 @@ function FramePool:Acquire() end
 ---@param obj T & Tp
 function FramePool:Release(obj) end
 
+---Releases all active frames back into the pool.
+function FramePool:ReleaseAll() end
+
+---Returns the number of currently active frames in the pool.
+---@return number
+function FramePool:GetNumActive() end
+
 ---Returns an iterator over all currently active frames in the pool.
 ---@return fun(): T & Tp
 function FramePool:EnumerateActive() end
 
+---Returns an iterator over all currently inactive frames in the pool.
+---@return fun(): T & Tp
+function FramePool:EnumerateInactive() end
+
 -- FramePoolCollection: returned by CreateFramePoolCollection.
 -- GetOrCreatePool returns a typed FramePool<T, Tp> matching CreateFrame semantics.
----@class FramePoolCollection: PoolCollectionBaseMixin
+---@class FramePoolCollection
 local FramePoolCollection = {}
+
+---Creates a new pool for the given frame type and template, adding it to the collection.
+---@generic T, Tp
+---@param frameType `T` | FrameType
+---@param parent? any
+---@param template? `Tp` | string
+---@param resetFunc? function
+---@param forbidden? boolean
+---@return FramePool<T, Tp>
+function FramePoolCollection:CreatePool(frameType, parent, template, resetFunc, forbidden) end
 
 ---Returns the pool for the given frame arguments, creating it if necessary.
 ---@generic T, Tp
@@ -56,6 +90,24 @@ local FramePoolCollection = {}
 ---@param forbidden? boolean
 ---@return FramePool<T, Tp>
 function FramePoolCollection:GetOrCreatePool(frameType, parent, template, resetFunc, forbidden) end
+
+---Acquires a frame from the appropriate pool for the given frame type.
+---When both frameType and template are string literals, returns the intersection
+---type matching what GetOrCreatePool/CreatePool would have produced.
+---@generic T, Tp
+---@overload fun(self: FramePoolCollection, frameType: `T`|FrameType, parent?: any, template: `Tp`|string): T & Tp
+---@param frameType FrameType
+---@param parent? any
+---@param template? string
+---@return Frame
+function FramePoolCollection:Acquire(frameType, parent, template) end
+
+---Releases all active objects in all pools back into their respective pools.
+function FramePoolCollection:ReleaseAll() end
+
+---Returns an iterator over all currently active objects across all pools.
+---@return fun(): Frame
+function FramePoolCollection:EnumerateActive() end
 
 ---Creates a new pool of objects using a custom creation function.
 ---@generic T
