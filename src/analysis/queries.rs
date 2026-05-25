@@ -2654,9 +2654,8 @@ impl AnalysisResult {
         let key = (u32::from(r.start()), u32::from(r.end()));
         let ctor_idx = *self.ir.table_ranges.get(&key)?;
 
-        // Find the expected class for this constructor
-        let class_idx = *self.ir.tc_expected_class.get(&ctor_idx)?;
-        let class_table = self.table(class_idx);
+        // Find the expected class(es) for this constructor
+        let class_indices = self.ir.tc_expected_class.get(&ctor_idx)?;
 
         // Extract the typed prefix for filtering
         let prefix = {
@@ -2678,19 +2677,22 @@ impl AnalysisResult {
         let ctor_table = &self.ir.tables[ctor_idx.val()];
         let already_set: HashSet<&String> = ctor_table.fields.keys().collect();
 
-        // Collect fields from the class and its parents
+        // Collect fields from all candidate classes and their parents
         let mut seen_fields: HashSet<&String> = HashSet::new();
         let mut all_fields: Vec<(&String, &FieldInfo)> = Vec::new();
-        for (name, fi) in &class_table.fields {
-            if seen_fields.insert(name) {
-                all_fields.push((name, fi));
-            }
-        }
-        for &parent_idx in &class_table.parent_classes {
-            let parent_table = self.table(parent_idx);
-            for (name, fi) in &parent_table.fields {
+        for &class_idx in class_indices {
+            let class_table = self.table(class_idx);
+            for (name, fi) in &class_table.fields {
                 if seen_fields.insert(name) {
                     all_fields.push((name, fi));
+                }
+            }
+            for &parent_idx in &class_table.parent_classes {
+                let parent_table = self.table(parent_idx);
+                for (name, fi) in &parent_table.fields {
+                    if seen_fields.insert(name) {
+                        all_fields.push((name, fi));
+                    }
                 }
             }
         }

@@ -1266,6 +1266,32 @@ nfh.items = {
     --    ^ diag: missing-fields
 }
 
+-- Union of classes: constructor should match ANY member, not just the first
+---@class UnionMemberA
+---@field type "display"
+---@field text string
+
+---@class UnionMemberB
+---@field type "launcher"
+---@field icon string
+
+---@alias UnionAB UnionMemberA | UnionMemberB
+
+---@param name string
+---@param obj UnionAB
+---@return UnionAB
+local function registerObj(name, obj) return obj end
+
+-- Matches UnionMemberB — no warning (text is not required on B)
+local _uo1 = registerObj("test", { type = "launcher", icon = "path/icon" })
+
+-- Matches UnionMemberA — no warning (icon is not required on A)
+local _uo2 = registerObj("test", { type = "display", text = "hello" })
+
+-- Matches neither: missing 'text' from A and 'icon' from B
+local _uo3 = registerObj("test", { type = "other" })
+--         ^ diag: missing-fields
+
 -- ── Malformed annotation diagnostics ─────────────────────────────────────
 
 -- Unknown annotation tag (typo)

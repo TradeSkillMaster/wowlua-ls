@@ -2723,7 +2723,9 @@ impl<'a> Analysis<'a> {
 
         // Case 1: @type X on a local variable
         for (&sym_idx, expected_type) in &self.ir.symbol_type_annotations {
-            let Some(class_idx) = extract_table_idx_from_type(expected_type) else { continue };
+            let mut class_indices = Vec::new();
+            extract_all_table_indices_from_type(expected_type, &mut class_indices);
+            if class_indices.is_empty() { continue; }
             let sym = &self.ir.symbols[sym_idx.val()];
             for ver in &sym.versions {
                 // original_type_source holds the table constructor when type_source was overwritten by @type
@@ -2732,7 +2734,9 @@ impl<'a> Analysis<'a> {
                 if tc_expr.is_external() { continue; }
                 if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(tc_expr) {
                     if ctor_idx.is_external() { continue; }
-                    tc_pairs.push((class_idx, ctor_idx));
+                    for &class_idx in &class_indices {
+                        tc_pairs.push((class_idx, ctor_idx));
+                    }
                 }
             }
         }
@@ -2741,11 +2745,15 @@ impl<'a> Analysis<'a> {
         for resolution in self.ir.call_resolutions.values() {
             for arg in &resolution.expected_args {
                 let Some(expected_type) = &arg.expected_type else { continue };
-                let Some(class_idx) = extract_table_idx_from_type(expected_type) else { continue };
+                let mut class_indices = Vec::new();
+                extract_all_table_indices_from_type(expected_type, &mut class_indices);
+                if class_indices.is_empty() { continue; }
                 if arg.arg_expr.is_external() { continue; }
                 if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(arg.arg_expr) {
                     if ctor_idx.is_external() { continue; }
-                    tc_pairs.push((class_idx, ctor_idx));
+                    for &class_idx in &class_indices {
+                        tc_pairs.push((class_idx, ctor_idx));
+                    }
                 }
             }
         }
@@ -2755,7 +2763,11 @@ impl<'a> Analysis<'a> {
         let parent_tables: Vec<TableIndex> = self.ir.bracket_key_fields.keys().copied().collect();
         for parent_idx in parent_tables {
             let value_type = self.ir.tables[parent_idx.val()].value_type.clone();
-            let Some(class_idx) = value_type.as_ref().and_then(extract_table_idx_from_type) else { continue };
+            let mut class_indices = Vec::new();
+            if let Some(vt) = value_type.as_ref() {
+                extract_all_table_indices_from_type(vt, &mut class_indices);
+            }
+            if class_indices.is_empty() { continue; }
             // Only if value_type is annotated (authoritative), not inferred
             if !self.ir.tables[parent_idx.val()].value_type_annotated { continue; }
             let Some(bracket_fields) = self.ir.bracket_key_fields.get(&parent_idx).cloned() else { continue };
@@ -2763,7 +2775,9 @@ impl<'a> Analysis<'a> {
                 if val_expr.is_external() { continue; }
                 if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(*val_expr) {
                     if ctor_idx.is_external() { continue; }
-                    tc_pairs.push((class_idx, ctor_idx));
+                    for &class_idx in &class_indices {
+                        tc_pairs.push((class_idx, ctor_idx));
+                    }
                 }
             }
         }
@@ -2788,20 +2802,28 @@ impl<'a> Analysis<'a> {
             }
             let Some(table_idx) = table_idx_opt else { continue };
             let value_type = self.table(table_idx).value_type.clone();
-            let Some(class_idx) = value_type.as_ref().and_then(extract_table_idx_from_type) else { continue };
+            let mut class_indices = Vec::new();
+            if let Some(vt) = value_type.as_ref() {
+                extract_all_table_indices_from_type(vt, &mut class_indices);
+            }
+            if class_indices.is_empty() { continue; }
             // For same-file tables we check value_type_annotated, but for
             // external (cross-file) tables that flag is not propagated.
             // Instead, verify the class has a name (was declared via @class).
             if !table_idx.is_external() && !self.table(table_idx).value_type_annotated {
                 continue;
             }
-            if table_idx.is_external() && self.table(class_idx).class_name.is_none() {
-                continue;
+            // Filter out external classes without a name
+            if table_idx.is_external() {
+                class_indices.retain(|&idx| self.table(idx).class_name.is_some());
+                if class_indices.is_empty() { continue; }
             }
             if val_expr.is_external() { continue; }
             if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(val_expr) {
                 if ctor_idx.is_external() { continue; }
-                tc_pairs.push((class_idx, ctor_idx));
+                for &class_idx in &class_indices {
+                    tc_pairs.push((class_idx, ctor_idx));
+                }
             }
         }
 
@@ -2812,10 +2834,14 @@ impl<'a> Analysis<'a> {
             if fa.actual_expr.is_external() { continue; }
             let Some(field_info) = self.table(fa.table_idx).fields.get(&fa.field_name) else { continue };
             let Some(ref ann) = field_info.annotation else { continue };
-            let Some(ann_table_idx) = extract_table_idx_from_type(ann) else { continue };
+            let mut class_indices = Vec::new();
+            extract_all_table_indices_from_type(ann, &mut class_indices);
+            if class_indices.is_empty() { continue; }
             if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(fa.actual_expr) {
                 if ctor_idx.is_external() { continue; }
-                tc_pairs.push((ann_table_idx, ctor_idx));
+                for &class_idx in &class_indices {
+                    tc_pairs.push((class_idx, ctor_idx));
+                }
             }
         }
 
@@ -2836,9 +2862,15 @@ impl<'a> Analysis<'a> {
             // the flag is not serialized — instead verify the value class has a name.
             if !type_table_idx.is_external() && !type_table.value_type_annotated { continue; }
             let vt = type_table.value_type.clone();
-            let Some(value_class_idx) = vt.as_ref().and_then(extract_table_idx_from_type) else { continue; };
-            if type_table_idx.is_external() && self.table(value_class_idx).class_name.is_none() {
-                continue;
+            let mut value_class_indices = Vec::new();
+            if let Some(vt) = vt.as_ref() {
+                extract_all_table_indices_from_type(vt, &mut value_class_indices);
+            }
+            if value_class_indices.is_empty() { continue; }
+            // Filter out external classes without a name
+            if type_table_idx.is_external() {
+                value_class_indices.retain(|&idx| self.table(idx).class_name.is_some());
+                if value_class_indices.is_empty() { continue; }
             }
             let ctor_table = &self.ir.tables[ctor_idx.val()];
             let field_exprs: Vec<ExprId> = ctor_table.fields.values().map(|fi| fi.expr).collect();
@@ -2846,14 +2878,21 @@ impl<'a> Analysis<'a> {
                 if expr_id.is_external() { continue; }
                 if let Expr::TableConstructor(inner_ctor_idx) = *self.ir.expr(expr_id) {
                     if inner_ctor_idx.is_external() { continue; }
-                    tc_pairs.push((value_class_idx, inner_ctor_idx));
+                    for &class_idx in &value_class_indices {
+                        tc_pairs.push((class_idx, inner_ctor_idx));
+                    }
                 }
             }
         }
 
-        // Record expected class for each constructor (used by completions)
+        // Record expected classes for each constructor (used by completions and missing-fields)
         for &(class_idx, ctor_idx) in &tc_pairs {
-            self.ir.tc_expected_class.insert(ctor_idx, class_idx);
+            self.ir.tc_expected_class.entry(ctor_idx).or_default().push(class_idx);
+        }
+        // Deduplicate class lists (same class can appear from multiple code paths)
+        for classes in self.ir.tc_expected_class.values_mut() {
+            classes.sort_unstable();
+            classes.dedup();
         }
 
         if tc_pairs.is_empty() { return false; }
@@ -3188,6 +3227,18 @@ fn extract_table_idx_from_type(vt: &ValueType) -> Option<TableIndex> {
         ValueType::Table(Some(idx)) => Some(*idx),
         ValueType::Union(parts) => parts.iter().find_map(extract_table_idx_from_type),
         _ => None,
+    }
+}
+
+fn extract_all_table_indices_from_type(vt: &ValueType, out: &mut Vec<TableIndex>) {
+    match vt {
+        ValueType::Table(Some(idx)) => out.push(*idx),
+        ValueType::Union(parts) => {
+            for p in parts {
+                extract_all_table_indices_from_type(p, out);
+            }
+        }
+        _ => {}
     }
 }
 

@@ -158,7 +158,7 @@ pub(crate) struct Ir {
     /// Maps table constructor indices to their expected class table indices.
     /// Populated during type resolution from `@type`, function call arguments,
     /// and bracket assignments on `table<K, V>` typed tables.
-    pub(crate) tc_expected_class: HashMap<TableIndex, TableIndex>,
+    pub(crate) tc_expected_class: HashMap<TableIndex, Vec<TableIndex>>,
     /// Bracket assignments where the target table couldn't be resolved in Phase 1
     /// (e.g. `local NPCs = private.Data.NPCs; NPCs[1] = { ... }`). Deferred to
     /// Phase 2 where resolved_type is available. (root_name, scope_idx, val_expr)
