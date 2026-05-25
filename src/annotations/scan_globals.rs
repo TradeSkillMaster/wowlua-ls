@@ -896,7 +896,9 @@ pub(crate) fn scan_file_globals_with_synth(
                         annotations.params
                     } else { Vec::new() };
                     let see = annotations.see.clone();
-                    if names.len() == 1 {
+                    // Local functions are file-scoped, not cross-file globals
+                    // (multi-name branch needs no check — Lua syntax forbids `local function a.b()`)
+                    if names.len() == 1 && !func.is_local() {
                         globals.push(ExternalGlobal {
                             name: names[0].clone(), kind: ExternalGlobalKind::Function,
                             params, returns: annotations.returns, return_names: annotations.return_names, return_descriptions: annotations.return_descriptions, overloads,
