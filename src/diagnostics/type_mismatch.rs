@@ -4,6 +4,41 @@ use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
 pub(crate) struct TypeMismatch;
 
+/// Check if `actual` is a class table type that should be accepted where a function type
+/// is expected (e.g. passing a `@class` table to a `fun(): T` parameter in a generic
+/// factory pattern). Only suppresses the diagnostic when the function's return type is
+/// compatible with the class — i.e. the class IS the return type (or a subclass of it).
+/// This avoids false negatives for non-generic cases like `fun(): string` where a class
+/// table is clearly not a valid factory for that return type.
+fn is_class_table_for_func(actual: &ValueType, expected: &ValueType, analysis: &AnalysisResult) -> bool {
+    let ValueType::Function(Some(fn_idx)) = expected else { return false; };
+    match actual {
+        ValueType::Table(Some(table_idx)) => {
+            if analysis.table(*table_idx).class_name.is_none() { return false; }
+            let func = analysis.func(*fn_idx);
+            // No return annotations → could be untyped factory, suppress conservatively
+            let Some(ret_type) = func.return_annotations.first() else { return true; };
+            match ret_type {
+                // Generic type variable or Any → suppression is safe (generic not yet resolved)
+                ValueType::Any | ValueType::TypeVariable(_) => true,
+                // Generic table → accept any class table
+                ValueType::Table(None) => true,
+                // Specific class table → only suppress if actual is that class or a subclass
+                ValueType::Table(Some(ret_table_idx)) => {
+                    *table_idx == *ret_table_idx
+                        || analysis.ir.is_subclass_of(*table_idx, *ret_table_idx)
+                }
+                // Concrete non-table type (string, number, etc.) → class is not compatible
+                _ => false,
+            }
+        }
+        ValueType::Union(types) => types.iter().all(|t| {
+            t.is_assignable_to(expected) || is_class_table_for_func(t, expected, analysis)
+        }),
+        _ => false,
+    }
+}
+
 /// Build related info pointing to the function definition where a parameter is declared.
 /// Only emitted for local functions (defined in the current file).
 fn param_declared_here(analysis: &AnalysisResult, func_idx: FunctionIndex) -> Vec<RelatedInfo> {
@@ -60,6 +95,8 @@ impl DiagnosticPass for TypeMismatch {
                     }
                 if arg_type.contains_type_variable() { continue; }
                 if check.skip_if_nil && matches!(arg_type, ValueType::Nil) { continue; }
+                // A @class table is compatible with a function parameter type (factory pattern)
+                if is_class_table_for_func(&arg_type, expected_type, analysis) { continue; }
                 let structurally_matched = !arg_type.is_assignable_to(expected_type)
                     && analysis.is_table_subtype(&arg_type, expected_type);
                 if structurally_matched {

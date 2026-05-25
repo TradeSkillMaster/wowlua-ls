@@ -471,7 +471,14 @@ local function makeFromFactory(factory) end
 
 -- Passing a class table — it's callable as a constructor, so its own type is T.
 local gm1 = makeFromFactory(GenMyClass)
---    ^ hover: (local) gm1: GenMyClass  diag: type-mismatch
+--    ^ hover: (local) gm1: GenMyClass
+
+-- Non-generic callback: class table is NOT a fun(): string factory — should still error.
+---@param cb fun(): string
+---@diagnostic disable-next-line: missing-return
+local function callWithStringFactory(cb) end
+callWithStringFactory(GenMyClass)
+--                    ^ diag: type-mismatch
 
 -- Passing an inline function whose first return is a class — T is extracted from the return annotation.
 local gm2 = makeFromFactory(function() return GenMyClass end)
@@ -827,4 +834,4 @@ for _, val in ReverseIPairs(mixedUnion) do
 --        ^ hover: (local) captured: number  def: local
 end
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion }
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2 }
