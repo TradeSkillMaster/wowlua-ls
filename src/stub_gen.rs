@@ -17,7 +17,12 @@ struct ApiDocData {
 #[derive(Debug)]
 struct ClassicOnlyItems {
     constants: Vec<(String, String, String)>,
+    /// Classic-only enums: enums absent from retail entirely.
     enums: Vec<(String, Vec<(String, i64)>)>,
+    /// Full union of all classic enum data (both classic-only and shared-with-retail),
+    /// returned so callers can merge classic-exclusive field names into retail enums
+    /// without re-parsing the classic API doc directories.
+    all_enums: HashMap<String, Vec<(String, i64)>>,
 }
 
 // ── Blizzard APIDocumentationGenerated full parser ───────────────────────────
@@ -3062,7 +3067,7 @@ fn generate_classic_stubs(
     retail_api_doc: Option<&ApiDocData>,
     retail_fxml_consts: &HashMap<String, (String, String)>,
     all_ui_dirs: &[PathBuf],
-) -> String {
+) -> (String, HashMap<String, Vec<(String, i64)>>) {
     let missing = &diff.missing;
     let missing_fxml = &diff.missing_fxml;
     let existing_globals = &diff.existing_globals;
@@ -3157,11 +3162,13 @@ fn generate_classic_stubs(
         missing_fxml.len());
 
     // Generate classic-only constants and enumerations from wow-ui-source
+    let mut classic_all_enums: HashMap<String, Vec<(String, i64)>> = HashMap::new();
     if let Some(retail_api) = retail_api_doc
         && !classic_ui_dirs.is_empty() {
             log::info!("Extracting classic-only constants and enums from wow-ui-source...");
             let classic_only =
                 collect_classic_only_constants(classic_ui_dirs, retail_api, retail_fxml_consts);
+            classic_all_enums = classic_only.all_enums;
 
             // Filter against already-existing stubs
             let only_constants: Vec<_> = classic_only.constants
@@ -3345,7 +3352,7 @@ fn generate_classic_stubs(
         }
     }
 
-    out.join("\n")
+    (out.join("\n"), classic_all_enums)
 }
 
 fn get_existing_names_with(dir: &Path, re: &regex_lite::Regex, exclude: &[&str]) -> HashSet<String> {
@@ -3659,9 +3666,11 @@ fn collect_classic_only_constants(
     retail_api_doc: &ApiDocData,
     retail_fxml_consts: &HashMap<String, (String, String)>,
 ) -> ClassicOnlyItems {
-    // Collect from all classic branches (union)
+    // Collect from all classic branches (union).
+    // Use HashMap<name, HashMap<field, value>> as the intermediate for enum fields so that
+    // merging across multiple classic branches is O(1) per field rather than O(n) linear scan.
     let mut classic_constants: HashMap<String, (String, String)> = HashMap::new();
-    let mut classic_enums: HashMap<String, Vec<(String, i64)>> = HashMap::new();
+    let mut classic_enums_map: HashMap<String, HashMap<String, i64>> = HashMap::new();
 
     for dir in classic_dirs {
         let api_doc = parse_api_doc_dir(dir);
@@ -3673,10 +3682,23 @@ fn collect_classic_only_constants(
         for (k, v) in fxml_consts {
             classic_constants.entry(k).or_insert(v);
         }
-        for (k, v) in api_doc.enums {
-            classic_enums.entry(k).or_insert(v);
+        for (enum_name, fields) in api_doc.enums {
+            let entry = classic_enums_map.entry(enum_name).or_default();
+            for (field_name, value) in fields {
+                entry.entry(field_name).or_insert(value);
+            }
         }
     }
+
+    // Flatten the intermediate HashMap<field, value> back to Vec for the return type.
+    let classic_enums_all: HashMap<String, Vec<(String, i64)>> = classic_enums_map
+        .into_iter()
+        .map(|(name, fields)| {
+            let mut v: Vec<(String, i64)> = fields.into_iter().collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            (name, v)
+        })
+        .collect();
 
     // Diff: classic-only = in classic but not in retail
     let retail_const_names: HashSet<&str> = retail_api_doc.constants
@@ -3693,13 +3715,13 @@ fn collect_classic_only_constants(
         .collect();
     only_constants.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut only_enums: Vec<_> = classic_enums
-        .into_iter()
+    let mut only_enums: Vec<_> = classic_enums_all.iter()
         .filter(|(name, _)| !retail_enum_names.contains(name.as_str()))
+        .map(|(name, fields)| (name.clone(), fields.clone()))
         .collect();
     only_enums.sort_by(|a, b| a.0.cmp(&b.0));
 
-    ClassicOnlyItems { constants: only_constants, enums: only_enums }
+    ClassicOnlyItems { constants: only_constants, enums: only_enums, all_enums: classic_enums_all }
 }
 
 // ── Main orchestration ─────────────────────────────────────────────────────────
@@ -3987,9 +4009,12 @@ pub fn regenerate_stubs() {
         wiki_names.extend(retail_extras);
     }
 
-    // Step 4a: Generate classic stubs (wiki + constant/enum + LE_* + XML frames)
+    // Step 4a: Generate classic stubs (wiki + constant/enum + LE_* + XML frames).
+    // Also returns the full union of classic enum data (classic_enum_union) so the
+    // enum-merge step below can add classic-exclusive field names into retail enums
+    // without a second traversal of the classic API doc directories.
     log::info!("Generating classic stubs...");
-    let classic_lua = generate_classic_stubs(
+    let (classic_lua, classic_enum_union) = generate_classic_stubs(
         &classic_diff,
         &wiki_pages,
         &wiki_redirects,
@@ -4095,6 +4120,35 @@ pub fn regenerate_stubs() {
     for (name, fields) in retail_enums {
         all_enums.insert(name, fields);
     }
+
+    // Merge classic-exclusive enum field names into enums that already exist in the
+    // combined retail/LuaEnum set.  Classic uses different names for some members
+    // vs retail (e.g. ItemQuality.Standard/Good vs Common/Uncommon), so addons
+    // that target both flavors get undefined-field diagnostics.  We union the
+    // field names: add classic names that are absent from the retail version so
+    // both flavors type-check cleanly.  Classic-only enums (not in retail at all)
+    // continue to be handled by generate_classic_stubs.
+    //
+    // classic_enum_union was already computed inside generate_classic_stubs — no
+    // second traversal of the classic API doc directories is needed here.
+    {
+        let mut merged_count = 0usize;
+        for (enum_name, extra_fields) in &classic_enum_union {
+            if let Some(existing) = all_enums.get_mut(enum_name) {
+                let present: HashSet<&str> = existing.iter().map(|(n, _)| n.as_str()).collect();
+                let to_add: Vec<(String, i64)> = extra_fields.iter()
+                    .filter(|(n, _)| !present.contains(n.as_str()))
+                    .map(|(n, v)| (n.clone(), *v))
+                    .collect();
+                merged_count += to_add.len();
+                existing.extend(to_add);
+            }
+        }
+        if merged_count > 0 {
+            log::info!("  Merged {merged_count} classic-exclusive field name(s) into shared retail enums");
+        }
+    }
+
     log::info!("  Combined Enum.* sources: {} total", all_enums.len());
     if all_enums.len() < 500 {
         source_errors.push(format!("Enum.* stubs: {} (expected ≥500)", all_enums.len()));

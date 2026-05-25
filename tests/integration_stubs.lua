@@ -1008,3 +1008,14 @@ local acquiredBtn = btnPool:Acquire()
 -- CreateFramePoolCollection returns a FramePoolCollection
 local poolColl = CreateFramePoolCollection()
 --    ^ hover: (local) poolColl: FramePoolCollection
+
+-- Enum.ItemQuality includes both retail (Common/Uncommon) and classic (Standard/Good)
+-- members so multi-flavor addons do not get undefined-field diagnostics.
+local _qual = Enum.ItemQuality.Standard
+--                              ^ hover: (field) Standard: number = 1
+local _qual2 = Enum.ItemQuality.Good
+--                               ^ hover: (field) Good: number = 2
+local _qual3 = Enum.ItemQuality.Common
+--                               ^ hover: (field) Common: number = 1
+local _qual4 = Enum.ItemQuality.Uncommon
+--                               ^ hover: (field) Uncommon: number = 2
