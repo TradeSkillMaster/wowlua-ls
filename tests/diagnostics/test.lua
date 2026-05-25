@@ -1241,6 +1241,31 @@ local mf8 = { name = "only name" }
 local mf9 = { name = "btn" }
 -- ^ diag: none
 
+-- Nested table constructors in table<K, V> where V is a class
+---@class NestedClassTest
+---@field x number
+---@field y number
+
+---@type table<string, NestedClassTest>
+local nested1 = {
+    complete = { x = 1, y = 2 },
+    -- ^ diag: none
+    incomplete = { x = 1 },
+    --         ^ diag: missing-fields
+}
+
+-- Field assignment with table<K, V> annotation
+---@class NestedFieldHost
+local nfh = {}
+
+---@type table<string, NestedClassTest>
+nfh.items = {
+    ok = { x = 10, y = 20 },
+    -- ^ diag: none
+    bad = { y = 5 },
+    --    ^ diag: missing-fields
+}
+
 -- ── Malformed annotation diagnostics ─────────────────────────────────────
 
 -- Unknown annotation tag (typo)

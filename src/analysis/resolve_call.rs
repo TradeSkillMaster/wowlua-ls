@@ -2798,6 +2798,52 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Case 5: Field assignments with table<K, V> type annotations
+        // e.g. `AddOn.RaceIcons = { Human = { ... } }` where RaceIcons has
+        // `@type table<string, RaceGender>` annotation.
+        for fa in &self.ir.field_assignments {
+            if fa.actual_expr.is_external() { continue; }
+            let Some(field_info) = self.table(fa.table_idx).fields.get(&fa.field_name) else { continue };
+            let Some(ref ann) = field_info.annotation else { continue };
+            let Some(ann_table_idx) = extract_table_idx_from_type(ann) else { continue };
+            if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(fa.actual_expr) {
+                if ctor_idx.is_external() { continue; }
+                tc_pairs.push((ann_table_idx, ctor_idx));
+            }
+        }
+
+        // Case 6: Named fields in table<K, V> typed constructors
+        // e.g. `local t: table<string, SomeClass> = { Human = { ... } }`
+        // The inner `{ ... }` should be checked against SomeClass.
+        // Look at tc_pairs from Cases 1-5 where the "class" is a table<K,V> type
+        // (has value_type pointing to a real class). Check the constructor's named
+        // field values for inner table constructors.
+        // NOTE: Only processes one level of nesting (tc_pairs snapshot from Cases 1-5).
+        // Deeper nesting like `table<K, table<K2, SomeClass>>` is not checked.
+        let existing_len = tc_pairs.len();
+        for i in 0..existing_len {
+            let (type_table_idx, ctor_idx) = tc_pairs[i];
+            if ctor_idx.is_external() { continue; }
+            let type_table = self.table(type_table_idx);
+            // For local tables, require value_type_annotated. For external tables,
+            // the flag is not serialized — instead verify the value class has a name.
+            if !type_table_idx.is_external() && !type_table.value_type_annotated { continue; }
+            let vt = type_table.value_type.clone();
+            let Some(value_class_idx) = vt.as_ref().and_then(extract_table_idx_from_type) else { continue; };
+            if type_table_idx.is_external() && self.table(value_class_idx).class_name.is_none() {
+                continue;
+            }
+            let ctor_table = &self.ir.tables[ctor_idx.val()];
+            let field_exprs: Vec<ExprId> = ctor_table.fields.values().map(|fi| fi.expr).collect();
+            for expr_id in field_exprs {
+                if expr_id.is_external() { continue; }
+                if let Expr::TableConstructor(inner_ctor_idx) = *self.ir.expr(expr_id) {
+                    if inner_ctor_idx.is_external() { continue; }
+                    tc_pairs.push((value_class_idx, inner_ctor_idx));
+                }
+            }
+        }
+
         // Record expected class for each constructor (used by completions)
         for &(class_idx, ctor_idx) in &tc_pairs {
             self.ir.tc_expected_class.insert(ctor_idx, class_idx);
