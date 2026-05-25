@@ -1363,8 +1363,9 @@ impl AnalysisResult {
         None
     }
 
-    /// Extract the identifier word at the given byte offset if it falls inside a `---` comment token.
-    /// Returns `(word, token_text_range)` where word is the class/alias name.
+    /// Extract the identifier word at the given byte offset if it falls inside an annotation comment.
+    /// Supports both `---` line comments and `--[[...]]` / `--[=[...]=]` block comments
+    /// that contain `@`-prefixed annotation content (e.g. `@as`, `@cast`, `@type`).
     fn annotation_word_at(&self, tree: &SyntaxTree, offset: u32) -> Option<String> {
         let text_size = TextSize::from(offset);
         let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
@@ -1372,12 +1373,17 @@ impl AnalysisResult {
             return None;
         }
         let tok_text = token.text();
-        if !tok_text.starts_with("---") {
-            return None;
-        }
-        // Skip @diagnostic lines — they contain diagnostic code names, not type references
-        if tok_text.contains("@diagnostic") {
-            return None;
+        if tok_text.starts_with("---") {
+            // Skip @diagnostic lines — they contain diagnostic code names, not type references
+            if tok_text.contains("@diagnostic") {
+                return None;
+            }
+        } else {
+            // Block comments: --[[...]], --[=[...]=], --[==[...]==], etc.
+            let inner = super::block_comment_inner(tok_text)?;
+            if !inner.trim_start().starts_with('@') || inner.contains("@diagnostic") {
+                return None;
+            }
         }
         let tok_start = u32::from(token.text_range().start());
         let cursor_in_tok = (offset - tok_start) as usize;

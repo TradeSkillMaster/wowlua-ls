@@ -228,3 +228,27 @@ local blockCast = nil
 --[[@cast blockCast BlockGhostType]]
 --                   ^ diag: undefined-doc-name
 print(blockCast)
+
+-- ── @as go-to-definition on class type ──────────────────────────────────────
+
+---@class AsDefClass
+---@field value number
+
+local asDefVar = nil --[[@as AsDefClass]]
+--                           ^ def: local 234:1  hover: (class) AsDefClass
+
+-- ── @cast (block comment) go-to-definition on class type ────────────────────
+
+---@type any
+local blockDefVar = nil
+
+--[[@cast blockDefVar AsDefClass]]
+--                    ^ def: local 234:1  hover: (class) AsDefClass
+
+-- ── @cast (line comment) go-to-definition on class type ─────────────────────
+
+---@type any
+local lineDefVar = nil
+
+---@cast lineDefVar AsDefClass
+--                  ^ def: local 234:1  hover: (class) AsDefClass

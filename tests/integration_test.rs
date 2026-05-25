@@ -189,7 +189,7 @@ fn run_annotation_tests(config: &TestConfig) {
             if code_line_num == 0 { break; }
             code_line_num -= 1;
             let cl = lines[code_line_num].trim();
-            if !cl.is_empty() && (!cl.starts_with("--") || cl.starts_with("---@") || cl == "---") { break; }
+            if !cl.is_empty() && (!cl.starts_with("--") || cl.starts_with("---@") || cl.starts_with("--[[@") || cl == "---") { break; }
         }
         let code_line_1based = code_line_num + 1;
 

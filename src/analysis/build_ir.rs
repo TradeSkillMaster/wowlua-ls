@@ -3045,21 +3045,12 @@ impl<'a> Analysis<'a> {
 
     /// Parse a comment token as a potential `@as` annotation.
     fn parse_as_comment(text: &str) -> Option<AnnotationType> {
-        let inner = if text.starts_with("--[[") && text.ends_with("]]") {
-            Some(&text[4..text.len()-2])
-        } else if text.starts_with("--[=[") && text.ends_with("]=]") {
-            Some(&text[5..text.len()-3])
-        } else {
-            None
-        };
-        if let Some(inner) = inner {
-            let inner = inner.trim();
-            if let Some(rest) = inner.strip_prefix("@as") {
-                let rest = rest.trim();
-                if !rest.is_empty() {
-                    return Some(crate::annotations::parse_type(rest));
-                }
-            }
+        let inner = super::block_comment_inner(text)?;
+        let inner = inner.trim();
+        let rest = inner.strip_prefix("@as")?;
+        let rest = rest.trim();
+        if !rest.is_empty() {
+            return Some(crate::annotations::parse_type(rest));
         }
         None
     }

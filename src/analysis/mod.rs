@@ -177,6 +177,27 @@ pub(crate) struct ExpressionArg {
     pub str_range: (u32, u32),
 }
 
+/// Extract the inner content of a long-bracket block comment (`--[[...]]`, `--[=[...]=]`,
+/// `--[==[...]==]`, etc.). Returns `None` if the text is not a valid long-bracket comment.
+pub(super) fn block_comment_inner(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("--[")?;
+    let level = rest.bytes().take_while(|&b| b == b'=').count();
+    let rest = rest.get(level..)?;
+    let rest = rest.strip_prefix('[')?;
+    // Strip closing: ] + level*= + ]
+    if rest.len() < level + 2 {
+        return None;
+    }
+    let (inner, close) = rest.split_at(rest.len() - (level + 2));
+    if !close.starts_with(']') || !close.ends_with(']') {
+        return None;
+    }
+    if level > 0 && !close[1..level + 1].bytes().all(|b| b == b'=') {
+        return None;
+    }
+    Some(inner)
+}
+
 /// Extract all `TableIndex` values reachable from a `ValueType`.
 /// Handles both a plain `Table(Some(idx))` and a `Union` of tables.
 /// Returns an empty vec for any other type.
