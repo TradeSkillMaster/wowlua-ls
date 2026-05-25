@@ -2163,8 +2163,8 @@ impl<'a> Analysis<'a> {
                     && let (AnnotationType::Simple(k_name), AnnotationType::Simple(v_name)) = (&args[0], &args[1]) {
                         let k_is_generic = generic_names.contains(k_name) && !subs.contains_key(k_name);
                         let v_is_generic = generic_names.contains(v_name) && !subs.contains_key(v_name);
-                        if (k_is_generic || v_is_generic)
-                            && let Some(table_idx) = self.ir.find_table_index(arg_expr_id) {
+                        if k_is_generic || v_is_generic {
+                            if let Some(table_idx) = self.ir.find_table_index(arg_expr_id) {
                                 // Prefer explicit key_type/value_type (from table<K,V> inheritance)
                                 let explicit_key = self.ir.table(table_idx).key_type.clone();
                                 let explicit_val = self.ir.table(table_idx).value_type.clone();
@@ -2190,7 +2190,59 @@ impl<'a> Analysis<'a> {
                                         }
                                     }
                                 }
+                            } else if let Some(arg_type) = self.resolve_expr(arg_expr_id) {
+                                // Fallback for union-typed args (e.g. BranchMerge across if/else).
+                                // Collect K/V types from all table members of the union.
+                                let table_indices = super::table_indices_from_type(&arg_type);
+                                if !table_indices.is_empty() {
+                                    if k_is_generic {
+                                        // For each table: use its explicit key_type if present;
+                                        // for field-only tables (struct-like) approximate with
+                                        // String since field keys are always string literals.
+                                        // Both contributions are unioned so a mix of typed maps
+                                        // and struct-like tables in the same union is handled.
+                                        let key_types: Vec<ValueType> = table_indices.iter()
+                                            .filter_map(|&ti| {
+                                                let tbl = self.ir.table(ti);
+                                                if let Some(kt) = tbl.key_type.clone() {
+                                                    Some(kt)
+                                                } else if !tbl.fields.is_empty() {
+                                                    // Field keys are string literals; use String as approximation
+                                                    Some(ValueType::String(None))
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .collect();
+                                        if !key_types.is_empty() {
+                                            subs.insert(k_name.clone(), ValueType::make_union(key_types));
+                                        }
+                                    }
+                                    if v_is_generic {
+                                        // V asymmetry vs K: field values can be any expression
+                                        // type, so we resolve each field's expr when value_type
+                                        // isn't set (unlike K where we approximate with String).
+                                        let val_types: Vec<ValueType> = table_indices.iter()
+                                            .filter_map(|&ti| self.ir.table(ti).value_type.clone())
+                                            .collect();
+                                        if !val_types.is_empty() {
+                                            subs.insert(v_name.clone(), ValueType::make_union(val_types));
+                                        } else {
+                                            // Collect exprs first to avoid borrow conflict with resolve_expr
+                                            let field_exprs: Vec<ExprId> = table_indices.iter()
+                                                .flat_map(|&ti| self.ir.table(ti).fields.values().map(|f| f.expr).collect::<Vec<_>>())
+                                                .collect();
+                                            let field_types: Vec<ValueType> = field_exprs.iter()
+                                                .filter_map(|&expr_id| self.resolve_expr(expr_id))
+                                                .collect();
+                                            if let Some(union_type) = Self::union_of(field_types) {
+                                                subs.insert(v_name.clone(), union_type);
+                                            }
+                                        }
+                                    }
+                                }
                             }
+                        }
                     }
             }
             AnnotationType::Backtick(inner) => {

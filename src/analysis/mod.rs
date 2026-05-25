@@ -177,6 +177,20 @@ pub(crate) struct ExpressionArg {
     pub str_range: (u32, u32),
 }
 
+/// Extract all `TableIndex` values reachable from a `ValueType`.
+/// Handles both a plain `Table(Some(idx))` and a `Union` of tables.
+/// Returns an empty vec for any other type.
+pub(super) fn table_indices_from_type(vt: &ValueType) -> Vec<TableIndex> {
+    match vt {
+        ValueType::Table(Some(idx)) => vec![*idx],
+        ValueType::Union(members) => members.iter().filter_map(|m| match m {
+            ValueType::Table(Some(idx)) => Some(*idx),
+            _ => None,
+        }).collect(),
+        _ => vec![],
+    }
+}
+
 impl Ir {
     /// Get the addon namespace table index for this file. Prefers the per-file
     /// override (set when multi-addon workspace isolation is active), falling

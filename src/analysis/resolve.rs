@@ -2479,25 +2479,28 @@ impl<'a> Analysis<'a> {
                         // iterator's return annotations.
                         if let Some(state_eid) = state_eid {
                             if let Some(arg_type) = self.resolve_expr(state_eid) {
-                                let table_idx = match &arg_type {
-                                    ValueType::Table(Some(idx)) => Some(*idx),
-                                    ValueType::Union(members) => members.iter().find_map(|m| match m {
-                                        ValueType::Table(Some(idx)) => Some(*idx),
-                                        _ => None,
-                                    }),
-                                    _ => None,
-                                };
-                                if let Some(table_idx) = table_idx {
+                                let table_indices = super::table_indices_from_type(&arg_type);
+                                if !table_indices.is_empty() {
                                     match var_idx {
-                                        0 => if let Some(kt) = self.table(table_idx).key_type.clone() {
-                                            // Control variable is never nil inside the loop body
-                                            return Some(kt.strip_nil());
-                                        },
-                                        1 => if let Some(vt) = self.table(table_idx).value_type.clone() {
-                                            // Lua tables cannot store nil values, so iteration
-                                            // never yields nil — strip nil from the value type.
-                                            return Some(vt.strip_nil());
-                                        },
+                                        0 => {
+                                            let key_types: Vec<ValueType> = table_indices.iter()
+                                                .filter_map(|&ti| self.table(ti).key_type.clone())
+                                                .collect();
+                                            if !key_types.is_empty() {
+                                                // Control variable is never nil inside the loop body
+                                                return Some(ValueType::make_union(key_types).strip_nil());
+                                            }
+                                        }
+                                        1 => {
+                                            let val_types: Vec<ValueType> = table_indices.iter()
+                                                .filter_map(|&ti| self.table(ti).value_type.clone())
+                                                .collect();
+                                            if !val_types.is_empty() {
+                                                // Lua tables cannot store nil values, so iteration
+                                                // never yields nil — strip nil from the value type.
+                                                return Some(ValueType::make_union(val_types).strip_nil());
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -2569,23 +2572,28 @@ impl<'a> Analysis<'a> {
                 };
                 if let Some(table_arg) = table_arg_expr
                     && let Some(arg_type) = self.resolve_expr(table_arg) {
-                        let table_idx = match &arg_type {
-                            ValueType::Table(Some(idx)) => Some(*idx),
-                            ValueType::Union(members) => {
-                                members.iter().find_map(|m| match m {
-                                    ValueType::Table(Some(idx)) => Some(*idx),
-                                    _ => None,
-                                })
-                            }
-                            _ => None,
-                        };
-                        if let Some(table_idx) = table_idx {
+                        let table_indices = super::table_indices_from_type(&arg_type);
+                        if !table_indices.is_empty() {
                             match var_idx {
                                 // Lua tables cannot store nil keys or nil values — strip nil
                                 // so that iterating a `(T|nil)[]` or `table<K|nil, V|nil>`
                                 // gives T/K/V instead of T?/K?/V? in the loop variables.
-                                0 => return self.table(table_idx).key_type.clone().map(|t| t.strip_nil()),
-                                1 => return self.table(table_idx).value_type.clone().map(|t| t.strip_nil()),
+                                0 => {
+                                    let key_types: Vec<ValueType> = table_indices.iter()
+                                        .filter_map(|&ti| self.table(ti).key_type.clone())
+                                        .collect();
+                                    if !key_types.is_empty() {
+                                        return Some(ValueType::make_union(key_types).strip_nil());
+                                    }
+                                }
+                                1 => {
+                                    let val_types: Vec<ValueType> = table_indices.iter()
+                                        .filter_map(|&ti| self.table(ti).value_type.clone())
+                                        .collect();
+                                    if !val_types.is_empty() {
+                                        return Some(ValueType::make_union(val_types).strip_nil());
+                                    }
+                                }
                                 _ => {}
                             }
                         }

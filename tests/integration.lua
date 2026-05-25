@@ -478,6 +478,27 @@ local function _branchMergeTest(cond1, cond2, cond3)
     --          ^ hover: (local) x3: number | string | true
 end
 
+-- ── For-in over branch-merged union table ──
+-- When a variable is assigned different table types in if/else branches,
+-- pairs() iteration should yield the union of both value types.
+local function _forInUnionTableTest(cond)
+    local tbl = nil
+    if cond then
+        tbl = {1, 2, 3}
+    else
+        tbl = {"a", "b", "c"}
+    end
+    for _, branchVal in pairs(tbl) do
+        local _use = branchVal
+        --           ^ hover: (local) branchVal: number | string
+    end
+    -- Key should be number (both branches use positional integer keys)
+    for branchKey, _ in pairs(tbl) do
+        local _k = branchKey
+        --         ^ hover: (local) branchKey: number
+    end
+end
+
 -- ── Table constructor key/value type inference ──
 local bracketStrMap = { ["foo"] = "bar", ["baz"] = "qux" }
 --    ^ hover: (local) bracketStrMap: table<string, string>  def: local
