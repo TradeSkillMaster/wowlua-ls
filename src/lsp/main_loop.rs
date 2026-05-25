@@ -36,14 +36,15 @@ use lsp_types::{PositionEncodingKind, TextDocumentSyncCapability, TextDocumentSy
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
 use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, DiagnosticSuppression, TypedSelfField, scan_all_annotations, scan_diagnostic_directives, scan_built_name_calls, DefclassContext, BuiltNameContext, scan_defclass_calls_with_context, scan_built_name_calls_with_context};
-use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, ValueType};
+use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, SymbolIndex, ValueType};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 use crate::analysis::queries::HighlightKind;
 use crate::analysis::semantic_tokens::{
     RawSemanticToken, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
-use crate::syntax::tree::SyntaxTree;
+use crate::syntax::tree::{NodeId, SyntaxTree};
+use crate::syntax::SyntaxKind;
 use crate::lsp::diagnostics;
 use crate::lsp::uri::{abs_path_to_uri, uri_to_abs_path};
 
@@ -1332,7 +1333,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             work_done_progress_options: Default::default(),
         })),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
-            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX, CodeActionKind::SOURCE]),
+            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX, CodeActionKind::SOURCE, CodeActionKind::REFACTOR_EXTRACT]),
             ..Default::default()
         })),
         document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
@@ -3155,6 +3156,18 @@ pub fn compute_code_actions(
     );
     if let Some(action) = make_generate_annotation_stubs_source_action(uri, text, cursor_offset, tree_and_analysis) {
         actions.push(CodeActionOrCommand::CodeAction(action));
+    }
+
+    // Refactoring actions (only when there's a real selection)
+    if range.start != range.end
+        && let Some((tree, analysis)) = tree_and_analysis
+    {
+        if let Some(action) = make_extract_variable_action(uri, text, range, tree) {
+            actions.push(CodeActionOrCommand::CodeAction(action));
+        }
+        if let Some(action) = make_extract_function_action(uri, text, range, tree, analysis) {
+            actions.push(CodeActionOrCommand::CodeAction(action));
+        }
     }
 
     actions
@@ -5895,6 +5908,417 @@ where
     not.extract(N::METHOD)
 }
 
+// ── Refactoring: Extract Variable ────────────────────────────────────────────
+
+/// Refactoring action: extract the selected expression into a new local variable.
+///
+/// Inserts `local newVar = <expr>` on the line before the containing statement
+/// and replaces the selection with `newVar`.
+#[allow(clippy::mutable_key_type)]
+fn make_extract_variable_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    range: lsp_types::Range,
+    tree: &SyntaxTree,
+) -> Option<CodeAction> {
+    let utf8 = use_utf8();
+    let start_offset = super::lsp_position_to_offset(text, range.start.line, range.start.character, utf8);
+    let end_offset = super::lsp_position_to_offset(text, range.end.line, range.end.character, utf8);
+
+    if start_offset >= end_offset { return None; }
+
+    let expr_text = text.get(start_offset as usize..end_offset as usize)?;
+    let expr_trimmed = expr_text.trim();
+    if expr_trimmed.is_empty() { return None; }
+
+    // Don't offer this when the selection is a complete statement (use Extract Function instead)
+    let (stmt_start, stmt_end) = find_enclosing_statement_range(tree, start_offset)?;
+    if start_offset <= stmt_start && end_offset >= stmt_end { return None; }
+
+    let indent = get_line_indentation(text, stmt_start);
+    let numbers = super::SafeLinePositions::new(text);
+
+    // Insert `local newVar = <expr>` on the line before the containing statement.
+    let insert_line = numbers.lsp_position(stmt_start as usize, utf8).line;
+    let insert_pos = Position { line: insert_line, character: 0 };
+    let edit_insert = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text: format!("{}local {} = {}\n", indent, EXTRACTED_VAR_NAME, expr_trimmed),
+    };
+
+    // Replace the selected expression with the variable name.
+    let edit_replace = lsp_types::TextEdit {
+        range,
+        new_text: EXTRACTED_VAR_NAME.to_string(),
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit_insert, edit_replace]);
+
+    Some(CodeAction {
+        title: "Extract to local variable".to_string(),
+        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+// ── Refactoring: Extract Function ────────────────────────────────────────────
+
+/// Placeholder name inserted into the document for the extracted variable.
+const EXTRACTED_VAR_NAME: &str = "newVar";
+/// Placeholder name inserted into the document for the extracted function.
+const EXTRACTED_FUNC_NAME: &str = "newFunction";
+
+/// Refactoring action: extract selected statements into a new local function.
+///
+/// Analyzes variables used/defined in the selection to determine parameters
+/// and return values, then generates a new `local function` definition and
+/// replaces the selected code with a call to it.
+#[allow(clippy::mutable_key_type)]
+fn make_extract_function_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    range: lsp_types::Range,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+) -> Option<CodeAction> {
+    let utf8 = use_utf8();
+    let sel_start = super::lsp_position_to_offset(text, range.start.line, range.start.character, utf8);
+    let sel_end = super::lsp_position_to_offset(text, range.end.line, range.end.character, utf8);
+
+    if sel_start >= sel_end { return None; }
+
+    // Find the range covered by complete statements inside the selection.
+    let (stmts_start, stmts_end) = find_complete_statements_range(tree, sel_start, sel_end)?;
+
+    let body_text = text.get(stmts_start as usize..stmts_end as usize)?;
+    if body_text.trim().is_empty() { return None; }
+
+    let numbers = super::SafeLinePositions::new(text);
+
+    let indent = get_line_indentation(text, stmts_start);
+    let inner_indent = format!("{}    ", indent);
+
+    // Analyze variable flow.
+    let params = find_outer_variables_used_in_range(tree, analysis, stmts_start, stmts_end);
+    let returns = find_variables_defined_in_range_used_after(
+        tree, analysis, stmts_start, stmts_end, text.len() as u32,
+    );
+
+    let params_str = params.join(", ");
+    let returns_str = returns.join(", ");
+
+    // Decline when the selection contains return statements: extracting them
+    // would break control flow (the `return` exits the extracted function, not
+    // the original caller).
+    if range_contains_return(tree, stmts_start, stmts_end) {
+        return None;
+    }
+
+    // Build the extracted function text.
+    let body_reindented = reindent_block(body_text, &indent, &inner_indent);
+    let mut func_text = format!("{}local function {}({})\n", indent, EXTRACTED_FUNC_NAME, params_str);
+    func_text.push_str(&body_reindented);
+    if !returns.is_empty() {
+        func_text.push_str(&format!("{}    return {}\n", indent, returns_str));
+    }
+    func_text.push_str(&format!("{}end\n\n", indent));
+
+    // Build the replacement call.
+    let call_text = if returns.is_empty() {
+        format!("{}{}({})\n", indent, EXTRACTED_FUNC_NAME, params_str)
+    } else {
+        format!("{}local {} = {}({})\n", indent, returns_str, EXTRACTED_FUNC_NAME, params_str)
+    };
+
+    // Insertion point: the start of the enclosing function's definition line,
+    // or byte 0 (top of file) when at file scope.  Using `stmts_start` as the
+    // fallback would produce two edits at the same document position, which has
+    // undefined behaviour in the LSP spec.
+    let insert_offset = find_enclosing_function_start(analysis, stmts_start)
+        .unwrap_or(0);
+    let insert_line = numbers.lsp_position(insert_offset as usize, utf8).line;
+    let insert_pos = Position { line: insert_line, character: 0 };
+
+    // Edit 1: insert the new function before the enclosing function.
+    let edit_insert = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text: func_text,
+    };
+
+    // Edit 2: replace the selected statements with the call.
+    // Align to full lines so indentation is preserved correctly.
+    let replace_start_line = numbers.lsp_position(stmts_start as usize, utf8).line;
+    let replace_start = Position { line: replace_start_line, character: 0 };
+    // Include the trailing newline after the last statement if present.
+    let after_end = if stmts_end < text.len() as u32
+        && text.as_bytes().get(stmts_end as usize) == Some(&b'\n')
+    {
+        stmts_end + 1
+    } else {
+        stmts_end
+    };
+    let replace_end = numbers.lsp_position(after_end as usize, utf8);
+
+    let edit_replace = lsp_types::TextEdit {
+        range: Range { start: replace_start, end: replace_end },
+        new_text: call_text,
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit_insert, edit_replace]);
+
+    Some(CodeAction {
+        title: "Extract to function".to_string(),
+        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+// ── Refactoring helpers ───────────────────────────────────────────────────────
+
+/// Returns `true` for syntax node kinds that correspond to statements.
+fn is_statement_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::AssignStatement
+            | SyntaxKind::LocalAssignStatement
+            | SyntaxKind::FunctionCall
+            | SyntaxKind::MethodCall
+            | SyntaxKind::DoBlock
+            | SyntaxKind::WhileLoop
+            | SyntaxKind::RepeatUntilLoop
+            | SyntaxKind::IfChain
+            | SyntaxKind::ForCountLoop
+            | SyntaxKind::ForInLoop
+            | SyntaxKind::FunctionDefinition
+            | SyntaxKind::ReturnStatement
+    )
+}
+
+/// Walk up the tree from `offset` to find the innermost enclosing statement.
+/// Returns its `(start, end)` byte range.
+fn find_enclosing_statement_range(tree: &SyntaxTree, offset: u32) -> Option<(u32, u32)> {
+    let token_id = tree.token_at_offset(offset).right_biased()?;
+    let mut node_id = tree.token_parent(token_id);
+    loop {
+        let node = tree.node(node_id);
+        if is_statement_kind(node.kind) && node.start != u32::MAX {
+            return Some((node.start, node.end));
+        }
+        node_id = tree.node_parent(node_id)?;
+    }
+}
+
+/// Find the innermost `Block` node whose range fully contains `[start, end]`.
+fn find_innermost_block_containing(tree: &SyntaxTree, start: u32, end: u32) -> Option<NodeId> {
+    let mut best: Option<(u32, NodeId)> = None;
+    for (i, node) in tree.nodes.iter().enumerate() {
+        if node.kind != SyntaxKind::Block { continue; }
+        if node.start == u32::MAX { continue; }
+        if node.start <= start && node.end >= end {
+            let len = node.end - node.start;
+            match best {
+                None => best = Some((len, NodeId(i as u32))),
+                Some((best_len, _)) if len < best_len => best = Some((len, NodeId(i as u32))),
+                _ => {}
+            }
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Find the byte range `(first_stmt_start, last_stmt_end)` for the complete
+/// statements that are direct children of the innermost block fully within
+/// `[sel_start, sel_end]`.
+fn find_complete_statements_range(tree: &SyntaxTree, sel_start: u32, sel_end: u32) -> Option<(u32, u32)> {
+    let block_id = find_innermost_block_containing(tree, sel_start, sel_end)?;
+
+    let mut first_start: Option<u32> = None;
+    let mut last_end: u32 = 0;
+
+    for child_id in tree.child_nodes(block_id) {
+        let node = tree.node(child_id);
+        if !is_statement_kind(node.kind) { continue; }
+        if node.start == u32::MAX { continue; }
+        if node.start >= sel_start && node.end <= sel_end {
+            if first_start.is_none_or(|s| node.start < s) {
+                first_start = Some(node.start);
+            }
+            if node.end > last_end {
+                last_end = node.end;
+            }
+        }
+    }
+
+    let first_start = first_start?;
+    if last_end == 0 { return None; }
+    Some((first_start, last_end))
+}
+
+/// Find the byte offset where the innermost enclosing function definition begins,
+/// for use as the insertion point when placing the extracted function.
+fn find_enclosing_function_start(analysis: &AnalysisResult, offset: u32) -> Option<u32> {
+    analysis.ir.functions.iter()
+        .filter(|f| {
+            f.def_node.start < offset
+                && f.def_node.end > offset
+                && f.def_node.start != f.def_node.end
+        })
+        .min_by_key(|f| f.def_node.end - f.def_node.start)
+        .map(|f| f.def_node.start)
+}
+
+/// Returns `true` if any `ReturnStatement` node falls entirely within `[start, end]`.
+fn range_contains_return(tree: &SyntaxTree, start: u32, end: u32) -> bool {
+    tree.nodes.iter().any(|node| {
+        node.kind == SyntaxKind::ReturnStatement
+            && node.start != u32::MAX
+            && node.start >= start
+            && node.end <= end
+    })
+}
+
+/// Return the leading whitespace of the line that contains `offset`.
+fn get_line_indentation(text: &str, offset: u32) -> String {
+    let offset = (offset as usize).min(text.len());
+    let line_start = text[..offset].rfind('\n').map_or(0, |p| p + 1);
+    let line = &text[line_start..];
+    let trimmed_len = line.len() - line.trim_start_matches([' ', '\t']).len();
+    line[..trimmed_len].to_string()
+}
+
+/// Collect the names of local (non-external) variables from an outer scope that
+/// are used within the byte range `[start, end)`.  These become parameters of
+/// the extracted function.
+fn find_outer_variables_used_in_range(
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+    start: u32,
+    end: u32,
+) -> Vec<String> {
+    let mut seen_syms: HashSet<SymbolIndex> = HashSet::new();
+    let mut result = Vec::new();
+
+    for token in tree.all_tokens() {
+        if token.kind != SyntaxKind::Name { continue; }
+        if token.start < start || token.start >= end { continue; }
+
+        let Some((sym_idx, name, _)) = analysis.find_symbol_at(tree, token.start) else { continue };
+
+        // Skip WoW API globals and already-seen symbols.
+        if sym_idx.is_external() { continue; }
+        if name == "self" { continue; }
+        if !seen_syms.insert(sym_idx) { continue; }
+
+        let sym = analysis.sym(sym_idx);
+        let Some(first_version) = sym.versions.first() else { continue };
+
+        // If the symbol's first definition is before this selection it comes
+        // from the enclosing scope → treat as a parameter.
+        if first_version.def_node.start < start {
+            result.push(name);
+        }
+    }
+
+    result
+}
+
+/// Find the names of local variables that are **defined or reassigned** within
+/// `[start, end)` and also **used** after `end`.  These become the return
+/// values of the extracted function.
+///
+/// This includes:
+/// - Variables introduced (first defined) inside the range.
+/// - Outer-scope variables that are *reassigned* inside the range (their
+///   modified value must be returned so the caller sees the update).
+fn find_variables_defined_in_range_used_after(
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+    start: u32,
+    end: u32,
+    file_end: u32,
+) -> Vec<String> {
+    // Pass 1 – collect symbols that have any version defined inside [start, end),
+    // preserving first-encounter order so the returned list is deterministic.
+    let mut defined_in_range_ordered: Vec<(SymbolIndex, String)> = Vec::new();
+    let mut defined_in_range_set: HashSet<SymbolIndex> = HashSet::new();
+    for token in tree.all_tokens() {
+        if token.kind != SyntaxKind::Name { continue; }
+        if token.start < start || token.start >= end { continue; }
+
+        let Some((sym_idx, name, _)) = analysis.find_symbol_at(tree, token.start) else { continue };
+        if sym_idx.is_external() { continue; }
+        if defined_in_range_set.contains(&sym_idx) { continue; }
+
+        let sym = analysis.sym(sym_idx);
+        // Accept the symbol if *any* version (including reassignments of outer
+        // variables) has its definition node inside the selection range.
+        let any_version_in_range = sym.versions.iter().any(|v| {
+            v.def_node.start >= start && v.def_node.start < end
+        });
+        if any_version_in_range {
+            defined_in_range_set.insert(sym_idx);
+            defined_in_range_ordered.push((sym_idx, name));
+        }
+    }
+
+    if defined_in_range_ordered.is_empty() { return Vec::new(); }
+
+    // Pass 2 – find which of those symbols are referenced after `end`.
+    let mut used_after: HashSet<SymbolIndex> = HashSet::new();
+    for token in tree.all_tokens() {
+        if token.kind != SyntaxKind::Name { continue; }
+        if token.start < end || token.start >= file_end { continue; }
+
+        let Some((sym_idx, _, _)) = analysis.find_symbol_at(tree, token.start) else { continue };
+        if defined_in_range_set.contains(&sym_idx) {
+            used_after.insert(sym_idx);
+        }
+    }
+
+    // Filter the definition-ordered list to only those used after the range.
+    defined_in_range_ordered
+        .into_iter()
+        .filter(|(idx, _)| used_after.contains(idx))
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// Re-indent a block of text: strip `old_indent` from the start of each line
+/// and prepend `new_indent`.
+fn reindent_block(text: &str, old_indent: &str, new_indent: &str) -> String {
+    let mut result = String::new();
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            // Preserve blank lines without adding spurious whitespace.
+            result.push('\n');
+        } else if let Some(stripped) = line.strip_prefix(old_indent) {
+            result.push_str(new_indent);
+            result.push_str(stripped);
+            result.push('\n');
+        } else {
+            // Line has less indentation than expected — keep as-is relative to new_indent.
+            result.push_str(new_indent);
+            result.push_str(line.trim_start());
+            result.push('\n');
+        }
+    }
+    // Drop a trailing blank line that would be added by the final split.
+    if result.ends_with("\n\n") {
+        result.pop();
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6227,5 +6651,197 @@ mod tests {
         let result = PendingEditMap::compose_single(10, 10, 1, 10, 11, 0);
         // Net zero change
         assert_eq!(result, PendingEditMap::Single { start: 10, old_end: 10, delta: 0 });
+    }
+
+    // ── Extract Variable / Extract Function tests ─────────────────────────────
+
+    /// Run full analysis (all three phases) on a snippet and return the results.
+    fn analyse(text: &str) -> (crate::syntax::tree::SyntaxTree, AnalysisResult) {
+        use std::sync::Arc;
+        let tree = crate::syntax::parser::parse(text);
+        let pre_globals = Arc::new(PreResolvedGlobals::empty());
+        let mut a = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+        a.resolve_types();
+        let result = a.into_result();
+        (tree, result)
+    }
+
+    #[test]
+    fn get_line_indentation_no_indent() {
+        assert_eq!(get_line_indentation("local x = 1", 0), "");
+    }
+
+    #[test]
+    fn get_line_indentation_with_spaces() {
+        let text = "function foo()\n    local x = 1\nend";
+        // offset 19 is inside "    local x = 1"
+        assert_eq!(get_line_indentation(text, 19), "    ");
+    }
+
+    #[test]
+    fn reindent_block_shifts_indentation() {
+        let body = "    x = 1\n    y = 2\n";
+        let result = reindent_block(body, "    ", "        ");
+        assert_eq!(result, "        x = 1\n        y = 2\n");
+    }
+
+    #[test]
+    fn reindent_block_preserves_blank_lines() {
+        let body = "    x = 1\n\n    y = 2\n";
+        let result = reindent_block(body, "    ", "        ");
+        assert!(result.contains("\n\n"), "blank line must be preserved");
+    }
+
+    #[test]
+    fn find_complete_statements_finds_both_statements() {
+        let text = "local x = 1\nlocal y = 2\n";
+        let tree = crate::syntax::parser::parse(text);
+        // Select both statements (trim trailing newline so the block's end
+        // offset is ≥ sel_end).
+        let sel_end = text.trim_end().len() as u32;
+        let result = find_complete_statements_range(&tree, 0, sel_end);
+        assert!(result.is_some(), "should find statements");
+        let (s, e) = result.unwrap();
+        assert_eq!(s, 0);
+        assert_eq!(e, sel_end);
+    }
+
+    #[test]
+    fn find_complete_statements_returns_none_for_empty_selection() {
+        let text = "local x = 1\n";
+        let tree = crate::syntax::parser::parse(text);
+        // A zero-length selection contains no complete statements
+        let result = find_complete_statements_range(&tree, 5, 5);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn range_contains_return_finds_return_stmt() {
+        let text = "function foo()\n  return 1\nend";
+        let tree = crate::syntax::parser::parse(text);
+        // The return statement is inside the function body
+        assert!(range_contains_return(&tree, 0, text.len() as u32));
+    }
+
+    #[test]
+    fn range_contains_return_false_when_no_return() {
+        let text = "local x = 1\nlocal y = 2\n";
+        let tree = crate::syntax::parser::parse(text);
+        assert!(!range_contains_return(&tree, 0, text.len() as u32));
+    }
+
+    #[test]
+    fn find_outer_vars_detects_outer_local() {
+        // `x` is defined before the selection; the selection uses it.
+        let text = "local x = 1\nlocal y = x + 1\n";
+        let (tree, analysis) = analyse(text);
+        // Selection covers the second statement: "local y = x + 1"
+        let sel_start = text.find("local y").unwrap() as u32;
+        let sel_end = text.len() as u32;
+        let params = find_outer_variables_used_in_range(&tree, &analysis, sel_start, sel_end);
+        assert!(params.contains(&"x".to_string()), "x should be a param: {params:?}");
+        assert!(!params.contains(&"y".to_string()), "y is defined in selection, not a param");
+    }
+
+    #[test]
+    fn find_defined_in_range_detects_local_used_after() {
+        let text = "local x = 1\nlocal y = 2\nprint(y)\n";
+        let (tree, analysis) = analyse(text);
+        // Selection covers the second statement: "local y = 2"
+        let sel_start = text.find("local y").unwrap() as u32;
+        let sel_end = (text.find("print").unwrap()) as u32;
+        let returns = find_variables_defined_in_range_used_after(
+            &tree, &analysis, sel_start, sel_end, text.len() as u32,
+        );
+        assert!(returns.contains(&"y".to_string()), "y is used after selection: {returns:?}");
+    }
+
+    #[test]
+    fn find_defined_in_range_excludes_not_used_after() {
+        // `y` is defined in the selection but never used after it.
+        let text = "local x = 1\nlocal y = 2\n";
+        let (tree, analysis) = analyse(text);
+        let sel_start = text.find("local y").unwrap() as u32;
+        let sel_end = text.len() as u32;
+        let returns = find_variables_defined_in_range_used_after(
+            &tree, &analysis, sel_start, sel_end, text.len() as u32,
+        );
+        assert!(!returns.contains(&"y".to_string()), "y is not used after selection: {returns:?}");
+    }
+
+    #[test]
+    fn extract_variable_action_produced_for_subexpression() {
+        let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+        let text = "local z = 1 + 2\n";
+        let tree = crate::syntax::parser::parse(text);
+        // Select "1 + 2" (chars 10–15)
+        let range = lsp_types::Range {
+            start: lsp_types::Position { line: 0, character: 10 },
+            end:   lsp_types::Position { line: 0, character: 15 },
+        };
+        let action = make_extract_variable_action(&uri, text, range, &tree);
+        assert!(action.is_some(), "should offer Extract Variable for a sub-expression");
+        let a = action.unwrap();
+        let edits = a.edit.unwrap().changes.unwrap();
+        let edits = edits.values().next().unwrap();
+        // Two edits: insert declaration + replace expression.
+        assert_eq!(edits.len(), 2);
+        assert!(edits[0].new_text.contains(EXTRACTED_VAR_NAME));
+        assert!(edits[0].new_text.contains("1 + 2"));
+        assert_eq!(edits[1].new_text, EXTRACTED_VAR_NAME);
+    }
+
+    #[test]
+    fn extract_variable_not_offered_for_full_statement() {
+        let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+        let text = "local x = 1\n";
+        let tree = crate::syntax::parser::parse(text);
+        // Select the entire statement
+        let range = lsp_types::Range {
+            start: lsp_types::Position { line: 0, character: 0 },
+            end:   lsp_types::Position { line: 0, character: 11 },
+        };
+        let action = make_extract_variable_action(&uri, text, range, &tree);
+        assert!(action.is_none(), "should not offer Extract Variable for a full statement");
+    }
+
+    #[test]
+    fn extract_function_not_offered_when_selection_contains_return() {
+        let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+        let text = "function outer()\n  local x = 1\n  return x\nend\n";
+        let (tree, analysis) = analyse(text);
+        // Select the two inner statements (local x and return x)
+        let sel_start = text.find("  local x").unwrap();
+        let sel_end = text.find("end").unwrap();
+        let range = lsp_types::Range {
+            start: lsp_types::Position { line: 1, character: 0 },
+            end:   lsp_types::Position { line: 3, character: 0 },
+        };
+        let _ = (sel_start, sel_end); // used for clarity above
+        let action = make_extract_function_action(&uri, text, range, &tree, &analysis);
+        assert!(action.is_none(), "should not offer Extract Function when selection contains return");
+    }
+
+    #[test]
+    fn extract_function_produces_edits_for_simple_statements() {
+        let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+        // Simple two-statement snippet at file scope (no enclosing function).
+        let text = "local a = 1\nlocal b = 2\nprint(a, b)\n";
+        let (tree, analysis) = analyse(text);
+        // Select the first two statements
+        let range = lsp_types::Range {
+            start: lsp_types::Position { line: 0, character: 0 },
+            end:   lsp_types::Position { line: 2, character: 0 },
+        };
+        let action = make_extract_function_action(&uri, text, range, &tree, &analysis);
+        assert!(action.is_some(), "should offer Extract Function");
+        let a = action.unwrap();
+        assert_eq!(a.kind, Some(lsp_types::CodeActionKind::REFACTOR_EXTRACT));
+        let edits = a.edit.unwrap().changes.unwrap();
+        let edits = edits.values().next().unwrap();
+        assert_eq!(edits.len(), 2, "expected insert + replace edits");
+        // The inserted function should contain the extracted function name.
+        assert!(edits[0].new_text.contains(EXTRACTED_FUNC_NAME),
+            "inserted text should contain function name: {}", edits[0].new_text);
     }
 }
