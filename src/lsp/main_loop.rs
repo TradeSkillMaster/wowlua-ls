@@ -35,7 +35,7 @@ use lsp_types::{PositionEncodingKind, TextDocumentSyncCapability, TextDocumentSy
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, DiagnosticSuppression, TypedSelfField, scan_all_annotations, scan_diagnostic_directives, scan_built_name_calls, DefclassContext, BuiltNameContext, scan_defclass_calls_with_context, scan_built_name_calls_with_context};
+use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, EventDecl, ScanResult, DiagnosticSuppression, TypedSelfField, scan_all_annotations, scan_diagnostic_directives, scan_built_name_calls, DefclassContext, BuiltNameContext, scan_defclass_calls_with_context, scan_built_name_calls_with_context};
 use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, SymbolIndex, ValueType};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
@@ -1081,6 +1081,7 @@ fn scan_directory_tracked(
     complete_directory_scan(pass1, stub_classes, stub_globals, configs)
 }
 
+// IMPORTANT: Update this function when adding semantic fields to ExternalGlobal.
 fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
     if a.len() != b.len() { return false; }
     // Compare all fields that affect analysis results (excludes positional
@@ -1104,6 +1105,66 @@ fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
             && x.built_extends == y.built_extends
             && x.string_value == y.string_value
             && x.number_value == y.number_value
+    })
+}
+
+/// Compare class declarations ignoring positional fields (def_range, def_path,
+/// field_ranges, field_paths) and display-only fields (see, declared_field_names,
+/// field_literals) that don't affect type resolution or diagnostics.
+// IMPORTANT: Update this function when adding semantic fields to ClassDecl.
+fn classes_match(a: &[ClassDecl], b: &[ClassDecl]) -> bool {
+    if a.len() != b.len() { return false; }
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        x.name == y.name
+            && x.type_params == y.type_params
+            && x.type_param_constraints == y.type_param_constraints
+            && x.parents == y.parents
+            && x.fields == y.fields
+            && x.accessors == y.accessors
+            && x.overloads == y.overloads
+            && x.generics == y.generics
+            && x.constructor_methods == y.constructor_methods
+            && x.constraint_type_arg_subs == y.constraint_type_arg_subs
+            && x.field_built_names == y.field_built_names
+            && x.is_enum == y.is_enum
+            && x.is_key_enum == y.is_key_enum
+            && x.correlated_groups == y.correlated_groups
+    })
+}
+
+/// Compare alias declarations ignoring positional fields (def_range, def_path).
+// IMPORTANT: Update this function when adding semantic fields to AliasDecl.
+fn aliases_match(a: &[AliasDecl], b: &[AliasDecl]) -> bool {
+    if a.len() != b.len() { return false; }
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        x.name == y.name
+            && x.type_params == y.type_params
+            && x.typ == y.typ
+            && x.is_opaque == y.is_opaque
+    })
+}
+
+/// Compare event declarations ignoring positional fields (def_range, def_path)
+/// and display-only fields (documentation).
+// IMPORTANT: Update this function when adding semantic fields to EventDecl.
+fn events_match(a: &[EventDecl], b: &[EventDecl]) -> bool {
+    if a.len() != b.len() { return false; }
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        x.event_type == y.event_type
+            && x.event_name == y.event_name
+            && x.params == y.params
+    })
+}
+
+/// Compare self-field declarations ignoring positional field (byte_range).
+// IMPORTANT: Update this function when adding semantic fields to TypedSelfField.
+fn self_fields_match(a: &[TypedSelfField], b: &[TypedSelfField]) -> bool {
+    if a.len() != b.len() { return false; }
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        x.class_name == y.class_name
+            && x.field_name == y.field_name
+            && x.annotation_type == y.annotation_type
+            && x.visibility == y.visibility
     })
 }
 
@@ -4344,25 +4405,29 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
 
     let globals_changed = ws.ws_file_globals.get(&file_path)
         .is_none_or(|old| !globals_match(old, &new_globals));
-    let classes_changed = ws.ws_file_classes.get(&file_path) != Some(&scan.classes);
-    let aliases_changed = ws.ws_file_aliases.get(&file_path) != Some(&scan.aliases);
-    let events_changed = ws.ws_file_events.get(&file_path) != Some(&scan.events);
+    let classes_changed = ws.ws_file_classes.get(&file_path)
+        .is_none_or(|old| !classes_match(old, &scan.classes));
+    let aliases_changed = ws.ws_file_aliases.get(&file_path)
+        .is_none_or(|old| !aliases_match(old, &scan.aliases));
+    let events_changed = ws.ws_file_events.get(&file_path)
+        .is_none_or(|old| !events_match(old, &scan.events));
 
+    // Always store fresh values so positions stay current for hover/go-to-def.
+    // Only rebuild when semantic content (types, names, fields) actually changed.
+    ws.ws_file_globals.insert(file_path.clone(), new_globals);
+    ws.ws_file_classes.insert(file_path.clone(), scan.classes);
+    ws.ws_file_aliases.insert(file_path.clone(), scan.aliases);
+    if scan.callable_classes.is_empty() {
+        ws.ws_file_callable_classes.remove(&file_path);
+    } else {
+        ws.ws_file_callable_classes.insert(file_path.clone(), scan.callable_classes);
+    }
+    if scan.events.is_empty() {
+        ws.ws_file_events.remove(&file_path);
+    } else {
+        ws.ws_file_events.insert(file_path.clone(), scan.events);
+    }
     if globals_changed || classes_changed || aliases_changed || events_changed {
-        ws.ws_file_globals.insert(file_path.clone(), new_globals);
-        ws.ws_file_classes.insert(file_path.clone(), scan.classes);
-        ws.ws_file_aliases.insert(file_path.clone(), scan.aliases);
-        if scan.callable_classes.is_empty() {
-            ws.ws_file_callable_classes.remove(&file_path);
-        } else {
-            ws.ws_file_callable_classes.insert(file_path.clone(), scan.callable_classes);
-        }
-        if scan.events.is_empty() {
-            ws.ws_file_events.remove(&file_path);
-        } else {
-            ws.ws_file_events.insert(file_path.clone(), scan.events);
-        }
-        // Rebuild cached merged vectors since workspace data changed
         ws.rebuild_caches();
     }
 
@@ -4419,7 +4484,7 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
             }
         }
         let changed = ws.ws_file_defclasses.get(&file_path)
-            .map_or(!discovered.is_empty(), |old| old != &discovered);
+            .map_or(!discovered.is_empty(), |old| !classes_match(old, &discovered));
         ws.ws_file_defclasses.insert(file_path.clone(), discovered);
         changed
     };
@@ -4442,7 +4507,7 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
             let new_self_fields = merge_self_field_results(typed, &funcall, bare);
 
             let sf_changed = ws.ws_file_self_fields.get(&file_path)
-                .map_or(!new_self_fields.is_empty(), |old| old != &new_self_fields);
+                .map_or(!new_self_fields.is_empty(), |old| !self_fields_match(old, &new_self_fields));
             let sfg_changed = ws.ws_file_self_field_globals.get(&file_path)
                 .map_or(!funcall.is_empty(), |old| !globals_match(old, &funcall));
             if new_self_fields.is_empty() {
