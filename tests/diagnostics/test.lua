@@ -872,6 +872,15 @@ _consume(testDupParam)
 ---@alias DupParamAlias<V> V[]
 -- ^ diag: duplicate-doc-alias
 
+-- Opaque aliases with distinct names should not trigger
+---@alias (opaque) OpaqueA number
+---@alias (opaque) OpaqueB number
+
+-- Same-name opaque aliases should still trigger
+---@alias (opaque) DupOpaque number
+---@alias (opaque) DupOpaque string
+-- ^ diag: duplicate-doc-alias
+
 -- Suppression via @diagnostic
 ---@alias SuppressedDupAlias string
 ---@diagnostic disable-next-line: duplicate-doc-alias

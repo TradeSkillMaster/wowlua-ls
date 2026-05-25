@@ -60,6 +60,7 @@ impl DiagnosticPass for AnnotationMetadata {
         }
 
         if let Some(rest) = text.strip_prefix("---@alias ") {
+            let rest = rest.strip_prefix("(opaque)").map(|r| r.trim_start()).unwrap_or(rest);
             let name = rest.split(|c: char| c.is_whitespace() || c == '<' || c == ':')
                 .next().unwrap_or("");
             if !name.is_empty() && !seen_aliases.insert(name.to_string()) {
