@@ -1742,6 +1742,12 @@ impl<'a> Analysis<'a> {
             .map(|&idx| self.table(idx).has_source_fields)
             .unwrap_or(false);
 
+        // Only update ir.classes when the built table has a distinct name from the
+        // schema (i.e. it was assigned by @built-name). When the built table inherits
+        // the schema's own class_name, overwriting ir.classes would corrupt the original
+        // class definition and cause false undefined-field diagnostics on chain methods.
+        let update_classes = built_class_name.as_ref() != class_name.as_ref();
+
         let new_built_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo {
             fields: built_fields, class_name: built_class_name.clone(),
@@ -1750,7 +1756,8 @@ impl<'a> Analysis<'a> {
             ..Default::default()
         });
 
-        if let Some(ref name) = built_class_name
+        if update_classes
+            && let Some(ref name) = built_class_name
             && self.ir.classes.contains_key(name) {
                 self.ir.classes.insert(name.clone(), new_built_idx);
             }
