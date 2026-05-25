@@ -1917,6 +1917,31 @@ pub(crate) fn class_has_field_impl(ir: &Ir, table_idx: TableIndex, field_name: &
     false
 }
 
+/// Extract the set of string literal names from a string-literal union key type.
+/// Returns `Some(keys)` when every member of the key type is a string literal
+/// (`String(Some(s))`), or when the key type itself is a single string literal.
+/// Returns `None` if any member is a non-literal (e.g. bare `String(None)`).
+fn extract_string_literal_keys(key_type: &ValueType) -> Option<HashSet<String>> {
+    match key_type {
+        ValueType::String(Some(s)) => {
+            let mut set = HashSet::new();
+            set.insert(s.clone());
+            Some(set)
+        }
+        ValueType::Union(types) if !types.is_empty() => {
+            let mut set = HashSet::new();
+            for t in types {
+                match t {
+                    ValueType::String(Some(s)) => { set.insert(s.clone()); }
+                    _ => return None,
+                }
+            }
+            Some(set)
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn is_table_subtype_impl(
     ir: &Ir,
     resolved_expr_cache: &[Option<ValueType>],
@@ -1980,6 +2005,29 @@ pub(crate) fn is_table_subtype_impl(
                 && fields_structurally_match_impl(ir, resolved_expr_cache, *a, *b) {
                     return true;
                 }
+            // `table<string_literal_keys, V>` → @class structural match.
+            // A dictionary annotated as `table<"r"|"g"|"b"|"a", number>` is
+            // structurally assignable to a class whose required fields are all
+            // covered by those literal key names and whose types are compatible
+            // with the dictionary's value type.
+            if at.class_name.is_none() && at.fields.is_empty() && bt.class_name.is_some()
+                && let (Some(key_type), Some(val_type)) = (&at.key_type, &at.value_type)
+                && let Some(keys) = extract_string_literal_keys(key_type)
+            {
+                let expected_fields = collect_class_fields_impl(ir, resolved_expr_cache, *b);
+                let all_match = expected_fields.iter().all(|(field_name, field_type)| {
+                    if keys.contains(field_name.as_str()) {
+                        val_type.is_assignable_to(field_type)
+                            || is_table_subtype_impl(ir, resolved_expr_cache, val_type, field_type)
+                    } else {
+                        matches!(field_type,
+                            ValueType::Union(types) if types.contains(&ValueType::Nil))
+                    }
+                });
+                if all_match {
+                    return true;
+                }
+            }
             if at.class_name.is_some() && bt.class_name.is_none()
                 && let (Some(bk), Some(bv)) = (&bt.key_type, &bt.value_type)
             {

@@ -181,3 +181,89 @@ end
 local mixedStr = {}
 useString(mixedStr)
 -- ^ diag: type-mismatch
+
+-- Structural match: table<string_literal_keys, V> → @class
+-- A dict annotated as table<"x"|"y", number> covers all fields of Point
+---@type table<"x"|"y", number>
+local dictPoint = {}
+usePoint(dictPoint)
+-- ^ diag: none
+
+-- Should work with a single literal key matching a single-field class
+---@class SingleField
+---@field x number
+---@param sf SingleField
+local function useSingle(sf) return sf.x end
+
+---@type table<"x", number>
+local single = {}
+useSingle(single)
+-- ^ diag: none
+
+-- Should fail: key set missing required field 'y'
+---@type table<"x", number>
+local missingY = {}
+usePoint(missingY)
+-- ^ diag: type-mismatch
+
+-- Should fail: extra keys are fine but value type incompatible (string vs number)
+---@type table<"x"|"y", string>
+local wrongValType = {}
+usePoint(wrongValType)
+-- ^ diag: type-mismatch
+
+-- Should work: optional field absent from key set is OK
+---@class RGBA
+---@field r number
+---@field g number
+---@field b number
+---@field a? number
+---@param color RGBA
+local function useRGBA(color) return color.r end
+
+---@type table<"r"|"g"|"b", number>
+local noAlpha = {}
+useRGBA(noAlpha)
+-- ^ diag: none
+
+-- Should work: all four keys present
+---@type table<"r"|"g"|"b"|"a", number>
+local fullRGBA = {}
+useRGBA(fullRGBA)
+-- ^ diag: none
+
+-- Non-literal key type should NOT match (no guarantee of named fields)
+---@type table<string, number>
+local anyStr = {}
+usePoint(anyStr)
+-- ^ diag: type-mismatch
+
+-- Should fail: inherited required field missing from key set
+---@class ColorBase
+---@field r number
+---@class ColorChild : ColorBase
+---@field g number
+---@field b number
+---@param c ColorChild
+local function useColorChild(c) return c.r end
+
+---@type table<"g"|"b", number>
+local missingInherited = {}
+useColorChild(missingInherited)
+-- ^ diag: type-mismatch
+
+-- Should work: key set covers both own and inherited required fields
+---@type table<"r"|"g"|"b", number>
+local fullInherited = {}
+useColorChild(fullInherited)
+-- ^ diag: none
+
+-- Should match vacuously: class with no fields at all
+---@class EmptyClass
+---@param e EmptyClass
+local function useEmpty(e) end
+
+---@type table<"x", number>
+local anyDict = {}
+useEmpty(anyDict)
+-- ^ diag: none
