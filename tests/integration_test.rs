@@ -194,6 +194,7 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_hover = extract_field(annotation, "hover:");
         let expected_doc = extract_field(annotation, "doc:");
         let expected_def = extract_field(annotation, "def:");
+        let expected_typedef = extract_field(annotation, "typedef:");
         let expected_sig = extract_field(annotation, "sig:");
         let expected_diag = extract_field(annotation, "diag:");
         let expected_refs = extract_field(annotation, "refs:");
@@ -205,7 +206,7 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_lens = extract_field(annotation, "lens:");
 
         if expected_hover.is_none() && expected_doc.is_none() && expected_def.is_none()
-            && expected_sig.is_none() && expected_diag.is_none()
+            && expected_typedef.is_none() && expected_sig.is_none() && expected_diag.is_none()
             && expected_refs.is_none() && expected_linked.is_none()
             && expected_comp.is_none() && expected_tok.is_none()
             && expected_highlight.is_none() && expected_hint.is_none()
@@ -218,7 +219,7 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // For diag-only annotations, we don't need to query at a specific offset
         if expected_diag.is_some() && expected_hover.is_none()
-            && expected_def.is_none() && expected_sig.is_none()
+            && expected_def.is_none() && expected_typedef.is_none() && expected_sig.is_none()
             && expected_refs.is_none() && expected_linked.is_none()
             && expected_comp.is_none() && expected_highlight.is_none()
         {
@@ -315,6 +316,34 @@ fn run_annotation_tests(config: &TestConfig) {
             if !matches {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    def expected: {}\n    def actual:   {}",
+                    config.lua_file, i + 1, location, expected, actual
+                ));
+            }
+        }
+
+        // Check type definition
+        if let Some(expected) = &expected_typedef {
+            let actual = match result.type_definition_at(&tree, offset) {
+                Some(DefinitionResult::Local(range)) => {
+                    let start = numbers.from_offset(u32::from(range.start()) as usize);
+                    format!("local {}:{}", start.0.0 + 1, start.1 + 1)
+                }
+                Some(DefinitionResult::External(loc)) => {
+                    format!("external {}", loc.path.display())
+                }
+                None => "None".to_string(),
+            };
+            let matches = match expected.as_str() {
+                "local" => actual.starts_with("local"),
+                "external" => actual.starts_with("external"),
+                "None" => actual == "None",
+                other if other.starts_with("external ") => actual.starts_with(other),
+                other if other.starts_with("local ") => actual.starts_with(other),
+                other => actual == other,
+            };
+            if !matches {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    typedef expected: {}\n    typedef actual:   {}",
                     config.lua_file, i + 1, location, expected, actual
                 ));
             }
@@ -614,7 +643,7 @@ fn normalize_tok(s: &str) -> Vec<String> {
 /// Keep in sync with the `extract_field` call sites above and the annotation
 /// format documented in CLAUDE.md ("Supported fields: hover:, def:, …").
 const FIELD_PREFIXES: &[&str] = &[
-    "hover:", "doc:", "def:", "sig:", "diag:", "refs:",
+    "hover:", "doc:", "def:", "typedef:", "sig:", "diag:", "refs:",
     "linked:", "comp:", "tok:", "highlight:", "hint:", "lens:",
 ];
 
@@ -767,6 +796,15 @@ fn check_diagnostic(
 // ---------------------------------------------------------------------------
 // Test functions
 // ---------------------------------------------------------------------------
+
+#[test]
+fn type_definition() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/type-definition.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
 
 #[test]
 fn integration_basic() {

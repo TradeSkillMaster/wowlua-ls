@@ -733,6 +733,108 @@ impl AnalysisResult {
         None
     }
 
+    /// Navigate from a variable to its type's declaration (`textDocument/typeDefinition`).
+    ///
+    /// For a variable whose resolved type is a `@class`, jumps to the class declaration.
+    /// For an `@alias (opaque)` type, jumps to the alias declaration.
+    /// For union types, returns the first navigable class/alias member.
+    /// Returns `None` for primitives and unresolvable types.
+    pub fn type_definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
+        // Try field access first so a same-named global doesn't shadow a field result.
+        // Invariant: when resolve_field_chain_at returns Some, the token is always at a
+        // field position, so the is_field_position guard below would also return None.
+        // We return None explicitly here to make that intent clear and prevent symbol
+        // lookup from returning the container variable's type for a non-navigable field.
+        if let Some((table_idx, field_name, expr_id, _)) = self.resolve_field_chain_at(tree, offset) {
+            let resolved_type = self.resolve_expr_type(expr_id).or_else(|| {
+                self.get_field(table_idx, &field_name)
+                    .and_then(|fi| fi.annotation.clone())
+            });
+            return if let Some(vt) = resolved_type {
+                self.type_definition_for_value(&vt)
+            } else {
+                None
+            };
+        }
+        if Self::is_field_position(tree, offset) && !self.is_g_dot_field(tree, offset) {
+            return None;
+        }
+        if let Some((symbol_idx, _, token_start)) = self.find_symbol_at(tree, offset)
+            && let Some(resolved) = self.symbol_resolved_type_at(symbol_idx, token_start)
+        {
+            return self.type_definition_for_value(resolved);
+        }
+        None
+    }
+
+    /// Map a resolved `ValueType` to the source location of its class or alias declaration.
+    fn type_definition_for_value(&self, vt: &ValueType) -> Option<DefinitionResult> {
+        match vt {
+            ValueType::Table(Some(idx)) => {
+                let class_name = self.table(*idx).class_name.as_deref()?;
+                self.class_definition_by_name(class_name)
+            }
+            ValueType::OpaqueAlias(name, _) => self.alias_definition_by_name(name),
+            ValueType::Union(types) => types.iter().find_map(|t| self.type_definition_for_value(t)),
+            ValueType::Intersection(types) => types.iter().find_map(|t| self.type_definition_for_value(t)),
+            _ => None,
+        }
+    }
+
+    /// Look up a `@class` declaration by name, preferring local then external.
+    fn class_definition_by_name(&self, name: &str) -> Option<DefinitionResult> {
+        if let Some(&(start, end)) = self.ir.class_def_ranges.get(name) {
+            return Some(DefinitionResult::Local(TextRange::new(
+                TextSize::from(start),
+                TextSize::from(end),
+            )));
+        }
+        if let Some(loc) = self.ir.ext.class_locations.get(name) {
+            return Some(DefinitionResult::External(loc.clone()));
+        }
+        None
+    }
+
+    /// Look up an `@alias` declaration by name, preferring local then external.
+    fn alias_definition_by_name(&self, name: &str) -> Option<DefinitionResult> {
+        if let Some(&(start, end)) = self.ir.alias_def_ranges.get(name) {
+            return Some(DefinitionResult::Local(TextRange::new(
+                TextSize::from(start),
+                TextSize::from(end),
+            )));
+        }
+        if let Some(loc) = self.ir.ext.alias_locations.get(name) {
+            return Some(DefinitionResult::External(loc.clone()));
+        }
+        None
+    }
+
+    /// Resolve the type of a symbol at the given token offset, selecting the correct
+    /// symbol version for redefined locals, params, and external symbols.
+    ///
+    /// This is the version-tracking logic shared by `type_definition_at` and `hover_at`.
+    fn symbol_resolved_type_at(&self, symbol_idx: SymbolIndex, token_start: u32) -> Option<&ValueType> {
+        let symbol = self.sym(symbol_idx);
+        let is_param = self.is_param_symbol(symbol_idx);
+        if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
+            symbol.versions.get(ver_idx).and_then(|v| v.resolved_type.as_ref())
+        } else if is_param {
+            // Always use version 0 for params (the declaration type from @param),
+            // not a later version from reassignment in the body.
+            symbol.versions.first().and_then(|v| v.resolved_type.as_ref())
+        } else if !symbol_idx.is_external() {
+            // Declaration site fallback: find the version whose def_node contains this
+            // token. For redefined locals (`local x = 1; local x = ""`), each
+            // redefinition creates a new version with its own def_node, so we must
+            // match the token offset to the correct version rather than always using v0.
+            self.version_at_def_site(symbol, token_start)
+                .or_else(|| symbol.versions.first())
+                .and_then(|v| v.resolved_type.as_ref())
+        } else {
+            symbol.versions.iter().rev().find_map(|v| v.resolved_type.as_ref())
+        }
+    }
+
     fn definition_for_expr(&self, expr_id: ExprId) -> Option<DefinitionResult> {
         match self.expr(expr_id) {
             Expr::FunctionDef(func_idx) => {
@@ -1008,28 +1110,9 @@ impl AnalysisResult {
         }
         if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(tree, offset) {
             let symbol = self.sym(symbol_idx);
-            // Use the version that was actually referenced at this token's start offset
-            // (recorded during build_ir), falling back to the latest resolved version.
-            // For parameters, always use version 0 (the declaration type from @param),
-            // not a later version from reassignment in the body.
             let is_param = self.is_param_symbol(symbol_idx);
-            let resolved = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
-                symbol.versions.get(ver_idx).and_then(|v| v.resolved_type.as_ref())
-            } else if is_param {
-                symbol.versions.first().and_then(|v| v.resolved_type.as_ref())
-            } else if !symbol_idx.is_external() {
-                // Declaration site fallback: find the version whose def_node
-                // contains this token. For redefined locals (`local x = 1; local x = ""`),
-                // each redefinition creates a new version with its own def_node, so we
-                // must match the token offset to the correct version rather than always
-                // using version 0.
-                self.version_at_def_site(symbol, token_start)
-                    .or_else(|| symbol.versions.first())
-                    .and_then(|v| v.resolved_type.as_ref())
-            } else {
-                symbol.versions.iter().rev()
-                    .find_map(|v| v.resolved_type.as_ref())
-            };
+            // Resolve the type at this reference using shared version-selection logic.
+            let resolved = self.symbol_resolved_type_at(symbol_idx, token_start);
             // Determine kind prefix
             let kind = if symbol_idx.is_external() {
                 "global"

@@ -263,6 +263,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/expression-type/` — `expression<C, R>` type: hover/completions/definition inside expression strings, `undefined-field` and `type-mismatch` diagnostics, return type inference, inherited fields
 - `tests/call-hierarchy.lua` — Call hierarchy queries: `call_hierarchy_item_at` (functions and methods), `outgoing_calls_from_function` (grouped call ranges, nested function exclusion), `call_sites_for_function` (incoming call sites with enclosing function), `enclosing_function_at`, `call_hierarchy_display_name` (method vs function formatting)
 - `tests/code-lens.lua` — Code lens assertions via `lens:` field: top-level functions, local functions, class methods (colon syntax), table functions (dot syntax), "N implementations" on `@class` declarations counting direct subclasses, "overrides Parent" on methods overriding parent class methods, multi-level inheritance (grandparent override resolution)
+- `tests/type-definition.lua` — Go to Type Definition assertions via `typedef:` field: variables typed as `@class` navigate to the class declaration, `@alias (opaque)` navigates to alias, union types navigate to first class member, field access on class tables navigates to field's type, primitives return None
 - `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch, assert, method-style)
 - `tests/isobjecttype-narrows.lua` — IsObjectType() narrowing via `@type-narrows` on FrameScriptObject: then-branch, early-exit, and-chain, else-branch no-narrow, non-literal/unknown class graceful degradation, non-Button subclass (--with-stubs)
 - `tests/type-guard.lua` — `type()` guard narrowing for symbols and field chains (`type(x) == "string"`, `type(obj.field) == "table"`, `type(x) ~= "nil"`)
@@ -314,7 +315,7 @@ oldFunc()
 local y = mustUse()
 -- ^ diag: none
 ```
-Fields are separated by double-space. Supported fields: `hover:`, `def:`, `sig:`, `diag:`, `refs:`, `comp:`, `tok:`, `hint:`, `lens:`.
+Fields are separated by double-space. Supported fields: `hover:`, `def:`, `typedef:`, `sig:`, `diag:`, `refs:`, `comp:`, `tok:`, `hint:`, `lens:`.
 
 The `tok:` field value is the semantic-token classification at the caret: the token type followed by zero or more modifiers in any order (e.g. `tok: function defaultLibrary`, `tok: method deprecated`). Use `tok: none` to assert no token is emitted at the caret.
 

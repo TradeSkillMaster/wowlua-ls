@@ -103,7 +103,7 @@ local vrOk, vrA, vrB = pcall(varargPcallFn)
 
 ---@type Frame
 local f = nil
---    ^ hover: (local) f: Frame {  def: local
+--    ^ hover: (local) f: Frame {  def: local  typedef: external
 
 -- Go-to-definition on external @class @field annotations (path must be relativized, not absolute)
 ---@type CurrencyInfo

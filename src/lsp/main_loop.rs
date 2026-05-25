@@ -1311,6 +1311,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         position_encoding: Some(negotiated_encoding),
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::INCREMENTAL)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
+        type_definition_provider: Some(lsp_types::TypeDefinitionProviderCapability::Simple(true)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         completion_provider: Some(lsp_types::CompletionOptions {
             trigger_characters: Some(vec![".".to_string(), ":".to_string(), "@".to_string(), "\"".to_string()]),
@@ -2175,6 +2176,28 @@ fn handle_request(
                 }
                 let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
                     let def = analysis.definition_at(tree, offset)?;
+                    match def {
+                        DefinitionResult::Local(def_range) => {
+                            let numbers = super::SafeLinePositions::new(doc.text.as_str());
+                            Some(GotoDefinitionResponse::Scalar(Location {
+                                uri: uri.clone(),
+                                range: numbers.lsp_range(u32::from(def_range.start()) as usize, u32::from(def_range.end()) as usize, use_utf8()),
+                            }))
+                        }
+                        DefinitionResult::External(ref loc) => {
+                            resolve_external_definition(loc)
+                        }
+                    }
+                }).unwrap_or(GotoDefinitionResponse::Array(Vec::new()));
+                send_response(connection, id, &result);
+            }
+        }
+        "textDocument/typeDefinition" => {
+            if let Ok((id, params)) = cast_req::<request::GotoTypeDefinition>(req) {
+                let uri = params.text_document_position_params.text_document.uri;
+                let position = params.text_document_position_params.position;
+                let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
+                    let def = analysis.type_definition_at(tree, offset)?;
                     match def {
                         DefinitionResult::Local(def_range) => {
                             let numbers = super::SafeLinePositions::new(doc.text.as_str());
