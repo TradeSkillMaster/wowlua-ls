@@ -1894,8 +1894,9 @@ fn main_loop(
                             doc.tree.unwrap_or_else(|| parse_lua(&text))
                         };
 
-                        // Skip workspace rebuild for stub files
-                        let rebuilt = if is_stub_path(&uri) {
+                        // Skip workspace rebuild for stub / @meta files
+                        let rebuilt = if is_stub_path(&uri)
+                            || doc.analysis.as_ref().is_some_and(|a| a.is_meta()) {
                             false
                         } else {
                             let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -4072,7 +4073,8 @@ fn handle_notification(
                     }
                     // Stub files: run analysis (so hover/go-to-definition work)
                     // but skip workspace rebuild to avoid multi-second delays.
-                    if is_stub_path(&uri) {
+                    // Defense-in-depth: also check for ---@meta in text.
+                    if is_stub_path(&uri) || text_has_meta(&text) {
                         let tree = parse_lua(&text);
                         let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
                         documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
@@ -4185,7 +4187,12 @@ fn handle_notification(
             if let Ok(params) = cast_not::<notification::DidCloseTextDocument>(not) {
                 let uri_str = params.text_document.uri.to_string();
                 // Stub files never participate in workspace diagnostics.
-                if is_stub_path(&params.text_document.uri) {
+                // Defense-in-depth: also check is_meta (analysis is always
+                // present for Lua files that passed didOpen's stub/shebang checks).
+                let is_meta_doc = documents.get(&uri_str).is_some_and(|d|
+                    d.analysis.as_ref().is_some_and(|a| a.is_meta())
+                );
+                if is_stub_path(&params.text_document.uri) || is_meta_doc {
                     documents.remove(&uri_str);
                     return;
                 }
@@ -5215,6 +5222,11 @@ fn reanalyze_open_documents(
 
 /// Check if a URI points to a file inside the built-in stubs directory
 /// or the temp stubs directory used for go-to-definition on stub symbols.
+///
+/// Both the stub directory paths and the URI-decoded path are canonicalized
+/// (symlinks resolved, case normalized on Windows) so that equivalent paths
+/// compare equal even when `/tmp` is a symlink or Windows drive letter casing
+/// differs between `std::env::temp_dir()` and the editor's URI.
 fn is_stub_path(uri: &lsp_types::Uri) -> bool {
     static STUB_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
     let dirs = STUB_DIRS.get_or_init(|| {
@@ -5232,12 +5244,40 @@ fn is_stub_path(uri: &lsp_types::Uri) -> bool {
         if let Some(dir) = stubs_dir() {
             v.push(dir);
         }
-        v
+        // Canonicalize each path so symlinks (e.g. /tmp → /private/tmp on
+        // macOS) are resolved. Canonicalize the parent first (which usually
+        // exists) then re-append the leaf, because the full path may not
+        // exist yet (e.g. wowlua-ls-stubs is created lazily on first
+        // go-to-definition).
+        v.into_iter()
+            .map(|d| {
+                std::fs::canonicalize(&d).unwrap_or_else(|_| {
+                    // Directory doesn't exist yet — canonicalize the parent
+                    // to resolve symlinks on the prefix (e.g. /tmp → /private/tmp).
+                    match (d.parent(), d.file_name()) {
+                        (Some(parent), Some(leaf)) => {
+                            std::fs::canonicalize(parent)
+                                .map(|cp| cp.join(leaf))
+                                .unwrap_or(d)
+                        }
+                        _ => d,
+                    }
+                })
+            })
+            .collect()
     });
-    let result = uri_to_abs_path(uri).is_some_and(|p| dirs.iter().any(|d| p.starts_with(d)));
+    let result = uri_to_abs_path(uri).is_some_and(|p| {
+        // Fast path: raw starts_with (no syscall). Covers the common case
+        // where paths already match without canonicalization.
+        if dirs.iter().any(|d| p.starts_with(d)) {
+            return true;
+        }
+        // Slow path: canonicalize to resolve symlinks / case differences.
+        // Only reached when the raw check fails (rare).
+        std::fs::canonicalize(&p)
+            .is_ok_and(|cp| dirs.iter().any(|d| cp.starts_with(d)))
+    });
     if !result && uri.as_str().contains("wowlua-ls-stubs") {
-        // Path contains the stubs marker but starts_with didn't match — likely
-        // a Windows path normalization issue. Log to help diagnose.
         log::debug!(
             "is_stub_path: URI contains 'wowlua-ls-stubs' but path check failed: uri={}, temp_dir={:?}",
             uri.as_str(),
@@ -5245,6 +5285,17 @@ fn is_stub_path(uri: &lsp_types::Uri) -> bool {
         );
     }
     result
+}
+
+/// Quick text-based check for `---@meta` in the first few lines.
+/// Used in `didOpen` where analysis hasn't run yet, so the authoritative
+/// `is_meta()` flag isn't available. Other handlers use `is_meta()` instead.
+fn text_has_meta(text: &str) -> bool {
+    // @meta is always near the top of the file; check the first 5 lines.
+    text.lines().take(5).any(|line| {
+        let trimmed = line.trim();
+        trimmed == "---@meta" || trimmed.starts_with("---@meta ")
+    })
 }
 
 /// Check if a URI points to a file that should be ignored by project config.
@@ -5560,10 +5611,8 @@ fn handle_document_diagnostic(
     ws: &WorkspaceState,
 ) -> DocumentDiagnosticReportResult {
     // Stub files should never produce diagnostics in the Problems panel.
-    // Defense-in-depth: check both the path (temp stubs dir) and the content
-    // (@meta annotation). On Windows, path normalization differences between
-    // std::env::temp_dir() and uri_to_abs_path() can cause is_stub_path() to
-    // miss the match, so we also check the analysis result's is_meta flag.
+    // Defense-in-depth: also check the analysis result's is_meta flag
+    // (analysis is always available for open documents at this point).
     let uri_str = uri.to_string();
     if is_stub_path(uri)
         || documents.get(&uri_str)
