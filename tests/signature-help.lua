@@ -37,7 +37,7 @@ btn:GetText()
 -- Test global function
 local t = {}
 table.insert(t, "hello")
---           ^ sig: fun(list: T[], value: T)
+--           ^ sig: fun(list: T[], value: T)  diag: none
 
 -- Test string literal method calls
 ("hello"):format("world")

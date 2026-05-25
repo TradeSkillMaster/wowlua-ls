@@ -94,6 +94,21 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Eat and emit all trivia tokens, returning true if any newline was crossed.
+    fn skip_trivia_track_newline(&mut self) -> bool {
+        let mut saw_newline = false;
+        loop {
+            match self.peek() {
+                Some(tok) if tok.kind.is_trivia() => {
+                    if tok.kind == SK::Newline { saw_newline = true; }
+                    self.bump();
+                }
+                _ => break,
+            }
+        }
+        saw_newline
+    }
+
     fn current_pos(&mut self) -> u32 {
         self.peek().map_or(self.text.len() as u32, |t| t.start)
     }
@@ -649,7 +664,7 @@ impl<'a> Parser<'a> {
             // Since the base was already emitted as the last child of the current node,
             // we take a checkpoint that includes it.
             let cp = self.checkpoint_before_last();
-            self.skip_trivia();
+            let saw_newline = self.skip_trivia_track_newline();
             let Some(tok) = self.peek() else { break };
 
             match tok.kind {
@@ -677,6 +692,9 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
+                // Colon doesn't need the newline guard: `:` cannot start a Lua
+                // statement, so `expr\n:method()` is unambiguously a method call.
+                // Only `(`, `{`, and string literals create the classic ambiguity.
                 SK::Colon => {
                     self.builder.start_node_at(cp, SK::MethodCall);
                     self.bump(); // `:`
@@ -706,7 +724,10 @@ impl<'a> Parser<'a> {
                     }
                     self.builder.finish_node();
                 }
-                SK::LeftBracket | SK::LeftCurlyBracket | SK::String => {
+                // Lua ambiguity: `f()\n(g)` can be `f()(g)` or two statements.
+                // When `(`, `{`, or a string literal follows a newline, treat it as
+                // a new statement rather than a call continuation.
+                SK::LeftBracket | SK::LeftCurlyBracket | SK::String if !saw_newline => {
                     self.builder.start_node_at(cp, SK::FunctionCall);
                     self.parse_call_args();
                     self.builder.finish_node();

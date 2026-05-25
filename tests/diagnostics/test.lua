@@ -3537,6 +3537,13 @@ local notCallableResult = notCallableUnion()
 
 _consume(tblResult, numResult, strResult, flagResult, nothingResult, inst, callableResult, maybeResult, notCallableResult)
 
+-- Should NOT warn: parenthesized expression on next line is not a call continuation
+-- (parser should not merge `func()\n(expr)` into `func()(expr)`)
+local function dotCallHelper() end
+dotCallHelper()
+("some string"):upper()
+-- ^ diag: none
+
 -- Should NOT warn: field initialized to nil then assigned from untyped varargs
 -- (the unresolvable assignment means the field could be any type)
 local function test_field_untyped_varargs()
