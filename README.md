@@ -7,15 +7,19 @@ A language server for World of Warcraft addon development. Built specifically fo
 
 ## Why wowlua-ls
 
-- **WoW API built in** — 9,000+ API stubs for retail, classic, and classic era. No setup, no addon manager.
-- **Event handler typing** — `SetScript("OnEvent", handler)` types `self`, `event`, and per-event payload params. Narrow `event == "ENCOUNTER_END"` and `...` resolves to the exact payload types.
-- **Powerful generics** — parameterized classes, constrained type parameters, backtick factory annotations, function-type projections (`params<F>`, `returns<F>`). Class-level generics propagate through method calls automatically.
-- **Metatable inference** — understands `setmetatable` + `__index`, chained metatables, `__call`, operator metamethods. Your OOP patterns just work.
-- **Correlated narrowing** — check one return value, and the LS narrows the rest. Eliminates false positives from multi-return functions.
+- **9,000+ WoW API stubs built in** — every function, frame type, enum, and global for retail, classic, and classic era. No setup, no addon manager.
+- **Event handler typing** — `SetScript("OnEvent", handler)` types `self`, `event`, and per-event payload params. Narrow `event == "ENCOUNTER_END"` and `...` resolves to the exact payload types. Works with custom event systems too via the `@event` annotation.
+- **XML frame scanning** — automatically scans `.xml` files for frame definitions, virtual templates, `parentKey` children, `inherits` chains, and `mixin` attributes. Your XML-defined frames and templates are typed without any manual annotations.
+- **TOC file support** — hover documentation, completions, go-to-definition on file paths, and diagnostics for `.toc` files. SavedVariables are auto-detected and registered as allowed globals.
+- **Metatable inference** — understands `setmetatable` + `__index`, chained metatables, `__call`, operator metamethods. Your OOP patterns just work without annotations.
+- **Correlated narrowing** — check one return value, and the LS narrows the rest. Eliminates false positives from multi-return functions. Works automatically — no annotations needed in most cases.
 - **Mixin and template support** — `CreateFrame`, `Mixin`, `CreateFromMixins`, and `CreateAndInitFromMixin` return intersection types automatically.
-- **Flavor filtering** — declare `flavors: ["retail", "classic"]` and get warnings on APIs that don't exist in all your targets.
-- **Builder pattern** — `@builds-field` tracks progressive type construction across chained method calls.
+- **Flavor filtering** — declare `flavors: ["retail", "classic"]` and get warnings on APIs that don't exist in all your targets. Guards via `WOW_PROJECT_ID` or `@flavor-narrows` are understood.
+- **70 diagnostics** — type safety, nil checking, annotation correctness, code quality, and WoW-specific checks. Each one individually configurable per-line or per-project.
 - **Diagnostic plugins** — write custom Lua scripts to enforce project-specific conventions. Query local variables, field accesses, and method calls to emit your own diagnostics.
+- **CI-ready CLI** — `wowlua_ls check path/to/addon` lints your addon and exits non-zero on diagnostics. Drop it into your CI pipeline.
+- **Powerful generics** — parameterized classes, constrained type parameters, backtick factory annotations, function-type projections (`params<F>`, `returns<F>`). Class-level generics propagate through method calls automatically.
+- **Builder pattern** — `@builds-field` tracks progressive type construction across chained method calls.
 
 Full feature list and comparisons in the [documentation](https://tradeskillmaster.github.io/wowlua-ls/guide/why-wowlua-ls).
 
@@ -73,27 +77,27 @@ For project-specific settings, add a `.wowluarc.json`:
 
 See the [Configuration guide](https://tradeskillmaster.github.io/wowlua-ls/guide/configuration) for all options.
 
-## What it understands
+## Features
 
-### Annotations
+### WoW-native intelligence
 
-LuaLS-compatible `---@` annotations:
+wowlua-ls understands the patterns WoW addons actually use:
 
-`@param` `@return` `@type` `@class` `@enum` `@field` `@alias` `@overload` `@generic` `@cast` `@as` `@deprecated` `@nodiscard` `@meta` `@diagnostic` `@see`
+- **Frame types and inheritance** — `CreateFrame("Button", nil, nil, "BackdropTemplate")` returns `Button & BackdropTemplateMixin`. Fields, methods, and scripts are all typed.
+- **Event payloads** — 1,000+ WoW events with typed payloads. Narrow the event name and `...` resolves to the correct types.
+- **XML frames and templates** — virtual templates become classes, named frames become globals, `parentKey` children become typed fields. No annotations needed.
+- **TOC files** — hover, completions, go-to-definition, and diagnostics in `.toc` files.
+- **Flavor guards** — `WOW_PROJECT_ID` checks and `@flavor-narrows` annotations let you share code across retail and classic with no false warnings.
 
-Plus WoW-specific extensions:
+### IDE features
 
-`@event` `@defclass` `@builds-field` `@built-name` `@built-extends` `@type-narrows` `@narrows-arg` `@correlated` `@flavor-narrows` `@constructor` `@accessor`
+Hover, go-to-definition, find references, rename, completions, signature help, semantic tokens, inlay hints (6 categories), code lens (usages, implementations, overrides), and call hierarchy.
 
 ### Type system
 
-Unions (`A | B`), intersections (`A & B`), arrays (`T[]`), generics (`@generic T`), variadic generics (`@generic T, ...M`), parameterized classes (`@class Foo<T>`), anonymous table shapes (`{field: type}`), optionals (`T?`), lateinit (`T!`), tuple-union returns (`@return (A, B) | (C, D)`), variadic returns (`@return ...T`).
+LuaLS-compatible annotations (`@param`, `@return`, `@class`, `@field`, `@generic`, `@overload`, etc.) plus WoW-specific extensions (`@event`, `@defclass`, `@builds-field`, `@type-narrows`, `@flavor-narrows`, and more). Full type system with unions, intersections, generics, parameterized classes, anonymous table shapes, optionals, lateinit, tuple-union returns, and opaque aliases.
 
-### Diagnostics
-
-65+ diagnostics covering type safety, nil checking, annotation correctness, code quality, and WoW-specific checks. Each one is individually configurable.
-
-See the [full diagnostic list](https://tradeskillmaster.github.io/wowlua-ls/reference/diagnostics).
+See the [annotation reference](https://tradeskillmaster.github.io/wowlua-ls/reference/annotations) and [diagnostic reference](https://tradeskillmaster.github.io/wowlua-ls/reference/diagnostics).
 
 ## CLI
 
