@@ -63,8 +63,58 @@
     "type-expression": {
       "patterns": [
         {"include": "#fun-type"},
+        {"include": "#table-shape"},
+        {"include": "#type-params"},
         {"include": "#type-union"},
+        {"include": "#type-intersection"},
         {"include": "#type-name"}
+      ]
+    },
+    "table-shape": {
+      "begin": "\\{",
+      "beginCaptures": {
+        "0": {"name": "punctuation.definition.table.begin.wowlua-hover"}
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {"name": "punctuation.definition.table.end.wowlua-hover"}
+      },
+      "patterns": [
+        {"include": "#table-field"},
+        {"include": "#type-expression"},
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.wowlua-hover"
+        }
+      ]
+    },
+    "table-field": {
+      "begin": "([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s*(:)\\s*",
+      "beginCaptures": {
+        "1": {"name": "variable.other.field.wowlua-hover"},
+        "2": {"name": "keyword.operator.optional.wowlua-hover"},
+        "3": {"name": "punctuation.separator.type.wowlua-hover"}
+      },
+      "end": "(?=[,}])",
+      "patterns": [
+        {"include": "#type-expression"}
+      ]
+    },
+    "type-params": {
+      "begin": "<",
+      "beginCaptures": {
+        "0": {"name": "punctuation.definition.typeparameters.begin.wowlua-hover"}
+      },
+      "end": ">",
+      "endCaptures": {
+        "0": {"name": "punctuation.definition.typeparameters.end.wowlua-hover"}
+      },
+      "patterns": [
+        {"include": "#type-expression"},
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.wowlua-hover"
+        }
       ]
     },
     "fun-type": {
@@ -90,6 +140,10 @@
     "type-union": {
       "match": "\\|",
       "name": "keyword.operator.union.wowlua-hover"
+    },
+    "type-intersection": {
+      "match": "&",
+      "name": "keyword.operator.intersection.wowlua-hover"
     },
     "type-name": {
       "patterns": [

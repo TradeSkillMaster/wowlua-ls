@@ -29,3 +29,9 @@ function Simple(x: number) -> boolean
     (true, MyClass)
     (false, "error")
     (true, number | string)
+(field) data: {name: string, age: number}
+(field) info: {title?: string, count: number}
+(field) icons: table<string, RaceGender>
+(field) frame: Frame<MyTemplate>
+(field) mixed: Frame & {extra: string}
+(field) nested: {cb: fun(x: table<string, number>): void}
