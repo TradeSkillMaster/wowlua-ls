@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global, undefined-global
 -- wowlua_ls integration test
 -- Annotations on the line below code use caret to mark test column
 -- Format: --  caret hover: TYPE  def: local|external|None
@@ -210,6 +211,7 @@ local arResult = alwaysReturns()
 -- to `-> number | nil`. Soundness is handled by the `missing-return` diagnostic.
 ---@param x any
 ---@return number
+---@diagnostic disable-next-line: missing-return
 local function annotatedBare(x)
 --             ^ hover: (local) function annotatedBare(x: any)\n-> number  def: local
     if x then return 1 end
@@ -394,6 +396,7 @@ end
 ---@param index? K
 ---@return K key
 ---@return V value
+---@diagnostic disable-next-line: missing-return
 local function myNext(t, index) end
 
 for nextKey, nextVal in myNext, forTbl do
@@ -409,6 +412,7 @@ end
 ---@param index? number
 ---@return string name
 ---@return number count
+---@diagnostic disable-next-line: missing-return
 local function concreteIter(t, index) end
 
 for ciName, ciCount in concreteIter, forTbl do
@@ -595,6 +599,7 @@ function doBlockConsumer()
 end
 
 -- do-block with non-nil table assignment
+---@diagnostic disable-next-line: redefined-local
 local doBlockTbl = nil
 do
     doBlockTbl = { name = "hello" }

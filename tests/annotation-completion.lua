@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global
 -- Annotation completion tests
 
 -- ── Tag completions ──────────────────────────────────────────────────────────
@@ -7,26 +8,32 @@
 --  ^ comp: param, return, type, class, field, alias, enum, event, overload, defclass, generic, cast, as, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, accessor, meta, diagnostic, type-narrows, flavor-narrows, narrows-arg, correlated, see
 
 -- Partial prefix: "re" → return
+---@diagnostic disable-next-line: malformed-annotation
 ---@re
 --    ^ comp: return
 
 -- Partial prefix: "se" → see
+---@diagnostic disable-next-line: malformed-annotation
 ---@se
 --    ^ comp: see
 
 -- Partial prefix: "p" → param, private, protected
+---@diagnostic disable-next-line: malformed-annotation
 ---@p
 --   ^ comp: param, private, protected
 
 -- Partial prefix: "cl" → class
+---@diagnostic disable-next-line: malformed-annotation
 ---@cl
 --    ^ comp: class
 
 -- Partial prefix: "co" → constructor, correlated
+---@diagnostic disable-next-line: malformed-annotation
 ---@co
 --    ^ comp: constructor, correlated
 
 -- Partial prefix: "fl" → flavor-narrows
+---@diagnostic disable-next-line: malformed-annotation
 ---@fl
 --    ^ comp: flavor-narrows
 
@@ -56,12 +63,14 @@ function ctxWithParams(a, b) end
 -- ── Param name completions ───────────────────────────────────────────────────
 
 -- Partial param name prefix "a"
+---@diagnostic disable-next-line: malformed-annotation
 ---@param a
 --         ^ comp: alpha
 function paramTest(alpha, beta)
 end
 
 -- Method params (colon syntax), partial "x"
+---@diagnostic disable-next-line: malformed-annotation
 ---@param x
 --         ^ comp: x
 function SomeTable:myMethod(x, y)
@@ -100,6 +109,7 @@ function compTest:doOther()
 end
 
 -- Colon completion with partial method name typed
+---@diagnostic disable-next-line: cannot-call
 compTest:do
 --          ^ comp: doAction, doOther
 

@@ -293,6 +293,7 @@ _aceModule:GetName()
 ---@param parent? any
 ---@param template? string
 ---@return Frame
+---@diagnostic disable-next-line: return-mismatch
 local function createWidget(frameType, name, parent, template) return {} end
 
 local _maybeTemplate = true and "MyTemplate" or nil ---@type string | nil
@@ -366,7 +367,7 @@ local _caimOne = CreateAndInitFromMixin(MixinAlpha)
 -- Field access on Mixin result: hover/def on intersection method
 local _mxAccess = Mixin(_mxFrame, MixinAlpha)
 _mxAccess:alphaMethod()
---        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 317:1  diag: none
+--        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 318:1  diag: none
 
 -- Field access on CreateFromMixins intersection
 local _cfmAccess = CreateFromMixins(MixinAlpha, MixinBeta)

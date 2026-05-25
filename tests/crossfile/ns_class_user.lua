@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Cross-file test: uses @type to reference class defined on addon namespace.
 -- Fields assigned to addon namespace in ns_class_defs.lua should be visible
 -- through the @class table when accessed via @type annotation.

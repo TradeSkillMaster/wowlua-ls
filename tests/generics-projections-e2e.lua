@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- End-to-end test covering Gaps 1–4 together: a fictional `GenericRegistry<F>`
 -- class exercised through the dominant idioms (class field, table-constructor
 -- field) with both registration and dispatch.
@@ -16,6 +17,7 @@ function GenericRegistry:Add(func) end
 ---@param key string
 ---@param ... params<F>
 ---@return returns<F>
+---@diagnostic disable-next-line: missing-return
 function GenericRegistry:Call(key, ...) end
 
 ---@param ... params<F>
@@ -157,6 +159,7 @@ local ConstrainedBox = {}
 function ConstrainedBox:Set(value) end
 
 ---@return V
+---@diagnostic disable-next-line: missing-return
 function ConstrainedBox:Get() end
 
 ---@type ConstrainedBox<string>
@@ -193,9 +196,11 @@ function TypedMap.Create(keyType, valType) return {} end
 function TypedMap.NewWithLookup(keyType, valType, lookupFunc) return {} end
 
 ---@return `K`
+---@diagnostic disable-next-line: missing-return
 function TypedMap:GetKeyType() end
 
 ---@return `V`
+---@diagnostic disable-next-line: missing-return
 function TypedMap:GetValType() end
 
 ---@class TypedMapView<K, V>

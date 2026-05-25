@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Cross-file test: file C uses select(2, ...) to extract addon namespace
 local ns = select(2, ...)
 local v = ns.version

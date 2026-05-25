@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global, undefined-global
 -- Cross-file chain test: uses Include to get a class from another file,
 -- then exercises method chains with @return self and resolves the final type.
 -- Tests: auto-created class tables from pre_globals + external expr cycle detection.
@@ -8,7 +9,7 @@ local Schema = Component:Include("ChainSchema")
 -- Long method chain with repeated @return self calls.
 -- This tests that external expr cycle detection doesn't break the chain.
 local db = Schema:AddField("name"):AddNumberField("count"):AddField("label"):Commit()
---    ^ hover: (local) db: ChainSchemaResult {
+--    ^ hover: (local) db: ChainSchemaResult {  diag: undefined-field
 
 -- Method on the result of the chain should resolve
 db.Query()
@@ -23,6 +24,7 @@ local Schema2 = Component:From("ChainTestComponent"):Include("ChainSchema")
 ---@field myDB ChainSchemaResult
 local private = {}
 private.myDB = Schema:AddField("x"):AddNumberField("y"):Commit()
+-- ^ diag: undefined-field
 
 -- Hover on the reassigned field resolves through @field annotation
 local r = private.myDB
@@ -36,6 +38,7 @@ private.myDB:Query()
 
 -- Builder chain accumulates fields, CreateInstance returns the built type
 local inst = Schema:AddTypedString("label"):AddTypedNumber("count"):AddTypedBool("active"):CreateInstance()
+-- ^ diag: undefined-field
 
 local lbl = inst.label
 --    ^ hover: (local) lbl: string
@@ -48,6 +51,7 @@ local act = inst.active
 
 -- @return built : Parent — built type inherits from ChainBuiltBase
 local inst2 = Schema:AddTypedString("name"):CreateInstanceWithParent()
+-- ^ diag: undefined-field
 
 local nm = inst2.name
 --    ^ hover: (local) nm: string
@@ -59,12 +63,13 @@ inst2:GetValue("x")
 -- Non-literal field name: graceful degradation (no crash, treated as regular @return self)
 local varName = "dynamic"
 local inst3 = Schema:AddTypedString(varName):CreateInstance()
---    ^ diag: unused-local
+--    ^ diag: unused-local  diag: undefined-field
 
 -- ── @built-extends type compatibility ──────────────────────────────────────
 
 -- Create named base type via @built-name, then extend it
 local BASE = Schema:Create("ChainBaseState"):AddTypedString("baseProp"):AddTypedBool("baseFlag")
+-- ^ diag: undefined-field
 local CHILD = BASE:Extend("ChainChildState"):AddTypedString("childProp")
 
 local childInst = CHILD:CreateInstance()

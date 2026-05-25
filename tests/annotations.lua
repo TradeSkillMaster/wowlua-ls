@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global, undefined-global
 -- Test: annotation-driven type resolution
 -- Tests @param, @return, @type, @class, @field, @alias, optional params
 
@@ -395,6 +396,7 @@ local _factoryClass = {}
 ---@return Builder
 function _factoryClass.create(name)
     return {}
+    -- ^ diag: return-mismatch
 end
 
 ---@type Factory
@@ -626,6 +628,7 @@ local name = config.names[1]
 --    ^ hover: (local) name: string
 
 ---@type number[]
+---@diagnostic disable-next-line: redefined-local
 local scores = {100, 95, 80}
 local firstScore = scores[1]
 --    ^ hover: (local) firstScore: number
@@ -661,6 +664,7 @@ function _myService262:GetName()
 end
 
 ---@type SvcRegistry
+---@diagnostic disable-next-line: assign-type-mismatch, redefined-local
 local registry = {}
 ---@type MyService262
 registry.main = _myService262
@@ -746,6 +750,7 @@ local function TestEnumNew(name, values) return values end
 
 ---@return TestEnumValue
 local function TestNewValue() return nil end
+-- ^ diag: return-mismatch
 
 local TEST_STATE = TestEnumNew("TEST_MY_STATE", {
     IDLE = TestNewValue(),
@@ -827,7 +832,7 @@ myFrame.
 factory.create("x")
     :setName("hi")
     :s
---   ^ comp: setCount, setName
+--   ^ comp: setCount, setName  diag: undefined-field
 
 -- ── Return annotation should not be polluted by body return statements ──────
 ---@param x number?
@@ -928,6 +933,7 @@ local compHolder = {
     inner = nil,
 }
 
+---@diagnostic disable-next-line: undefined-field
 compHolder.inner:d
 --               ^ comp: doStuff
 
@@ -1028,6 +1034,7 @@ local tacReady = tac._ready
 ---@type number
 local reassigned = "hello"
 --    ^ hover: (local) reassigned: number  def: local
+---@diagnostic disable-next-line: assign-type-mismatch
 reassigned = true
 local reassignedVal = reassigned
 --    ^ hover: (local) reassignedVal: true  def: local
@@ -1215,6 +1222,7 @@ end
 ---@return {[1]: string, [2]: number}
 local function getPair()
     return {"hello", 42}
+    -- ^ diag: return-mismatch
 end
 local pair = getPair()
 local pairFirst = pair[1]
@@ -1269,6 +1277,7 @@ local _ = tableSubsumed
 ---@class CommaRetA
 ---@class CommaRetB
 
+---@diagnostic disable-next-line: malformed-annotation
 ---@return CommaRetA?, CommaRetB?
 local function commaRetFunc()
     ---@type CommaRetB?

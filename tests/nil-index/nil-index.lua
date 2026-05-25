@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Test: nil-index diagnostic
 local function _consume(...) end
 

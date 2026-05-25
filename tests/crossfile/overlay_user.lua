@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Cross-file overlay test: uses fields defined in overlay_defs.lua
 ---@type MyAddon
 local addon = MyAddon

@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Test: correlated return-only overload inference
 -- With `inference.correlated_return_overloads: true`, functions that have no
 -- @return annotations and whose return statements form a clean all-set-or-all-nil
@@ -305,6 +306,7 @@ local _ = decodeGroup
 ---@class Color
 
 ---@return Color
+---@diagnostic disable-next-line: return-mismatch
 local function pick() return nil end
 
 local function count() return 42 end
@@ -360,6 +362,7 @@ _consume(inverseCaller)
 
 ---@class Fish
 ---@return Fish
+---@diagnostic disable-next-line: return-mismatch
 local function pick2() return nil end
 
 local function countStr() return "two" end
@@ -616,6 +619,7 @@ local function swap(a, b)
     return nil, nil
 end
 
+---@diagnostic disable-next-line: redefined-local
 local s1, s2 = swap("hello", 42)
 --    ^ hover: (local) s1: string?
 if s1 then

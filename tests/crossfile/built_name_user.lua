@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global
 -- Cross-file @built-name test: calling @built-name through wrapper functions.
 -- Tests that @built-name propagates through wrapper functions for both
 -- cross-file class discovery and per-file built-name resolution.
@@ -69,7 +70,7 @@ local STATE_LI = BNBuilder.CreateSchema("MY_BN_LI_STATE")
 ---@param state MY_BN_LI_STATE
 function useLateinitBuiltField(state)
     state.handler:DoSomething()
-    --    ^ hover: (field) handler: BNFieldBase!
+    --    ^ hover: (field) handler: BNFieldBase!  diag: undefined-field
     if state.handler then
         state.handler = nil
         -- ^ diag: none

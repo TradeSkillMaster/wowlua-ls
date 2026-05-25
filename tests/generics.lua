@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Test: @generic type parameter support
 
 -- ── Simple pass-through generic ──────────────────────────────────────────────
@@ -167,6 +168,7 @@ local v = getVal({x = 1, y = 2})
 ---@generic T: DefBase
 ---@param name `T`
 ---@return T
+---@diagnostic disable-next-line: missing-return
 local function defineClass(name) end
 
 local MyClass = defineClass("MyClass")
@@ -191,6 +193,7 @@ local tm = MyClass:TestMethod()
 ---@generic T: AccBase
 ---@param name `T`
 ---@return T
+---@diagnostic disable-next-line: missing-return
 local function makeAccClass(name) end
 
 local AccThing = makeAccClass("AccThing")
@@ -215,6 +218,7 @@ local s = AccThing:Secret()
 ---@generic T
 ---@param animType `T`
 ---@return T
+---@diagnostic disable-next-line: missing-return
 local function createAnim(animType) end
 
 ---@class BtConfig
@@ -344,13 +348,9 @@ local hv = STATE:HasValue(r)
 ---@field _value T
 local Container = {}
 
----@generic T
----@param self Container<T>
 ---@return T
 function Container:Get() return self._value end
 
----@generic T
----@param self Container<T>
 ---@param v T
 function Container:Set(v) self._value = v end
 
@@ -450,6 +450,7 @@ accum = accum and numMin(accum, childVal) or childVal
 ---@param a `T`
 ---@param b? `Tp`
 ---@return T & Tp
+---@diagnostic disable-next-line: missing-return
 local function makeIntersection(a, b) end
 
 -- When only T is resolved (b is omitted), Tp should be dropped — not shown as "& Tp"
@@ -465,11 +466,12 @@ local GenMyClass = {}
 ---@generic T
 ---@param factory fun(): T
 ---@return T
+---@diagnostic disable-next-line: missing-return
 local function makeFromFactory(factory) end
 
 -- Passing a class table — it's callable as a constructor, so its own type is T.
 local gm1 = makeFromFactory(GenMyClass)
---    ^ hover: (local) gm1: GenMyClass
+--    ^ hover: (local) gm1: GenMyClass  diag: type-mismatch
 
 -- Passing an inline function whose first return is a class — T is extracted from the return annotation.
 local gm2 = makeFromFactory(function() return GenMyClass end)
@@ -480,6 +482,7 @@ local gm2 = makeFromFactory(function() return GenMyClass end)
 ---@generic T
 ---@param createFunc (fun(): T) | T
 ---@return T
+---@diagnostic disable-next-line: missing-return
 local function newFromUnion(createFunc) end
 
 -- Direct class argument matches the `T` alternative.
@@ -497,14 +500,14 @@ local un2 = newFromUnion(function() return GenMyClass end)
 ---@class GenPool<T>
 local GenPool = {}
 
----@generic T
----@param self GenPool<T>
 ---@return T
+---@diagnostic disable-next-line: missing-return
 function GenPool:PoolGet() end
 
 ---@generic T
 ---@param createFunc (fun(): T) | T
 ---@return GenPool<T>
+---@diagnostic disable-next-line: missing-return
 local function NewPool(createFunc) end
 
 -- Direct local assignment. `pool` has no `---@type`, so version.type_args
@@ -542,6 +545,7 @@ genPrivate.pool:PoolGet()
 ---@param a (fun(): T) | U
 ---@return T
 ---@return U
+---@diagnostic disable-next-line: missing-return
 local function multiGen(a) end
 
 local mt = multiGen(GenMyClass)
@@ -552,8 +556,6 @@ local mt = multiGen(GenMyClass)
 ---@class GenCBR<F>
 local GenCBR = {}
 
----@generic F
----@param self GenCBR<F>
 ---@param func F
 function GenCBR:Register(func) end
 
@@ -574,8 +576,6 @@ voidReg:Register(rightHandler)
 ---@class GenContainerStrict<T>
 local GenContainerStrict = {}
 
----@generic T
----@param self GenContainerStrict<T>
 ---@param v T
 function GenContainerStrict:Put(v) end
 
@@ -595,12 +595,12 @@ _G.useGap3 = { wrongHandler, rightHandler }
 ---@class GenPoolFC<T>
 local GenPoolFC = {}
 
----@generic T
----@param self GenPoolFC<T>
 ---@return T
+---@diagnostic disable-next-line: missing-return
 function GenPoolFC:Get() end
 
 ---@return GenPoolFC
+---@diagnostic disable-next-line: missing-return
 function GenPoolFC.NewFC() end
 
 -- preceding-line @type (common private-table idiom in WoW addons)
@@ -625,9 +625,8 @@ _G.useGap2 = { tblPrim, tblInline }
 ---@class PoolForFun<T>
 local PoolForFun = {}
 
----@generic T
----@param self PoolForFun<T>
 ---@return T
+---@diagnostic disable-next-line: missing-return
 function PoolForFun:GetFun() end
 
 ---@class FieldFunService
@@ -703,14 +702,14 @@ local FieldPool = {}
 ---@generic T
 ---@param cls T
 ---@return FieldPool<T>
+---@diagnostic disable-next-line: missing-return
 function FieldPool.Create(cls) end
 
 ---@param obj T
 function FieldPool:Recycle(obj) end
 
----@generic T
----@param self FieldPool<T>
 ---@return T
+---@diagnostic disable-next-line: missing-return
 function FieldPool:Get() end
 
 local fp = {}
@@ -777,7 +776,8 @@ end
 
 ---@generic K, V
 ---@param tbl table<K, V>
----@return K?, V?
+---@return K?
+---@return V?
 local function generic_next_like(tbl) end
 
 ---@type GenClassForNext
@@ -796,6 +796,7 @@ generic_next_like(classItem)
 local function makeField(fieldType, func) return func() end
 
 ---@return string
+---@diagnostic disable-next-line: redefined-local
 local function getName() return "" end
 
 local f1 = makeField("string", getName)
@@ -815,6 +816,7 @@ local f2 = makeField("number", getCount)
 ---@generic V
 ---@param tbl V[]
 ---@return fun(): number, V
+---@diagnostic disable-next-line: missing-return
 local function ReverseIPairs(tbl) end
 
 ---@type number[] | table<string, true>

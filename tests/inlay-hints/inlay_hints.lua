@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Inlay hint tests: `hint:` asserts the inlay hint label at the caret position.
 -- The caret must point to the exact byte offset where the hint is emitted:
 --   - Parameter names: start of the argument expression
@@ -84,7 +85,9 @@ add(a, 10)
 
 -- Multi-return expansion: inner call should not get duplicate param hints
 ---@param itemInfo string
----@return string, number, string
+---@return string
+---@return number
+---@return string
 local function GetItemInfo(itemInfo)
     return itemInfo, 0, ""
 end
@@ -98,6 +101,7 @@ end
 local r = GetItemInfo("sword")
 --                    ^ hint: itemInfo:
 
+---@diagnostic disable-next-line: redefined-local
 local a, b, c = myselect(1, GetItemInfo("sword"))
 --                       ^ hint: index:
 --                          ^ hint: none
@@ -201,6 +205,7 @@ for i, v in ipairs(sparseNums) do
 --      ^ hint: : number
 end
 
+---@diagnostic disable-next-line: nil-table-key
 ---@type table<string|nil, boolean|nil>
 local sparseFlags = {}
 for k, v in pairs(sparseFlags) do

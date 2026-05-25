@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 local function _consume(...) end
 
 -- ── All-or-nothing: tuple-union returns ──────────────────────────────
@@ -242,7 +243,7 @@ _consume(badOverload)
 ---      | (nil, nil)
 local function mixedStyle()
 --            ^ diag: malformed-annotation
-    return true, "hi", 1
+    return true
 end
 _consume(mixedStyle)
 
@@ -277,6 +278,7 @@ end
 
 ---@return number uuid
 ---@return ...any
+---@diagnostic disable-next-line: missing-return
 local function innerFunc(n, ...)
     if n then
         return n, ...
@@ -421,9 +423,9 @@ local _ = no4
 ---      | (false, string, string)
 local function validateResult()
     if math.random() > 0.66 then
-        return true, 42
+        return true, 42, nil
     elseif math.random() > 0.33 then
-        return false, nil
+        return false, nil, nil
     else
         return false, "error", "bad input"
     end
@@ -479,9 +481,9 @@ local TestEnum = {}
 ---      | (false, TestEnum, string)
 local function cascadeResult()
     if math.random() > 0.66 then
-        return true, 42
+        return true, 42, nil
     elseif math.random() > 0.33 then
-        return false, nil
+        return false, nil, nil
     else
         return false, TestEnum, "bad input"
     end
@@ -689,6 +691,7 @@ local DECL_HOVER_MEMBER = nil
 ---@return (true ok, number? value, nil)
 ---      | (false ok, nil, nil)
 ---      | (false ok, DeclHoverEnum err, string arg)
+---@diagnostic disable-next-line: missing-return
 local function declHoverCheck() end
 _consume(declHoverCheck)
 
@@ -790,7 +793,7 @@ local function parseInner(str, data)
     if str == "" then
         return false, 1, "empty"
     end
-    return true
+    return true, nil, nil
 end
 _consume(parseInner)
 

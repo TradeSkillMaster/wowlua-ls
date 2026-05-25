@@ -5,7 +5,9 @@
 -- version and overwrites the correct reassignment version.
 
 -- Pattern 1: Local from multi-return, then reassigned with or-coalesce
----@return string, string?, number?
+---@return string
+---@return string?
+---@return number?
 local function getData()
     return "ok", nil, nil
 end

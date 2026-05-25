@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Tests for @type-narrows custom type guard narrowing
 
 ---@class Animal
@@ -16,6 +17,7 @@ local TypeChecker = {}
 ---@param typeName string
 ---@type-narrows 1 2
 ---@return boolean
+---@diagnostic disable-next-line: missing-return
 function TypeChecker.IsType(element, typeName) end
 
 -- Alias whose type_source doesn't resolve to a table directly, but the
@@ -316,6 +318,7 @@ end
 
 ---@param parent ScrollBase
 local function testMethodHoverOnNarrowedType(parent)
+    ---@diagnostic disable-next-line: type-mismatch
     if TypeChecker.IsType(parent, "ScrollChild") then
         parent:_DoScroll(1)
         --      ^ hover: (method) function ScrollChild:_DoScroll(dir)  def: local

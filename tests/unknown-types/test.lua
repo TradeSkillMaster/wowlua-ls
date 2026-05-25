@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Test: unknown-* strict-typing diagnostics (default-disabled; enabled via .wowluarc.json)
 --
 -- These HINTs fire when the resolver couldn't infer a type (resolved_type = None).

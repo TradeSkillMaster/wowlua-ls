@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Test: structural subtyping — table literals assignable to @class types
 
 ---@class ContentLine

@@ -48,7 +48,7 @@ _consume(ATC:PublicMethod())
 
 -- Hover should resolve the method on the class
 local s = ATC:SecretMethod()
---    ^ hover: (local) s: number  def: local
+--    ^ hover: (local) s: number  def: local  diag: access-private
 
 -- ── Accessor inheritance ──────────────────────────────────────────────────────
 
@@ -156,10 +156,12 @@ end
 
 -- ── Circular inheritance does not hang accessor lookup ──────────────────────
 
+---@diagnostic disable-next-line: circle-doc-class
 ---@class CycAccA : CycAccB
 ---@accessor __priv private
 local CycA = {} ---@type CycAccA
 
+---@diagnostic disable-next-line: circle-doc-class
 ---@class CycAccB : CycAccA
 local CycB = {} ---@type CycAccB
 

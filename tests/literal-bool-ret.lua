@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Tests for literal boolean return type narrowing on union discriminators.
 -- When a union type A | B has a method where A:Method() returns literal `false`
 -- and B:Method() returns literal `true`, the LS narrows the union in branches.

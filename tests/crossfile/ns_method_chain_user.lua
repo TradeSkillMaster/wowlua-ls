@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Cross-file test: exercises method chains on @class-typed addon namespace fields.
 -- Regression test: methods defined on ns.Foo must be available on class Foo when
 -- resolved via generic return types (e.g. From("Foo"):Include("Bar")).

@@ -109,6 +109,7 @@ end
 local function SLCCreateWidget(frameType, name)
 end
 
+---@diagnostic disable-next-line: missing-parameter
 SLCCreateWidget("")
 --               ^ comp: Frame, Button, Slider, EditBox
 
@@ -129,6 +130,7 @@ end
 ---@type SLCRegistry
 local reg
 
+---@diagnostic disable-next-line: missing-parameter
 reg:Register("")
 --            ^ comp: spell, item, quest
 

@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Tests for @cast and @as annotations
 
 -- ── @cast Replace ──────────────────────────────────────────────────────────────
@@ -219,12 +220,11 @@ local knownCast = nil
 --^ diag: none
 print(knownCast)
 
--- ── @cast with block comment syntax and unknown type (no test assertion here;
--- the --[[...]] form is handled by the same code path but the test harness
--- does not easily support diag: assertions on block comment lines) ──────────
+-- ── @cast with block comment syntax and unknown type ──────────────────────────
 
 ---@type any
 local blockCast = nil
 
 --[[@cast blockCast BlockGhostType]]
+--                   ^ diag: undefined-doc-name
 print(blockCast)

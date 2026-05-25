@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Cross-file test: completions inside bracket-assigned table constructor
 -- when the target table's type comes from a namespace field chain
 local _, private = ...

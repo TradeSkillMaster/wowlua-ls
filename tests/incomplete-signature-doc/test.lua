@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Test: incomplete-signature-doc diagnostic
 
 -- All params documented + @return when needed → no fire

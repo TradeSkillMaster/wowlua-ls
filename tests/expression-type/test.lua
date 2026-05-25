@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global
 ---@class ExprState
 ---@field progress number
 ---@field active boolean
@@ -44,7 +45,7 @@ checkBool([[progress + count]])
 
 -- Completions inside expression string
 checkBool([[prog]])
---            ^ comp: progress, active, name, count
+--            ^ comp: progress, active, name, count  diag: undefined-field
 
 -- Regular string delimiter
 checkBool("progress == 1")
@@ -111,7 +112,7 @@ checkIntersect([[badVar + 1]])
 
 -- Completions include fields from both classes
 checkIntersect([[pro]])
---                ^ comp: progress, active, name, count, min, max
+--                ^ comp: progress, active, name, count, min, max  diag: undefined-field
 
 -- expression<self & Funcs> works with intersection
 ---@class SelfWithFuncs

@@ -18,6 +18,7 @@ end
 
 ---@return FuncChain
 local function getChain()
+    ---@diagnostic disable-next-line: return-mismatch
     return {}
 end
 
@@ -55,6 +56,7 @@ local a = getChain():GetResult()
 
 ---@return FuncChild
 local function getChild()
+    ---@diagnostic disable-next-line: return-mismatch
     return {}
 end
 

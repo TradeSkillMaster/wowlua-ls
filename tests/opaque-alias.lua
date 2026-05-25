@@ -4,6 +4,7 @@
 ---@alias (opaque) ItemID number
 ---@alias (opaque) Answer "YES"|"NO"
 ---@alias (opaque) Toggle "YES"|"NO"
+-- ^ diag: duplicate-doc-alias
 
 -- ── Hover shows alias name ──────────────────────────────────────────────
 
@@ -118,11 +119,14 @@ local greeting = ans .. "!"
 
 ---@alias (opaque) Callback fun(x: number): string
 ---@alias (opaque) OtherCallback fun(x: number): string
+-- ^ diag: duplicate-doc-alias
 
 ---@return Callback
+---@diagnostic disable-next-line: missing-return
 local function getCallback() end
 
 ---@return OtherCallback
+---@diagnostic disable-next-line: missing-return
 local function getOtherCallback() end
 
 local cb = getCallback()
@@ -145,6 +149,7 @@ invokeCallback(otherCb)
 ---@field enabled boolean
 
 ---@alias (opaque) AppConfig Config
+-- ^ diag: duplicate-doc-alias
 
 ---@type AppConfig
 local cfg = { name = "test", enabled = true }
@@ -159,6 +164,7 @@ local cfgEnabled = cfg.enabled
 -- ── Opaque wrapping table<K,V> — bracket index ──────────────────────
 
 ---@alias (opaque) ScoreMap table<string, number>
+-- ^ diag: duplicate-doc-alias
 
 ---@type ScoreMap
 local scores = { alice = 100, bob = 200 }
@@ -169,6 +175,7 @@ local aliceScore = scores["alice"]
 -- ── Opaque table cross-alias rejection ──────────────────────────────
 
 ---@alias (opaque) ServerConfig Config
+-- ^ diag: duplicate-doc-alias
 
 ---@param c AppConfig
 local function useAppConfig(c) end
@@ -187,6 +194,7 @@ useAppConfig(srv)
 
 ---@alias (opaque) WorldPos Pos
 ---@alias (opaque) ScreenPos WorldPos
+-- ^ diag: duplicate-doc-alias
 
 ---@type ScreenPos
 local sp = { x = 10, y = 20 }

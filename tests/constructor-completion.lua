@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Table constructor field completions: when typing inside a table constructor
 -- whose expected type is a known class, offer that class's fields.
 
@@ -30,6 +31,7 @@ items[1] = {
 local function processItem(data)
 end
 
+---@diagnostic disable-next-line: type-mismatch
 processItem({
     n
 --  ^ comp: name, count, active
@@ -38,6 +40,7 @@ processItem({
 -- ── Case 4: already-set fields are excluded ─────────────────────────────────
 
 ---@type CCItem
+---@diagnostic disable-next-line: assign-type-mismatch, missing-fields
 local partial = {
     name = "hello",
     a

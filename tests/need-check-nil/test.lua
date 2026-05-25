@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global, undefined-global
 local function _consume(...) end
 
 ---@class NilCheckFrame
@@ -258,6 +259,7 @@ _consume(testAssignNarrow)
 
 ---@class NilCheckElement
 ---@field public _parent NilCheckElement|nil
+---@field public _id string
 
 ---@param self NilCheckElement
 ---@return NilCheckElement
@@ -321,10 +323,6 @@ end
 _consume(testEnsureInitEq)
 
 -- ── field access guard in `and` expression (not `if`) ───────────────
-
----@class NilCheckElement
----@field public _parent NilCheckElement|nil
----@field public _id string
 
 ---@param self NilCheckElement
 local function testAndFieldGuard(self)
@@ -1085,6 +1083,7 @@ end
 local function createObj()
     ---@type IfBlockMergeObj
     return {}
+    -- ^ diag: return-mismatch
 end
 
 do
@@ -1463,8 +1462,7 @@ local wn1 = whileNarrow1
 ---@type NilCheckFrame?
 local whileFrame = nil
 while not whileFrame do
-    ---@type NilCheckFrame
-    whileFrame = {}
+    whileFrame = {} --[[@as NilCheckFrame]]
 end
 whileFrame:Show()
 -- ^ diag: none
@@ -2381,6 +2379,7 @@ _consume(testBracketNoGuard)
 -- ── Length operator on possibly-nil values ─────────────────────────────
 
 ---@type string?
+---@diagnostic disable-next-line: redefined-local
 local maybeStr = nil
 local _lenBad = #maybeStr
 --              ^ diag: need-check-nil
@@ -2448,6 +2447,7 @@ local _directRow = nilRows[1]
 --    ^ hover: (local) _directRow: NilStripRow?
 
 -- table<K|nil, V|nil>: iteration strips nil from both key and value
+---@diagnostic disable-next-line: nil-table-key
 ---@type table<string|nil, number|nil>
 local mixedTbl = {}
 for k, v in pairs(mixedTbl) do

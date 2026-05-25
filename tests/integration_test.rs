@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
+use lsp_types::DiagnosticSeverity;
+
 use wowlua_ls::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 use wowlua_ls::annotations;
 use wowlua_ls::config::ProjectConfigs;
@@ -169,6 +171,10 @@ fn run_annotation_tests(config: &TestConfig) {
         Vec::new()
     };
 
+    // Track which lines have been covered by a `diag:` assertion so we can
+    // detect unasserted diagnostics after the annotation loop.
+    let mut diag_asserted_lines: HashSet<u32> = HashSet::new();
+
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if !trimmed.starts_with("--") { continue; }
@@ -222,7 +228,9 @@ fn run_annotation_tests(config: &TestConfig) {
             && expected_def.is_none() && expected_typedef.is_none() && expected_sig.is_none()
             && expected_refs.is_none() && expected_linked.is_none()
             && expected_comp.is_none() && expected_highlight.is_none()
+            && expected_tok.is_none() && expected_hint.is_none() && expected_lens.is_none()
         {
+            collect_asserted_lines(code_line_1based, &lines, &mut diag_asserted_lines);
             check_diagnostic(
                 config.lua_file, i, code_line_1based,
                 &expected_diag.unwrap(), &diag_lines, &mut failures, &lines,
@@ -380,6 +388,7 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check diagnostic (if combined with other fields)
         if let Some(expected) = &expected_diag {
+            collect_asserted_lines(code_line_1based, &lines, &mut diag_asserted_lines);
             check_diagnostic(
                 config.lua_file, i, code_line_1based,
                 expected, &diag_lines, &mut failures, &lines,
@@ -605,6 +614,20 @@ fn run_annotation_tests(config: &TestConfig) {
         }
     }
 
+    // Fail on any WARNING/ERROR diagnostics not covered by a `diag:` assertion.
+    // HINT diagnostics (unused-local, unused-function, etc.) are not required to
+    // be asserted — they are noisy in test code that creates locals/functions just
+    // for hover/def assertions.  HINT diagnostics are still fully testable via
+    // explicit `diag:` assertions in dedicated test files.
+    for (line, code, msg, is_hint) in &diag_lines {
+        if !is_hint && !diag_asserted_lines.contains(line) {
+            failures.push(format!(
+                "  {}:{}\n    unasserted diagnostic: {} ({})\n    add `-- ^ diag: {}` or `-- ^ diag: none` to assert this diagnostic",
+                config.lua_file, line, code, msg, code
+            ));
+        }
+    }
+
     if !failures.is_empty() {
         panic!(
             "\n{} test(s) failed out of {} in {}:\n{}",
@@ -692,20 +715,24 @@ fn extract_field(s: &str, prefix: &str) -> Option<String> {
 }
 
 /// Collect all diagnostics from in-process analysis.
-/// Returns vec of (1-based line number, diagnostic code, message).
+/// Returns vec of (1-based line number, diagnostic code, message, is_hint).
 fn collect_diagnostics_inprocess(
     tree: &SyntaxTree,
     analysis: &AnalysisResult,
     suppressions: &[wowlua_ls::annotations::DiagnosticSuppression],
     numbers: &line_numbers::LinePositions,
     disabled: &HashSet<String>,
-) -> Vec<(u32, String, String)> {
+) -> Vec<(u32, String, String, bool)> {
     let mut diags = Vec::new();
+    // Syntax errors are still testable via `diag:` assertions but are excluded
+    // from the unasserted diagnostic check — they are structural parse failures
+    // (always visible in the editor) and their codes are free-form messages that
+    // can't be suppressed via `---@diagnostic disable`.
     for e in &tree.errors {
         let start = numbers.from_offset(e.start as usize);
         let start_line = start.0.0;
         if !lsp::diagnostics::is_suppressed("syntax", start_line, suppressions) {
-            diags.push((start_line + 1, e.message.clone(), e.message.clone()));
+            diags.push((start_line + 1, e.message.clone(), e.message.clone(), true));
         }
     }
     for d in analysis.run_diagnostics(tree) {
@@ -713,10 +740,57 @@ fn collect_diagnostics_inprocess(
         let start = numbers.from_offset(d.start);
         let start_line = start.0.0;
         if !lsp::diagnostics::is_suppressed(d.code, start_line, suppressions) {
-            diags.push((start_line + 1, d.code.to_string(), d.message.clone()));
+            let is_hint = d.severity == DiagnosticSeverity::HINT;
+            diags.push((start_line + 1, d.code.to_string(), d.message.clone(), is_hint));
         }
     }
     diags
+}
+
+/// Collect all lines associated with a code line: the code line itself, any
+/// `---@` annotation lines immediately above, and any `--[[` block-comment
+/// annotation lines immediately below (e.g. `--[[@cast ...]]`).
+fn associated_lines(code_line_1based: usize, source_lines: &[&str]) -> Vec<u32> {
+    let mut lines = vec![code_line_1based as u32];
+    // Walk upward through ---@ annotation lines
+    let mut ln = code_line_1based;
+    while ln > 1 {
+        ln -= 1;
+        let text = source_lines[ln - 1].trim();
+        if text.starts_with("---@") {
+            lines.push(ln as u32);
+        } else if text.is_empty() || text.starts_with("---") {
+            continue;
+        } else {
+            break;
+        }
+    }
+    // Walk downward through empty lines, assertion comments, and --[[ block-comment
+    // annotation lines (e.g. --[[@cast ...]]).
+    let mut ln = code_line_1based;
+    while ln < source_lines.len() {
+        ln += 1;
+        let text = source_lines[ln - 1].trim();
+        if text.starts_with("--[[") {
+            lines.push(ln as u32);
+        } else if text.is_empty() {
+            continue;
+        } else if text.starts_with("--") && text[2..].trim_start().starts_with('^') {
+            // Skip assertion comment lines (-- ^ ...)
+            continue;
+        } else {
+            break;
+        }
+    }
+    lines
+}
+
+/// Record all lines covered by a `diag:` assertion at `code_line_1based`
+/// into the exhaustive-check set.
+fn collect_asserted_lines(code_line_1based: usize, source_lines: &[&str], set: &mut HashSet<u32>) {
+    for line in associated_lines(code_line_1based, source_lines) {
+        set.insert(line);
+    }
 }
 
 /// Check a diag: annotation against collected diagnostics.
@@ -730,28 +804,14 @@ fn check_diagnostic(
     annotation_line: usize,
     code_line_1based: usize,
     expected: &str,
-    diag_lines: &[(u32, String, String)],
+    diag_lines: &[(u32, String, String, bool)],
     failures: &mut Vec<String>,
     source_lines: &[&str],
 ) {
-    // Collect the code line and any ---@ annotation lines immediately above it
-    let mut check_lines = vec![code_line_1based as u32];
-    let mut ln = code_line_1based; // 1-based
-    while ln > 1 {
-        ln -= 1;
-        let text = source_lines[ln - 1].trim();
-        if text.starts_with("---@") {
-            check_lines.push(ln as u32);
-        } else if text.is_empty() || text.starts_with("---") {
-            // plain doc comment or blank — keep walking
-            continue;
-        } else {
-            break;
-        }
-    }
+    let check_lines = associated_lines(code_line_1based, source_lines);
     let diags_on_line: Vec<(&str, &str)> = diag_lines.iter()
-        .filter(|(l, _, _)| check_lines.contains(l))
-        .map(|(_, code, msg)| (code.as_str(), msg.as_str()))
+        .filter(|(l, _, _, _)| check_lines.contains(l))
+        .map(|(_, code, msg, _)| (code.as_str(), msg.as_str()))
         .collect();
     let codes_on_line: Vec<&str> = diags_on_line.iter().map(|(c, _)| *c).collect();
 

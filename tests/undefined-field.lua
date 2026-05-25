@@ -51,7 +51,9 @@ end
 ---@class FieldReassignHost
 ---@field db TestFieldObj
 local host = {}
+---@diagnostic disable-next-line: field-type-mismatch
 host.db = nil
+---@diagnostic disable-next-line: duplicate-set-field
 host.db = obj
 
 -- Hover on intermediate field should resolve via @field annotation
@@ -62,6 +64,7 @@ local dbName = host.db.name
 ---@class FieldReassignBare
 local bare = {}
 bare.ref = nil
+---@diagnostic disable-next-line: duplicate-set-field
 bare.ref = obj
 
 local bareName = bare.ref.name
@@ -131,6 +134,7 @@ local r = nsfc.runtime
 
 -- Same pattern with a function return
 ---@return NonSelfFieldClass
+---@diagnostic disable-next-line: return-mismatch
 local function makeNsfc() return {} end
 
 local obj2 = makeNsfc()

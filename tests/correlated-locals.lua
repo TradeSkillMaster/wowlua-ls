@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 local function _consume(...) end
 
 ---@param n number

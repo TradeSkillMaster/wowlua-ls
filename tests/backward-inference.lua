@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Test: backward type inference from body usage
 
 -- ── Signal 1: arithmetic with a typed-number operand → number ──
@@ -564,6 +565,7 @@ local function contraCaller(cond, p)
     local _ = p + 1
     if cond then
         takesStr(p)
+        --       ^ diag: type-mismatch
     end
 end
 contraCaller(true, 5)
@@ -764,11 +766,13 @@ end
 ---@generic T
 ---@param list T[]
 ---@return ...T
+---@diagnostic disable-next-line: missing-return
 local function biMockUnpack(list) end
 
 ---@generic V
 ---@param list V[]
 ---@return fun(): integer, V
+---@diagnostic disable-next-line: missing-return
 local function biMockIpairs(list) end
 
 local function biStructuralIntersect(items)

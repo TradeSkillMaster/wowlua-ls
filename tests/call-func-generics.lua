@@ -29,6 +29,7 @@ end
 ---@generic F
 ---@param func F
 ---@return Iter<F>
+---@diagnostic disable-next-line: return-mismatch
 local function wrapIter(func) return {} end
 
 ---@param tbl table
@@ -101,6 +102,7 @@ end
 
 ---@type Iter<fun(): boolean>
 local iter8 = {}
+---@diagnostic disable-next-line: unbalanced-assignments
 local f, g = iter8()
 --    ^ hover: (local) f: boolean
 --       ^ hover: (local) g: nil

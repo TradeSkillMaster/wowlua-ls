@@ -40,7 +40,7 @@ table.insert(t, "hello")
 --           ^ sig: fun(list: T[], value: T)  diag: none
 
 -- Test string literal method calls
-("hello"):format("world")
---                ^ sig: fun(s: string | number, ...: any): string
+local _f = ("hello"):format("world")
+--                          ^ sig: fun(s: string | number, ...: any): string
 local _u = "hello":upper()
 --                       ^ sig: fun(s: string | number): string

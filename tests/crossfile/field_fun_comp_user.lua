@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Cross-file test: string literal completions and call resolution for
 -- @field fun() types defined on workspace-scanned classes.
 

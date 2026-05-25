@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global
 -- Cross-file regression test: assigning to optional built-table fields
 -- should NOT trigger field-type-mismatch when @param type is T|`T`
 -- (Bug #15: built-table optional fields lose non-nil type)

@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global, undefined-global
 -- Test: semantic diagnostics (@deprecated, @nodiscard, @diagnostic suppression)
 local function _consume(...) end
 
@@ -1963,14 +1964,17 @@ local function _diagBranchType(x)
     local timeLeft = x
     if timeLeft < 0 then
         timeLeft = "expired"
+        -- ^ diag: assign-type-mismatch
     elseif timeLeft >= 1 then
         _diagTakeNum(timeLeft)
         --           ^ diag: none
         timeLeft = "days"
+        -- ^ diag: assign-type-mismatch
     else
         _diagTakeNum(timeLeft)
         --           ^ diag: none
         timeLeft = "hours"
+        -- ^ diag: assign-type-mismatch
     end
 end
 
@@ -2554,6 +2558,7 @@ local function acceptTable(tbl)
     return tbl
 end
 local bracketTbl = {}
+-- ^ diag: redefined-local
 bracketTbl[1] = "hello"
 bracketTbl[2] = "world"
 -- Type of bracketTbl should still be table, not table|string
@@ -2846,6 +2851,7 @@ greetOptional(nil)
 
 ---@param x string
 ---@return number
+---@diagnostic disable-next-line: invalid-op
 local function _parseInt(x) return x + 0 end
 
 ---@return number[]
@@ -2853,6 +2859,7 @@ local function convertElements()
     local parts = {"1", "2", "3"}
     for i = 1, #parts do
         parts[i] = _parseInt(parts[i])
+        -- ^ diag: type-mismatch
     end
     return parts
 --         ^ hover: (local) parts: number[]
@@ -2868,6 +2875,7 @@ end
 local function convertSingleElement()
     local data = {"a", "b", "c"}
     data[1] = _parseInt(data[1])
+    -- ^ diag: type-mismatch
     return data
 end
 -- ^ diag: none
@@ -3464,6 +3472,7 @@ CallbackSelfRenameHost:setEventHandler(function(_, event, ...) end)
 -- Should warn: calling a table-typed variable
 ---@type table
 local tbl = {}
+-- ^ diag: redefined-local
 local tblResult = tbl()
 --                ^ diag: cannot-call
 
@@ -3482,6 +3491,7 @@ local strResult = str()
 -- Should warn: calling a boolean
 ---@type boolean
 local flag = true
+-- ^ diag: redefined-local
 local flagResult = flag()
 --                 ^ diag: cannot-call
 
@@ -3788,6 +3798,7 @@ classDefInlineInst.unknown = 42
 -- Negative: function return typed as @class — caller gets an instance
 ---@return ClassDefBasic
 local function _makeClassDef() return {} end
+-- ^ diag: return-mismatch
 local classDefFromCall = _makeClassDef()
 classDefFromCall.injected = 99
 --               ^ diag: inject-field

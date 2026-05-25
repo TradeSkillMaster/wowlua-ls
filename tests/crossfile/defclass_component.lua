@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global, undefined-global
 -- Cross-file defclass test: defines a class via DefineClass call and adds methods
 local MyComp = DefineClass("MyComp")
 
@@ -10,6 +11,7 @@ end
 ---@param name string
 ---@return MyComp
 function MyComp.Create(name)
+    ---@diagnostic disable-next-line: redundant-parameter
     return MyComp(name)
 end
 
@@ -28,9 +30,11 @@ end
 ---@class Schema
 
 ---@return Schema
+---@diagnostic disable-next-line: return-mismatch
 function CreateSchema(name) return {} end
 
 ---@return SchemaState
+---@diagnostic disable-next-line: return-mismatch
 function Schema:Build() return {} end
 
 ---@class SchemaState
@@ -50,6 +54,7 @@ end
 
 ---@return UnrelatedInfo
 function MyComp.MakeInfo()
+    ---@diagnostic disable-next-line: return-mismatch
     return {}
 end
 

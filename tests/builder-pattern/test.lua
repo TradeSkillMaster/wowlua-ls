@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global, undefined-global
 -- Test: @builds-field builder pattern (single-file)
 
 ---@class BuilderSchema

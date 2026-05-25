@@ -28,6 +28,7 @@ local w = Widget:SetLabel("hi")
 --                 ^ tok: none
 
 -- Deprecated method call — not emitted (grammar handles method coloring).
+---@diagnostic disable-next-line: deprecated
 Widget:SetName("x")
 --     ^ tok: none
 
@@ -131,6 +132,7 @@ local TreeNode = {}
 local pvt = { childrenTemp = {} }
 
 ---@return ...number @The children
+---@diagnostic disable-next-line: missing-return
 function TreeNode:GetChildren(node)
 --       ^ tok: none
 --                ^ tok: none

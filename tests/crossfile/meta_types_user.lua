@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Uses types defined in meta_types.lua (@meta file).
 -- Should not produce undefined-doc-name warnings.
 

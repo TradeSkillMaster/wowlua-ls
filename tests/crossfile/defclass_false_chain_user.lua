@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Cross-file negative test: non-defclass methods with class-name string arguments
 -- must NOT cause the variable to be typed as that class. Chained calls resolve
 -- through the normal resolve phase (FieldAccess + backtick generic binding),

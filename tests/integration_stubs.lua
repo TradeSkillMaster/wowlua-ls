@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- wowlua_ls integration test (with stubs)
 -- Requires: --with-stubs
 
@@ -703,7 +704,9 @@ end
 do
     ---@class StubEqTestCode
     local _StubEqTestCode = {}
-    local CODES = { OK = nil, ---@type StubEqTestCode }
+    local CODES = {
+        OK = nil, ---@type StubEqTestCode
+    }
     if UIParent == CODES.OK then
         -- UIParent is external; this must not panic
         local _ = UIParent
@@ -762,6 +765,7 @@ do
     ---@return string
     ---@return number
     ---@return boolean
+    ---@diagnostic disable-next-line: missing-return
     local function multiRet() end
 
     local s1 = select(1, multiRet())
@@ -919,6 +923,7 @@ end
 -- so :method() calls should resolve to string library methods.
 
 local strVar = "hello"
+---@diagnostic disable-next-line: discard-returns
 strVar:upper()
 --     ^ hover: (method) function stringlib:upper(s: string | number)  def: external
 
@@ -930,6 +935,7 @@ local left, right = columnRange:match("^(%d+)%-(%d+)$")
 ---@return string?
 local function maybeGetStr() return "hi" end
 local optStr = maybeGetStr()
+---@diagnostic disable-next-line: discard-returns
 optStr:upper()
 --     ^ hover: (method) function stringlib:upper(s: string | number)  def: external
 
@@ -1032,10 +1038,12 @@ local _qual4 = Enum.ItemQuality.Uncommon
 -- treated as an invalid type, leaving return_annotations empty and falling
 -- back to the body's inferred type (ScriptRegion from GetMouseFoci()).
 
---- @return Frame?, string?
+---@return Frame?
+---@return string?
 local function getFrameAndName()
     for _, frame in ipairs(GetMouseFoci()) do
-        return frame, frame:GetName() ---@diagnostic disable-line: return-type-mismatch
+        local f = frame --[[@as Frame]]
+        return f, f:GetName()
     end
 end
 

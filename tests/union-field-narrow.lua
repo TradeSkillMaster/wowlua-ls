@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Tests for union member narrowing based on field presence/truthiness guards
 
 ---@class ColInfo.WithTitle

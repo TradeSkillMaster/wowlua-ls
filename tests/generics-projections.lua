@@ -3,17 +3,15 @@
 ---@class GenericRegistry<F>
 local GenericRegistry = {}
 
----@generic F
----@param self GenericRegistry<F>
 ---@param key string
 ---@return returns<F>
+---@diagnostic disable-next-line: missing-return
 function GenericRegistry:Peek(key) end
 
----@generic F
----@param self GenericRegistry<F>
 ---@param key string
 ---@param ... params<F>
 ---@return returns<F>
+---@diagnostic disable-next-line: missing-return
 function GenericRegistry:Call(key, ...) end
 
 ---@class GPFrame
@@ -211,6 +209,7 @@ local function mySelect(index, ...) end
 ---@return number
 ---@return boolean
 ---@return string
+---@diagnostic disable-next-line: missing-return
 local function multiRet() end
 
 -- select(1, ...) → first return: string

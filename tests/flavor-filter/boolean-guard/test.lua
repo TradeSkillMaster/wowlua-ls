@@ -1,3 +1,4 @@
+---@diagnostic disable: create-global
 -- Boolean variables and fields annotated with `@flavor-narrows` act as flavor
 -- guards in `if var then ... end` conditions, just like guard functions.
 

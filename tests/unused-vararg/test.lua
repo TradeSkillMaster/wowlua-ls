@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Test: unused-vararg diagnostic (default-disabled; enabled via .wowluarc.json)
 
 local function _consume(...) return ... end

@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Tests for type() guard narrowing on symbols and fields
 
 ---@diagnostic disable:unused-local

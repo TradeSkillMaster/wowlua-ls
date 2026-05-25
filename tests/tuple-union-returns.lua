@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- Tuple-union `@return` syntax: new multi-value return form.
 -- Replaces the old `@return T name` + `@overload return:` pattern with a
 -- single `@return (T1 name1, T2 name2) | (U1, U2) desc` line.
