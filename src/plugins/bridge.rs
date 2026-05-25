@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use lsp_types::DiagnosticSeverity;
 use mlua::prelude::*;
 
+use crate::lsp::uri::abs_path_to_uri;
 use crate::types::*;
 use super::PluginDiagnostic;
 use super::query::{self, AnalysisSnapshot, LiteralValue};
@@ -76,6 +77,49 @@ impl LuaUserData for LuaFileContext {
                     init_expr: v.init_expr,
                 };
                 result.set(i + 1, lua.create_userdata(var)?)?;
+            }
+            Ok(result)
+        });
+
+        methods.add_method("find_event_declarations", |lua, this, type_name: Option<String>| {
+            let events = query::find_event_declarations(
+                &this.snap,
+                type_name.as_deref(),
+            );
+            let result = lua.create_table()?;
+            for (i, ev) in events.into_iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("type_name", ev.type_name)?;
+                entry.set("event_name", ev.event_name)?;
+                match ev.range {
+                    Some((start, end)) => entry.set("range", make_range_table(lua, start, end)?)?,
+                    None => entry.set("range", LuaNil)?,
+                }
+                match ev.source_path {
+                    Some(p) => {
+                        let uri_str = abs_path_to_uri(&p)
+                            .map(|u| u.to_string());
+                        match uri_str {
+                            Some(s) => entry.set("source_uri", s)?,
+                            None => entry.set("source_uri", LuaNil)?,
+                        }
+                    }
+                    None => entry.set("source_uri", LuaNil)?,
+                }
+                let params = lua.create_table()?;
+                for (j, p) in ev.params.into_iter().enumerate() {
+                    let param = lua.create_table()?;
+                    param.set("name", p.name)?;
+                    param.set("type_name", p.type_name)?;
+                    param.set("nilable", p.nilable)?;
+                    match p.description {
+                        Some(d) => param.set("description", d)?,
+                        None => param.set("description", LuaNil)?,
+                    }
+                    params.set(j + 1, param)?;
+                }
+                entry.set("params", params)?;
+                result.set(i + 1, entry)?;
             }
             Ok(result)
         });

@@ -29,6 +29,15 @@ local FileContext = {}
 ---@return wowlua.plugin.LocalVar[]
 function FileContext:find_locals(opts) end
 
+--- Find `@event` declarations from the workspace.
+---
+--- Returns all event declarations aggregated across the workspace. Events from
+--- stub files, scanned addon files, and the current file are all included.
+--- Use `source_uri` to identify which file each event was declared in.
+---@param type_name? string Only return events of this type (e.g. `"WowEvent"`)
+---@return wowlua.plugin.EventDecl[]
+function FileContext:find_event_declarations(type_name) end
+
 --- Emit a **warning** diagnostic at the given source range.
 ---@param range wowlua.plugin.Range Source range to underline
 ---@param message string Diagnostic message shown to the user
@@ -68,11 +77,11 @@ function LocalVar:field_reads() end
 ---@return wowlua.plugin.FieldAccess[]
 function LocalVar:field_writes() end
 
---- Get all method calls on this variable (colon-style: `var:method(args)`).
+--- Get all method/function calls on this variable (both `var:method(args)` and `var.func(args)`).
 ---@return wowlua.plugin.MethodCall[]
 function LocalVar:method_calls() end
 
---- Get all method definitions on this variable (e.g. `function var:method() end`).
+--- Get all method/function definitions on this variable (both `function var:method() end` and `function var.func() end`).
 ---@return wowlua.plugin.MethodDef[]
 function LocalVar:method_defs() end
 
@@ -128,10 +137,10 @@ function Initializer:args() end
 ---@field range wowlua.plugin.Range Byte range of the access expression
 
 ---------------------------------------------------------------------------
--- MethodCall — a colon-style method call on a variable
+-- MethodCall — a method or function call on a variable
 ---------------------------------------------------------------------------
 
---- A method call on a variable (e.g. `var:methodName(arg1, arg2)`).
+--- A method or function call on a variable (e.g. `var:methodName(arg1, arg2)` or `var.funcName(arg1)`).
 ---@class wowlua.plugin.MethodCall
 ---@field method_name string The called method name
 ---@field range wowlua.plugin.Range Byte range of the call expression
@@ -145,7 +154,7 @@ function MethodCall:args() end
 -- MethodDef — a method definition on a variable
 ---------------------------------------------------------------------------
 
---- A method definition on a variable (e.g. `function var:methodName() end`).
+--- A method or function definition on a variable (e.g. `function var:methodName() end` or `function var.funcName() end`).
 ---@class wowlua.plugin.MethodDef
 ---@field method_name string The defined method name
 ---@field range wowlua.plugin.Range Byte range of the definition
@@ -188,6 +197,30 @@ function Param:comparisons() end
 ---@class wowlua.plugin.ComparisonInfo
 ---@field range wowlua.plugin.Range Byte range of the comparison expression
 ---@field literal? string|number|boolean The literal value being compared against (nil if not a literal)
+
+---------------------------------------------------------------------------
+-- EventDecl — an @event declaration from the workspace
+---------------------------------------------------------------------------
+
+--- An event declaration from an `@event TypeName "EVENT_NAME"` annotation.
+--- Aggregated across the entire workspace (all scanned files and stubs).
+---@class wowlua.plugin.EventDecl
+---@field type_name string The event type (e.g. "WowEvent", "FrameEvent")
+---@field event_name string The event name (e.g. "ENCOUNTER_END", "OnLoad")
+---@field params wowlua.plugin.EventParam[] The event's payload parameters
+---@field range? wowlua.plugin.Range Byte range of the declaration in the source file (nil for built-in stubs)
+---@field source_uri? string File URI where this event was declared (nil for built-in stubs)
+
+---------------------------------------------------------------------------
+-- EventParam — a parameter of an @event declaration
+---------------------------------------------------------------------------
+
+--- A parameter declared in an `@event` annotation's payload.
+---@class wowlua.plugin.EventParam
+---@field name string Parameter name (e.g. "encounterID")
+---@field type_name string Type name (e.g. "number", "string")
+---@field nilable boolean Whether the parameter is optional
+---@field description? string Human-readable description of the parameter
 
 ---------------------------------------------------------------------------
 -- Plugin return table

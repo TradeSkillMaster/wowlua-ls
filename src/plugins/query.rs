@@ -3,8 +3,12 @@
 //! This is the stable API boundary between the plugin system and the internal IR.
 //! Internal refactors should only require changes here, not in bridge.rs or plugins.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use crate::analysis::AnalysisResult;
 use crate::ast::Operator;
+use crate::pre_globals::EventPayload;
 use crate::types::*;
 
 /// A snapshot of the analysis state needed by plugins.
@@ -17,8 +21,10 @@ pub(super) struct AnalysisSnapshot {
     #[allow(dead_code)] // reserved for future scope-walking queries
     pub(super) scopes: Vec<Scope>,
     pub(super) field_assignments: Vec<FieldAssignment>,
-    pub(super) string_literals: std::collections::HashMap<ExprId, String>,
-    pub(super) number_literals: std::collections::HashMap<ExprId, String>,
+    pub(super) string_literals: HashMap<ExprId, String>,
+    pub(super) number_literals: HashMap<ExprId, String>,
+    pub(super) event_types: HashMap<String, HashMap<String, EventPayload>>,
+    pub(super) event_locations: HashMap<String, HashMap<String, ExternalLocation>>,
 }
 
 impl AnalysisSnapshot {
@@ -32,6 +38,8 @@ impl AnalysisSnapshot {
             field_assignments: analysis.ir.field_assignments.clone(),
             string_literals: analysis.ir.string_literals.clone(),
             number_literals: analysis.ir.number_literals.clone(),
+            event_types: analysis.ir.ext.event_types.clone(),
+            event_locations: analysis.ir.ext.event_locations.clone(),
         }
     }
 
@@ -143,6 +151,24 @@ pub(super) struct ComparisonInfo {
     pub(super) literal: Option<LiteralValue>,
     pub(super) range_start: u32,
     pub(super) range_end: u32,
+}
+
+/// An event declaration from `@event TypeName "EVENT_NAME"`.
+pub(super) struct EventDeclInfo {
+    pub(super) type_name: String,
+    pub(super) event_name: String,
+    pub(super) params: Vec<EventParamInfo>,
+    /// Byte range of the declaration site, or `None` for built-in stubs.
+    pub(super) range: Option<(u32, u32)>,
+    pub(super) source_path: Option<PathBuf>,
+}
+
+/// A parameter of an event declaration.
+pub(super) struct EventParamInfo {
+    pub(super) name: String,
+    pub(super) type_name: String,
+    pub(super) nilable: bool,
+    pub(super) description: Option<String>,
 }
 
 /// Info about a call init (for `var = Something:Method(args)` patterns).
@@ -348,12 +374,15 @@ fn is_symbol_ref(snap: &AnalysisSnapshot, expr_id: ExprId, target: SymbolIndex) 
     matches!(snap.exprs.get(expr_id.val()), Some(Expr::SymbolRef(s, _)) if *s == target)
 }
 
-/// Find method calls (colon calls) on a variable.
+/// Find method/function calls on a variable (both colon-style `var:method()` and dot-style `var.func()`).
+///
+/// Intentionally matches all `FunctionCall` expressions on this symbol's fields,
+/// regardless of `is_method_call`, so plugins see both calling conventions.
 pub(super) fn method_calls(snap: &AnalysisSnapshot, sym_idx: SymbolIndex) -> Vec<MethodCallInfo> {
     let mut results = Vec::new();
 
     for expr in &snap.exprs {
-        if let Expr::FunctionCall { func, args, arg_ranges, is_method_call: true, call_range, .. } = expr
+        if let Expr::FunctionCall { func, args, arg_ranges, call_range, .. } = expr
             && let Some(Expr::FieldAccess { table, field, .. }) = snap.exprs.get(func.val())
             && is_symbol_ref(snap, *table, sym_idx)
         {
@@ -517,4 +546,35 @@ pub(super) fn args_info(snap: &AnalysisSnapshot, arg_exprs: &[ExprId], arg_range
             kind: expr_kind(snap, *expr_id),
         }
     }).collect()
+}
+
+/// Find event declarations, optionally filtered by type name.
+pub(super) fn find_event_declarations(snap: &AnalysisSnapshot, type_name_filter: Option<&str>) -> Vec<EventDeclInfo> {
+    let mut results = Vec::new();
+
+    for (type_name, events) in &snap.event_types {
+        if type_name_filter.is_some_and(|f| type_name != f) {
+            continue;
+        }
+        let locations = snap.event_locations.get(type_name);
+        for (event_name, payload) in events {
+            let location = locations.and_then(|locs| locs.get(event_name));
+            results.push(EventDeclInfo {
+                type_name: type_name.clone(),
+                event_name: event_name.clone(),
+                params: payload.params.iter().map(|p| EventParamInfo {
+                    name: p.name.clone(),
+                    type_name: p.type_name.clone(),
+                    nilable: p.nilable,
+                    description: p.description.clone(),
+                }).collect(),
+                range: location.map(|loc| (loc.start, loc.end)),
+                source_path: location.map(|loc| loc.path.clone()),
+            });
+        }
+    }
+
+    // Sort for deterministic order
+    results.sort_by(|a, b| a.type_name.cmp(&b.type_name).then(a.event_name.cmp(&b.event_name)));
+    results
 }

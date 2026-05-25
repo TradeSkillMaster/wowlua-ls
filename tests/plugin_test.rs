@@ -6,8 +6,12 @@ use wowlua_ls::plugins::PluginEngine;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 
 fn analyze_with_plugins(lua_source: &str, plugin_paths: &[PathBuf]) -> Vec<(String, String)> {
+    analyze_with_plugins_and_globals(lua_source, plugin_paths, PreResolvedGlobals::empty())
+}
+
+fn analyze_with_plugins_and_globals(lua_source: &str, plugin_paths: &[PathBuf], pre_globals: PreResolvedGlobals) -> Vec<(String, String)> {
     let tree = wowlua_ls::syntax::parser::parse(lua_source);
-    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let pre_globals = Arc::new(pre_globals);
     let mut analysis = Analysis::new_with_tree(
         &tree, pre_globals, AnalysisConfig::default(),
     );
@@ -192,4 +196,165 @@ end
         .filter(|(code, msg)| code == "tsm-private" && (msg.contains("'db'") || msg.contains("'query'") || msg.contains("'timer'")))
         .collect();
     assert!(false_positives.is_empty(), "unexpected diagnostics on used fields: {false_positives:?}");
+}
+
+#[test]
+fn plugin_dot_syntax_defs_and_calls() {
+    let diags = analyze_with_plugins(
+        r#"
+local private = {
+    db = nil,
+}
+
+function private.OnLoad()
+    private.db = 1
+end
+
+function private.OnUpdate()
+    private.OnLoad()
+end
+
+private.Cleanup()
+"#,
+        &[plugin_path("dot_syntax_plugin.lua")],
+    );
+
+    let relevant: Vec<_> = diags.iter()
+        .filter(|(code, _)| code == "test-dot-syntax")
+        .collect();
+
+    // Should find 3 dot-syntax defs: OnLoad, OnUpdate, Cleanup (wait — Cleanup has no def)
+    let defs: Vec<_> = relevant.iter()
+        .filter(|(_, msg)| msg.starts_with("def: "))
+        .collect();
+    assert_eq!(defs.len(), 2, "expected 2 dot-syntax defs (OnLoad, OnUpdate), got: {defs:?}");
+    assert!(defs.iter().any(|(_, msg)| msg.contains("OnLoad")), "missing OnLoad def: {defs:?}");
+    assert!(defs.iter().any(|(_, msg)| msg.contains("OnUpdate")), "missing OnUpdate def: {defs:?}");
+
+    // Should find 2 dot-syntax calls: OnLoad (called from OnUpdate) and Cleanup
+    let calls: Vec<_> = relevant.iter()
+        .filter(|(_, msg)| msg.starts_with("call: "))
+        .collect();
+    assert_eq!(calls.len(), 2, "expected 2 dot-syntax calls (OnLoad, Cleanup), got: {calls:?}");
+    assert!(calls.iter().any(|(_, msg)| msg.contains("OnLoad")), "missing OnLoad call: {calls:?}");
+    assert!(calls.iter().any(|(_, msg)| msg.contains("Cleanup")), "missing Cleanup call: {calls:?}");
+}
+
+#[test]
+fn plugin_colon_calls_still_work() {
+    // Verify colon-style calls are still captured after the dot-syntax expansion
+    let diags = analyze_with_plugins(
+        r#"
+local obj = {}
+obj:register("EVENT_A")
+obj.configure("setting")
+"#,
+        &[plugin_path("dot_syntax_plugin.lua")],
+    );
+
+    let calls: Vec<_> = diags.iter()
+        .filter(|(code, msg)| code == "test-dot-syntax" && msg.starts_with("call: "))
+        .collect();
+    assert_eq!(calls.len(), 2, "expected both colon and dot calls, got: {calls:?}");
+    assert!(calls.iter().any(|(_, msg)| msg.contains("register")), "missing colon call: {calls:?}");
+    assert!(calls.iter().any(|(_, msg)| msg.contains("configure")), "missing dot call: {calls:?}");
+}
+
+#[test]
+fn plugin_find_event_declarations() {
+    use wowlua_ls::annotations::EventDecl;
+    use wowlua_ls::pre_globals::EventPayloadParam;
+
+    let mut pg = PreResolvedGlobals::empty();
+    pg.merge_events(&[
+        EventDecl {
+            event_type: "WowEvent".into(),
+            event_name: "ENCOUNTER_END".into(),
+            params: vec![
+                EventPayloadParam {
+                    name: "encounterID".into(),
+                    type_name: "number".into(),
+                    nilable: false,
+                    description: Some("The encounter ID".into()),
+                },
+                EventPayloadParam {
+                    name: "encounterName".into(),
+                    type_name: "string".into(),
+                    nilable: false,
+                    description: None,
+                },
+            ],
+            documentation: None,
+            def_range: Some((100, 150)),
+            def_path: Some(std::path::PathBuf::from("/tmp/events.lua")),
+        },
+        EventDecl {
+            event_type: "WowEvent".into(),
+            event_name: "PLAYER_LOGIN".into(),
+            params: vec![],
+            documentation: None,
+            def_range: Some((200, 230)),
+            def_path: Some(std::path::PathBuf::from("/tmp/events.lua")),
+        },
+        EventDecl {
+            event_type: "FrameEvent".into(),
+            event_name: "OnLoad".into(),
+            params: vec![
+                EventPayloadParam {
+                    name: "self".into(),
+                    type_name: "Frame".into(),
+                    nilable: false,
+                    description: None,
+                },
+            ],
+            documentation: None,
+            def_range: None,
+            def_path: None,
+        },
+    ]);
+
+    let diags = analyze_with_plugins_and_globals(
+        "local x = 1\n",
+        &[plugin_path("event_decl_plugin.lua")],
+        pg,
+    );
+
+    let relevant: Vec<_> = diags.iter()
+        .filter(|(code, _)| code == "test-event-decl")
+        .collect();
+
+    // Should find all 3 events
+    let hints: Vec<_> = relevant.iter()
+        .filter(|(_, msg)| msg.contains("/"))
+        .collect();
+    assert_eq!(hints.len(), 3, "expected 3 event declarations, got: {hints:?}");
+
+    // Check specific events with params
+    assert!(hints.iter().any(|(_, msg)|
+        msg.contains("WowEvent/ENCOUNTER_END") && msg.contains("encounterID:number") && msg.contains("encounterName:string")
+    ), "missing ENCOUNTER_END with params: {hints:?}");
+
+    assert!(hints.iter().any(|(_, msg)|
+        msg.contains("WowEvent/PLAYER_LOGIN")
+    ), "missing PLAYER_LOGIN: {hints:?}");
+
+    assert!(hints.iter().any(|(_, msg)|
+        msg.contains("FrameEvent/OnLoad") && msg.contains("self:Frame")
+    ), "missing OnLoad: {hints:?}");
+
+    // Check source_uri is present for events with def_path
+    assert!(hints.iter().any(|(_, msg)|
+        msg.contains("ENCOUNTER_END") && msg.contains("from=file:///tmp/events.lua")
+    ), "missing source_uri for ENCOUNTER_END: {hints:?}");
+
+    // Check description propagation
+    assert!(hints.iter().any(|(_, msg)|
+        msg.contains("encounterID:number(The encounter ID)")
+    ), "missing description for encounterID: {hints:?}");
+
+    // Check type_name filter: should report wow_count=2
+    let filter_msg = relevant.iter()
+        .find(|(_, msg)| msg.starts_with("wow_count="));
+    assert_eq!(filter_msg.map(|(_, m)| m.as_str()), Some("wow_count=2"),
+        "type_name filter should return 2 WowEvent entries, got: {relevant:?}");
 }

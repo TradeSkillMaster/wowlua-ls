@@ -1256,6 +1256,10 @@ impl<'a> Analysis<'a> {
                                 if resolved {
                                     let final_visibility = accessor_visibility.unwrap_or(method_visibility);
                                     let method_def_range = ident.syntax().text_range();
+                                    let existing_field = self.ir.get_field(table_idx, field_name);
+                                    let field_existed = existing_field.is_some();
+                                    let had_annotation = existing_field.is_some_and(|f| f.annotation.is_some());
+                                    let field_lateinit = existing_field.is_some_and(|f| f.lateinit);
                                     let fi = FieldInfo {
                                         expr: func_def_expr,
                                         visibility: final_visibility,
@@ -1273,6 +1277,22 @@ impl<'a> Analysis<'a> {
                                     } else {
                                         self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
                                     }
+                                    let func_r = func.syntax().text_range();
+                                    let root_sym = self.ir.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx);
+                                    self.ir.field_assignments.push(FieldAssignment {
+                                        table_idx, root_name: root_name.clone(), root_symbol: root_sym,
+                                        field_name: field_name.clone(),
+                                        actual_expr: func_def_expr,
+                                        scope_idx, block_stmt_index: stmt_index as u32,
+                                        ident_start: u32::from(method_def_range.start()), ident_end: u32::from(method_def_range.end()),
+                                        expr_start: u32::from(func_r.start()), expr_end: u32::from(func_r.end()),
+                                        field_existed_at_build: field_existed,
+                                        had_annotation_at_build: had_annotation,
+                                        lateinit: field_lateinit,
+                                        in_constructor: false,
+                                        in_function: func_id.is_some(),
+                                        is_method_def: true,
+                                    });
                                 }
                             } else if names.len() == 2 {
                                 let r = ident.syntax().text_range();

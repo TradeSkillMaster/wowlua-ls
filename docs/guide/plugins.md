@@ -60,6 +60,17 @@ Find local variables declared at file scope.
 - **`name`** — only return variables with this exact name
 - **`init`** — only return variables whose initializer is a table constructor, function call, or function definition
 
+### `ctx:find_event_declarations(type_name?)`
+
+Find `@event` declarations from the workspace. Returns all events aggregated across scanned files and stubs.
+
+```lua
+---@param type_name? string  -- e.g. "WowEvent"
+---@return EventDecl[]
+```
+
+- **`type_name`** — only return events of this type (e.g. `"WowEvent"`, `"FrameEvent"`)
+
 ### Emitting diagnostics
 
 Four methods, one per severity level:
@@ -91,8 +102,8 @@ A local variable returned by `find_locals`.
 |---|---|---|
 | `var:field_reads()` | `FieldAccess[]` | All `var.field` read accesses |
 | `var:field_writes()` | `FieldAccess[]` | All `var.field = value` assignments |
-| `var:method_calls()` | `MethodCall[]` | All `var:method(args)` calls |
-| `var:method_defs()` | `MethodDef[]` | All `function var:method() end` definitions |
+| `var:method_calls()` | `MethodCall[]` | All `var:method(args)` and `var.func(args)` calls |
+| `var:method_defs()` | `MethodDef[]` | All `function var:method() end` and `function var.func() end` definitions |
 
 ## Initializer API
 
@@ -169,6 +180,25 @@ The right-hand side of a `local` declaration.
 |---|---|---|
 | `range` | `Range` | Byte range of the comparison |
 | `literal` | `string\|number\|boolean?` | Literal being compared against |
+
+### EventDecl
+
+| Property | Type | Description |
+|---|---|---|
+| `type_name` | `string` | Event type (e.g. `"WowEvent"`, `"FrameEvent"`) |
+| `event_name` | `string` | Event name (e.g. `"ENCOUNTER_END"`, `"OnLoad"`) |
+| `params` | `EventParam[]` | Payload parameters |
+| `range` | `Range?` | Byte range of the declaration in its source file (`nil` for built-in stubs) |
+| `source_uri` | `string?` | File URI where declared (`nil` for built-in stubs) |
+
+### EventParam
+
+| Property | Type | Description |
+|---|---|---|
+| `name` | `string` | Parameter name |
+| `type_name` | `string` | Type name (e.g. `"number"`, `"string"`) |
+| `nilable` | `boolean` | Whether the parameter is optional |
+| `description` | `string?` | Human-readable description |
 
 ### Range
 
@@ -266,7 +296,7 @@ The LS recognizes plugin diagnostic codes automatically — no `unknown-diag-cod
 
 ## Limitations
 
-- Plugins only see **file-scope local variables**. Inner locals, upvalues, and globals are not queryable.
+- Plugins only see **file-scope local variables**. Inner locals, upvalues, and globals are not queryable. (`find_event_declarations` is the exception — it returns workspace-wide event metadata.)
 - Plugins cannot access **resolved types**. They work with structural patterns (field names, method calls, literal values), not the type system.
 - The Lua VM is **shared across files** within a session. Global assignments inside `run()` persist across calls. Avoid polluting the global scope — use `local` for all variables.
 - Plugin files are loaded at startup. **Editing a plugin requires restarting the language server** to pick up changes.
