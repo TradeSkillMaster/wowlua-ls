@@ -1,11 +1,38 @@
 use crate::analysis::AnalysisResult;
 use crate::types::SymbolIdentifier;
 use crate::syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
-use crate::syntax::tree::SyntaxTree;
+use crate::syntax::tree::{SyntaxToken, SyntaxTree};
 use super::{DiagnosticPass, WowDiagnostic};
 
 pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, message: String, start: usize, end: usize) {
     super::MALFORMED_ANNOTATION.emit(diags, message, start, end);
+}
+
+/// Check whether the next meaningful token after `tok` is a `---|` continuation comment.
+/// Skips whitespace, newlines, and regular (non-doc) comments so that e.g.
+/// `---@event Foo` / `-- description` / `---|"A"` still detects the continuation.
+fn next_token_is_continuation(tok: &SyntaxToken<'_>) -> bool {
+    let mut next = tok.next_token();
+    while let Some(ref t) = next {
+        let k = t.kind();
+        if k == SyntaxKind::Whitespace || k == SyntaxKind::Newline {
+            next = t.next_token();
+            continue;
+        }
+        if k == SyntaxKind::Comment {
+            let text = t.text();
+            if text.starts_with("---|") {
+                return true;
+            }
+            // Skip regular comments (not doc annotations) between the tag and ---|
+            if !text.starts_with("---") {
+                next = t.next_token();
+                continue;
+            }
+        }
+        return false;
+    }
+    false
 }
 
 /// What the scanner just passed over — tracks whether whitespace should end the type expression.
@@ -178,23 +205,7 @@ impl DiagnosticPass for MalformedAnnotation {
                 "alias" if rest.is_empty() =>
                     Some("@alias requires a name and type".to_string()),
                 "alias" if !rest.contains(char::is_whitespace) => {
-                    let has_continuation = {
-                        let mut next = tok.next_token();
-                        let mut found = false;
-                        while let Some(ref t) = next {
-                            let k = t.kind();
-                            if k == SyntaxKind::Whitespace || k == SyntaxKind::Newline {
-                                next = t.next_token();
-                                continue;
-                            }
-                            if k == SyntaxKind::Comment && t.text().starts_with("---|") {
-                                found = true;
-                            }
-                            break;
-                        }
-                        found
-                    };
-                    if has_continuation { None }
+                    if next_token_is_continuation(&tok) { None }
                     else { Some("@alias requires a type after the alias name".to_string()) }
                 }
                 "cast" if rest.is_empty() =>
@@ -203,8 +214,10 @@ impl DiagnosticPass for MalformedAnnotation {
                     Some("@cast requires a type after the variable name".to_string()),
                 "type" if rest.is_empty() =>
                     Some("@type requires a type".to_string()),
-                "return" if rest.is_empty() =>
-                    Some("@return requires a type".to_string()),
+                "return" if rest.is_empty() => {
+                    if next_token_is_continuation(&tok) { None }
+                    else { Some("@return requires a type".to_string()) }
+                }
                 "return" if has_top_level_comma(rest) =>
                     Some("comma-separated return types are not supported; use separate @return lines for each return value".to_string()),
                 "overload" if rest.is_empty() =>
@@ -288,7 +301,9 @@ impl DiagnosticPass for MalformedAnnotation {
                     if rest.is_empty() {
                         Some("@event requires a type and event name (e.g. @event MyEvent \"EVENT_NAME\")".to_string())
                     } else if !rest.contains(char::is_whitespace) {
-                        Some("@event requires an event name after the type (e.g. @event MyEvent \"EVENT_NAME\")".to_string())
+                        // Batch form: @event TypeName followed by ---| lines
+                        if next_token_is_continuation(&tok) { None }
+                        else { Some("@event requires an event name after the type (e.g. @event MyEvent \"EVENT_NAME\")".to_string()) }
                     } else {
                         None
                     }

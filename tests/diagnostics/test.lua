@@ -1434,10 +1434,26 @@ local malformed11 = nil
 -- ^ diag: none
 local malformed12 = nil
 
+-- Batch @event with ---| continuations should NOT warn
+---@event MyEvent
+-- ^ diag: none
+---| "BATCH_ONE" -> x: number
+---| "BATCH_TWO"
+local malformed13 = nil
+
+-- Bare @return with ---| continuations should NOT warn
+---@return
+-- ^ diag: none
+---| boolean, string
+---| false, nil
+local function notMalformedReturn5()
+    return true, "ok"
+end
+
 _consume(mdobj, boolParam, _dfncObj, mf1, mf2, mf3, mf4, mf5, mf6, mf7, mf8, mf9)
 _consume(malformed1, malformed2, malformed3, malformed4, malformed5, malformed5b, malformed5c)
-_consume(notMalformedReturn1, notMalformedReturn2, notMalformedReturn3, notMalformedReturn4)
-_consume(malformed6, malformed7, malformed8, malformed9, malformed10, malformed11, malformed12, validFunc, validVar, validDepr)
+_consume(notMalformedReturn1, notMalformedReturn2, notMalformedReturn3, notMalformedReturn4, notMalformedReturn5)
+_consume(malformed6, malformed7, malformed8, malformed9, malformed10, malformed11, malformed12, malformed13, validFunc, validVar, validDepr)
 
 -- ── type() guard narrows in and-condition ──────────────────────────────
 
