@@ -4529,15 +4529,16 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
         had_sf || had_sfg
     };
 
-    if globals_changed || classes_changed || aliases_changed || defclasses_changed || self_fields_changed {
+    if globals_changed || classes_changed || aliases_changed || defclasses_changed || self_fields_changed || events_changed {
         log::info!(
-            "Workspace rebuild triggered by didOpen: {} (globals={} classes={} aliases={} defclasses={} self_fields={})",
+            "Workspace rebuild triggered by didOpen: {} (globals={} classes={} aliases={} defclasses={} self_fields={} events={})",
             file_path.display(),
             globals_changed,
             classes_changed,
             aliases_changed,
             defclasses_changed,
             self_fields_changed,
+            events_changed,
         );
         ws.rebuild();
         true
@@ -6934,6 +6935,72 @@ mod tests {
         let _ = (sel_start, sel_end); // used for clarity above
         let action = make_extract_function_action(&uri, text, range, &tree, &analysis);
         assert!(action.is_none(), "should not offer Extract Function when selection contains return");
+    }
+
+    /// Regression: adding an `@event` annotation to a file must trigger
+    /// `ws.rebuild()` so the event type alias is merged into PreResolvedGlobals.
+    /// Previously `events_changed` was checked for `rebuild_caches()` but
+    /// missing from the `rebuild()` condition, causing undefined-type warnings
+    /// until a full VS Code reload.
+    #[test]
+    fn event_annotation_change_triggers_rebuild() {
+        let lua_source = concat!(
+            "---@event MyEvent \"SOMETHING_HAPPENED\"\n",
+            "---@param id number\n",
+        );
+        let tree = crate::syntax::parser::parse(lua_source);
+        let root = crate::syntax::SyntaxNode::new_root(&tree);
+
+        // WorkspaceState with no prior events for this file.
+        let mut ws = WorkspaceState {
+            root: Some(PathBuf::from("/project")),
+            configs: crate::config::ProjectConfigs::default(),
+            stub_globals: Vec::new(),
+            stub_classes: Vec::new(),
+            stub_pre_globals: Arc::new(PreResolvedGlobals::empty()),
+            stubs_have_defclass: false,
+            stubs_have_built_name: false,
+            ws_file_globals: HashMap::new(),
+            ws_file_classes: HashMap::new(),
+            ws_file_aliases: HashMap::new(),
+            ws_file_defclasses: HashMap::new(),
+            ws_file_events: HashMap::new(),
+            ws_file_self_fields: HashMap::new(),
+            ws_file_self_field_globals: HashMap::new(),
+            pre_globals: Arc::new(PreResolvedGlobals::empty()),
+            cached_all_globals: Vec::new(),
+            cached_all_classes: Vec::new(),
+            cached_needs_defclass: false,
+            cached_needs_built_name: false,
+            cached_defclass_func_names: Vec::new(),
+            cached_built_name_func_names: Vec::new(),
+            ws_file_addon_ns_class: HashMap::new(),
+            ws_file_callable_classes: HashMap::new(),
+            cached_callable_classes: HashSet::new(),
+            plugin_engine: None,
+            ws_generation: 0,
+            cached_ws_diagnostics: None,
+        };
+
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
+        assert!(rebuilt, "adding @event must trigger workspace rebuild");
+        assert!(ws.ws_generation > 0, "ws_generation must be bumped after rebuild");
+
+        // File's events must be stored for future change detection.
+        let stored_events = ws.ws_file_events.get(&PathBuf::from("/project/test.lua"));
+        assert!(stored_events.is_some(), "events must be stored in ws_file_events");
+        let events = stored_events.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_name, "SOMETHING_HAPPENED");
+
+        // A second call with identical source must NOT rebuild.
+        let tree2 = crate::syntax::parser::parse(lua_source);
+        let root2 = crate::syntax::SyntaxNode::new_root(&tree2);
+        let gen_before = ws.ws_generation;
+        let rebuilt2 = maybe_rebuild_workspace(&uri, root2, &mut ws);
+        assert!(!rebuilt2, "identical source must not trigger rebuild");
+        assert_eq!(ws.ws_generation, gen_before, "ws_generation must not change");
     }
 
     #[test]
