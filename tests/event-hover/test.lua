@@ -223,6 +223,19 @@ local function handleBatchAction(action, ...)
     end
 end
 
+-- ── Parameterized types in event payload narrowing ──
+
+---@param action BatchAction
+---@param ... params<BatchAction>
+local function handleBatchParamTypes(action, ...)
+    if action == "BATCH_GENERIC_PARAM" then
+        local iter = ...
+        local i = iter
+--            ^ hover: (local) i: IteratorObject
+-- (base class resolved; type args not substituted by resolve_annotation_type)
+    end
+end
+
 -- ── Inline params on single @event ──
 
 ---@param ev InlineEvent

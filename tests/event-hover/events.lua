@@ -45,6 +45,8 @@
 -- (e.g. WowEvent → string) are resolved before dependent aliases.
 ---@alias AnyGameEvent WowEvent
 
+---@class IteratorObject<F>
+
 ---@class EventFrame
 local EventFrame = {}
 

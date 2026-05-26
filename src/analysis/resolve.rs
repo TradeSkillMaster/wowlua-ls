@@ -1089,22 +1089,11 @@ impl<'a> Analysis<'a> {
     }
 
     fn resolve_event_param_type_static(ir: &super::Ir, param: &crate::pre_globals::EventPayloadParam) -> Option<ValueType> {
-        let base = match param.type_name.as_str() {
-            "number" | "integer" => ValueType::Number,
-            "string" => ValueType::String(None),
-            "boolean" | "bool" => ValueType::Boolean(None),
-            "any" => ValueType::Any,
-            "nil" => ValueType::Nil,
-            name => {
-                if let Some(&table_idx) = ir.ext.classes.get(name) {
-                    ValueType::Table(Some(table_idx))
-                } else if let Some(&table_idx) = ir.classes.get(name) {
-                    ValueType::Table(Some(table_idx))
-                } else {
-                    ValueType::Any
-                }
-            }
-        };
+        let at = crate::annotations::annotation_types::parse_type(&param.type_name);
+        // No generic type variables in scope for event params
+        let base = crate::annotations::resolve_annotation_type(&at, &[], &ir.ext.classes, &ir.ext.aliases)
+            .or_else(|| crate::annotations::resolve_annotation_type(&at, &[], &ir.classes, &ir.aliases))
+            .unwrap_or(ValueType::Any);
         if param.nilable {
             Some(ValueType::union(base, ValueType::Nil))
         } else {
