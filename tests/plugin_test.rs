@@ -358,3 +358,35 @@ fn plugin_find_event_declarations() {
     assert_eq!(filter_msg.map(|(_, m)| m.as_str()), Some("wow_count=2"),
         "type_name filter should return 2 WowEvent entries, got: {relevant:?}");
 }
+
+#[test]
+fn plugin_param_type_name() {
+    let diags = analyze_with_plugins(
+        r#"
+local Handler = {}
+
+---@param action ActionType
+---@param count number
+function Handler.OnAction(action, count)
+end
+
+function Handler.Untyped(x)
+end
+"#,
+        &[plugin_path("param_type_plugin.lua")],
+    );
+
+    let relevant: Vec<_> = diags.iter()
+        .filter(|(code, _)| code == "test-param-type")
+        .collect();
+
+    // OnAction has two typed params
+    assert!(relevant.iter().any(|(_, msg)| msg == "action:ActionType"),
+        "expected action:ActionType, got: {relevant:?}");
+    assert!(relevant.iter().any(|(_, msg)| msg == "count:number"),
+        "expected count:number, got: {relevant:?}");
+
+    // Untyped param should report nil for type_name
+    assert!(relevant.iter().any(|(_, msg)| msg == "x:nil"),
+        "expected x:nil for untyped param, got: {relevant:?}");
+}

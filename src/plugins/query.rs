@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::analysis::AnalysisResult;
+use crate::annotations::{AnnotationType, format_annotation_type};
 use crate::ast::Operator;
 use crate::pre_globals::EventPayload;
 use crate::types::*;
@@ -144,6 +145,8 @@ pub(super) struct ParamInfo {
     pub(super) name: String,
     pub(super) sym_idx: SymbolIndex,
     pub(super) param_index: usize,
+    /// The annotation type name (e.g. "ActionType") if a `@param` annotation exists.
+    pub(super) type_name: Option<String>,
 }
 
 /// An equality comparison involving a symbol.
@@ -431,10 +434,19 @@ pub(super) fn function_params(snap: &AnalysisSnapshot, func_idx: FunctionIndex) 
 
     func.args.iter().enumerate().filter_map(|(i, &sym_idx)| {
         let name = snap.sym_name(sym_idx)?.to_string();
+        // `Simple("")` is the default placeholder for unannotated params (set in build_ir.rs).
+        // For the implicit `self` param on colon methods of generic classes, build_ir synthesizes
+        // a `Parameterized("Class", [T, ...])` annotation — we suppress that so plugin authors
+        // don't see a surprising type_name on `self`.
+        let type_name = func.param_annotations.get(i)
+            .filter(|at| !matches!(at, AnnotationType::Simple(s) if s.is_empty()))
+            .filter(|_| name != "self")
+            .map(format_annotation_type);
         Some(ParamInfo {
             name,
             sym_idx,
             param_index: i,
+            type_name,
         })
     }).collect()
 }

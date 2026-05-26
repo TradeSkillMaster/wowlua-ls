@@ -338,6 +338,7 @@ impl LuaUserData for LuaMethodDef {
                     name: p.name,
                     sym_idx: p.sym_idx,
                     param_index: p.param_index,
+                    type_name: p.type_name,
                 })?)?;
             }
             Ok(result)
@@ -352,12 +353,14 @@ struct LuaParam {
     name: String,
     sym_idx: SymbolIndex,
     param_index: usize,
+    type_name: Option<String>,
 }
 
 impl LuaUserData for LuaParam {
     fn add_fields<F: LuaUserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("name", |_, this| Ok(this.name.clone()));
         fields.add_field_method_get("index", |_, this| Ok(this.param_index + 1)); // 1-based for Lua
+        fields.add_field_method_get("type_name", |_, this| Ok(this.type_name.clone()));
     }
 
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
