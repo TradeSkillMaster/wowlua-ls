@@ -54,6 +54,18 @@ oldFunc()
 oldFunc() ---@diagnostic disable-line: deprecated
 -- ^ diag: none
 
+-- Should warn: deprecated method called via self:Method()
+---@class DeprMethodHost
+local deprHost = {}
+---@deprecated
+function deprHost:oldMethod() end
+deprHost:oldMethod()
+--       ^ diag: deprecated  hover: (method) function DeprMethodHost:oldMethod()
+
+-- Should warn: deprecated method called via dot syntax
+deprHost.oldMethod(deprHost)
+--       ^ diag: deprecated
+
 -- ── Type mismatch diagnostics ──────────────────────────────────────────────
 
 ---@param x number

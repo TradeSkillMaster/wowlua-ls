@@ -239,7 +239,25 @@ impl DiagnosticPass for AnnotationMetadata {
             _ => continue,
         };
         if !analysis.func(func_idx).deprecated { continue; }
-        let name = analysis.function_name(func_idx).unwrap_or_else(|| "?".to_string());
+        let name = analysis.function_name(func_idx).unwrap_or_else(|| {
+            if let Expr::FieldAccess { table, field, .. } = analysis.expr(callee) {
+                let table = *table;
+                let field = field.as_str();
+                let class_name = analysis.resolve_expr_type(table).and_then(|ty| match ty {
+                    ValueType::Table(Some(idx)) => analysis.table(idx).class_name.clone(),
+                    _ => None,
+                });
+                match class_name {
+                    Some(cls) => {
+                        let sep = if let Expr::FunctionCall { is_method_call: true, .. } = expr { ":" } else { "." };
+                        format!("{}{}{}", cls, sep, field)
+                    }
+                    None => field.to_string(),
+                }
+            } else {
+                "?".to_string()
+            }
+        });
         // Related info: point to the function definition where @deprecated was declared.
         // Only for local (non-external) functions whose def_node is in the current file.
         let func = analysis.func(func_idx);
