@@ -339,6 +339,7 @@ impl LuaUserData for LuaMethodDef {
                     sym_idx: p.sym_idx,
                     param_index: p.param_index,
                     type_name: p.type_name,
+                    nilable: p.nilable,
                 })?)?;
             }
             Ok(result)
@@ -354,6 +355,7 @@ struct LuaParam {
     sym_idx: SymbolIndex,
     param_index: usize,
     type_name: Option<String>,
+    nilable: bool,
 }
 
 impl LuaUserData for LuaParam {
@@ -361,6 +363,7 @@ impl LuaUserData for LuaParam {
         fields.add_field_method_get("name", |_, this| Ok(this.name.clone()));
         fields.add_field_method_get("index", |_, this| Ok(this.param_index + 1)); // 1-based for Lua
         fields.add_field_method_get("type_name", |_, this| Ok(this.type_name.clone()));
+        fields.add_field_method_get("nilable", |_, this| Ok(this.nilable));
     }
 
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {

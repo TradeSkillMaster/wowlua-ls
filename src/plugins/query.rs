@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::analysis::AnalysisResult;
-use crate::annotations::{AnnotationType, format_annotation_type};
+use crate::annotations::{AnnotationType, annotation_type_is_nullable, format_annotation_type};
 use crate::ast::Operator;
 use crate::pre_globals::EventPayload;
 use crate::types::*;
@@ -147,6 +147,10 @@ pub(super) struct ParamInfo {
     pub(super) param_index: usize,
     /// The annotation type name (e.g. "ActionType") if a `@param` annotation exists.
     pub(super) type_name: Option<String>,
+    /// True if declared as `@param name?` or the type contains nil (e.g. `string|nil`).
+    /// Note: untyped parameters (no `@param` annotation) report `false`; check
+    /// `type_name.is_none()` to distinguish untyped from typed-non-nilable.
+    pub(super) nilable: bool,
 }
 
 /// An equality comparison involving a symbol.
@@ -438,15 +442,19 @@ pub(super) fn function_params(snap: &AnalysisSnapshot, func_idx: FunctionIndex) 
         // For the implicit `self` param on colon methods of generic classes, build_ir synthesizes
         // a `Parameterized("Class", [T, ...])` annotation — we suppress that so plugin authors
         // don't see a surprising type_name on `self`.
-        let type_name = func.param_annotations.get(i)
+        let ann = func.param_annotations.get(i);
+        let type_name = ann
             .filter(|at| !matches!(at, AnnotationType::Simple(s) if s.is_empty()))
             .filter(|_| name != "self")
             .map(format_annotation_type);
+        let param_optional = func.param_optional.get(i).copied().unwrap_or(false);
+        let ann_has_nil = ann.is_some_and(annotation_type_is_nullable);
         Some(ParamInfo {
             name,
             sym_idx,
             param_index: i,
             type_name,
+            nilable: param_optional || ann_has_nil,
         })
     }).collect()
 }

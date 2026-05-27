@@ -372,6 +372,11 @@ end
 
 function Handler.Untyped(x)
 end
+
+---@param callback? fun()
+---@param tag string|nil
+function Handler.Nilable(callback, tag)
+end
 "#,
         &[plugin_path("param_type_plugin.lua")],
     );
@@ -380,13 +385,21 @@ end
         .filter(|(code, _)| code == "test-param-type")
         .collect();
 
-    // OnAction has two typed params
-    assert!(relevant.iter().any(|(_, msg)| msg == "action:ActionType"),
-        "expected action:ActionType, got: {relevant:?}");
-    assert!(relevant.iter().any(|(_, msg)| msg == "count:number"),
-        "expected count:number, got: {relevant:?}");
+    // OnAction has two typed, non-nilable params
+    assert!(relevant.iter().any(|(_, msg)| msg == "action:ActionType:N"),
+        "expected action:ActionType:N, got: {relevant:?}");
+    assert!(relevant.iter().any(|(_, msg)| msg == "count:number:N"),
+        "expected count:number:N, got: {relevant:?}");
 
-    // Untyped param should report nil for type_name
-    assert!(relevant.iter().any(|(_, msg)| msg == "x:nil"),
-        "expected x:nil for untyped param, got: {relevant:?}");
+    // Untyped param should report nil for type_name, not nilable
+    assert!(relevant.iter().any(|(_, msg)| msg == "x:nil:N"),
+        "expected x:nil:N for untyped param, got: {relevant:?}");
+
+    // @param callback? fun() — nilable via name suffix
+    assert!(relevant.iter().any(|(_, msg)| msg == "callback:fun():Y"),
+        "expected callback:fun():Y, got: {relevant:?}");
+
+    // @param tag string|nil — nilable via type containing nil (formatted as string?)
+    assert!(relevant.iter().any(|(_, msg)| msg == "tag:string?:Y"),
+        "expected tag:string?:Y, got: {relevant:?}");
 }

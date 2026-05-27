@@ -162,6 +162,7 @@ The right-hand side of a `local` declaration.
 | `name` | `string` | Parameter name |
 | `index` | `integer` | 1-based parameter index |
 | `type_name` | `string?` | Annotation type name from `@param` (e.g. `"ActionType"`), or nil if untyped. Always nil for the implicit `self` parameter |
+| `nilable` | `boolean` | `true` if declared as `@param name?` or the type contains nil (e.g. `string|nil`). Untyped parameters (no `@param`) report `false` — check `type_name` to distinguish untyped from typed-non-nilable |
 
 | Method | Returns | Description |
 |---|---|---|
