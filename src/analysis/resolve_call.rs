@@ -1733,6 +1733,7 @@ impl<'a> Analysis<'a> {
                 lateinit,
                 def_range: None,
                 flavor_guard: 0,
+                description: None,
                 from_scan: false,
             });
         }
@@ -2281,6 +2282,7 @@ impl<'a> Analysis<'a> {
                         lateinit: fi.lateinit,
                         def_range: fi.def_range,
                         flavor_guard: fi.flavor_guard,
+                        description: fi.description.clone(),
                         from_scan: false,
                     })
                 }).collect();
@@ -2299,6 +2301,7 @@ impl<'a> Analysis<'a> {
                         lateinit: fi.lateinit,
                         def_range: fi.def_range,
                         flavor_guard: fi.flavor_guard,
+                        description: fi.description,
                         from_scan: false,
                     })
                 }).collect();

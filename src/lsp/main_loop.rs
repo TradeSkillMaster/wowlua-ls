@@ -6462,6 +6462,7 @@ mod tests {
             see: Vec::new(),
             declared_field_names: HashSet::new(),
             field_literals: HashMap::new(),
+            field_descriptions: HashMap::new(),
         }
     }
 

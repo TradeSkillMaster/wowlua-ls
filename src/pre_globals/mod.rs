@@ -310,6 +310,7 @@ fn populate_table_fields(
             def_range: None,
             extra_exprs: Vec::new(),
             flavor_guard: 0,
+            description: None,
             from_scan: false,
         });
     }
@@ -407,6 +408,7 @@ fn walk_deep_path(
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        description: None,
                         from_scan: false,
                     });
                     record_field_location(field_locations, current_idx, seg, g);
@@ -980,6 +982,7 @@ impl BuildContext {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        description: class.field_descriptions.get(field_name).cloned(),
                         from_scan: false,
                     });
                 } else if annotation_type_references_type_params(annotation_type, &self.tables[local_idx].class_type_params) {
@@ -997,6 +1000,7 @@ impl BuildContext {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        description: class.field_descriptions.get(field_name).cloned(),
                         from_scan: false,
                     });
                 }
@@ -1269,6 +1273,7 @@ impl BuildContext {
                     def_range: None,
                     extra_exprs: Vec::new(),
                     flavor_guard: 0,
+                    description: None,
                     from_scan: false,
                 };
                 if g.is_override {
@@ -1356,6 +1361,7 @@ impl BuildContext {
                     def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: g.flavor_guard,
+                        description: None,
                         from_scan: true,
                     });
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
@@ -1398,6 +1404,7 @@ impl BuildContext {
                     def_range: None,
                     extra_exprs: Vec::new(),
                     flavor_guard: g.flavor_guard,
+                    description: None,
                     from_scan: true,
                 });
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
@@ -1938,6 +1945,7 @@ impl BuildContext {
                     def_range: None,
                             extra_exprs: Vec::new(),
                             flavor_guard: 0,
+                            description: None,
                             from_scan: true,
                         });
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -1981,6 +1989,7 @@ impl BuildContext {
                     def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        description: None,
                         from_scan: true,
                     });
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -2054,6 +2063,7 @@ impl BuildContext {
                             def_range: None,
                             extra_exprs: Vec::new(),
                             flavor_guard: 0,
+                            description: None,
                             from_scan: true,
                         });
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -2120,6 +2130,7 @@ impl BuildContext {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        description: None,
                         from_scan: true,
                     });
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -2557,6 +2568,7 @@ impl PreResolvedGlobals {
                         lateinit: false,
                         def_range: None,
                         flavor_guard: 0,
+                        description: None,
                         from_scan: false,
                     });
                 }
@@ -3116,6 +3128,7 @@ mod tests {
             see: Vec::new(),
             declared_field_names: std::collections::HashSet::new(),
             field_literals: std::collections::HashMap::new(),
+            field_descriptions: std::collections::HashMap::new(),
         }
     }
 

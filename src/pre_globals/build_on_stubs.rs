@@ -284,6 +284,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        description: class.field_descriptions.get(field_name).cloned(),
                         from_scan: false,
                     });
                 } else if annotation_type_references_type_params(annotation_type, &self.tables[local_idx].class_type_params) {
@@ -299,6 +300,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        description: class.field_descriptions.get(field_name).cloned(),
                         from_scan: false,
                     });
                 }
@@ -599,6 +601,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     def_range: None,
                     extra_exprs: Vec::new(),
                     flavor_guard: 0,
+                    description: None,
                     from_scan: false,
                 });
                 if g.constructor || constructor_method_names.contains(method_name.as_str()) {
@@ -696,6 +699,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: g.flavor_guard,
+                        description: None,
                         from_scan: true,
                     });
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
@@ -740,6 +744,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     def_range: None,
                     extra_exprs: Vec::new(),
                     flavor_guard: g.flavor_guard,
+                    description: None,
                     from_scan: true,
                 });
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
@@ -1193,6 +1198,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             def_range: None,
                             extra_exprs: Vec::new(),
                             flavor_guard: 0,
+                            description: None,
                             from_scan: true,
                         });
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -1236,6 +1242,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        description: None,
                         from_scan: true,
                     });
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -1286,6 +1293,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             def_range: None,
                             extra_exprs: Vec::new(),
                             flavor_guard: 0,
+                            description: None,
                             from_scan: true,
                         });
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -1354,6 +1362,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             def_range: None,
                             extra_exprs: Vec::new(),
                             flavor_guard: 0,
+                            description: None,
                             from_scan: true,
                         });
                     }
@@ -1425,6 +1434,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         def_range: None,
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
+                        description: None,
                         from_scan: true,
                     });
                 }

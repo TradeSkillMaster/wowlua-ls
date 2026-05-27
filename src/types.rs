@@ -798,6 +798,12 @@ pub(crate) struct FieldInfo {
     /// narrows the active flavor set to this mask.
     #[serde(default)]
     pub(crate) flavor_guard: u8,
+    /// Description text from `@field` annotation (text after the type).
+    /// E.g. `@field Foo number The foo count.` → Some("The foo count.")
+    /// Populated at build time from `ClassDecl.field_descriptions`; not part of the
+    /// precomputed stubs blob (WoW API stubs have no field descriptions).
+    #[serde(skip)]
+    pub(crate) description: Option<String>,
     /// True when this field was speculatively discovered by workspace scanning
     /// (runtime field assignments, table placeholders, class-name-matched fields)
     /// rather than authored (annotations, function definitions). Used by

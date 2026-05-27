@@ -576,6 +576,7 @@ impl<'a> Analysis<'a> {
                                 lateinit: inline_is_lateinit,
                                 def_range: Some((u32::from(field_range.start()), u32::from(field_range.end()))),
                                 flavor_guard: 0,
+                                description: None,
                                 from_scan: false,
                             });
                         }
@@ -617,6 +618,7 @@ impl<'a> Analysis<'a> {
                                         lateinit: false,
                                         def_range: None,
                                         flavor_guard: 0,
+                                        description: None,
                                         from_scan: false,
                                     });
                                 }

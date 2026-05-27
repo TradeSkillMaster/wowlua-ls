@@ -521,7 +521,7 @@ fn build_doc_field(
         view: Some(view),
         deprecated: false,
         visible,
-        desc: None,
+        desc: field.description.clone(),
     }
 }
 
@@ -543,6 +543,7 @@ mod tests {
             lateinit: false,
             def_range: None,
             flavor_guard: 0,
+            description: None,
             from_scan: false,
         }
     }
@@ -631,6 +632,7 @@ mod tests {
             lateinit: false,
             def_range: None,
             flavor_guard: 0,
+            description: None,
             from_scan: false,
         }
     }
@@ -687,6 +689,7 @@ mod tests {
             lateinit: false,
             def_range: None,
             flavor_guard: 0,
+            description: None,
             from_scan: false,
         };
         register_class(&mut pg, "MyClass", vec![
@@ -793,5 +796,33 @@ mod tests {
         assert_eq!(docs.len(), 1);
         let names: Vec<&str> = docs[0].fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["publicField"]);
+    }
+
+    #[test]
+    fn field_descriptions_included() {
+        let mut pg = PreResolvedGlobals::empty();
+        let root = PathBuf::from("/test/project");
+        let mut field = make_field(Some(ValueType::Number), Some("number".to_string()));
+        field.description = Some("The item count.".to_string());
+        register_class(&mut pg, "MyClass", vec![
+            ("count", field),
+        ], &root, &["count"]);
+        let docs = generate_docs(&pg, &root, None);
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].fields.len(), 1);
+        assert_eq!(docs[0].fields[0].desc.as_deref(), Some("The item count."));
+    }
+
+    #[test]
+    fn field_descriptions_none_when_absent() {
+        let mut pg = PreResolvedGlobals::empty();
+        let root = PathBuf::from("/test/project");
+        register_class(&mut pg, "MyClass", vec![
+            ("count", make_field(Some(ValueType::Number), Some("number".to_string()))),
+        ], &root, &["count"]);
+        let docs = generate_docs(&pg, &root, None);
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].fields.len(), 1);
+        assert!(docs[0].fields[0].desc.is_none());
     }
 }

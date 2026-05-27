@@ -670,6 +670,7 @@ fn finalize_frame(
         see: Vec::new(),
         declared_field_names: HashSet::new(),
         field_literals: HashMap::new(),
+        field_descriptions: HashMap::new(),
     };
     classes.push(class_decl);
 
@@ -710,6 +711,7 @@ fn finalize_frame(
                 see: Vec::new(),
                 declared_field_names: HashSet::new(),
                 field_literals: HashMap::new(),
+                field_descriptions: HashMap::new(),
             };
             mixin_augments.push(augment);
         }

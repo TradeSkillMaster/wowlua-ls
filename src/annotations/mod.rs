@@ -284,6 +284,11 @@ pub struct ClassDecl {
     /// Used to show enum values in hover like `(field) Poor: number = 0`.
     #[serde(default)]
     pub field_literals: HashMap<String, String>,
+    /// Per-field description text from `@field` annotations (text after the type).
+    /// E.g. `@field Foo number The foo count.` → "Foo" → "The foo count."
+    /// Not serialized into the precomputed stubs blob — populated at scan time.
+    #[serde(skip)]
+    pub field_descriptions: HashMap<String, String>,
 }
 
 impl ClassDecl {
@@ -421,6 +426,7 @@ pub(crate) struct AnnotationBlock {
     pub(crate) class_type_param_constraints: Vec<Option<String>>,
     pub(crate) class_parents: Vec<String>,
     pub(crate) fields: Vec<(String, AnnotationType, Visibility)>,
+    pub(crate) field_descriptions: HashMap<String, String>,
     pub(crate) alias: Option<(String, AnnotationType)>,
     pub(crate) alias_type_params: Vec<String>,
     pub(crate) alias_is_opaque: bool,
@@ -932,7 +938,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new(), field_descriptions: block.field_descriptions });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -1158,6 +1164,10 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if let Some((vis, name, is_optional, type_str)) = parse_field_header(rest) {
                 let type_str_trimmed = type_str.trim();
                 let type_only = extract_type_prefix(type_str_trimmed);
+                let desc_text = type_str_trimmed[type_only.len()..].trim();
+                if !desc_text.is_empty() {
+                    block.field_descriptions.insert(name.to_string(), desc_text.to_string());
+                }
                 let typ = parse_type(type_only);
                 let typ = if is_optional {
                     AnnotationType::Union(vec![typ, AnnotationType::Simple("nil".to_string())])
@@ -1506,3 +1516,50 @@ pub use scan_defclass::scan_defclass_calls;
 pub use scan_defclass::{DefclassContext, scan_defclass_calls_with_context};
 pub use scan_built_name::scan_built_name_calls;
 pub use scan_built_name::{BuiltNameContext, scan_built_name_calls_with_context};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: parse annotation lines and return the block.
+    fn parse(lines: &[&str]) -> AnnotationBlock {
+        let lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        parse_annotation_lines(&lines)
+    }
+
+    #[test]
+    fn field_description_simple() {
+        let block = parse(&["---@class Foo", "---@field count number The item count."]);
+        assert_eq!(block.field_descriptions.get("count").map(String::as_str), Some("The item count."));
+    }
+
+    #[test]
+    fn field_description_absent() {
+        let block = parse(&["---@class Foo", "---@field count number"]);
+        assert!(block.field_descriptions.get("count").is_none());
+    }
+
+    #[test]
+    fn field_description_generic_type() {
+        let block = parse(&["---@class Foo", "---@field registry table<string, number> The registry."]);
+        assert_eq!(block.field_descriptions.get("registry").map(String::as_str), Some("The registry."));
+    }
+
+    #[test]
+    fn field_description_union_type() {
+        let block = parse(&["---@class Foo", "---@field value string|number The value."]);
+        assert_eq!(block.field_descriptions.get("value").map(String::as_str), Some("The value."));
+    }
+
+    #[test]
+    fn field_description_fun_type() {
+        let block = parse(&["---@class Foo", "---@field callback fun(x: number): boolean The callback."]);
+        assert_eq!(block.field_descriptions.get("callback").map(String::as_str), Some("The callback."));
+    }
+
+    #[test]
+    fn field_description_optional_field() {
+        let block = parse(&["---@class Foo", "---@field name? string The optional name."]);
+        assert_eq!(block.field_descriptions.get("name").map(String::as_str), Some("The optional name."));
+    }
+}

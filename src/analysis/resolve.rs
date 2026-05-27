@@ -1623,6 +1623,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    description: None,
                     from_scan: false,
                 };
                 if !current_table.is_external() {
@@ -1723,6 +1724,7 @@ impl<'a> Analysis<'a> {
                         lateinit: assign.inline_is_lateinit,
                         def_range: None,
                         flavor_guard: 0,
+                        description: None,
                         from_scan: false,
                     });
                 }
@@ -1766,6 +1768,7 @@ impl<'a> Analysis<'a> {
                     lateinit,
                     def_range: None,
                     flavor_guard: 0,
+                    description: None,
                     from_scan: false,
                 });
             }

@@ -1270,6 +1270,7 @@ impl<'a> Analysis<'a> {
                                         extra_exprs: Vec::new(),
                                         def_range: Some((u32::from(method_def_range.start()), u32::from(method_def_range.end()))),
                                         flavor_guard: 0,
+                                        description: None,
                                         from_scan: false,
                                     };
                                     if !table_idx.is_external() {
@@ -1661,6 +1662,7 @@ impl<'a> Analysis<'a> {
                                                     extra_exprs: Vec::new(),
                                                     def_range: Some((u32::from(method_def_range.start()), u32::from(method_def_range.end()))),
                                                     flavor_guard: 0,
+                                                    description: None,
                                                     from_scan: false,
                                                 };
                                                 if !table_idx.is_external() {
@@ -1825,6 +1827,7 @@ impl<'a> Analysis<'a> {
                                                         lateinit: false,
                                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
                                                         flavor_guard: 0,
+                                                        description: None,
                                                         from_scan: false,
                                                     };
                                                     if !target.is_external() {
@@ -1894,6 +1897,7 @@ impl<'a> Analysis<'a> {
                                                         lateinit: inline_is_lateinit,
                                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
                                                         flavor_guard: assign_flavor_guard,
+                                                        description: None,
                                                         from_scan: false,
                                                     });
                                                 }
@@ -1958,6 +1962,7 @@ impl<'a> Analysis<'a> {
                                                         lateinit: li || inline_is_lateinit,
                                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
                                                         flavor_guard: assign_flavor_guard,
+                                                        description: None,
                                                         from_scan: false,
                                                     });
                                                 }
@@ -2048,6 +2053,7 @@ impl<'a> Analysis<'a> {
                                                                         lateinit: false,
                                                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
                                                                         flavor_guard: 0,
+                                                                        description: None,
                                                                         from_scan: false,
                                                                     });
                                                                 }

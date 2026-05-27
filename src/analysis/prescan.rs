@@ -256,6 +256,7 @@ impl<'a> Analysis<'a> {
                         lateinit: is_lateinit,
                         def_range,
                         flavor_guard: 0,
+                        description: class.field_descriptions.get(field_name).cloned(),
                         from_scan: false,
                     });
                 } else {
@@ -273,6 +274,7 @@ impl<'a> Analysis<'a> {
                             lateinit: is_lateinit,
                             def_range,
                             flavor_guard: 0,
+                            description: class.field_descriptions.get(field_name).cloned(),
                             from_scan: false,
                         });
                     }
@@ -745,6 +747,7 @@ impl<'a> Analysis<'a> {
                             lateinit: false,
                             def_range: None,
                             flavor_guard: 0,
+                            description: None,
                             from_scan: false,
                         });
                     } else {
@@ -760,6 +763,7 @@ impl<'a> Analysis<'a> {
                             lateinit: false,
                             def_range: None,
                             flavor_guard: 0,
+                            description: None,
                             from_scan: false,
                         });
                     }
@@ -1078,6 +1082,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    description: None,
                     from_scan: false,
                 });
             } else {
@@ -1093,6 +1098,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    description: None,
                     from_scan: false,
                 });
             }
@@ -1128,6 +1134,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    description: None,
                     from_scan: false,
                 });
             } else {
@@ -1143,6 +1150,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    description: None,
                     from_scan: false,
                 });
             }
@@ -1887,6 +1895,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                     flavor_guard: 0,
+                    description: None,
                     from_scan: false,
                 });
             }
