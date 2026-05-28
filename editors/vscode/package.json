@@ -1,7 +1,7 @@
 {
   "name": "wowlua-ls",
   "displayName": "WoW Lua Language Server",
-  "description": "Lua language server for World of Warcraft addons",
+  "description": "Language server for WoW addon development - 9,000+ API stubs, 70 diagnostics, event typing, XML frame scanning, and more",
   "version": "0.0.1",
   "publisher": "TradeSkillMaster",
   "engines": {

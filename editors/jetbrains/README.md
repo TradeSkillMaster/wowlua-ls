@@ -1,4 +1,4 @@
-# WoW Lua Language Server — JetBrains Plugin
+# WoW Lua Language Server - JetBrains Plugin
 
 IntelliJ-based plugin that connects any JetBrains IDE (IntelliJ IDEA, PyCharm, WebStorm, GoLand, etc.) to the [wowlua_ls](https://github.com/TradeSkillMaster/wowlua-ls) language server via LSP.
 
@@ -6,11 +6,16 @@ IntelliJ-based plugin that connects any JetBrains IDE (IntelliJ IDEA, PyCharm, W
 
 All features are provided by the `wowlua_ls` language server:
 
-- 9,000+ WoW API stubs with hover documentation
-- Code completion, go-to-definition, find references, rename
-- 55+ diagnostics for type safety and nil checking
-- Signature help with overload resolution
-- Semantic token highlighting
+- 9,000+ WoW API stubs built in (retail, classic, classic era)
+- Event handler typing with per-event payload params
+- XML frame scanning for frame definitions, virtual templates, and mixins
+- TOC file support - hover, completions, go-to-definition, and diagnostics
+- Metatable inference, correlated narrowing, mixin and template support
+- Flavor filtering - warns on APIs unavailable in your target game version
+- 70 diagnostics for type safety, nil checking, annotation correctness, and WoW-specific checks
+- Diagnostic plugins for project-specific conventions
+- Powerful generics, builder patterns, signature help with overload resolution
+- Code completion, go-to-definition, find references, rename, semantic tokens
 
 The plugin adds:
 

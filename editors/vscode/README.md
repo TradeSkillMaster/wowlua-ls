@@ -1,17 +1,22 @@
 # WoW Lua Language Server
 
-A language server for World of Warcraft addon development. Built specifically for WoW Lua — not a general-purpose Lua LS with WoW bolted on.
+A language server for World of Warcraft addon development. Built specifically for WoW Lua - not a general-purpose Lua LS with WoW bolted on.
 
 ## Features
 
-- **WoW API built in** — 9,000+ API stubs for retail, classic, and classic era. No setup, no addon manager.
-- **Powerful generics** — parameterized classes, constrained type parameters, function-type projections. Class-level generics propagate through method calls automatically.
-- **Metatable inference** — understands `setmetatable` + `__index`, chained metatables, `__call`, operator metamethods. Your OOP patterns just work.
-- **Correlated narrowing** — check one return value, and the LS narrows the rest. Eliminates false positives from multi-return functions.
-- **Mixin and template support** — `CreateFrame("Frame", nil, nil, "BackdropTemplate")` returns `Frame & BackdropTemplate` automatically.
-- **Flavor filtering** — declare target flavors and get warnings on APIs that don't exist in all your targets.
-- **Builder pattern** — `@builds-field` tracks progressive type construction across chained method calls.
-- **55+ diagnostics** covering type safety, nil checking, annotation correctness, code quality, and WoW-specific checks.
+- **9,000+ WoW API stubs built in** - every function, frame type, enum, and global for retail, classic, and classic era. No setup, no addon manager.
+- **Event handler typing** - `SetScript("OnEvent", handler)` types `self`, `event`, and per-event payload params. Works with custom event systems too via the `@event` annotation.
+- **XML frame scanning** - automatically scans `.xml` files for frame definitions, virtual templates, `parentKey` children, `inherits` chains, and `mixin` attributes.
+- **TOC file support** - hover documentation, completions, go-to-definition on file paths, and diagnostics for `.toc` files. SavedVariables are auto-detected as allowed globals.
+- **Metatable inference** - understands `setmetatable` + `__index`, chained metatables, `__call`, operator metamethods. Your OOP patterns just work.
+- **Correlated narrowing** - check one return value, and the LS narrows the rest. Eliminates false positives from multi-return functions.
+- **Mixin and template support** - `CreateFrame("Frame", nil, nil, "BackdropTemplate")` returns `Frame & BackdropTemplate` automatically.
+- **Flavor filtering** - declare target flavors and get warnings on APIs that don't exist in all your targets.
+- **70 diagnostics** - type safety, nil checking, annotation correctness, code quality, and WoW-specific checks. Each one individually configurable.
+- **Diagnostic plugins** - write custom Lua scripts to enforce project-specific conventions.
+- **CI-ready CLI** - `wowlua_ls check path/to/addon` lints your addon and exits non-zero on diagnostics.
+- **Powerful generics** - parameterized classes, constrained type parameters, function-type projections. Class-level generics propagate through method calls automatically.
+- **Builder pattern** - `@builds-field` tracks progressive type construction across chained method calls.
 
 ## Getting started
 
@@ -57,4 +62,4 @@ Full documentation at **[tradeskillmaster.github.io/wowlua-ls](https://tradeskil
 
 ## License
 
-GPL-3.0 — see [LICENSE](https://github.com/TradeSkillMaster/wowlua-ls/blob/main/LICENSE.md).
+GPL-3.0 - see [LICENSE](https://github.com/TradeSkillMaster/wowlua-ls/blob/main/LICENSE.md).

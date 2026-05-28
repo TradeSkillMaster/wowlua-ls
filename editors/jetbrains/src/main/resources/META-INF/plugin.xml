@@ -5,23 +5,29 @@
             url="https://github.com/TradeSkillMaster/wowlua-ls">TradeSkillMaster</vendor>
 
     <description><![CDATA[
-    Lua language server for World of Warcraft addon development, powered by
+    A language server for World of Warcraft addon development, powered by
     <a href="https://github.com/TradeSkillMaster/wowlua-ls">wowlua_ls</a>.
+    Built specifically for WoW Lua - not a general-purpose Lua LS with WoW bolted on.
 
     <h3>Features</h3>
     <ul>
-        <li>9,000+ WoW API stubs with hover documentation (retail, classic, classic_era)</li>
-        <li>Code completion, go-to-definition, find references, rename</li>
-        <li>55+ diagnostics for type safety, nil checking, and WoW-specific checks</li>
-        <li>Generic types, metatable inference, builder patterns</li>
-        <li>Flavor filtering &mdash; warns on APIs unavailable in your target game version</li>
-        <li>Signature help with overload resolution</li>
-        <li>Semantic token highlighting</li>
+        <li>9,000+ WoW API stubs built in - every function, frame type, enum, and global for retail, classic, and classic era</li>
+        <li>Event handler typing - <code>SetScript("OnEvent", handler)</code> types <code>self</code>, <code>event</code>, and per-event payload params</li>
+        <li>XML frame scanning - automatically scans <code>.xml</code> files for frame definitions, virtual templates, and mixin attributes</li>
+        <li>TOC file support - hover, completions, go-to-definition, and diagnostics for <code>.toc</code> files</li>
+        <li>Metatable inference - understands <code>setmetatable</code> + <code>__index</code>, chained metatables, operator metamethods</li>
+        <li>Correlated narrowing - check one return value, and the LS narrows the rest</li>
+        <li>Mixin and template support - <code>CreateFrame</code> returns intersection types automatically</li>
+        <li>Flavor filtering - warns on APIs unavailable in your target game version</li>
+        <li>70 diagnostics for type safety, nil checking, annotation correctness, and WoW-specific checks</li>
+        <li>Diagnostic plugins - write custom Lua scripts to enforce project-specific conventions</li>
+        <li>Powerful generics, builder patterns, signature help with overload resolution</li>
+        <li>Code completion, go-to-definition, find references, rename, semantic tokens</li>
     </ul>
 
     <h3>Setup</h3>
     <p>Install the <code>wowlua_ls</code> binary and either add it to your PATH or configure
-    the path in <b>Settings &rarr; Tools &rarr; WoW Lua LS</b>.</p>
+    the path in <b>Settings > Tools > WoW Lua LS</b>.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
