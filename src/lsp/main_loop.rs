@@ -495,6 +495,39 @@ impl WorkspaceState {
         }
         Vec::new()
     }
+
+    #[cfg(test)]
+    fn for_test(root: Option<PathBuf>) -> Self {
+        Self {
+            root,
+            configs: crate::config::ProjectConfigs::default(),
+            stub_globals: Vec::new(),
+            stub_classes: Vec::new(),
+            stub_pre_globals: Arc::new(PreResolvedGlobals::empty()),
+            stubs_have_defclass: false,
+            stubs_have_built_name: false,
+            ws_file_globals: HashMap::new(),
+            ws_file_classes: HashMap::new(),
+            ws_file_aliases: HashMap::new(),
+            ws_file_defclasses: HashMap::new(),
+            ws_file_events: HashMap::new(),
+            ws_file_self_fields: HashMap::new(),
+            ws_file_self_field_globals: HashMap::new(),
+            pre_globals: Arc::new(PreResolvedGlobals::empty()),
+            cached_all_globals: Vec::new(),
+            cached_all_classes: Vec::new(),
+            cached_needs_defclass: false,
+            cached_needs_built_name: false,
+            cached_defclass_func_names: Vec::new(),
+            cached_built_name_func_names: Vec::new(),
+            ws_file_addon_ns_class: HashMap::new(),
+            ws_file_callable_classes: HashMap::new(),
+            cached_callable_classes: HashSet::new(),
+            plugin_engine: None,
+            ws_generation: 0,
+            cached_ws_diagnostics: None,
+        }
+    }
 }
 
 fn collect_lua_paths_filtered(
@@ -4409,8 +4442,9 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
         .is_none_or(|old| !classes_match(old, &scan.classes));
     let aliases_changed = ws.ws_file_aliases.get(&file_path)
         .is_none_or(|old| !aliases_match(old, &scan.aliases));
+    // Events are removed from ws_file_events when empty, so None + empty = unchanged.
     let events_changed = ws.ws_file_events.get(&file_path)
-        .is_none_or(|old| !events_match(old, &scan.events));
+        .map_or(!scan.events.is_empty(), |old| !events_match(old, &scan.events));
 
     // Always store fresh values so positions stay current for hover/go-to-def.
     // Only rebuild when semantic content (types, names, fields) actually changed.
@@ -5424,9 +5458,13 @@ fn try_batch_analyze(
         let would_rebuild = file_path.as_ref().is_some_and(|fp| {
             let globals_changed = ws.ws_file_globals.get(fp)
                 .is_none_or(|old| !globals_match(old, &new_globals));
-            let classes_changed = ws.ws_file_classes.get(fp) != Some(&scan.classes);
-            let aliases_changed = ws.ws_file_aliases.get(fp) != Some(&scan.aliases);
-            let events_changed = ws.ws_file_events.get(fp) != Some(&scan.events);
+            let classes_changed = ws.ws_file_classes.get(fp)
+                .is_none_or(|old| !classes_match(old, &scan.classes));
+            let aliases_changed = ws.ws_file_aliases.get(fp)
+                .is_none_or(|old| !aliases_match(old, &scan.aliases));
+            // Events are removed from ws_file_events when empty, so None + empty = unchanged.
+            let events_changed = ws.ws_file_events.get(fp)
+                .map_or(!scan.events.is_empty(), |old| !events_match(old, &scan.events));
             globals_changed || classes_changed || aliases_changed || events_changed
         });
 
@@ -6611,36 +6649,9 @@ mod tests {
         );
         wrapper.returns = vec![AnnotationType::Simple("SchemaClass".to_string())];
 
-        let mut ws = WorkspaceState {
-            root: None,
-            configs: crate::config::ProjectConfigs::default(),
-            stub_globals: vec![init_method, wrapper],
-            stub_classes: Vec::new(),
-            stub_pre_globals: Arc::new(PreResolvedGlobals::empty()),
-            stubs_have_defclass: false,
-            stubs_have_built_name: true,
-            ws_file_globals: HashMap::new(),
-            ws_file_classes: HashMap::new(),
-            ws_file_aliases: HashMap::new(),
-            ws_file_defclasses: HashMap::new(),
-            ws_file_events: HashMap::new(),
-            ws_file_self_fields: HashMap::new(),
-            ws_file_self_field_globals: HashMap::new(),
-            pre_globals: Arc::new(PreResolvedGlobals::empty()),
-            cached_all_globals: Vec::new(),
-            cached_all_classes: Vec::new(),
-            cached_needs_defclass: false,
-            cached_needs_built_name: false,
-            cached_defclass_func_names: Vec::new(),
-            cached_built_name_func_names: Vec::new(),
-            ws_file_addon_ns_class: HashMap::new(),
-            ws_file_callable_classes: HashMap::new(),
-            cached_callable_classes: HashSet::new(),
-            plugin_engine: None,
-            ws_generation: 0,
-            cached_ws_diagnostics: None,
-        };
-
+        let mut ws = WorkspaceState::for_test(None);
+        ws.stub_globals = vec![init_method, wrapper];
+        ws.stubs_have_built_name = true;
         ws.rebuild_caches();
 
         // Must include both the direct method name AND the wrapper function name
@@ -6952,36 +6963,7 @@ mod tests {
         let tree = crate::syntax::parser::parse(lua_source);
         let root = crate::syntax::SyntaxNode::new_root(&tree);
 
-        // WorkspaceState with no prior events for this file.
-        let mut ws = WorkspaceState {
-            root: Some(PathBuf::from("/project")),
-            configs: crate::config::ProjectConfigs::default(),
-            stub_globals: Vec::new(),
-            stub_classes: Vec::new(),
-            stub_pre_globals: Arc::new(PreResolvedGlobals::empty()),
-            stubs_have_defclass: false,
-            stubs_have_built_name: false,
-            ws_file_globals: HashMap::new(),
-            ws_file_classes: HashMap::new(),
-            ws_file_aliases: HashMap::new(),
-            ws_file_defclasses: HashMap::new(),
-            ws_file_events: HashMap::new(),
-            ws_file_self_fields: HashMap::new(),
-            ws_file_self_field_globals: HashMap::new(),
-            pre_globals: Arc::new(PreResolvedGlobals::empty()),
-            cached_all_globals: Vec::new(),
-            cached_all_classes: Vec::new(),
-            cached_needs_defclass: false,
-            cached_needs_built_name: false,
-            cached_defclass_func_names: Vec::new(),
-            cached_built_name_func_names: Vec::new(),
-            ws_file_addon_ns_class: HashMap::new(),
-            ws_file_callable_classes: HashMap::new(),
-            cached_callable_classes: HashSet::new(),
-            plugin_engine: None,
-            ws_generation: 0,
-            cached_ws_diagnostics: None,
-        };
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
 
         let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
         let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
@@ -7002,6 +6984,41 @@ mod tests {
         let rebuilt2 = maybe_rebuild_workspace(&uri, root2, &mut ws);
         assert!(!rebuilt2, "identical source must not trigger rebuild");
         assert_eq!(ws.ws_generation, gen_before, "ws_generation must not change");
+    }
+
+    /// Regression: files with no @event annotations must not trigger an infinite
+    /// rebuild loop. Previously, empty events were removed from ws_file_events,
+    /// and is_none_or() treated the missing entry as "changed", causing every
+    /// no-event file to trigger a rebuild on every scan.
+    #[test]
+    fn no_event_file_does_not_trigger_infinite_rebuild() {
+        let lua_source = "local x = 1\n";
+        let tree = crate::syntax::parser::parse(lua_source);
+        let root = crate::syntax::SyntaxNode::new_root(&tree);
+
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let file_path = PathBuf::from("/project/test.lua");
+
+        // Pre-populate globals/classes/aliases so only the events path is tested.
+        // (Without this, globals_changed is true because the file isn't in the map yet.)
+        let (globals, _) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), false, false);
+        let scan_pre = crate::annotations::scan_all_annotations(root);
+        ws.ws_file_globals.insert(file_path.clone(), globals);
+        ws.ws_file_classes.insert(file_path.clone(), scan_pre.classes);
+        ws.ws_file_aliases.insert(file_path.clone(), scan_pre.aliases);
+
+        // First call: file has no events, events map has no entry → must not rebuild.
+        // With the bug, is_none_or(None) returned true → events_changed → infinite loop.
+        let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
+        assert!(!rebuilt, "file with no events must not trigger rebuild");
+
+        // Second call must also be stable (no infinite loop).
+        let tree2 = crate::syntax::parser::parse(lua_source);
+        let root2 = crate::syntax::SyntaxNode::new_root(&tree2);
+        let rebuilt2 = maybe_rebuild_workspace(&uri, root2, &mut ws);
+        assert!(!rebuilt2, "repeated scan of no-event file must not trigger rebuild");
     }
 
     #[test]
