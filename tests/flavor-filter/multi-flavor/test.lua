@@ -13,3 +13,8 @@ AbbreviateLargeNumbers(500)
 -- Missing retail → warn.
 AbandonQuest()
 -- ^ diag: wrong-flavor-api
+
+-- GameTooltip:SetHyperlink is defined in vendor stubs but absent from Blizzard's
+-- retail WidgetAPI.lua. It works in all flavors — no false positive.
+GameTooltip:SetHyperlink("item:12345")
+--          ^ diag: none

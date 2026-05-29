@@ -3167,14 +3167,13 @@ fn fetch_branch_resources(stubs_dir: &Path) -> BranchResourceData {
                     continue;
                 }
                 let stub_key = format!("{type_name}:{method}");
-                // Always update flavor_map for classic-only methods, even if vendor stubs
-                // already define the method (so apply_flavor_data restricts it correctly).
-                flavor_map.insert(format!("{type_name}.{method}"), mask);
                 if existing_widget_methods.contains(&stub_key) {
-                    // Already covered in vendor stubs — flavor mask set above, no new stub needed.
+                    // Vendor stubs cover retail APIs not listed in retail's WidgetAPI.lua
+                    // (e.g. GameTooltip:SetHyperlink). Don't restrict these to classic-only.
                     continue;
                 }
-                // Add to flavor map using dot-notation key (matches apply_flavor_data lookup)
+                // Not in vendor stubs and not in retail WidgetAPI — genuinely classic-only.
+                flavor_map.insert(format!("{type_name}.{method}"), mask);
                 missing_widget_methods.push((type_name.clone(), method.clone()));
             }
         }
