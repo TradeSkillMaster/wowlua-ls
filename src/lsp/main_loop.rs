@@ -1742,7 +1742,15 @@ fn main_loop(
             let remaining = last_dirty_at
                 .map(|t| debounce.saturating_sub(t.elapsed()))
                 .unwrap_or(debounce);
-            connection.receiver.recv_timeout(remaining).ok()
+            match connection.receiver.recv_timeout(remaining) {
+                Ok(msg) => Some(msg),
+                Err(e) => {
+                    if e.is_disconnected() {
+                        break;
+                    }
+                    None
+                }
+            }
         } else {
             last_dirty_at = None;
             match connection.receiver.recv() {
