@@ -1,5 +1,5 @@
 # wowlua-ls precomputed stubs
-# Generated: 2026-05-29T13:48:22Z
+# Generated: 2026-05-30T14:16:24Z
 # Source: https://github.com/Ketho/vscode-wow-api.git @ 6f9adfc8a83aca2d1078d30620b16033a3e85f4a
-# Symbols: 146488, Functions: 44838, Tables: 23826
-# Embedded source files: 2827
+# Symbols: 146498, Functions: 44840, Tables: 24575
+# Embedded source files: 2828

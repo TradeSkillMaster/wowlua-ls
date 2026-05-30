@@ -643,6 +643,12 @@ _evFrame:RegisterEvent("NONEXISTENT_EVENT_XYZ")
 _evFrame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
 --                         ^ comp: NAME_PLATE_CREATED, NAME_PLATE_UNIT_ADDED, NAME_PLATE_UNIT_BEHIND_CAMERA_CHANGED, NAME_PLATE_UNIT_REMOVED
 
+-- EventRegistry inherits CallbackRegistryMixin methods and types event as FrameEvent
+EventRegistry:RegisterCallback("PLAYER_REPORT_SUBMITTED", function() end)
+--                                ^ hover: (event) PLAYER_REPORT_SUBMITTED → invitedByGUID: WOWGUID  doc: warcraft.wiki.gg/wiki/PLAYER_REPORT_SUBMITTED
+EventRegistry:RegisterFrameEvent("PLAYER_LOGIN")
+--                                  ^ hover: (event) PLAYER_LOGIN  doc: warcraft.wiki.gg/wiki/PLAYER_LOGIN
+
 -- ── SetScript handler contextual typing from overload ──
 do
     local sf = CreateFrame('Frame')

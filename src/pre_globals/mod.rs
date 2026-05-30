@@ -1065,7 +1065,7 @@ impl BuildContext {
                 if self.classes.contains_key(&g.name) {
                     self.class_globals.insert(g.name.clone());
                     if let Some(path) = &g.source_path {
-                        self.table_source_locations.insert(g.name.clone(), ExternalLocation {
+                        self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
                             path: path.clone(), start: g.def_start, end: g.def_end,
                         });
                     }
@@ -1078,7 +1078,7 @@ impl BuildContext {
                     self.classes.insert(g.name.clone(), class_idx);
                     self.class_globals.insert(g.name.clone());
                     if let Some(path) = &g.source_path {
-                        self.table_source_locations.insert(g.name.clone(), ExternalLocation {
+                        self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
                             path: path.clone(), start: g.def_start, end: g.def_end,
                         });
                     }
@@ -1087,7 +1087,7 @@ impl BuildContext {
                     self.tables.push(TableInfo::default());
                     self.non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
-                        self.table_source_locations.insert(g.name.clone(), ExternalLocation {
+                        self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
                             path: path.clone(), start: g.def_start, end: g.def_end,
                         });
                     }
@@ -1101,7 +1101,7 @@ impl BuildContext {
                 && self.classes.contains_key(&g.name) {
                 self.class_globals.insert(g.name.clone());
                 if let Some(path) = &g.source_path {
-                    self.table_source_locations.insert(g.name.clone(), ExternalLocation {
+                    self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
                         path: path.clone(), start: g.def_start, end: g.def_end,
                     });
                 }
@@ -1141,6 +1141,25 @@ impl BuildContext {
                 ..Default::default()
             });
             self.classes.insert(target_name.clone(), table_idx);
+        }
+
+        // Re-check variable globals against the now-populated class map.
+        // The first pass (above) only catches names that were already in self.classes
+        // from @class declarations. This second pass catches names whose class tables
+        // were auto-created from method/field definitions (e.g. `EventRegistry =
+        // CreateFromMixins(...)` followed by `function EventRegistry:Method()`).
+        for g in globals {
+            if let ExternalGlobalKind::Variable(_) = &g.kind
+                && self.classes.contains_key(&g.name)
+                && !self.class_globals.contains(&g.name)
+            {
+                self.class_globals.insert(g.name.clone());
+                if let Some(path) = &g.source_path {
+                    self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
+                        path: path.clone(), start: g.def_start, end: g.def_end,
+                    });
+                }
+            }
         }
 
         // Build method function entries. Handles all depths uniformly:
