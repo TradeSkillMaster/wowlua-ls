@@ -106,6 +106,16 @@ _consume(_orderedTable)
 ---@class AliasClass : MyClass
 -- ^ diag: none
 
+-- ── Parameterized class parent should not trigger ────────────────────
+
+---@class GenericBase<T>
+
+---@class GenericChild<T> : GenericBase<T>
+-- ^ diag: none
+
+---@class BadGenericChild : Tabel<string>
+-- ^ diag: undefined-doc-class
+
 -- ── Suppression ──────────────────────────────────────────────────────
 
 ---@diagnostic disable: undefined-doc-class

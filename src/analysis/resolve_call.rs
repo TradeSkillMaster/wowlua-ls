@@ -102,40 +102,58 @@ impl<'a> Analysis<'a> {
             !func_args.is_empty(),
         );
 
-        // If the callee has `@param ... params<F>` and F is
-        // bound via the receiver's `@type X<fun(...)>`, the vararg
-        // slot expands to F's param list — per-slot type-mismatch
-        // checks use F's args.
-        let projected_f_idx: Option<FunctionIndex> = {
+        // Resolve receiver info for method calls: projected_f_idx (for params<F>)
+        // and class_type_param_subs (for class-level generics like Box<T>).
+        // Both need the receiver expression and type_args, so they share a single
+        // receiver-analysis block to avoid redundant expression cloning/resolution.
+        let mut projected_f_idx: Option<FunctionIndex> = None;
+        let mut class_type_param_subs: HashMap<String, ValueType> = HashMap::new();
+        if is_method_call
+            && let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone()
+        {
+            let receiver_type_args = self.get_expr_type_args(receiver_expr);
+
+            // params<F> projection: bind F from receiver's @type X<fun(...)>
             let proj_name: Option<String> = match &self.func(func_idx).vararg_projection {
                 Some(crate::types::ProjectionKind::Params(n)) => Some(n.clone()),
                 _ => None,
             };
             if let Some(proj_name) = proj_name {
-                if is_method_call {
-                    let callee_expr = *func;
-                    let param0 = param_annotations.first().cloned();
-                    if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = param0 {
-                        if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(callee_expr).clone() {
-                            let receiver_type_args = self.get_expr_type_args(receiver_expr);
-                            if receiver_type_args.len() == type_arg_anns.len() {
-                                let mut found = None;
-                                for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
-                                    if let crate::annotations::AnnotationType::Simple(gname) = type_arg_ann
-                                        && *gname == proj_name
-                                            && let Some(ValueType::Function(Some(f_idx))) = receiver_type_args.get(pos) {
-                                                found = Some(*f_idx);
-                                                break;
-                                            }
+                let param0 = param_annotations.first().cloned();
+                if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = param0
+                    && receiver_type_args.len() == type_arg_anns.len()
+                {
+                    for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
+                        if let crate::annotations::AnnotationType::Simple(gname) = type_arg_ann
+                            && *gname == proj_name
+                                && let Some(ValueType::Function(Some(f_idx))) = receiver_type_args.get(pos) {
+                                    projected_f_idx = Some(*f_idx);
+                                    break;
                                 }
-                                found
-                            } else { None }
-                        } else { None }
-                    } else { None }
-                } else { None }
-            } else { None }
-        };
+                    }
+                }
+            }
 
+            // Class-level type param substitution for inline callback resolution.
+            // When calling a method on a parameterized class (e.g. Box<boolean>:Apply(fun(value: T))),
+            // we need to resolve T → boolean from the receiver's type_args.
+            let receiver_type = self.resolve_expr(receiver_expr);
+            let ctp = match &receiver_type {
+                Some(ValueType::Table(Some(tidx))) => self.table(*tidx).class_type_params.clone(),
+                _ => Vec::new(),
+            };
+            if !ctp.is_empty() {
+                for (pos, name) in ctp.iter().enumerate() {
+                    if let Some(vt) = receiver_type_args.get(pos) {
+                        class_type_param_subs.insert(name.clone(), vt.clone());
+                    }
+                }
+            }
+        }
+        // Order doesn't matter here: resolve_annotation_type_gen only uses the names
+        // for TypeVariable recognition, not positional binding.
+        let class_gen_context: Vec<(String, Option<String>)> = class_type_param_subs.keys()
+            .map(|k| (k.clone(), None)).collect();
 
         // Propagate callee's fun() param annotation types into inline function params
         for (i, arg_expr_id) in args.iter().enumerate() {
@@ -182,7 +200,9 @@ impl<'a> Analysis<'a> {
                 if inline_sym_idx.is_external() { continue; }
                 if self.ir.symbols[inline_sym_idx.val()].versions.first()
                     .is_some_and(|v| v.resolved_type.is_some()) { continue; }
-                if let Some(vt) = self.resolve_annotation_type(&param_info.typ) {
+                if let Some(vt) = self.resolve_annotation_with_class_generics(
+                    &param_info.typ, &class_gen_context, &class_type_param_subs,
+                ) {
                     let vt = if param_info.optional {
                         ValueType::union(vt, ValueType::Nil)
                     } else {
@@ -199,7 +219,9 @@ impl<'a> Analysis<'a> {
                 } else {
                     let mut return_vts = Vec::new();
                     for ret_annotation in &sig.returns {
-                        if let Some(vt) = self.resolve_annotation_type(ret_annotation) {
+                        if let Some(vt) = self.resolve_annotation_with_class_generics(
+                            ret_annotation, &class_gen_context, &class_type_param_subs,
+                        ) {
                             return_vts.push(vt);
                         }
                     }
@@ -1857,6 +1879,26 @@ impl<'a> Analysis<'a> {
         });
 
         new_schema_idx
+    }
+
+    /// Resolve an annotation type, substituting class-level type params when available.
+    /// Used by inline callback param/return propagation (Stage 1 of resolve_function_call).
+    /// Note: `resolve_annotation_type_gen` (non-mut) discards structural type info
+    /// (e.g. `T[]` → `Table(None)`), so nested class type params inside arrays or
+    /// `table<K,V>` won't be substituted. Top-level type params (e.g. `T`, `T|nil`)
+    /// work correctly.
+    fn resolve_annotation_with_class_generics(
+        &mut self,
+        ann: &crate::annotations::AnnotationType,
+        class_gen_context: &[(String, Option<String>)],
+        class_type_param_subs: &HashMap<String, ValueType>,
+    ) -> Option<ValueType> {
+        if class_gen_context.is_empty() {
+            self.resolve_annotation_type(ann)
+        } else {
+            self.resolve_annotation_type_gen(ann, class_gen_context)
+                .map(|vt| self.substitute_generics_deep(&vt, class_type_param_subs))
+        }
     }
 
     // ── Generic type arg helpers ──────────────────────────────────────────────

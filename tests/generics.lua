@@ -375,6 +375,50 @@ local function extractBool(c)
 end
 extractBool(numBox) -- use to avoid unused-function
 
+-- ── Class generic T flows into callback parameter types ──────────────────
+
+---@class CallbackBox<T>
+local CallbackBox = {}
+
+---@param func fun(value: T)
+---@return self
+function CallbackBox:Apply(func) return self end
+
+---@param func fun(value: T): T
+---@return self
+function CallbackBox:Transform(func) return self end
+
+---@type CallbackBox<boolean>
+local cbBox = {}
+cbBox:Apply(function(value)
+    local cbVal = value
+    --      ^ hover: (local) cbVal: boolean
+end)
+
+cbBox:Transform(function(value)
+    local cbVal2 = value
+    --      ^ hover: (local) cbVal2: boolean
+    return value
+end)
+
+-- ── Multi-type-param class: positional mapping ────────────────────────────
+
+---@class PairBox<K, V>
+local PairBox = {}
+
+---@param func fun(key: K, val: V)
+---@return self
+function PairBox:Each(func) return self end
+
+---@type PairBox<string, number>
+local pb = {}
+pb:Each(function(key, val)
+    local k = key
+    --    ^ hover: (local) k: string
+    local v = val
+    --    ^ hover: (local) v: number
+end)
+
 -- ── Generic inference from union of array types ───────────────────────────
 
 ---@class GenItemKey

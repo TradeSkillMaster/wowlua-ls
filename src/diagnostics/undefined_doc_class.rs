@@ -35,7 +35,16 @@ impl DiagnosticPass for UndefinedDocClass {
             let prefix = format!("---@class {}", class.name);
             for parent_name in &class.parents {
                 if valid_parent_builtins.contains(parent_name.as_str()) { continue; }
-                if parent_name.starts_with("table<") { continue; }
+                // Parameterized parents: extract base name and check if it's a known class
+                // or builtin. e.g. "Parent<T>" → check "Parent", "table<K,V>" → check "table".
+                // Skip if known; fall through if unknown (e.g. "tabel<string, number>" typo).
+                if let Some(base) = parent_name.strip_suffix('>').and_then(|s| s.split('<').next())
+                    && (valid_parent_builtins.contains(base)
+                        || analysis.ir.classes.contains_key(base)
+                        || analysis.ir.ext.classes.contains_key(base))
+                {
+                    continue;
+                }
 
                 // Primitive type names, string/number literals, unions, and
                 // function types cannot be inherited from — classes are tables.
