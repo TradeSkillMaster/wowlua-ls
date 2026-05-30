@@ -353,12 +353,21 @@ impl<'a> Analysis<'a> {
                 // statically false — x must be truthy in the then-branch.
                 if op.is_comparison() && is_then_branch
                     && let [lhs, rhs] = terms.as_slice()
-                    && let Some(sym_idx) = self.extract_or_coercion_narrow_symbol(lhs, rhs, op, true, parent_scope)
-                        .or_else(|| self.extract_or_coercion_narrow_symbol(rhs, lhs, op, false, parent_scope))
+                    && let Some(names) = self.extract_or_coercion_narrow_names(lhs, rhs, op, true)
+                        .or_else(|| self.extract_or_coercion_narrow_names(rhs, lhs, op, false))
                 {
-                    self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
-                    self.narrow_siblings(sym_idx, target_scope);
-                    self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
+                    if names.len() == 1 {
+                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                            self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            self.narrow_siblings(sym_idx, target_scope);
+                            self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
+                        }
+                    } else {
+                        // Field access like `(obj.field or 0) > 0` → narrow obj.field to non-nil.
+                        // Uses target_scope (consistent with try_narrow_field callers elsewhere);
+                        // get_symbol inside walks the scope chain so it finds symbols from parent_scope.
+                        self.try_narrow_field(&names, target_scope);
+                    }
                 }
                 let is_neq = matches!(op, Operator::NotEquals);
                 let is_eq = matches!(op, Operator::Equals);
@@ -2273,15 +2282,16 @@ impl<'a> Analysis<'a> {
 
     /// Detect `(x or LITERAL) CMP VALUE` where `LITERAL CMP VALUE` is statically
     /// false, implying `x` must be truthy (non-nil). `or_is_lhs` indicates whether
-    /// the or-expression is on the left side of the comparison.
-    fn extract_or_coercion_narrow_symbol(
+    /// the or-expression is on the left side of the comparison. Returns the name
+    /// chain of `x` (length 1 for a simple identifier, >= 2 for a field access
+    /// like `obj.field`).
+    fn extract_or_coercion_narrow_names(
         &self,
         or_side: &Expression<'_>,
         value_side: &Expression<'_>,
         op: Operator,
         or_is_lhs: bool,
-        parent_scope: ScopeIndex,
-    ) -> Option<SymbolIndex> {
+    ) -> Option<Vec<String>> {
         // Unwrap grouping: `(x or 0)` → `x or 0`
         let or_expr = match or_side {
             Expression::GroupedExpression(g) => g.get_expression()?,
@@ -2296,12 +2306,13 @@ impl<'a> Analysis<'a> {
             [a, b] => (a, b),
             _ => return None,
         };
-        // var_expr must be a simple identifier
-        let sym_idx = match var_expr {
-            Expression::Identifier(ident) => {
-                let names = ident.names();
-                if names.len() != 1 { return None; }
-                self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope)?
+        // var_expr must be a plain identifier or dotted field access (no dynamic
+        // bracket indexing).
+        let names = match var_expr {
+            Expression::Identifier(ident) if !ident.has_any_dynamic_bracket() => {
+                let names = ident.names_with_brackets();
+                if names.is_empty() { return None; }
+                names
             }
             _ => return None,
         };
@@ -2310,7 +2321,7 @@ impl<'a> Analysis<'a> {
         if Self::or_coercion_fallback_is_true(default_expr, value_side, op, or_is_lhs) != Some(false) {
             return None;
         }
-        Some(sym_idx)
+        Some(names)
     }
 
     /// Check if a block contains a `break` statement at the current loop level.

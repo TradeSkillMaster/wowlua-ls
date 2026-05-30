@@ -150,3 +150,34 @@ _use(v4 < v4)
 ---@diagnostic disable-next-line: invalid-op
 _use(nil < 1)
 -- ^ diag: none
+
+-- `(field or 0) > 0` narrows a nilable field to non-nil — concat is then valid
+---@class ConcatNarrow
+---@field count number?
+---@class ConcatNarrowOuter
+---@field inner ConcatNarrow
+local _ConcatNarrow
+
+---@param obj ConcatNarrow
+local function _concatNarrowField(obj)
+    if (obj.count or 0) > 0 then
+        _use("n:" .. obj.count)
+        --   ^ diag: none
+    end
+    -- Wrong default: `(x or 5) > 0` is true even when nil, so no narrowing.
+    if (obj.count or 5) > 0 then
+        _use("n:" .. obj.count)
+        --   ^ diag: invalid-op
+    end
+end
+_use(_concatNarrowField)
+
+-- Deep field chain: `(obj.inner.count or 0) > 0` narrows nested field
+---@param obj ConcatNarrowOuter
+local function _concatNarrowDeepField(obj)
+    if (obj.inner.count or 0) > 0 then
+        _use("n:" .. obj.inner.count)
+        --   ^ diag: none
+    end
+end
+_use(_concatNarrowDeepField)
