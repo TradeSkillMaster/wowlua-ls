@@ -1466,6 +1466,46 @@ impl AnalysisResult {
         None
     }
 
+    /// Find the CallResolution and argument index for a token inside a function/method call.
+    /// Returns (arg_index, param_index, call_resolution) where param_index accounts for
+    /// the implicit `self` parameter in colon calls.
+    fn call_resolution_for_arg<'a>(&'a self, token: &SyntaxToken) -> Option<(usize, usize, &'a crate::types::CallResolution)> {
+        let call_node = token.ancestors()
+            .find(|n| n.kind() == SyntaxKind::FunctionCall || n.kind() == SyntaxKind::MethodCall)?;
+
+        let arg_list = call_node.children()
+            .find(|n| n.kind() == SyntaxKind::ArgumentList)?;
+        let tok_start = token.text_range().start();
+        let mut arg_index = 0usize;
+        for child in arg_list.children_with_tokens() {
+            if child.text_range().start() >= tok_start {
+                break;
+            }
+            if child.kind() == SyntaxKind::Comma {
+                arg_index += 1;
+            }
+        }
+
+        let call_range = (u32::from(call_node.text_range().start()), u32::from(call_node.text_range().end()));
+        let call_res = self.ir.exprs.iter().enumerate()
+            .find_map(|(idx, expr)| {
+                if let Expr::FunctionCall { call_range: cr, .. } = expr
+                    && *cr == call_range
+                {
+                    self.ir.call_resolutions.get(&ExprId(idx))
+                } else {
+                    None
+                }
+            })?;
+
+        let is_colon = call_node.kind() == SyntaxKind::MethodCall
+            || FunctionCall::cast(call_node)
+                .is_some_and(|c| c.identifier().is_some_and(|id| id.is_call_to_self()));
+        let param_index = if is_colon { arg_index + 1 } else { arg_index };
+
+        Some((arg_index, param_index, call_res))
+    }
+
     fn resolve_event_string_at<'a>(&'a self, tree: &'a SyntaxTree, offset: u32) -> Option<(&'a str, &'a str, &'a crate::pre_globals::EventPayload)> {
         let text_size = TextSize::from(offset);
         let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
@@ -1478,59 +1518,8 @@ impl AnalysisResult {
             return None;
         }
 
-        let call_node = token.ancestors()
-            .find(|n| n.kind() == SyntaxKind::FunctionCall || n.kind() == SyntaxKind::MethodCall)?;
-        let call = FunctionCall::cast(call_node)?;
-        let ident = call.identifier()?;
-        let is_colon = ident.is_call_to_self();
-
-        let arg_list = call.syntax().children()
-            .find(|n| n.kind() == SyntaxKind::ArgumentList)?;
-        let tok_start = token.text_range().start();
-        let mut arg_index = 0u32;
-        for child in arg_list.children_with_tokens() {
-            if child.text_range().start() >= tok_start {
-                break;
-            }
-            if child.kind() == SyntaxKind::Comma {
-                arg_index += 1;
-            }
-        }
-
-        let names = ident.names();
-        if names.is_empty() {
-            return None;
-        }
-        let scope_idx = self.scope_at_offset(text_size)?;
-        let func_idx = if names.len() == 1 {
-            let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-            let ver = self.sym(symbol_idx).versions.iter().rev()
-                .find_map(|v| v.resolved_type.as_ref())?;
-            match ver {
-                ValueType::Function(Some(idx)) => *idx,
-                _ => return None,
-            }
-        } else {
-            let root_sym = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-            let ver = self.sym(root_sym).versions.iter().rev()
-                .find_map(|v| v.resolved_type.as_ref())?;
-            let mut table_idx = Self::extract_table_idx(ver)?;
-            for name in &names[1..names.len()-1] {
-                let field_expr = self.get_field(table_idx, name)?.expr;
-                let ft = self.resolve_expr_type(field_expr)?;
-                table_idx = Self::extract_table_idx(&ft)?;
-            }
-            let method_name = &names[names.len() - 1];
-            let field_expr = self.get_field(table_idx, method_name)?.expr;
-            let ft = self.resolve_expr_type(field_expr)?;
-            match ft {
-                ValueType::Function(Some(idx)) => idx,
-                _ => return None,
-            }
-        };
-
-        let func = self.func(func_idx);
-        let param_idx = if is_colon { arg_index + 1 } else { arg_index } as usize;
+        let (_, param_idx, call_res) = self.call_resolution_for_arg(&token)?;
+        let func = self.func(call_res.func_idx);
         let ann = func.param_annotations.get(param_idx)?;
         let event_type_name = match ann {
             crate::annotations::AnnotationType::Simple(s) => s.as_str(),
@@ -2956,36 +2945,7 @@ impl AnalysisResult {
         &self,
         token: &SyntaxToken,
     ) -> Option<ValueType> {
-        // Walk up to find a FunctionCall or MethodCall ancestor
-        let call_node = token.ancestors()
-            .find(|n| n.kind() == SyntaxKind::FunctionCall || n.kind() == SyntaxKind::MethodCall)?;
-
-        // Determine which argument position our string is in
-        let arg_list = call_node.children()
-            .find(|n| n.kind() == SyntaxKind::ArgumentList)?;
-        let tok_start = token.text_range().start();
-        let mut arg_index = 0usize;
-        for child in arg_list.children_with_tokens() {
-            if child.text_range().start() >= tok_start {
-                break;
-            }
-            if child.kind() == SyntaxKind::Comma {
-                arg_index += 1;
-            }
-        }
-
-        // Find the matching CallResolution by matching the IR FunctionCall expr's call_range
-        let call_range = (u32::from(call_node.text_range().start()), u32::from(call_node.text_range().end()));
-        let call_res = self.ir.exprs.iter().enumerate()
-            .find_map(|(idx, expr)| {
-                if let Expr::FunctionCall { call_range: cr, .. } = expr
-                    && *cr == call_range
-                {
-                    self.ir.call_resolutions.get(&ExprId(idx))
-                } else {
-                    None
-                }
-            })?;
+        let (arg_index, param_index, call_res) = self.call_resolution_for_arg(token)?;
 
         // expected_args already excludes `self` for method calls, so use arg_index directly
         if let Some(resolved_arg) = call_res.expected_args.get(arg_index)
@@ -2997,12 +2957,6 @@ impl AnalysisResult {
             }
         }
 
-        let is_colon = call_node.kind() == SyntaxKind::MethodCall
-            || FunctionCall::cast(call_node)
-                .and_then(|c| c.identifier())
-                .map(|id| id.is_call_to_self())
-                .unwrap_or(false);
-        let param_index = if is_colon { arg_index + 1 } else { arg_index };
         let func = self.func(call_res.func_idx);
 
         // Try parameter annotations (these include `self`, so offset for colon calls)

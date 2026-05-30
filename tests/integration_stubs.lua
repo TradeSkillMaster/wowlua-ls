@@ -643,6 +643,15 @@ _evFrame:RegisterEvent("NONEXISTENT_EVENT_XYZ")
 _evFrame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
 --                         ^ comp: NAME_PLATE_CREATED, NAME_PLATE_UNIT_ADDED, NAME_PLATE_UNIT_BEHIND_CAMERA_CHANGED, NAME_PLATE_UNIT_REMOVED
 
+-- Event hover through field chain (regression: manual chain resolution could fail)
+do
+    ---@class _EvNs
+    local ns = {}
+    ns.frame = CreateFrame("Frame")
+    ns.frame:RegisterEvent("PLAYER_LOGIN")
+    --                       ^ hover: (event) PLAYER_LOGIN  doc: warcraft.wiki.gg/wiki/PLAYER_LOGIN
+end
+
 -- EventRegistry inherits CallbackRegistryMixin methods and types event as FrameEvent
 EventRegistry:RegisterCallback("PLAYER_REPORT_SUBMITTED", function() end)
 --                                ^ hover: (event) PLAYER_REPORT_SUBMITTED → invitedByGUID: WOWGUID  doc: warcraft.wiki.gg/wiki/PLAYER_REPORT_SUBMITTED
