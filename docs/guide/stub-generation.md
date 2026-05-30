@@ -8,6 +8,8 @@ Stubs are regenerated with:
 cargo run -- regenerate-stubs
 ```
 
+The git repositories below (Ketho/vscode-wow-api and Gethe/wow-ui-source) are shallow-cloned into a persistent cache under the platform cache directory (`$XDG_CACHE_HOME`/`~/.cache/wowlua-ls/clones/` on Linux/macOS, `%LOCALAPPDATA%\wowlua-ls\clones\` on Windows). On subsequent runs the cached clones are updated in place with `git fetch --depth 1` + `git reset --hard` rather than re-cloned from scratch, saving most of the clone time. Set the `WOWLUA_LS_REFRESH_CLONES` environment variable to force fresh clones.
+
 ## Data sources
 
 The pipeline integrates six major sources into a single type database.
@@ -50,7 +52,10 @@ The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Ann
 
 Function names are discovered by querying the MediaWiki API for the `API_functions`, `API_functions/Removed`, `API_functions/deprecated`, and `API_functions/Noflavor` categories. Names that duplicate a Blizzard API namespace function (e.g. `GetAddOnMetadata` shadowed by `C_AddOns.GetAddOnMetadata`) are filtered unless they still exist as bare globals in BlizzardInterfaceResources' `GlobalAPI.lua`.
 
-Page names from all three passes are collected upfront and batch-fetched in a single HTTP POST to `Special:Export`, then distributed to each processor:
+Page names from all three passes are collected upfront and batch-fetched in a single HTTP POST to `Special:Export` (the endpoint is behind Cloudflare, which rejects concurrent requests, so this is intentionally one request), then distributed to each processor:
+
+The raw `Special:Export` XML dump is the single most expensive step (~25–40s). It is persistently cached under the platform cache directory (`$XDG_CACHE_HOME`/`~/.cache/wowlua-ls/` on Linux/macOS, `%LOCALAPPDATA%\wowlua-ls\` on Windows) with a 24-hour TTL. The cache is keyed by a hash of the requested page-name set — not by parsing logic — so iterating on `parse_wikitext()` or stub formatting reuses the cached dump and only a change to *which* pages are requested forces a re-fetch. Set the `WOWLUA_LS_REFRESH_WIKI` environment variable to force a fresh fetch regardless of cache age.
+
 
 - **Classic-only APIs** — Wiki pages for APIs in `(classic_era ∪ classic) \ retail` are parsed to extract parameter types, names, and return types, generating typed stubs in `ClassicGlobals.lua`.
 - **Wiki-documented globals** — Function names from the wiki category query are parsed with `parse_wikitext()` to generate `WikiGlobals.lua`. Functions without a wiki page or whose markup can't be parsed get a bare `function name(...) end` stub with a doc link.

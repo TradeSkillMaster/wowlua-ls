@@ -406,6 +406,11 @@ const RESOURCE_URL_TEMPLATE: &str =
 const WIKI_EXPORT_URL: &str = "https://warcraft.wiki.gg/wiki/Special:Export";
 const USER_AGENT: &str = "wowlua-ls-stub-generator/1.0";
 
+/// Max age of the cached raw wiki export dump before a fresh fetch is required (24h).
+const WIKI_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+/// Bump to invalidate all existing wiki-export caches when the request shape changes.
+const WIKI_CACHE_VERSION: u32 = 1;
+
 /// Gethe/wow-ui-source repo for APIDocumentation and FrameXML constant extraction.
 const WOW_UI_SOURCE_REPO: &str = "https://github.com/Gethe/wow-ui-source.git";
 /// Classic branches to union when diffing against retail.
@@ -1478,6 +1483,38 @@ fn fetch_wago_latest_build(product: &str) -> String {
         .to_string()
 }
 
+/// Raw CSV payloads fetched from wago.tools, plus the resolved retail build string.
+/// Fetched up front (concurrently with git clones) and passed into `generate_global_stubs`.
+struct GlobalCsvData {
+    retail_build: String,
+    globalstrings_csv: String,
+    globalcolor_csv: String,
+}
+
+/// Fetch the GlobalStrings and GlobalColor DB2 CSVs from wago.tools. Pure network — no
+/// dependency on the git clones, so this runs concurrently with cloning.
+fn fetch_global_csvs() -> Result<GlobalCsvData, String> {
+    // Fetch from wago.tools DB2 (more authoritative than enUS.ts / Ketho's repo).
+    log::info!("  Fetching GlobalStrings from wago.tools...");
+    let retail_build = fetch_wago_latest_build("wow");
+    log::info!("  Using retail build: {retail_build}");
+    let csv_url = format!(
+        "https://wago.tools/db2/GlobalStrings/csv?build={retail_build}&locale=enUS"
+    );
+    let globalstrings_csv = fetch_url(&csv_url, None)
+        .map_err(|e| format!("Failed to fetch GlobalStrings CSV from wago.tools: {e}"))?;
+
+    // Fetch GlobalColor DB2 for color objects + _CODE string variants.
+    // No build filter — GlobalColor is stable data and we want the most complete coverage
+    // (newer builds on PTR/beta may add entries before they reach live).
+    log::info!("  Fetching GlobalColor from wago.tools...");
+    let color_csv_url = "https://wago.tools/db2/GlobalColor/csv";
+    let globalcolor_csv = fetch_url(color_csv_url, None)
+        .map_err(|e| format!("Failed to fetch GlobalColor CSV from wago.tools: {e}"))?;
+
+    Ok(GlobalCsvData { retail_build, globalstrings_csv, globalcolor_csv })
+}
+
 /// Generate GlobalStrings.lua, GlobalVariables.lua, and GlobalColors.lua content in memory.
 /// `all_globals` is the universe of known global names (from BlizzardInterfaceResources).
 /// `global_constants` maps constant names to their numeric values (from APIDocumentation + FrameXML).
@@ -1488,26 +1525,11 @@ fn generate_global_stubs(
     global_constants: &HashMap<String, i64>,
     stubs_dir: &Path,
     extra_existing_dirs: &[&Path],
+    csvs: &GlobalCsvData,
 ) -> (String, String, String) {
-    // Fetch from wago.tools DB2 (more authoritative than enUS.ts / Ketho's repo).
-    log::info!("  Fetching GlobalStrings from wago.tools...");
-    let retail_build = fetch_wago_latest_build("wow");
-    log::info!("  Using retail build: {retail_build}");
-    let csv_url = format!(
-        "https://wago.tools/db2/GlobalStrings/csv?build={retail_build}&locale=enUS"
-    );
-    let csv_content = fetch_url(&csv_url, None)
-        .unwrap_or_else(|e| panic!("Failed to fetch GlobalStrings CSV from wago.tools: {e}"));
-    let globalstrings = parse_globalstrings_csv(&csv_content);
-
-    // Fetch GlobalColor DB2 for color objects + _CODE string variants.
-    // No build filter — GlobalColor is stable data and we want the most complete coverage
-    // (newer builds on PTR/beta may add entries before they reach live).
-    log::info!("  Fetching GlobalColor from wago.tools...");
-    let color_csv_url = "https://wago.tools/db2/GlobalColor/csv".to_string();
-    let color_csv_content = fetch_url(&color_csv_url, None)
-        .unwrap_or_else(|e| panic!("Failed to fetch GlobalColor CSV from wago.tools: {e}"));
-    let globalcolors = parse_globalcolors_csv(&color_csv_content);
+    let retail_build = &csvs.retail_build;
+    let globalstrings = parse_globalstrings_csv(&csvs.globalstrings_csv);
+    let globalcolors = parse_globalcolors_csv(&csvs.globalcolor_csv);
 
     let mut existing = get_existing_names(stubs_dir, &[
         "GlobalStrings.lua", "GlobalVariables.lua", "GlobalColors.lua",
@@ -1695,24 +1717,119 @@ fn fetch_widget_api(branch: &str) -> HashMap<String, HashSet<String>> {
     }
 }
 
-/// Fetch wiki pages for a list of API names in a single `Special:Export` POST request,
-/// resolving redirects so callers can map redirect sources to canonical page names.
-/// Returns `(pages, redirects)` where `redirects` maps source → canonical target name.
-/// Returns `(pages, redirects)` where `pages` maps API name → wikitext and
-/// `redirects` maps source → canonical target name.
-/// Returns empty maps on HTTP failure.
-fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<String, String>, HashMap<String, String>) {
-    let pages_text: String = api_names.iter()
-        .map(|n| format!("API {n}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let xml_text = match fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text), ("curonly", "1")])) {
-        Ok(text) => text,
-        Err(e) => {
-            log::error!("Wiki export failed: {e} — wiki pages will be empty");
-            return (HashMap::new(), HashMap::new());
+/// Persistent cache directory (survives across runs and reboots). Prefers the platform cache
+/// dir (`%LOCALAPPDATA%` on Windows, `$XDG_CACHE_HOME` / `~/.cache` on Linux/macOS) and falls
+/// back to the system temp dir.
+fn cache_dir() -> PathBuf {
+    // Check LOCALAPPDATA first so that on Windows (where Git-for-Windows / MSYS2 may also set
+    // HOME) we use the idiomatic Windows location rather than $HOME/.cache.
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("wowlua-ls")
+}
+
+/// Stable cache key for a wiki export request: a hash of the sorted page-name list. Keying on
+/// the requested names (not on parsing/formatting logic) means changes to how we parse the dump
+/// or emit stubs reuse the cached XML; only a change to *which* pages we request re-fetches.
+///
+/// Uses FNV-1a (64-bit) instead of `DefaultHasher` because the latter's algorithm is explicitly
+/// not stable across Rust toolchain versions — a toolchain upgrade would silently orphan the
+/// cached file on disk.
+fn wiki_cache_key(api_names: &[String]) -> u64 {
+    let mut sorted: Vec<&str> = api_names.iter().map(|s| s.as_str()).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    // FNV-1a 64-bit — deterministic across Rust versions.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in WIKI_CACHE_VERSION.to_le_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    for name in sorted {
+        for b in name.bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
         }
+        // Separator so "ab","c" ≠ "a","bc".
+        h ^= 0xff;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Read a cache file if it exists and is younger than `ttl_secs`. Returns None on any error
+/// (missing, unreadable, or stale) so the caller transparently falls back to a fresh fetch.
+fn read_fresh_cache(path: &Path, ttl_secs: u64) -> Option<String> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let age = std::time::SystemTime::now().duration_since(modified).ok()?;
+    if age.as_secs() > ttl_secs {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<String, String>, HashMap<String, String>) {
+    // NOTE: This is intentionally a single request. The MediaWiki Special:Export endpoint is
+    // behind Cloudflare, which rejects concurrent requests with HTTP 403/429 and can
+    // temporarily challenge-block the source IP. Splitting this into parallel chunked requests
+    // was measured to fail outright (every chunk 403'd) — do not parallelize this fetch.
+    //
+    // The raw XML dump is persistently cached (keyed by the requested page set) with a 24h TTL,
+    // so repeated runs within a day — including iterating on parsing/stub-formatting code —
+    // reuse the dump instead of re-fetching. Set WOWLUA_LS_REFRESH_WIKI to force a fresh fetch.
+    let force_refresh = std::env::var_os("WOWLUA_LS_REFRESH_WIKI").is_some();
+    let cd = cache_dir();
+    let cache_filename = format!("wiki-export-{:016x}.xml", wiki_cache_key(api_names));
+    let cache_path = cd.join(&cache_filename);
+
+    // Evict stale wiki cache files that don't match the current hash (e.g. from a different
+    // page set or a previous hasher implementation). Keeps the cache dir tidy.
+    if let Ok(entries) = std::fs::read_dir(&cd) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if let Some(s) = name.to_str()
+                && s.starts_with("wiki-export-") && s.ends_with(".xml") && s != cache_filename
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    let xml_text = if !force_refresh
+        && let Some(cached) = read_fresh_cache(&cache_path, WIKI_CACHE_TTL_SECS)
+    {
+        log::info!(
+            "  Using cached wiki export: {} ({:.1} MB; set WOWLUA_LS_REFRESH_WIKI to force refresh)",
+            cache_path.display(),
+            cached.len() as f64 / 1_048_576.0
+        );
+        cached
+    } else {
+        let pages_text: String = api_names.iter()
+            .map(|n| format!("API {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let fetched = match fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text), ("curonly", "1")])) {
+            Ok(text) => text,
+            Err(e) => {
+                log::error!("Wiki export failed: {e} — wiki pages will be empty");
+                return (HashMap::new(), HashMap::new());
+            }
+        };
+        // Best-effort cache write — a failure here only costs a re-fetch next run.
+        if let Some(parent) = cache_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            log::warn!("Could not create wiki cache dir {}: {e}", parent.display());
+        } else if let Err(e) = std::fs::write(&cache_path, &fetched) {
+            log::warn!("Could not write wiki cache {}: {e}", cache_path.display());
+        }
+        fetched
     };
+
     let mut pages = HashMap::new();
     let mut redirects = HashMap::new();
     for page_text in xml_text.split("<page>").skip(1) {
@@ -3541,6 +3658,41 @@ fn shallow_clone(repo: &str, branch: &str, dest: &Path) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// Update an existing shallow clone in place, or fall back to a fresh clone if it's
+/// missing/broken. Reusing a clone (`git fetch --depth 1` + `reset --hard`) is far cheaper
+/// than re-cloning from scratch. When `refresh` is true, always reclones.
+fn ensure_shallow_clone(repo: &str, branch: &str, dest: &Path, refresh: bool) -> bool {
+    if !refresh && dest.join(".git").exists() {
+        let fetched = std::process::Command::new("git")
+            .current_dir(dest)
+            .args(["fetch", "--depth", "1", "origin", branch])
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .is_ok_and(|s| s.success());
+        if fetched
+            && std::process::Command::new("git")
+                .current_dir(dest)
+                .args(["reset", "--hard", "FETCH_HEAD"])
+                .status()
+                .is_ok_and(|s| s.success())
+        {
+            // Drop any stray untracked files left over from a previous run.
+            let _ = std::process::Command::new("git")
+                .current_dir(dest)
+                .args(["clean", "-fdq"])
+                .status();
+            return true;
+        }
+        log::warn!("could not update cached clone at {}, recloning", dest.display());
+    }
+    if dest.exists()
+        && let Err(e) = std::fs::remove_dir_all(dest)
+    {
+        log::warn!("failed to remove {}: {e}", dest.display());
+    }
+    shallow_clone(repo, branch, dest)
+}
+
 /// Parse all *Documentation.lua files in Blizzard_APIDocumentationGenerated.
 /// Returns (constants: name → (type, value), enums: enum_name → [(field_name, value)]).
 fn parse_api_doc_dir(ui_source_dir: &Path) -> ApiDocData {
@@ -3868,9 +4020,30 @@ pub fn regenerate_stubs() {
     // Checked at the end alongside aggregate thresholds before writing blobs.
     let mut source_errors: Vec<String> = Vec::new();
 
-    // Step 1: Shallow-clone vscode-wow-api into a temp directory
+    // [TIMING] instrumentation — phase!("name") logs elapsed since the previous checkpoint.
+    let timing_total = std::time::Instant::now();
+    let mut timing_last = std::time::Instant::now();
+    macro_rules! phase {
+        ($name:expr) => {{
+            let now = std::time::Instant::now();
+            log::debug!("[TIMING] {:<40} {:>8.2}s", $name, now.duration_since(timing_last).as_secs_f64());
+            #[allow(unused_assignments)]
+            { timing_last = now; }
+        }};
+    }
+
+    // Kick off clone-independent network fetches up front so they overlap with the git clones
+    // below (which take ~15s and otherwise block everything). Joined later at their use sites.
+    let wiki_names_handle = std::thread::spawn(fetch_wiki_function_names);
+    let global_csvs_handle = std::thread::spawn(fetch_global_csvs);
+
+    // Step 1: Shallow-clone vscode-wow-api into the persistent clones cache.
+    // Cached clones are reused across runs (updated via `git fetch`) unless
+    // WOWLUA_LS_REFRESH_CLONES is set. tmp_dir holds throwaway scratch dirs only.
     // If WOWLUA_LS_KETHO_CLONE env var points to an existing clone, use it directly.
     let tmp_dir = std::env::temp_dir().join("wowlua-ls-stub-gen");
+    let clones_dir = cache_dir().join("clones");
+    let refresh_clones = std::env::var_os("WOWLUA_LS_REFRESH_CLONES").is_some();
     let clone_dir = if let Ok(existing) = std::env::var("WOWLUA_LS_KETHO_CLONE") {
         let p = PathBuf::from(existing);
         if !p.is_dir() {
@@ -3883,24 +4056,12 @@ pub fn regenerate_stubs() {
         log::info!("Using existing clone at {}", p.display());
         p
     } else {
-        let d = tmp_dir.join("vscode-wow-api");
-        if d.exists() {
-            log::info!("Cleaning up previous temp dir...");
-            let _ = std::fs::remove_dir_all(&d);
-        }
-        let _ = std::fs::create_dir_all(&tmp_dir);
+        let _ = std::fs::create_dir_all(&clones_dir);
+        let d = clones_dir.join("vscode-wow-api");
 
         log::info!("Shallow-cloning vscode-wow-api @ {VSCODE_WOW_API_BRANCH}...");
 
-        let status = std::process::Command::new("git")
-            .arg("clone")
-            .args(["--depth", "1"])
-            .args(["--branch", VSCODE_WOW_API_BRANCH])
-            .arg(VSCODE_WOW_API_REPO)
-            .arg(&d)
-            .status()
-            .expect("Failed to run git clone");
-        if !status.success() {
+        if !ensure_shallow_clone(VSCODE_WOW_API_REPO, VSCODE_WOW_API_BRANCH, &d, refresh_clones) {
             log::error!("git clone failed");
             std::process::exit(1);
         }
@@ -3932,6 +4093,7 @@ pub fn regenerate_stubs() {
         log::error!("git submodule update failed");
         std::process::exit(1);
     }
+    phase!("clone vscode-wow-api + submodules");
     // Build a virtual stubs directory structure for scanning:
     // We need the clone's Annotations + overrides + generated stubs
     let scan_tmp = tmp_dir.join("scan-stubs");
@@ -3961,27 +4123,22 @@ pub fn regenerate_stubs() {
     log::info!("Cloning wow-ui-source branches...");
     let mut classic_ui_dirs = Vec::new();
     for branch in CLASSIC_UI_BRANCHES {
-        let dest = tmp_dir.join(format!("wow-ui-source-{branch}"));
-        if dest.exists() {
-            let _ = std::fs::remove_dir_all(&dest);
-        }
-        if shallow_clone(WOW_UI_SOURCE_REPO, branch, &dest) {
+        let dest = clones_dir.join(format!("wow-ui-source-{branch}"));
+        if ensure_shallow_clone(WOW_UI_SOURCE_REPO, branch, &dest, refresh_clones) {
             log::info!("  Cloned {branch}");
             classic_ui_dirs.push(dest);
         } else {
             log::warn!("could not clone branch {branch}");
         }
     }
-    let retail_ui_dir = tmp_dir.join("wow-ui-source-live");
-    if retail_ui_dir.exists() {
-        let _ = std::fs::remove_dir_all(&retail_ui_dir);
-    }
-    let has_retail_ui = shallow_clone(WOW_UI_SOURCE_REPO, "live", &retail_ui_dir);
+    let retail_ui_dir = clones_dir.join("wow-ui-source-live");
+    let has_retail_ui = ensure_shallow_clone(WOW_UI_SOURCE_REPO, "live", &retail_ui_dir, refresh_clones);
     if has_retail_ui {
         log::info!("  Cloned live (retail)");
     } else {
         log::warn!("could not clone live branch");
     }
+    phase!("clone wow-ui-source (3 branches)");
 
     // Build all_ui_dirs: classic branches + retail (for XML frame extraction across all versions)
     let mut all_ui_dirs: Vec<PathBuf> = classic_ui_dirs.clone();
@@ -4000,6 +4157,7 @@ pub fn regenerate_stubs() {
     if blizzard_docs.functions.len() < 500 {
         source_errors.push(format!("Blizzard API functions: {} (expected ≥500)", blizzard_docs.functions.len()));
     }
+    phase!("parse_blizzard_api_docs (retail)");
 
     // Step 2c: Fetch BlizzardInterfaceResources lists (all 3 branches), compute classic API
     // diff, derive retail global name universe, and compute flavor bitmasks from branch presence.
@@ -4009,6 +4167,7 @@ pub fn regenerate_stubs() {
         source_errors.push("BlizzardInterfaceResources retail names: empty (fetch failed)".to_string());
     }
     let classic_diff = branch_data.classic_diff;
+    phase!("fetch_branch_resources (HTTP)");
 
     // Step 2d: Extract retail constants and enumerations from wow-ui-source.
     // Constants → GlobalVariables.lua values; enumerations → BlizzardEnums.lua.
@@ -4054,6 +4213,7 @@ pub fn regenerate_stubs() {
     } else {
         (HashMap::new(), HashMap::new(), HashSet::new(), None, HashMap::new())
     };
+    phase!("extract retail constants/enums (FrameXML walk)");
 
     // Step 3: Generate global stubs (from BlizzardInterfaceResources + FrameXML globals).
     // Extend the retail name universe with names discovered directly from wow-ui-source.
@@ -4075,12 +4235,21 @@ pub fn regenerate_stubs() {
         log::warn!("annotations_dir does not exist: {} — GlobalVariables dedup may be incomplete", annotations_dir.display());
     }
     let extra_dirs = vec![annotations_dir.as_path(), overrides_dir.as_path()];
+    let global_csvs = global_csvs_handle
+        .join()
+        .expect("wago CSV fetch thread panicked")
+        .unwrap_or_else(|e| {
+            log::error!("{e}");
+            std::process::exit(1);
+        });
     let (global_strings_lua, global_vars_lua, global_colors_lua) = generate_global_stubs(
         &extended_retail_names,
         &global_constants,
         &combined_stubs,
         &extra_dirs,
+        &global_csvs,
     );
+    phase!("generate_global_stubs (join wago CSV + CPU)");
 
     // Vendor stubs from clone (Core + FrameXML)
     let vendor_dirs = [
@@ -4091,10 +4260,11 @@ pub fn regenerate_stubs() {
 
     // Step 4: Collect all wiki page names from the three passes, then batch-fetch once
     log::info!("Collecting wiki page names...");
-    let mut wiki_names = fetch_wiki_function_names();
+    let mut wiki_names = wiki_names_handle.join().expect("wiki function names fetch thread panicked");
     if wiki_names.len() < 1000 {
         source_errors.push(format!("wiki function names: {} (expected ≥1000)", wiki_names.len()));
     }
+    phase!("join wiki_function_names (overlapped w/ clones)");
     let widget_methods = collect_widget_enrichment_methods(&vendor_dir_paths);
     log::info!("  Widget methods needing enrichment: {}", widget_methods.len());
 
@@ -4123,6 +4293,7 @@ pub fn regenerate_stubs() {
     } else {
         (HashMap::new(), HashMap::new())
     };
+    phase!("fetch_wiki_pages (HTTP, batch)");
 
     // Supplement wiki category names with retail API globals not in any wiki category.
     // Functions with wiki pages get full annotations; those without get bare stubs.
@@ -4153,6 +4324,7 @@ pub fn regenerate_stubs() {
         &retail_fxml_consts,
         &all_ui_dirs,
     );
+    phase!("generate_classic_stubs (LE_*, XML, fields walks)");
 
     // Step 4b: Enrich widget stubs with wiki-scraped annotations
     log::info!("Enriching widget stubs with wiki annotations...");
@@ -4169,6 +4341,7 @@ pub fn regenerate_stubs() {
     if cvar_lua.is_empty() {
         source_errors.push("CVar alias: empty (fetch failed)".to_string());
     }
+    phase!("enrich widgets + CVar fetch (HTTP)");
 
     // Step 5: Collect existing names from vendor annotations + overrides for deduplication.
     // Generated stubs only fill gaps where richer hand-written annotations don't exist.
@@ -4241,6 +4414,7 @@ pub fn regenerate_stubs() {
             }
         }
     };
+    phase!("gen wiki/blizzard stubs + LuaEnum fetch (HTTP)");
 
     // Enums: merge APIDocumentation enums with LuaEnum.lua categories, replacing Ketho's Enum.lua.
     // APIDocumentation has 825 enums; LuaEnum.lua fills ~120 gaps (shop, housing, etc.).
@@ -4367,8 +4541,10 @@ pub fn regenerate_stubs() {
             .is_none_or(|n| !matches!(n, "GlobalStrings.lua" | "GlobalVariables.lua" | "GlobalColors.lua"))
     }));
 
+    phase!("write generated stubs + enum/constants merge");
     let (classes, mut aliases, mut globals, _addon_ns_class_names, stub_events, _callable_classes) =
         crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
+    phase!("scan_paths_with_overrides (parse all stubs)");
 
     // Step 6b: Apply flavor bitmask data derived from BlizzardInterfaceResources branch diffs
     apply_flavor_data(&mut globals, &branch_data.flavor_map);
@@ -4386,6 +4562,7 @@ pub fn regenerate_stubs() {
     log::info!("Building PreResolvedGlobals...");
     let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new(), &std::collections::HashSet::new());
     pre_globals.merge_events(&stub_events);
+    phase!("PreResolvedGlobals::build");
     log::info!("  Event types: {} types, {} total events",
         pre_globals.event_types.len(),
         pre_globals.event_types.values().map(|m| m.len()).sum::<usize>());
@@ -4490,6 +4667,7 @@ pub fn regenerate_stubs() {
     log::info!("  Uncompressed: {:.1} MB", files_encoded.len() as f64 / 1_048_576.0);
     let files_compressed = zstd::encode_all(files_encoded.as_slice(), 9).expect("zstd compress files failed");
     log::info!("  Compressed:   {:.1} MB", files_compressed.len() as f64 / 1_048_576.0);
+    phase!("embed file contents + serialize/compress files blob");
 
     // Prepend version header (4 bytes) before the zstd payload
     let mut files_output = Vec::with_capacity(4 + files_compressed.len());
@@ -4546,10 +4724,13 @@ pub fn regenerate_stubs() {
     std::fs::write(&output_path, &output).unwrap();
     log::info!("Blob written to: {} ({:.1} MB)", output_path.display(), output.len() as f64 / 1_048_576.0);
 
-    // Cleanup
+    phase!("serialize/compress main blob + write");
+
+    // Cleanup scratch dirs only — the persistent clones cache (clones_dir) is kept for reuse.
     log::info!("Cleaning up temp dir...");
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
+    log::debug!("[TIMING] {:<40} {:>8.2}s", "TOTAL", timing_total.elapsed().as_secs_f64());
     log::info!("Done!");
 }
 
