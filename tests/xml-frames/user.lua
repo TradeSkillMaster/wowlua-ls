@@ -97,6 +97,42 @@ function SearchMixin:OnLoad()
     --   ^ hover: (field) SearchButton: Button  diag: none
 end
 
+-- Nested parentKey propagation: unnamed child frames with parentKey should
+-- propagate their nested fields into the parent's field type without needing
+-- user @class annotations. DialogFrame.Sidebar is typed as
+-- MyBaseTemplate & {ActionBtn: Button} from XML alone.
+---@class DialogFrameMixin
+local DialogFrameMixin = {}
+
+function DialogFrameMixin:Init()
+    -- Sidebar comes from XML parentKey, ActionBtn is a nested parentKey inside it
+    self.Sidebar.ActionBtn:Enable()
+    --           ^ hover: (field) ActionBtn: Button  diag: none
+    -- Template fields are still accessible through the base type
+    self.Sidebar.Title:SetText("test")
+    --           ^ hover: (field) Title: FontString  diag: none
+end
+
+-- User @class overrides XML-generated field types: the XML scanner infers
+-- MyPanel.Header as MyBaseTemplate, but the user's @class MyPanel defines
+-- @field Header as MyPanelHeader (with additional fields like CloseBtn).
+---@class MyPanelHeader : Frame
+---@field CloseBtn Button
+
+---@class MyPanel : Frame
+---@field Header MyPanelHeader
+MyPanelMixin = {}
+-- ^ diag: create-global
+
+function MyPanelMixin:DoSomething()
+    -- self.Header should resolve to MyPanelHeader (user annotation), not
+    -- MyBaseTemplate (XML-inferred type)
+    local hdr = self.Header
+    --    ^ hover: (local) hdr: MyPanelHeader
+    self.Header.CloseBtn:Enable()
+    --          ^ hover: (field) CloseBtn: Button  diag: none
+end
+
 -- Hyphenated names should not create globals (invalid Lua identifier)
 local x = InvalidFrame
 --        ^ diag: undefined-global

@@ -103,6 +103,35 @@
         SOME_XML_GLOBAL = 42
     </Script>
 
+    <!-- Nested parentKey propagation: unnamed child frames with parentKey should
+         propagate their nested parentKey fields into the parent's field type.
+         Without this, Sidebar.ActionBtn would be inaccessible because the
+         unnamed inner frame (parentKey="Sidebar") has no name and its fields
+         would be lost. -->
+    <Frame name="DialogFrame" virtual="true" mixin="DialogFrameMixin">
+        <Frames>
+            <Frame parentKey="Sidebar" inherits="MyBaseTemplate">
+                <Frames>
+                    <Button parentKey="ActionBtn" />
+                </Frames>
+            </Frame>
+        </Frames>
+    </Frame>
+
+    <!-- User @class override: Lua @class annotations should take precedence over
+         XML-generated field types. The XML scanner infers MyPanel.Header as
+         MyBaseTemplate, but the user defines @class MyPanel with @field Header
+         typed as MyPanelHeader (a more specific class). -->
+    <Frame name="MyPanel" virtual="true" mixin="MyPanelMixin">
+        <Frames>
+            <Frame parentKey="Header" inherits="MyBaseTemplate">
+                <Frames>
+                    <Button parentKey="CloseBtn" />
+                </Frames>
+            </Frame>
+        </Frames>
+    </Frame>
+
     <!-- Names that should be filtered out (invalid Lua identifiers) -->
     <Frame name="!InvalidFrame" parent="UIParent" />
     <Texture name="Wood-Tile" virtual="true" />

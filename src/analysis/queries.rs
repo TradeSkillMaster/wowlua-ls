@@ -4323,28 +4323,74 @@ impl AnalysisResult {
         Some(table_idx)
     }
 
-    /// Resolve a simple identifier node to its full resolved type (intersection-aware).
-    /// Only handles the simple single-name case; returns None for complex chains.
+    /// Resolve an identifier node to its full resolved type (intersection-aware).
+    /// Handles both simple single-name identifiers (`foo`) and chained dot access
+    /// (`self.Sidebar.ActionBtn`), walking field accesses iteratively while
+    /// preserving the full ValueType (including intersections).
     fn resolve_identifier_to_type(&self, node: &SyntaxNode, scope_offset: TextSize) -> Option<ValueType> {
-        let child_names: Vec<_> = node.children_with_tokens()
+        // Only handles NameRef and DotAccess chains. BracketAccess involves index
+        // resolution that this function doesn't support — bail out so the caller
+        // can fall through to the table-based resolution path.
+        if node.kind() == SyntaxKind::BracketAccess {
+            return None;
+        }
+        // Collect all DotAccess/NameRef nodes bottom-up, then resolve from the
+        // root outward. This avoids recursion (and potential stack overflow on
+        // pathological inputs with deeply nested dot chains).
+        let mut chain = vec![*node];
+        loop {
+            let current = *chain.last().unwrap();
+            let has_child_call = current.children().any(|c|
+                c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall);
+            if has_child_call {
+                return None;
+            }
+            if let Some(child_ident) = current.children().find(|c|
+                c.kind() == SyntaxKind::DotAccess || c.kind() == SyntaxKind::NameRef)
+            {
+                chain.push(child_ident);
+            } else if current.children().any(|c| c.kind().is_identifier()) {
+                // Child is an identifier kind we can't handle (e.g. BracketAccess)
+                return None;
+            } else {
+                break;
+            }
+        }
+
+        // The deepest node (last in chain) must be the root single-name identifier.
+        let root_node = chain.last()?;
+        let root_names: Vec<_> = root_node.children_with_tokens()
             .filter_map(|it| it.into_token())
             .filter(|t| t.kind() == SyntaxKind::Name)
             .collect();
-        // Only handle simple single-name identifiers (no dots/brackets/child nodes)
-        let has_child_node = node.children().any(|c| c.kind().is_identifier()
-            || c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall);
-        if has_child_node || child_names.len() != 1 {
+        if root_names.len() != 1 {
             return None;
         }
-        let root_name = child_names[0].text().to_string();
+        let root_name = root_names[0].text().to_string();
         let scope_idx = self.scope_at_offset(scope_offset)?;
         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
-        let narrowed = self.get_type_narrowing(symbol_idx, scope_idx);
-        if let Some(narrowed) = narrowed {
-            return Some(narrowed.clone());
+        let mut current_type = self.get_type_narrowing(symbol_idx, scope_idx)
+            .cloned()
+            .or_else(|| {
+                let ver = self.sym(symbol_idx).versions.last()?;
+                ver.resolved_type.clone()
+            })?;
+
+        // Walk from root outward through each intermediate node's Name tokens.
+        for ancestor in chain.iter().rev().skip(1) {
+            let field_names: Vec<_> = ancestor.children_with_tokens()
+                .filter_map(|it| it.into_token())
+                .filter(|t| t.kind() == SyntaxKind::Name)
+                .collect();
+            for name_tok in &field_names {
+                let name = name_tok.text().to_string();
+                let indices = Self::extract_all_table_indices(&current_type);
+                let fi = indices.iter().find_map(|&idx| self.get_field(idx, &name))?;
+                current_type = self.resolve_field_type(fi)?;
+            }
         }
-        let ver = self.sym(symbol_idx).versions.last()?;
-        ver.resolved_type.clone()
+
+        Some(current_type)
     }
 
     /// Resolve a receiver (identifier, funcall, grouped expression, or string literal)

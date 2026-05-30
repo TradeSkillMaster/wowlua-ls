@@ -352,9 +352,11 @@ impl WorkspaceState {
         let mut ws_globals: Vec<ExternalGlobal> = self.ws_file_globals.values().flatten()
             .cloned()
             .collect();
-        let ws_classes_input: Vec<ClassDecl> = self.ws_file_classes.values().flatten()
-            .cloned()
-            .collect();
+        // Collect workspace classes. Lua @class annotations take precedence over
+        // XML-generated classes with the same name: XML classes whose name already
+        // appears in a Lua file are routed through the overlay merge path so that
+        // user-defined @field types are preserved.
+        let (ws_classes_input, xml_overlay_classes) = partition_xml_overlay_classes(&self.ws_file_classes);
         let mut ws_aliases: Vec<AliasDecl> = self.ws_file_aliases.values().flatten()
             .cloned()
             .collect();
@@ -362,7 +364,9 @@ impl WorkspaceState {
         let ws_events: Vec<crate::annotations::EventDecl> = self.ws_file_events.values().flatten().cloned().collect();
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
-        let defclass_decls: Vec<&ClassDecl> = self.ws_file_defclasses.values().flatten().collect();
+        let defclass_decls: Vec<&ClassDecl> = self.ws_file_defclasses.values().flatten()
+            .chain(xml_overlay_classes.iter())
+            .collect();
         let mut ws_classes = merge_defclass_into_overlays(ws_classes_input, &self.stub_classes, defclass_decls);
 
         // Merge self-field scan results into classes and globals.
@@ -838,24 +842,81 @@ pub fn scan_paths_with_overrides(
     (classes, aliases, globals, addon_ns_class_names, events, callable_classes)
 }
 
+/// Partition XML classes into direct classes and overlay classes based on whether
+/// a Lua `@class` with the same name already exists. XML classes that duplicate a
+/// Lua class are returned as overlays so that Lua-defined `@field` types take
+/// precedence via the overlay merge path.
+fn partition_xml_classes(
+    xml_classes: Vec<ClassDecl>,
+    lua_class_names: &HashSet<String>,
+) -> (Vec<ClassDecl>, Vec<ClassDecl>) {
+    let mut direct = Vec::new();
+    let mut overlays = Vec::new();
+    for class in xml_classes {
+        if lua_class_names.contains(&class.name) {
+            overlays.push(class);
+        } else {
+            direct.push(class);
+        }
+    }
+    (direct, overlays)
+}
+
+/// Partition workspace classes from a path→classes map into (direct, xml_overlay)
+/// vectors. Non-XML sources (Lua files, files with no extension) are always
+/// included directly. XML sources whose class name matches a Lua class are returned
+/// as overlays for precedence-preserving merge.
+fn partition_xml_overlay_classes(
+    ws_file_classes: &HashMap<PathBuf, Vec<ClassDecl>>,
+) -> (Vec<ClassDecl>, Vec<ClassDecl>) {
+    let mut lua_class_names: HashSet<String> = HashSet::new();
+    let mut lua_classes: Vec<ClassDecl> = Vec::new();
+    let mut xml_classes: Vec<ClassDecl> = Vec::new();
+    for (path, classes) in ws_file_classes {
+        if path.extension().is_some_and(|e| e == "xml") {
+            xml_classes.extend(classes.iter().cloned());
+        } else {
+            // Non-XML sources (Lua, files with no extension) are always direct.
+            for class in classes {
+                lua_class_names.insert(class.name.clone());
+            }
+            lua_classes.extend(classes.iter().cloned());
+        }
+    }
+    let (direct_xml, overlay_xml) = partition_xml_classes(xml_classes, &lua_class_names);
+    lua_classes.extend(direct_xml);
+    (lua_classes, overlay_xml)
+}
+
 /// Scan XML files and merge their classes/globals into a WorkspaceScanResult.
+///
+/// XML-generated classes whose name already exists from Lua `@class` annotations
+/// are treated as overlays: their non-duplicate fields and parents are merged into
+/// the Lua class, but Lua-defined fields take precedence. This allows users to
+/// override XML-inferred field types with more specific `@field` annotations.
 fn scan_xml_paths_into(xml_paths: &[PathBuf], result: &mut WorkspaceScanResult) {
     use rayon::prelude::*;
     let xml_results: Vec<_> = xml_paths.par_iter()
         .filter_map(|p| crate::xml_scan::scan_xml_file(p))
         .collect();
-    let mut all_mixin_augments: Vec<ClassDecl> = Vec::new();
+    let lua_class_names: HashSet<String> = result.0.iter().map(|c| c.name.clone()).collect();
+    let mut all_xml_classes = Vec::new();
+    let mut all_overlays: Vec<ClassDecl> = Vec::new();
     for xml_result in xml_results {
-        result.0.extend(xml_result.classes);
+        all_xml_classes.extend(xml_result.classes);
         result.2.extend(xml_result.globals);
-        all_mixin_augments.extend(xml_result.mixin_augments);
+        all_overlays.extend(xml_result.mixin_augments);
     }
-    // Merge mixin augments into the class list so that mixin Lua classes gain
-    // parentKey fields from frames that use them. Uses the same overlay merge
-    // logic as defclass scanning: existing fields are not overwritten.
-    if !all_mixin_augments.is_empty() {
+    let (direct, overlay) = partition_xml_classes(all_xml_classes, &lua_class_names);
+    result.0.extend(direct);
+    all_overlays.extend(overlay);
+    // Merge overlays (XML duplicate classes + mixin augments) into the class list
+    // so that mixin Lua classes gain parentKey fields from frames that use them.
+    // Uses the same overlay merge logic as defclass scanning: existing fields are
+    // not overwritten.
+    if !all_overlays.is_empty() {
         let classes = std::mem::take(&mut result.0);
-        result.0 = merge_defclass_into_overlays(classes, &[], all_mixin_augments.iter().collect());
+        result.0 = merge_defclass_into_overlays(classes, &[], all_overlays.iter().collect());
     }
 }
 

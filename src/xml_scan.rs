@@ -166,6 +166,10 @@ struct FrameContext {
     def_end: u32,
     /// KeyValue fields with `type="global"` that need FieldRef resolution.
     global_key_values: Vec<(String, Vec<String>, u32)>,
+    /// The `parentKey` attribute value, if this frame was registered as a field
+    /// on its parent. Used to enrich the parent's field type with nested fields
+    /// when the frame is finalized without a name.
+    parent_key: Option<String>,
 }
 
 /// Stack entry for tracking nesting during XML parsing.
@@ -271,6 +275,23 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
                     && let Some(mut frame_ctx) = entry.frame
                 {
                     frame_ctx.def_end = end_pos;
+                    // For unnamed frames with nested parentKey fields: enrich the
+                    // parent's field type so nested fields are accessible through
+                    // the parent's field (e.g. self.Header.CloseBtn).
+                    //
+                    // Named frames don't need this: they create their own ClassDecl
+                    // via finalize_frame, and the nested fields are registered as
+                    // fields on that class. The parent's field type already points
+                    // to the named class, so field lookup finds them naturally.
+                    if frame_ctx.name.is_none()
+                        && !frame_ctx.fields.is_empty()
+                        && frame_ctx.parent_key.is_some()
+                    {
+                        enrich_parent_field_with_nested(
+                            &mut ctx.stack,
+                            &frame_ctx,
+                        );
+                    }
                     finalize_frame(frame_ctx, path, &mut ctx.classes, &mut ctx.globals, &mut ctx.mixin_augments);
                 }
             }
@@ -416,6 +437,7 @@ fn handle_frame_element(
         def_start: tag_start,
         def_end: tag_start,
         global_key_values: Vec::new(),
+        parent_key: effective_parent_key.clone(),
     };
 
     stack.push(StackEntry {
@@ -604,6 +626,73 @@ fn register_parent_array_field(
     frame_ctx
         .field_ranges
         .insert(parent_array.to_string(), (tag_start, tag_start));
+}
+
+/// When an unnamed `parentKey` frame is finalized and has nested `parentKey`
+/// fields from its children, enrich the corresponding field on the parent frame
+/// so those nested fields are accessible via chained field access.
+///
+/// For example, given:
+/// ```xml
+/// <Frame name="MyPanel" mixin="MyPanelMixin">
+///   <Frame parentKey="Header" inherits="BackdropTemplate">
+///     <Button parentKey="CloseBtn" />
+///   </Frame>
+/// </Frame>
+/// ```
+/// The `Header` field on `MyPanel` starts as `BackdropTemplate`. After this
+/// function, it becomes `BackdropTemplate & {CloseBtn: Button}`, making
+/// `self.Header.CloseBtn` accessible without manual `@class` annotations.
+fn enrich_parent_field_with_nested(
+    stack: &mut [StackEntry],
+    child_ctx: &FrameContext,
+) {
+    let parent_key = match &child_ctx.parent_key {
+        Some(pk) => pk.as_str(),
+        None => return,
+    };
+
+    // Find the nearest frame ancestor (the parent).
+    let Some(parent_frame) = stack.iter_mut().rev()
+        .find_map(|entry| entry.frame.as_mut())
+    else {
+        return;
+    };
+
+    // Find the parentKey field on the parent.
+    let Some(field) = parent_frame.fields.iter_mut()
+        .find(|(name, _, _)| name == parent_key)
+    else {
+        return;
+    };
+
+    // Build a table literal from the child's nested fields.
+    let table_fields: Vec<(String, AnnotationType)> = child_ctx.fields.iter()
+        .map(|(name, ty, _)| (name.clone(), ty.clone()))
+        .collect();
+
+    if table_fields.is_empty() {
+        return;
+    }
+
+    let table_literal = AnnotationType::TableLiteral(table_fields);
+
+    // Enrich: original_type & {nested fields...}
+    field.1 = intersect_with(&field.1, table_literal);
+}
+
+/// Append `extra` to an annotation type as an intersection member.
+/// If `base` is already an intersection, `extra` is appended; otherwise a new
+/// two-element intersection is created.
+fn intersect_with(base: &AnnotationType, extra: AnnotationType) -> AnnotationType {
+    match base {
+        AnnotationType::Intersection(members) => {
+            let mut new_members = members.clone();
+            new_members.push(extra);
+            AnnotationType::Intersection(new_members)
+        }
+        other => AnnotationType::Intersection(vec![other.clone(), extra]),
+    }
 }
 
 /// Finalize a frame context into ClassDecl and/or ExternalGlobal entries.
