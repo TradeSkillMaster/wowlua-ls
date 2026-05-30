@@ -460,6 +460,197 @@ fn synthesize_return_only_overloads_from(
     }).collect()
 }
 
+/// Build a complete [`ExternalGlobal`] capturing a function definition's full
+/// signature: params (merged with `@param` annotations), `@return`/body-derived
+/// returns (including tail-call resolution and `...VarArgs` fallback), overloads
+/// (including synthesized correlated return-only overloads), `@deprecated`/
+/// `@nodiscard`/visibility/generics/etc., and the function's byte range.
+///
+/// The returned global has placeholder `name` (empty) and `kind`
+/// ([`ExternalGlobalKind::Function`]); callers override them via struct-update
+/// syntax (`ExternalGlobal { name, kind, ..base }`) to emit the function as a
+/// top-level global, a method on a table/namespace, or a namespace field
+/// assigned a local function (`ns.f = f`).
+fn build_func_external(
+    func: &crate::ast::FunctionDefinition<'_>,
+    anno_node: SyntaxNode<'_>,
+    is_colon: bool,
+    correlated_return_overloads: bool,
+    file_func_returns: &HashMap<String, Vec<AnnotationType>>,
+    file_func_tail_callee: &HashMap<String, String>,
+    owned_path: Option<&std::path::Path>,
+) -> ExternalGlobal {
+    // Annotations may live on an enclosing statement rather than the function
+    // node itself (e.g. `---@param ...\nlocal f = function() end`), so the
+    // caller specifies which node to scan for `---@` comments.
+    let mut annotations = extract_annotations(anno_node);
+    let mut overloads: Vec<OverloadSig> = annotations.overloads.iter()
+        .filter_map(|s| parse_overload(s)).collect();
+    // Collect body returns once (when no @return annotations) for
+    // both overload synthesis and implicit_nil_return detection.
+    let body_returns = if annotations.returns.is_empty() {
+        func.block().map(|body| {
+            let mut returns = Vec::new();
+            synth_collect_returns(&body, &mut returns);
+            returns
+        })
+    } else {
+        None
+    };
+    // Implicit nil return: every return in the body is bare (no
+    // expressions), or the body has no return statements at all.
+    let implicit_nil_return = body_returns.as_ref()
+        .is_some_and(|returns| returns.iter().all(|(_, is_bare)| *is_bare));
+    // Derive primary return types from body when no @return
+    // annotations exist.  Picks the max-arity explicit return to
+    // determine the number of return slots and their coarse types.
+    // When multiple returns share max arity, widen each position:
+    // positions where all paths agree keep that type, positions
+    // where paths disagree (e.g. nil vs any) widen to `any`.
+    let body_derived_returns: Vec<AnnotationType> = body_returns.as_ref()
+        .and_then(|returns| {
+            let non_bare: Vec<_> = returns.iter()
+                .filter(|(_, is_bare)| !*is_bare)
+                .collect();
+            let max_arity = non_bare.iter()
+                .map(|(exprs, _)| exprs.len())
+                .max()?;
+            let max_returns: Vec<&Vec<AnnotationType>> = non_bare.iter()
+                .filter(|(exprs, _)| exprs.len() == max_arity)
+                .map(|(exprs, _)| exprs)
+                .collect();
+            if max_returns.len() == 1 {
+                return Some(max_returns[0].clone());
+            }
+            // Multiple returns with same max arity: widen types
+            // at each position so cross-file callers see the
+            // combined return type.
+            let mut result = Vec::with_capacity(max_arity);
+            for i in 0..max_arity {
+                let first = &max_returns[0][i];
+                if max_returns[1..].iter().all(|r| r[i] == *first) {
+                    result.push(first.clone());
+                } else {
+                    result.push(AnnotationType::Simple("any".to_string()));
+                }
+            }
+            Some(result)
+        })
+        .unwrap_or_default();
+    // When the body-derived return ends with `any` (typically from
+    // a tail-call function call), the actual return arity is unknown
+    // at scan time.  Try to resolve the callee within the same file
+    // to get concrete return types; otherwise fall back to VarArgs.
+    //
+    // NOTE: The widening above can also produce a trailing `any` when
+    // paths disagree at the last position, but that is harmless —
+    // `tail_call_callee_name` gates on the AST actually ending with a
+    // tail call, so a widened `any` won't trigger the VarArgs fallback
+    // spuriously.
+    let tail_callee = if body_derived_returns.last()
+        .is_some_and(|t| matches!(t, AnnotationType::Simple(s) if s == "any"))
+    {
+        func.block().and_then(|body| tail_call_callee_name(&body))
+    } else {
+        None
+    };
+    // Synthesize correlated return-only overloads from the pre-collected
+    // returns.  Matches the per-file IR synthesis so cross-file call sites
+    // also see the synthesized overloads.
+    if correlated_return_overloads
+        && !overloads.iter().any(|o| o.is_return_only)
+        && let Some(body) = func.block()
+        && let Some(returns) = body_returns {
+            overloads.extend(synthesize_return_only_overloads_from(returns, &body));
+        }
+    // Populate returns from body-derived types when no @return annotations
+    // exist.  This gives cross-file callers the correct return arity and
+    // coarse types (comparisons → boolean, literals → their type, everything
+    // else → any).
+    if annotations.returns.is_empty() && !body_derived_returns.is_empty() {
+        if let Some(callee) = &tail_callee {
+            // Tail-call return: resolve through same-file functions to find
+            // the terminal callee's concrete return types.
+            if let Some(resolved) = resolve_through_tail_calls(
+                callee, file_func_returns, file_func_tail_callee,
+            ) {
+                annotations.returns = resolved.clone();
+            } else {
+                // Callee not in this file; keep VarArgs(any) to signal
+                // open-ended arity.
+                let last = body_derived_returns.last().unwrap().clone();
+                let mut returns = body_derived_returns;
+                let len = returns.len();
+                returns[len - 1] = AnnotationType::VarArgs(Box::new(last));
+                annotations.returns = returns;
+            }
+        } else {
+            annotations.returns = body_derived_returns;
+        }
+    }
+    let range = func.syntax().text_range();
+    let def_start = u32::from(range.start());
+    let def_end = u32::from(range.end());
+    // Merge @param annotations with actual parameter names.
+    let params = if let Some(param_list) = func.params() {
+        let actual_params: Vec<String> = param_list.parameters().into_iter()
+            .filter(|n| !is_colon || n != "self")
+            .collect();
+        let mut ps: Vec<ParamInfo> = actual_params.iter()
+            .map(|n| {
+                if let Some(ann) = annotations.params.iter().find(|p| &p.name == n) {
+                    ann.clone()
+                } else {
+                    ParamInfo { name: n.clone(), typ: AnnotationType::Simple(String::new()), optional: false, description: None }
+                }
+            })
+            .collect();
+        if param_list.ellipsis() {
+            if let Some(ann) = annotations.params.iter().find(|p| p.name == "...") {
+                ps.push(ann.clone());
+            } else {
+                ps.push(ParamInfo { name: "...".to_string(), typ: AnnotationType::Simple(String::new()), optional: false, description: None });
+            }
+        }
+        ps
+    } else if !annotations.params.is_empty() {
+        std::mem::take(&mut annotations.params)
+    } else { Vec::new() };
+    ExternalGlobal {
+        name: String::new(),
+        kind: ExternalGlobalKind::Function,
+        params,
+        returns: annotations.returns,
+        return_names: annotations.return_names,
+        return_descriptions: annotations.return_descriptions,
+        overloads,
+        doc: annotations.doc,
+        deprecated: annotations.deprecated,
+        nodiscard: annotations.nodiscard,
+        constructor: annotations.constructor,
+        visibility: annotations.visibility,
+        generics: annotations.generics,
+        defclass: annotations.defclass,
+        defclass_parent: annotations.defclass_parent,
+        source_path: owned_path.map(|p| p.to_path_buf()),
+        def_start,
+        def_end,
+        builds_field: annotations.builds_field,
+        built_name: annotations.built_name,
+        built_extends: annotations.built_extends,
+        type_narrows: annotations.type_narrows,
+        type_narrows_class: annotations.type_narrows_class,
+        string_value: None,
+        number_value: None,
+        is_override: false,
+        see: annotations.see,
+        flavors: 0,
+        flavor_guard: annotations.flavor_guard,
+        implicit_nil_return,
+        narrows_arg: annotations.narrows_arg,
+    }
+}
+
 // ── Global declaration scanning ─────────────────────────────────────────────
 
 pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
@@ -729,6 +920,40 @@ pub(crate) fn scan_file_globals_with_synth(
         }
     }
 
+    // Capture full signatures of local functions (both `local function f()` and
+    // `local f = function()`) keyed by name. Assigning a local function to a
+    // namespace/class field (`ns.f = f`) then re-uses the captured signature so
+    // the params/returns survive cross-file, instead of degrading to a bare
+    // `function` type. Must run after `file_func_returns`/`file_func_tail_callee`
+    // are populated so body-derived returns resolve through tail calls.
+    let mut local_function_sigs: HashMap<String, ExternalGlobal> = HashMap::new();
+    for stmt in &all_stmts {
+        match stmt {
+            Statement::FunctionDefinition(func) if func.is_local() => {
+                if let Some(name) = func.name() {
+                    local_function_sigs.insert(name, build_func_external(
+                        func, func.syntax(), false, correlated_return_overloads,
+                        &file_func_returns, &file_func_tail_callee, owned_path.as_deref(),
+                    ));
+                }
+            }
+            Statement::LocalAssign(assign) => {
+                if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
+                    let names = name_list.names();
+                    let exprs = expr_list.expressions();
+                    if names.len() == 1 && exprs.len() == 1
+                        && let Expression::Function(fd) = &exprs[0] {
+                            local_function_sigs.insert(names[0].clone(), build_func_external(
+                                fd, assign.syntax(), false, correlated_return_overloads,
+                                &file_func_returns, &file_func_tail_callee, owned_path.as_deref(),
+                            ));
+                        }
+                }
+            }
+            _ => {}
+        }
+    }
+
     let mut globals = Vec::new();
     // Track field names assigned on the addon table in this file (e.g. ns.LibTSMApp = ...)
     // Used to gate 3-part chains so we don't inject fields onto unrelated external classes
@@ -757,170 +982,14 @@ pub(crate) fn scan_file_globals_with_synth(
                 }
                 let is_colon = is_colon_opt.unwrap_or(false);
                 {
-                    let mut annotations = extract_annotations(func.syntax());
-                    let mut overloads: Vec<OverloadSig> = annotations.overloads.iter()
-                        .filter_map(|s| parse_overload(s)).collect();
-                    // Collect body returns once (when no @return annotations) for
-                    // both overload synthesis and implicit_nil_return detection.
-                    let body_returns = if annotations.returns.is_empty() {
-                        func.block().map(|body| {
-                            let mut returns = Vec::new();
-                            synth_collect_returns(&body, &mut returns);
-                            returns
-                        })
-                    } else {
-                        None
-                    };
-                    // Implicit nil return: every return in the body is bare (no
-                    // expressions), or the body has no return statements at all.
-                    let implicit_nil_return = body_returns.as_ref()
-                        .is_some_and(|returns| returns.iter().all(|(_, is_bare)| *is_bare));
-                    // Derive primary return types from body when no @return
-                    // annotations exist.  Picks the max-arity explicit return to
-                    // determine the number of return slots and their coarse types.
-                    // When multiple returns share max arity, widen each position:
-                    // positions where all paths agree keep that type, positions
-                    // where paths disagree (e.g. nil vs any) widen to `any`.
-                    // Must be computed before `body_returns` is consumed below.
-                    let body_derived_returns: Vec<AnnotationType> = body_returns.as_ref()
-                        .and_then(|returns| {
-                            let non_bare: Vec<_> = returns.iter()
-                                .filter(|(_, is_bare)| !*is_bare)
-                                .collect();
-                            let max_arity = non_bare.iter()
-                                .map(|(exprs, _)| exprs.len())
-                                .max()?;
-                            let max_returns: Vec<&Vec<AnnotationType>> = non_bare.iter()
-                                .filter(|(exprs, _)| exprs.len() == max_arity)
-                                .map(|(exprs, _)| exprs)
-                                .collect();
-                            if max_returns.len() == 1 {
-                                return Some(max_returns[0].clone());
-                            }
-                            // Multiple returns with same max arity: widen types
-                            // at each position so cross-file callers see the
-                            // combined return type.
-                            let mut result = Vec::with_capacity(max_arity);
-                            for i in 0..max_arity {
-                                let first = &max_returns[0][i];
-                                if max_returns[1..].iter().all(|r| r[i] == *first) {
-                                    result.push(first.clone());
-                                } else {
-                                    result.push(AnnotationType::Simple("any".to_string()));
-                                }
-                            }
-                            Some(result)
-                        })
-                        .unwrap_or_default();
-                    // When the body-derived return ends with `any` (typically from
-                    // a tail-call function call), the actual return arity is unknown
-                    // at scan time.  Try to resolve the callee within the same file
-                    // to get concrete return types; otherwise fall back to VarArgs.
-                    // NOTE: The widening above can also produce a trailing `any`
-                    // when paths disagree at the last position, but that is
-                    // harmless — `tail_call_callee_name` gates on the AST actually
-                    // ending with a tail call, so a widened `any` won't trigger
-                    // the VarArgs fallback spuriously.
-                    let tail_callee = if body_derived_returns.last()
-                        .is_some_and(|t| matches!(t, AnnotationType::Simple(s) if s == "any"))
-                    {
-                        func.block().and_then(|body| tail_call_callee_name(&body))
-                    } else {
-                        None
-                    };
-                    // Synthesize correlated return-only overloads from the
-                    // pre-collected returns. Matches the per-file IR synthesis so
-                    // cross-file call sites (method calls resolving through a
-                    // workspace-scanned class) also see the synthesized overloads.
-                    if correlated_return_overloads
-                        && !overloads.iter().any(|o| o.is_return_only)
-                        && let Some(body) = func.block()
-                        && let Some(returns) = body_returns {
-                            overloads.extend(synthesize_return_only_overloads_from(returns, &body));
-                        }
-                    // Populate returns from body-derived types when no @return
-                    // annotations exist.  This gives cross-file callers the
-                    // correct return arity and coarse types (comparisons →
-                    // boolean, literals → their type, everything else → any).
-                    if annotations.returns.is_empty() && !body_derived_returns.is_empty() {
-                        if let Some(callee) = &tail_callee {
-                            // Tail-call return: resolve through same-file functions
-                            // to find the terminal callee's concrete return types.
-                            if let Some(resolved) = resolve_through_tail_calls(
-                                callee, &file_func_returns, &file_func_tail_callee,
-                            ) {
-                                annotations.returns = resolved.clone();
-                            } else {
-                                // Callee not in this file; keep VarArgs(any) to
-                                // signal open-ended arity.
-                                let last = body_derived_returns.last().unwrap().clone();
-                                let mut returns = body_derived_returns;
-                                let len = returns.len();
-                                returns[len - 1] = AnnotationType::VarArgs(Box::new(last));
-                                annotations.returns = returns;
-                            }
-                        } else {
-                            annotations.returns = body_derived_returns;
-                        }
-                    }
-                    let range = func.syntax().text_range();
-                    let def_start = u32::from(range.start());
-                    let def_end = u32::from(range.end());
-                    // Merge @param annotations with actual parameter names.
-                    // When some params have annotations and others don't, the
-                    // actual param list is the source of truth for param count;
-                    // annotations just add type info.
-                    let params = if let Some(param_list) = func.params() {
-                        let actual_params: Vec<String> = param_list.parameters().into_iter()
-                            .filter(|n| !is_colon || n != "self")
-                            .collect();
-                        let mut ps: Vec<ParamInfo> = actual_params.iter()
-                            .map(|n| {
-                                // Use annotation if available for this param name
-                                if let Some(ann) = annotations.params.iter().find(|p| &p.name == n) {
-                                    ann.clone()
-                                } else {
-                                    ParamInfo { name: n.clone(), typ: AnnotationType::Simple(String::new()), optional: false, description: None }
-                                }
-                            })
-                            .collect();
-                        if param_list.ellipsis() {
-                            if let Some(ann) = annotations.params.iter().find(|p| p.name == "...") {
-                                ps.push(ann.clone());
-                            } else {
-                                ps.push(ParamInfo { name: "...".to_string(), typ: AnnotationType::Simple(String::new()), optional: false, description: None });
-                            }
-                        }
-                        ps
-                    } else if !annotations.params.is_empty() {
-                        annotations.params
-                    } else { Vec::new() };
-                    let see = annotations.see.clone();
+                    let base = build_func_external(
+                        func, func.syntax(), is_colon, correlated_return_overloads,
+                        &file_func_returns, &file_func_tail_callee, owned_path.as_deref(),
+                    );
                     // Local functions are file-scoped, not cross-file globals
                     // (multi-name branch needs no check — Lua syntax forbids `local function a.b()`)
                     if names.len() == 1 && !func.is_local() {
-                        globals.push(ExternalGlobal {
-                            name: names[0].clone(), kind: ExternalGlobalKind::Function,
-                            params, returns: annotations.returns, return_names: annotations.return_names, return_descriptions: annotations.return_descriptions, overloads,
-                            doc: annotations.doc, deprecated: annotations.deprecated,
-                            nodiscard: annotations.nodiscard, constructor: annotations.constructor,
-                            visibility: annotations.visibility,
-                            generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
-                            source_path: owned_path.clone(),
-                            def_start, def_end,
-                            builds_field: annotations.builds_field.clone(),
-                            built_name: annotations.built_name,
-                            built_extends: annotations.built_extends,
-                            type_narrows: annotations.type_narrows,
-                            type_narrows_class: annotations.type_narrows_class.clone(),
-                            string_value: None, number_value: None,
-                            is_override: false,
-                            see: see.clone(),
-                            flavors: 0,
-                            flavor_guard: annotations.flavor_guard,
-                            implicit_nil_return,
-                            narrows_arg: annotations.narrows_arg,
-                        });
+                        globals.push(ExternalGlobal { name: names[0].clone(), ..base });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
                         let method_name = &names[names.len() - 1];
@@ -936,27 +1005,9 @@ pub(crate) fn scan_file_globals_with_synth(
                         // resolves as `ns.Db.A:Foo()`.
                         if local_tables.contains(root_name) && !class_vars.contains_key(root_name) && addon_ns_var.as_deref() != Some(root_name.as_str()) {
                             local_table_methods.entry(root_name.clone()).or_default().push(ExternalGlobal {
-                                name: String::new(), // placeholder, set when flushed
+                                // name left empty; set when flushed onto the addon ns
                                 kind: ExternalGlobalKind::Method(intermediates.clone(), method_name.clone(), is_colon),
-                                params, returns: annotations.returns, return_names: annotations.return_names, return_descriptions: annotations.return_descriptions, overloads,
-                                doc: annotations.doc, deprecated: annotations.deprecated,
-                                nodiscard: annotations.nodiscard, constructor: annotations.constructor,
-                                visibility: annotations.visibility,
-                                generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
-                                source_path: owned_path.clone(),
-                                def_start, def_end,
-                                builds_field: annotations.builds_field.clone(),
-                                built_name: annotations.built_name,
-                                built_extends: annotations.built_extends,
-                                type_narrows: annotations.type_narrows,
-                                type_narrows_class: annotations.type_narrows_class.clone(),
-                                string_value: None, number_value: None,
-                                is_override: false,
-                                see: see.clone(),
-                                flavors: 0,
-                                flavor_guard: annotations.flavor_guard,
-                                implicit_nil_return,
-                                narrows_arg: annotations.narrows_arg,
+                                ..base.clone()
                             });
                         } else {
                             let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -967,25 +1018,7 @@ pub(crate) fn scan_file_globals_with_synth(
                             globals.push(ExternalGlobal {
                                 name: canonical_name,
                                 kind: ExternalGlobalKind::Method(intermediates, method_name.clone(), is_colon),
-                                params, returns: annotations.returns, return_names: annotations.return_names, return_descriptions: annotations.return_descriptions, overloads,
-                                doc: annotations.doc, deprecated: annotations.deprecated,
-                                nodiscard: annotations.nodiscard, constructor: annotations.constructor,
-                                visibility: annotations.visibility,
-                                generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
-                                source_path: owned_path.clone(),
-                                def_start, def_end,
-                                builds_field: annotations.builds_field.clone(),
-                                built_name: annotations.built_name,
-                                built_extends: annotations.built_extends,
-                                type_narrows: annotations.type_narrows,
-                                type_narrows_class: annotations.type_narrows_class.clone(),
-                                string_value: None, number_value: None,
-                                is_override: false,
-                                see: see.clone(),
-                                flavors: 0,
-                                flavor_guard: annotations.flavor_guard,
-                                implicit_nil_return,
-                                narrows_arg: annotations.narrows_arg,
+                                ..base
                             });
                         }
                     }
@@ -1245,6 +1278,42 @@ pub(crate) fn scan_file_globals_with_synth(
                                     } else { Vec::new() }
                                 } else { Vec::new() }
                             } else { Vec::new() };
+                            // When the RHS is a single local function with a captured
+                            // signature, emit a method on the namespace/class so the full
+                            // signature (params/returns/etc.) is preserved cross-file,
+                            // matching `function ns.field(...)`. Otherwise the field would
+                            // degrade to a bare `function` type.
+                            if let Expression::Identifier(rhs_ident) = &effective {
+                                let rhs_names = rhs_ident.names();
+                                if rhs_names.len() == 1
+                                    && let Some(base) = local_function_sigs.get(&rhs_names[0]) {
+                                        // Prefer an explicit @private/@protected on the
+                                        // function; otherwise derive visibility from the
+                                        // namespace field name (e.g. `_`-prefix convention).
+                                        let visibility = if base.visibility != Visibility::Public {
+                                            base.visibility
+                                        } else {
+                                            default_visibility_for_name(&field_name, implicit_protected_prefix)
+                                        };
+                                        // Merge assignment-level annotations (doc comment,
+                                        // @flavor guard) that override the function-level
+                                        // ones, so `--- @flavor retail\nns.f = impl` works.
+                                        let mut merged = base.clone();
+                                        if annotations.doc.is_some() { merged.doc = annotations.doc; }
+                                        if annotations.flavor_guard != 0 { merged.flavor_guard = annotations.flavor_guard; }
+                                        if annotations.deprecated { merged.deprecated = true; }
+                                        globals.push(ExternalGlobal {
+                                            name: canonical_name,
+                                            kind: ExternalGlobalKind::Method(intermediates, field_name.clone(), false),
+                                            visibility,
+                                            ..merged
+                                        });
+                                        if is_addon_root && names.len() == 2 {
+                                            addon_assigned_fields.insert(field_name.clone());
+                                        }
+                                        continue;
+                                    }
+                            }
                             let range = assign.syntax().text_range();
                             globals.push(ExternalGlobal {
                                 name: canonical_name,
