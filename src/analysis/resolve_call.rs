@@ -993,11 +993,12 @@ impl<'a> Analysis<'a> {
             let builds_field_info = self.func(func_idx).builds_field.clone();
             let built_name_param = self.func(func_idx).built_name;
             let built_extends = self.func(func_idx).built_extends;
-            let receiver_type = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
-                self.resolve_expr(receiver_expr)
+            let receiver_expr_id = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
+                Some(receiver_expr)
             } else {
                 None
             };
+            let receiver_type = receiver_expr_id.and_then(|re| self.resolve_expr(re));
             if let Some(rt) = receiver_type {
                 // If this method has @builds-field, create a new table with the added field
                 if let (Some((param_idx, field_vt, field_lateinit)), ValueType::Table(Some(recv_idx))) = (builds_field_info, &rt) {
@@ -1046,11 +1047,26 @@ impl<'a> Analysis<'a> {
                         .map(|ta| self.resolve_annotation_type_mut_gen(ta, &fn_generics)
                             .unwrap_or(ValueType::Any))
                         .collect();
-                    for arg in &mut resolved {
+                    for (i, arg) in resolved.iter_mut().enumerate() {
                         *arg = self.substitute_generics_deep(arg, &generic_subs);
+                        // T! (NonNil) strips nil after generic substitution so that
+                        // e.g. @return self<T!> on Publisher<string?> yields Publisher<string>.
+                        if matches!(self_args.get(i), Some(crate::annotations::AnnotationType::NonNil(_))) {
+                            *arg = arg.strip_nil();
+                        }
                     }
                     if !resolved.is_empty() {
                         self.call_type_args.insert(expr_id, resolved);
+                    }
+                } else {
+                    // Plain @return self: propagate receiver's type args so that
+                    // chained calls (e.g. pub:Filter():IgnoreNil()) can resolve
+                    // the class type params from the intermediate call result.
+                    // This is a general chaining fix — without it, any @return self
+                    // method in a chain loses its receiver's type parameterization.
+                    let receiver_args = self.get_expr_type_args(receiver_expr_id.unwrap());
+                    if !receiver_args.is_empty() {
+                        self.call_type_args.insert(expr_id, receiver_args);
                     }
                 }
                 return Some(rt);

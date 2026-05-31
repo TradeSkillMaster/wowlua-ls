@@ -167,3 +167,43 @@ local wstr = {}
 local invBad = wstr:Invert()
 --    ^ hover: (local) invBad: Wrap<boolean>
 --                  ^ diag: param-constraint-mismatch
+
+-- ── @return self<T!> re-parameterization (non-nil stripping) ────────────────
+
+---@class Publisher<T>
+local Publisher = {}
+
+---@return self
+function Publisher:Filter() return self end
+
+---@return self<T!>
+function Publisher:IgnoreNil() return self end
+
+---@return self<boolean>
+function Publisher:ToBoolean() return self end
+
+-- T is nilable: IgnoreNil() strips nil from the type param
+---@type Publisher<string?>
+local pub = {}
+local pub2 = pub:IgnoreNil()
+--    ^ hover: (local) pub2: Publisher<string>
+
+-- Chain: Filter preserves nilability, IgnoreNil strips it
+local pub3 = pub:Filter():IgnoreNil()
+--    ^ hover: (local) pub3: Publisher<string>
+
+-- Already non-nil: T! is a no-op
+---@type Publisher<number>
+local pubNum = {}
+local pub4 = pubNum:IgnoreNil()
+--    ^ hover: (local) pub4: Publisher<number>
+
+-- T! with union containing nil: strips nil from union
+---@type Publisher<number|string|nil>
+local pubUnion = {}
+local pub5 = pubUnion:IgnoreNil()
+--    ^ hover: (local) pub5: Publisher<number | string>
+
+-- ToBoolean after IgnoreNil: chains compose correctly
+local pub6 = pub:IgnoreNil():ToBoolean()
+--    ^ hover: (local) pub6: Publisher<boolean>
