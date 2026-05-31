@@ -140,7 +140,11 @@ type CachedWsDiagnostics = (u64, Vec<(String, Vec<lsp_types::Diagnostic>)>);
 
 struct WorkspaceState {
     root: Option<PathBuf>,
-    configs: crate::config::ProjectConfigs,
+    // Shared via Arc so background warm workers can hold a cheap clone without
+    // deep-copying the (potentially large) per-directory config map. Mutated only
+    // during full scans (init / config reload) by building a fresh value and
+    // swapping in a new Arc.
+    configs: Arc<crate::config::ProjectConfigs>,
     stub_globals: Vec<ExternalGlobal>,
     stub_classes: Vec<ClassDecl>,
     /// Cached stubs-only PreResolvedGlobals, built once at startup.
@@ -187,6 +191,12 @@ struct WorkspaceState {
     /// Populated lazily on first `workspace/diagnostic` request and invalidated
     /// when `ws_generation` changes (i.e. workspace is rebuilt).
     cached_ws_diagnostics: Option<CachedWsDiagnostics>,
+    /// True while a background warm (`spawn_warm`) is computing closed-file
+    /// diagnostics. When set, `handle_workspace_diagnostic` serves the prior
+    /// (stale) cache instead of synchronously recomputing — the in-flight warm
+    /// will deliver fresh results via a second diagnostic refresh. This keeps the
+    /// main loop responsive instead of blocking on a full re-analysis.
+    warm_in_flight: bool,
 }
 
 /// Collect (class_name, field_name) pairs from all @field entries on the given classes.
@@ -429,46 +439,78 @@ impl WorkspaceState {
 
         self.pre_globals = Arc::new(pg);
         self.ws_generation += 1;
-        self.cached_ws_diagnostics = None;
+        // Intentionally retain `cached_ws_diagnostics` (now stale: its stored
+        // generation no longer matches `ws_generation`). The generation mismatch
+        // already prevents it from being served as fresh, but keeping the entries
+        // lets (1) the next incremental warm reuse them as the prior baseline and
+        // (2) `handle_workspace_diagnostic` serve them while a background warm is
+        // in flight (avoiding a blocking synchronous recompute / diagnostic
+        // flicker). A fresh full warm overwrites them when no prior is reusable.
     }
 
     /// Pre-compute workspace diagnostics for all unopened files so the next
     /// `workspace/diagnostic` request is a cache hit. Call after a workspace
     /// rebuild (Phase 4) to avoid a 10+ second synchronous recompute in the
     /// request handler (Phase 3) that blocks hover/completion/etc.
-    fn warm_ws_diagnostic_cache(&mut self) {
-        use rayon::prelude::*;
-        let all_ws_paths: Vec<&PathBuf> = self
-            .ws_file_globals
+    /// Recompute the workspace diagnostic cache.
+    ///
+    /// When `affected` is `Some(names)` and a prior cache exists, this performs an
+    /// *incremental* warm: a workspace file is re-analyzed only when its source
+    /// text mentions one of the affected declaration names (the transitive
+    /// reverse-dependency closure of what changed); otherwise its prior
+    /// diagnostics are reused verbatim. When `affected` is `None` (startup,
+    /// lazy recompute, or a non-name-diffable change like defclass/events), every
+    /// file is re-analyzed.
+    fn warm_ws_diagnostic_cache(&mut self, affected: Option<&HashSet<String>>) {
+        let paths = self.ws_lua_paths();
+        let plugin_codes = self.plugin_codes();
+        // Take the prior cache so untouched files can reuse their diagnostics.
+        // Only valid for incremental warms (`affected.is_some()`).
+        let prior = self.cached_ws_diagnostics.take();
+        let prior_entries = match (&affected, &prior) {
+            (Some(_), Some((_, entries))) => Some(entries.as_slice()),
+            _ => None,
+        };
+        let disk_results = compute_ws_diagnostics(
+            &paths,
+            &self.pre_globals,
+            &self.configs,
+            &plugin_codes,
+            affected,
+            prior_entries,
+        );
+        self.cached_ws_diagnostics = Some((self.ws_generation, disk_results));
+    }
+
+    /// All workspace `.lua` paths (the set warmed for closed-file diagnostics).
+    fn ws_lua_paths(&self) -> Vec<PathBuf> {
+        self.ws_file_globals
             .keys()
             .filter(|p| p.extension().is_some_and(|e| e == "lua"))
-            .collect();
-        let plugin_codes = self.plugin_codes();
-        let pre_globals = &self.pre_globals;
-        let configs = &self.configs;
+            .cloned()
+            .collect()
+    }
 
-        let disk_results: Vec<(String, Vec<lsp_types::Diagnostic>)> = all_ws_paths
-            .par_iter()
-            .filter_map(|&path| {
-                let text = std::fs::read_to_string(path).ok()?;
-                if crate::has_shebang(&text) {
-                    return None;
-                }
-                let uri = abs_path_to_uri(path)?;
-                if is_ignored_uri(&uri, configs) {
-                    return None;
-                }
-                let tree = parse_lua(&text);
-                let mut result = analyze_lua_parsed(&uri, pre_globals, configs, &tree);
-                result.plugin_diag_codes = plugin_codes.clone();
-                let root = crate::syntax::SyntaxNode::new_root(&tree);
-                let suppressions = scan_diagnostic_directives(root);
-                let diag_items = build_file_diagnostics_with(&uri, &tree, &result, &text, &[], configs, &suppressions);
-                Some((uri.to_string(), diag_items))
-            })
-            .collect();
-
-        self.cached_ws_diagnostics = Some((self.ws_generation, disk_results));
+    /// Snapshot everything a warm needs as owned/`Arc`-shared, `Send + 'static`
+    /// data so the work can run on a background thread without borrowing `self`.
+    /// Clones (rather than takes) the prior cache so untouched files reuse their
+    /// diagnostics during an incremental warm AND the stale cache stays available
+    /// to serve `workspace/diagnostic` pulls while the warm runs. `generation`
+    /// lets the caller discard stale results.
+    fn warm_inputs(&self, affected: Option<HashSet<String>>) -> WarmInputs {
+        let prior_entries = match (&affected, &self.cached_ws_diagnostics) {
+            (Some(_), Some((_, entries))) => Some(entries.clone()),
+            _ => None,
+        };
+        WarmInputs {
+            generation: self.ws_generation,
+            paths: self.ws_lua_paths(),
+            pre_globals: Arc::clone(&self.pre_globals),
+            configs: Arc::clone(&self.configs),
+            plugin_codes: self.plugin_codes(),
+            affected,
+            prior: prior_entries,
+        }
     }
 
     /// Run plugins against an analysis result and return diagnostics.
@@ -505,7 +547,7 @@ impl WorkspaceState {
     fn for_test(root: Option<PathBuf>) -> Self {
         Self {
             root,
-            configs: crate::config::ProjectConfigs::default(),
+            configs: Arc::new(crate::config::ProjectConfigs::default()),
             stub_globals: Vec::new(),
             stub_classes: Vec::new(),
             stub_pre_globals: Arc::new(PreResolvedGlobals::empty()),
@@ -531,8 +573,180 @@ impl WorkspaceState {
             plugin_engine: None,
             ws_generation: 0,
             cached_ws_diagnostics: None,
+            warm_in_flight: false,
         }
     }
+}
+
+/// All inputs a workspace-diagnostic warm needs, snapshotted as owned / `Arc`
+/// data so the warm can run on a background thread (see `spawn_warm`). The
+/// `generation` is the `ws_generation` at snapshot time; results are discarded
+/// if the workspace has since advanced.
+struct WarmInputs {
+    generation: u64,
+    paths: Vec<PathBuf>,
+    pre_globals: Arc<PreResolvedGlobals>,
+    configs: Arc<crate::config::ProjectConfigs>,
+    plugin_codes: Vec<String>,
+    affected: Option<HashSet<String>>,
+    prior: Option<Vec<(String, Vec<lsp_types::Diagnostic>)>>,
+}
+
+/// Output of a background warm: the computed closed-file diagnostics tagged with
+/// the generation they were computed against.
+struct WarmResult {
+    generation: u64,
+    diagnostics: Vec<(String, Vec<lsp_types::Diagnostic>)>,
+}
+
+/// Soundness predicate for incremental warm reuse: a file may keep its prior
+/// diagnostics only when none of the changed declaration names (`affected`,
+/// already expanded through the reverse-dependency closure) appear textually in
+/// its source. Cross-file diagnostic effects flow through named declarations, so
+/// a file that never mentions any affected name cannot have changed diagnostics.
+///
+/// Uses word-boundary matching: the match is ignored if the character immediately
+/// before or after is alphanumeric or underscore. This avoids short names like
+/// "ID" or "UI" matching incidentally inside longer identifiers (e.g. "UUID",
+/// "GUID"), which would disable the incremental optimization for those names.
+fn file_unaffected_by(text: &str, affected: &HashSet<String>) -> bool {
+    !affected.iter().any(|n| contains_word(text, n))
+}
+
+/// True if `needle` appears in `haystack` at a word boundary (the character
+/// before the match is NOT [A-Za-z0-9_] and the character after is NOT either).
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    let n_len = n.len();
+    if n_len > h.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i + n_len <= h.len() {
+        if let Some(pos) = haystack[i..].find(needle) {
+            let abs = i + pos;
+            let before_ok = abs == 0 || !is_ident_byte(h[abs - 1]);
+            let after_ok = abs + n_len >= h.len() || !is_ident_byte(h[abs + n_len]);
+            if before_ok && after_ok {
+                return true;
+            }
+            i = abs + 1;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+#[inline]
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Pure (no `&self`) workspace-diagnostic computation, shared by the synchronous
+/// warm (`warm_ws_diagnostic_cache`) and the background worker (`spawn_warm`).
+///
+/// Re-reads, re-parses and re-analyzes each `.lua` path in parallel. When
+/// `affected` is `Some` and `prior` is present, a file whose text mentions none
+/// of the affected declaration names reuses its prior diagnostics verbatim
+/// (incremental warm); otherwise it is fully re-analyzed.
+fn compute_ws_diagnostics(
+    paths: &[PathBuf],
+    pre_globals: &Arc<PreResolvedGlobals>,
+    configs: &crate::config::ProjectConfigs,
+    plugin_codes: &[String],
+    affected: Option<&HashSet<String>>,
+    prior: Option<&[(String, Vec<lsp_types::Diagnostic>)]>,
+) -> Vec<(String, Vec<lsp_types::Diagnostic>)> {
+    use rayon::prelude::*;
+    let prior_map: Option<HashMap<&str, &Vec<lsp_types::Diagnostic>>> = match (affected, prior) {
+        (Some(_), Some(entries)) => {
+            Some(entries.iter().map(|(uri, diags)| (uri.as_str(), diags)).collect())
+        }
+        _ => None,
+    };
+    paths
+        .par_iter()
+        .filter_map(|path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            if crate::has_shebang(&text) {
+                return None;
+            }
+            let uri = abs_path_to_uri(path)?;
+            if is_ignored_uri(&uri, configs) {
+                return None;
+            }
+            let uri_s = uri.to_string();
+            // Incremental reuse: if none of the affected names appear in this
+            // file's text, its diagnostics cannot have changed — reuse them.
+            if let (Some(names), Some(prior)) = (affected, prior_map.as_ref())
+                && file_unaffected_by(&text, names)
+                && let Some(diags) = prior.get(uri_s.as_str())
+            {
+                return Some((uri_s, (*diags).clone()));
+            }
+            let tree = parse_lua(&text);
+            let mut result = analyze_lua_parsed(&uri, pre_globals, configs, &tree);
+            result.plugin_diag_codes = plugin_codes.to_vec();
+            let root = crate::syntax::SyntaxNode::new_root(&tree);
+            let suppressions = scan_diagnostic_directives(root);
+            let diag_items = build_file_diagnostics_with(&uri, &tree, &result, &text, &[], configs, &suppressions);
+            Some((uri_s, diag_items))
+        })
+        .collect()
+}
+
+/// Run a warm on a detached background thread. Sends the `WarmResult` over
+/// `warm_tx`, then a `()` wake over `wake_tx` so the main loop's `select!`
+/// notices the result is ready. Both sends are best-effort: on shutdown the
+/// receivers are dropped and the sends fail harmlessly.
+///
+/// A drop guard ensures the wake signal is always sent even if the worker
+/// panics (e.g. a Rayon task hits an unrecoverable error), so `warm_in_flight`
+/// is reliably cleared and future warms are not permanently suppressed.
+fn spawn_warm(
+    inputs: WarmInputs,
+    warm_tx: crossbeam_channel::Sender<WarmResult>,
+    wake_tx: crossbeam_channel::Sender<()>,
+) {
+    std::thread::spawn(move || {
+        // Guard: always send a wake signal on thread exit (normal or panic)
+        // so the main loop drains warm_rx and clears `warm_in_flight`.
+        struct WakeGuard(Option<crossbeam_channel::Sender<()>>);
+        impl Drop for WakeGuard {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        let _guard = WakeGuard(Some(wake_tx));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compute_ws_diagnostics(
+                &inputs.paths,
+                &inputs.pre_globals,
+                &inputs.configs,
+                &inputs.plugin_codes,
+                inputs.affected.as_ref(),
+                inputs.prior.as_deref(),
+            )
+        }));
+        match result {
+            Ok(diagnostics) => {
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics });
+            }
+            Err(_) => {
+                log::error!("Background warm panicked; sending empty result to unblock main loop");
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: Vec::new() });
+            }
+        }
+        // _guard drops here, sending the wake signal
+    });
 }
 
 fn collect_lua_paths_filtered(
@@ -1176,68 +1390,193 @@ fn scan_directory_tracked(
     complete_directory_scan(pass1, stub_classes, stub_globals, configs)
 }
 
+/// Compare two globals on the fields that affect analysis results (excludes
+/// positional fields like doc, source_path, def_start, def_end which only affect
+/// hover/go-to-definition display, not type resolution or diagnostics).
 // IMPORTANT: Update this function when adding semantic fields to ExternalGlobal.
+fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool {
+    x.name == y.name
+        && x.kind == y.kind
+        && x.params == y.params
+        && x.returns == y.returns
+        && x.overloads == y.overloads
+        && x.deprecated == y.deprecated
+        && x.nodiscard == y.nodiscard
+        && x.constructor == y.constructor
+        && x.visibility == y.visibility
+        && x.generics == y.generics
+        && x.defclass == y.defclass
+        && x.defclass_parent == y.defclass_parent
+        && x.builds_field == y.builds_field
+        && x.built_name == y.built_name
+        && x.built_extends == y.built_extends
+        && x.string_value == y.string_value
+        && x.number_value == y.number_value
+        && x.requires == y.requires
+}
+
 fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
-    if a.len() != b.len() { return false; }
-    // Compare all fields that affect analysis results (excludes positional
-    // fields like doc, source_path, def_start, def_end which only affect
-    // hover/go-to-definition display, not type resolution or diagnostics).
-    a.iter().zip(b.iter()).all(|(x, y)| {
-        x.name == y.name
-            && x.kind == y.kind
-            && x.params == y.params
-            && x.returns == y.returns
-            && x.overloads == y.overloads
-            && x.deprecated == y.deprecated
-            && x.nodiscard == y.nodiscard
-            && x.constructor == y.constructor
-            && x.visibility == y.visibility
-            && x.generics == y.generics
-            && x.defclass == y.defclass
-            && x.defclass_parent == y.defclass_parent
-            && x.builds_field == y.builds_field
-            && x.built_name == y.built_name
-            && x.built_extends == y.built_extends
-            && x.string_value == y.string_value
-            && x.number_value == y.number_value
-            && x.requires == y.requires
-    })
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| global_semantic_eq(x, y))
 }
 
-/// Compare class declarations ignoring positional fields (def_range, def_path,
-/// field_ranges, field_paths) and display-only fields (see, declared_field_names,
-/// field_literals) that don't affect type resolution or diagnostics.
+/// Compare two class declarations on the fields that affect analysis results,
+/// ignoring positional fields (def_range, def_path, field_ranges, field_paths)
+/// and display-only fields (see, declared_field_names, field_literals).
 // IMPORTANT: Update this function when adding semantic fields to ClassDecl.
-fn classes_match(a: &[ClassDecl], b: &[ClassDecl]) -> bool {
-    if a.len() != b.len() { return false; }
-    a.iter().zip(b.iter()).all(|(x, y)| {
-        x.name == y.name
-            && x.type_params == y.type_params
-            && x.type_param_constraints == y.type_param_constraints
-            && x.parents == y.parents
-            && x.fields == y.fields
-            && x.accessors == y.accessors
-            && x.overloads == y.overloads
-            && x.generics == y.generics
-            && x.constructor_methods == y.constructor_methods
-            && x.constraint_type_arg_subs == y.constraint_type_arg_subs
-            && x.field_built_names == y.field_built_names
-            && x.is_enum == y.is_enum
-            && x.is_key_enum == y.is_key_enum
-            && x.correlated_groups == y.correlated_groups
-    })
+fn class_semantic_eq(x: &ClassDecl, y: &ClassDecl) -> bool {
+    x.name == y.name
+        && x.type_params == y.type_params
+        && x.type_param_constraints == y.type_param_constraints
+        && x.parents == y.parents
+        && x.fields == y.fields
+        && x.accessors == y.accessors
+        && x.overloads == y.overloads
+        && x.generics == y.generics
+        && x.constructor_methods == y.constructor_methods
+        && x.constraint_type_arg_subs == y.constraint_type_arg_subs
+        && x.field_built_names == y.field_built_names
+        && x.is_enum == y.is_enum
+        && x.is_key_enum == y.is_key_enum
+        && x.correlated_groups == y.correlated_groups
 }
 
-/// Compare alias declarations ignoring positional fields (def_range, def_path).
+fn classes_match(a: &[ClassDecl], b: &[ClassDecl]) -> bool {
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| class_semantic_eq(x, y))
+}
+
+/// Compare two alias declarations ignoring positional fields (def_range, def_path).
 // IMPORTANT: Update this function when adding semantic fields to AliasDecl.
+fn alias_semantic_eq(x: &AliasDecl, y: &AliasDecl) -> bool {
+    x.name == y.name
+        && x.type_params == y.type_params
+        && x.typ == y.typ
+        && x.is_opaque == y.is_opaque
+}
+
 fn aliases_match(a: &[AliasDecl], b: &[AliasDecl]) -> bool {
-    if a.len() != b.len() { return false; }
-    a.iter().zip(b.iter()).all(|(x, y)| {
-        x.name == y.name
-            && x.type_params == y.type_params
-            && x.typ == y.typ
-            && x.is_opaque == y.is_opaque
-    })
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| alias_semantic_eq(x, y))
+}
+
+/// Collect declaration names that differ between the old and new slice, keyed by
+/// `name` (not positional index, since edits can reorder/insert/remove entries).
+/// A name is "changed" if it is added, removed, or any of its same-named entries
+/// differ semantically. Over-approximation is safe — these names seed the
+/// reverse-dependency closure that decides which files to re-analyze.
+fn diff_changed_names<T, F>(old: &[T], new: &[T], name_of: impl Fn(&T) -> &str, eq: F) -> HashSet<String>
+where
+    F: Fn(&T, &T) -> bool,
+{
+    use std::collections::HashMap;
+    let group = |items: &[T]| -> HashMap<String, Vec<usize>> {
+        let mut m: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, it) in items.iter().enumerate() {
+            m.entry(name_of(it).to_string()).or_default().push(i);
+        }
+        m
+    };
+    let old_groups = group(old);
+    let new_groups = group(new);
+    let mut changed = HashSet::new();
+    // Collect the union of keys once to avoid visiting names present in both
+    // groups twice (the old chain approach relied on a `changed.contains`
+    // guard to skip the duplicate).
+    let all_names: HashSet<&String> = old_groups.keys().chain(new_groups.keys()).collect();
+    for name in all_names {
+        let o = old_groups.get(name);
+        let n = new_groups.get(name);
+        let differs = match (o, n) {
+            (Some(oi), Some(ni)) => {
+                oi.len() != ni.len()
+                    || oi.iter().zip(ni.iter()).any(|(&a, &b)| !eq(&old[a], &new[b]))
+            }
+            _ => true, // present on only one side: added or removed
+        };
+        if differs {
+            changed.insert(name.clone());
+        }
+    }
+    changed
+}
+
+fn globals_changed_names(old: &[ExternalGlobal], new: &[ExternalGlobal]) -> HashSet<String> {
+    diff_changed_names(old, new, |g| g.name.as_str(), global_semantic_eq)
+}
+
+fn classes_changed_names(old: &[ClassDecl], new: &[ClassDecl]) -> HashSet<String> {
+    diff_changed_names(old, new, |c| c.name.as_str(), class_semantic_eq)
+}
+
+fn aliases_changed_names(old: &[AliasDecl], new: &[AliasDecl]) -> HashSet<String> {
+    diff_changed_names(old, new, |a| a.name.as_str(), alias_semantic_eq)
+}
+
+/// Build a reverse-dependency graph: maps a type name → the set of declaration
+/// names that reference it. E.g. a class `Foo` with a field typed `Bar` produces
+/// an edge `Bar → Foo`, so when `Bar` changes we know `Foo` is affected even
+/// though `Foo`'s own source may not mention `Bar` by name in a way the textual
+/// filter would catch. Used to expand the set of changed declarations into the
+/// full set of declarations whose resolved types could shift.
+fn build_reverse_dep_graph<'a>(
+    classes: impl IntoIterator<Item = &'a ClassDecl>,
+    aliases: impl IntoIterator<Item = &'a AliasDecl>,
+    globals: impl IntoIterator<Item = &'a ExternalGlobal>,
+) -> HashMap<String, HashSet<String>> {
+    let mut rev: HashMap<String, HashSet<String>> = HashMap::new();
+    for c in classes {
+        let mut names = HashSet::new();
+        crate::annotations::class_referenced_names(c, &mut names);
+        for r in names {
+            if r != c.name {
+                rev.entry(r).or_default().insert(c.name.clone());
+            }
+        }
+    }
+    for a in aliases {
+        let mut names = HashSet::new();
+        crate::annotations::collect_referenced_type_names(&a.typ, &mut names);
+        for r in names {
+            if r != a.name {
+                rev.entry(r).or_default().insert(a.name.clone());
+            }
+        }
+    }
+    // Globals: if a global function's @param/@return references a class/alias,
+    // files calling that global (mentioning its name) must be re-analyzed when
+    // the referenced declaration changes.
+    for g in globals {
+        let mut names = HashSet::new();
+        crate::annotations::global_referenced_names(g, &mut names);
+        for r in names {
+            if r != g.name {
+                rev.entry(r).or_default().insert(g.name.clone());
+            }
+        }
+    }
+    rev
+}
+
+/// Transitive closure of `seed` over the reverse-dependency graph: every name that
+/// is reachable from a changed name by following "is referenced by" edges. The
+/// result is the full set of declaration names whose diagnostics could change.
+fn expand_affected_names(
+    seed: HashSet<String>,
+    rev: &HashMap<String, HashSet<String>>,
+) -> HashSet<String> {
+    let mut result: HashSet<String> = HashSet::new();
+    let mut stack: Vec<String> = seed.into_iter().collect();
+    while let Some(name) = stack.pop() {
+        if !result.insert(name.clone()) {
+            continue;
+        }
+        if let Some(deps) = rev.get(&name) {
+            for d in deps {
+                if !result.contains(d) {
+                    stack.push(d.clone());
+                }
+            }
+        }
+    }
+    result
 }
 
 /// Compare event declarations ignoring positional fields (def_range, def_path)
@@ -1628,7 +1967,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let mut ws = WorkspaceState {
         root: workspace_root,
-        configs,
+        configs: Arc::new(configs),
         stub_globals, stub_classes,
         stub_pre_globals,
         stubs_have_defclass,
@@ -1653,6 +1992,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         plugin_engine: None,
         ws_generation: 0,
         cached_ws_diagnostics: None,
+        warm_in_flight: false,
     };
     let plugin_paths = ws.configs.all_plugins();
     if !plugin_paths.is_empty() {
@@ -1677,7 +2017,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             }));
         }
         let cache_start = std::time::Instant::now();
-        ws.warm_ws_diagnostic_cache();
+        ws.warm_ws_diagnostic_cache(None);
         log::debug!("Warmed workspace diagnostic cache at startup in {:.1?}", cache_start.elapsed());
     }
 
@@ -1793,34 +2133,105 @@ fn main_loop(
     let mut last_dirty_at: Option<Instant> = None;
     const DEBOUNCE_MS: u64 = 400;
 
+    // Background warm channels (Option 1). `warm_rx` carries the computed
+    // closed-file diagnostics; `wake_rx` is a separate, content-free signal that
+    // unblocks the main loop's `select!` so it loops back and drains `warm_rx`.
+    // Keeping them separate avoids the result being consumed by the wake check.
+    let (warm_tx, warm_rx) = crossbeam_channel::unbounded::<WarmResult>();
+    let (wake_tx, wake_rx) = crossbeam_channel::unbounded::<()>();
+    // A second rebuild during a warm stores its scope here instead of spawning a
+    // concurrent worker; the pending warm is launched when the in-flight one
+    // returns (results coalesce). Successive scopes are merged, so two
+    // incremental changes still produce an incremental re-warm rather than
+    // falling back to full. The in-flight flag itself lives on
+    // `ws.warm_in_flight` so request handlers can consult it.
+    let mut pending_rewarm: Option<RebuildScope> = None;
+
     loop {
+        // Drain any completed background warms. A result whose generation still
+        // matches the live workspace is installed into the cache and triggers a
+        // second diagnostic refresh (#2) so pull-model clients re-request the now
+        // up-to-date closed-file diagnostics. Stale results (a newer rebuild has
+        // since advanced `ws_generation`) are discarded.
+        while let Ok(res) = warm_rx.try_recv() {
+            ws.warm_in_flight = false;
+            if res.generation == ws.ws_generation {
+                ws.cached_ws_diagnostics = Some((res.generation, res.diagnostics));
+                if client.diagnostic_refresh {
+                    send_refresh_requests(
+                        &connection, &mut progress_counter,
+                        false, false, false, true,
+                    );
+                }
+            } else {
+                log::debug!(
+                    "Discarding stale warm (gen {} != {})",
+                    res.generation, ws.ws_generation
+                );
+            }
+            // If edits landed while the warm ran, launch a fresh one now for the
+            // current workspace state, preserving the merged scope so incremental
+            // changes don't fall back to a full warm unnecessarily.
+            if let Some(scope) = pending_rewarm.take() {
+                if !ws.warm_in_flight {
+                    let affected: Option<HashSet<String>> = match &scope {
+                        RebuildScope::Incremental(names) if !names.is_empty() => {
+                            let rev = build_reverse_dep_graph(
+                                ws.cached_all_classes.iter(),
+                                ws.ws_file_aliases.values().flatten(),
+                                ws.cached_all_globals.iter(),
+                            );
+                            Some(expand_affected_names(names.clone(), &rev))
+                        }
+                        _ => None,
+                    };
+                    let inputs = ws.warm_inputs(affected);
+                    ws.warm_in_flight = true;
+                    spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
+                } else {
+                    // Shouldn't happen (we just cleared warm_in_flight above),
+                    // but defensively put the scope back.
+                    pending_rewarm = Some(scope);
+                }
+            }
+        }
+
         let has_dirty = documents.values().any(|d| d.dirty);
 
         // If documents need re-analysis, compute how long to wait based on when
         // the last change arrived. This ensures the debounce timer resets on every
         // keystroke regardless of typing speed — we always wait DEBOUNCE_MS after
         // the last change before publishing diagnostics.
+        // A `wake_rx` signal (background warm finished) yields `None` so the loop
+        // body runs with an empty batch and falls back to the top-of-loop drain
+        // on the next iteration.
+        let mut disconnected = false;
         let first = if has_dirty {
             let debounce = Duration::from_millis(DEBOUNCE_MS);
             let remaining = last_dirty_at
                 .map(|t| debounce.saturating_sub(t.elapsed()))
                 .unwrap_or(debounce);
-            match connection.receiver.recv_timeout(remaining) {
-                Ok(msg) => Some(msg),
-                Err(e) => {
-                    if e.is_disconnected() {
-                        break;
-                    }
-                    None
-                }
+            crossbeam_channel::select! {
+                recv(connection.receiver) -> msg => match msg {
+                    Ok(m) => Some(m),
+                    Err(_) => { disconnected = true; None }
+                },
+                recv(wake_rx) -> _ => None,
+                default(remaining) => None,
             }
         } else {
             last_dirty_at = None;
-            match connection.receiver.recv() {
-                Ok(msg) => Some(msg),
-                Err(_) => break,
+            crossbeam_channel::select! {
+                recv(connection.receiver) -> msg => match msg {
+                    Ok(m) => Some(m),
+                    Err(_) => { disconnected = true; None }
+                },
+                recv(wake_rx) -> _ => None,
             }
         };
+        if disconnected {
+            break;
+        }
 
         // Drain all additional pending messages without blocking
         let batch: Vec<Message> = if let Some(first) = first {
@@ -2000,6 +2411,11 @@ fn main_loop(
             // The batch path (try_batch_analyze) never rebuilds — it falls
             // back to sequential when a rebuild would be needed.
             let mut had_workspace_rebuild = false;
+            // Accumulate the union of rebuild scopes across all files processed in
+            // this Phase 4 cycle. Drives the incremental vs full warm decision: a
+            // single Full anywhere forces a full warm, otherwise the union of all
+            // changed declaration names is used to compute the affected closure.
+            let mut warm_scope = RebuildScope::None;
 
             if !did_batch {
                 // Sequential fallback: process one file at a time, checking for messages between each.
@@ -2060,13 +2476,14 @@ fn main_loop(
                         };
 
                         // Skip workspace rebuild for stub / @meta files
-                        let rebuilt = if is_stub_path(&uri)
+                        let rebuild_scope = if is_stub_path(&uri)
                             || doc.analysis.as_ref().is_some_and(|a| a.is_meta()) {
-                            false
+                            RebuildScope::None
                         } else {
                             let root = crate::syntax::SyntaxNode::new_root(&tree);
                             maybe_rebuild_workspace(&uri, root, &mut ws)
                         };
+                        let rebuilt = rebuild_scope.is_rebuild();
 
                         // If no new text, workspace didn't rebuild for THIS file,
                         // and the analysis was built against the current workspace
@@ -2088,6 +2505,7 @@ fn main_loop(
                         documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
                         if rebuilt {
                             had_workspace_rebuild = true;
+                            warm_scope = warm_scope.merge(rebuild_scope);
                             if let Some(ref token) = analysis_token {
                                 send_progress(&connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
                                     message: Some("Rebuilding workspace...".to_string()),
@@ -2110,23 +2528,52 @@ fn main_loop(
                 }
             }
 
-            // Pre-warm the workspace diagnostic cache after a rebuild so the
-            // subsequent `workspace/diagnostic` request (triggered by the refresh
-            // below) is a cache hit.  Without this, the request handler (Phase 3)
-            // synchronously re-parses + re-analyzes ALL workspace files, blocking
-            // hover/completion for 10+ seconds on large projects.
-            if had_workspace_rebuild && client.diagnostic_refresh {
-                if let Some(ref token) = analysis_token {
-                    let file_count = ws.ws_file_globals.len();
-                    send_progress(&connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
-                        message: Some(format!("Checking {} workspace files\u{2026}", file_count)),
-                        percentage: None,
-                        cancellable: Some(false),
-                    }));
+            // Warm the workspace diagnostic cache after a rebuild so closed-file
+            // `workspace/diagnostic` pulls are cache hits. This runs on a
+            // background thread (Option 1): the open buffer is refreshed
+            // immediately below (refresh #1, served live from `doc.analysis`),
+            // and when the warm finishes the top-of-loop drain installs its
+            // result and sends refresh #2 for the closed files. The main loop is
+            // never blocked on the ~1-2s full re-analysis.
+            if had_workspace_rebuild && client.diagnostic_refresh && !ws.ws_file_globals.is_empty() {
+                if ws.warm_in_flight {
+                    // A warm is already running for an earlier generation. Don't
+                    // spawn a concurrent worker — coalesce by re-warming once it
+                    // returns (the drain at the top of the loop honors this).
+                    // Merge the scope so successive incremental changes stay
+                    // incremental rather than falling back to full.
+                    pending_rewarm = Some(match pending_rewarm.take() {
+                        Some(prev) => prev.merge(warm_scope),
+                        None => warm_scope,
+                    });
+                } else {
+                    // Compute the affected-file closure for an incremental warm:
+                    // expand the changed declaration names through the
+                    // reverse-dependency graph (built AFTER rebuild so it reflects
+                    // new state). A Full scope (or an empty incremental set,
+                    // treated as "unknown") warms every file.
+                    let affected: Option<HashSet<String>> = match &warm_scope {
+                        RebuildScope::Incremental(names) if !names.is_empty() => {
+                            let rev = build_reverse_dep_graph(
+                                ws.cached_all_classes.iter(),
+                                ws.ws_file_aliases.values().flatten(),
+                                ws.cached_all_globals.iter(),
+                            );
+                            Some(expand_affected_names(names.clone(), &rev))
+                        }
+                        _ => None,
+                    };
+                    log::debug!(
+                        "Spawning background warm ({})",
+                        match &affected {
+                            Some(a) => format!("incremental, {} affected names", a.len()),
+                            None => "full".to_string(),
+                        }
+                    );
+                    let inputs = ws.warm_inputs(affected);
+                    ws.warm_in_flight = true;
+                    spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
                 }
-                let cache_start = std::time::Instant::now();
-                ws.warm_ws_diagnostic_cache();
-                log::debug!("Warmed workspace diagnostic cache in {:.1?}", cache_start.elapsed());
             }
 
             log::debug!("Phase 4 complete in {:.1?}", phase4_start.elapsed());
@@ -3085,10 +3532,11 @@ fn handle_request(
                 // Show progress only when a full recomputation will occur (first
                 // request or after workspace state changed). Cached responses are
                 // near-instant and don't need a spinner.
-                let will_recompute = match &ws.cached_ws_diagnostics {
-                    Some((cached_gen, _)) => *cached_gen != ws.ws_generation,
-                    None => true,
-                };
+                let will_recompute = !ws.warm_in_flight
+                    && match &ws.cached_ws_diagnostics {
+                        Some((cached_gen, _)) => *cached_gen != ws.ws_generation,
+                        None => true,
+                    };
                 let file_count = ws.ws_file_globals.len();
                 let token = if supports_progress && will_recompute && file_count > 0 {
                     let t = NumberOrString::Number(*progress_counter);
@@ -4529,7 +4977,10 @@ fn handle_notification(
                     let tree = parse_lua(&text);
 
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
-                    let rebuilt = maybe_rebuild_workspace(&uri, root, ws);
+                    // didOpen only marks other docs dirty for the next Phase 4 cycle,
+                    // which performs the actual (possibly incremental) warm. We just
+                    // need the boolean "did anything rebuild" here.
+                    let rebuilt = maybe_rebuild_workspace(&uri, root, ws).is_rebuild();
                     let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
                     result.plugin_diag_codes = ws.plugin_codes();
                     let file_path = uri_to_abs_path(&uri).unwrap_or_default();
@@ -4696,7 +5147,8 @@ fn reload_config(
             cancellable: Some(false),
         }));
     }
-    ws.configs = crate::config::ProjectConfigs::default();
+    // Build a fresh config locally (scan mutates it), then swap in a new Arc.
+    let mut new_configs = crate::config::ProjectConfigs::default();
     let DirectoryScanResult {
         file_globals,
         file_classes,
@@ -4707,7 +5159,8 @@ fn reload_config(
         file_callable_classes,
         file_self_fields,
         file_self_field_globals,
-    } = scan_directory_tracked(root, &mut ws.configs, &ws.stub_classes, &ws.stub_globals);
+    } = scan_directory_tracked(root, &mut new_configs, &ws.stub_classes, &ws.stub_globals);
+    ws.configs = Arc::new(new_configs);
     ws.ws_file_globals = file_globals;
     ws.ws_file_classes = file_classes;
     ws.ws_file_aliases = file_aliases;
@@ -4726,12 +5179,48 @@ fn reload_config(
 /// Re-scan a file's workspace globals and rebuild PreResolvedGlobals if they changed.
 /// Takes a pre-parsed syntax root to avoid double-parsing.
 /// Returns true if a rebuild occurred.
-fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode<'_>, ws: &mut WorkspaceState) -> bool {
+/// Outcome of `maybe_rebuild_workspace`, describing how much of the workspace
+/// diagnostic cache needs to be re-warmed.
+enum RebuildScope {
+    /// No semantic change — no rebuild happened.
+    None,
+    /// A rebuild happened and the change is limited to the named declarations
+    /// (classes/globals/aliases). The warm can be incremental: only files in the
+    /// reverse-dependency closure of these names need re-analysis.
+    Incremental(HashSet<String>),
+    /// A rebuild happened but the change isn't cleanly name-diffable (defclass /
+    /// self-field / event changes). The whole workspace must be re-warmed.
+    Full,
+}
+
+impl RebuildScope {
+    fn is_rebuild(&self) -> bool {
+        !matches!(self, RebuildScope::None)
+    }
+
+    /// Merge another scope into this one, taking the more conservative of the two.
+    /// Precedence: `None` < `Incremental` < `Full`; two `Incremental`s union their
+    /// name sets.
+    fn merge(self, other: RebuildScope) -> RebuildScope {
+        match (self, other) {
+            (RebuildScope::Full, _) | (_, RebuildScope::Full) => RebuildScope::Full,
+            (RebuildScope::Incremental(mut a), RebuildScope::Incremental(b)) => {
+                a.extend(b);
+                RebuildScope::Incremental(a)
+            }
+            (RebuildScope::Incremental(a), RebuildScope::None)
+            | (RebuildScope::None, RebuildScope::Incremental(a)) => RebuildScope::Incremental(a),
+            (RebuildScope::None, RebuildScope::None) => RebuildScope::None,
+        }
+    }
+}
+
+fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode<'_>, ws: &mut WorkspaceState) -> RebuildScope {
     use crate::annotations::scan_defclass_calls;
 
     let file_path = match uri_to_path(uri, &ws.root) {
         Some(p) => p,
-        None => return false,
+        None => return RebuildScope::None,
     };
 
     let synth = ws.configs.correlated_return_overloads_for(&file_path);
@@ -4770,6 +5259,34 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
     // Events are removed from ws_file_events when empty, so None + empty = unchanged.
     let events_changed = ws.ws_file_events.get(&file_path)
         .map_or(!scan.events.is_empty(), |old| !events_match(old, &scan.events));
+
+    // Compute the set of declaration names that changed (added/removed/modified),
+    // for the incremental warm scope. For a brand-new file (no prior entry) every
+    // declared name counts as changed. Must run before the inserts below move the
+    // new values. These drive *which files* are re-analyzed, not *whether* we
+    // rebuild — that is still decided by the `*_changed` booleans above.
+    let changed_decl_names: HashSet<String> = {
+        let mut names = HashSet::new();
+        if globals_changed {
+            match ws.ws_file_globals.get(&file_path) {
+                Some(old) => names.extend(globals_changed_names(old, &new_globals)),
+                None => names.extend(new_globals.iter().map(|g| g.name.clone())),
+            }
+        }
+        if classes_changed {
+            match ws.ws_file_classes.get(&file_path) {
+                Some(old) => names.extend(classes_changed_names(old, &scan.classes)),
+                None => names.extend(scan.classes.iter().map(|c| c.name.clone())),
+            }
+        }
+        if aliases_changed {
+            match ws.ws_file_aliases.get(&file_path) {
+                Some(old) => names.extend(aliases_changed_names(old, &scan.aliases)),
+                None => names.extend(scan.aliases.iter().map(|a| a.name.clone())),
+            }
+        }
+        names
+    };
 
     // Always store fresh values so positions stay current for hover/go-to-def.
     // Only rebuild when semantic content (types, names, fields) actually changed.
@@ -4900,9 +5417,18 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
             events_changed,
         );
         ws.rebuild();
-        true
+        // defclass/self-field/event changes are hard to express as a precise set
+        // of changed declaration names (they flow through builder chains and
+        // method bodies), so fall back to a Full warm in those cases. When only
+        // class/global/alias declarations changed, the reverse-dependency closure
+        // over `changed_decl_names` is sufficient and we can warm incrementally.
+        if defclasses_changed || self_fields_changed || events_changed {
+            RebuildScope::Full
+        } else {
+            RebuildScope::Incremental(changed_decl_names)
+        }
     } else {
-        false
+        RebuildScope::None
     }
 }
 
@@ -6168,12 +6694,17 @@ fn handle_workspace_diagnostic(
     // display both sets independently.
     let open_uri_strs: HashSet<&str> = documents.keys().map(|s| s.as_str()).collect();
     let current_gen = ws.ws_generation;
-    let needs_recompute = match ws.cached_ws_diagnostics {
-        Some((cached_gen, _)) => cached_gen != current_gen,
-        None => true,
-    };
+    // When a background warm is in flight, serve the prior (stale) cache rather
+    // than recomputing synchronously — the warm will deliver fresh results via a
+    // second diagnostic refresh shortly. This keeps the pull handler from
+    // blocking the main loop on a full re-analysis (the whole point of Option 1).
+    let needs_recompute = !ws.warm_in_flight
+        && match ws.cached_ws_diagnostics {
+            Some((cached_gen, _)) => cached_gen != current_gen,
+            None => true,
+        };
     if needs_recompute {
-        ws.warm_ws_diagnostic_cache();
+        ws.warm_ws_diagnostic_cache(None);
     }
 
     if let Some((_, ref cached)) = ws.cached_ws_diagnostics {
@@ -6803,30 +7334,7 @@ mod tests {
     use crate::annotations::{AnnotationType, Visibility};
 
     fn empty_class(name: &str) -> ClassDecl {
-        ClassDecl {
-            name: name.to_string(),
-            type_params: Vec::new(),
-            type_param_constraints: Vec::new(),
-            parents: Vec::new(),
-            fields: Vec::new(),
-            accessors: Vec::new(),
-            overloads: Vec::new(),
-            generics: Vec::new(),
-            constructor_methods: Vec::new(),
-            constraint_type_arg_subs: Vec::new(),
-            field_built_names: HashMap::new(),
-            is_enum: false,
-            is_key_enum: false,
-            correlated_groups: Vec::new(),
-            def_range: None,
-            def_path: None,
-            field_ranges: HashMap::new(),
-            field_paths: HashMap::new(),
-            see: Vec::new(),
-            declared_field_names: HashSet::new(),
-            field_literals: HashMap::new(),
-            field_descriptions: HashMap::new(),
-        }
+        ClassDecl::for_test(name)
     }
 
     fn tok(start: u32, length: u32) -> RawSemanticToken {
@@ -7292,8 +7800,10 @@ mod tests {
         let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
 
         let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
-        let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
-        assert!(rebuilt, "adding @event must trigger workspace rebuild");
+        let scope = maybe_rebuild_workspace(&uri, root, &mut ws);
+        assert!(scope.is_rebuild(), "adding @event must trigger workspace rebuild");
+        // Event changes are hard to name-diff, so they force a Full warm.
+        assert!(matches!(scope, RebuildScope::Full), "event change must yield a Full rebuild scope");
         assert!(ws.ws_generation > 0, "ws_generation must be bumped after rebuild");
 
         // File's events must be stored for future change detection.
@@ -7307,8 +7817,9 @@ mod tests {
         let tree2 = crate::syntax::parser::parse(lua_source);
         let root2 = crate::syntax::SyntaxNode::new_root(&tree2);
         let gen_before = ws.ws_generation;
-        let rebuilt2 = maybe_rebuild_workspace(&uri, root2, &mut ws);
-        assert!(!rebuilt2, "identical source must not trigger rebuild");
+        let scope2 = maybe_rebuild_workspace(&uri, root2, &mut ws);
+        assert!(!scope2.is_rebuild(), "identical source must not trigger rebuild");
+        assert!(matches!(scope2, RebuildScope::None), "no change must yield RebuildScope::None");
         assert_eq!(ws.ws_generation, gen_before, "ws_generation must not change");
     }
 
@@ -7337,14 +7848,14 @@ mod tests {
 
         // First call: file has no events, events map has no entry → must not rebuild.
         // With the bug, is_none_or(None) returned true → events_changed → infinite loop.
-        let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
-        assert!(!rebuilt, "file with no events must not trigger rebuild");
+        let scope = maybe_rebuild_workspace(&uri, root, &mut ws);
+        assert!(!scope.is_rebuild(), "file with no events must not trigger rebuild");
 
         // Second call must also be stable (no infinite loop).
         let tree2 = crate::syntax::parser::parse(lua_source);
         let root2 = crate::syntax::SyntaxNode::new_root(&tree2);
-        let rebuilt2 = maybe_rebuild_workspace(&uri, root2, &mut ws);
-        assert!(!rebuilt2, "repeated scan of no-event file must not trigger rebuild");
+        let scope2 = maybe_rebuild_workspace(&uri, root2, &mut ws);
+        assert!(!scope2.is_rebuild(), "repeated scan of no-event file must not trigger rebuild");
     }
 
     #[test]
@@ -7368,5 +7879,282 @@ mod tests {
         // The inserted function should contain the extracted function name.
         assert!(edits[0].new_text.contains(EXTRACTED_FUNC_NAME),
             "inserted text should contain function name: {}", edits[0].new_text);
+    }
+
+    // ---- Incremental-warm building blocks (Part A) ----
+
+    fn ext_global(name: &str) -> ExternalGlobal {
+        ExternalGlobal {
+            name: name.to_string(),
+            kind: ExternalGlobalKind::Function,
+            params: Vec::new(),
+            returns: Vec::new(),
+            return_names: Vec::new(),
+            return_descriptions: Vec::new(),
+            overloads: Vec::new(),
+            doc: None,
+            deprecated: false,
+            nodiscard: false,
+            constructor: false,
+            visibility: Visibility::Public,
+            generics: Vec::new(),
+            defclass: None,
+            defclass_parent: None,
+            source_path: None,
+            def_start: 0,
+            def_end: 0,
+            builds_field: None,
+            built_name: None,
+            built_extends: false,
+            type_narrows: None,
+            type_narrows_class: None,
+            string_value: None,
+            number_value: None,
+            is_override: false,
+            see: Vec::new(),
+            flavors: 0,
+            flavor_guard: 0,
+            implicit_nil_return: false,
+            narrows_arg: None,
+            requires: Vec::new(),
+        }
+    }
+
+    fn alias_decl(name: &str, typ: AnnotationType) -> AliasDecl {
+        AliasDecl {
+            name: name.to_string(),
+            type_params: Vec::new(),
+            typ,
+            def_range: None,
+            def_path: None,
+            is_opaque: false,
+        }
+    }
+
+    #[test]
+    fn globals_changed_names_detects_added_removed_modified() {
+        let mut foo = ext_global("Foo");
+        foo.returns = vec![AnnotationType::Simple("number".to_string())];
+        let bar = ext_global("Bar");
+        let old = vec![foo.clone(), bar.clone()];
+
+        // Modify Foo's return type, keep Bar, remove nothing, add Baz.
+        let mut foo2 = ext_global("Foo");
+        foo2.returns = vec![AnnotationType::Simple("string".to_string())];
+        let baz = ext_global("Baz");
+        let new = vec![foo2, bar, baz];
+
+        let changed = globals_changed_names(&old, &new);
+        assert!(changed.contains("Foo"), "modified global must be reported: {changed:?}");
+        assert!(changed.contains("Baz"), "added global must be reported: {changed:?}");
+        assert!(!changed.contains("Bar"), "unchanged global must NOT be reported: {changed:?}");
+    }
+
+    #[test]
+    fn classes_changed_names_detects_field_change() {
+        let a_old = ClassDecl {
+            fields: vec![("x".to_string(), AnnotationType::Simple("number".to_string()), Visibility::Public)],
+            ..empty_class("A")
+        };
+        let b = empty_class("B");
+        let old = vec![a_old, b.clone()];
+
+        let a_new = ClassDecl {
+            fields: vec![("x".to_string(), AnnotationType::Simple("string".to_string()), Visibility::Public)],
+            ..empty_class("A")
+        };
+        let new = vec![a_new, b];
+
+        let changed = classes_changed_names(&old, &new);
+        assert_eq!(changed.into_iter().collect::<Vec<_>>(), vec!["A".to_string()]);
+    }
+
+    #[test]
+    fn aliases_changed_names_detects_type_change() {
+        let old = vec![
+            alias_decl("Id", AnnotationType::Simple("number".to_string())),
+            alias_decl("Name", AnnotationType::Simple("string".to_string())),
+        ];
+        let new = vec![
+            alias_decl("Id", AnnotationType::Simple("string".to_string())),
+            alias_decl("Name", AnnotationType::Simple("string".to_string())),
+        ];
+        let changed = aliases_changed_names(&old, &new);
+        assert_eq!(changed.into_iter().collect::<Vec<_>>(), vec!["Id".to_string()]);
+    }
+
+    #[test]
+    fn reverse_dep_closure_walks_transitively() {
+        // C has a field typed B; B has a field typed A. Changing A should affect
+        // B (direct) and C (transitive through B).
+        let class_a = empty_class("A");
+        let class_b = ClassDecl {
+            fields: vec![("inner".to_string(), AnnotationType::Simple("A".to_string()), Visibility::Public)],
+            ..empty_class("B")
+        };
+        let class_c = ClassDecl {
+            fields: vec![("inner".to_string(), AnnotationType::Simple("B".to_string()), Visibility::Public)],
+            ..empty_class("C")
+        };
+        let classes = [class_a, class_b, class_c];
+        let rev = build_reverse_dep_graph(classes.iter(), std::iter::empty(), std::iter::empty());
+
+        // Edges: A -> {B}, B -> {C}.
+        assert!(rev.get("A").unwrap().contains("B"));
+        assert!(rev.get("B").unwrap().contains("C"));
+
+        let seed: HashSet<String> = ["A".to_string()].into_iter().collect();
+        let affected = expand_affected_names(seed, &rev);
+        assert!(affected.contains("A"));
+        assert!(affected.contains("B"));
+        assert!(affected.contains("C"));
+        assert_eq!(affected.len(), 3, "closure should be exactly {{A,B,C}}: {affected:?}");
+    }
+
+    #[test]
+    fn reverse_dep_closure_via_alias() {
+        // An alias `Handle` resolves to class `Widget`. Changing `Widget` should
+        // mark `Handle` affected.
+        let widget = empty_class("Widget");
+        let handle = alias_decl("Handle", AnnotationType::Simple("Widget".to_string()));
+        let rev = build_reverse_dep_graph(std::iter::once(&widget), std::iter::once(&handle), std::iter::empty());
+        assert!(rev.get("Widget").unwrap().contains("Handle"));
+
+        let seed: HashSet<String> = ["Widget".to_string()].into_iter().collect();
+        let affected = expand_affected_names(seed, &rev);
+        assert!(affected.contains("Widget"));
+        assert!(affected.contains("Handle"));
+    }
+
+    #[test]
+    fn reverse_dep_closure_via_global_return_type() {
+        // A global function `GetWidget` returns `Widget`. Changing `Widget`
+        // should mark `GetWidget` affected — so files calling GetWidget (by
+        // mentioning that name) are re-analyzed even if they don't textually
+        // mention "Widget".
+        let widget = empty_class("Widget");
+        let mut get_widget = ext_global("GetWidget");
+        get_widget.returns = vec![AnnotationType::Simple("Widget".to_string())];
+        let rev = build_reverse_dep_graph(
+            std::iter::once(&widget),
+            std::iter::empty(),
+            std::iter::once(&get_widget),
+        );
+        assert!(rev.get("Widget").unwrap().contains("GetWidget"));
+
+        let seed: HashSet<String> = ["Widget".to_string()].into_iter().collect();
+        let affected = expand_affected_names(seed, &rev);
+        assert!(affected.contains("Widget"));
+        assert!(affected.contains("GetWidget"));
+    }
+
+    #[test]
+    fn maybe_rebuild_workspace_returns_incremental_for_class_edit() {
+        // Adding a parent to a @class must produce an Incremental scope naming the
+        // edited class (mirrors the TimeUtil osdateparam edit that motivated this).
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let file_path = PathBuf::from("/project/test.lua");
+
+        // Seed the file with a class that has no parent.
+        let src1 = "---@class TimeParts\n---@field year number\nlocal x = 1\n";
+        let tree1 = crate::syntax::parser::parse(src1);
+        let root1 = crate::syntax::SyntaxNode::new_root(&tree1);
+        let _ = maybe_rebuild_workspace(&uri, root1, &mut ws);
+        assert!(ws.ws_file_classes.contains_key(&file_path));
+
+        // Now add a parent class — semantic change limited to TimeParts.
+        let src2 = "---@class TimeParts: osdateparam\n---@field year number\nlocal x = 1\n";
+        let tree2 = crate::syntax::parser::parse(src2);
+        let root2 = crate::syntax::SyntaxNode::new_root(&tree2);
+        let scope = maybe_rebuild_workspace(&uri, root2, &mut ws);
+
+        match scope {
+            RebuildScope::Incremental(names) => {
+                assert!(names.contains("TimeParts"), "changed class must be named: {names:?}");
+            }
+            RebuildScope::Full => panic!("expected Incremental scope, got Full"),
+            RebuildScope::None => panic!("expected Incremental scope, got None"),
+        }
+    }
+
+    #[test]
+    fn rebuild_scope_merge_precedence() {
+        // None < Incremental < Full.
+        let inc_a = RebuildScope::Incremental(["A".to_string()].into_iter().collect());
+        let inc_b = RebuildScope::Incremental(["B".to_string()].into_iter().collect());
+
+        match inc_a.merge(inc_b) {
+            RebuildScope::Incremental(names) => {
+                assert!(names.contains("A") && names.contains("B"), "union of names: {names:?}");
+            }
+            _ => panic!("two Incrementals must union"),
+        }
+
+        assert!(matches!(RebuildScope::None.merge(RebuildScope::Full), RebuildScope::Full));
+        assert!(matches!(RebuildScope::Full.merge(RebuildScope::Incremental(HashSet::new())), RebuildScope::Full));
+        let merged = RebuildScope::None.merge(RebuildScope::Incremental(["X".to_string()].into_iter().collect()));
+        assert!(matches!(merged, RebuildScope::Incremental(_)));
+        assert!(matches!(RebuildScope::None.merge(RebuildScope::None), RebuildScope::None));
+    }
+
+    #[test]
+    fn file_unaffected_by_textual_filter() {
+        let affected: HashSet<String> =
+            ["TimeParts".to_string(), "Widget".to_string()].into_iter().collect();
+        // No affected name appears → the file's prior diagnostics may be reused.
+        assert!(file_unaffected_by("local x = 1\nreturn x", &affected));
+        // Mentions an affected class → must be re-analyzed (cannot reuse).
+        assert!(!file_unaffected_by("---@type TimeParts\nlocal t", &affected));
+        assert!(!file_unaffected_by("Widget:New()", &affected));
+        // Empty affected set: nothing can be affected, so reuse is always valid.
+        assert!(file_unaffected_by("anything TimeParts", &HashSet::new()));
+        // Word-boundary matching: "ID" inside "GUID" is not a match (reduces
+        // false positives for short class names).
+        let short: HashSet<String> = ["ID".to_string(), "UI".to_string()].into_iter().collect();
+        assert!(file_unaffected_by("local GUID = 'abc'", &short), "ID inside GUID: no boundary");
+        assert!(file_unaffected_by("local unique_id = 1", &short), "ID preceded by underscore");
+        assert!(!file_unaffected_by("local ID = 1", &short), "ID at word boundary: match");
+        assert!(!file_unaffected_by("---@type UI\nlocal x", &short), "UI after space: match");
+        assert!(file_unaffected_by("local uiScale = 2", &short), "UI followed by letter: no boundary");
+    }
+
+    #[test]
+    fn rebuild_retains_stale_cache_for_incremental_reuse() {
+        // `rebuild()` must bump the generation (invalidating the cache for fresh
+        // serving) while RETAINING the prior entries so the next incremental warm
+        // can reuse them and `handle_workspace_diagnostic` can serve them during a
+        // background warm. Regression guard for the warm-incremental enablement.
+        let mut ws = WorkspaceState::for_test(None);
+        let gen0 = ws.ws_generation;
+        ws.cached_ws_diagnostics =
+            Some((gen0, vec![("file:///a.lua".to_string(), Vec::new())]));
+        ws.rebuild();
+        assert_eq!(ws.ws_generation, gen0 + 1, "rebuild bumps generation");
+        let (cached_gen, entries) = ws
+            .cached_ws_diagnostics
+            .as_ref()
+            .expect("cache retained after rebuild");
+        assert_eq!(*cached_gen, gen0, "retained entries keep their (now stale) generation");
+        assert_eq!(entries.len(), 1, "prior entries retained for incremental reuse");
+    }
+
+    #[test]
+    fn warm_inputs_clones_prior_without_clearing_cache() {
+        let mut ws = WorkspaceState::for_test(None);
+        ws.cached_ws_diagnostics =
+            Some((ws.ws_generation, vec![("file:///a.lua".to_string(), Vec::new())]));
+        // Incremental warm: prior is carried for splice, and the live cache is
+        // left in place so pulls during the background warm still serve it.
+        let affected: HashSet<String> = ["Foo".to_string()].into_iter().collect();
+        let inputs = ws.warm_inputs(Some(affected));
+        assert!(inputs.prior.is_some(), "incremental warm carries prior entries");
+        assert!(
+            ws.cached_ws_diagnostics.is_some(),
+            "warm_inputs must NOT clear the cache (served during the warm)"
+        );
+        // Full warm: no prior baseline (every file is recomputed).
+        let inputs_full = ws.warm_inputs(None);
+        assert!(inputs_full.prior.is_none());
     }
 }

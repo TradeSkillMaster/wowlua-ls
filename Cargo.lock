@@ -1155,6 +1155,7 @@ name = "wowlua_ls"
 version = "0.0.0"
 dependencies = [
  "bincode",
+ "crossbeam-channel",
  "env_logger",
  "line-numbers",
  "log",

@@ -8,6 +8,7 @@ license = "GPL-3.0"
 [dependencies]
 rayon = "1.10"
 line-numbers = "0.4.0"
+crossbeam-channel = "0.5"
 lsp-server = "=0.7.8"
 lsp-types = "0.97.0"
 serde = { version = "1.0.219", features = ["derive"] }

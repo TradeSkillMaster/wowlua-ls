@@ -58,6 +58,109 @@ pub(crate) fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
     }
 }
 
+/// Collect every type *name* referenced anywhere in an annotation type, including
+/// the heads of `Parameterized` types (e.g. `table<K, V>` contributes "table", "K",
+/// "V"). Used to build a reverse-dependency graph for incremental re-analysis:
+/// over-approximation (including primitives / type-param names) is harmless because
+/// the graph is keyed on real declaration names.
+pub(crate) fn collect_referenced_type_names(ann: &AnnotationType, out: &mut HashSet<String>) {
+    match ann {
+        AnnotationType::Simple(name) => {
+            out.insert(name.clone());
+        }
+        AnnotationType::Parameterized(name, args) => {
+            out.insert(name.clone());
+            for a in args {
+                collect_referenced_type_names(a, out);
+            }
+        }
+        AnnotationType::Union(members) | AnnotationType::Intersection(members) => {
+            for m in members {
+                collect_referenced_type_names(m, out);
+            }
+        }
+        AnnotationType::Array(inner)
+        | AnnotationType::Backtick(inner)
+        | AnnotationType::NonNil(inner)
+        | AnnotationType::VarArgs(inner) => collect_referenced_type_names(inner, out),
+        AnnotationType::Fun(params, returns, _) => {
+            for p in params {
+                collect_referenced_type_names(&p.typ, out);
+            }
+            for r in returns {
+                collect_referenced_type_names(r, out);
+            }
+        }
+        AnnotationType::TableLiteral(fields) => {
+            for (_, t) in fields {
+                collect_referenced_type_names(t, out);
+            }
+        }
+        AnnotationType::Tuple(positions, _) => {
+            for p in positions {
+                collect_referenced_type_names(&p.typ, out);
+            }
+        }
+    }
+}
+
+/// Collect every type name referenced by a class declaration: parents (which may
+/// be parameterized, e.g. `Foo<Bar>` or `table<K, V>`), field types, overload
+/// param/return types, generic-constraint type-arg substitutions, and
+/// `@built-name` field targets.
+pub(crate) fn class_referenced_names(c: &ClassDecl, out: &mut HashSet<String>) {
+    for parent in &c.parents {
+        // Parents are stored as raw strings (possibly parameterized); parse so that
+        // `Foo<Bar>` contributes both "Foo" and "Bar".
+        collect_referenced_type_names(&annotation_types::parse_type(parent), out);
+    }
+    for (_, typ, _) in &c.fields {
+        collect_referenced_type_names(typ, out);
+    }
+    for ov in &c.overloads {
+        for p in &ov.params {
+            collect_referenced_type_names(&p.typ, out);
+        }
+        for r in &ov.returns {
+            collect_referenced_type_names(r, out);
+        }
+    }
+    for (constraint, args) in &c.constraint_type_arg_subs {
+        out.insert(constraint.clone());
+        for a in args {
+            out.insert(a.clone());
+        }
+    }
+    for built in c.field_built_names.values() {
+        out.insert(built.clone());
+    }
+}
+
+/// Collect all type names referenced by a global's param types, return types,
+/// and overloads. Used by the reverse-dependency graph so that if a class/alias
+/// changes, globals whose signatures reference it are included in the affected
+/// closure — and files calling those globals (by mentioning the global's name)
+/// are re-analyzed even if they don't textually mention the changed class name.
+pub(crate) fn global_referenced_names(g: &ExternalGlobal, out: &mut HashSet<String>) {
+    for p in &g.params {
+        collect_referenced_type_names(&p.typ, out);
+    }
+    for r in &g.returns {
+        collect_referenced_type_names(r, out);
+    }
+    for ov in &g.overloads {
+        for p in &ov.params {
+            collect_referenced_type_names(&p.typ, out);
+        }
+        for r in &ov.returns {
+            collect_referenced_type_names(r, out);
+        }
+    }
+    if let Some((_, ref bt)) = g.builds_field {
+        collect_referenced_type_names(bt, out);
+    }
+}
+
 pub(crate) fn value_type_to_name(vt: &ValueType, ir: &crate::analysis::Ir) -> Option<String> {
     match vt {
         ValueType::String(None) => Some("string".to_string()),
@@ -354,6 +457,37 @@ pub struct ClassDecl {
 }
 
 impl ClassDecl {
+    /// Construct a minimal `ClassDecl` with only its name set and all other
+    /// fields defaulted. Used by unit tests that need a class stub without
+    /// caring about the full field set.
+    #[cfg(test)]
+    pub(crate) fn for_test(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            type_params: Vec::new(),
+            type_param_constraints: Vec::new(),
+            parents: Vec::new(),
+            fields: Vec::new(),
+            accessors: Vec::new(),
+            overloads: Vec::new(),
+            generics: Vec::new(),
+            constructor_methods: Vec::new(),
+            constraint_type_arg_subs: Vec::new(),
+            field_built_names: HashMap::new(),
+            is_enum: false,
+            is_key_enum: false,
+            correlated_groups: Vec::new(),
+            def_range: None,
+            def_path: None,
+            field_ranges: HashMap::new(),
+            field_paths: HashMap::new(),
+            see: Vec::new(),
+            declared_field_names: HashSet::new(),
+            field_literals: HashMap::new(),
+            field_descriptions: HashMap::new(),
+        }
+    }
+
     /// Determine the *initial* `EnumKind` for this class declaration.
     ///
     /// **Two-step contract:** This returns a placeholder (`Number`) for regular
@@ -1642,5 +1776,63 @@ mod tests {
     fn field_description_optional_field() {
         let block = parse(&["---@class Foo", "---@field name? string The optional name."]);
         assert_eq!(block.field_descriptions.get("name").map(String::as_str), Some("The optional name."));
+    }
+
+    // ---- Type-name walkers (incremental warm dependency tracking) ----
+
+    fn referenced(type_str: &str) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        collect_referenced_type_names(&annotation_types::parse_type(type_str), &mut out);
+        out
+    }
+
+    #[test]
+    fn collect_names_simple_and_parameterized() {
+        assert!(referenced("Widget").contains("Widget"));
+        let p = referenced("table<KeyType, ValueType>");
+        assert!(p.contains("table"));
+        assert!(p.contains("KeyType"));
+        assert!(p.contains("ValueType"));
+    }
+
+    #[test]
+    fn collect_names_union_intersection_array() {
+        let u = referenced("Apple | Banana");
+        assert!(u.contains("Apple") && u.contains("Banana"));
+        let i = referenced("Frame & Mixin");
+        assert!(i.contains("Frame") && i.contains("Mixin"));
+        assert!(referenced("Element[]").contains("Element"));
+    }
+
+    #[test]
+    fn collect_names_fun_and_table_literal() {
+        let f = referenced("fun(a: Foo, b: Bar): Baz");
+        assert!(f.contains("Foo") && f.contains("Bar") && f.contains("Baz"));
+        let t = referenced("{ x: Alpha, y: Beta }");
+        assert!(t.contains("Alpha") && t.contains("Beta"));
+    }
+
+    #[test]
+    fn collect_names_nonnil_and_nested() {
+        assert!(referenced("Handle!").contains("Handle"));
+        let nested = referenced("table<string, Foo | Bar>");
+        assert!(nested.contains("Foo") && nested.contains("Bar"));
+    }
+
+    #[test]
+    fn class_referenced_names_covers_parents_fields_overloads() {
+        let class = ClassDecl {
+            parents: vec!["BaseType".to_string()],
+            fields: vec![("inner".to_string(), AnnotationType::Simple("FieldType".to_string()), Visibility::Public)],
+            ..empty_class_for_test("Derived")
+        };
+        let mut out = std::collections::HashSet::new();
+        class_referenced_names(&class, &mut out);
+        assert!(out.contains("BaseType"), "parent must be tracked: {out:?}");
+        assert!(out.contains("FieldType"), "field type must be tracked: {out:?}");
+    }
+
+    fn empty_class_for_test(name: &str) -> ClassDecl {
+        ClassDecl::for_test(name)
     }
 }
