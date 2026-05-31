@@ -2453,6 +2453,20 @@ fn crossfile_return_overload_narrowing() {
 }
 
 #[test]
+fn crossfile_return_overload_guarded_siblings() {
+    // Cross-file tuple-union sibling narrowing where BOTH siblings are directly
+    // guarded (truthy early-exit + nil early-exit). The surviving sibling must
+    // still narrow to the single compatible tuple-union case and pass a typed
+    // parameter without a false-positive type-mismatch. Regression for the
+    // deferred-narrowing path skipping doubly-guarded siblings.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/retoverload_guard_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_return_overload_synth() {
     // Cross-file sibling narrowing for SYNTHESIZED correlated return-only
     // overloads (unannotated function whose body matches the bare-return +

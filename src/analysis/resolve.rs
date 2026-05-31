@@ -570,8 +570,16 @@ impl<'a> Analysis<'a> {
         if self.deferred_sibling_narrowings.is_empty() {
             return;
         }
-        let entries = std::mem::take(&mut self.deferred_sibling_narrowings);
+        let mut entries = std::mem::take(&mut self.deferred_sibling_narrowings);
+        // Process entries carrying more narrowing context last. `rewrite_sym_refs_in_subtree`
+        // only advances a ref to a *newer* version (higher index), so the last-applied
+        // narrowing for a given sibling+scope wins. When several early-exit guards in the
+        // same scope produce overlapping deferred entries (e.g. `[(0,StripTruthy)]` then
+        // `[(0,StripTruthy),(1,StripNil)]`), the most complete one must win so the
+        // OverloadNarrow filters against every active guard.
+        entries.sort_by_key(|e| e.narrowed.len());
         let mut remaining = Vec::new();
+        let mut rewrote_any = false;
         for entry in entries {
             // Try to resolve the func expression to get the function type
             let func_type = self.resolve_expr(entry.func_expr);
@@ -588,11 +596,11 @@ impl<'a> Analysis<'a> {
             };
             if has_return_overloads {
                 for &(ret_index, sibling_idx) in &entry.siblings {
-                    // Skip the directly-guarded sibling (already narrowed via guard in any tracking set)
-                    if self.narrow_kind_for(sibling_idx, entry.scope).is_some() {
-                        continue;
-                    }
-                    // Skip siblings reassigned since the multi-return assignment
+                    // Skip siblings reassigned since the multi-return assignment.
+                    // `sibling_was_reassigned` sees through OverloadNarrow versions
+                    // so a partial deferred entry (processed earlier by the
+                    // narrowed.len() sort) doesn't block a fuller one from
+                    // re-narrowing the same sibling with the complete guard set.
                     if self.sibling_was_reassigned(sibling_idx, entry.scope, ret_index) {
                         continue;
                     }
@@ -604,11 +612,24 @@ impl<'a> Analysis<'a> {
                         // before this deferred narrowing ran and still point at the
                         // pre-narrow version. Redirect them to the OverloadNarrow
                         // version so downstream diagnostics see the narrowed type.
-                        self.rewrite_sym_refs_in_subtree(sibling_idx, entry.scope, new_ver);
+                        if self.rewrite_sym_refs_in_subtree(sibling_idx, entry.scope, new_ver) {
+                            rewrote_any = true;
+                        }
                         pending.push((sibling_idx, new_ver));
                     }
                 }
             }
+        }
+        // A rewritten ref may be wrapped by parent expressions (e.g. a `StripNil`
+        // applied to the argument by an earlier nil-guard) whose cached type is
+        // now stale. Clearing the entire cache is broader than strictly necessary
+        // (only transitively-dependent parents need invalidation), but deferred
+        // sibling narrowings are rare and building a parent-expression dependency
+        // graph isn't worth the complexity. A targeted approach would track
+        // rewritten ExprIds and walk their parent chain, but there is no
+        // parent-pointer map in the IR.
+        if rewrote_any {
+            self.resolved_expr_cache.fill(None);
         }
         self.deferred_sibling_narrowings = remaining;
     }
@@ -1009,6 +1030,8 @@ impl<'a> Analysis<'a> {
 
             // Update the directly-narrowed symbol's SymbolRef expressions in the subtree
             // (the TypeFilter version was just pushed — direct the refs there).
+            // Cache invalidation not needed: this runs within the standard fixpoint
+            // iteration which re-resolves dependent expressions naturally.
             self.rewrite_sym_refs_in_subtree(sym_idx, scope_idx, trigger_ver);
 
             // Propagate to multi-return siblings.
@@ -1118,8 +1141,9 @@ impl<'a> Analysis<'a> {
     /// Only rewrites sites whose current version is STRICTLY LESS than `new_ver` so that
     /// re-invoking this helper is idempotent and so that assignment-created reassignment
     /// versions (which are newer) aren't clobbered by a narrowing update.
-    pub(crate) fn rewrite_sym_refs_in_subtree(&mut self, sym_idx: SymbolIndex, root_scope: ScopeIndex, new_ver: usize) {
-        let Some(sites) = self.sym_ref_sites.get(&sym_idx).cloned() else { return };
+    pub(crate) fn rewrite_sym_refs_in_subtree(&mut self, sym_idx: SymbolIndex, root_scope: ScopeIndex, new_ver: usize) -> bool {
+        let Some(sites) = self.sym_ref_sites.get(&sym_idx).cloned() else { return false };
+        let mut rewrote = false;
         for (expr_id, offset) in sites {
             let Some(site_scope) = self.ir.scope_at_offset(offset) else { continue };
             if !self.is_scope_in_subtree(site_scope, root_scope) { continue; }
@@ -1149,8 +1173,18 @@ impl<'a> Analysis<'a> {
                 let versions = &self.ir.symbols[sym_idx.val()].versions;
                 let v0_start = versions[0].def_node.start;
                 let is_post_reassignment = (old_ver..new_ver).any(|v| {
-                    versions[v].def_node.start != v0_start
-                        && versions[v].def_node.start <= offset
+                    if versions[v].def_node.start == v0_start
+                        || versions[v].def_node.start > offset
+                    {
+                        return false;
+                    }
+                    // A version produced by guard narrowing of the same symbol
+                    // (StripNil/StripFalsy from a nil/truthy guard, OverloadNarrow
+                    // from a sibling tuple-union narrowing, or a SymbolRef alias)
+                    // is NOT a reassignment — it refines the same value. Only a
+                    // genuine reassignment (FunctionCall, literal, different RHS)
+                    // should block the deferred narrowing rewrite.
+                    !self.is_narrowing_version_of(sym_idx, v)
                 });
                 if is_post_reassignment {
                     continue;
@@ -1161,6 +1195,25 @@ impl<'a> Analysis<'a> {
             if let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
                 *slot = None;
             }
+            rewrote = true;
+        }
+        rewrote
+    }
+
+    /// Whether version `ver` of `sym_idx` was produced by narrowing the same
+    /// symbol (a guard or sibling tuple-union refinement) rather than a genuine
+    /// reassignment. Used by `rewrite_sym_refs_in_subtree` so a guard-narrowing
+    /// version doesn't masquerade as a reassignment and block a later deferred
+    /// OverloadNarrow rewrite.
+    fn is_narrowing_version_of(&self, sym_idx: SymbolIndex, ver: usize) -> bool {
+        let Some(ts) = self.ir.symbols[sym_idx.val()].versions[ver].type_source else {
+            return false;
+        };
+        match self.ir.expr(ts) {
+            Expr::StripNil(_) | Expr::StripFalsy(_) | Expr::OverloadNarrow { .. }
+            | Expr::TypeFilter(..) | Expr::CastRemove(..) => true,
+            Expr::SymbolRef(s, _) => *s == sym_idx,
+            _ => false,
         }
     }
 

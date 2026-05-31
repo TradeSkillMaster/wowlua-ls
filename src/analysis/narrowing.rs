@@ -1589,7 +1589,11 @@ impl<'a> Analysis<'a> {
         // version looks like a reassignment and prevents sibling narrowing in
         // compound guards like `if x and x > 0 then`.
         let mut expr = self.ir.expr(ts);
-        for _ in 0..5 {
+        // Max chain depth: OverloadNarrow → SymbolRef → StripNil → SymbolRef →
+        // StripFalsy → SymbolRef → FunctionCall. Each narrowing layer adds at
+        // most 2 hops (the wrapper + its inner SymbolRef). Bump if new arms are
+        // added to the match below.
+        for _ in 0..6 {
             match expr {
                 Expr::FunctionCall { ret_index, .. } => return *ret_index != expected_ret_index,
                 Expr::SymbolRef(sym, ver_ref) => {
@@ -1599,6 +1603,17 @@ impl<'a> Analysis<'a> {
                         None => return true,
                     }
                 }
+                // An OverloadNarrow version is a prior tuple-union narrowing of
+                // this same multi-return value, not a reassignment. Follow its
+                // inner SymbolRef back to the underlying FunctionCall so a fuller
+                // deferred narrowing can re-narrow on top of a partial one.
+                Expr::OverloadNarrow { inner, .. } => { expr = self.ir.expr(*inner); }
+                // StripNil/StripFalsy versions come from a nil/truthy guard on
+                // the sibling itself (e.g. `if errType == nil then return end`).
+                // These refine the same multi-return value rather than reassign
+                // it, so see through them too — otherwise a directly-guarded
+                // sibling can never get a correlated OverloadNarrow.
+                Expr::StripNil(inner) | Expr::StripFalsy(inner) => { expr = self.ir.expr(*inner); }
                 _ => return true,
             }
         }
