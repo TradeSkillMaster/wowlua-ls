@@ -1589,6 +1589,7 @@ pub(crate) use annotation_scanning::{
 pub(crate) use annotation_scanning::{
     is_select_varargs,
     reduce_to_fun_alias, resolve_annotation_type,
+    extract_fun_sig,
 };
 pub use scan_globals::scan_file_globals;
 pub(crate) use scan_globals::scan_file_globals_with_synth;

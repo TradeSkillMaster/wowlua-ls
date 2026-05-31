@@ -203,36 +203,10 @@ impl<'a> Analysis<'a> {
             };
             if inline_func_idx.is_external() { continue; }
             // Get the callee's param annotation for this position
-            let sig = match param_annotations.get(i + self_offset) {
-                Some(crate::annotations::AnnotationType::Simple(s)) if s.starts_with("fun(") => {
-                    match crate::annotations::parse_overload(s) {
-                        Some(sig) => sig,
-                        None => continue,
-                    }
-                }
-                Some(crate::annotations::AnnotationType::Fun(params, returns, is_vararg)) => {
-                    crate::annotations::OverloadSig {
-                        params: params.clone(),
-                        returns: returns.clone(),
-                        is_vararg: *is_vararg,
-                        is_return_only: false,
-                    }
-                }
-                Some(ann) => {
-                    // Resolve aliases and optional fun types (e.g. fun(...)?, @alias commsHandler fun(...))
-                    let Some((crate::annotations::AnnotationType::Fun(params, returns, is_vararg), _)) =
-                        crate::annotations::reduce_to_fun_alias(
-                            ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
-                        ) else { continue };
-                    crate::annotations::OverloadSig {
-                        params: params.clone(),
-                        returns: returns.clone(),
-                        is_vararg: *is_vararg,
-                        is_return_only: false,
-                    }
-                }
-                None => continue,
-            };
+            let Some(sig) = param_annotations.get(i + self_offset)
+                .and_then(|ann| crate::annotations::extract_fun_sig(
+                    ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
+                )) else { continue };
             let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
             for (j, param_info) in sig.params.iter().enumerate() {
                 let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
@@ -478,6 +452,62 @@ impl<'a> Analysis<'a> {
                         generic_subs.insert(name.clone(), ct.clone());
                         constraint_fallback_names.insert(name.clone());
                     }
+            }
+        }
+
+        // Type inline event-callback varargs from a literal event name. For:
+        //   ---@generic E: FrameEvent
+        //   ---@param event E
+        //   ---@param callback fun(...params<E>)
+        //   function Event.Register(event, callback) end
+        //   Event.Register("BAG_UPDATE", function(...) local id = ... end)
+        // the generic E was bound to the string literal "BAG_UPDATE" above. When the
+        // callback param is `fun(...params<E>)` and E's constraint names a registered
+        // event type, project that event's payload onto the inline callback's varargs
+        // (reusing the same `event_vararg_types` mechanism as in-body event narrowing).
+        if !generics.is_empty() {
+            let generic_constraints_raw = self.func(func_idx).generic_constraints_raw.clone();
+            for (i, arg_expr_id) in args.iter().enumerate() {
+                let inline_func_idx = match self.ir.expr(*arg_expr_id) {
+                    Expr::FunctionDef(idx) => *idx,
+                    _ => continue,
+                };
+                if inline_func_idx.is_external() { continue; }
+                // Reduce the callee's param annotation to the callback's fun() params.
+                let Some(sig) = param_annotations.get(i + self_offset)
+                    .and_then(|ann| crate::annotations::extract_fun_sig(
+                        ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
+                    )) else { continue };
+                let params = sig.params;
+                // Find the `...params<G>` vararg projection's generic name.
+                let Some(gen_name) = params.iter().find_map(|p| {
+                    if p.name != "..." { return None; }
+                    if let crate::annotations::AnnotationType::Parameterized(base, targs) = &p.typ
+                        && base == "params" && targs.len() == 1
+                        && let crate::annotations::AnnotationType::Simple(g) = &targs[0]
+                    {
+                        Some(g.clone())
+                    } else {
+                        None
+                    }
+                }) else { continue };
+                // G must have been bound from a concrete event-name string literal arg.
+                let Some(&bind_arg_i) = generic_arg_indices.get(&gen_name) else { continue };
+                let Some(event_name) = args.get(bind_arg_i)
+                    .and_then(|e| self.ir.string_literals.get(e)).cloned() else { continue };
+                // G's constraint must name a registered event type (e.g. FrameEvent).
+                let Some(Some(event_type_name)) = generic_constraints_raw.iter()
+                    .find(|(n, _)| *n == gen_name).map(|(_, c)| c.clone()) else { continue };
+                let Some(payload_params) = self.ir.ext.event_types.get(&event_type_name)
+                    .and_then(|m| m.get(&event_name))
+                    .map(|payload| payload.params.clone()) else { continue };
+                let vararg_types: Vec<ValueType> = payload_params.iter()
+                    .filter_map(|p| Self::resolve_event_param_type_static(&self.ir, p))
+                    .collect();
+                if !vararg_types.is_empty() {
+                    let scope = self.ir.functions[inline_func_idx.val()].scope;
+                    self.event_vararg_types.insert(scope, vararg_types);
+                }
             }
         }
 

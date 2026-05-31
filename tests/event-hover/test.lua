@@ -252,3 +252,27 @@ handleInlineHover("INLINE_NONE")
 
 handleInlineHover("")
 --                 ^ comp: INLINE_NONE, INLINE_ONE, INLINE_TWO
+
+-- ── Inline callback varargs typed from a bound event-name generic ──
+
+RegisterAction("DO_PROCESS", function(...)
+    local first = ...
+--                ^ hover: (varargs) ...: boolean, boolean
+    local s = first
+--        ^ hover: (local) s: boolean
+end)
+
+RegisterAction("DO_SKIP", function(...)
+    local test = ...
+--               ^ hover: (varargs) ...: ?
+end)
+
+-- Colon-syntax: self_offset shifts param_annotations index
+---@type EventFrame
+local ef = nil
+ef:OnAction("DO_PROCESS", function(...)
+    local a = ...
+--            ^ hover: (varargs) ...: boolean, boolean
+    local b = a
+--        ^ hover: (local) b: boolean
+end)

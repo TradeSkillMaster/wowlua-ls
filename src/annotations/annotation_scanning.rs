@@ -977,6 +977,39 @@ pub(crate) fn reduce_to_fun_alias<'a>(
     }
 }
 
+/// Extract `OverloadSig` from an annotation that is (or resolves to) a function
+/// type. Handles `fun(...)` strings, `Fun(...)` variants, and alias chains via
+/// `reduce_to_fun_alias`.
+pub(crate) fn extract_fun_sig(
+    ann: &AnnotationType,
+    local_aliases: &std::collections::HashMap<String, AnnotationType>,
+    ext_aliases: &std::collections::HashMap<String, AnnotationType>,
+) -> Option<OverloadSig> {
+    match ann {
+        AnnotationType::Simple(s) if s.starts_with("fun(") => {
+            super::annotation_types::parse_overload(s)
+        }
+        AnnotationType::Fun(params, returns, is_vararg) => {
+            Some(OverloadSig {
+                params: params.clone(),
+                returns: returns.clone(),
+                is_vararg: *is_vararg,
+                is_return_only: false,
+            })
+        }
+        other => {
+            let (AnnotationType::Fun(params, returns, is_vararg), _) =
+                reduce_to_fun_alias(other, local_aliases, ext_aliases)? else { return None };
+            Some(OverloadSig {
+                params: params.clone(),
+                returns: returns.clone(),
+                is_vararg: *is_vararg,
+                is_return_only: false,
+            })
+        }
+    }
+}
+
 pub(crate) fn resolve_annotation_type(
     at: &AnnotationType, generics: &[(String, Option<String>)],
     classes: &std::collections::HashMap<String, TableIndex>,

@@ -180,6 +180,41 @@ end)
 
 The `...params<MyAddonEvent>` projection tells the LS: "the varargs of this callback correspond to the payload of whatever event name the `event` param is narrowed to." This is the same mechanism the built-in `SetScript("OnEvent", ...)` uses.
 
+### Register-by-name with `@generic E: EventType`
+
+The overload approach above relies on an in-body `if event == "X"` comparison to narrow the
+varargs. For a register-by-name API — where the caller passes a single event name and a
+callback dedicated to that event — bind a generic to the event name and project it into the
+callback's varargs directly:
+
+```lua
+---Registers an event callback for a single event.
+---@generic E: FrameEvent
+---@param event E
+---@param callback fun(...params<E>)
+function Event.Register(event, callback) end
+```
+
+Calling with a string-literal event name types the callback's `...` from that event's payload —
+no in-body comparison needed:
+
+```lua
+Event.Register("BAG_UPDATE", function(...)
+    local bagID = ...
+    -- bagID: Enum.BagIndex
+end)
+
+Event.Register("CHAT_MSG_CHANNEL", function(...)
+    local text = ...
+    -- text: string
+end)
+```
+
+`E` is constrained to `FrameEvent` (any event type works), so it binds to the literal event
+name passed in (`"BAG_UPDATE"`), and `...params<E>` resolves to that event's declared payload.
+If the event name is not a string literal, or names an event with no payload, the varargs
+degrade to `?`.
+
 ### Event name quoting
 
 Event names in `@event` declarations should be quoted to match how they appear at call sites:
@@ -229,4 +264,4 @@ Or with inline parameters:
 2. When that parameter is narrowed to a string literal (via `==` comparison), the LS looks up the corresponding event payload
 3. All `...` expressions in the narrowed scope resolve to the payload's declared types
 
-This only activates when `EventType` is NOT a declared `@generic` — if it is, the standard function-projection behavior applies instead.
+When the projected name is a declared `@generic` constrained to an event type (e.g. `@generic E: FrameEvent`), and the generic is bound to a string-literal event name at the call site, the callback's varargs are projected from that event's payload directly — see [Register-by-name with `@generic E: EventType`](#register-by-name-with-generic-e-eventtype). Otherwise, when the projected name is a generic bound to a function, the standard function-projection behavior applies.

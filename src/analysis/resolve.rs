@@ -1120,7 +1120,7 @@ impl<'a> Analysis<'a> {
         None
     }
 
-    fn resolve_event_param_type_static(ir: &super::Ir, param: &crate::pre_globals::EventPayloadParam) -> Option<ValueType> {
+    pub(super) fn resolve_event_param_type_static(ir: &super::Ir, param: &crate::pre_globals::EventPayloadParam) -> Option<ValueType> {
         let at = crate::annotations::annotation_types::parse_type(&param.type_name);
         // No generic type variables in scope for event params
         let base = crate::annotations::resolve_annotation_type(&at, &[], &ir.ext.classes, &ir.ext.aliases)

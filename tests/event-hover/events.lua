@@ -59,6 +59,19 @@ function EventFrame:RegisterCustomEvent(eventName) end
 ---@param name string
 function EventFrame:SetName(name) end
 
+-- Generic register-by-name: the callback's varargs are typed from the
+-- specific event literal bound to E.
+---@generic E: ActionEvent
+---@param event E
+---@param callback fun(...params<E>)
+function RegisterAction(event, callback) end
+
+-- Colon-syntax method variant (self_offset = 1).
+---@generic E: ActionEvent
+---@param event E
+---@param callback fun(...params<E>)
+function EventFrame:OnAction(event, callback) end
+
 ---@overload fun(self: EventFrame, script: "OnEvent", handler: fun(self: EventFrame, event: WowEvent, ...params<WowEvent>))
 ---@overload fun(self: EventFrame, script: "OnUpdate", handler: fun(self: EventFrame, elapsed: number))
 ---@param scriptType string
