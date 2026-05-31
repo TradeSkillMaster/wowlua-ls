@@ -5283,19 +5283,35 @@ impl AnalysisResult {
         Vec::new()
     }
 
+    fn format_type_args(&self, type_args: &[ValueType]) -> String {
+        type_args.iter()
+            .map(|a| self.format_type_depth(a, 1))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     fn append_type_args_to_class(&self, formatted: &str, vt: &ValueType, type_args: &[ValueType]) -> String {
         if type_args.is_empty() {
             return formatted.to_string();
         }
         if let ValueType::Table(Some(idx)) = vt
             && let Some(ref class_name) = self.table(*idx).class_name
-                && formatted.starts_with(class_name.as_str()) {
-                    let args_str = type_args.iter()
-                        .map(|a| self.format_type_depth(a, 1))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return format!("{}<{}>", class_name, args_str);
-                }
+            && formatted.starts_with(class_name.as_str())
+        {
+            let args_str = self.format_type_args(type_args);
+            return format!("{}<{}>", class_name, args_str);
+        }
+        // Handle nullable parameterized class: Union([Table(class), Nil]) formatted as "ClassName?"
+        if let ValueType::Union(members) = vt
+            && members.len() == 2
+            && members.iter().any(|t| matches!(t, ValueType::Nil))
+            && let Some(ValueType::Table(Some(idx))) = members.iter().find(|t| !matches!(t, ValueType::Nil))
+            && let Some(ref class_name) = self.table(*idx).class_name
+            && formatted.starts_with(class_name.as_str())
+        {
+            let args_str = self.format_type_args(type_args);
+            return format!("{}<{}>?", class_name, args_str);
+        }
         formatted.to_string()
     }
 
@@ -6963,6 +6979,10 @@ impl AnalysisResult {
                 .unwrap_or_else(|| self.format_type_for_hint(resolved));
             if formatted == "?" { continue; }
 
+            // Append bound generic type args (e.g. Schema → Schema<string>)
+            let type_args = self.get_symbol_type_args(symbol_idx, token_start);
+            let formatted = self.append_type_args_to_class(&formatted, resolved, &type_args);
+
             hints.push(InlayHintData {
                 position: token_end,
                 label: format!(": {}", formatted),
@@ -7055,6 +7075,10 @@ impl AnalysisResult {
 
             let formatted = self.format_type_for_hint(resolved);
 
+            let token_start = u32::from(token.text_range().start());
+            let type_args = self.get_symbol_type_args(sym_idx, token_start);
+            let formatted = self.append_type_args_to_class(&formatted, resolved, &type_args);
+
             let token_end = u32::from(token.text_range().end());
             hints.push(InlayHintData {
                 position: token_end,
@@ -7117,6 +7141,9 @@ impl AnalysisResult {
             let formatted = self.format_type_for_hint(resolved);
             if formatted == "?" { continue; }
 
+            let type_args = self.get_symbol_type_args(symbol_idx, token_start);
+            let formatted = self.append_type_args_to_class(&formatted, resolved, &type_args);
+
             hints.push(InlayHintData {
                 position: token_end,
                 label: format!(": {}", formatted),
@@ -7167,6 +7194,9 @@ impl AnalysisResult {
             if formatted == "?" {
                 continue;
             }
+
+            let type_args = self.get_type_args_for_expr(expr_id);
+            let formatted = self.append_type_args_to_class(&formatted, &resolved, &type_args);
 
             hints.push(InlayHintData {
                 position: call_range.1,

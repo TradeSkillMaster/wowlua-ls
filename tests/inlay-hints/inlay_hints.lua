@@ -302,3 +302,50 @@ local function testChain(c)
         --           ^ hint: none
     end
 end
+
+-- ── Generic type args in hints ──────────────────────────────────────────────
+
+---@class Wrapper<T>
+---@field value T
+local Wrapper = {}
+
+---@generic T
+---@param val T
+---@return Wrapper<T>
+---@diagnostic disable-next-line: return-mismatch
+local function wrap(val) return {} end
+
+-- Variable hint shows bound type arg
+local w1 = wrap("hello")
+--      ^ hint: : Wrapper<string>
+
+local w2 = wrap(42)
+--      ^ hint: : Wrapper<number>
+
+-- Multiple type args
+---@class Pair<K, V>
+---@field key K
+---@field val V
+local Pair = {}
+
+---@generic K, V
+---@param k K
+---@param v V
+---@return Pair<K, V>
+---@diagnostic disable-next-line: return-mismatch
+local function makePair(k, v) return {} end
+
+local p1 = makePair("age", 30)
+--      ^ hint: : Pair<string, number>
+
+-- @return self propagates receiver type args
+---@param x number
+---@return self
+---@diagnostic disable-next-line: return-mismatch
+function Wrapper:withNumber(x) return {} end
+
+---@param w Wrapper<string>
+local function testSelfReturn(w)
+    local r = w:withNumber(1)
+    --     ^ hint: : Wrapper<string>
+end
