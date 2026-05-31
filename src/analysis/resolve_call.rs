@@ -342,7 +342,16 @@ impl<'a> Analysis<'a> {
                             });
                         if has_fun_member
                             && let Some(annotation) = param_annotations.get(i + self_offset).cloned() {
+                                let prev_len = generic_subs.len();
                                 self.infer_generics_from_annotation(&annotation, &generic_names, &generics, &defclass, *arg_expr_id, &mut generic_subs);
+                                if generic_subs.len() > prev_len {
+                                    for name in generic_subs.keys() {
+                                        if !generic_arg_indices.contains_key(name) {
+                                            substitutable_generic_names.insert(name.clone());
+                                        }
+                                        generic_arg_indices.entry(name.clone()).or_insert(i);
+                                    }
+                                }
                             }
                         if let Some(name) = types.iter().find_map(|t| match t {
                             ValueType::TypeVariable(n) => Some(n),

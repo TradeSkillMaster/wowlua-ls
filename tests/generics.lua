@@ -1037,4 +1037,67 @@ local gotBox = getBox()
 gotBox:Each(function(n) end)
 --                   ^ hover: (param) n: number
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2 }
+-- ── Infer generic from function argument's parameter types ────────────────
+
+---@param x number
+---@param y number
+---@return number
+local function mathRound(x, y) return x end
+
+---@generic A
+---@param map (fun(value: number, arg: A): any)|string|number|table
+---@param arg? A
+---@return string
+local function funParamApply(map, arg)
+    return ""
+end
+
+-- Passing mathRound (2-param function) should bind A = number
+-- so `arg` accepts a number without type-mismatch.
+local fpResult1 = funParamApply(mathRound, 42)
+--    ^ hover: (local) fpResult1: string
+
+---@param x number
+---@return string
+local function numToStr(x) return tostring(x) end
+
+-- Passing numToStr (1-param function) should leave A unbound
+-- so calling with no second arg is fine.
+local fpResult2 = funParamApply(numToStr)
+--    ^ hover: (local) fpResult2: string
+
+-- Non-function argument (string) to union param — A stays unbound,
+-- no type-mismatch because arg? is optional.
+local fpResult3 = funParamApply("someKey")
+--    ^ hover: (local) fpResult3: string
+
+-- Unannotated function — no @param annotations means param_types is None,
+-- A stays unbound. No type-mismatch because arg? is optional.
+local function unannotated(x, y) return x end
+local fpResult4 = funParamApply(unannotated)
+--    ^ hover: (local) fpResult4: string
+
+-- Generic already bound from return type — param binding doesn't overwrite.
+---@generic R
+---@param f (fun(x: R): R)|string
+---@param fallback? R
+---@return R
+local function retBound(f, fallback)
+    return fallback
+end
+
+---@param x number
+---@return number
+local function numId(x) return x end
+-- R is bound to number from return type; param binding also sees number,
+-- !subs.contains_key guard prevents overwrite — result stays number.
+local fpResult5 = retBound(numId)
+--    ^ hover: (local) fpResult5: number
+
+-- Wrong-typed second arg triggers type-mismatch when A is bound from
+-- function param types.
+local fpResult6 = funParamApply(mathRound, "oops")
+--    ^ hover: (local) fpResult6: string
+--                                ^ diag: type-mismatch
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2, mathRound, funParamApply, numToStr, unannotated, retBound, numId }

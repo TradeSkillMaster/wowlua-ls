@@ -18,6 +18,17 @@ struct FunReturnInfo {
     overloads: Vec<ResolvedOverload>,
 }
 
+/// Return type and parameter types extracted from a function argument,
+/// for generic inference in the `Fun` arm of `infer_generics_from_annotation`.
+struct ArgFunctionTypeInfo {
+    ret: Option<ValueType>,
+    params: Option<Vec<ValueType>>,
+}
+
+impl ArgFunctionTypeInfo {
+    const EMPTY: Self = Self { ret: None, params: None };
+}
+
 #[derive(Debug)]
 struct DefclassFuncInfo {
     generic_name: String,
@@ -2304,18 +2315,43 @@ impl<'a> Analysis<'a> {
             AnnotationType::NonNil(inner) => {
                 self.infer_generics_from_annotation(inner, generic_names, generics, defclass, arg_expr_id, subs);
             }
-            AnnotationType::Fun(_, returns, _) => {
+            AnnotationType::Fun(params, returns, _) => {
+                let type_info = self.arg_function_type_info(arg_expr_id);
                 // fun(...): T — infer T from the argument's return type, or from
                 // the argument itself if it's a value that matches T directly
                 // (the union case `(fun(): T) | T` falls through to here via the
                 // Union arm below).
-                if let Some(arg_ret) = self.arg_function_return_type(arg_expr_id) {
+                if let Some(ref arg_ret) = type_info.ret {
                     for ret_ann in returns {
                         if let AnnotationType::Simple(name) = ret_ann
                             && generic_names.contains(name) && !subs.contains_key(name) {
                                 subs.insert(name.clone(), arg_ret.clone());
                                 break;
                             }
+                    }
+                }
+                // fun(x: T, y: A): ... — infer generics from the argument
+                // function's parameter types. E.g. if the annotation says
+                // `fun(value: T, arg: A): any` and the actual function has
+                // `@param value number, @param sig? number`, bind A = number.
+                //
+                // Only `Simple(name)` annotation types are matched here — generics
+                // in complex positions (e.g. `T[]`, `table<K, A>`) are not inferred
+                // from function param types. This is consistent with the return-type
+                // path above which also only handles `Simple(name)`.
+                if let Some(ref param_types) = type_info.params {
+                    for (i, param_info) in params.iter().enumerate() {
+                        if let AnnotationType::Simple(name) = &param_info.typ
+                            && generic_names.contains(name) && !subs.contains_key(name)
+                            && let Some(pt) = param_types.get(i)
+                        {
+                            let stripped = pt.strip_nil();
+                            if !matches!(&stripped, ValueType::Nil)
+                                && !matches!(&stripped, ValueType::Union(t) if t.is_empty())
+                            {
+                                subs.insert(name.clone(), stripped);
+                            }
+                        }
                     }
                 }
             }
@@ -2345,52 +2381,71 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// For `fun(): T`-style parameters, compute the return type an argument will
-    /// produce. Handles two forms:
-    ///   - The arg is a function (`FunctionDef` / `SymbolRef` to a function) —
-    ///     use its first return type.
-    ///   - The arg is a named `@class` table — calling the class is a
-    ///     constructor; the return is the class type itself. This also covers
-    ///     the `T` alternative of a `(fun(): T) | T` union when the arg is the
-    ///     class directly. Plain non-class tables (`{}` literals) are excluded
-    ///     so an empty table doesn't silently bind T.
-    fn arg_function_return_type(&mut self, arg_expr_id: ExprId) -> Option<ValueType> {
-        let arg_type = self.resolve_expr(arg_expr_id)?;
+    /// Extract return type and parameter types from a function argument in one
+    /// `resolve_expr` call, for use by the `Fun` arm of `infer_generics_from_annotation`.
+    ///
+    /// Return type (`ret`):
+    ///   - Function args: first return annotation (or FunctionRet symbol fallback).
+    ///   - Named `@class` tables: the class type itself (constructor return).
+    ///   - Plain non-class tables: None (prevents empty `{}` from silently binding T).
+    ///
+    /// Parameter types (`params`):
+    ///   - Function args with `@param` annotations: resolved types per position.
+    ///     Unresolvable annotations use `Any` as a positional placeholder — this
+    ///     preserves index alignment but cannot leak into generic bindings because
+    ///     the caller only matches `AnnotationType::Simple(name)` against these.
+    ///   - Functions without annotations or non-function args: None.
+    fn arg_function_type_info(&mut self, arg_expr_id: ExprId) -> ArgFunctionTypeInfo {
+        let Some(arg_type) = self.resolve_expr(arg_expr_id) else {
+            return ArgFunctionTypeInfo::EMPTY;
+        };
         match &arg_type {
             ValueType::Function(Some(fn_idx)) => {
                 let fn_idx = *fn_idx;
-                let ret = self.func(fn_idx).return_annotations.first().cloned();
-                if let Some(vt) = ret
-                    && !matches!(vt, ValueType::TypeVariable(_)) {
-                        return Some(vt);
+
+                // Return type: prefer annotation, fall back to FunctionRet symbol.
+                let ret = {
+                    let ann_ret = self.func(fn_idx).return_annotations.first().cloned();
+                    if let Some(vt) = ann_ret
+                        && !matches!(vt, ValueType::TypeVariable(_))
+                    {
+                        Some(vt)
+                    } else {
+                        let func_scope = self.func(fn_idx).scope;
+                        let ret_id = SymbolIdentifier::FunctionRet(fn_idx, 0);
+                        self.get_symbol(&ret_id, func_scope).and_then(|ret_sym_idx| {
+                            let ver = self.sym(ret_sym_idx).versions.first()?;
+                            if ver.resolved_type.is_some() {
+                                return ver.resolved_type.clone();
+                            }
+                            ver.type_source.and_then(|src| self.resolve_expr(src))
+                        })
                     }
-                // Fall back to FunctionRet symbol: first try its resolved_type,
-                // then fall through to resolving its type_source (the return expr)
-                // so an unannotated inline function's first return is available
-                // even before the fixpoint has filled in `resolved_type`.
-                let func_scope = self.func(fn_idx).scope;
-                let ret_id = SymbolIdentifier::FunctionRet(fn_idx, 0);
-                let ret_sym_idx = self.get_symbol(&ret_id, func_scope)?;
-                let (resolved, type_source) = {
-                    let ver = self.sym(ret_sym_idx).versions.first()?;
-                    (ver.resolved_type.clone(), ver.type_source)
                 };
-                if resolved.is_some() {
-                    return resolved;
-                }
-                if let Some(src_expr) = type_source {
-                    return self.resolve_expr(src_expr);
-                }
-                None
+
+                // Parameter types
+                let param_annotations = self.func(fn_idx).param_annotations.clone();
+                let params = if param_annotations.is_empty() {
+                    None
+                } else {
+                    let mut types = Vec::new();
+                    for ann in &param_annotations {
+                        types.push(self.resolve_annotation_type(ann).unwrap_or(ValueType::Any));
+                    }
+                    Some(types)
+                };
+
+                ArgFunctionTypeInfo { ret, params }
             }
             ValueType::Table(Some(idx)) => {
-                if self.table(*idx).class_name.is_some() {
+                let ret = if self.table(*idx).class_name.is_some() {
                     Some(arg_type)
                 } else {
                     None
-                }
+                };
+                ArgFunctionTypeInfo { ret, params: None }
             }
-            _ => None,
+            _ => ArgFunctionTypeInfo::EMPTY,
         }
     }
 
