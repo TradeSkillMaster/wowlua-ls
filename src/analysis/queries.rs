@@ -3144,6 +3144,7 @@ impl AnalysisResult {
             ("type-narrows",   "Type guard that narrows target param",    F,         None),
             ("flavor-narrows", "Flavor guard that narrows WoW API availability", F,  None),
             ("narrows-arg",    "In-place argument type narrowing",        F,         Some("narrows-arg ${1:N}")),
+            ("requires",       "Restrict method by receiver type-param constraint", F,  Some("requires ${1:T}: ${2:Constraint}")),
             ("correlated",     "Declare fields that are always nil/non-nil together", C, None),
             ("see",            "Cross-reference link to related symbol or URL", F|C|S, None),
         ];
