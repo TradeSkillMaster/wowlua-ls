@@ -2473,6 +2473,7 @@ impl<'a> Analysis<'a> {
                     }
                     ValueType::Union(types) => {
                         let mut value_types: Vec<ValueType> = Vec::new();
+                        let key_type_resolved = self.resolve_expr(*key);
                         for t in types {
                             if let ValueType::Table(Some(idx)) = t {
                                 // Literal key → try named field lookup first
@@ -2485,6 +2486,15 @@ impl<'a> Analysis<'a> {
                                             }
                                             continue;
                                         }
+                                    }
+                                // Skip this union member if its key_type is incompatible
+                                // with the actual key (e.g. indexing table<K,V>|T[] with K
+                                // should only yield V, not the array element type)
+                                if let Some(ref kt) = key_type_resolved
+                                    && let Some(ref table_kt) = self.table(*idx).key_type
+                                    && !kt.is_assignable_to(table_kt)
+                                    && !self.is_table_subtype(kt, table_kt) {
+                                        continue;
                                     }
                                 if let Some(vt) = &self.table(*idx).value_type
                                     && !value_types.iter().any(|existing| self.types_equivalent(existing, vt)) {

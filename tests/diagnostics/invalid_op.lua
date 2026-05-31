@@ -205,3 +205,19 @@ local _orC
 if not _orA or not _orB or not _orC or _orA + _orB + _orC > 0 then
     _use(_orC)
 end
+
+-- Bracket access on union table with incompatible key type should not produce
+-- a union of all value types — only members whose key_type matches contribute.
+---@class BracketUnionItem
+---@field name string
+
+---@class BracketUnionCtx
+---@field items table<BracketUnionItem, number> | BracketUnionItem[]
+
+---@param ctx BracketUnionCtx
+---@param item BracketUnionItem
+local function _bracketUnionAccess(ctx, item)
+    local id = ctx.items[item]
+    _use(id > 0)
+end
+_use(_bracketUnionAccess)
