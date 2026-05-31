@@ -3637,6 +3637,48 @@ fn quick_fix_as_cast_assign_type_mismatch() {
         "should insert @as cast after the assigned value, got: {:?}", result);
 }
 
+#[test]
+fn quick_fix_nil_coalesce_number_concat() {
+    // `num` is number?; concatenating it triggers invalid-op.
+    let src = "local num = nil ---@type number?\nlocal text = \"n: \"..num\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "invalid-op")
+        .expect("expected invalid-op diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("\"n: \"..(num or 0)"),
+        "should wrap nilable number operand with `(num or 0)`, got: {:?}", result);
+}
+
+#[test]
+fn quick_fix_nil_coalesce_string_concat() {
+    // `s` is string?; concatenating it triggers invalid-op.
+    let src = "local s = nil ---@type string?\nlocal text = \"x\"..s\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "invalid-op")
+        .expect("expected invalid-op diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("\"x\"..(s or \"\")"),
+        "should wrap nilable string operand with `(s or \"\")`, got: {:?}", result);
+}
+
+#[test]
+fn quick_fix_nil_coalesce_arithmetic() {
+    // `n` is number?; arithmetic on it triggers invalid-op.
+    let src = "local n = nil ---@type number?\nlocal y = n + 1\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "invalid-op")
+        .expect("expected invalid-op diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("(n or 0) + 1"),
+        "should wrap nilable number operand with `(n or 0)`, got: {:?}", result);
+}
+
 // ── "Fix all in this file" bulk code action tests ─────────────────────────
 
 /// Find all LSP diagnostics with a given code.

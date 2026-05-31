@@ -43,6 +43,7 @@ use crate::analysis::queries::HighlightKind;
 use crate::analysis::semantic_tokens::{
     RawSemanticToken, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
+use crate::ast::{AstNode, BinaryExpression};
 use crate::syntax::tree::{NodeId, SyntaxTree};
 use crate::syntax::SyntaxKind;
 use crate::lsp::diagnostics;
@@ -3436,6 +3437,12 @@ pub fn compute_quick_fixes(
                 .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
                 .unwrap_or_default()
         }
+        "invalid-op" => {
+            let Some((tree, analysis)) = tree_and_analysis else { return vec![] };
+            make_nil_coalesce_action(uri, text, diag, tree, analysis)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
         _ => vec![],
     }
 }
@@ -3882,6 +3889,107 @@ fn make_fill_missing_fields_action(
         "Fill all missing fields".to_string()
     };
 
+    Some(CodeAction {
+        title,
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// If `ty` is a nilable `number?` or `string?` (a union of `nil` and exactly
+/// one of `Number` or `String`), return the Lua literal to coalesce nil to:
+/// `"0"` for numbers, `"\"\""` for strings. Returns `None` for any other shape
+/// (e.g. multi-member unions like `string|number|nil`, bare non-union types, or
+/// unions whose non-nil member is a table/function/boolean).
+fn nil_coalesce_default(ty: &ValueType) -> Option<&'static str> {
+    let ValueType::Union(members) = ty.strip_opaque() else { return None };
+    let mut non_nil = None;
+    for m in members {
+        if matches!(m, ValueType::Nil) { continue; }
+        if non_nil.is_some() { return None; } // more than one non-nil member
+        non_nil = Some(m);
+    }
+    match non_nil? {
+        ValueType::Number => Some("0"),
+        ValueType::String(_) => Some("\"\""),
+        _ => None,
+    }
+}
+
+/// Quick fix for `invalid-op` on a binary operation with a possibly-nil
+/// `number?`/`string?` operand: wrap the nilable operand(s) in `(expr or 0)`
+/// (numbers) or `(expr or "")` (strings) so the operation becomes well-typed.
+#[allow(clippy::mutable_key_type)]
+fn make_nil_coalesce_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+) -> Option<CodeAction> {
+    let utf8 = use_utf8();
+    let diag_start = super::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, utf8);
+    let diag_end = super::lsp_position_to_offset(text, diag.range.end.line, diag.range.end.character, utf8);
+
+    // Locate the IR binary-op site whose range matches the diagnostic.
+    let &(expr_id, _, _) = analysis.ir.binary_op_sites.iter()
+        .find(|&&(_, s, e)| s == diag_start && e == diag_end)?;
+    let crate::types::Expr::BinaryOp { lhs, rhs, .. } = analysis.ir.exprs[expr_id.val()] else { return None };
+
+    // Determine the coalesce default for each operand (None if not nilable num/str).
+    let lhs_default = analysis.resolve_expr_type(lhs).as_ref().and_then(nil_coalesce_default);
+    let rhs_default = analysis.resolve_expr_type(rhs).as_ref().and_then(nil_coalesce_default);
+    if lhs_default.is_none() && rhs_default.is_none() { return None; }
+
+    // Find the matching BinaryExpression syntax node to get operand text ranges.
+    // The IR lowers operands left-to-right, so term[0] is `lhs`, term[1] is `rhs`.
+    let root = crate::syntax::tree::SyntaxNode::new_root(tree);
+    let bin_node = root.descendants().find(|n| {
+        n.kind() == SyntaxKind::BinaryExpression
+            && n.text_range().start().0 == diag_start
+            && n.text_range().end().0 == diag_end
+    })?;
+    let terms = BinaryExpression::cast(bin_node)?.get_terms();
+    if terms.len() != 2 { return None; }
+
+    let numbers = super::SafeLinePositions::new(text);
+    let mut edits = Vec::new();
+    for (operand, default) in [(&terms[0], lhs_default), (&terms[1], rhs_default)] {
+        let Some(default) = default else { continue };
+        let range = operand.syntax().text_range();
+        let (op_start, op_end) = (range.start().0, range.end().0);
+        let operand_text = text.get(op_start as usize..op_end as usize)?;
+        edits.push(lsp_types::TextEdit {
+            range: Range {
+                start: numbers.lsp_position(op_start as usize, utf8),
+                end: numbers.lsp_position(op_end as usize, utf8),
+            },
+            new_text: format!("({} or {})", operand_text, default),
+        });
+    }
+    if edits.is_empty() { return None; }
+
+    // Sort edits in reverse document order so that applying them sequentially
+    // does not shift the byte positions of earlier edits.
+    edits.sort_by(|a, b| {
+        b.range.start.line.cmp(&a.range.start.line)
+            .then(b.range.start.character.cmp(&a.range.start.character))
+    });
+
+    let title = if edits.len() == 1 {
+        let default = lhs_default.or(rhs_default).unwrap_or("?");
+        format!("Provide fallback `or {}` for possibly-nil value", default)
+    } else {
+        "Provide fallbacks for possibly-nil values".to_string()
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), edits);
     Some(CodeAction {
         title,
         kind: Some(CodeActionKind::QUICKFIX),
