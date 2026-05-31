@@ -239,3 +239,54 @@ local function _parenOrGuardConcat(val)
     _use(r)
 end
 _use(_parenOrGuardConcat)
+
+-- String literal early-exit narrowing: `if x == "LIT" then return end` strips "LIT"
+---@param pct number|"BID"
+local function _earlyExitLiteral(pct)
+    if pct == "BID" then
+        return "bid"
+    end
+    -- pct should be narrowed to number here
+    local _p = pct
+    --    ^ hover: (local) _p: number
+    return _p < 100
+end
+_use(_earlyExitLiteral)
+
+-- String literal early-exit narrowing with ~= (negated):
+-- `if x ~= "active" then return end` → x IS "active" after
+---@param status "active"|"inactive"|number
+local function _earlyExitLiteralNeq(status)
+    if status ~= "active" then
+        return false
+    end
+    -- status should be narrowed to "active" here
+    local _s = status
+    --    ^ hover: (local) _s: "active"
+    return true
+end
+_use(_earlyExitLiteralNeq)
+
+-- ~= narrowing from 2-member string union
+---@param mode "read"|"write"
+local function _earlyExitNeqTwoMember(mode)
+    if mode ~= "read" then
+        return false
+    end
+    local _m = mode
+    --    ^ hover: (local) _m: "read"
+    return true
+end
+_use(_earlyExitNeqTwoMember)
+
+-- ~= narrowing from larger string union (only compared literal remains)
+---@param level "debug"|"info"|"warn"|"error"
+local function _earlyExitNeqLargeUnion(level)
+    if level ~= "error" then
+        return
+    end
+    local _l = level
+    --    ^ hover: (local) _l: "error"
+    return true
+end
+_use(_earlyExitNeqLargeUnion)

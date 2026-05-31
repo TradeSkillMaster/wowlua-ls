@@ -157,3 +157,29 @@ local function test_optional_field(x)
         --    ^ hover: (local) t: Opt.B
     end
 end
+
+-- ── Field chain string literal early-exit narrowing ─────────────────────────
+
+---@class StatusObj
+---@field status "active"|"inactive"|"archived"
+---@field value number
+
+-- `if obj.status == "archived" then return end` strips "archived" from field
+---@param obj StatusObj
+local function test_field_literal_eq_early_exit(obj)
+    if obj.status == "archived" then
+        return
+    end
+    local _s = obj.status
+    --    ^ hover: (local) _s: "active" | "inactive"
+end
+
+-- `if obj.status ~= "active" then return end` filters field to "active"
+---@param obj StatusObj
+local function test_field_literal_neq_early_exit(obj)
+    if obj.status ~= "active" then
+        return
+    end
+    local _s = obj.status
+    --    ^ hover: (local) _s: "active"
+end

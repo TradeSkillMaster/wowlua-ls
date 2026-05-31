@@ -890,6 +890,37 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                     }
+                    // String literal equality early exit:
+                    // `if x == "LIT" then return end` → strip "LIT" from x after
+                    // `if x ~= "LIT" then return end` → filter x to "LIT" after
+                    if let Some((ident, lit_vt)) = Self::extract_literal_eq_sides(lhs, rhs) {
+                        let names = ident.names_with_brackets();
+                        if names.len() == 1 {
+                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                                if is_eq {
+                                    self.add_type_stripped(scope_idx, sym_idx, lit_vt.clone());
+                                    self.push_strip_type_version(sym_idx, lit_vt, scope_idx, true);
+                                } else {
+                                    // `if x ~= "LIT" then return end` → x IS "LIT" after
+                                    self.type_filtered_symbols.entry(scope_idx).or_default()
+                                        .insert(sym_idx, lit_vt.clone());
+                                    self.push_type_filter_version(sym_idx, lit_vt, scope_idx, true);
+                                }
+                            }
+                        } else if names.len() >= 2 && !ident.has_any_dynamic_bracket()
+                            && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
+                        {
+                            let chain = names[1..].to_vec();
+                            if is_eq {
+                                self.add_type_stripped_field(scope_idx, sym_idx, chain, lit_vt);
+                            } else {
+                                self.narrowed_fields.entry(scope_idx).or_default()
+                                    .insert((sym_idx, chain.clone()));
+                                self.type_narrowed_fields.entry(scope_idx).or_default()
+                                    .insert((sym_idx, chain), lit_vt);
+                            }
+                        }
+                    }
                 }
             }
             Expression::GroupedExpression(g) => {
