@@ -562,7 +562,7 @@ pub(crate) fn parse_return_line(s: &str, force_tuple: bool) -> (AnnotationType, 
     (parse_type(type_only), name, description)
 }
 
-pub(super) fn strip_return_description(s: &str) -> &str {
+pub(crate) fn strip_return_description(s: &str) -> &str {
     let bytes = s.as_bytes();
     let mut depth = 0usize;
     let mut end = s.len();
@@ -594,7 +594,7 @@ pub(super) fn find_hash_comment(s: &str) -> Option<usize> {
     None
 }
 
-pub(super) fn extract_type_prefix(s: &str) -> &str {
+pub(crate) fn extract_type_prefix(s: &str) -> &str {
     let mut depth = 0usize;
     let mut after_colon = false;
     let mut in_fun_ret = false;

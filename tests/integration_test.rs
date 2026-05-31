@@ -3821,6 +3821,125 @@ fn fix_all_type_mismatch_two_instances() {
     assert!(result.contains("\"b\" --[[@as number]]"), "got: {:?}", result);
 }
 
+// ── Refactor: combine @return lines into a single-line tuple return ──────────
+
+/// Run `compute_code_actions` with the cursor at (line, col) and return the
+/// "Combine into single-line tuple return" action's first edit, if offered.
+fn combine_returns_edit_at(
+    src: &str,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+    line: u32,
+    col: u32,
+) -> Option<lsp_types::TextEdit> {
+    use lsp_types::{CodeActionOrCommand, Position, Range, Uri};
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let range = Range {
+        start: Position { line, character: col },
+        end:   Position { line, character: col },
+    };
+    let actions = lsp::compute_code_actions(&uri, src, range, &[], Some((tree, analysis)));
+    let action = actions.into_iter().find_map(|a| {
+        if let CodeActionOrCommand::CodeAction(ca) = a {
+            if ca.title == "Combine into single-line tuple return" { return Some(ca); }
+        }
+        None
+    })?;
+    let changes = action.edit?.changes?;
+    changes.into_values().next()?.into_iter().next()
+}
+
+#[test]
+fn combine_returns_cursor_on_function() {
+    let src = "---@return boolean success\n---@return number? numInvalidItems\n---@return number? numChangedOperations\nfunction Foo() return true end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    // Cursor on the function definition line (line 3).
+    let edit = combine_returns_edit_at(src, &tree, &analysis, 3, 0)
+        .expect("expected a combine-returns action");
+    let result = apply_text_edit(src, &edit);
+    assert!(
+        result.contains("---@return (boolean success, number? numInvalidItems, number? numChangedOperations)"),
+        "got: {:?}", result
+    );
+    // The three separate @return lines are gone.
+    assert_eq!(result.matches("---@return").count(), 1, "got: {:?}", result);
+    assert!(result.contains("function Foo()"), "function should be preserved");
+}
+
+#[test]
+fn combine_returns_cursor_on_comment() {
+    let src = "---@return boolean success\n---@return number? count\nfunction Foo() return true, 1 end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    // Cursor on the second @return comment line (line 1).
+    let edit = combine_returns_edit_at(src, &tree, &analysis, 1, 5)
+        .expect("expected a combine-returns action when cursor is on a @return line");
+    let result = apply_text_edit(src, &edit);
+    assert!(
+        result.contains("---@return (boolean success, number? count)"),
+        "got: {:?}", result
+    );
+}
+
+#[test]
+fn combine_returns_preserves_indentation() {
+    let src = "    ---@return boolean a\n    ---@return number b\n    local f = function() return true, 1 end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let edit = combine_returns_edit_at(src, &tree, &analysis, 0, 8)
+        .expect("expected a combine-returns action");
+    let result = apply_text_edit(src, &edit);
+    assert!(
+        result.contains("    ---@return (boolean a, number b)"),
+        "indentation should be preserved, got: {:?}", result
+    );
+}
+
+#[test]
+fn combine_returns_drops_descriptions() {
+    let src = "---@return boolean success the op worked\n---@return number count number of items\nfunction Foo() return true, 1 end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let edit = combine_returns_edit_at(src, &tree, &analysis, 0, 0)
+        .expect("expected a combine-returns action");
+    let result = apply_text_edit(src, &edit);
+    assert!(
+        result.contains("---@return (boolean success, number count)"),
+        "trailing prose descriptions should be dropped, got: {:?}", result
+    );
+}
+
+#[test]
+fn combine_returns_single_return_no_action() {
+    let src = "---@return boolean success\nfunction Foo() return true end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    assert!(
+        combine_returns_edit_at(src, &tree, &analysis, 1, 0).is_none(),
+        "a single @return line should not offer the combine action"
+    );
+}
+
+#[test]
+fn combine_returns_non_contiguous_no_action() {
+    // A @param interrupts the @return run, so the run above the function is a
+    // single line and no combine action is offered.
+    let src = "---@return boolean a\n---@param x number\n---@return number b\nfunction f(x) return true, x end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    assert!(
+        combine_returns_edit_at(src, &tree, &analysis, 3, 0).is_none(),
+        "non-contiguous @return lines should not be combined"
+    );
+}
+
+#[test]
+fn combine_returns_variadic_no_action() {
+    // A variadic `...T` return has special fill-remaining-slots semantics that
+    // cannot be expressed in the tuple shorthand — bail out.
+    let src = "---@return boolean success\n---@return ...string items\nfunction Foo() return true end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    assert!(
+        combine_returns_edit_at(src, &tree, &analysis, 2, 0).is_none(),
+        "variadic @return should prevent the combine action"
+    );
+}
+
 // ── Source action: generate annotation stubs ─────────────────────────────────
 
 /// Helper: call `make_generate_annotation_stubs_source_action` with the cursor

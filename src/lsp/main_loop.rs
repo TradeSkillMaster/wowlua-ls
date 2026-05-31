@@ -3324,6 +3324,11 @@ pub fn compute_code_actions(
         actions.push(CodeActionOrCommand::CodeAction(action));
     }
 
+    // Refactor: combine multiple `---@return` lines into a single-line tuple return.
+    if let Some(action) = make_combine_returns_action(uri, text, cursor_offset, tree_and_analysis) {
+        actions.push(CodeActionOrCommand::CodeAction(action));
+    }
+
     // Refactoring actions (only when there's a real selection)
     if range.start != range.end
         && let Some((tree, analysis)) = tree_and_analysis
@@ -3706,6 +3711,148 @@ pub fn make_generate_annotation_stubs_source_action(
     Some(CodeAction {
         title: "Generate annotation stubs".to_string(),
         kind: Some(CodeActionKind::SOURCE),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// If `line` is a `---@return` doc-comment, return the text following `@return`
+/// (trimmed). Accepts extra leading dashes (`----`) and an optional space before
+/// the tag (`--- @return`). Returns `None` for any other line.
+fn return_annotation_body(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let t = t.strip_prefix("---")?;
+    let t = t.trim_start_matches('-').trim_start();
+    let after = t.strip_prefix("@return")?;
+    // Guard against `@returns` and friends: the tag must be followed by
+    // whitespace or end-of-line.
+    if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(after.trim())
+}
+
+/// Refactor: combine a contiguous run of two or more `---@return` lines into a
+/// single-line tuple return, e.g.
+///
+/// ```text
+/// ---@return boolean success
+/// ---@return number? numInvalidItems
+/// ---@return number? numChangedOperations
+/// ```
+///
+/// becomes
+///
+/// ```text
+/// ---@return (boolean success, number? numInvalidItems, number? numChangedOperations)
+/// ```
+///
+/// Fires when the cursor sits on one of the `@return` comment lines, or inside a
+/// function whose annotation block ends with such a run. Per-position trailing
+/// prose descriptions are dropped (the tuple shorthand has no slot for them).
+#[allow(clippy::mutable_key_type)]
+fn make_combine_returns_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    cursor_offset: u32,
+    tree_and_analysis: Option<(&SyntaxTree, &AnalysisResult)>,
+) -> Option<CodeAction> {
+    let utf8 = use_utf8();
+    let numbers = super::SafeLinePositions::new(text);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let is_return_line = |i: usize| lines.get(i).is_some_and(|l| return_annotation_body(l).is_some());
+
+    let (cursor_line, _) = numbers.line_col(cursor_offset as usize);
+    let cursor_line = cursor_line.0 as usize;
+
+    // Determine a line that belongs to the `@return` run.
+    let anchor = if is_return_line(cursor_line) {
+        // Cursor is directly on a `@return` comment line.
+        cursor_line
+    } else {
+        // Cursor is inside a function: use the line immediately above its
+        // definition, which must be the last line of the `@return` run.
+        let (_, analysis) = tree_and_analysis?;
+        let func = analysis.ir.functions.iter()
+            .filter(|f| f.def_node.start <= cursor_offset && cursor_offset < f.def_node.end)
+            .min_by_key(|f| f.def_node.end - f.def_node.start)?;
+        let (func_line, _) = numbers.line_col(func.def_node.start as usize);
+        let above = (func_line.0 as usize).checked_sub(1)?;
+        if !is_return_line(above) { return None; }
+        above
+    };
+
+    // Expand to the full contiguous run of `@return` lines around the anchor.
+    // The `is_return_line` predicate naturally stops at non-`@return` lines
+    // (blank lines, code, `@param`, etc.), so orphaned annotation blocks above
+    // will not be swept in.
+    let mut first = anchor;
+    while first > 0 && is_return_line(first - 1) { first -= 1; }
+    let mut last = anchor;
+    while is_return_line(last + 1) { last += 1; }
+
+    // Need at least two lines to combine.
+    if last == first { return None; }
+
+    // Parse each line into a `type [name]` tuple position.
+    let mut positions: Vec<String> = Vec::new();
+    for line in &lines[first..=last] {
+        let body = return_annotation_body(line)?;
+        if body.is_empty() { return None; }
+        // Don't flatten forms that aren't simple `type name`: an existing tuple
+        // `(...)`, a `@return built` builder return, or a variadic `...T` return
+        // (which has special fill-remaining-slots semantics incompatible with
+        // tuple shorthand).
+        if body.starts_with('(') { return None; }
+        let stripped = crate::annotations::strip_return_description(body);
+        if stripped.starts_with("...") { return None; }
+        if stripped == "built"
+            || stripped.starts_with("built ")
+            || stripped.starts_with("built:")
+        {
+            return None;
+        }
+        let typ = crate::annotations::extract_type_prefix(stripped);
+        if typ.is_empty() { return None; }
+        let name = stripped[typ.len()..].split_whitespace().next().unwrap_or("");
+        if name.is_empty() {
+            positions.push(typ.to_string());
+        } else {
+            positions.push(format!("{} {}", typ, name));
+        }
+    }
+
+    // Preserve the indentation of the first `@return` line.
+    let indent = {
+        let l = lines[first];
+        &l[..l.len() - l.trim_start().len()]
+    };
+    let combined = format!("{}---@return ({})", indent, positions.join(", "));
+
+    // Precompute byte offsets of line starts (O(n) once, then O(1) per lookup).
+    let line_offsets: Vec<usize> = std::iter::once(0)
+        .chain(lines.iter().map(|l| l.len() + 1))
+        .scan(0usize, |acc, x| { *acc += x; Some(*acc) })
+        .collect();
+    let start_off = line_offsets[first];
+    let end_off = line_offsets[last + 1];
+
+    let edit = lsp_types::TextEdit {
+        range: Range {
+            start: numbers.lsp_position(start_off, utf8),
+            end: numbers.lsp_position(end_off, utf8),
+        },
+        new_text: format!("{}\n", combined),
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+    Some(CodeAction {
+        title: "Combine into single-line tuple return".to_string(),
+        kind: Some(CodeActionKind::REFACTOR_REWRITE),
         edit: Some(lsp_types::WorkspaceEdit {
             changes: Some(changes),
             ..Default::default()

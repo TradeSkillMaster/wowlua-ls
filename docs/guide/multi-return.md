@@ -137,6 +137,28 @@ function getPerson() end
 
 This is equivalent to separate `@return` lines but more compact.
 
+### Combine refactor
+
+To convert existing multi-line `@return` annotations into the single-tuple shorthand,
+place the cursor on any of the `@return` comment lines (or on the function definition)
+and invoke the **"Combine into single-line tuple return"** code action. It rewrites
+
+```lua
+---@return boolean success
+---@return number? numInvalidItems
+---@return number? numChangedOperations
+```
+
+into
+
+```lua
+---@return (boolean success, number? numInvalidItems, number? numChangedOperations)
+```
+
+The action only appears when there are two or more contiguous `@return` lines. Per-position
+trailing prose descriptions are dropped, since the tuple shorthand carries only a type and
+an optional name per position.
+
 ## Legacy syntax
 
 The legacy multi-line `@return` syntax still works:

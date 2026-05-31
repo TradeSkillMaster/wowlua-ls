@@ -3,7 +3,7 @@ use crate::ast::AstNode;
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::{ResolvedOverload, ValueType};
-use annotation_types::{strip_return_description, find_hash_comment, extract_type_prefix};
+use annotation_types::find_hash_comment;
 
 // ── Annotation types ─────────────────────────────────────────────────────────
 
@@ -1569,6 +1569,7 @@ pub mod scan_built_name;
 pub(crate) use annotation_types::{
     format_annotation_type, substitute_alias_type_params, match_projection,
     detect_event_params, detect_event_params_from_generic, parse_type, parse_return_line,
+    strip_return_description, extract_type_prefix,
 };
 pub use annotation_types::OverloadSig;
 pub(crate) use annotation_types::parse_overload;
