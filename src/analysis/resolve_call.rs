@@ -30,6 +30,47 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Resolve and substitute a single self-return type arg, applying `strip_nil`
+    /// where `NonNil` (the `T!` annotation) appears — even when nested inside unions.
+    fn resolve_and_substitute_self_arg(
+        &mut self,
+        at: &crate::annotations::AnnotationType,
+        fn_generics: &[(String, Option<String>)],
+        generic_subs: &HashMap<String, ValueType>,
+    ) -> Option<ValueType> {
+        use crate::annotations::AnnotationType;
+        match at {
+            AnnotationType::NonNil(inner) => {
+                let resolved = self.resolve_and_substitute_self_arg(inner, fn_generics, generic_subs)?;
+                Some(resolved.strip_nil())
+            }
+            AnnotationType::Union(parts) => {
+                let converted: Vec<ValueType> = parts.iter()
+                    .filter_map(|p| self.resolve_and_substitute_self_arg(p, fn_generics, generic_subs))
+                    .collect();
+                match converted.len() {
+                    0 => None,
+                    1 => converted.into_iter().next(),
+                    _ => Some(ValueType::make_union(converted)),
+                }
+            }
+            AnnotationType::Intersection(parts) => {
+                let converted: Vec<ValueType> = parts.iter()
+                    .filter_map(|p| self.resolve_and_substitute_self_arg(p, fn_generics, generic_subs))
+                    .collect();
+                match converted.len() {
+                    0 => None,
+                    1 => converted.into_iter().next(),
+                    _ => Some(ValueType::Intersection(converted)),
+                }
+            }
+            _ => {
+                let resolved = self.resolve_annotation_type_mut_gen(at, fn_generics)?;
+                Some(self.substitute_generics_deep(&resolved, generic_subs))
+            }
+        }
+    }
+
     /// Resolve `@return self<X>` type args: resolve annotation types, substitute
     /// bound generics, strip nil for `T!` (NonNil) positions, backfill trailing
     /// receiver type args, and insert into `call_type_args`.
@@ -43,15 +84,9 @@ impl<'a> Analysis<'a> {
     ) {
         let fn_generics = self.func(func_idx).generic_constraints_raw.clone();
         let mut resolved: Vec<ValueType> = self_args.iter()
-            .map(|ta| self.resolve_annotation_type_mut_gen(ta, &fn_generics)
+            .map(|ta| self.resolve_and_substitute_self_arg(ta, &fn_generics, generic_subs)
                 .unwrap_or(ValueType::Any))
             .collect();
-        for (i, arg) in resolved.iter_mut().enumerate() {
-            *arg = self.substitute_generics_deep(arg, generic_subs);
-            if matches!(self_args.get(i), Some(crate::annotations::AnnotationType::NonNil(_))) {
-                *arg = arg.strip_nil();
-            }
-        }
         // `self<X>` only re-parameterizes the leading type params; keep the
         // receiver's remaining type args (e.g. `Shared<string,string>` through
         // `@return self<R>` stays `Shared<R, string>`).

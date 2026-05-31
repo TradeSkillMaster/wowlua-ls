@@ -219,6 +219,20 @@ function Publisher:ReplaceBooleanWith(trueValue, falseValue) return self end
 local pub7 = pub:ReplaceBooleanWith("hello", 5)
 --               ^ hover: (method) function Publisher:ReplaceBooleanWith(trueValue: string, falseValue: number)\n-> self<string | number>
 
+-- @return self<T!|V>: NonNil inside union strips nil from T only
+---@generic V
+---@param value V
+---@return self<T!|V>
+function Publisher:CoalesceNil(value) return self end
+
+local pub8 = pub:CoalesceNil("")
+--    ^ hover: (local) pub8: Publisher<string>
+
+---@type Publisher<number|nil>
+local pubNilNum = {}
+local pub9 = pubNilNum:CoalesceNil("")
+--    ^ hover: (local) pub9: Publisher<number | string>
+
 -- ── Overload with self<R> and generic callback inference ─────────────────────
 
 ---@class Stream<T>
