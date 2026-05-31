@@ -1087,3 +1087,27 @@ local function guardedFlag()
     return ok
 end
 _consume(guardedFlag)
+
+-- ── Duplicate anonymous table dedup in synthesized return overloads ──────
+-- Regression: when a function returns {} in one branch and a table variable
+-- in another (multi-return), the synthesized overload union should collapse
+-- the two anonymous tables to a single `table`, not `table | table`.
+
+local function fetchItems()
+    local items = {}
+    return items
+end
+
+local function getInfo(msg)
+    local items = fetchItems()
+    if not items then
+        return {}
+    end
+    return items, msg
+end
+
+local info, newMsg = getInfo("test")
+local _ = info
+--        ^ hover: (local) info: table
+local _2 = newMsg
+--         ^ hover: (local) newMsg: string?

@@ -1663,7 +1663,7 @@ impl<'a> Analysis<'a> {
                     .map(|t| self.substitute_generics_deep(&t, &generic_subs))
                     .collect()
             };
-            Some(ValueType::make_union(return_only_types))
+            Some(self.ir.dedupe_union_tables(ValueType::make_union(return_only_types)))
         } else {
             // Walk every `FunctionRet` symbol in `func.rets` rather than
             // looking up just the body-scope one. Each `return` registers
