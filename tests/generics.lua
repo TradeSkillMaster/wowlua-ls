@@ -381,10 +381,11 @@ extractBool(numBox) -- use to avoid unused-function
 local boolBox = {}
 extractBool(boolBox)
 
--- Union type argument containing the expected type: tolerated (truthiness idiom)
+-- Union type argument: not all members compatible → type-mismatch
 ---@type Container<boolean | number>
 local unionBox = {}
 extractBool(unionBox)
+--          ^ diag: type-mismatch
 
 -- ── Identity-forwarding parameterized subclass: type args compared ──────
 
@@ -403,6 +404,20 @@ local subVal = subNum:Get()
 ---@type SubContainer<boolean>
 local subBool = {}
 extractBool(subBool)  -- subclass with matching type arg: clean
+
+-- Union type arg where only some members are compatible: flags
+---@param c Container<string | number>
+local function acceptStringOrNum(c) return c:Get() end
+---@type Container<number | false>
+local falseBox = {}
+acceptStringOrNum(falseBox)
+--               ^ diag: type-mismatch
+acceptStringOrNum(numBox)  -- Container<number>: number assignable to string|number: clean
+
+-- Union type arg where all members are compatible: clean
+---@type Container<number>
+local numBox2 = {}
+acceptStringOrNum(numBox2)
 
 -- Non-identity parameterized parent is now linked (binding T's parent to a
 -- concrete `string`), but the child's own arg `number` still mismatches the

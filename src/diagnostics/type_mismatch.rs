@@ -79,16 +79,16 @@ fn generic_arg_variance_violation(
         if exp_args.len() != check.actual_type_args.len() { continue; }
         for (act, exp) in check.actual_type_args.iter().zip(exp_args.iter()) {
             if is_unconstrained_type_arg(act) || is_unconstrained_type_arg(exp) { continue; }
-            // A union actual type arg is tolerated when ANY member is compatible:
-            // this covers truthiness idioms like `x or <bool>` whose inferred value
-            // type is a union containing the expected type. Only flag when no member
-            // is compatible (e.g. `BaseFrame?` or `number` against `boolean`).
+            // All non-nil members of a union type arg must be compatible with
+            // the expected type arg (covariant check). Nil is filtered because
+            // optionality is handled separately by the outer type check.
             let members: Vec<&ValueType> = match act {
                 ValueType::Union(ms) => ms.iter().filter(|m| !matches!(m, ValueType::Nil)).collect(),
                 other => vec![other],
             };
+            // Empty after nil-filter → vacuous true; outer check handles nil-only args.
             let compatible = members.iter()
-                .any(|m| m.is_assignable_to(exp) || analysis.is_table_subtype(m, exp));
+                .all(|m| m.is_assignable_to(exp) || analysis.is_table_subtype(m, exp));
             if !compatible {
                 let fmt_args = |idx: TableIndex, args: &[ValueType]| -> String {
                     let name = analysis.table(idx).class_name.clone().unwrap_or_default();
