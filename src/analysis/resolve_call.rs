@@ -948,7 +948,19 @@ impl<'a> Analysis<'a> {
                                 &expr_tree,
                                 &|word: &str| table_idxs.iter()
                                     .find_map(|&idx| self.get_field(idx, word)
-                                        .and_then(|fi| fi.annotation.clone())),
+                                        .and_then(|fi| {
+                                            let ty = fi.annotation.clone()?;
+                                            // Lateinit (T!) fields strip nil for static access
+                                            // (no need-check-nil), but in expression<> strings
+                                            // the expression evaluates at runtime when the field
+                                            // may still be unset, so include nil to avoid a false
+                                            // positive type-mismatch on the generic R binding.
+                                            if fi.lateinit {
+                                                Some(ValueType::make_union(vec![ty, ValueType::Nil]))
+                                            } else {
+                                                Some(ty)
+                                            }
+                                        })),
                             );
                             if let Some(t) = inferred
                                 && !matches!(t, ValueType::Any)

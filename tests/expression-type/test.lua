@@ -215,3 +215,57 @@ local function useDynParam(st)
 	local p = st:Publisher([[flag]])
 	--    ^ hover: (local) p: ExprSchema<boolean>
 end
+
+-- ── Lateinit (T!) fields include nil in expression R inference ──
+---@class LateinitBuilder
+local LateinitBuilder = {}
+
+---@built-name 1
+---@return self
+function LateinitBuilder.Create(name) return LateinitBuilder end
+
+---@generic T
+---@param key string
+---@param class T|`T`
+---@builds-field 1 T!
+---@return self
+function LateinitBuilder:AddDeferredField(key, class) return self end
+
+---@param key string
+---@builds-field 1 number
+---@return self
+function LateinitBuilder:AddNumField(key) return self end
+
+---@return self
+function LateinitBuilder:Commit() return self end
+
+---@return built: DynState
+function LateinitBuilder:CreateState() end
+
+local liState = LateinitBuilder.Create("LIState")
+	:AddDeferredField("frame", "ExprSchema")
+	:AddNumField("count")
+	:Commit()
+	:CreateState()
+
+-- Lateinit field binds R = ExprSchema? (includes nil)
+local liPub = liState:Publisher([[frame]])
+--    ^ hover: (local) liPub: ExprSchema<ExprSchema?>
+
+-- Non-lateinit field still binds R without nil
+local liNum = liState:Publisher([[count]])
+--    ^ hover: (local) liNum: ExprSchema<number>
+
+-- Lateinit on an already-nilable annotation deduplicates nil via make_union
+---@param key string
+---@builds-field 1 string?!
+---@return self
+function LateinitBuilder:AddNilableLI(key) return self end
+
+local liState2 = LateinitBuilder.Create("LIState2")
+	:AddNilableLI("tag")
+	:Commit()
+	:CreateState()
+
+local liTag = liState2:Publisher([[tag]])
+--    ^ hover: (local) liTag: ExprSchema<string?>
