@@ -2490,6 +2490,61 @@ local function _multiRetTest(value, flag)
 end
 _multiRetTest("x", true)
 
+-- Self-referential multi-return: param used as both argument and assignment target,
+-- with early-return narrowing that should not rewrite the pre-assignment argument ref.
+---@param value string
+---@param canBeZero boolean
+---@return (number value, nil)|(nil, string errStr)
+local function _multiRetParseTupleUnion(value, canBeZero)
+    return nil, "err"
+end
+
+---@param value string
+---@param flag boolean
+local function _multiRetSelfRefAnnotated(value, flag)
+    local errMsg = nil
+    value, errMsg = _multiRetParseTupleUnion(value, flag)
+    --                                       ^ hover: (param) value: string
+    if not value then
+        return false, errMsg
+    end
+    return true
+end
+_multiRetSelfRefAnnotated("x", true)
+
+-- Same pattern but WITHOUT @param on value — backward inference determines the type.
+-- The deferred narrowing from `if not value then return end` must not rewrite
+-- the argument SymbolRef from its pre-assignment version to the narrowed version.
+local function _multiRetSelfRefUnannotated(value, flag)
+    local errMsg = nil
+    value, errMsg = _multiRetParseTupleUnion(value, flag)
+    --                                       ^ hover: (param) value: string
+    if not value then
+        return false, errMsg
+    end
+    return true
+end
+_multiRetSelfRefUnannotated("x", true)
+
+-- Sequential multi-return reassignments: ensures the `multi_return_siblings`
+-- entry (which may be overwritten by the second call) doesn't cause a false
+-- positive on the first call's argument, and that the second call correctly
+-- reports a type-mismatch (value is now number? from the first call).
+---@param value string
+---@param flag boolean
+local function _multiRetSequentialReassign(value, flag)
+    local errMsg = nil
+    value, errMsg = _multiRetParseTupleUnion(value, flag)
+    --                                       ^ hover: (param) value: string
+    value, errMsg = _multiRetParseTupleUnion(value, flag)
+    --                                       ^ diag: type-mismatch
+    if not value then
+        return false, errMsg
+    end
+    return true
+end
+_multiRetSequentialReassign("x", true)
+
 -- ── Function alias field materialization ─────────────────────────────────────
 -- Fields typed with function aliases should resolve to concrete function types
 -- and enable parameter checking at call sites.

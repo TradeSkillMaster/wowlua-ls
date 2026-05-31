@@ -1415,6 +1415,17 @@ impl<'a> Analysis<'a> {
                     // is NOT a reassignment — it refines the same value. Only a
                     // genuine reassignment (FunctionCall, literal, different RHS)
                     // should block the deferred narrowing rewrite.
+                    //
+                    // Special case: a FunctionCall version in a multi-return sibling
+                    // group is only "transparent" when the SymbolRef is already at
+                    // that version (v == old_ver) — it's the base being refined by
+                    // OverloadNarrow. When the ref is at an earlier version, the
+                    // FunctionCall is a real assignment boundary (e.g. param `value`
+                    // at version 0 should not be rewritten past the multi-return
+                    // reassignment at version 1).
+                    if v != old_ver && self.is_function_call_on_multi_return_symbol(sym_idx, v) {
+                        return true;
+                    }
                     !self.is_narrowing_version_of(sym_idx, v)
                 });
                 if is_post_reassignment {
@@ -1447,13 +1458,28 @@ impl<'a> Analysis<'a> {
             // A FunctionCall version that is part of a multi-return sibling group
             // is the base value being refined by the OverloadNarrow, not an
             // unrelated reassignment that should block the rewrite.
-            // Note: we use contains_key rather than matching call_range because
-            // multi_return_siblings may have been overwritten by a later
-            // multi-return reassignment of the same symbol (e.g., the same
-            // variable destructured from two different calls in sequence).
-            Expr::FunctionCall { .. } => self.multi_return_siblings.contains_key(&sym_idx),
+            Expr::FunctionCall { .. } => self.is_function_call_on_multi_return_symbol(sym_idx, ver),
             _ => false,
         }
+    }
+
+    /// Whether version `ver` of `sym_idx` is a FunctionCall whose symbol is
+    /// tracked in `multi_return_siblings`. Used by `rewrite_sym_refs_in_subtree`
+    /// to block rewrites that jump over the multi-return assignment from a
+    /// pre-assignment version.
+    ///
+    /// Note: uses `contains_key` rather than matching call_range because
+    /// `multi_return_siblings` may have been overwritten by a later multi-return
+    /// reassignment of the same symbol. This means the check can return true for
+    /// a single-return FunctionCall if the symbol was later involved in a
+    /// multi-return assignment. In practice this is correct — any non-`old_ver`
+    /// FunctionCall should block the rewrite regardless of its return arity.
+    fn is_function_call_on_multi_return_symbol(&self, sym_idx: SymbolIndex, ver: usize) -> bool {
+        let Some(ts) = self.ir.symbols[sym_idx.val()].versions[ver].type_source else {
+            return false;
+        };
+        matches!(self.ir.expr(ts), Expr::FunctionCall { .. })
+            && self.multi_return_siblings.contains_key(&sym_idx)
     }
 
     /// Check if `candidate` is the same as `root` or a descendant scope of `root`.
