@@ -1527,10 +1527,18 @@ impl AnalysisResult {
         let (_, param_idx, call_res) = self.call_resolution_for_arg(&token)?;
         let func = self.func(call_res.func_idx);
         let ann = func.param_annotations.get(param_idx)?;
-        let event_type_name = match ann {
+        let mut event_type_name = match ann {
             crate::annotations::AnnotationType::Simple(s) => s.as_str(),
             _ => return None,
         };
+        // If the param type is a generic type variable (e.g. `@param event E`
+        // with `@generic E: FrameEvent`), resolve it to its constraint so the
+        // event payload can be looked up under the event-type name.
+        if let Some((_, Some(constraint))) = func.generic_constraints_raw.iter()
+            .find(|(n, _)| n == event_type_name)
+        {
+            event_type_name = constraint.as_str();
+        }
 
         let payload = self.ir.ext.event_types.get(event_type_name)?
             .get(event_name)?;

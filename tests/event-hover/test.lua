@@ -276,3 +276,55 @@ ef:OnAction("DO_PROCESS", function(...)
     local b = a
 --        ^ hover: (local) b: boolean
 end)
+
+-- ── Inline callback NAMED params typed from a bound event-name generic ──
+-- (regression: a callback written as `function(foo)` rather than `function(...)`
+--  still types its named params positionally from the event payload)
+
+RegisterAction("DO_PROCESS", function(success, canRetry)
+    local s = success
+--        ^ hover: (local) s: boolean
+    local c = canRetry
+--        ^ hover: (local) c: boolean
+end)
+
+-- Fewer named params than the payload: only the first is bound.
+RegisterAction("DO_PROCESS", function(first)
+    local f = first
+--        ^ hover: (local) f: boolean
+end)
+
+-- Event with no payload: a named param stays untyped.
+RegisterAction("DO_SKIP", function(nothing)
+    local n = nothing
+--        ^ hover: (local) n: ?
+end)
+
+-- Colon-syntax method variant types named params positionally too.
+ef:OnAction("DO_PROCESS", function(ok, retry)
+    local o = ok
+--        ^ hover: (local) o: boolean
+    local r = retry
+--        ^ hover: (local) r: boolean
+end)
+
+-- ── Annotation with named params before ...params<E> (vararg_pos > 0) ──
+-- The callback annotation `fun(label: string, ...params<E>)` means the first
+-- inline param is typed from the annotation ("label: string") and params after
+-- that position map to the event payload.
+RegisterLabeled("DO_PROCESS", function(lbl, success, canRetry)
+    local l = lbl
+--        ^ hover: (local) l: string
+    local s = success
+--        ^ hover: (local) s: boolean
+    local c = canRetry
+--        ^ hover: (local) c: boolean
+end)
+
+-- ── Event-name string hover/def resolves through a generic constraint ──
+-- (regression: `@param event E` with `@generic E: ActionEvent` should still
+--  hover the event-name argument as an event, via E's constraint)
+RegisterAction("DO_PROCESS", function() end)
+--               ^ hover: (event) DO_PROCESS → success: boolean, canRetry: boolean  def: external
+ef:OnAction("DO_PROCESS", function() end)
+--            ^ hover: (event) DO_PROCESS → success: boolean, canRetry: boolean  def: external

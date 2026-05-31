@@ -215,6 +215,18 @@ name passed in (`"BAG_UPDATE"`), and `...params<E>` resolves to that event's dec
 If the event name is not a string literal, or names an event with no payload, the varargs
 degrade to `?`.
 
+The callback may also declare **named parameters** instead of `...` — they are typed
+positionally from the payload:
+
+```lua
+Event.Register("CHAT_MSG_CHANNEL", function(text)
+    -- text: string
+end)
+```
+
+Extra named parameters beyond the payload length remain untyped (`?`); if fewer are
+declared, only those are typed.
+
 ### Event name quoting
 
 Event names in `@event` declarations should be quoted to match how they appear at call sites:

@@ -551,14 +551,17 @@ impl<'a> Analysis<'a> {
                         ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
                     )) else { continue };
                 let params = sig.params;
-                // Find the `...params<G>` vararg projection's generic name.
-                let Some(gen_name) = params.iter().find_map(|p| {
+                // Find the `...params<G>` vararg projection's generic name and its
+                // position within the annotation's param list (e.g. for
+                // `fun(label: string, ...params<E>)`, vararg_pos=1). The inline
+                // callback's params at and after that index are typed from the payload.
+                let Some((vararg_pos, gen_name)) = params.iter().enumerate().find_map(|(pos, p)| {
                     if p.name != "..." { return None; }
                     if let crate::annotations::AnnotationType::Parameterized(base, targs) = &p.typ
                         && base == "params" && targs.len() == 1
                         && let crate::annotations::AnnotationType::Simple(g) = &targs[0]
                     {
-                        Some(g.clone())
+                        Some((pos, g.clone()))
                     } else {
                         None
                     }
@@ -578,6 +581,20 @@ impl<'a> Analysis<'a> {
                     .collect();
                 if !vararg_types.is_empty() {
                     let scope = self.ir.functions[inline_func_idx.val()].scope;
+                    // Type the inline callback's named params positionally from the
+                    // payload: a callback written as `function(foo)` (rather than
+                    // `function(...)`) consumes the varargs through named params, so
+                    // map payload[j] onto the j-th param after the vararg position.
+                    let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
+                    for (j, vt) in vararg_types.iter().enumerate() {
+                        let Some(&param_sym) = inline_args.get(vararg_pos + j) else { break };
+                        if param_sym.is_external() { continue; }
+                        if let Some(v) = self.ir.symbols[param_sym.val()].versions.first_mut()
+                            && v.resolved_type.is_none()
+                        {
+                            v.resolved_type = Some(vt.clone());
+                        }
+                    }
                     self.event_vararg_types.insert(scope, vararg_types);
                 }
             }

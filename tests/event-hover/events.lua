@@ -72,6 +72,12 @@ function RegisterAction(event, callback) end
 ---@param callback fun(...params<E>)
 function EventFrame:OnAction(event, callback) end
 
+-- Callback annotation with a named param before ...params<E> (vararg_pos=1).
+---@generic E: ActionEvent
+---@param event E
+---@param callback fun(label: string, ...params<E>)
+function RegisterLabeled(event, callback) end
+
 ---@overload fun(self: EventFrame, script: "OnEvent", handler: fun(self: EventFrame, event: WowEvent, ...params<WowEvent>))
 ---@overload fun(self: EventFrame, script: "OnUpdate", handler: fun(self: EventFrame, elapsed: number))
 ---@param scriptType string
