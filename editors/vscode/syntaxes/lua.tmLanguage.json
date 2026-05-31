@@ -445,8 +445,8 @@
               ]
             },
             {
-              "comment": "Description text starting with @ (e.g. @Iterator, @see)",
-              "match": "\\s*@[a-zA-Z].+",
+              "comment": "Description text starting with @ (e.g. @Iterator, @see, @!!!FIXME)",
+              "match": "\\s*@\\S.+",
               "name": "comment.block.documentation.lua"
             },
             {"match": "\\?", "name": "keyword.operator.lua"},
