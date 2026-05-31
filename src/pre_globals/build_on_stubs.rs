@@ -805,7 +805,7 @@ impl<'a> BuildOnStubsContext<'a> {
             // Indexed parallel to `ws_classes`.
             let lookup_parents: Vec<Vec<String>> = ws_classes.iter()
                 .map(|c| c.parents.iter()
-                    .filter_map(|p| crate::annotations::parent_class_lookup_name(p, &c.type_params))
+                    .filter_map(|p| crate::annotations::parent_link_with_bindings(p).map(|(b, _)| b))
                     .collect())
                 .collect();
             let mut ws_class_index: HashMap<&str, usize> = HashMap::new();
@@ -912,6 +912,25 @@ impl<'a> BuildOnStubsContext<'a> {
                 }
                 if changed {
                     self.tables[child_local].parent_classes = accum;
+                }
+            }
+        }
+
+        // Record direct-parent type-arg bindings for ANY parameterized parent
+        // (including renamed/non-identity ones like `Child<TCur,TShared> :
+        // Parent<TCur>`). Independent of `parent_classes` linkage — this only
+        // drives ancestor type-param translation at call resolution.
+        for class in ws_classes.iter() {
+            if class.parents.is_empty() { continue; }
+            let Some(&child_table_idx) = self.classes.get(class.name.as_str()) else { continue };
+            let child_local = child_table_idx.ext_offset();
+            let bindings_to_record = crate::annotations::collect_parent_type_bindings(
+                &class.parents, &class.type_params, &self.classes,
+                |a, g| crate::annotations::resolve_annotation_type(a, g, &self.classes, &self.aliases),
+            );
+            for (parent_idx, b) in bindings_to_record {
+                if !self.tables[child_local].parent_type_bindings.iter().any(|(pi, _)| *pi == parent_idx) {
+                    self.tables[child_local].parent_type_bindings.push((parent_idx, b));
                 }
             }
         }

@@ -30,6 +30,42 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Resolve `@return self<X>` type args: resolve annotation types, substitute
+    /// bound generics, strip nil for `T!` (NonNil) positions, backfill trailing
+    /// receiver type args, and insert into `call_type_args`.
+    fn resolve_self_return_type_args(
+        &mut self,
+        self_args: &[crate::annotations::AnnotationType],
+        func_idx: FunctionIndex,
+        generic_subs: &HashMap<String, ValueType>,
+        receiver_expr_id: Option<ExprId>,
+        expr_id: ExprId,
+    ) {
+        let fn_generics = self.func(func_idx).generic_constraints_raw.clone();
+        let mut resolved: Vec<ValueType> = self_args.iter()
+            .map(|ta| self.resolve_annotation_type_mut_gen(ta, &fn_generics)
+                .unwrap_or(ValueType::Any))
+            .collect();
+        for (i, arg) in resolved.iter_mut().enumerate() {
+            *arg = self.substitute_generics_deep(arg, generic_subs);
+            if matches!(self_args.get(i), Some(crate::annotations::AnnotationType::NonNil(_))) {
+                *arg = arg.strip_nil();
+            }
+        }
+        // `self<X>` only re-parameterizes the leading type params; keep the
+        // receiver's remaining type args (e.g. `Shared<string,string>` through
+        // `@return self<R>` stays `Shared<R, string>`).
+        if let Some(re) = receiver_expr_id {
+            let recv_args = self.get_expr_type_args(re);
+            while resolved.len() < recv_args.len() {
+                resolved.push(recv_args[resolved.len()].clone());
+            }
+        }
+        if !resolved.is_empty() {
+            self.call_type_args.insert(expr_id, resolved);
+        }
+    }
+
     pub(super) fn resolve_function_call(
         &mut self,
         expr_id: ExprId,
@@ -172,6 +208,42 @@ impl<'a> Analysis<'a> {
                 for (pos, name) in ctp.iter().enumerate() {
                     if let Some(vt) = receiver_type_args.get(pos) {
                         class_type_param_subs.insert(name.clone(), vt.clone());
+                    }
+                }
+            }
+            // Translate ancestor class type-param names through parameterized-parent
+            // bindings (e.g. `Child<TCur,TShared> : Parent<TCur>` makes Parent's `T`
+            // resolve to TCur's concrete binding). Walk `parent_type_bindings`
+            // transitively so an inherited method's `@requires`/param/return
+            // annotations — which reference the ANCESTOR's param names — resolve to
+            // the receiver's concrete types. Child bindings win on name collision
+            // (`or_insert`), and `visited` guards against cyclic inheritance.
+            //
+            // Uses DFS (work.pop) which is fine: `or_insert` means the child's own
+            // bindings always win regardless of visit order, and sibling parents with
+            // the same param name are not a real-world pattern. The `.clone()` calls
+            // on `parent_type_bindings` and `class_type_params` are borrow-checker
+            // workarounds — `self` is borrowed mutably by `substitute_generics_deep`,
+            // so we can't hold shared refs into `self.table()` across that call.
+            if let Some(ValueType::Table(Some(recv_tidx))) = &receiver_type {
+                let mut work: Vec<(TableIndex, HashMap<String, ValueType>)> =
+                    vec![(*recv_tidx, class_type_param_subs.clone())];
+                let mut visited: HashSet<TableIndex> = HashSet::new();
+                while let Some((tidx, cur_subs)) = work.pop() {
+                    if !visited.insert(tidx) { continue; }
+                    let parent_bindings = self.table(tidx).parent_type_bindings.clone();
+                    for (parent_idx, bindings) in parent_bindings {
+                        let parent_params = self.table(parent_idx).class_type_params.clone();
+                        let mut parent_subs: HashMap<String, ValueType> = HashMap::new();
+                        for (i, p_name) in parent_params.iter().enumerate() {
+                            if let Some(b) = bindings.get(i) {
+                                let concrete = self.substitute_generics_deep(b, &cur_subs);
+                                class_type_param_subs.entry(p_name.clone())
+                                    .or_insert_with(|| concrete.clone());
+                                parent_subs.insert(p_name.clone(), concrete);
+                            }
+                        }
+                        work.push((parent_idx, parent_subs));
                     }
                 }
             }
@@ -1104,22 +1176,9 @@ impl<'a> Analysis<'a> {
             let receiver_type = receiver_expr_id.and_then(|re| self.resolve_expr(re));
             if let Some(rt) = receiver_type {
                 if !self_args.is_empty() {
-                    // self<R>: resolve type args and substitute bound generics
-                    let fn_generics = self.func(func_idx).generic_constraints_raw.clone();
-                    let self_args = self_args.clone();
-                    let mut resolved: Vec<ValueType> = self_args.iter()
-                        .map(|ta| self.resolve_annotation_type_mut_gen(ta, &fn_generics)
-                            .unwrap_or(ValueType::Any))
-                        .collect();
-                    for (i, arg) in resolved.iter_mut().enumerate() {
-                        *arg = self.substitute_generics_deep(arg, &generic_subs);
-                        if matches!(self_args.get(i), Some(crate::annotations::AnnotationType::NonNil(_))) {
-                            *arg = arg.strip_nil();
-                        }
-                    }
-                    if !resolved.is_empty() {
-                        self.call_type_args.insert(expr_id, resolved);
-                    }
+                    self.resolve_self_return_type_args(
+                        self_args, func_idx, &generic_subs, receiver_expr_id, expr_id,
+                    );
                 } else {
                     // Plain self: propagate receiver's type args
                     if let Some(re) = receiver_expr_id {
@@ -1191,22 +1250,9 @@ impl<'a> Analysis<'a> {
                 // own generics) and cache under this call's ExprId so display and
                 // downstream resolution reconstruct `Class<X>`.
                 if let Some(self_args) = self.func(func_idx).returns_self_type_args.clone() {
-                    let fn_generics = self.func(func_idx).generic_constraints_raw.clone();
-                    let mut resolved: Vec<ValueType> = self_args.iter()
-                        .map(|ta| self.resolve_annotation_type_mut_gen(ta, &fn_generics)
-                            .unwrap_or(ValueType::Any))
-                        .collect();
-                    for (i, arg) in resolved.iter_mut().enumerate() {
-                        *arg = self.substitute_generics_deep(arg, &generic_subs);
-                        // T! (NonNil) strips nil after generic substitution so that
-                        // e.g. @return self<T!> on Publisher<string?> yields Publisher<string>.
-                        if matches!(self_args.get(i), Some(crate::annotations::AnnotationType::NonNil(_))) {
-                            *arg = arg.strip_nil();
-                        }
-                    }
-                    if !resolved.is_empty() {
-                        self.call_type_args.insert(expr_id, resolved);
-                    }
+                    self.resolve_self_return_type_args(
+                        &self_args, func_idx, &generic_subs, receiver_expr_id, expr_id,
+                    );
                 } else {
                     // Plain @return self: propagate receiver's type args so that
                     // chained calls (e.g. pub:Filter():IgnoreNil()) can resolve

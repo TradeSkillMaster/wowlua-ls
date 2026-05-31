@@ -189,37 +189,56 @@ pub(crate) fn resolve_primitive_type_name(name: &str) -> Option<ValueType> {
 }
 
 /// Returns the base class name to use when linking a `@class Child : Parent`
-/// parent into the inheritance graph.
+/// parent into the inheritance graph, plus the parent's parsed type-arg
+/// annotations so callers can resolve them into per-position bindings.
 ///
-/// - A plain parent name (`Parent`) returns `Some("Parent")`.
-/// - A parameterized parent that purely forwards the child's own type
-///   parameters in order (`Child<T, U> : Parent<T, U>`) returns the base name
-///   (`Some("Parent")`), so the class links like an identity-forwarding
-///   subclass and type arguments can be compared positionally.
-/// - `table<K, V>` parents return `None` (handled separately via key/value
-///   types), as do non-identity parameterized parents (`Child<T> : Parent<string>`
-///   or reordered args), which we deliberately leave unlinked to avoid unsound
-///   positional type-argument comparisons.
-pub(crate) fn parent_class_lookup_name(
-    parent_name: &str,
-    child_type_params: &[String],
-) -> Option<String> {
+/// - A plain parent name (`Parent`) returns `Some(("Parent", []))`.
+/// - A parameterized parent (`Child<TCur, TShared> : Parent<TCur>`) returns
+///   `Some(("Parent", [Simple("TCur")]))`, regardless of whether the args
+///   identity-forward the child's own params. Renamed/reordered/concrete args
+///   link too; soundness of type-arg comparisons is provided by the recorded
+///   `parent_type_bindings` rather than positional name matching.
+/// - `table<K, V>` parents return `None` (handled separately via key/value types).
+pub(crate) fn parent_link_with_bindings(parent_name: &str) -> Option<(String, Vec<AnnotationType>)> {
     if !parent_name.contains('<') {
-        return Some(parent_name.to_string());
+        return Some((parent_name.to_string(), Vec::new()));
     }
-    if let AnnotationType::Parameterized(base, args) = parse_type(parent_name) {
-        if base == "table" {
-            return None;
-        }
-        let identity_forwarding = args.len() == child_type_params.len()
-            && args.iter().zip(child_type_params).all(|(a, p)| {
-                matches!(a, AnnotationType::Simple(n) if n == p)
-            });
-        if identity_forwarding {
-            return Some(base);
-        }
+    match parse_type(parent_name) {
+        AnnotationType::Parameterized(base, _) if base == "table" => None,
+        AnnotationType::Parameterized(base, args) => Some((base, args)),
+        _ => None,
     }
-    None
+}
+
+/// Resolve direct-parent type-arg bindings for `parent_type_bindings`.
+/// For each parent string with type args whose base class name resolves in
+/// `classes`, returns `(parent_idx, bindings)` where each binding is the
+/// parent type-arg resolved via the caller-supplied `resolve_fn` with the
+/// child's type params registered as generics (so a forwarded child param
+/// name becomes `TypeVariable`).
+///
+/// Shared between `prescan.rs` (per-file) and `build_on_stubs.rs` (workspace);
+/// the only difference is which type resolver they pass in.
+pub(crate) fn collect_parent_type_bindings(
+    parents: &[String],
+    child_type_params: &[String],
+    classes: &std::collections::HashMap<String, crate::types::TableIndex>,
+    mut resolve_fn: impl FnMut(&AnnotationType, &[(String, Option<String>)]) -> Option<crate::types::ValueType>,
+) -> Vec<(crate::types::TableIndex, Vec<crate::types::ValueType>)> {
+    let child_generics: Vec<(String, Option<String>)> = child_type_params.iter()
+        .map(|p| (p.clone(), None)).collect();
+    let mut out = Vec::new();
+    for p in parents {
+        let Some((base, args)) = parent_link_with_bindings(p) else { continue };
+        if args.is_empty() { continue; }
+        let Some(&parent_idx) = classes.get(base.as_str()) else { continue };
+        if out.iter().any(|(pi, _)| *pi == parent_idx) { continue; }
+        let bindings: Vec<crate::types::ValueType> = args.iter()
+            .map(|a| resolve_fn(a, &child_generics).unwrap_or(crate::types::ValueType::Any))
+            .collect();
+        out.push((parent_idx, bindings));
+    }
+    out
 }
 
 /// Extract `self` / `self<X>` from an overload's return annotations.

@@ -876,6 +876,18 @@ pub(crate) struct TableInfo {
     #[serde(default)]
     pub(crate) class_type_param_constraints: Vec<Option<String>>,
     pub(crate) parent_classes: Vec<TableIndex>,
+    /// Direct-parent type-arg bindings (DIRECT annotation/defclass parents only,
+    /// NOT the flattened `parent_classes`). Each entry is `(parent TableIndex,
+    /// bindings)` where `bindings[i]` is the type applied to the parent's i-th
+    /// type param, expressed in THIS class's param names — a child param name
+    /// becomes `ValueType::TypeVariable("TCur")`, concrete args stay concrete.
+    /// At method-call resolution, a transitive walk over this list translates an
+    /// inherited method's ancestor param names (e.g. `@requires T`) into the
+    /// receiver's concrete bindings. Recomputed at build time (not persisted in
+    /// the precomputed stub blob), so empty for deserialized stub classes — the
+    /// transitive walk simply stops at such ancestors.
+    #[serde(skip)]
+    pub(crate) parent_type_bindings: Vec<(TableIndex, Vec<ValueType>)>,
     pub(crate) array_fields: Vec<ExprId>,
     pub(crate) key_type: Option<ValueType>,
     pub(crate) value_type: Option<ValueType>,

@@ -441,7 +441,7 @@ impl<'a> Analysis<'a> {
                 if class.parents.is_empty() { continue; }
                 let child_idx = class_table_indices[class_i];
                 for parent_name in &class.parents {
-                    let Some(lookup) = crate::annotations::parent_class_lookup_name(parent_name, &class.type_params) else { continue };
+                    let Some((lookup, _)) = crate::annotations::parent_link_with_bindings(parent_name) else { continue };
                     if let Some(&parent_idx) = self.ir.classes.get(lookup.as_str()) {
                         let parent_fields: Vec<(String, FieldInfo)> =
                             self.ir.table(parent_idx).fields.iter()
@@ -513,13 +513,29 @@ impl<'a> Analysis<'a> {
             let child_idx = class_table_indices[class_i];
             if child_idx.is_external() { continue; }
             let parent_indices: Vec<TableIndex> = class.parents.iter()
-                .filter_map(|p| crate::annotations::parent_class_lookup_name(p, &class.type_params))
-                .filter_map(|p| self.ir.classes.get(p.as_str()).copied())
+                .filter_map(|p| crate::annotations::parent_link_with_bindings(p))
+                .filter_map(|(p, _)| self.ir.classes.get(p.as_str()).copied())
                 .collect();
+            // Record direct-parent type-arg bindings for ANY parameterized parent
+            // (including renamed/non-identity ones like `Child<TCur,TShared> :
+            // Parent<TCur>`), resolving each arg with the child's params as type
+            // variables. This is independent of `parent_classes` linkage — method
+            // resolution still relies on `parent_classes`/flattened fields (which
+            // may come from defclass), while `parent_type_bindings` only drives
+            // ancestor type-param translation at call resolution.
+            let bindings = crate::annotations::collect_parent_type_bindings(
+                &class.parents, &class.type_params, &self.ir.classes,
+                |a, g| self.resolve_annotation_type_gen(a, g),
+            );
             let table = &mut self.ir.tables[child_idx.val()];
             for parent_idx in parent_indices {
                 if !table.parent_classes.contains(&parent_idx) {
                     table.parent_classes.push(parent_idx);
+                }
+            }
+            for (parent_idx, b) in bindings {
+                if !table.parent_type_bindings.iter().any(|(p, _)| *p == parent_idx) {
+                    table.parent_type_bindings.push((parent_idx, b));
                 }
             }
         }

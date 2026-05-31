@@ -275,3 +275,73 @@ local streamNullable = {}
 local mapped6 = streamNullable:IgnoreNilOverload()
 --    ^ hover: (local) mapped6: Stream<string>
 --                              ^ hover: (method) function Stream:IgnoreNilOverload()\n-> self\nfunction Stream:IgnoreNilOverload()\n-> self<string>
+
+-- ── Renamed parent type param translated through parameterized parent ────────
+-- A subclass that renames its parent's type param (`Box<T>` becomes `TCur` in
+-- the child) must translate the parent's `@requires T` / `@return self<R>` onto
+-- the child's binding, and preserve trailing child params across `self<R>`.
+
+---@class Box<T>
+local Box = {}
+
+---@requires T: boolean
+---@return self<boolean>
+function Box:Flip() return self end
+
+---@generic R
+---@param value R
+---@return self<R>
+function Box:ReplaceWith(value) return self end
+
+---@return T
+function Box:GetValue() return nil end
+
+---@class SharedBox<TCur, TShared> : Box<TCur>
+local SharedBox = {}
+
+-- Receiver's TCur=string violates Box's `@requires T: boolean` (translated
+-- through the renamed parent binding `Box<TCur>`).
+---@type SharedBox<string, string>
+local sbStr = {}
+sbStr:Flip()
+--    ^ diag: param-constraint-mismatch
+
+-- Receiver's TCur=boolean satisfies the constraint: clean.
+---@type SharedBox<boolean, string>
+local sbBool = {}
+sbBool:Flip()
+
+-- Inherited `@return T` with mismatched arity (Box has 1 param, SharedBox has 2)
+-- doesn't substitute yet — `bind_receiver_type_args` requires matching arity.
+-- TODO: merge class_type_param_subs into generic_subs for inherited returns.
+local sbVal = sbStr:GetValue()
+--    ^ hover: (local) sbVal: ?
+
+-- `@return self<R>` re-parameterizes only the leading param; the trailing
+-- TShared must survive (SharedBox<R, string>, not SharedBox<R>).
+local sbReplaced = sbStr:ReplaceWith(123)
+--    ^ hover: (local) sbReplaced: SharedBox<number, string>
+
+-- Transitive: a 3-level chain renames the param twice. GrandBox's `@requires`
+-- on its own T must reach MidBox<TM> : GrandBox<TM> and Leaf<TL> : MidBox<TL>.
+---@class GrandBox<T>
+local GrandBox = {}
+
+---@requires T: boolean
+---@return self<boolean>
+function GrandBox:Toggle() return self end
+
+---@class MidBox<TM> : GrandBox<TM>
+local MidBox = {}
+
+---@class Leaf<TL> : MidBox<TL>
+local Leaf = {}
+
+---@type Leaf<string>
+local leafStr = {}
+leafStr:Toggle()
+--      ^ diag: param-constraint-mismatch
+
+---@type Leaf<boolean>
+local leafBool = {}
+leafBool:Toggle()

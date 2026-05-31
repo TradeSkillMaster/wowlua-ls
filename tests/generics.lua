@@ -404,8 +404,9 @@ local subVal = subNum:Get()
 local subBool = {}
 extractBool(subBool)  -- subclass with matching type arg: clean
 
--- Non-identity parameterized parent stays conservative (parent binds a concrete
--- type, so it is not linked as an identity-forwarding subclass)
+-- Non-identity parameterized parent is now linked (binding T's parent to a
+-- concrete `string`), but the child's own arg `number` still mismatches the
+-- expected `Container<boolean>`, so the type-mismatch is preserved.
 ---@class FixedContainer<T> : Container<string>
 local FixedContainer = {}
 
