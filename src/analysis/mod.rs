@@ -104,8 +104,9 @@ pub(crate) struct Ir {
     /// Bracket-indexed access sites for `nil-index` diagnostic.
     /// Each entry is (key_expr_id, key_start, key_end) covering both reads and writes.
     pub(crate) bracket_index_sites: Vec<(ExprId, u32, u32)>,
-    /// Binary-op sites for `invalid-op` diagnostic.
-    /// Each entry is (binary_op_expr_id, start, end) covering arithmetic and concatenation ops.
+    /// Binary-op sites for `invalid-op` and `redundant-or`/`redundant-and` diagnostics.
+    /// Each entry is (binary_op_expr_id, start, end) covering arithmetic, concatenation,
+    /// comparison, and logical ops.
     pub(crate) binary_op_sites: Vec<(ExprId, u32, u32)>,
     /// Unary-op sites for `invalid-op` and `need-check-nil` diagnostics (currently `#` length operator).
     /// Each entry is (unary_op_expr_id, start, end).

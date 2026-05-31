@@ -74,6 +74,8 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `redundant-return` | Bare `return` at end of function |
 | `trailing-space` | Line ends with whitespace |
 | `not-precedence` | `not x <cmp> y` is `(not x) <cmp> y` |
+| `redundant-or` | `or` where left side is always truthy (RHS is dead code) |
+| `redundant-and` | `and` where left side is always falsy (RHS is dead code) |
 | `implicit-nil-return` | Bare `return` in function with optional `@return` **(off by default)** |
 | `unknown-param-type` | Parameter type can't be inferred **(off by default)** |
 | `unknown-return-type` | Return value has no resolvable type **(off by default)** |

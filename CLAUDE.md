@@ -143,6 +143,7 @@ Diagnostic modules under `src/diagnostics/` (40 modules implementing `Diagnostic
 - `ast_checks.rs` — AST-traversing pass consolidating: empty blocks (`empty-block`, HINT), unbalanced assignments (`unbalanced-assignments`), redundant values (`redundant-value`), redundant return values (`redundant-return-value`), code after break (`code-after-break`, HINT), unreachable code after return (`unreachable-code`, HINT), count-down loops (`count-down-loop`), unused functions (`unused-function`, HINT), redundant return (`redundant-return`, HINT), deprecated symbol usage (`deprecated`)
 - `trailing_space.rs` — lines ending with whitespace (`trailing-space`, HINT)
 - `not_precedence.rs` — `not x <cmp> y` parsing as `(not x) <cmp> y` (`not-precedence`, HINT)
+- `redundant_logical.rs` — redundant `or`/`and` where LHS truthiness/falsiness makes RHS unreachable (`redundant-or`, `redundant-and`, HINT)
 - `unused_vararg.rs` — functions declaring `...` but never referencing it (`unused-vararg`, HINT, default-disabled)
 
 **Unknown-type diagnostics (strict typing, all default-disabled):**
@@ -280,6 +281,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/incomplete-signature-doc/` / `tests/incomplete-signature-doc-meta/` — `incomplete-signature-doc` HINT for functions with partial `@param`/`@return` annotations; `-meta` asserts `@meta` files suppress the diagnostic. Each dir has a `.wowluarc.json` enabling the default-off code.
 - `tests/stylistic.lua` — Stylistic HINT diagnostics: `empty-block`, `redundant-return`, `trailing-space`
 - `tests/not-precedence.lua` — Operator precedence: `not x <cmp> y` parses as `(not x) <cmp> y` (`not-precedence`)
+- `tests/redundant-logical.lua` — `redundant-or` (truthy LHS makes `or` RHS dead code) and `redundant-and` (falsy LHS makes `and` RHS dead code) HINT diagnostics, `@diagnostic` suppression
 - `tests/syntax-coverage.lua` — Broad syntax construct coverage: numeric literals, long strings, unary/binary operators, repeat/until, for-step, semicolons, no-paren calls, anonymous functions, multi-dot definitions, code-after-break, long bracket comments, forward-declared locals, nested function returns, bracket-keyed tables, multi-target assignment, conditional function defs, higher-order functions, module patterns, closures, reassignment, colon methods
 - `tests/convergence.lua` — Fixpoint convergence regression: 60 reverse-order function calls testing inner loop optimization
 - `tests/metatable-type-i.lua` — Metatable type inference: `setmetatable()` + `__index` field propagation, chained metatables, self-referential `mt.__index = mt`, factory functions, instance field priority (--with-stubs)

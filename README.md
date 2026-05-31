@@ -15,7 +15,7 @@ A language server for World of Warcraft addon development. Built specifically fo
 - **Correlated narrowing** — check one return value, and the LS narrows the rest. Eliminates false positives from multi-return functions. Works automatically — no annotations needed in most cases.
 - **Mixin and template support** — `CreateFrame`, `Mixin`, `CreateFromMixins`, and `CreateAndInitFromMixin` return intersection types automatically.
 - **Flavor filtering** — declare `flavors: ["retail", "classic"]` and get warnings on APIs that don't exist in all your targets. Guards via `WOW_PROJECT_ID` or `@flavor-narrows` are understood.
-- **71 diagnostics** — type safety, nil checking, annotation correctness, code quality, and WoW-specific checks. Each one individually configurable per-line or per-project.
+- **73 diagnostics** — type safety, nil checking, annotation correctness, code quality, and WoW-specific checks. Each one individually configurable per-line or per-project.
 - **Diagnostic plugins** — write custom Lua scripts to enforce project-specific conventions. Query local variables, field accesses, and method calls to emit your own diagnostics.
 - **CI-ready CLI** — `wowlua_ls check path/to/addon` lints your addon and exits non-zero on diagnostics. Drop it into your CI pipeline.
 - **Powerful generics** — parameterized classes, constrained type parameters, backtick factory annotations, function-type projections (`params<F>`, `returns<F>`). Class-level generics propagate through method calls automatically.

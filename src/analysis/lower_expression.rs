@@ -451,9 +451,12 @@ impl<'a> Analysis<'a> {
                         self.ir.push_alias_version(sym_idx, ver, scope_idx);
                     }
                     let expr_id = self.ir.push_expr(Expr::BinaryOp { op, lhs: lhs_id, rhs: rhs_id });
-                    // Track arithmetic/concatenation/comparison sites for invalid-op diagnostic.
+                    // Track binary-op sites for diagnostics:
+                    //   invalid-op: arithmetic, concatenation, ordered comparison
+                    //   redundant-or/redundant-and: logical or/and
                     if op.is_arithmetic() || op == Operator::Concatenate
                         || matches!(op, Operator::LessThan | Operator::GreaterThan | Operator::LessThanOrEquals | Operator::GreaterThanOrEquals)
+                        || matches!(op, Operator::Or | Operator::And)
                     {
                         let r = b.syntax().text_range();
                         self.ir.binary_op_sites.push((expr_id, u32::from(r.start()), u32::from(r.end())));

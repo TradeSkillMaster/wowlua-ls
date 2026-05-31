@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, undefined-global
+---@diagnostic disable: create-global, undefined-global, redundant-or, redundant-and
 -- Test: semantic diagnostics (@deprecated, @nodiscard, @diagnostic suppression)
 local function _consume(...) end
 

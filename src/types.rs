@@ -297,6 +297,16 @@ impl ValueType {
         }
     }
 
+    /// Returns true if this type is guaranteed to be falsy in Lua (nil or false).
+    /// Used by `and` resolution: `falsy_val and y` always evaluates to `falsy_val`.
+    pub(crate) fn is_guaranteed_falsy(&self) -> bool {
+        match self {
+            ValueType::Nil | ValueType::Boolean(Some(false)) => true,
+            ValueType::OpaqueAlias(_, inner) => inner.is_guaranteed_falsy(),
+            _ => false,
+        }
+    }
+
     /// Check if `self` (actual type) is assignable to `expected` (parameter type).
     /// Table subclass checks require Analysis context and are handled separately.
     pub(crate) fn is_assignable_to(&self, expected: &ValueType) -> bool {

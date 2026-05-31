@@ -30,6 +30,7 @@ mod nil_table_key;
 mod not_precedence;
 mod param_constraint_mismatch;
 mod redefined_local;
+mod redundant_logical;
 mod return_mismatch;
 mod shadowed_local;
 mod trailing_space;
@@ -141,6 +142,8 @@ pub(crate) const EMPTY_BLOCK: DiagnosticDef             = DiagnosticDef { code: 
 pub(crate) const TRAILING_SPACE: DiagnosticDef          = DiagnosticDef { code: "trailing-space",           severity: DiagnosticSeverity::HINT };
 pub(crate) const REDUNDANT_RETURN: DiagnosticDef        = DiagnosticDef { code: "redundant-return",         severity: DiagnosticSeverity::HINT };
 pub(crate) const NOT_PRECEDENCE: DiagnosticDef          = DiagnosticDef { code: "not-precedence",           severity: DiagnosticSeverity::HINT };
+pub(crate) const REDUNDANT_OR: DiagnosticDef            = DiagnosticDef { code: "redundant-or",             severity: DiagnosticSeverity::HINT };
+pub(crate) const REDUNDANT_AND: DiagnosticDef           = DiagnosticDef { code: "redundant-and",            severity: DiagnosticSeverity::HINT };
 pub(crate) const WRONG_FLAVOR_API: DiagnosticDef        = DiagnosticDef { code: "wrong-flavor-api",         severity: DiagnosticSeverity::WARNING };
 pub(crate) const UNKNOWN_PARAM_TYPE: DiagnosticDef      = DiagnosticDef { code: "unknown-param-type",       severity: DiagnosticSeverity::HINT };
 pub(crate) const UNKNOWN_RETURN_TYPE: DiagnosticDef     = DiagnosticDef { code: "unknown-return-type",      severity: DiagnosticSeverity::HINT };
@@ -174,6 +177,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
     &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SHADOWED_LOCAL,
     &MIXED_ENUM_VALUES, &INVALID_CLASS_PARENT, &INVALID_OP, &NIL_TABLE_KEY, &SAFETY_LIMIT,
+    &REDUNDANT_OR, &REDUNDANT_AND,
 ];
 
 pub(crate) fn append_structural_mismatch_suffix(
@@ -271,6 +275,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &call_arity::CallArity,
         &cannot_call::CannotCall,
         &invalid_op::InvalidOp,
+        &redundant_logical::RedundantLogical,
         &multi_return_projection::MultiReturnProjection,
         &discard_returns::DiscardReturns,
         &wrong_flavor_api::WrongFlavorApi,

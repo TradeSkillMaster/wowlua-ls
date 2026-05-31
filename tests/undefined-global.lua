@@ -1,3 +1,4 @@
+---@diagnostic disable: redundant-or
 -- Test: undefined-global diagnostic (requires stubs)
 local function _consume(...) end
 
