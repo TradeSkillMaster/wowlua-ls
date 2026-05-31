@@ -209,6 +209,16 @@ local pub5 = pubUnion:IgnoreNil()
 local pub6 = pub:IgnoreNil():ToBoolean()
 --    ^ hover: (local) pub6: Publisher<boolean>
 
+-- @return self<V1|V2>: union type args substitute each generic member
+---@generic V1, V2
+---@param trueValue V1
+---@param falseValue V2
+---@return self<V1|V2>
+function Publisher:ReplaceBooleanWith(trueValue, falseValue) return self end
+
+local pub7 = pub:ReplaceBooleanWith("hello", 5)
+--               ^ hover: (method) function Publisher:ReplaceBooleanWith(trueValue: string, falseValue: number)\n-> self<string | number>
+
 -- ── Overload with self<R> and generic callback inference ─────────────────────
 
 ---@class Stream<T>

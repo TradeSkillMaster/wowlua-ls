@@ -6392,13 +6392,12 @@ impl AnalysisResult {
     }
 
     /// Format a single `@return self<X>` type argument, substituting type
-    /// variables from `subs`. Handles `NonNil(T)` by stripping nil from the
-    /// substituted type (so `T!` with `T = string?` displays as `string`).
-    ///
-    /// Note: only substitutes bare type variables (`Simple("T")`) and non-nil
-    /// wrappers (`NonNil(Simple("T"))`). More complex annotation types containing
-    /// type variables (e.g. `Parameterized("Foo", [Simple("T")])`) fall through
-    /// to raw formatting without substitution.
+    /// variables from `subs`. Handles `Simple("T")` (bare type variables),
+    /// `NonNil(Simple("T"))` (stripping nil from the substituted type), and
+    /// `Union(members)` (recursively formatting each member with dedup).
+    /// More complex annotation types containing type variables
+    /// (e.g. `Parameterized("Foo", [Simple("T")])`) fall through to raw
+    /// formatting without substitution.
     fn format_self_return_arg(&self, arg: &crate::annotations::AnnotationType, subs: &HashMap<String, ValueType>) -> String {
         use crate::annotations::AnnotationType;
         match arg {
@@ -6416,6 +6415,16 @@ impl AnalysisResult {
                     return self.format_type_depth(&vt.strip_nil(), 1);
                 }
                 crate::annotations::format_annotation_type(arg)
+            }
+            AnnotationType::Union(members) => {
+                let mut parts: Vec<String> = Vec::new();
+                for member in members {
+                    let formatted = self.format_self_return_arg(member, subs);
+                    if !parts.contains(&formatted) {
+                        parts.push(formatted);
+                    }
+                }
+                parts.join(" | ")
             }
             _ => crate::annotations::format_annotation_type(arg),
         }
