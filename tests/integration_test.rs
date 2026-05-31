@@ -2032,6 +2032,15 @@ fn union_field_narrow() {
 }
 
 #[test]
+fn and_or_alias_narrow() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/and-or-alias-narrow.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn structural_subtype() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/structural-subtype.lua",

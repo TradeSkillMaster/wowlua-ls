@@ -133,7 +133,15 @@ impl<'a> Analysis<'a> {
                     // pending so they can improve once the operand resolves.
                     let is_volatile_binop = matches!(expr,
                         Expr::BinaryOp { op, .. } if *op == Operator::Or || *op == Operator::And);
-                    if (is_branch_merge || is_volatile_binop)
+                    // SymbolRef versions read their target's resolved_type
+                    // live (no cache, no recursion). The target may still be
+                    // partially resolved when the ref first resolves, so keep
+                    // SymbolRefs volatile to track the target's improving type.
+                    // This is critical for alias versions from push_alias_version
+                    // but applies to any cross-symbol `local y = x` too.
+                    let is_alias_ref = matches!(expr, Expr::SymbolRef(..));
+                    let is_volatile = is_branch_merge || is_volatile_binop || is_alias_ref;
+                    if is_volatile
                         && let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
                         *slot = None;
                     }
@@ -147,7 +155,7 @@ impl<'a> Analysis<'a> {
                         {
                             self.ir.event_type_display.insert((si, vi), alias);
                         }
-                        if (is_branch_merge || is_volatile_binop) && prev.as_ref() != Some(&resolved) {
+                        if is_volatile && prev.as_ref() != Some(&resolved) {
                             // Result changed — keep in pending for another
                             // iteration so that newly resolved operands can contribute.
                             true
