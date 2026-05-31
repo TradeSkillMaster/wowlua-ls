@@ -35,6 +35,10 @@ pub(crate) fn annotation_type_references_type_params(at: &AnnotationType, type_p
             fields.iter().any(|(_, ft)| annotation_type_references_type_params(ft, type_params))
         }
         AnnotationType::VarArgs(inner) => annotation_type_references_type_params(inner, type_params),
+        AnnotationType::IndexedAccess(base, key) => {
+            type_params.iter().any(|p| p == base)
+                || annotation_type_references_type_params(key, type_params)
+        }
         AnnotationType::Tuple(positions, _) => positions.iter().any(|p| annotation_type_references_type_params(&p.typ, type_params)),
     }
 }
@@ -121,6 +125,17 @@ fn substitute_annotation_type_inner(
         AnnotationType::VarArgs(inner) => {
             AnnotationType::VarArgs(Box::new(substitute_annotation_type_inner(inner, subs, reverse)))
         }
+        AnnotationType::IndexedAccess(base, key) => {
+            let substituted_base = if let Some(&table_idx) = subs.get(base) {
+                reverse.get(&table_idx).map(|n| (*n).clone()).unwrap_or_else(|| base.clone())
+            } else {
+                base.clone()
+            };
+            AnnotationType::IndexedAccess(
+                substituted_base,
+                Box::new(substitute_annotation_type_inner(key, subs, reverse)),
+            )
+        }
         AnnotationType::Tuple(positions, description) => {
             AnnotationType::Tuple(
                 positions.iter().map(|p| crate::annotations::TuplePosition {
@@ -139,7 +154,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 25;
+pub(crate) const BLOB_VERSION: u32 = 26;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).

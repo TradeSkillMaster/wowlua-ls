@@ -1092,6 +1092,15 @@ pub(crate) fn resolve_annotation_type(
             resolve_annotation_type(inner, generics, classes, aliases)
         }
         AnnotationType::Tuple(..) => None,
+        AnnotationType::IndexedAccess(base, _key) => {
+            // If the base is a generic, return TypeVariable; otherwise Any placeholder.
+            // Real resolution happens at call sites in resolve_call.rs.
+            if generics.iter().any(|(g, _)| g == base) {
+                Some(ValueType::TypeVariable(base.clone()))
+            } else {
+                Some(ValueType::Any)
+            }
+        }
     }
 }
 

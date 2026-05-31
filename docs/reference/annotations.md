@@ -42,6 +42,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 |---|---|---|
 | `@generic T` | Generic type parameter on a function. | [Generics](/guide/generics) |
 | `@generic T: Class` | Constrained generic. | [Generics](/guide/generics) |
+| `@generic T, K: keyof T` | Key-constrained generic — K must be a field name of T. | [Generics](/guide/generics#keyof-constraints) |
 | `@generic T, ...M` | Variadic generic — collects excess arguments into an intersection. | [Generics](/guide/generics#variadic-generics) |
 | `@requires T: Constraint` | Method is only callable when the receiver's class type parameter `T` satisfies the constraint. | [Generics](/guide/generics) |
 | `` @param name `T` `` | Resolve string argument as a class name. | [Generics](/guide/generics) |
@@ -129,6 +130,7 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `A \| B` | Union |
 | `A & B` | Intersection |
 | `T[]` | Array |
+| `T[K]` | Indexed access — field type of K on T |
 | `T?` | Optional (`T \| nil`) |
 | `T!` | Non-nil / lateinit |
 | `table<K, V>` | Map type |

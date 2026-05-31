@@ -1154,6 +1154,15 @@ impl Ir {
                     self.check_annotation_type_names(ft, generics, start, end, diags);
                 }
             }
+            AnnotationType::IndexedAccess(base, key) => {
+                // The base must be a declared generic; the key is a type to validate
+                if !generics.iter().any(|(g, _)| g == base) {
+                    self.check_annotation_type_names(
+                        &AnnotationType::Simple(base.clone()), generics, start, end, diags,
+                    );
+                }
+                self.check_annotation_type_names(key, generics, start, end, diags);
+            }
             AnnotationType::Tuple(positions, _) => {
                 for p in positions {
                     self.check_annotation_type_names(&p.typ, generics, start, end, diags);

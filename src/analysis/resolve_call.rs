@@ -419,6 +419,12 @@ impl<'a> Analysis<'a> {
                             // For backtick params (`T` or unions containing `T`), resolve the string literal to a type
                             let inferred = if param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick) {
                                 self.resolve_backtick_arg(arg_expr_id, &arg_type)
+                            } else if matches!(&arg_type, ValueType::String(None))
+                                && let Some(literal) = self.ir.string_literals.get(arg_expr_id)
+                                && self.func(func_idx).generic_constraints_raw.iter().any(|(n, c)| n == name && c.as_ref().is_some_and(|s| crate::annotations::parse_keyof_constraint(s).is_some()))
+                            {
+                                // Preserve literal value for keyof constraint validation
+                                ValueType::String(Some(literal.clone()))
                             } else {
                                 arg_type.clone()
                             };
@@ -1503,6 +1509,8 @@ impl<'a> Analysis<'a> {
 
         // Generic substitution for non-overload return types
         if !generic_subs.is_empty() {
+            // Special return-type resolutions for generic raw annotations
+
             // Backtick return: `@return \`K\`` returns the type name as a string literal
             if let Some(raw_ret) = self.func(func_idx).return_annotations_raw.get(ret_index)
                 && let crate::annotations::AnnotationType::Backtick(inner) = raw_ret
@@ -1511,6 +1519,21 @@ impl<'a> Analysis<'a> {
                             && let Some(type_name) = crate::annotations::value_type_to_name(bound_type, &self.ir) {
                                 return Some(ValueType::String(Some(type_name)));
                             }
+
+            // IndexedAccess return: `@return T[K]` — resolve the field type on T using bound K
+            let fn_generics = self.func(func_idx).generic_constraints_raw.clone();
+            if let Some(raw_ret) = self.func(func_idx).return_annotations_raw.get(ret_index)
+                && let crate::annotations::AnnotationType::IndexedAccess(table_name, key_ann) = raw_ret.clone()
+                && let Some(table_vt) = generic_subs.get(&table_name)
+                    && let ValueType::Table(Some(table_idx)) = table_vt {
+                        let table_idx = *table_idx;
+                        let key_vt = self.resolve_annotation_type_mut_gen(&key_ann, &fn_generics)
+                            .map(|v| self.substitute_generics_deep(&v, &generic_subs))
+                            .unwrap_or(ValueType::Any);
+                        if let Some(ft) = self.resolve_indexed_access_field(table_idx, &key_vt) {
+                            return Some(ft);
+                        }
+                    }
             if let Some(ret_vt) = return_annotations.get(ret_index) {
                 self.projection_deferred = false;
                 let substituted = self.substitute_generics_deep(ret_vt, &generic_subs);
@@ -1534,8 +1557,6 @@ impl<'a> Analysis<'a> {
                             // Pass the function's own generic names so that
                             // `Simple("T")` resolves to `TypeVariable("T")`,
                             // which `substitute_generics_deep` can then replace.
-                            let fn_generics = self.func(func_idx)
-                                .generic_constraints_raw.clone();
                             let mut substituted_args: Vec<ValueType> = type_arg_anns.iter()
                                 .map(|ta| {
                                     self.resolve_annotation_type_mut_gen(ta, &fn_generics)
@@ -2414,6 +2435,41 @@ impl<'a> Analysis<'a> {
             }
             _ => Vec::new(),
         }
+    }
+
+    // ── Indexed access resolution ──────────────────────────────────────────────
+
+    /// Resolve `T[K]` to the field type on a table, given the bound key type.
+    /// If K is a single string literal, returns that field's type.
+    /// If K is a union of string literals, returns a union of field types.
+    fn resolve_indexed_access_field(&mut self, table_idx: TableIndex, key_vt: &ValueType) -> Option<ValueType> {
+        match key_vt {
+            ValueType::String(Some(field_name)) => {
+                self.resolve_field_type_on_table(table_idx, field_name)
+            }
+            ValueType::Union(members) => {
+                let literals: Vec<String> = members.iter().filter_map(|m| {
+                    if let ValueType::String(Some(name)) = m { Some(name.clone()) } else { None }
+                }).collect();
+                let field_types: Vec<ValueType> = literals.iter().filter_map(|name| {
+                    self.resolve_field_type_on_table(table_idx, name)
+                }).collect();
+                if field_types.is_empty() {
+                    None
+                } else {
+                    Some(ValueType::make_union(field_types))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the type of a named field on a table (annotation or resolved expression).
+    fn resolve_field_type_on_table(&mut self, table_idx: TableIndex, field_name: &str) -> Option<ValueType> {
+        let fi = self.get_field(table_idx, field_name)?;
+        let ann = fi.annotation.clone();
+        let expr_id = fi.expr;
+        ann.or_else(|| self.resolve_expr(expr_id))
     }
 
     // ── Generic substitution ─────────────────────────────────────────────────

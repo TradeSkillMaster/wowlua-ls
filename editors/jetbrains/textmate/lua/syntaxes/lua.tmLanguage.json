@@ -500,6 +500,7 @@
               "endCaptures": {"0": {"name": "keyword.operator.lua"}},
               "patterns": [
                 {"match": ":", "name": "keyword.operator.lua"},
+                {"match": "\\bkeyof\\b", "name": "keyword.operator.lua"},
                 {"include": "#emmydoc.type"}
               ]
             }

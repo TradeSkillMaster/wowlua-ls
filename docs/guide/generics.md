@@ -157,6 +157,48 @@ local a = {}
 local b = {}
 ```
 
+### `keyof` constraints and indexed access types {#keyof-constraints}
+
+The `keyof T` constraint restricts a type parameter to the field names of another type. Combined with `T[K]` (indexed access), this lets you write functions where both the key and the return type are validated:
+
+```lua
+---@class Config
+---@field name string
+---@field value number
+---@field enabled boolean
+
+---@generic T, K: keyof T
+---@param obj T
+---@param key K
+---@return T[K]
+local function getField(obj, key)
+    return obj[key]
+end
+
+---@type Config
+local cfg = { name = "test", value = 42, enabled = true }
+
+local n = getField(cfg, "name")    -- n: string
+local v = getField(cfg, "value")   -- v: number
+local e = getField(cfg, "enabled") -- e: boolean
+
+getField(cfg, "bogus")  -- generic-constraint-mismatch: "bogus" is not a field of Config
+```
+
+The LS also provides string literal completions for keyof-constrained parameters — typing `getField(cfg, "")` will suggest `enabled`, `name`, `value`.
+
+This pattern is useful for WoW addon code that needs to safely access fields by name:
+
+```lua
+---@generic T, K: keyof T
+---@param obj T
+---@param method K
+---@param ... any
+function CallMethod(obj, method, ...)
+    obj[method](obj, ...)
+end
+```
+
 ### Bracket-index fields
 
 Type parameters work in bracket-index field declarations:

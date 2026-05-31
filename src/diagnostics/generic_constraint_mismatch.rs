@@ -11,11 +11,42 @@ impl DiagnosticPass for GenericConstraintMismatch {
             if cr.generic_subs.is_empty() { continue; }
             let func = analysis.func(cr.func_idx);
             for (name, bound_type, arg_range) in &cr.generic_subs {
+                if matches!(bound_type, ValueType::TypeVariable(_)) { continue; }
+                if func.defclass.as_deref() == Some(name.as_str()) { continue; }
+
+                // Check for `keyof` constraints (dynamic — depends on another generic's binding)
+                let raw_constraint = func.generic_constraints_raw.iter()
+                    .find(|(n, _)| n == name)
+                    .and_then(|(_, c)| c.as_ref());
+                if let Some(raw_c) = raw_constraint
+                    && let Some(ref_name) = crate::annotations::parse_keyof_constraint(raw_c) {
+                        // Find the referenced generic's bound type
+                        let table_type = cr.generic_subs.iter()
+                            .find(|(n, _, _)| n == ref_name)
+                            .map(|(_, vt, _)| vt);
+                        if let Some(ValueType::Table(Some(table_idx))) = table_type {
+                            let fields = crate::analysis::collect_class_fields_impl(
+                                &analysis.ir, &analysis.resolved_expr_cache, *table_idx,
+                            );
+                            let valid = match bound_type {
+                                ValueType::String(Some(key)) => fields.iter().any(|(n, _)| n == key),
+                                _ => true, // Non-literal: can't validate statically
+                            };
+                            if !valid {
+                                let Some(&(start, end)) = arg_range.as_ref() else { continue };
+                                let actual_str = analysis.format_value_type_depth(bound_type, 1);
+                                super::GENERIC_CONSTRAINT_MISMATCH.emit(diags, format!(
+                                    "type `{}` does not satisfy constraint `keyof {}` on generic `{}`",
+                                    actual_str, ref_name, name
+                                ), start as usize, end as usize);
+                            }
+                        }
+                        continue;
+                    }
+
                 let Some(constraint) = func.generics.iter()
                     .find(|(n, _)| n == name)
                     .and_then(|(_, c)| c.as_ref()) else { continue };
-                if matches!(bound_type, ValueType::TypeVariable(_)) { continue; }
-                if func.defclass.as_deref() == Some(name.as_str()) { continue; }
                 let actual_stripped = bound_type.strip_nil();
                 let is_pure_nil = matches!(&actual_stripped, ValueType::Union(t) if t.is_empty());
                 if is_pure_nil

@@ -1333,6 +1333,17 @@ impl<'a> Analysis<'a> {
             AnnotationType::VarArgs(inner) => {
                 AnnotationType::VarArgs(Box::new(self.substitute_annotation_type(inner, subs)))
             }
+            AnnotationType::IndexedAccess(base, key) => {
+                let substituted_base = if let Some(&table_idx) = subs.get(base) {
+                    self.ir.table(table_idx).class_name.clone().unwrap_or_else(|| base.clone())
+                } else {
+                    base.clone()
+                };
+                AnnotationType::IndexedAccess(
+                    substituted_base,
+                    Box::new(self.substitute_annotation_type(key, subs)),
+                )
+            }
             AnnotationType::Tuple(positions, description) => {
                 AnnotationType::Tuple(
                     positions.iter().map(|p| crate::annotations::TuplePosition {
@@ -1895,6 +1906,14 @@ impl<'a> Analysis<'a> {
                 0 => None, 1 => converted.into_iter().next(),
                 _ => Some(ValueType::Intersection(converted)),
             };
+        }
+        if let AnnotationType::IndexedAccess(base, _) = at {
+            // If the base is a generic, return TypeVariable as placeholder.
+            // Real resolution happens at call sites via generic substitution.
+            if generics.iter().any(|(g, _)| g == base) {
+                return Some(ValueType::TypeVariable(base.clone()));
+            }
+            return Some(ValueType::Any);
         }
         self.resolve_annotation_type_gen(at, generics)
     }

@@ -66,6 +66,9 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
         AnnotationType::VarArgs(inner) => {
             format!("...{}", format_annotation_type(inner))
         }
+        AnnotationType::IndexedAccess(base, key) => {
+            format!("{}[{}]", base, format_annotation_type(key))
+        }
         AnnotationType::Tuple(positions, description) => {
             let parts: Vec<String> = positions.iter().map(|p| {
                 match &p.name {
@@ -132,6 +135,16 @@ pub(crate) fn substitute_alias_type_params(
         }
         AnnotationType::VarArgs(inner) => {
             AnnotationType::VarArgs(Box::new(substitute_alias_type_params(inner, type_params, args)))
+        }
+        AnnotationType::IndexedAccess(base, key) => {
+            let substituted_base = type_params.iter().zip(args.iter())
+                .find(|(p, _)| *p == base)
+                .and_then(|(_, arg)| if let AnnotationType::Simple(name) = arg { Some(name.clone()) } else { None })
+                .unwrap_or_else(|| base.clone());
+            AnnotationType::IndexedAccess(
+                substituted_base,
+                Box::new(substitute_alias_type_params(key, type_params, args)),
+            )
         }
         AnnotationType::Tuple(positions, description) => {
             AnnotationType::Tuple(
@@ -324,9 +337,34 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
         && let Some(sig) = parse_overload(fun_str) {
             return AnnotationType::Fun(sig.params, sig.returns, sig.is_vararg);
         }
-    if let Some(without_brackets) = s.strip_suffix("[]") {
-        let base = parse_type(without_brackets);
-        return AnnotationType::Array(Box::new(base));
+    if s.ends_with(']') && !s.starts_with('[') {
+        // Find matching '[' at top level (not inside <>, (), {})
+        let bytes = s.as_bytes();
+        let mut depth = 0i32;
+        let mut bracket_start = None;
+        for i in (0..bytes.len() - 1).rev() {
+            match bytes[i] {
+                b'>' | b')' | b'}' | b']' => depth += 1,
+                b'<' | b'(' | b'{' => depth -= 1,
+                b'[' => { if depth == 0 { bracket_start = Some(i); break; } depth -= 1; }
+                _ => {}
+            }
+        }
+        if let Some(bstart) = bracket_start {
+            let base_str = s[..bstart].trim();
+            let inner = s[bstart + 1..s.len() - 1].trim();
+            if inner.is_empty() {
+                // T[] — array type
+                let base = parse_type(base_str);
+                return AnnotationType::Array(Box::new(base));
+            } else if !base_str.is_empty()
+                && base_str.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                // T[K] — indexed access type (base must be a simple identifier)
+                let key = parse_type(inner);
+                return AnnotationType::IndexedAccess(base_str.to_string(), Box::new(key));
+            }
+        }
     }
     if s.ends_with('>')
         && let Some(lt_pos) = s.find('<') {

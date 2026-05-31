@@ -66,6 +66,7 @@ fn collect_nil_table_keys_inner(at: &AnnotationType, out: &mut Vec<String>) {
                 collect_nil_table_keys_inner(&pos.typ, out);
             }
         }
+        AnnotationType::IndexedAccess(_, key) => collect_nil_table_keys_inner(key, out),
         AnnotationType::Simple(_) | AnnotationType::Backtick(_) => {}
     }
 }

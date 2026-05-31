@@ -1002,6 +1002,15 @@ fn requires_misuse() {
 }
 
 #[test]
+fn keyof_indexed_access() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/keyof-indexed-access.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn document_highlight() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/document-highlight.lua",

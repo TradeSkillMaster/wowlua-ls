@@ -19,6 +19,7 @@ pub enum AnnotationType {
     Intersection(Vec<AnnotationType>),            // T & U — intersection of types
     TableLiteral(Vec<(String, AnnotationType)>),  // {field: type, ...} — anonymous table shape
     VarArgs(Box<AnnotationType>),                // ...T — variadic return expansion
+    IndexedAccess(String, Box<AnnotationType>),  // T[K] — indexed access type
     /// `(T1 name1, T2 name2, ...)` — multi-value return tuple. Only valid in
     /// return position (top-level of `@return`, inside `fun(): ...`, as an
     /// `@alias` body). The optional `description` is per-case text from the
@@ -83,6 +84,10 @@ pub(crate) fn collect_referenced_type_names(ann: &AnnotationType, out: &mut Hash
         | AnnotationType::Backtick(inner)
         | AnnotationType::NonNil(inner)
         | AnnotationType::VarArgs(inner) => collect_referenced_type_names(inner, out),
+        AnnotationType::IndexedAccess(base, key) => {
+            out.insert(base.clone());
+            collect_referenced_type_names(key, out);
+        }
         AnnotationType::Fun(params, returns, _) => {
             for p in params {
                 collect_referenced_type_names(&p.typ, out);
@@ -173,6 +178,12 @@ pub(crate) fn value_type_to_name(vt: &ValueType, ir: &crate::analysis::Ir) -> Op
         ValueType::Function(None) => Some("function".to_string()),
         _ => None,
     }
+}
+
+/// Extract the target type name from a `keyof X` constraint string.
+/// Returns `Some("X")` if the constraint starts with `keyof `, None otherwise.
+pub(crate) fn parse_keyof_constraint(raw: &str) -> Option<&str> {
+    raw.strip_prefix("keyof ").map(|s| s.trim())
 }
 
 pub(crate) fn resolve_primitive_type_name(name: &str) -> Option<ValueType> {

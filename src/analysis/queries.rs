@@ -3010,6 +3010,31 @@ impl AnalysisResult {
             return Some(ValueType::Union(types));
         }
 
+        // Check if param is a keyof-constrained generic — provide field name completions
+        if let Some(ann) = func.param_annotations.get(param_index)
+            && let crate::annotations::AnnotationType::Simple(gen_name) = ann {
+                let keyof_target = func.generic_constraints_raw.iter()
+                    .find(|(n, _)| n == gen_name)
+                    .and_then(|(_, c)| c.as_ref())
+                    .and_then(|c| crate::annotations::parse_keyof_constraint(c).map(|s| s.to_string()));
+                if let Some(ref_name) = keyof_target {
+                    // Find the referenced generic's table binding from the call resolution
+                    let table_type = call_res.generic_subs.iter()
+                        .find(|(n, _, _)| n == &ref_name)
+                        .map(|(_, vt, _)| vt);
+                    if let Some(ValueType::Table(Some(table_idx))) = table_type {
+                        let fields = crate::analysis::collect_class_fields_impl(
+                            &self.ir, &self.resolved_expr_cache, *table_idx,
+                        );
+                        let mut names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                        names.sort_unstable();
+                        let types = names.into_iter()
+                            .map(|s| ValueType::String(Some(s.to_owned()))).collect();
+                        return Some(ValueType::Union(types));
+                    }
+                }
+            }
+
         None
     }
 
@@ -6533,6 +6558,15 @@ impl AnalysisResult {
             AT::TableLiteral(fields) => AT::TableLiteral(
                 fields.iter().map(|(n, ft)| (n.clone(), self.substitute_annotation_type_vars(ft, subs))).collect(),
             ),
+            AT::IndexedAccess(base, key) => {
+                let substituted_base = subs.get(base)
+                    .map(|vt| self.format_value_type_depth(vt, 1))
+                    .unwrap_or_else(|| base.clone());
+                AT::IndexedAccess(
+                    substituted_base,
+                    Box::new(self.substitute_annotation_type_vars(key, subs)),
+                )
+            }
             AT::Tuple(positions, desc) => AT::Tuple(
                 positions.iter().map(|p| TuplePosition {
                     typ: self.substitute_annotation_type_vars(&p.typ, subs),
@@ -6585,6 +6619,11 @@ impl AnalysisResult {
                 fields.iter().any(|(_, ft)| self.annotation_has_unresolvable(ft, generics))
             }
             AnnotationType::VarArgs(inner) => self.annotation_has_unresolvable(inner, generics),
+            AnnotationType::IndexedAccess(base, key) => {
+                (!generics.iter().any(|(g, _)| g == base)
+                    && self.annotation_has_unresolvable(&AnnotationType::Simple(base.clone()), generics))
+                || self.annotation_has_unresolvable(key, generics)
+            }
             AnnotationType::Tuple(positions, _) => positions.iter().any(|p| self.annotation_has_unresolvable(&p.typ, generics)),
         }
     }
