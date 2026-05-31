@@ -1494,6 +1494,7 @@ impl<'a> Analysis<'a> {
                 description: None,
                 has_vararg_tail: false,
                 is_vararg: false,
+                returns_self_type_args: None,
             });
             self.ir.synthesized_overload_funcs.insert(func_id);
             // Queue non-literal positions for refinement at resolve time.

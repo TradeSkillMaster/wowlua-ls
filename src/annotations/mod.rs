@@ -119,6 +119,33 @@ pub(crate) fn parent_class_lookup_name(
     None
 }
 
+/// Extract `self` / `self<X>` from an overload's return annotations.
+///
+/// Returns `(filtered_returns, self_type_args)` where `filtered_returns` contains
+/// only the non-self return annotations and `self_type_args` is:
+/// - `Some(args)` if `self<X>` was found (args from the Parameterized variant)
+/// - `Some(vec![])` if bare `self` was found
+/// - `None` if no self return was present
+pub(crate) fn extract_overload_self_return(
+    returns: &[AnnotationType],
+) -> (Vec<&AnnotationType>, Option<Vec<AnnotationType>>) {
+    let mut self_type_args = None;
+    let filtered: Vec<&AnnotationType> = returns.iter().filter(|at| {
+        match at {
+            AnnotationType::Parameterized(name, args) if name == "self" => {
+                self_type_args = Some(args.clone());
+                false
+            }
+            AnnotationType::Simple(name) if name == "self" => {
+                self_type_args = Some(Vec::new());
+                false
+            }
+            _ => true,
+        }
+    }).collect();
+    (filtered, self_type_args)
+}
+
 #[derive(Debug)]
 pub(crate) struct SelfFieldEntry {
     pub(crate) name: String,
@@ -214,6 +241,7 @@ where F: FnMut(&AnnotationType) -> Option<ValueType>,
                 description: description.clone(),
                 has_vararg_tail,
                 is_vararg: false,
+                returns_self_type_args: None,
             }
         }).collect()
     } else {

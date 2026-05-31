@@ -20,9 +20,9 @@ struct FunReturnInfo {
 
 /// Return type and parameter types extracted from a function argument,
 /// for generic inference in the `Fun` arm of `infer_generics_from_annotation`.
-struct ArgFunctionTypeInfo {
-    ret: Option<ValueType>,
-    params: Option<Vec<ValueType>>,
+pub(super) struct ArgFunctionTypeInfo {
+    pub(super) ret: Option<ValueType>,
+    pub(super) params: Option<Vec<ValueType>>,
 }
 
 impl ArgFunctionTypeInfo {
@@ -2395,7 +2395,7 @@ impl<'a> Analysis<'a> {
     ///     preserves index alignment but cannot leak into generic bindings because
     ///     the caller only matches `AnnotationType::Simple(name)` against these.
     ///   - Functions without annotations or non-function args: None.
-    fn arg_function_type_info(&mut self, arg_expr_id: ExprId) -> ArgFunctionTypeInfo {
+    pub(super) fn arg_function_type_info(&mut self, arg_expr_id: ExprId) -> ArgFunctionTypeInfo {
         let Some(arg_type) = self.resolve_expr(arg_expr_id) else {
             return ArgFunctionTypeInfo::EMPTY;
         };
@@ -2404,12 +2404,30 @@ impl<'a> Analysis<'a> {
                 let fn_idx = *fn_idx;
 
                 // Return type: prefer annotation, fall back to FunctionRet symbol.
+                // Skip TypeVariable (unresolved generic placeholder) so we use
+                // the actual body-inferred return type instead.
                 let ret = {
                     let ann_ret = self.func(fn_idx).return_annotations.first().cloned();
-                    if let Some(vt) = ann_ret
+                    if let Some(ref vt) = ann_ret
                         && !matches!(vt, ValueType::TypeVariable(_))
                     {
-                        Some(vt)
+                        // When the annotation is Any (e.g. from contextual typing
+                        // `@param map fun(): any`), prefer the FunctionRet symbol's
+                        // body-inferred type if available, since `any` adds no info.
+                        if matches!(vt, ValueType::Any) {
+                            let func_scope = self.func(fn_idx).scope;
+                            let ret_id = SymbolIdentifier::FunctionRet(fn_idx, 0);
+                            let body_ret = self.get_symbol(&ret_id, func_scope).and_then(|ret_sym_idx| {
+                                let ver = self.sym(ret_sym_idx).versions.first()?;
+                                if ver.resolved_type.is_some() {
+                                    return ver.resolved_type.clone();
+                                }
+                                ver.type_source.and_then(|src| self.resolve_expr(src))
+                            });
+                            body_ret.or(ann_ret)
+                        } else {
+                            ann_ret
+                        }
                     } else {
                         let func_scope = self.func(fn_idx).scope;
                         let ret_id = SymbolIdentifier::FunctionRet(fn_idx, 0);

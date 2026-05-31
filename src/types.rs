@@ -637,6 +637,12 @@ pub(crate) struct ResolvedOverload {
     pub(crate) has_vararg_tail: bool,
     #[serde(default)]
     pub(crate) is_vararg: bool,
+    /// When the overload's return type is `self<X>`, the raw annotation type
+    /// args are preserved here (e.g. `[AnnotationType::Simple("R")]` for
+    /// `self<R>`). Empty vec means plain `self` (no re-parameterization).
+    /// `None` means the overload does not return self.
+    #[serde(default)]
+    pub(crate) returns_self_type_args: Option<Vec<crate::annotations::AnnotationType>>,
 }
 
 impl ResolvedOverload {

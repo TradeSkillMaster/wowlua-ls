@@ -207,3 +207,57 @@ local pub5 = pubUnion:IgnoreNil()
 -- ToBoolean after IgnoreNil: chains compose correctly
 local pub6 = pub:IgnoreNil():ToBoolean()
 --    ^ hover: (local) pub6: Publisher<boolean>
+
+-- ── Overload with self<R> and generic callback inference ─────────────────────
+
+---@class Stream<T>
+local Stream = {}
+
+---@generic R
+---@overload fun(map: (fun(value: T): R)): self<R>
+---@param map fun(value: T): any
+---@return self
+function Stream:Map(map) return self end
+
+---@type Stream<string>
+local stream = {}
+
+-- Inline function callback: R inferred from body return type
+local mapped1 = stream:Map(function(value) return 42 end)
+--    ^ hover: (local) mapped1: Stream<number>
+
+-- Named function callback
+---@param value string
+---@return boolean
+local function toBool(value) return value ~= "" end
+local mapped2 = stream:Map(toBool)
+--    ^ hover: (local) mapped2: Stream<boolean>
+
+-- Fallback to @return self when called with non-function (diagnostic expected)
+local mapped3 = stream:Map("something")
+--                         ^ diag: type-mismatch
+--    ^ hover: (local) mapped3: Stream<string>
+
+-- Chain: Map then Map
+local mapped4 = stream:Map(function(value) return 42 end):Map(function(value) return value > 0 end)
+--    ^ hover: (local) mapped4: Stream<boolean>
+
+-- Overload self<R> with multi-param callback
+---@generic A, R
+---@overload fun(map: (fun(value: T, arg: A): R), arg?: A): self<R>
+---@param map (fun(value: T, arg: A): any)|string|number|table
+---@return self
+function Stream:MapWithArg(map, arg) return self end
+
+local mapped5 = stream:MapWithArg(function(value, extra) return 42 end)
+--    ^ hover: (local) mapped5: Stream<number>
+
+-- Overload self<T!> — NonNil stripping in overload return
+---@overload fun(): self<T!>
+---@return self
+function Stream:IgnoreNilOverload() return self end
+
+---@type Stream<string?>
+local streamNullable = {}
+local mapped6 = streamNullable:IgnoreNilOverload()
+--    ^ hover: (local) mapped6: Stream<string>

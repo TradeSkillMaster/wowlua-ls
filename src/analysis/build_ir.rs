@@ -2743,13 +2743,15 @@ impl<'a> Analysis<'a> {
                             optional: p.optional,
                         }
                     }).collect();
-                    let returns = sig.returns.iter()
+                    let (non_self_returns, returns_self_type_args) =
+                        crate::annotations::extract_overload_self_return(&sig.returns);
+                    let returns = non_self_returns.iter()
                         .filter_map(|at| self.resolve_annotation_type_mut_gen(at, generics))
                         .collect();
                     let has_vararg_tail = matches!(
                         sig.returns.last(), Some(crate::annotations::AnnotationType::VarArgs(_))
                     );
-                    ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail, is_vararg: sig.is_vararg }
+                    ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail, is_vararg: sig.is_vararg, returns_self_type_args }
                 })
                 .collect();
             self.ir.functions[func_idx.val()].overloads = overloads;

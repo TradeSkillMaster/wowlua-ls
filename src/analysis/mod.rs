@@ -1983,6 +1983,19 @@ pub(crate) fn type_involves_type_variable_impl(ir: &Ir, vt: &ValueType) -> bool 
             table.value_type.as_ref().is_some_and(|v| type_involves_type_variable_impl(ir, v))
                 || table.key_type.as_ref().is_some_and(|k| type_involves_type_variable_impl(ir, k))
         }
+        ValueType::Function(Some(idx)) => {
+            let func = ir.func(*idx);
+            func.return_annotations.iter().any(|r| type_involves_type_variable_impl(ir, r))
+                || func.args.iter().any(|&sym_idx| {
+                    ir.sym(sym_idx).versions.last()
+                        .and_then(|v| v.resolved_type.as_ref())
+                        .is_some_and(|t| type_involves_type_variable_impl(ir, t))
+                })
+                || func.overloads.iter().any(|o| {
+                    o.params.iter().any(|p| p.typ.as_ref().is_some_and(|t| type_involves_type_variable_impl(ir, t)))
+                        || o.returns.iter().any(|r| type_involves_type_variable_impl(ir, r))
+                })
+        }
         ValueType::Union(types) => types.iter().any(|t| type_involves_type_variable_impl(ir, t)),
         _ => false,
     }

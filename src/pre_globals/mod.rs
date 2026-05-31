@@ -139,7 +139,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 24;
+pub(crate) const BLOB_VERSION: u32 = 25;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -639,6 +639,7 @@ fn overload_from_duplicate_def(
         params: ovl_params, returns: ovl_returns,
         is_return_only: false, description: None,
         has_vararg_tail: false, is_vararg,
+        returns_self_type_args: None,
     }
 }
 
@@ -2954,22 +2955,27 @@ impl PreResolvedGlobals {
                     optional: p.optional,
                 }
             }).collect();
-            let returns = sig.returns.iter()
+            let (non_self_returns, returns_self_type_args) =
+                crate::annotations::extract_overload_self_return(&sig.returns);
+            let returns = non_self_returns.iter()
                 .filter_map(|at| {
-                    if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = at {
-                        Some(Self::materialize_fun_type(
-                            inner_params, inner_returns, *inner_vararg, generic_annotations,
-                            dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
-                        ))
-                    } else {
-                        Self::resolve_annotation_gen(at, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+                    match at {
+                        AnnotationType::Fun(inner_params, inner_returns, inner_vararg) => {
+                            Some(Self::materialize_fun_type(
+                                inner_params, inner_returns, *inner_vararg, generic_annotations,
+                                dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                            ))
+                        }
+                        _ => {
+                            Self::resolve_annotation_gen(at, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+                        }
                     }
                 })
                 .collect();
             let has_vararg_tail = matches!(
                 sig.returns.last(), Some(AnnotationType::VarArgs(_))
             );
-            ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail, is_vararg: sig.is_vararg }
+            ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail, is_vararg: sig.is_vararg, returns_self_type_args }
         }).collect();
 
         // Append synthesized return-only overloads from tuple-union @return.

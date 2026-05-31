@@ -10,6 +10,26 @@ pub(super) struct CallSiteInfo {
 // ── Function call resolution ──────────────────────────────────────────────────
 
 impl<'a> Analysis<'a> {
+    /// Check if a param type involving type variables should skip or trigger
+    /// a mismatch during overload scoring.
+    ///
+    /// Returns `Some(true)` for a definite mismatch (Function param with a
+    /// non-function arg), `Some(false)` to skip further assignability checks,
+    /// or `None` if the param doesn't involve type variables (caller should
+    /// proceed with normal checking).
+    fn type_var_param_mismatch(&self, param_t: &ValueType, arg_t: &ValueType) -> Option<bool> {
+        if !self.type_involves_type_variable(param_t) {
+            return None;
+        }
+        // For Function params with TypeVariable returns, still verify the arg is
+        // a function so non-function args correctly fall through to the primary.
+        if matches!(param_t, ValueType::Function(_)) && !matches!(arg_t, ValueType::Function(_)) {
+            Some(true)
+        } else {
+            Some(false)
+        }
+    }
+
     pub(super) fn resolve_function_call(
         &mut self,
         expr_id: ExprId,
@@ -545,8 +565,8 @@ impl<'a> Analysis<'a> {
                                         return true;
                                     }
                                     // Skip mismatch check for params with unresolved type variables
-                                    if self.type_involves_type_variable(param_t) {
-                                        return false;
+                                    if let Some(result) = self.type_var_param_mismatch(param_t, arg_t) {
+                                        return result;
                                     }
                                     // Optional params accept nil
                                     if param.optional && matches!(arg_t, ValueType::Nil) {
@@ -599,9 +619,8 @@ impl<'a> Analysis<'a> {
                                     return true;
                                 }
                                 // Skip mismatch check for params with unresolved type variables
-                                // (e.g. T[] in generic functions) — can't compare until inferred
-                                if self.type_involves_type_variable(param_t) {
-                                    return false;
+                                if let Some(result) = self.type_var_param_mismatch(param_t, &arg_t) {
+                                    return result;
                                 }
                                 // Optional params accept nil
                                 if param.optional && matches!(arg_t, ValueType::Nil) {
@@ -668,6 +687,27 @@ impl<'a> Analysis<'a> {
                                     generic_arg_indices.entry(name.clone()).or_insert(i);
                                     substitutable_generic_names.insert(name.clone());
                                 }
+                    }
+                    // Function with TypeVariable return: fun(...): R → infer R
+                    // from the argument function's return type.
+                    if let ValueType::Function(Some(fn_idx)) = param_type {
+                        let fn_ret_anns = self.func(*fn_idx).return_annotations.clone();
+                        // Hoist outside the loop: the result depends only on
+                        // arg_expr_id, not on the loop variable.
+                        let mut type_info = None;
+                        for ret_vt in &fn_ret_anns {
+                            if let ValueType::TypeVariable(name) = ret_vt
+                                && generic_names.contains(name)
+                                && (!generic_subs.contains_key(name) || constraint_fallback_names.contains(name))
+                            {
+                                let info = type_info.get_or_insert_with(|| self.arg_function_type_info(*arg_expr_id));
+                                if let Some(ref arg_ret) = info.ret {
+                                    generic_subs.insert(name.clone(), arg_ret.clone());
+                                    constraint_fallback_names.remove(name);
+                                    substitutable_generic_names.insert(name.clone());
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -988,6 +1028,59 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Extract receiver expression once for both overload self<R> and primary @return self.
+        let receiver_expr_id = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
+            Some(receiver_expr)
+        } else {
+            None
+        };
+
+        // @overload ... : self / self<R> — re-parameterize the receiver type.
+        // Must run before the primary returns_self check since both may be set
+        // (e.g. @overload fun(...): self<R> with a primary @return self fallback).
+        //
+        // Limitation: only handles ret_index == 0.  If an overload declares
+        // additional return values alongside self (e.g. `@overload fun(): self<R>, number`),
+        // the `self` return is filtered out in build_ir.rs so `returns[0]` becomes
+        // `number`, but this block returns the receiver type first and the extra
+        // returns are silently dropped.  Multi-return overloads with self<R> are
+        // not a real-world pattern, so this is acceptable for now.
+        if let Some(overload) = matching_overload
+            && let Some(ref self_args) = overload.returns_self_type_args
+            && ret_index == 0
+        {
+            let receiver_type = receiver_expr_id.and_then(|re| self.resolve_expr(re));
+            if let Some(rt) = receiver_type {
+                if !self_args.is_empty() {
+                    // self<R>: resolve type args and substitute bound generics
+                    let fn_generics = self.func(func_idx).generic_constraints_raw.clone();
+                    let self_args = self_args.clone();
+                    let mut resolved: Vec<ValueType> = self_args.iter()
+                        .map(|ta| self.resolve_annotation_type_mut_gen(ta, &fn_generics)
+                            .unwrap_or(ValueType::Any))
+                        .collect();
+                    for (i, arg) in resolved.iter_mut().enumerate() {
+                        *arg = self.substitute_generics_deep(arg, &generic_subs);
+                        if matches!(self_args.get(i), Some(crate::annotations::AnnotationType::NonNil(_))) {
+                            *arg = arg.strip_nil();
+                        }
+                    }
+                    if !resolved.is_empty() {
+                        self.call_type_args.insert(expr_id, resolved);
+                    }
+                } else {
+                    // Plain self: propagate receiver's type args
+                    if let Some(re) = receiver_expr_id {
+                        let receiver_args = self.get_expr_type_args(re);
+                        if !receiver_args.is_empty() {
+                            self.call_type_args.insert(expr_id, receiver_args);
+                        }
+                    }
+                }
+                return Some(rt);
+            }
+        }
+
         // @constructor: return the class table type
         if let Some(ctor_table_idx) = constructor_table_idx {
             return if ret_index == 0 {
@@ -1002,11 +1095,6 @@ impl<'a> Analysis<'a> {
             let builds_field_info = self.func(func_idx).builds_field.clone();
             let built_name_param = self.func(func_idx).built_name;
             let built_extends = self.func(func_idx).built_extends;
-            let receiver_expr_id = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
-                Some(receiver_expr)
-            } else {
-                None
-            };
             let receiver_type = receiver_expr_id.and_then(|re| self.resolve_expr(re));
             if let Some(rt) = receiver_type {
                 // If this method has @builds-field, create a new table with the added field
@@ -1235,6 +1323,7 @@ impl<'a> Analysis<'a> {
         // If so, the primary return type should be unioned with nil (the function
         // can return nothing/nil via the return-only overload path).
         let return_overloads_may_nil = self.func(func_idx).return_overload_may_nil(ret_index);
+
         let return_type = matching_overload
             .and_then(|o| o.returns.get(ret_index))
             .map(|vt| {

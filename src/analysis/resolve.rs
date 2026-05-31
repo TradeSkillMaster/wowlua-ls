@@ -951,6 +951,7 @@ impl<'a> Analysis<'a> {
                                 description: None,
                                 has_vararg_tail: false,
                                 is_vararg: false,
+                                returns_self_type_args: None,
                             });
                         }
                         func.overloads = new_overloads;
