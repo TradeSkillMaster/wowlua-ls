@@ -5319,6 +5319,11 @@ impl AnalysisResult {
         if type_args.is_empty() {
             return formatted.to_string();
         }
+        // Don't display unresolved generic type variables (e.g. "R" from @generic R).
+        // Show just the class name without type args instead of "ClassName<R>".
+        if type_args.iter().any(|a| matches!(a, ValueType::TypeVariable(_))) {
+            return formatted.to_string();
+        }
         if let ValueType::Table(Some(idx)) = vt
             && let Some(ref class_name) = self.table(*idx).class_name
             && formatted.starts_with(class_name.as_str())

@@ -2537,7 +2537,30 @@ impl<'a> Analysis<'a> {
                 if !array_fields.is_empty() {
                     return Self::union_of(self.collect_unique_element_types(&array_fields));
                 }
-                self.ir.table(idx).value_type.clone()
+                if let Some(vt) = self.ir.table(idx).value_type.clone() {
+                    return Some(vt);
+                }
+                // Bracket-keyed table whose value_type hasn't been set yet
+                // (infer_bracket_field_types runs later in the fixpoint loop).
+                // Resolve value expressions inline so generic binding (e.g.
+                // table<T,R> overload params) can extract the value type now.
+                // Uses resolve_expr (not resolve_expr_to_broad_type) to preserve
+                // precision — generic binding benefits from exact types rather
+                // than broadened categories.
+                if let Some(bracket_fields) = self.ir.bracket_key_fields.get(&idx).cloned() {
+                    let mut val_types: Vec<ValueType> = Vec::new();
+                    for (_key_expr, val_expr) in &bracket_fields {
+                        if let Some(vt) = self.resolve_expr(*val_expr)
+                            && vt != ValueType::Nil && !self.is_structurally_duplicate_type(&val_types, &vt)
+                        {
+                            val_types.push(vt);
+                        }
+                    }
+                    if !val_types.is_empty() {
+                        return Self::union_of(val_types);
+                    }
+                }
+                None
             }
             // Union of array types: e.g. string[] | ItemKey[] → string | ItemKey
             ValueType::Union(members) => {

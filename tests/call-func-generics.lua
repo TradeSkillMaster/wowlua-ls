@@ -279,6 +279,28 @@ function Stream:MapWithArg(map, arg) return self end
 local mapped5 = stream:MapWithArg(function(value, extra) return 42 end)
 --    ^ hover: (local) mapped5: Stream<number>
 
+-- Overload self<R> with table<T,R> lookup table
+---@generic R
+---@overload fun(map: table<T,R>): self<R>
+---@param map fun(value: T): any
+---@return self
+function Stream:MapLookup(map) return self end
+
+local LOOKUP = {
+    ["alpha"] = 100,
+    ["beta"] = 200,
+}
+local mapped_lookup = stream:MapLookup(LOOKUP)
+--    ^ hover: (local) mapped_lookup: Stream<number>
+
+-- Bracket-keyed table with non-literal keys (deferred value_type inference)
+---@alias StreamKey string
+---@type table<StreamKey, boolean>
+local KEYED = {}
+KEYED["x"] = true
+local mapped_keyed = stream:MapLookup(KEYED)
+--    ^ hover: (local) mapped_keyed: Stream<boolean>
+
 -- Overload self<T!> — NonNil stripping in overload return
 ---@overload fun(): self<T!>
 ---@return self
