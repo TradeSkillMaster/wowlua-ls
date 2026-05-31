@@ -875,3 +875,21 @@ local function loopCarriedType(items)
         end
     end
 end
+
+-- ── Boolean truthiness guard narrowing ───────────────────────────────
+-- Inside `if flag then`, a bare `boolean` narrows to `true` (the only
+-- truthy boolean value in Lua). `boolean?` also narrows to `true`.
+
+---@param flag boolean
+---@param optFlag boolean?
+local function boolGuardNarrow(flag, optFlag)
+    if flag then
+        local x = flag
+        --    ^ hover: (local) x: true
+    end
+    if optFlag then
+        local y = optFlag
+        --    ^ hover: (local) y: true
+    end
+end
+_consume(boolGuardNarrow)

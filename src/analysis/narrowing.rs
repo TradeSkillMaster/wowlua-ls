@@ -267,7 +267,7 @@ impl<'a> Analysis<'a> {
                             self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.falsy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.narrow_siblings(sym_idx, target_scope);
-                            self.narrow_correlated_locals(sym_idx, target_scope, true);
+                            self.narrow_correlated_locals(sym_idx, target_scope);
                             self.narrow_or_coalesce_derived(sym_idx, target_scope, true);
                             // Boolean type-guard alias: `local b = type(x) == "string"; if b then`
                             self.try_apply_type_guard_alias(sym_idx, target_scope, true);
@@ -389,7 +389,7 @@ impl<'a> Analysis<'a> {
                                 if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                                     self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                     self.narrow_siblings(sym_idx, target_scope);
-                                    self.narrow_correlated_locals(sym_idx, target_scope, false);
+                                    self.narrow_correlated_locals(sym_idx, target_scope);
                                     self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                                 }
                             } else if !ident.has_any_dynamic_bracket() {
@@ -1060,7 +1060,7 @@ impl<'a> Analysis<'a> {
         self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
         self.push_strip_nil_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
-        self.narrow_correlated_locals(sym_idx, scope_idx, false);
+        self.narrow_correlated_locals(sym_idx, scope_idx);
         self.narrow_or_coalesce_derived(sym_idx, scope_idx, false);
     }
 
@@ -1070,7 +1070,7 @@ impl<'a> Analysis<'a> {
         self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
         self.push_strip_falsy_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
-        self.narrow_correlated_locals(sym_idx, scope_idx, true);
+        self.narrow_correlated_locals(sym_idx, scope_idx);
         self.narrow_or_coalesce_derived(sym_idx, scope_idx, true);
     }
 
@@ -1127,7 +1127,7 @@ impl<'a> Analysis<'a> {
                                 if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                                     self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
                                     self.narrow_siblings(sym_idx, scope_idx);
-                                    self.narrow_correlated_locals(sym_idx, scope_idx, false);
+                                    self.narrow_correlated_locals(sym_idx, scope_idx);
                                     self.narrow_or_coalesce_derived(sym_idx, scope_idx, false);
                                 }
                             } else if !ident.has_any_dynamic_bracket() {
@@ -1707,7 +1707,7 @@ impl<'a> Analysis<'a> {
     /// also narrow all sibling locals in the same group. This handles the pattern where
     /// multiple locals are always assigned together in every branch of an if/elseif chain
     /// (without else), so guarding one implies all are non-nil.
-    fn narrow_correlated_locals(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, falsy: bool) {
+    fn narrow_correlated_locals(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         // Find all groups containing sym_idx and collect sibling indices.
         let mut siblings: Vec<SymbolIndex> = Vec::new();
         for group in &self.correlated_locals {
@@ -1720,16 +1720,16 @@ impl<'a> Analysis<'a> {
             }
         }
         for sibling in siblings {
+            // Correlation only tells us the sibling was assigned in the same
+            // branches as the guard variable (i.e. it is non-nil). It does NOT
+            // imply the sibling is truthy — a boolean sibling assigned `false`
+            // stays `false` — so siblings are always nil-stripped, never
+            // falsy-stripped, regardless of how the guard variable was narrowed.
             self.narrowed_symbols.entry(scope_idx).or_default().insert(sibling);
-            if falsy {
-                self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(sibling);
-                self.push_strip_falsy_version(sibling, scope_idx);
-            } else {
-                self.push_strip_nil_version(sibling, scope_idx);
-            }
+            self.push_strip_nil_version(sibling, scope_idx);
             // A correlated sibling is itself a valid narrowing source for any
             // `x = x or sibling` coalesce derivations.
-            self.narrow_or_coalesce_derived(sibling, scope_idx, falsy);
+            self.narrow_or_coalesce_derived(sibling, scope_idx, false);
         }
     }
 

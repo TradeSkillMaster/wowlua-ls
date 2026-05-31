@@ -728,6 +728,8 @@ impl<'a> Analysis<'a> {
                     self.ir.push_expr(Expr::StripFalsy(sym_ref))
                 } else if self.is_symbol_narrowed(symbol_idx, scope_idx) {
                     self.ir.push_expr(Expr::StripNil(sym_ref))
+                } else if self.is_symbol_truthy_narrowed(symbol_idx, scope_idx) {
+                    self.ir.push_expr(Expr::StripTruthy(sym_ref))
                 } else {
                     sym_ref
                 }

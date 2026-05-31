@@ -1064,3 +1064,26 @@ function fwd.handleOther(symbol, data)
     end
     return true
 end
+
+-- ── Boolean guard truthy/falsy narrowing in synthesized return cases ─────
+-- Regression: a boolean? guard returned in both a truthy branch (re-returning
+-- the guard plus correlated values) and falsy fall-through must narrow to
+-- `true` in the truthy case and `false | nil` in the falsy case — not bare
+-- `boolean`. Mirrors the (true, number, number) | (false|nil, nil, nil) shape.
+
+---@return boolean?
+---@return number
+---@return number
+local function computeFlag()
+    return cond and true or nil, 1, 2
+end
+
+local function guardedFlag()
+--             ^ hover: (local) function guardedFlag()\n-> boolean?, number?, number?\ncases (inferred):\n(true, number, number)\n(false?, nil, nil)
+    local ok, x, y = computeFlag()
+    if ok then
+        return ok, x, y
+    end
+    return ok
+end
+_consume(guardedFlag)

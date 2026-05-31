@@ -357,16 +357,51 @@ impl ValueType {
     /// In Lua, both nil and false are falsy, so after a truthiness guard
     /// (`if x then`, `if not x then return end`), both should be stripped.
     pub(crate) fn strip_falsy(&self) -> ValueType {
+        // A bare `boolean` (Boolean(None)) that survives a truthiness guard can only
+        // be `true`, so collapse it to the `true` literal.
+        fn map_member(t: &ValueType) -> Option<ValueType> {
+            match t {
+                ValueType::Nil | ValueType::Boolean(Some(false)) => None,
+                ValueType::Boolean(None) => Some(ValueType::Boolean(Some(true))),
+                other => Some(other.clone()),
+            }
+        }
         match self {
             ValueType::Union(types) => {
-                let filtered: Vec<_> = types.iter()
-                    .filter(|t| !matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))))
-                    .cloned()
-                    .collect();
+                let filtered: Vec<_> = types.iter().filter_map(map_member).collect();
                 ValueType::make_union(filtered)
             }
-            ValueType::Nil | ValueType::Boolean(Some(false)) => ValueType::make_union(vec![]),
-            _ => self.clone(),
+            other => map_member(other).unwrap_or_else(|| ValueType::make_union(vec![])),
+        }
+    }
+
+    /// Complement of `strip_falsy`: keeps only the falsy possibilities of a type.
+    /// Used by falsy-region narrowing (`else` of `if x then`, `if x then return end`
+    /// continuation, etc.): in such regions the value can only be `nil` or `false`.
+    /// A bare `boolean` collapses to the `false` literal. Types with no falsy
+    /// possibility (pure truthy values like `string`/`number`) are left unchanged
+    /// — the region is statically unreachable for them, so narrowing to an empty
+    /// type would be unhelpful and could break downstream resolution.
+    pub(crate) fn strip_truthy(&self) -> ValueType {
+        fn map_member(t: &ValueType) -> Option<ValueType> {
+            match t {
+                ValueType::Nil => Some(ValueType::Nil),
+                ValueType::Boolean(Some(false)) | ValueType::Boolean(None) => {
+                    Some(ValueType::Boolean(Some(false)))
+                }
+                _ => None,
+            }
+        }
+        match self {
+            ValueType::Union(types) => {
+                let filtered: Vec<_> = types.iter().filter_map(map_member).collect();
+                // No falsy members → unreachable region; keep the type unchanged.
+                if filtered.is_empty() {
+                    return self.clone();
+                }
+                ValueType::make_union(filtered)
+            }
+            other => map_member(other).unwrap_or_else(|| other.clone()),
         }
     }
 
@@ -1028,6 +1063,7 @@ pub(crate) enum Expr {
     VarArgs(usize, bool), // (ret_index, file_level): ret_index 0 = first vararg, etc.
     StripNil(ExprId), // wraps an expression, strips nil from the resolved type
     StripFalsy(ExprId), // wraps an expression, strips nil and false from the resolved type
+    StripTruthy(ExprId), // wraps an expression, keeps only falsy values (nil / false) — falsy-region narrowing
     /// Overload-based narrowing for multi-return siblings.
     /// Filters return-only overloads by narrowed siblings and computes the union
     /// of types at `ret_index` across compatible overloads.

@@ -2011,6 +2011,13 @@ impl<'a> Analysis<'a> {
                     other => other,
                 };
             }
+            Expr::StripTruthy(inner) => {
+                let inner = *inner;
+                return match self.resolve_expr(inner).map(|vt| vt.strip_truthy()) {
+                    Some(ValueType::Union(ref members)) if members.is_empty() => None,
+                    other => other,
+                };
+            }
             Expr::OverloadNarrow { inner, func_expr, ret_index, narrowed } => {
                 let inner = *inner;
                 let func_expr = *func_expr;

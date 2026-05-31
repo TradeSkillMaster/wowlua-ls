@@ -1830,6 +1830,10 @@ impl<'a> Analysis<'a> {
         scope_set_contains(&self.falsy_narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
     }
 
+    pub(crate) fn is_symbol_truthy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        scope_set_contains(&self.truthy_narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
+    }
+
     pub(crate) fn get_type_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
         scope_map_get(&self.type_narrowed_symbols, &self.ir.scopes, &sym_idx, scope_idx)
     }
