@@ -1074,3 +1074,23 @@ if commaRetFrame2 then
     useFrame(commaRetFrame2)
     -- ^ diag: none
 end
+
+-- ── loadstring tuple-union return ───────────────────────────────────────────
+
+local lsFn, lsErr = loadstring("return 1")
+--    ^ hover: (local) lsFn: function?
+--            ^ hover: (local) lsErr: string?
+
+-- narrowing: success case (early-exit on nil)
+local lsFn2, lsErr2 = loadstring("return 1")
+if not lsFn2 then return end
+local _ = lsFn2
+--        ^ hover: (local) lsFn2: function
+local _ = lsErr2
+--        ^ hover: (local) lsErr2: nil
+
+-- narrowing: error case (early-exit on success)
+local lsFn3, lsErr3 = loadstring("bad code")
+if lsFn3 then return end
+local _ = lsErr3
+--        ^ hover: (local) lsErr3: string
