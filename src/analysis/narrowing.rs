@@ -3277,6 +3277,11 @@ impl<'a> Analysis<'a> {
     /// - `self.field ~= nil and ...` → `StripNil`
     /// - `type(self.field) == "type" and ...` → `FilterTo(type)`
     pub(super) fn detect_and_lhs_field_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>, GuardNarrow)> {
+        // Unwrap parenthesized expressions
+        if let Expression::GroupedExpression(g) = lhs
+            && let Some(inner) = g.get_expression() {
+                return self.detect_and_lhs_field_guard(&inner, scope_idx);
+        }
         // Bare field truthiness: `self.field and ...` or `self._state.x and ...`
         if let Expression::Identifier(ident) = lhs {
             let names = ident.names();
@@ -3325,6 +3330,11 @@ impl<'a> Analysis<'a> {
     /// `type(x) == "string"`), detect which symbol should be narrowed.
     /// Returns (symbol_index, guard_narrow_kind) if a guard pattern is found.
     pub(super) fn detect_and_lhs_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
+        // Unwrap parenthesized expressions: `(x and y) and ...` → look inside
+        if let Expression::GroupedExpression(g) = lhs
+            && let Some(inner) = g.get_expression() {
+                return self.detect_and_lhs_guard(&inner, scope_idx);
+        }
         // Bare name: `x and ...` → truthiness guard (strip nil + false)
         // Also resolves boolean type-guard aliases: `isString and ...` → FilterTo(String) on target
         if let Expression::Identifier(ident) = lhs {
@@ -3404,6 +3414,13 @@ impl<'a> Analysis<'a> {
     }
 
     fn collect_and_chain_guards_inner(&self, expr: &Expression<'_>, scope_idx: ScopeIndex, guards: &mut Vec<(SymbolIndex, GuardNarrow)>) {
+        // Unwrap parenthesized expressions
+        if let Expression::GroupedExpression(g) = expr {
+            if let Some(inner) = g.get_expression() {
+                self.collect_and_chain_guards_inner(&inner, scope_idx, guards);
+            }
+            return;
+        }
         if let Expression::BinaryExpression(bin) = expr {
             if matches!(bin.kind(), Operator::And) {
                 let terms = bin.get_terms();
@@ -3455,6 +3472,13 @@ impl<'a> Analysis<'a> {
     }
 
     fn collect_and_chain_field_guards_inner(&self, expr: &Expression<'_>, scope_idx: ScopeIndex, guards: &mut Vec<(SymbolIndex, Vec<String>, GuardNarrow)>) {
+        // Unwrap parenthesized expressions
+        if let Expression::GroupedExpression(g) = expr {
+            if let Some(inner) = g.get_expression() {
+                self.collect_and_chain_field_guards_inner(&inner, scope_idx, guards);
+            }
+            return;
+        }
         if let Expression::BinaryExpression(bin) = expr {
             if matches!(bin.kind(), Operator::And) {
                 let terms = bin.get_terms();
@@ -3500,6 +3524,13 @@ impl<'a> Analysis<'a> {
     }
 
     fn collect_and_chain_flavor_guards_inner(&self, expr: &Expression<'_>, scope_idx: ScopeIndex, combined: &mut u8) {
+        // Unwrap parenthesized expressions
+        if let Expression::GroupedExpression(g) = expr {
+            if let Some(inner) = g.get_expression() {
+                self.collect_and_chain_flavor_guards_inner(&inner, scope_idx, combined);
+            }
+            return;
+        }
         if let Expression::BinaryExpression(bin) = expr {
             if matches!(bin.kind(), Operator::And) {
                 let terms = bin.get_terms();
@@ -3543,6 +3574,11 @@ impl<'a> Analysis<'a> {
 
     /// Detect a guard from a single (non-chain) expression — bare name, `x ~= nil`, or type guard.
     fn detect_and_lhs_guard_leaf(&self, expr: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
+        // Unwrap parenthesized expressions
+        if let Expression::GroupedExpression(g) = expr
+            && let Some(inner) = g.get_expression() {
+                return self.detect_and_lhs_guard_leaf(&inner, scope_idx);
+        }
         if let Expression::Identifier(ident) = expr {
             let names = ident.names();
             if names.len() == 1 {
@@ -3598,6 +3634,11 @@ impl<'a> Analysis<'a> {
     /// In `not x or f(x)`, if `not x` is true (x is nil), the or short-circuits;
     /// so when f(x) executes, x must be non-nil.
     pub(super) fn detect_or_lhs_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
+        // Unwrap parenthesized expressions
+        if let Expression::GroupedExpression(g) = lhs
+            && let Some(inner) = g.get_expression() {
+                return self.detect_or_lhs_guard(&inner, scope_idx);
+        }
         // `not x or ...` → x is truthy in RHS (strip nil + false)
         if let Expression::UnaryExpression(u) = lhs
             && matches!(u.kind(), Operator::Not) {
@@ -3645,6 +3686,13 @@ impl<'a> Analysis<'a> {
     }
 
     fn collect_or_chain_guards_inner(&self, expr: &Expression<'_>, scope_idx: ScopeIndex, guards: &mut Vec<(SymbolIndex, GuardNarrow)>) {
+        // Unwrap parenthesized expressions
+        if let Expression::GroupedExpression(g) = expr {
+            if let Some(inner) = g.get_expression() {
+                self.collect_or_chain_guards_inner(&inner, scope_idx, guards);
+            }
+            return;
+        }
         if let Expression::BinaryExpression(bin) = expr {
             if matches!(bin.kind(), Operator::Or) {
                 let terms = bin.get_terms();

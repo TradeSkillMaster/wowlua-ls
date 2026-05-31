@@ -221,3 +221,21 @@ local function _bracketUnionAccess(ctx, item)
     _use(id > 0)
 end
 _use(_bracketUnionAccess)
+
+-- Parenthesized `and` guard: `(a and b) and ...` should narrow both a and b.
+-- The GroupedExpression wrapper around `(a and b)` must not block guard detection.
+---@param minAmt? number
+---@param maxAmt? number
+local function _parenAndGuardConcat(minAmt, maxAmt)
+    local r = (minAmt and maxAmt) and ("["..minAmt.."-"..maxAmt.."]") or ""
+    _use(r)
+end
+_use(_parenAndGuardConcat)
+
+-- Parenthesized `or` guard: `(x == nil) or f(x)` should narrow x in the RHS.
+---@param val? number
+local function _parenOrGuardConcat(val)
+    local r = (val == nil) or (val > 0)
+    _use(r)
+end
+_use(_parenOrGuardConcat)
