@@ -37,6 +37,11 @@
 ---@fl
 --    ^ comp: flavor-narrows
 
+-- Non-matching prefix: no tag starts with "xyz" → empty, no fallback to globals
+---@diagnostic disable-next-line: malformed-annotation
+---@xyz
+--     ^ comp: none
+
 -- ── Context-aware filtering ────────────────────────────────────────────────
 
 -- Function context: after @param, only function-applicable tags appear

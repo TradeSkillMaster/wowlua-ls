@@ -3099,7 +3099,8 @@ impl AnalysisResult {
             return Some(items);
         }
 
-        None
+        // Inside a ---@ annotation — never fall back to general scope completions.
+        Some(Vec::new())
     }
 
     fn try_tag_completions(&self, after_at: &str, token: &SyntaxToken, snippets: bool) -> Option<Vec<lsp_types::CompletionItem>> {
@@ -3180,7 +3181,13 @@ impl AnalysisResult {
             })
             .collect();
 
-        if items.is_empty() { None } else { Some(items) }
+        if items.is_empty() {
+            // No whitespace in after_at means we're in tag position — return empty
+            // to prevent fallthrough to param-name / type-name completions.
+            Some(Vec::new())
+        } else {
+            Some(items)
+        }
     }
 
     fn detect_annotation_context(&self, token: &SyntaxToken) -> AnnotationContext {
@@ -3215,7 +3222,7 @@ impl AnalysisResult {
                         match tag {
                             "param" | "return" | "generic" | "builds-field" | "built-name"
                             | "built-extends" | "type-narrows" | "defclass" | "flavor-narrows"
-                            | "narrows-arg" => {
+                            | "narrows-arg" | "requires" => {
                                 has_function_tag = true;
                             }
                             "class" | "enum" | "field" | "accessor" | "correlated" => {
