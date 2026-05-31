@@ -1383,8 +1383,14 @@ impl<'a> Analysis<'a> {
                             let node = DefNode::from_node(ret.syntax());
                             let expressions = expr_list.expressions();
                             for (index, expr) in expressions.iter().enumerate() {
-                                let expr_id = self.lower_expression(expr, scope_idx);
+                                let (expr_id, original_expr_id) = self.lower_expression_with_original(expr, scope_idx);
                                 let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
+                                // When @as overrides the return expression, preserve the
+                                // pre-cast SymbolRef in original_type_source so the
+                                // pass-through detection can trace back to the callee.
+                                if let Some(orig) = original_expr_id {
+                                    self.ir.set_type_source(symbol_idx, orig);
+                                }
                                 self.ir.set_type_source(symbol_idx, expr_id);
                                 let func = self.ir.functions.get_mut(func_id.val()).unwrap();
                                 if !func.rets.contains(&symbol_idx) {

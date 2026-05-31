@@ -297,6 +297,12 @@ impl<'a> Analysis<'a> {
                     }
                     new_resolution = true;
                 }
+                // Detect destructure+re-return pass-throughs (e.g.
+                // `local a, b = Callee(...); return a, b`) and propagate
+                // callee's return-only overloads to the wrapper.
+                if self.propagate_passthrough_return_overloads() {
+                    new_resolution = true;
+                }
                 if !new_resolution {
                     break;
                 }
@@ -618,6 +624,14 @@ impl<'a> Analysis<'a> {
                         pending.push((sibling_idx, new_ver));
                     }
                 }
+            } else if let Some(ValueType::Function(Some(func_idx))) = &func_type {
+                // Function resolved but has no overloads yet. If it also has no
+                // return annotations, it might gain overloads from tail-call or
+                // pass-through propagation during stall recovery. Retain the entry.
+                if self.ir.func(*func_idx).return_annotations.is_empty() {
+                    remaining.push(entry);
+                    continue;
+                }
             }
         }
         // A rewritten ref may be wrapped by parent expressions (e.g. a `StripNil`
@@ -643,8 +657,6 @@ impl<'a> Analysis<'a> {
     /// Returns the newly created (SymbolIndex, version_index) pairs for the caller
     /// to add to the pending-resolution list.
     fn expand_resolved_tail_call_returns(&mut self) -> Vec<(SymbolIndex, usize)> {
-        use std::collections::BTreeMap;
-
         let mut new_pending: Vec<(SymbolIndex, usize)> = Vec::new();
 
         // Collect candidate functions: local functions with no return annotations,
@@ -678,7 +690,7 @@ impl<'a> Analysis<'a> {
             let rets = self.ir.functions[func_id.val()].rets.clone();
 
             // Group by DefNode
-            let mut groups: BTreeMap<(u32, u32), Vec<(usize, SymbolIndex)>> = BTreeMap::new();
+            let mut groups: HashMap<(u32, u32), Vec<(usize, SymbolIndex)>> = HashMap::new();
             for &sym_idx in &rets {
                 if sym_idx.is_external() { continue; }
                 let sym = &self.ir.symbols[sym_idx.val()];
@@ -770,9 +782,228 @@ impl<'a> Analysis<'a> {
                     }
                     new_pending.push((symbol_idx, 0));
                 }
+
+                // Propagate callee's return-only overloads to the wrapper so
+                // callers of the wrapper benefit from sibling narrowing.
+                let callee_overloads: Vec<ResolvedOverload> = self.func(callee_func_idx)
+                    .overloads.iter()
+                    .filter(|o| o.is_return_only)
+                    .cloned()
+                    .collect();
+                if !callee_overloads.is_empty() {
+                    let func_def = self.ir.functions.get_mut(func_id.val()).unwrap();
+                    for ovl in callee_overloads {
+                        func_def.push_unique_overload(ovl);
+                    }
+                    self.ir.synthesized_overload_funcs.insert(func_id);
+                }
             }
         }
         new_pending
+    }
+
+    /// Detect functions whose single return statement re-returns values from a
+    /// destructured multi-return call (with possible `@as` casts), and propagate
+    /// the callee's return-only overloads to the wrapper using a nil-pattern
+    /// split of the wrapper's resolved return types. Returns true if any
+    /// overloads were propagated.
+    ///
+    /// Pattern: `local a, b = Callee(...); return a --[[@as T?]], b`
+    /// Detection: trace each FunctionRet's type_source (or original_type_source
+    /// for @as positions) back through SymbolRef → FunctionCall to identify the
+    /// underlying callee. All positions must trace to the same call site.
+    fn propagate_passthrough_return_overloads(&mut self) -> bool {
+        let mut propagated = false;
+
+        // Build the candidate set on first call; reuse on subsequent iterations.
+        let candidates = self.passthrough_candidates.get_or_insert_with(|| {
+            let mut cands = Vec::new();
+            for (fi, func) in self.ir.functions.iter().enumerate() {
+                if !func.return_annotations.is_empty() { continue; }
+                if func.rets.is_empty() { continue; }
+                cands.push(FunctionIndex(fi));
+            }
+            cands
+        }).clone();
+
+        let mut remaining: Vec<FunctionIndex> = Vec::new();
+
+        for func_id in candidates {
+            // Skip if this candidate already gained overloads in a prior iteration
+            if self.ir.functions[func_id.val()].overloads.iter().any(|o| o.is_return_only) {
+                continue;
+            }
+            let rets = self.ir.functions[func_id.val()].rets.clone();
+
+            // Group by DefNode to find return statements
+            let mut groups: HashMap<(u32, u32), Vec<(usize, SymbolIndex)>> = HashMap::new();
+            for &sym_idx in &rets {
+                if sym_idx.is_external() { continue; }
+                let sym = &self.ir.symbols[sym_idx.val()];
+                let SymbolIdentifier::FunctionRet(_, slot) = sym.id else { continue };
+                let Some(ver) = sym.versions.first() else { continue };
+                let key = (ver.def_node.start, ver.def_node.end);
+                groups.entry(key).or_default().push((slot, sym_idx));
+            }
+
+            // Must be a single return statement with arity >= 2
+            if groups.len() != 1 { continue; }
+            let mut group = groups.into_values().next().unwrap();
+            group.sort_by_key(|(slot, _)| *slot);
+            if group.len() < 2 { continue; }
+
+            // For each position, trace back to the underlying callee FunctionCall.
+            // Use type_source first, then original_type_source (for @as positions).
+            // Track which positions have @as (traced via original_type_source).
+            let mut callee_call_range: Option<(u32, u32)> = None;
+            let mut callee_func_idx: Option<FunctionIndex> = None;
+            let mut all_traced = true;
+            let mut has_as_cast: Vec<bool> = Vec::new();
+
+            for &(_, sym_idx) in &group {
+                let (ts, ots) = {
+                    let sym = &self.ir.symbols[sym_idx.val()];
+                    let Some(ver) = sym.versions.first() else { all_traced = false; break; };
+                    (ver.type_source, ver.original_type_source)
+                };
+
+                // Try type_source first (direct SymbolRef), then original_type_source (@as)
+                let (traced, is_as) = match self.trace_ret_to_callee_call(ts) {
+                    Some(result) => (Some(result), false),
+                    None => match self.trace_ret_to_callee_call(ots) {
+                        Some(result) => (Some(result), true),
+                        None => (None, false),
+                    }
+                };
+
+                match traced {
+                    Some((cr, fi)) => {
+                        has_as_cast.push(is_as);
+                        if let Some(existing_cr) = callee_call_range {
+                            if existing_cr != cr {
+                                all_traced = false;
+                                break;
+                            }
+                        } else {
+                            callee_call_range = Some(cr);
+                            callee_func_idx = Some(fi);
+                        }
+                    }
+                    None => {
+                        all_traced = false;
+                        break;
+                    }
+                }
+            }
+
+            if !all_traced { remaining.push(func_id); continue; }
+            let Some(callee_func_idx) = callee_func_idx else { remaining.push(func_id); continue; };
+
+            // Check if callee has return-only overloads
+            let callee_overloads: Vec<ResolvedOverload> = self.func(callee_func_idx)
+                .overloads.iter()
+                .filter(|o| o.is_return_only)
+                .cloned()
+                .collect();
+            if callee_overloads.is_empty() { remaining.push(func_id); continue; }
+
+            let any_as_cast = has_as_cast.iter().any(|&x| x);
+
+            // For positions with @as casts, resolve the wrapper's return type
+            // so we can apply nil-pattern splitting on those positions.
+            let mut resolved_types: Vec<Option<ValueType>> = Vec::new();
+            if any_as_cast {
+                for &(_, sym_idx) in &group {
+                    let ver = &self.ir.symbols[sym_idx.val()].versions[0];
+                    let rt = ver.type_source.and_then(|ts| self.resolve_expr(ts));
+                    resolved_types.push(rt);
+                }
+            }
+
+            // Generate propagated overloads:
+            // - For direct positions (no @as): use callee's overload type directly
+            // - For @as positions: nil-pattern split (nil → nil, non-nil → resolved.strip_nil())
+            let mut new_overloads: Vec<ResolvedOverload> = Vec::new();
+            for callee_ovl in &callee_overloads {
+                let mut returns: Vec<ValueType> = Vec::new();
+                let mut valid = true;
+
+                for (i, &is_as) in has_as_cast.iter().enumerate() {
+                    let callee_type = callee_ovl.return_type_at(i);
+                    if !is_as {
+                        // Direct pass-through: use callee's type exactly
+                        returns.push(callee_type);
+                    } else {
+                        // @as position: nil-pattern split
+                        if matches!(callee_type, ValueType::Nil) {
+                            returns.push(ValueType::Nil);
+                        } else if let Some(rt) = resolved_types.get(i).and_then(|r| r.as_ref()) {
+                            returns.push(rt.strip_nil());
+                        } else {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+                if !valid { break; }
+                new_overloads.push(ResolvedOverload {
+                    params: Vec::new(),
+                    returns,
+                    is_return_only: true,
+                    description: callee_ovl.description.clone(),
+                    has_vararg_tail: callee_ovl.has_vararg_tail,
+                    is_vararg: false,
+                    returns_self_type_args: None,
+                });
+            }
+
+            if new_overloads.len() == callee_overloads.len() {
+                let func_def = self.ir.functions.get_mut(func_id.val()).unwrap();
+                for ovl in new_overloads {
+                    func_def.push_unique_overload(ovl);
+                }
+                self.ir.synthesized_overload_funcs.insert(func_id);
+                propagated = true;
+            } else {
+                remaining.push(func_id);
+            }
+        }
+        self.passthrough_candidates = Some(remaining);
+        propagated
+    }
+
+    /// Trace a FunctionRet's type_source through SymbolRef → symbol's type_source
+    /// → FunctionCall, returning the call_range and callee function index.
+    fn trace_ret_to_callee_call(&mut self, type_source: Option<ExprId>) -> Option<((u32, u32), FunctionIndex)> {
+        let ts = type_source?;
+        let sym_ref = match self.ir.expr(ts) {
+            Expr::SymbolRef(sym, ver) => (*sym, *ver),
+            _ => return None,
+        };
+        let sym = &self.ir.symbols[sym_ref.0.val()];
+        let ver = sym.versions.get(sym_ref.1)?;
+        let inner_ts = ver.type_source?;
+        match self.ir.expr(inner_ts) {
+            Expr::FunctionCall { func, call_range, .. } => {
+                let func_expr = *func;
+                let cr = *call_range;
+                // Resolve the callee function
+                let callee_type = self.resolve_expr(func_expr)?;
+                let callee_type = callee_type.into_strip_opaque();
+                let func_idx = match callee_type {
+                    ValueType::Function(Some(idx)) => idx,
+                    ValueType::Union(ref types) | ValueType::Intersection(ref types) => {
+                        types.iter().find_map(|t| match t {
+                            ValueType::Function(Some(idx)) => Some(*idx),
+                            _ => None,
+                        })?
+                    }
+                    _ => return None,
+                };
+                Some(((cr.0, cr.1), func_idx))
+            }
+            _ => None,
+        }
     }
 
     /// Refine synthesized return-only overload slots whose source expressions
@@ -1213,6 +1444,14 @@ impl<'a> Analysis<'a> {
             Expr::StripNil(_) | Expr::StripFalsy(_) | Expr::OverloadNarrow { .. }
             | Expr::TypeFilter(..) | Expr::CastRemove(..) => true,
             Expr::SymbolRef(s, _) => *s == sym_idx,
+            // A FunctionCall version that is part of a multi-return sibling group
+            // is the base value being refined by the OverloadNarrow, not an
+            // unrelated reassignment that should block the rewrite.
+            // Note: we use contains_key rather than matching call_range because
+            // multi_return_siblings may have been overwritten by a later
+            // multi-return reassignment of the same symbol (e.g., the same
+            // variable destructured from two different calls in sequence).
+            Expr::FunctionCall { .. } => self.multi_return_siblings.contains_key(&sym_idx),
             _ => false,
         }
     }

@@ -1511,6 +1511,10 @@ pub struct Analysis<'a> {
     /// can't be resolved at build time.
     /// Processed during the resolve fixpoint loop once the function type is available.
     pub(crate) deferred_sibling_narrowings: Vec<DeferredSiblingNarrowing>,
+    /// Cached candidate set for pass-through overload propagation. Built once at
+    /// the start of Phase 2 stall recovery; entries are removed as they gain
+    /// overloads or are disqualified, avoiding a full function-list rescan.
+    passthrough_candidates: Option<Vec<FunctionIndex>>,
     /// Deferred class-equality narrowings from `x == EXPR` / `x ~= EXPR` where EXPR
     /// can't be classified at build time. Each entry: (sym_idx, expr_id, scope_idx).
     /// Processed in resolve: if EXPR's type is a class table, narrow sym_idx to that class
@@ -1714,6 +1718,7 @@ impl<'a> Analysis<'a> {
             method_decl_subs: HashMap::new(),
             multi_return_siblings: HashMap::new(),
             deferred_sibling_narrowings: Vec::new(),
+            passthrough_candidates: None,
             deferred_class_eq_narrowings: Vec::new(),
             deferred_event_narrowings: Vec::new(),
             correlated_locals: Vec::new(),

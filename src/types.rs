@@ -826,6 +826,13 @@ impl Function {
         }
     }
 
+    /// Push a return-only overload if it is not already present (linear dedup).
+    pub(crate) fn push_unique_overload(&mut self, ovl: ResolvedOverload) {
+        if !self.overloads.contains(&ovl) {
+            self.overloads.push(ovl);
+        }
+    }
+
     /// Whether any return-only overload implies nil at `ret_index`. Uses
     /// `ResolvedOverload::return_type_at` so `has_vararg_tail` cases fall
     /// through to the vararg element type rather than implicit nil.

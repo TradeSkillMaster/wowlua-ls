@@ -11,13 +11,20 @@ use super::narrowing::GuardNarrow;
 
 impl<'a> Analysis<'a> {
     pub(super) fn lower_expression(&mut self, expression: &Expression<'_>, scope_idx: ScopeIndex) -> ExprId {
+        self.lower_expression_with_original(expression, scope_idx).0
+    }
+
+    /// Like `lower_expression`, but when an `@as` cast is applied, also returns
+    /// the pre-cast expression id. Used by return processing so that FunctionRet
+    /// symbols can preserve the original SymbolRef in `original_type_source`,
+    /// enabling pass-through detection for destructured multi-return re-returns.
+    pub(super) fn lower_expression_with_original(&mut self, expression: &Expression<'_>, scope_idx: ScopeIndex) -> (ExprId, Option<ExprId>) {
         let expr_id = self.lower_expression_inner(expression, scope_idx);
-        // Check for trailing --[[@as Type]] annotation
         if let Some(as_type) = Self::extract_inline_as(expression.syntax())
             && let Some(vt) = self.resolve_annotation_type_mut_gen(&as_type, &[]) {
-                return self.ir.push_expr(Expr::Literal(vt));
+                return (self.ir.push_expr(Expr::Literal(vt)), Some(expr_id));
             }
-        expr_id
+        (expr_id, None)
     }
 
     fn lower_expression_inner(&mut self, expression: &Expression<'_>, scope_idx: ScopeIndex) -> ExprId {

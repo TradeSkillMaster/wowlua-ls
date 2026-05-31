@@ -2371,6 +2371,15 @@ fn crossfile_tail_call_returns() {
 }
 
 #[test]
+fn tail_call_overload_forwarding() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/tail-call-overloads.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn crossfile_global_ref_field() {
     // Stub function assigned to table field should preserve function type cross-file
     run_annotation_tests(&TestConfig {

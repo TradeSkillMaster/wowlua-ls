@@ -2045,6 +2045,42 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Quick check whether a function has returns that could plausibly gain
+    /// overloads through tail-call or pass-through propagation. Returns true if
+    /// any FunctionRet's type_source is a FunctionCall (direct tail call) or a
+    /// SymbolRef whose own type_source is a FunctionCall (pass-through pattern).
+    fn has_forwardable_returns(&self, func_idx: FunctionIndex) -> bool {
+        let func = self.ir.func(func_idx);
+        for &sym_idx in &func.rets {
+            if sym_idx.is_external() { continue; }
+            let sym = &self.ir.symbols[sym_idx.val()];
+            let Some(ver) = sym.versions.first() else { continue };
+            let Some(ts) = ver.type_source else { continue };
+            match self.ir.expr(ts) {
+                Expr::FunctionCall { .. } => return true,
+                Expr::SymbolRef(ref_sym, ref_ver) => {
+                    // Pass-through: local assigned from a FunctionCall then re-returned
+                    let ref_ver_data = &self.ir.symbols[ref_sym.val()].versions[*ref_ver];
+                    if let Some(inner_ts) = ref_ver_data.type_source
+                        && matches!(self.ir.expr(inner_ts), Expr::FunctionCall { .. }) {
+                            return true;
+                    }
+                    // Also check original_type_source for @as cast positions
+                    if let Some(ots) = ver.original_type_source
+                        && let Expr::SymbolRef(os, ov) = self.ir.expr(ots) {
+                            let ov_data = &self.ir.symbols[os.val()].versions[*ov];
+                            if let Some(inner_ts) = ov_data.type_source
+                                && matches!(self.ir.expr(inner_ts), Expr::FunctionCall { .. }) {
+                                    return true;
+                            }
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// Check if the function called in a multi-return group has return-only overloads.
     /// Returns the func_expr ExprId for deferred resolution when the callee is a
     /// FieldAccess that can't be resolved at build time (cross-file case).
@@ -2119,6 +2155,15 @@ impl<'a> Analysis<'a> {
         let Some(func_idx) = func_idx else { return OverloadCheck::NoOverloads };
         if self.ir.func(func_idx).overloads.iter().any(|o| o.is_return_only) {
             OverloadCheck::HasOverloads(func_expr)
+        } else if self.ir.func(func_idx).return_annotations.is_empty()
+            && (self.ir.func(func_idx).rets.is_empty() || self.has_forwardable_returns(func_idx))
+        {
+            // Defer when the function might gain overloads later:
+            // - empty rets: body not yet processed (forward-declared function that
+            //   may gain correlated return overloads once its body is built)
+            // - forwardable returns: tail-call or pass-through that may gain
+            //   overloads from callee propagation in Phase 2 stall recovery
+            OverloadCheck::Deferred(func_expr)
         } else {
             OverloadCheck::NoOverloads
         }
