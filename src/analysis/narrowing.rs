@@ -3252,17 +3252,24 @@ impl<'a> Analysis<'a> {
                 }
                 return;
             }
-            // Flat form: BinaryExpr(None, [x, BinaryExpr(And, ...)])
+            // Flat form: BinaryExpr(None, [x, BinaryExpr(And, ...)]).
+            // The Pratt parser produces this for mixed-precedence expressions
+            // (e.g. `a == b and c == d`), never for pure `and` chains which
+            // always nest as `And(And(...), ...)`. Included for completeness.
             if matches!(bin.kind(), Operator::None) {
                 let terms = bin.get_terms();
                 if let [lhs, Expression::BinaryExpression(rhs_bin)] = terms.as_slice()
                     && matches!(rhs_bin.kind(), Operator::And) {
                         self.collect_and_chain_guards_inner(lhs, scope_idx, guards);
                         let rhs_terms = rhs_bin.get_terms();
-                        if let [_, rhs_of_and] = rhs_terms.as_slice()
-                            && let Some(g) = self.detect_and_lhs_guard_leaf(rhs_of_and, scope_idx) {
+                        if let [mid, rhs_of_and] = rhs_terms.as_slice() {
+                            if let Some(g) = self.detect_and_lhs_guard_leaf(mid, scope_idx) {
                                 guards.push(g);
                             }
+                            if let Some(g) = self.detect_and_lhs_guard_leaf(rhs_of_and, scope_idx) {
+                                guards.push(g);
+                            }
+                        }
                         return;
                     }
             }
@@ -3460,6 +3467,58 @@ impl<'a> Analysis<'a> {
                 }
             }
         None
+    }
+
+    /// Collect ALL inverse-nil guard symbols from a left-associative `or` chain.
+    /// For `Or(Or(g1, g2), rhs)`, given the LHS `Or(g1, g2)`, returns guards for
+    /// `[g1, g2]` — every inverse-nil guard (`not x`, `x == nil`) that must be
+    /// falsy for the RHS to execute, so each guarded symbol is non-nil in the RHS.
+    pub(super) fn collect_or_chain_guards(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Vec<(SymbolIndex, GuardNarrow)> {
+        let mut guards = Vec::new();
+        self.collect_or_chain_guards_inner(lhs, scope_idx, &mut guards);
+        guards
+    }
+
+    fn collect_or_chain_guards_inner(&self, expr: &Expression<'_>, scope_idx: ScopeIndex, guards: &mut Vec<(SymbolIndex, GuardNarrow)>) {
+        if let Expression::BinaryExpression(bin) = expr {
+            if matches!(bin.kind(), Operator::Or) {
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    // Recurse into LHS to collect earlier guards
+                    self.collect_or_chain_guards_inner(lhs, scope_idx, guards);
+                    // The RHS of this inner `or` is also a guard for the outer RHS
+                    if let Some(g) = self.detect_or_lhs_guard(rhs, scope_idx) {
+                        guards.push(g);
+                    }
+                }
+                return;
+            }
+            // Flat form: BinaryExpr(None, [x, BinaryExpr(Or, ...)]).
+            // The Pratt parser produces this for mixed-precedence expressions
+            // (e.g. `a == nil or b == nil or c`), never for pure `or` chains
+            // which always nest as `Or(Or(...), ...)`. Included for completeness.
+            if matches!(bin.kind(), Operator::None) {
+                let terms = bin.get_terms();
+                if let [lhs, Expression::BinaryExpression(rhs_bin)] = terms.as_slice()
+                    && matches!(rhs_bin.kind(), Operator::Or) {
+                        self.collect_or_chain_guards_inner(lhs, scope_idx, guards);
+                        let rhs_terms = rhs_bin.get_terms();
+                        if let [mid, rhs_of_or] = rhs_terms.as_slice() {
+                            if let Some(g) = self.detect_or_lhs_guard(mid, scope_idx) {
+                                guards.push(g);
+                            }
+                            if let Some(g) = self.detect_or_lhs_guard(rhs_of_or, scope_idx) {
+                                guards.push(g);
+                            }
+                        }
+                        return;
+                    }
+            }
+        }
+        // Base case: a leaf expression (`not x`, `x == nil`)
+        if let Some(g) = self.detect_or_lhs_guard(expr, scope_idx) {
+            guards.push(g);
+        }
     }
 
     /// When lowering `a or b` where `a` is an inverse field nil guard

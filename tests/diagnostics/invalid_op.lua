@@ -181,3 +181,27 @@ local function _concatNarrowDeepField(obj)
     end
 end
 _use(_concatNarrowDeepField)
+
+-- Multi-term `or` chain narrows every guarded operand in the final term.
+-- `not a or not b or (a <= b)`: when the comparison runs, both a and b are
+-- non-nil, so the ordered comparison is valid (no false-positive invalid-op).
+-- The exhaustive harness fails if any unexpected invalid-op warning appears.
+---@type number?
+local _orA
+---@type number?
+local _orB
+if not _orA or not _orB or _orB <= _orA then
+    _use(_orA)
+end
+
+-- Same with `== nil` guard form.
+if _orA == nil or _orB == nil or _orB < _orA then
+    _use(_orB)
+end
+
+-- 3+ guard terms: deeper nesting exercises recursive Or-chain collection.
+---@type number?
+local _orC
+if not _orA or not _orB or not _orC or _orA + _orB + _orC > 0 then
+    _use(_orC)
+end

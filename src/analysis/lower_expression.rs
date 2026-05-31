@@ -89,8 +89,15 @@ impl<'a> Analysis<'a> {
                     // For `and` chains, collect ALL guard symbols from the LHS
                     // so `a and b and c and func(a, b, c)` narrows a, b, AND c.
                     let is_and_chain = matches!(op, Operator::And) || (matches!(op, Operator::None) && matches!(rhs, Expression::BinaryExpression(rb) if matches!(rb.kind(), Operator::And)));
+                    // `g1 or g2 or rhs`: for the RHS to execute, every inverse-nil
+                    // guard term (`not x`, `x == nil`) must be falsy, so each guarded
+                    // symbol is non-nil in the RHS. Collect all of them so nested
+                    // `or` chains narrow every guarded symbol (not just the first).
+                    let is_or_chain = matches!(op, Operator::Or) || (matches!(op, Operator::None) && matches!(rhs, Expression::BinaryExpression(rb) if matches!(rb.kind(), Operator::Or)));
                     let extra_chain_guards: Vec<(SymbolIndex, GuardNarrow)> = if is_and_chain {
                         self.collect_and_chain_guards(lhs, scope_idx)
+                    } else if is_or_chain {
+                        self.collect_or_chain_guards(lhs, scope_idx)
                     } else {
                         Vec::new()
                     };
