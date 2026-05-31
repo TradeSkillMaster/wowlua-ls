@@ -241,27 +241,26 @@ impl<'a> Analysis<'a> {
                                         pre_ref = self.ir.push_expr(Expr::CastRemove(pre_ref, gt));
                                     }
                                 }
+                                // For nil-guarded variables, wrap the implicit-else
+                                // contribution in StripNil/StripFalsy. The condition
+                                // being false means the variable was non-nil/non-falsy
+                                // in the implicit else path. Only the implicit-else
+                                // expression is stripped — body contributions keep their
+                                // full type (e.g. a reassignment to `boolean` keeps
+                                // `false` as a possible value).
+                                if let Some(&(_, strip_falsy)) = merge.implicit_else_strip_nil
+                                    .iter().find(|(gs, _)| *gs == *sym_idx)
+                                {
+                                    pre_ref = if strip_falsy {
+                                        self.ir.push_expr(Expr::StripFalsy(pre_ref))
+                                    } else {
+                                        self.ir.push_expr(Expr::StripNil(pre_ref))
+                                    };
+                                }
                                 merge_exprs.push(pre_ref);
                             }
 
-                            let merge_expr = self.ir.push_expr(Expr::BranchMerge(merge_exprs));
-                            // For nil-guarded variables, wrap the merge result in
-                            // StripNil/StripFalsy. The condition being false means
-                            // the variable was non-nil in the implicit else, and the
-                            // then-branch assigned it (replacing the original nil).
-                            // This handles @type annotation overrides that widen the
-                            // branch contribution to include nil.
-                            let final_expr = if let Some(&(_, strip_falsy)) = merge.implicit_else_strip_nil
-                                .iter().find(|(gs, _)| *gs == *sym_idx)
-                            {
-                                if strip_falsy {
-                                    self.ir.push_expr(Expr::StripFalsy(merge_expr))
-                                } else {
-                                    self.ir.push_expr(Expr::StripNil(merge_expr))
-                                }
-                            } else {
-                                merge_expr
-                            };
+                            let final_expr = self.ir.push_expr(Expr::BranchMerge(merge_exprs));
                             let node = self.ir.symbols[sym_idx.val()].versions[pre_ver].def_node;
                             let order = self.ir.next_order();
                             self.ir.symbols[sym_idx.val()].versions.push(SymbolVersion {

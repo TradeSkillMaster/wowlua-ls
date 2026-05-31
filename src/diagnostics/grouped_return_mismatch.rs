@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::analysis::AnalysisResult;
 use crate::ast::{AstNode, Return};
 use crate::syntax::SyntaxNode;
@@ -56,9 +56,12 @@ impl DiagnosticPass for GroupedReturnMismatch {
                 // Detect forwarded correlated destructure: all return expressions are
                 // symbol refs whose type_source points to FunctionCall exprs from the
                 // same call site (i.e. `local a,b,c = f(); return a,b,c`).
+                // Also handles variables reassigned through if-branches (BranchMerge)
+                // where each branch traces back to a correlated multi-return call.
                 let is_correlated_forward = return_exprs.len() > 1 && {
                     let mut common_call_range: Option<(u32, u32)> = None;
                     let mut all_from_same_call = true;
+                    // First try the simple path: all from one call site.
                     for &expr_id in &return_exprs {
                         let range = (|| {
                             let expr = analysis.expr(expr_id);
@@ -86,7 +89,16 @@ impl DiagnosticPass for GroupedReturnMismatch {
                             _ => { all_from_same_call = false; break; }
                         }
                     }
-                    all_from_same_call && common_call_range.is_some()
+                    if all_from_same_call && common_call_range.is_some() {
+                        true
+                    } else {
+                        // Extended check: walk through BranchMerge expressions to
+                        // find correlated call sites. Variables reassigned together
+                        // in if-branches (e.g. `if not ok then ok,a,b = f() end`)
+                        // produce BranchMerge type_sources that still trace back to
+                        // correlated multi-return calls.
+                        detect_correlated_through_branches(&return_exprs, analysis)
+                    }
                 };
 
                 let matches_any = return_only_overloads.iter().any(|overload| {
@@ -251,4 +263,66 @@ fn all_union_expansions_match(
         if carry { break; }
     }
     true
+}
+
+/// Detect correlated multi-return forwarding through BranchMerge expressions.
+/// Returns true if all return expressions trace back (through BranchMerge/StripNil/
+/// StripFalsy/SymbolRef chains) to function calls that share at least one common
+/// call site across all positions.
+fn detect_correlated_through_branches(
+    return_exprs: &[ExprId],
+    analysis: &AnalysisResult,
+) -> bool {
+    // For each return expression, collect all reachable call_ranges.
+    let mut per_expr_ranges: Vec<HashSet<(u32, u32)>> = Vec::new();
+    for &expr_id in return_exprs {
+        let mut ranges = HashSet::new();
+        collect_call_ranges_from_expr(expr_id, analysis, &mut ranges, 0);
+        if ranges.is_empty() {
+            return false;
+        }
+        per_expr_ranges.push(ranges);
+    }
+
+    // Check if there's at least one call_range common to ALL return expressions.
+    per_expr_ranges[0].iter()
+        .any(|r| per_expr_ranges[1..].iter().all(|s| s.contains(r)))
+}
+
+/// Recursively collect all FunctionCall call_ranges reachable from an expression,
+/// walking through SymbolRef → type_source, BranchMerge branches, and
+/// StripNil/StripFalsy wrappers.
+///
+/// Depth limit: each if-branch adds ~3 levels (SymbolRef → BranchMerge → SymbolRef),
+/// so depth 16 supports ~5 sequential if-reassignment blocks which covers real-world
+/// addon patterns with margin.
+fn collect_call_ranges_from_expr(
+    expr_id: ExprId,
+    analysis: &AnalysisResult,
+    ranges: &mut HashSet<(u32, u32)>,
+    depth: usize,
+) {
+    if depth > 16 { return; }
+    match analysis.expr(expr_id) {
+        Expr::FunctionCall { call_range, .. } => {
+            ranges.insert(*call_range);
+        }
+        Expr::SymbolRef(sym_idx, ver_idx) => {
+            let sym_idx = *sym_idx;
+            let ver_idx = *ver_idx;
+            if let Some(ver) = analysis.sym(sym_idx).versions.get(ver_idx)
+                && let Some(source) = ver.type_source {
+                    collect_call_ranges_from_expr(source, analysis, ranges, depth + 1);
+            }
+        }
+        Expr::StripNil(inner) | Expr::StripFalsy(inner) => {
+            collect_call_ranges_from_expr(*inner, analysis, ranges, depth + 1);
+        }
+        Expr::BranchMerge(exprs) => {
+            for &eid in exprs {
+                collect_call_ranges_from_expr(eid, analysis, ranges, depth + 1);
+            }
+        }
+        _ => {}
+    }
 }

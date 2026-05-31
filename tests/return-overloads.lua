@@ -824,6 +824,31 @@ local function independentLocals()
 end
 _consume(independentLocals)
 
+-- Correlated multi-return through if-branch reassignment: variables that
+-- are always multi-assigned together from correlated calls should not warn.
+---@return (true success, number numA, number numB)
+---|       (false, nil, nil)
+local function multiReturnSource()
+    if math.random() > 0.5 then
+        return true, 1, 2
+    end
+    return false, nil, nil
+end
+
+---@return (true success, number numA, number numB)
+---|       (false, nil, nil)
+local function branchCorrelated()
+    local success, a, b = multiReturnSource()
+    if not success then
+        success, a, b = multiReturnSource()
+    end
+    if not success then
+        success, a, b = multiReturnSource()
+    end
+    return success, a, b
+end
+_consume(branchCorrelated)
+
 -- ── Sibling narrowing skips reassigned variables ─────────────────────
 -- When a multi-return sibling is reassigned, assert/narrowing on a
 -- co-sibling must not overwrite the reassigned type with the original
