@@ -5558,8 +5558,9 @@ impl AnalysisResult {
             };
             all_args.push(vararg_str);
         }
+        let no_subs = HashMap::new();
         let rets: Vec<String> = if func.returns_self {
-            vec![Self::self_return_text(func)]
+            vec![self.self_return_text(func, &no_subs)]
         } else if !func.return_annotations.is_empty() {
             func.return_annotations.iter().enumerate().map(|(i, vt)| {
                 let formatted = self.format_value_type_depth(vt, 1);
@@ -5912,8 +5913,10 @@ impl AnalysisResult {
             };
             all_args.push(vararg_str);
         }
+        let no_subs = HashMap::new();
+        let effective_subs = subs.unwrap_or(&no_subs);
         let rets: Vec<String> = if func.returns_self {
-            vec![Self::self_return_text(func)]
+            vec![self.self_return_text(func, effective_subs)]
         } else if !func.return_annotations.is_empty() {
             func.return_annotations.iter().enumerate().map(|(i, vt)| {
                 let formatted = if let Some(s) = subs {
@@ -6106,8 +6109,9 @@ impl AnalysisResult {
             })
             .collect();
 
+        let no_subs = HashMap::new();
         let rets: Vec<String> = if func.returns_self {
-            vec![Self::self_return_text(func)]
+            vec![self.self_return_text(func, &no_subs)]
         } else if !func.return_annotations.is_empty() {
             func.return_annotations.iter().enumerate().map(|(i, vt)| {
                 let formatted = self.format_value_type_depth(vt, 1);
@@ -6371,17 +6375,49 @@ impl AnalysisResult {
     }
 
     /// Format the `@return self` text for a method, expanding to `self<X>` when
-    /// the method has `@return self<X>` re-parameterization args.
-    fn self_return_text(func: &Function) -> String {
+    /// the method has `@return self<X>` re-parameterization args. When `subs`
+    /// contains bindings for type variables in the args (e.g. `T → string?`),
+    /// the concrete types are shown instead of the raw annotation variables.
+    fn self_return_text(&self, func: &Function, subs: &HashMap<String, ValueType>) -> String {
         match &func.returns_self_type_args {
             Some(args) if !args.is_empty() => {
                 let inner = args.iter()
-                    .map(crate::annotations::format_annotation_type)
+                    .map(|arg| self.format_self_return_arg(arg, subs))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("self<{inner}>")
             }
             _ => "self".to_string(),
+        }
+    }
+
+    /// Format a single `@return self<X>` type argument, substituting type
+    /// variables from `subs`. Handles `NonNil(T)` by stripping nil from the
+    /// substituted type (so `T!` with `T = string?` displays as `string`).
+    ///
+    /// Note: only substitutes bare type variables (`Simple("T")`) and non-nil
+    /// wrappers (`NonNil(Simple("T"))`). More complex annotation types containing
+    /// type variables (e.g. `Parameterized("Foo", [Simple("T")])`) fall through
+    /// to raw formatting without substitution.
+    fn format_self_return_arg(&self, arg: &crate::annotations::AnnotationType, subs: &HashMap<String, ValueType>) -> String {
+        use crate::annotations::AnnotationType;
+        match arg {
+            AnnotationType::Simple(name) => {
+                if let Some(vt) = subs.get(name.as_str()) {
+                    self.format_type_depth(vt, 1)
+                } else {
+                    crate::annotations::format_annotation_type(arg)
+                }
+            }
+            AnnotationType::NonNil(inner) => {
+                if let AnnotationType::Simple(name) = inner.as_ref()
+                    && let Some(vt) = subs.get(name.as_str())
+                {
+                    return self.format_type_depth(&vt.strip_nil(), 1);
+                }
+                crate::annotations::format_annotation_type(arg)
+            }
+            _ => crate::annotations::format_annotation_type(arg),
         }
     }
 
@@ -6662,7 +6698,7 @@ impl AnalysisResult {
             all_args.push(vararg_str);
         }
         let rets: Vec<String> = if func.returns_self {
-            vec![Self::self_return_text(func)]
+            vec![self.self_return_text(func, subs)]
         } else if !func.return_annotations.is_empty() {
             func.return_annotations.iter().enumerate().map(|(i, vt)| {
                 // Prefer the raw annotation (preserves `Parameterized` class
@@ -6707,9 +6743,21 @@ impl AnalysisResult {
                             None => format!("{}{}", p.name, opt),
                         }
                     }).collect();
-                let ov_rets: Vec<String> = overload.returns.iter()
-                    .map(|vt| self.format_type_subst(vt, 1, subs))
-                    .collect();
+                let ov_rets: Vec<String> = if let Some(ref self_args) = overload.returns_self_type_args {
+                    if self_args.is_empty() {
+                        vec!["self".to_string()]
+                    } else {
+                        let inner = self_args.iter()
+                            .map(|arg| self.format_self_return_arg(arg, subs))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        vec![format!("self<{inner}>")]
+                    }
+                } else {
+                    overload.returns.iter()
+                        .map(|vt| self.format_type_subst(vt, 1, subs))
+                        .collect()
+                };
                 let ov_args_joined = ov_args.join(", ");
                 let ov_single = format!("\nfunction {}({})", name, ov_args_joined);
                 let mut ov_line = if ov_single.len() > 81 && ov_args.len() > 1 {

@@ -128,8 +128,14 @@ impl<'a> Analysis<'a> {
         // receiver-analysis block to avoid redundant expression cloning/resolution.
         let mut projected_f_idx: Option<FunctionIndex> = None;
         let mut class_type_param_subs: HashMap<String, ValueType> = HashMap::new();
+        // Extract field_range once for use by both class type-param subs (below)
+        // and method-level generic subs (after call resolution).
+        let field_range = match self.expr(func_expr_id) {
+            Expr::FieldAccess { field_range, .. } => *field_range,
+            _ => None,
+        };
         if is_method_call
-            && let Expr::FieldAccess { table: receiver_expr, field_range, .. } = self.expr(*func).clone()
+            && let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone()
         {
             let receiver_type_args = self.get_expr_type_args(receiver_expr);
 
@@ -944,6 +950,22 @@ impl<'a> Analysis<'a> {
                     (name.clone(), vt.clone(), arg_range)
                 })
                 .collect();
+
+            // Record method-level generic bindings (A, R, etc.) alongside class
+            // type-param subs so hover shows bound concrete types in the signature.
+            // Done before inserting CallResolution so generic_subs_ir can be moved
+            // into it without cloning.
+            if is_method_call && !generic_subs_ir.is_empty()
+                && let Some(range) = field_range
+            {
+                let entry = self.method_decl_subs.entry(range).or_default();
+                for (name, vt, _) in &generic_subs_ir {
+                    if !matches!(vt, ValueType::TypeVariable(_)) {
+                        entry.insert(name.clone(), vt.clone());
+                    }
+                }
+            }
+
             self.ir.call_resolutions.insert(expr_id, CallResolution {
                 func_idx,
                 expected_args: resolved_call_args,

@@ -187,6 +187,7 @@ function Publisher:ToBoolean() return self end
 local pub = {}
 local pub2 = pub:IgnoreNil()
 --    ^ hover: (local) pub2: Publisher<string>
+--               ^ hover: (method) function Publisher:IgnoreNil()\n-> self<string>
 
 -- Chain: Filter preserves nilability, IgnoreNil strips it
 local pub3 = pub:Filter():IgnoreNil()
@@ -225,6 +226,7 @@ local stream = {}
 -- Inline function callback: R inferred from body return type
 local mapped1 = stream:Map(function(value) return 42 end)
 --    ^ hover: (local) mapped1: Stream<number>
+--                     ^ hover: (method) function Stream:Map(map: fun(value: string): any)\n-> self\nfunction Stream:Map(map: fun(value: string): number)\n-> self<number>
 
 -- Named function callback
 ---@param value string
@@ -232,6 +234,7 @@ local mapped1 = stream:Map(function(value) return 42 end)
 local function toBool(value) return value ~= "" end
 local mapped2 = stream:Map(toBool)
 --    ^ hover: (local) mapped2: Stream<boolean>
+--                     ^ hover: (method) function Stream:Map(map: fun(value: string): any)\n-> self\nfunction Stream:Map(map: fun(value: string): boolean)\n-> self<boolean>
 
 -- Fallback to @return self when called with non-function (diagnostic expected)
 local mapped3 = stream:Map("something")
@@ -261,3 +264,4 @@ function Stream:IgnoreNilOverload() return self end
 local streamNullable = {}
 local mapped6 = streamNullable:IgnoreNilOverload()
 --    ^ hover: (local) mapped6: Stream<string>
+--                              ^ hover: (method) function Stream:IgnoreNilOverload()\n-> self\nfunction Stream:IgnoreNilOverload()\n-> self<string>
