@@ -321,18 +321,29 @@ pub(super) fn resolve_expr_type_impl(
                                 }
                         }
                     }
-                    continue;
+                    // If own field resolved only to Table(None) placeholders and the
+                    // table is a class, fall through to parent class check for a better type.
+                    // (Mirrors the same guard in resolve.rs FieldAccess and
+                    // queries.rs resolve_field_or_g_env.)
+                    if !field_types.is_empty()
+                        && (!field_types.iter().all(|vt| matches!(vt, ValueType::Table(None)))
+                            || ir.table(idx).class_name.is_none())
+                    {
+                        continue;
+                    }
                 }
                 // Check parent classes
                 for &parent_idx in &ir.table(idx).parent_classes {
                     if let Some(fi) = ir.get_field(parent_idx, &field) {
                         if let Some(ref ann) = fi.annotation {
-                            if !field_types.contains(ann) {
+                            if !matches!(ann, ValueType::Any | ValueType::Table(None))
+                                && !field_types.contains(ann) {
                                 field_types.push(ann.clone());
                             }
                         } else {
                             let expr = fi.expr;
                             if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, expr, visited, depth + 1)
+                                && !matches!(vt, ValueType::Any | ValueType::Table(None))
                                 && !field_types.contains(&vt) {
                                     field_types.push(vt);
                                 }
@@ -3955,8 +3966,30 @@ impl AnalysisResult {
     /// the current table is the `_G` environment. Returns the next table index.
     fn resolve_field_or_g_env(&self, idx: TableIndex, name: &str) -> Option<TableIndex> {
         if let Some(fi) = self.get_field(idx, name) {
-            let ft = self.resolve_field_type(fi)?;
-            return Self::extract_table_idx(&ft);
+            if let Some(ft) = self.resolve_field_type(fi)
+                && let Some(table_idx) = Self::extract_table_idx(&ft)
+            {
+                return Some(table_idx);
+            }
+            // Own field exists but couldn't resolve to a table. For class tables,
+            // try parent classes for the same field with a resolvable type.
+            // This handles self-referential patterns (X.field = X.field:Method())
+            // where the own field's expression can't resolve due to the cycle.
+            // (Mirrors the same guard in resolve.rs FieldAccess and
+            // queries.rs resolve_expr_type_impl.)
+            let tbl = self.table(idx);
+            if tbl.class_name.is_some() {
+                for &parent_idx in &tbl.parent_classes.clone() {
+                    if let Some(pfi) = self.ir.get_field(parent_idx, name)
+                        && let Some(pft) = self.resolve_field_type(pfi)
+                        && !matches!(pft, ValueType::Table(None))
+                        && let Some(table_idx) = Self::extract_table_idx(&pft)
+                    {
+                        return Some(table_idx);
+                    }
+                }
+            }
+            return None;
         }
         if self.ir.is_global_env(idx) {
             let global_type = self.resolve_global_symbol_type(name)?;

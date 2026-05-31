@@ -1550,6 +1550,15 @@ fn crossfile_defclass_false_chain() {
 }
 
 #[test]
+fn crossfile_self_ref_schema() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/self_ref_schema_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_built_name_wrapper() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/built_name_user.lua",

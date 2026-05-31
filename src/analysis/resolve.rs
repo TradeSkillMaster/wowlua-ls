@@ -2536,10 +2536,48 @@ impl<'a> Analysis<'a> {
                         }
                     }
                 }
+                // If the field resolved to a meaningful type, return it.
+                // But if all types are Table(None) placeholders (from unresolvable
+                // self-referential builder chains), try parent classes first.
+                let all_placeholder = !field_types.is_empty()
+                    && field_types.iter().all(|vt| matches!(vt, ValueType::Table(None)));
+                if !field_types.is_empty() && !all_placeholder {
+                    return Some(ValueType::make_union(field_types));
+                }
+                // Field exists but type is unresolvable or only Table(None) placeholder.
+                // For class tables, try parent classes for a better type. This handles
+                // self-referential assignments like X.field = X.field:Method() where
+                // the local field's expression can't resolve due to the cycle.
+                if field_exists && table_indices.first().is_some_and(|&idx| self.table(idx).class_name.is_some()) {
+                    let mut parent_field_types: Vec<ValueType> = Vec::new();
+                    for &idx in &table_indices {
+                        let parents = self.table(idx).parent_classes.clone();
+                        for &parent_idx in &parents {
+                            if let Some(fi) = self.ir.get_field(parent_idx, field) {
+                                if let Some(ref ann_vt) = fi.annotation {
+                                    if !matches!(ann_vt, ValueType::Any | ValueType::Table(None))
+                                        && !parent_field_types.contains(ann_vt) {
+                                        parent_field_types.push(ann_vt.clone());
+                                    }
+                                } else {
+                                    let expr = fi.expr;
+                                    if let Some(vt) = self.resolve_expr(expr)
+                                        && !matches!(vt, ValueType::Any | ValueType::Table(None))
+                                        && !parent_field_types.contains(&vt) {
+                                            parent_field_types.push(vt);
+                                        }
+                                }
+                            }
+                        }
+                    }
+                    if !parent_field_types.is_empty() {
+                        return Some(ValueType::make_union(parent_field_types));
+                    }
+                }
+                // Return placeholder type if we have one, otherwise None
                 if !field_types.is_empty() {
                     return Some(ValueType::make_union(field_types));
                 }
-                // Field exists but type couldn't be resolved — don't emit undefined-field
                 if field_exists {
                     return None;
                 }

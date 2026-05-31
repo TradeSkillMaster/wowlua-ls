@@ -40,6 +40,8 @@ pub struct DefclassContext {
     global_returns: HashMap<String, Vec<AnnotationType>>,
     /// func_path → param_index for @built-name extraction
     built_name_funcs: HashMap<String, usize>,
+    /// class_name → field_name → field_type, for resolving ClassName._field:Method() patterns
+    class_field_types: HashMap<String, HashMap<String, AnnotationType>>,
 }
 
 impl DefclassContext {
@@ -141,7 +143,20 @@ impl DefclassContext {
 
         let built_name_funcs = build_built_name_map(all_globals);
 
-        Self { defclass_funcs, constructor_names, global_returns, built_name_funcs }
+        // Build class field type map from existing class declarations for resolving
+        // ClassName._field:Method() patterns (e.g. BaseFrame._STATE_SCHEMA:Extend())
+        let mut class_field_types: HashMap<String, HashMap<String, AnnotationType>> = HashMap::new();
+        for class in all_classes {
+            for (field_name, field_type, _) in &class.fields {
+                if !matches!(field_type, AnnotationType::Simple(s) if s == "any") {
+                    class_field_types.entry(class.name.clone())
+                        .or_default()
+                        .insert(field_name.clone(), field_type.clone());
+                }
+            }
+        }
+
+        Self { defclass_funcs, constructor_names, global_returns, built_name_funcs, class_field_types }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -445,11 +460,18 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                 let exprs = el.expressions();
                 if let Some(expr) = exprs.first() {
                     let field_type = extract_type_annotation_for_assign(assign.syntax())
-                        .unwrap_or_else(|| infer_type_from_expression(expr, global_returns, &HashMap::new(), &HashMap::new()));
-                    // Always record for cross-file visibility
-                    class_field_all.entry(result_idx)
-                        .or_default()
-                        .insert(field_name.clone(), field_type.clone());
+                        .unwrap_or_else(|| infer_type_from_expression(expr, global_returns, &HashMap::new(), &HashMap::new(), &ctx.class_field_types));
+                    // Skip storing `any`-typed fields when the RHS is a self-referential
+                    // method call (X.field = X.field:Method(...)). In this case the parent
+                    // class likely has a better type that would be masked by `any`.
+                    let is_self_ref_any = matches!(&field_type, AnnotationType::Simple(s) if s == "any")
+                        && is_self_referential_call(expr, root_var, field_name);
+                    if !is_self_ref_any {
+                        // Always record for cross-file visibility
+                        class_field_all.entry(result_idx)
+                            .or_default()
+                            .insert(field_name.clone(), field_type.clone());
+                    }
                     // Only record non-any types for constructor method resolution
                     if !matches!(&field_type, AnnotationType::Simple(s) if s == "any") {
                         class_field_types.entry(result_idx)
@@ -534,7 +556,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                     .map(|(name, _, _)| name.clone()).collect();
                 let field_types = class_field_types.get(&result_idx).cloned().unwrap_or_default();
                 let field_built_names = class_field_built_names.get(&result_idx).cloned().unwrap_or_default();
-                let ctor_fields = extract_self_fields(body, global_returns, &field_types, &field_built_names);
+                let ctor_fields = extract_self_fields(body, global_returns, &field_types, &field_built_names, &ctx.class_field_types);
                 for entry in ctor_fields {
                     if !existing_fields.contains(&entry.name) {
                         let vis = default_visibility_for_name(&entry.name, implicit_protected_prefix);
@@ -566,16 +588,16 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
 /// `field_types` maps known self-field names to their types (from class-level assignments and
 /// previously-discovered constructor fields), enabling resolution of `self._X:Method()` calls.
 /// `field_built_names` maps field names to their @built-name class names for built table resolution.
-fn extract_self_fields(block: Block<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> Vec<SelfFieldEntry> {
+fn extract_self_fields(block: Block<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>, class_field_types: &HashMap<String, HashMap<String, AnnotationType>>) -> Vec<SelfFieldEntry> {
     let mut fields = Vec::new();
     let mut seen = HashSet::new();
     let mut field_types = field_types.clone();
-    extract_self_fields_inner(block, &mut fields, &mut seen, global_returns, &mut field_types, field_built_names);
+    extract_self_fields_inner(block, &mut fields, &mut seen, global_returns, &mut field_types, field_built_names, class_field_types);
     fields
 }
 
 /// Infer an `AnnotationType` from a constructor RHS expression.
-fn infer_type_from_expression(expr: &Expression<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> AnnotationType {
+fn infer_type_from_expression(expr: &Expression<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>, class_field_types: &HashMap<String, HashMap<String, AnnotationType>>) -> AnnotationType {
     match expr {
         Expression::Literal(lit) => {
             if lit.get_string().is_some() {
@@ -599,7 +621,7 @@ fn infer_type_from_expression(expr: &Expression<'_>, global_returns: &HashMap<St
         Expression::TableConstructor(_) => AnnotationType::Simple("table".to_string()),
         Expression::Function(_) => AnnotationType::Simple("function".to_string()),
         Expression::FunctionCall(call) => {
-            match resolve_funcall_return_type(call, global_returns, field_types, field_built_names) {
+            match resolve_funcall_return_type(call, global_returns, field_types, field_built_names, class_field_types) {
                 Some(resolved) => {
                     // Prefer @built-name class name over the chain type for field assignment
                     if let Some(name) = resolved.built_name {
@@ -613,6 +635,27 @@ fn infer_type_from_expression(expr: &Expression<'_>, global_returns: &HashMap<St
         }
         _ => AnnotationType::Simple("any".to_string()),
     }
+}
+
+/// Check if an expression is a self-referential method call, i.e. `X.field:Method(...)`
+/// where `X` matches `root_var` and `field` matches `field_name`. This handles both
+/// direct calls (`X.field:Method()`) and chained calls (`X.field:Method():Other()`).
+fn is_self_referential_call(expr: &Expression<'_>, root_var: &str, field_name: &str) -> bool {
+    let Expression::FunctionCall(call) = expr else { return false };
+    // Walk down chained calls iteratively to find the innermost identifier
+    let mut current_ident = match call.identifier() {
+        Some(id) => id,
+        None => return false,
+    };
+    while let Some(nested) = current_ident.syntax().children().find_map(FunctionCall::cast) {
+        match nested.identifier() {
+            Some(id) => current_ident = id,
+            None => return false,
+        }
+    }
+    let names = current_ident.names();
+    // Check if the root identifier matches X.field (e.g. BaseFrame._STATE_SCHEMA)
+    names.len() >= 2 && names[0] == root_var && names[1] == field_name
 }
 
 /// Walk a FunctionCall chain to find a @built-name call and extract the class name.
@@ -690,18 +733,21 @@ struct ResolvedReturn {
 /// self-field method calls (self._X:Method()), and @return self.
 /// `field_built_names` maps self-field names to their @built-name class names,
 /// used to resolve `@return built` to the actual built table name.
+/// `class_field_types` maps class_name → field_name → type for resolving
+/// ClassName._field:Method() patterns across classes.
 fn resolve_funcall_return_type(
     call: &FunctionCall<'_>,
     global_returns: &HashMap<String, Vec<AnnotationType>>,
     field_types: &HashMap<String, AnnotationType>,
     field_built_names: &HashMap<String, String>,
+    class_field_types: &HashMap<String, HashMap<String, AnnotationType>>,
 ) -> Option<ResolvedReturn> {
     let ident = call.identifier()?;
 
     // Check for chained calls: the identifier contains a nested FunctionCall
     if let Some(nested_call) = ident.syntax().children().find_map(FunctionCall::cast) {
         // Resolve the inner call to get the receiver type
-        let inner = resolve_funcall_return_type(&nested_call, global_returns, field_types, field_built_names)?;
+        let inner = resolve_funcall_return_type(&nested_call, global_returns, field_types, field_built_names, class_field_types)?;
 
         // The outer method name is the last name token in the identifier
         let names = ident.names();
@@ -752,6 +798,30 @@ fn resolve_funcall_return_type(
         return None;
     }
 
+    // Class-field method call: ClassName._field:Method() → names = ["ClassName", "_field", "Method"]
+    // Look up the field's type on the class, then resolve the method on that type.
+    // Only handles Simple and Parameterized("Name", _) field types; compound types
+    // (unions, intersections, fun() shapes) are not resolved through this path.
+    if names.len() == 3 {
+        let class_name = &names[0];
+        let field_name = &names[1];
+        let method_name = &names[2];
+        let field_class_name = match class_field_types.get(class_name.as_str())
+            .and_then(|fields| fields.get(field_name.as_str()))
+        {
+            Some(AnnotationType::Simple(s)) => Some(s.as_str()),
+            Some(AnnotationType::Parameterized(s, _)) => Some(s.as_str()),
+            _ => None,
+        };
+        if let Some(field_class) = field_class_name {
+            let method_path = format!("{}.{}", field_class, method_name);
+            if let Some(returns) = global_returns.get(&method_path) {
+                let chain_type = pick_effective_return(returns, Some(field_class))?;
+                return Some(ResolvedReturn { chain_type, built_name: None });
+            }
+        }
+    }
+
     let func_path = names.join(".");
     if let Some(returns) = global_returns.get(&func_path) {
         // For method calls (2+ names), the receiver class is names[0]
@@ -763,7 +833,7 @@ fn resolve_funcall_return_type(
     None
 }
 
-fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>, seen: &mut HashSet<String>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &mut HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) {
+fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>, seen: &mut HashSet<String>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &mut HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>, class_field_types: &HashMap<String, HashMap<String, AnnotationType>>) {
     for stmt in block.statements() {
         match &stmt {
             Statement::Assign(assign) => {
@@ -779,7 +849,7 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>,
                                     .or_else(|| extract_inline_type_annotation(assign.syntax()))
                                     .unwrap_or_else(|| {
                                         exprs.get(i)
-                                            .map(|e| infer_type_from_expression(e, global_returns, field_types, field_built_names))
+                                            .map(|e| infer_type_from_expression(e, global_returns, field_types, field_built_names, class_field_types))
                                             .unwrap_or_else(|| AnnotationType::Simple("any".to_string()))
                                     });
                                 // Track non-any types so later fields can reference them
@@ -806,28 +876,28 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>,
             Statement::If(if_chain) => {
                 for child in if_chain.syntax().children() {
                     if let Some(b) = Block::cast(child) {
-                        extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names);
+                        extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names, class_field_types);
                     }
                 }
             }
             Statement::While(w) => {
                 if let Some(b) = w.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names);
+                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names, class_field_types);
                 }
             }
             Statement::ForInLoop(f) => {
                 if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names);
+                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names, class_field_types);
                 }
             }
             Statement::ForCountLoop(f) => {
                 if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names);
+                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names, class_field_types);
                 }
             }
             Statement::Do(d) => {
                 if let Some(b) = d.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names);
+                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names, class_field_types);
                 }
             }
             _ => {}
