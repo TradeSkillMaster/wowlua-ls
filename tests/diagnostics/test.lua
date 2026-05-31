@@ -4016,6 +4016,44 @@ if child then
     -- ^ diag: none
 end
 
+-- Vararg type checking: arguments to ... should be type-checked
+---@param x number
+---@param ... number
+---@return number
+local function _vaMin(x, ...) return x end
+
+_vaMin(2, nil)
+--        ^ diag: type-mismatch
+_vaMin(2, "hi")
+--        ^ diag: type-mismatch
+_vaMin(2, 3)
+-- ^ diag: none
+_vaMin(2, 3, "bad")
+--           ^ diag: type-mismatch
+
+-- Vararg type checking with generics
+---@generic T: number
+---@param x T
+---@param ... T
+---@return T
+local function _vaGenMin(x, ...) return x end
+
+_vaGenMin(2, nil)
+--           ^ diag: type-mismatch
+_vaGenMin(2, "hi")
+--           ^ diag: type-mismatch
+_vaGenMin(2, 3)
+-- ^ diag: none
+
+-- Vararg type checking with no positional params
+---@param ... string
+local function _vaOnly(...) end
+
+_vaOnly(42)
+--      ^ diag: type-mismatch
+_vaOnly("ok")
+-- ^ diag: none
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function

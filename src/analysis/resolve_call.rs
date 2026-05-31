@@ -1026,6 +1026,12 @@ impl<'a> Analysis<'a> {
                     self.sym(f_arg_sym).versions.first()
                         .and_then(|ver| ver.resolved_type.clone())
                 })
+            } else if let Some(va) = self.func(func_idx).vararg_annotation.clone() {
+                let raw_generics = self.func(func_idx).generic_constraints_raw.clone();
+                // Skip variadic generics (`...M`): the bound type represents the
+                // combined type of ALL excess args, not each individual one.
+                self.resolve_annotation_type_gen(&va, &raw_generics)
+                    .filter(|vt| !matches!(vt, ValueType::TypeVariable(n) if n.starts_with("...")))
             } else {
                 None
             };
@@ -1064,6 +1070,8 @@ impl<'a> Analysis<'a> {
                 overload.params.get(i + overload_self_offset).map(|p| p.name.clone()).unwrap_or_else(|| "?".to_string())
             } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                 if let SymbolIdentifier::Name(n) = &self.sym(param_sym_idx).id { n.clone() } else { "?".to_string() }
+            } else if self.func(func_idx).vararg_annotation.is_some() {
+                "...".to_string()
             } else {
                 "?".to_string()
             };
