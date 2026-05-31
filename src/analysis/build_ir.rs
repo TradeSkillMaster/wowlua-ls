@@ -946,6 +946,12 @@ impl<'a> Analysis<'a> {
                             self.analyze_early_exit_guard(&cond, scope_idx);
                         }
                     }
+                    // Detect complementary early-exit guard pairs:
+                    // `if a and not b then return` + `if not a and b then return`
+                    // → a and b have correlated truthiness (both nil or both non-nil).
+                    if exiting_prefix_len >= 2 {
+                        self.detect_complementary_exit_guards(&branches[..exiting_prefix_len], scope_idx);
+                    }
                     // Ensure-initialized: `if not x.f then x.f = val end`
                     // Only for single-branch if without else.
                     if branches.len() == 1 && !has_else

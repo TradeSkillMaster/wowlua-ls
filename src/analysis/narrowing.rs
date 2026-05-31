@@ -418,6 +418,27 @@ impl<'a> Analysis<'a> {
                             }
                         }
                     }
+                    // `a ~= b` between two correlated locals (then-branch), or
+                    // `a == b` (else-branch): eliminates the "both nil" state
+                    // (since nil ~= nil is false), so both must be non-nil.
+                    let is_neq_then = is_neq && is_then_branch;
+                    let is_eq_else = is_eq && !is_then_branch;
+                    if (is_neq_then || is_eq_else)
+                        && let Expression::Identifier(lhs_ident) = lhs
+                        && let Expression::Identifier(rhs_ident) = rhs
+                    {
+                        let lhs_names = lhs_ident.names();
+                        let rhs_names = rhs_ident.names();
+                        if lhs_names.len() == 1 && rhs_names.len() == 1
+                            && let Some(lhs_sym) = self.get_symbol(&SymbolIdentifier::Name(lhs_names[0].clone()), parent_scope)
+                            && let Some(rhs_sym) = self.get_symbol(&SymbolIdentifier::Name(rhs_names[0].clone()), parent_scope)
+                            && lhs_sym != rhs_sym
+                            && self.are_correlated(lhs_sym, rhs_sym)
+                        {
+                            // Narrow one; narrow_correlated_locals propagates to the other.
+                            self.narrow_symbol_strip_nil(lhs_sym, target_scope);
+                        }
+                    }
                     // String literal equality narrowing for field chains and symbols:
                     // `x == "LAST"` → then-branch filters to "LAST", else-branch strips "LAST"
                     if let Some((ident, lit_vt)) = Self::extract_literal_eq_sides(lhs, rhs) {
@@ -938,6 +959,75 @@ impl<'a> Analysis<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Analyze an `and`-chain condition and extract which symbols must be truthy
+    /// vs falsy for the condition to be true.
+    /// Returns `Some((truthy_syms, falsy_syms))` when the condition is a pure
+    /// `and`-chain of bare identifiers and `not identifier` terms.
+    /// Used for detecting complementary early-exit guard pairs.
+    fn extract_and_truthiness_shape(
+        cond: &Expression<'_>,
+        ir: &Ir,
+        scope_idx: ScopeIndex,
+    ) -> Option<(Vec<SymbolIndex>, Vec<SymbolIndex>)> {
+        let mut truthy = Vec::new();
+        let mut falsy = Vec::new();
+        Self::collect_and_truthiness_terms(cond, ir, scope_idx, &mut truthy, &mut falsy)?;
+        if truthy.is_empty() && falsy.is_empty() {
+            return None;
+        }
+        truthy.sort_by_key(|s| s.val());
+        truthy.dedup();
+        falsy.sort_by_key(|s| s.val());
+        falsy.dedup();
+        Some((truthy, falsy))
+    }
+
+    /// Recursively collect truthy/falsy symbols from an `and`-chain condition.
+    /// Returns `None` if any term is not a simple truthiness check.
+    fn collect_and_truthiness_terms(
+        cond: &Expression<'_>,
+        ir: &Ir,
+        scope_idx: ScopeIndex,
+        truthy: &mut Vec<SymbolIndex>,
+        falsy: &mut Vec<SymbolIndex>,
+    ) -> Option<()> {
+        match cond {
+            Expression::Identifier(ident) => {
+                let names = ident.names();
+                if names.len() != 1 { return None; }
+                let sym_idx = ir.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+                truthy.push(sym_idx);
+                Some(())
+            }
+            Expression::UnaryExpression(unary) if unary.kind() == Operator::Not => {
+                let terms = unary.get_terms();
+                let inner = terms.first()?;
+                if let Expression::Identifier(ident) = inner {
+                    let names = ident.names();
+                    if names.len() != 1 { return None; }
+                    let sym_idx = ir.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+                    falsy.push(sym_idx);
+                    Some(())
+                } else {
+                    None
+                }
+            }
+            Expression::BinaryExpression(bin)
+                if matches!(bin.kind(), Operator::And | Operator::None) =>
+            {
+                for term in &bin.get_terms() {
+                    Self::collect_and_truthiness_terms(term, ir, scope_idx, truthy, falsy)?;
+                }
+                Some(())
+            }
+            Expression::GroupedExpression(g) => {
+                let inner = g.get_expression()?;
+                Self::collect_and_truthiness_terms(&inner, ir, scope_idx, truthy, falsy)
+            }
+            _ => None,
         }
     }
 
@@ -1705,6 +1795,53 @@ impl<'a> Analysis<'a> {
             return Some(NarrowKind::StripNil);
         }
         None
+    }
+
+    /// Check whether two symbols belong to the same correlated-local group.
+    fn are_correlated(&self, a: SymbolIndex, b: SymbolIndex) -> bool {
+        self.correlated_locals.iter().any(|group| group.contains(&a) && group.contains(&b))
+    }
+
+    /// Detect pairs of early-exit branches with complementary `and`-chain
+    /// conditions. When branch i has `{truthy: {a}, falsy: {b}}` and branch j
+    /// has `{truthy: {b}, falsy: {a}}`, all involved symbols share the same
+    /// nilability after the exits. Register them as a correlated-local group.
+    pub(super) fn detect_complementary_exit_guards(
+        &mut self,
+        exiting_branches: &[IfBranch<'_>],
+        scope_idx: ScopeIndex,
+    ) {
+        // Extract truthiness shapes for each branch that has a condition.
+        let shapes: Vec<Option<(Vec<SymbolIndex>, Vec<SymbolIndex>)>> = exiting_branches
+            .iter()
+            .map(|branch| {
+                let cond = branch.expression()?;
+                Self::extract_and_truthiness_shape(&cond, &self.ir, scope_idx)
+            })
+            .collect();
+
+        // Check all pairs for complementary shapes.
+        for (i, shape_i) in shapes.iter().enumerate() {
+            let Some((truthy_i, falsy_i)) = shape_i else { continue };
+            for shape_j in &shapes[i + 1..] {
+                let Some((truthy_j, falsy_j)) = shape_j else { continue };
+                // Complementary: truthy_i == falsy_j && falsy_i == truthy_j
+                if truthy_i == falsy_j && falsy_i == truthy_j {
+                    // truthy_i ∪ falsy_i == truthy_j ∪ falsy_j by the
+                    // complementary property, so only branch i's symbols
+                    // are needed to build the group.
+                    let mut group: Vec<SymbolIndex> = Vec::new();
+                    for sym in truthy_i.iter().chain(falsy_i.iter()) {
+                        if !group.contains(sym) {
+                            group.push(*sym);
+                        }
+                    }
+                    if group.len() >= 2 {
+                        self.correlated_locals.push(group);
+                    }
+                }
+            }
+        }
     }
 
     /// Remove `sym_idx` from every correlated-local group that contains it, then prune

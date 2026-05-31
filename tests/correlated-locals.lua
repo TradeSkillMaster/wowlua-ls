@@ -452,3 +452,104 @@ local knownVar = nil ---@type number?
 -- ^ diag: malformed-annotation
 local _sink = knownVar
 _consume(_sink)
+
+-- ── Complementary early-exit guards: a and not b / not a and b ──────────
+-- After both branches exit, the remaining states are "both nil" or "both
+-- non-nil". Then `~=` eliminates "both nil" (nil == nil is true in Lua).
+
+---@param profit_a number?
+---@param profit_b number?
+local function complementaryExitGuards(profit_a, profit_b)
+    if profit_a and not profit_b then
+        return true
+    elseif not profit_a and profit_b then
+        return false
+    end
+    if profit_a ~= profit_b then
+        return profit_a > profit_b
+        --     ^ hover: (param) profit_a: number
+    end
+    return false
+end
+_consume(complementaryExitGuards)
+
+-- Same pattern with elseif
+---@param x number?
+---@param y number?
+local function complementaryExitElseif(x, y)
+    if x and not y then
+        return 1
+    elseif not x and y then
+        return 2
+    end
+    if x ~= y then
+        local a = x
+        --    ^ hover: (local) a: number
+        local b = y
+        --    ^ hover: (local) b: number
+    end
+end
+_consume(complementaryExitElseif)
+
+-- `==` in else-branch is equivalent to `~=` in then-branch
+---@param m number?
+---@param n number?
+local function eqElseBranchNarrows(m, n)
+    if m and not n then return
+    elseif not m and n then return end
+    if m == n then
+        -- both could be nil here (nil == nil is true)
+        local a = m
+        --    ^ hover: (local) a: number?
+    else
+        -- m ~= n: eliminates both-nil → both non-nil
+        local b = m
+        --    ^ hover: (local) b: number
+    end
+end
+_consume(eqElseBranchNarrows)
+
+-- Non-complementary guards should NOT create correlation
+---@param a number?
+---@param b number?
+local function nonComplementaryGuards(a, b)
+    if a and not b then
+        return
+    elseif a and b then  -- not complementary (truthy={a,b}, falsy={})
+        return
+    end
+    if a ~= b then
+        local x = a
+        --    ^ hover: (local) x: number?
+    end
+end
+_consume(nonComplementaryGuards)
+
+-- Truthiness guard after complementary exit also narrows the correlated sibling
+---@param p number?
+---@param q number?
+local function truthinessGuardAfterComplementary(p, q)
+    if p and not q then return
+    elseif not p and q then return end
+    if p then
+        local a = q
+        --    ^ hover: (local) a: number
+    end
+end
+_consume(truthinessGuardAfterComplementary)
+
+-- Three variables in complementary guards
+---@param a number?
+---@param b string?
+---@param c boolean?
+local function threeVarComplementary(a, b, c)
+    if a and not b and not c then return
+    elseif not a and b and c then return end
+    if a ~= nil then
+        local x = b
+        --    ^ hover: (local) x: string
+        local y = c
+        --    ^ hover: (local) y: boolean
+    end
+end
+_consume(threeVarComplementary)
