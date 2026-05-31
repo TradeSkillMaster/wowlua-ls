@@ -2395,6 +2395,8 @@ impl<'a> Analysis<'a> {
             vararg_projection: None,
             event_params: None,
             narrows_arg: None,
+            requires_constraints: Vec::new(),
+            returns_self_type_args: None,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -2633,6 +2635,14 @@ impl<'a> Analysis<'a> {
                         self.ir.functions[func_idx.val()].returns_self = true;
                         continue;
                     }
+                    // @return self<X> — return the receiver re-parameterized with X
+                    if let crate::annotations::AnnotationType::Parameterized(name, type_args) = ret_annotation
+                        && name == "self"
+                    {
+                        self.ir.functions[func_idx.val()].returns_self = true;
+                        self.ir.functions[func_idx.val()].returns_self_type_args = Some(type_args.clone());
+                        continue;
+                    }
                     // @return built [: Parent] — mark the function as returning the built type
                     if let crate::annotations::AnnotationType::Simple(s) = ret_annotation {
                         if s == "built" {
@@ -2712,6 +2722,11 @@ impl<'a> Analysis<'a> {
         // Apply @narrows-arg annotation
         if let Some(idx) = annotations.narrows_arg {
             self.ir.functions[func_idx.val()].narrows_arg = Some(idx);
+        }
+
+        // Apply @requires receiver type-param constraints
+        if !annotations.requires.is_empty() {
+            self.ir.functions[func_idx.val()].requires_constraints = annotations.requires.clone();
         }
 
         // return_self_class_name is checked post-resolution in check_annotation_metadata_diagnostics

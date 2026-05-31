@@ -144,3 +144,26 @@ em1:Emit("hello", 42)
 
 em1:Emit(123, 42)
 --       ^ diag: type-mismatch
+
+-- ── @requires T constraint gating + @return self<X> re-parameterization ──────
+
+---@class Wrap<T>
+local Wrap = {}
+
+---@requires T: boolean
+---@return self<boolean>
+function Wrap:Invert() return self end
+
+-- Constraint satisfied: no diagnostic, returns re-parameterized self.
+---@type Wrap<boolean>
+local wbool = {}
+local invOk = wbool:Invert()
+--    ^ hover: (local) invOk: Wrap<boolean>
+
+-- Constraint violated: receiver T is string, not boolean.
+-- The return is still re-parameterized to Wrap<boolean> via @return self<boolean>.
+---@type Wrap<string>
+local wstr = {}
+local invBad = wstr:Invert()
+--    ^ hover: (local) invBad: Wrap<boolean>
+--                  ^ diag: param-constraint-mismatch

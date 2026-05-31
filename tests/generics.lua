@@ -374,6 +374,45 @@ local function extractBool(c)
     return bv
 end
 extractBool(numBox) -- use to avoid unused-function
+--          ^ diag: type-mismatch
+
+-- Matching type argument: no variance mismatch
+---@type Container<boolean>
+local boolBox = {}
+extractBool(boolBox)
+
+-- Union type argument containing the expected type: tolerated (truthiness idiom)
+---@type Container<boolean | number>
+local unionBox = {}
+extractBool(unionBox)
+
+-- ── Identity-forwarding parameterized subclass: type args compared ──────
+
+---@class SubContainer<T> : Container<T>
+local SubContainer = {}
+
+---@type SubContainer<number>
+local subNum = {}
+extractBool(subNum)   -- subclass with mismatched type arg
+--          ^ diag: type-mismatch
+
+-- Subclass inherits the parent's parameterized method through T forwarding
+local subVal = subNum:Get()
+--    ^ hover: (local) subVal: number
+
+---@type SubContainer<boolean>
+local subBool = {}
+extractBool(subBool)  -- subclass with matching type arg: clean
+
+-- Non-identity parameterized parent stays conservative (parent binds a concrete
+-- type, so it is not linked as an identity-forwarding subclass)
+---@class FixedContainer<T> : Container<string>
+local FixedContainer = {}
+
+---@type FixedContainer<number>
+local fixedNum = {}
+extractBool(fixedNum)
+--          ^ diag: type-mismatch
 
 -- ── Class generic T flows into callback parameter types ──────────────────
 
@@ -417,6 +456,43 @@ pb:Each(function(key, val)
     --    ^ hover: (local) k: string
     local v = val
     --    ^ hover: (local) v: number
+end)
+
+-- ── Class generic T inside structural callback param types ────────────────
+
+---@class StructBox<T>
+local StructBox = {}
+
+---@param func fun(values: T[])
+---@return self
+function StructBox:EachArray(func) return self end
+
+---@param func fun(map: table<string, T>)
+---@return self
+function StructBox:EachMap(func) return self end
+
+---@param func fun(value: T): T[]
+---@return self
+function StructBox:MapArray(func) return self end
+
+---@type StructBox<boolean>
+local sb = {}
+sb:EachArray(function(values)
+    local sbArr = values
+    --      ^ hover: (local) sbArr: boolean[]
+    local sbElem = values[1]
+    --      ^ hover: (local) sbElem: boolean
+end)
+
+sb:EachMap(function(map)
+    local sbVal = map["x"]
+    --      ^ hover: (local) sbVal: boolean
+end)
+
+sb:MapArray(function(value)
+    local sbInput = value
+    --      ^ hover: (local) sbInput: boolean
+    return { value }
 end)
 
 -- ── Generic inference from union of array types ───────────────────────────
@@ -877,5 +953,88 @@ for _, val in ReverseIPairs(mixedUnion) do
     local captured = val
 --        ^ hover: (local) captured: number  def: local
 end
+
+-- ── Method hover substitutes class type vars from parameterized receiver ──────
+-- Regression: hovering a method whose @param/@return uses the class type
+-- variable T should display the concrete bound type (e.g. `string`) when the
+-- receiver is a parameterized instance like Holder<string>, instead of the bare
+-- `T` (param) or the type-arg-less `Holder` (return).
+
+---@class Holder<T>
+local Holder = {}
+
+---@param fn fun(value: T)
+---@return Holder<T>
+function Holder:ApplyTo(fn) return self end
+
+---@return Holder<string>
+---@diagnostic disable-next-line: missing-return
+local function makeStringHolder() end
+
+local strHolder = makeStringHolder()
+strHolder:ApplyTo(function(v) end)
+--        ^ hover: (method) function Holder:ApplyTo(fn: fun(value: string))\n  -> Holder<string>
+
+-- ── Method return hover binds class type var to an optional (union) arg ───────
+-- Regression: a method returning `Other<T>` on a receiver `Carrier<string?>`
+-- must show `-> Other<string?>`. The resolved return type drops the class type
+-- args, so the raw annotation is re-substituted; the substituted concrete type
+-- (`string?`, a union) must not be re-validated as a type name.
+
+---@class Carrier<T>
+local Carrier = {}
+
+---@class Other<T>
+local Other = {}
+
+---@return Other<T>
+---@diagnostic disable-next-line: missing-return
+function Carrier:Wrap() end
+
+---@type Carrier<string?>
+local optCarrier
+local wrapped = optCarrier:Wrap()
+--                         ^ hover: (method) function Carrier:Wrap()\n  -> Other<string?>
+
+-- ── Definition hover keeps explicit parameterized return type args ────────────
+-- Regression: hovering a method *definition* with an explicit
+-- `@return Box3<string?>` must show `-> Box3<string?>`, not the bare `Box3`.
+-- This is the non-generic-receiver case (no type-var substitution): the
+-- resolved return type still drops the class type args, so the raw annotation
+-- must be used directly.
+
+---@class Box3<T>
+local Box3 = {}
+
+---@class Container3
+local Container3 = {}
+
+---@return Box3<string?>
+---@diagnostic disable-next-line: missing-return
+function Container3:GetBox() end
+--                  ^ hover: (method) function Container3:GetBox()\n  -> Box3<string?>
+
+-- ── Inferred return propagates class type args through a passthrough ──────────
+-- Regression: a function with NO @return annotation that returns a
+-- parameterized-class value should let callers see the concrete type args
+-- (e.g. Box2<number>), so a downstream callback param resolves to the bound
+-- type. Type args are tracked out-of-band, so the inferred-return path must
+-- propagate them into the call site.
+
+---@class Box2<T>
+local Box2 = {}
+
+---@param fn fun(value: T)
+function Box2:Each(fn) end
+
+---@type Box2<number>
+local boxedNum
+
+local function getBox() return boxedNum end
+
+local gotBox = getBox()
+--    ^ hover: (local) gotBox: Box2<number>
+gotBox:Each(function(n) end)
+--                   ^ hover: (param) n: number
 
 _G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2 }

@@ -113,6 +113,7 @@ fn find_call_resolution(
                         projected_f_idx: None,
                         is_expansion: false,
                         first_arg_range: None,
+                        receiver_param_subs: std::collections::HashMap::new(),
                     },
                 ));
             }

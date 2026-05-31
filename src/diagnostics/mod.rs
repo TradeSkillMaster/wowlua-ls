@@ -28,6 +28,7 @@ mod need_check_nil;
 mod nil_index;
 mod nil_table_key;
 mod not_precedence;
+mod param_constraint_mismatch;
 mod redefined_local;
 mod return_mismatch;
 mod shadowed_local;
@@ -118,6 +119,7 @@ pub(crate) const UNBALANCED_ASSIGNMENTS: DiagnosticDef  = DiagnosticDef { code: 
 pub(crate) const DUPLICATE_SET_FIELD: DiagnosticDef     = DiagnosticDef { code: "duplicate-set-field",      severity: DiagnosticSeverity::WARNING };
 pub(crate) const UNUSED_FUNCTION: DiagnosticDef         = DiagnosticDef { code: "unused-function",          severity: DiagnosticSeverity::HINT };
 pub(crate) const GENERIC_CONSTRAINT_MISMATCH: DiagnosticDef = DiagnosticDef { code: "generic-constraint-mismatch", severity: DiagnosticSeverity::WARNING };
+pub(crate) const PARAM_CONSTRAINT_MISMATCH: DiagnosticDef = DiagnosticDef { code: "param-constraint-mismatch", severity: DiagnosticSeverity::WARNING };
 pub(crate) const DOC_FIELD_NO_CLASS: DiagnosticDef      = DiagnosticDef { code: "doc-field-no-class",       severity: DiagnosticSeverity::WARNING };
 pub(crate) const DOC_FUNC_NO_FUNCTION: DiagnosticDef   = DiagnosticDef { code: "doc-func-no-function",    severity: DiagnosticSeverity::WARNING };
 pub(crate) const UNDEFINED_DOC_CLASS: DiagnosticDef     = DiagnosticDef { code: "undefined-doc-class",      severity: DiagnosticSeverity::WARNING };
@@ -163,7 +165,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &NEED_CHECK_NIL, &NIL_INDEX, &UNDEFINED_DOC_PARAM, &DUPLICATE_DOC_PARAM, &DUPLICATE_DOC_FIELD,
     &DUPLICATE_DOC_ALIAS, &UNKNOWN_DIAG_CODE, &REDUNDANT_RETURN_VALUE, &REDUNDANT_VALUE,
     &UNBALANCED_ASSIGNMENTS, &DUPLICATE_SET_FIELD, &UNUSED_FUNCTION,
-    &GENERIC_CONSTRAINT_MISMATCH, &DOC_FIELD_NO_CLASS, &DOC_FUNC_NO_FUNCTION, &UNDEFINED_DOC_CLASS,
+    &GENERIC_CONSTRAINT_MISMATCH, &PARAM_CONSTRAINT_MISMATCH, &DOC_FIELD_NO_CLASS, &DOC_FUNC_NO_FUNCTION, &UNDEFINED_DOC_CLASS,
     &UNDEFINED_DOC_NAME, &MISSING_FIELDS, &MALFORMED_ANNOTATION, &CIRCLE_DOC_CLASS,
     &GROUPED_RETURN_MISMATCH, &BUILDS_FIELD_NOT_SELF, &RETURN_SELF_CLASS_NAME,
     &IMPLICIT_NIL_RETURN, &CREATE_GLOBAL, &DUPLICATE_CONSTRUCTOR, &CONSTRUCTOR_RETURN,
@@ -265,6 +267,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &duplicate_set_field::DuplicateSetField,
         &missing_fields::MissingFields,
         &generic_constraint_mismatch::GenericConstraintMismatch,
+        &param_constraint_mismatch::ParamConstraintMismatch,
         &call_arity::CallArity,
         &cannot_call::CannotCall,
         &invalid_op::InvalidOp,

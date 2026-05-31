@@ -993,6 +993,15 @@ fn call_func_generics() {
 }
 
 #[test]
+fn requires_misuse() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/requires-misuse.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn document_highlight() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/document-highlight.lua",

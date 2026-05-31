@@ -109,7 +109,7 @@ impl<'a> Analysis<'a> {
         let mut projected_f_idx: Option<FunctionIndex> = None;
         let mut class_type_param_subs: HashMap<String, ValueType> = HashMap::new();
         if is_method_call
-            && let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone()
+            && let Expr::FieldAccess { table: receiver_expr, field_range, .. } = self.expr(*func).clone()
         {
             let receiver_type_args = self.get_expr_type_args(receiver_expr);
 
@@ -148,6 +148,19 @@ impl<'a> Analysis<'a> {
                         class_type_param_subs.insert(name.clone(), vt.clone());
                     }
                 }
+            }
+            // Record the substitution keyed by the method-name token range so
+            // hover can display the bound concrete types (e.g. `T → string`) in
+            // the method signature. Only stored when at least one type param
+            // resolved to a non-type-variable concrete type.
+            if let Some(range) = field_range
+                && !class_type_param_subs.is_empty()
+                && class_type_param_subs.values()
+                    .any(|vt| !matches!(vt, ValueType::TypeVariable(_)))
+            {
+                // Overwrite each fixpoint iteration so the converged (most
+                // concrete) substitution wins over earlier partial ones.
+                self.method_decl_subs.insert(range, class_type_param_subs.clone());
             }
         }
         // Order doesn't matter here: resolve_annotation_type_gen only uses the names
@@ -857,9 +870,18 @@ impl<'a> Analysis<'a> {
                 None
             };
             if let Some(&(start, end)) = arg_ranges.get(i) {
+                let actual_type_args = self.get_expr_type_args(*arg_expr_id);
+                let expected_parameterized = if actual_type_args.is_empty() {
+                    Vec::new()
+                } else {
+                    param_annotations.get(i + self_offset)
+                        .map(|ann| self.param_parameterized_constraints(ann, &generic_subs))
+                        .unwrap_or_default()
+                };
                 resolved_call_args.push(ResolvedCallArg {
                     expected_type, arg_expr: *arg_expr_id, param_name,
                     skip_if_nil, primary_param_type, start, end,
+                    actual_type_args, expected_parameterized,
                 });
             }
         }
@@ -880,6 +902,7 @@ impl<'a> Analysis<'a> {
                 projected_f_idx: None,
                 is_expansion: false,
                 first_arg_range: arg_ranges.first().copied(),
+                receiver_param_subs: class_type_param_subs.clone(),
             });
 
             // Detect expression<C, R> parameters and record them for diagnostics/queries
@@ -901,8 +924,39 @@ impl<'a> Analysis<'a> {
                 {
                     let table_idxs = self.resolve_expression_tables(&type_args[0], receiver_table_idx);
                     if !table_idxs.is_empty() {
-                        let return_type = type_args.get(1)
-                            .and_then(|rt| self.resolve_annotation_type(rt));
+                        // When the result type `R` is one of the method's generic
+                        // type parameters, infer it from the expression body and
+                        // bind it (so `@return Schema<R>` becomes `Schema<number>`
+                        // etc.). Otherwise R is a fixed constraint to check against.
+                        let r_generic = match type_args.get(1) {
+                            Some(crate::annotations::AnnotationType::Simple(name))
+                                if generics.iter().any(|(g, _)| g == name) => Some(name.clone()),
+                            _ => None,
+                        };
+                        let return_type = if r_generic.is_some() {
+                            None
+                        } else {
+                            type_args.get(1).and_then(|rt| self.resolve_annotation_type(rt))
+                        };
+                        if let Some(rname) = r_generic
+                            && !generic_subs.contains_key(&rname)
+                            && let Some(content) = self.ir.string_literals.get(arg_expr_id).cloned()
+                        {
+                            let wrapped = format!("return {content}");
+                            let expr_tree = crate::syntax::parser::Parser::new(&wrapped).parse();
+                            let inferred = crate::diagnostics::expression_type::infer_expression_type(
+                                &expr_tree,
+                                &|word: &str| table_idxs.iter()
+                                    .find_map(|&idx| self.get_field(idx, word)
+                                        .and_then(|fi| fi.annotation.clone())),
+                            );
+                            if let Some(t) = inferred
+                                && !matches!(t, ValueType::Any)
+                            {
+                                substitutable_generic_names.insert(rname.clone());
+                                generic_subs.insert(rname, t);
+                            }
+                        }
                         self.ir.expression_args.insert(*arg_expr_id, crate::analysis::ExpressionArg {
                             table_idxs,
                             return_type,
@@ -968,6 +1022,23 @@ impl<'a> Analysis<'a> {
                             new_idx
                         };
                         return Some(ValueType::Table(Some(new_idx)));
+                    }
+                }
+                // @return self<X>: re-parameterize the receiver with the given
+                // class type args. Resolve them (substituting any of the method's
+                // own generics) and cache under this call's ExprId so display and
+                // downstream resolution reconstruct `Class<X>`.
+                if let Some(self_args) = self.func(func_idx).returns_self_type_args.clone() {
+                    let fn_generics = self.func(func_idx).generic_constraints_raw.clone();
+                    let mut resolved: Vec<ValueType> = self_args.iter()
+                        .map(|ta| self.resolve_annotation_type_mut_gen(ta, &fn_generics)
+                            .unwrap_or(ValueType::Any))
+                        .collect();
+                    for arg in &mut resolved {
+                        *arg = self.substitute_generics_deep(arg, &generic_subs);
+                    }
+                    if !resolved.is_empty() {
+                        self.call_type_args.insert(expr_id, resolved);
                     }
                 }
                 return Some(rt);
@@ -1345,6 +1416,36 @@ impl<'a> Analysis<'a> {
         };
         // If we still have no ret_type, there's no meaningful inference to make.
         ret_type.as_ref()?;
+        // Inferred return (no `@return` annotation): propagate the type
+        // arguments of the returned expression so callers can re-substitute
+        // class type vars through the call chain. Without this, a function
+        // like `function f() return x end` (where `x` is `Schema<string>`)
+        // loses the `<string>` binding at the call site because the inferred
+        // return type carries only the bare class table, with type args
+        // tracked out-of-band in `call_type_args` / `version.type_args`.
+        if ret_index == 0
+            && !has_return_annotations
+            && !synthesized_return_only
+            && !self.call_type_args.contains_key(&expr_id)
+            && !self.func(func_idx).rets.is_empty()
+            && matches!(ret_type, Some(ValueType::Table(Some(_))))
+        {
+            let ret_syms: Vec<SymbolIndex> = self.func(func_idx).rets.clone();
+            for sym_idx in ret_syms {
+                if !matches!(&self.sym(sym_idx).id, SymbolIdentifier::FunctionRet(_, 0)) {
+                    continue;
+                }
+                let Some(src_expr) = self.sym(sym_idx).versions.first().and_then(|v| v.type_source)
+                else {
+                    continue;
+                };
+                let args = self.get_expr_type_args(src_expr);
+                if !args.is_empty() {
+                    self.call_type_args.insert(expr_id, args);
+                    break;
+                }
+            }
+        }
         // If this function has generics and the return type is still a
         // TypeVariable, don't return it — keep unresolved so a later
         // fixpoint pass can substitute the concrete type.
@@ -1883,10 +1984,10 @@ impl<'a> Analysis<'a> {
 
     /// Resolve an annotation type, substituting class-level type params when available.
     /// Used by inline callback param/return propagation (Stage 1 of resolve_function_call).
-    /// Note: `resolve_annotation_type_gen` (non-mut) discards structural type info
-    /// (e.g. `T[]` → `Table(None)`), so nested class type params inside arrays or
-    /// `table<K,V>` won't be substituted. Top-level type params (e.g. `T`, `T|nil`)
-    /// work correctly.
+    /// Uses the `_mut_gen` resolver so structural types (`T[]`, `table<K,V>`, `fun(x: T)`)
+    /// materialize a `TableInfo`/`Function` whose nested `TypeVariable`s are then
+    /// substituted by `substitute_generics_deep`. Top-level type params (`T`, `T|nil`)
+    /// work too.
     fn resolve_annotation_with_class_generics(
         &mut self,
         ann: &crate::annotations::AnnotationType,
@@ -1896,7 +1997,7 @@ impl<'a> Analysis<'a> {
         if class_gen_context.is_empty() {
             self.resolve_annotation_type(ann)
         } else {
-            self.resolve_annotation_type_gen(ann, class_gen_context)
+            self.resolve_annotation_type_mut_gen(ann, class_gen_context)
                 .map(|vt| self.substitute_generics_deep(&vt, class_type_param_subs))
         }
     }
@@ -1934,6 +2035,39 @@ impl<'a> Analysis<'a> {
                     }
         }
         subs
+    }
+
+    /// Extract parameterized class constraints from a raw parameter annotation.
+    /// For each `Class<...>` form (directly or as a union member), resolve the
+    /// class name to its table index and resolve+substitute its type arguments.
+    /// Builtin parameterized forms (`table<K,V>`, `expression<C,R>`, etc.) and
+    /// non-class names are skipped. Used for generic type-argument variance checks.
+    fn param_parameterized_constraints(
+        &mut self,
+        ann: &crate::annotations::AnnotationType,
+        generic_subs: &HashMap<String, ValueType>,
+    ) -> Vec<(TableIndex, Vec<ValueType>)> {
+        use crate::annotations::AnnotationType;
+        let members: Vec<&AnnotationType> = match ann {
+            AnnotationType::Union(m) => m.iter().collect(),
+            other => vec![other],
+        };
+        let mut out = Vec::new();
+        for m in members {
+            if let AnnotationType::Parameterized(name, args) = m {
+                let Some(&table_idx) = self.ir.classes.get(name)
+                    .or_else(|| self.ir.ext.classes.get(name)) else { continue };
+                let resolved: Vec<ValueType> = args.iter()
+                    .map(|a| {
+                        let vt = self.resolve_annotation_type(a).unwrap_or(ValueType::Any);
+                        if generic_subs.is_empty() { vt }
+                        else { self.substitute_generics_deep(&vt, generic_subs) }
+                    })
+                    .collect();
+                out.push((table_idx, resolved));
+            }
+        }
+        out
     }
 
     pub(super) fn get_expr_type_args(&mut self, expr_id: ExprId) -> Vec<ValueType> {
@@ -2007,38 +2141,6 @@ impl<'a> Analysis<'a> {
     }
 
     // ── Generic substitution ─────────────────────────────────────────────────
-
-    pub(super) fn type_contains_type_variable_deep(&self, vt: &ValueType) -> bool {
-        let mut visited: HashSet<TableIndex> = HashSet::new();
-        self.type_contains_type_variable_deep_inner(vt, &mut visited)
-    }
-
-    fn type_contains_type_variable_deep_inner(
-        &self,
-        vt: &ValueType,
-        visited: &mut HashSet<TableIndex>,
-    ) -> bool {
-        match vt {
-            ValueType::TypeVariable(_) => true,
-            ValueType::Union(types) | ValueType::Intersection(types) => {
-                types.iter().any(|t| self.type_contains_type_variable_deep_inner(t, visited))
-            }
-            ValueType::Table(Some(idx)) => {
-                if !visited.insert(*idx) { return false; }
-                let t = self.table(*idx);
-                if let Some(v) = &t.value_type
-                    && self.type_contains_type_variable_deep_inner(v, visited) { return true; }
-                if let Some(k) = &t.key_type
-                    && self.type_contains_type_variable_deep_inner(k, visited) { return true; }
-                t.fields.values().any(|fi| {
-                    fi.annotation.as_ref().is_some_and(|a|
-                        self.type_contains_type_variable_deep_inner(a, visited))
-                })
-            }
-            ValueType::OpaqueAlias(_, inner) => self.type_contains_type_variable_deep_inner(inner, visited),
-            _ => false,
-        }
-    }
 
     pub(super) fn substitute_generics_deep(&mut self, vt: &ValueType, subs: &HashMap<String, ValueType>) -> ValueType {
         match vt {
@@ -2292,6 +2394,8 @@ impl<'a> Analysis<'a> {
                     vararg_projection: None,
                     event_params: None,
                     narrows_arg: None,
+                    requires_constraints: Vec::new(),
+                    returns_self_type_args: None,
                 });
                 ValueType::Function(Some(new_func_idx))
             }

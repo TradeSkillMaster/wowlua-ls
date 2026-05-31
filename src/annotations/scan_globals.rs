@@ -648,6 +648,7 @@ fn build_func_external(
         flavor_guard: annotations.flavor_guard,
         implicit_nil_return,
         narrows_arg: annotations.narrows_arg,
+        requires: annotations.requires,
     }
 }
 
@@ -1133,6 +1134,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 flavors: 0, flavor_guard: annotations.flavor_guard,
                                 implicit_nil_return: false,
                                 narrows_arg: None,
+                                requires: Vec::new(),
                             });
                         } else if names.len() >= 2 {
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
@@ -1330,6 +1332,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 flavors: 0, flavor_guard: annotations.flavor_guard,
                                 implicit_nil_return: false,
                                 narrows_arg: None,
+                                requires: Vec::new(),
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.

@@ -615,6 +615,8 @@ mod tests {
             vararg_projection: None,
             event_params: None,
             narrows_arg: None,
+            requires_constraints: Vec::new(),
+            returns_self_type_args: None,
         };
         pg.functions.push(func);
         let func_idx = FunctionIndex(EXT_BASE + pg.functions.len() - 1);

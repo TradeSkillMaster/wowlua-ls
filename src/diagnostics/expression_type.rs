@@ -49,7 +49,13 @@ impl DiagnosticPass for ExpressionType {
 
             // Check return type constraint if specified
             if let Some(expected) = expected_return {
-                let inferred = infer_expression_type(analysis, &expr_tree, table_idxs);
+                let name_type = |word: &str| -> Option<ValueType> {
+                    table_idxs.iter().find_map(|&idx| {
+                        let fi = analysis.get_field(idx, word)?;
+                        fi.annotation.clone().or_else(|| analysis.resolve_expr_type(fi.expr))
+                    })
+                };
+                let inferred = infer_expression_type(&expr_tree, &name_type);
                 if let Some(ref inferred_type) = inferred
                     && !is_assignable(inferred_type, expected)
                 {
@@ -95,8 +101,16 @@ pub fn compute_content_start(content_len: usize, str_start: u32, str_end: u32) -
     }
 }
 
-/// Simple rule-based type inference for Lua expressions.
-fn infer_expression_type(analysis: &AnalysisResult, tree: &SyntaxTree, table_idxs: &[TableIndex]) -> Option<ValueType> {
+/// Simple rule-based type inference for a Lua expression parsed as `return <expr>`.
+///
+/// `name_type(word)` resolves the type of a bare identifier (a context field of
+/// the `expression<C, R>` class C); it returns `None` for unknown names. This is
+/// shared between the `expression-type` diagnostic and generic `R` inference in
+/// call resolution (`resolve_call.rs`), which supply different field lookups.
+pub(crate) fn infer_expression_type(
+    tree: &SyntaxTree,
+    name_type: &dyn Fn(&str) -> Option<ValueType>,
+) -> Option<ValueType> {
     // Tree structure: Block(root) → ReturnStatement → ExpressionList → expression
     // SyntaxNode::new_root IS the Block node.
     let root = SyntaxNode::new_root(tree);
@@ -104,11 +118,11 @@ fn infer_expression_type(analysis: &AnalysisResult, tree: &SyntaxTree, table_idx
     let expr_list = ret_stmt.children().next()?;
     let expr_node = expr_list.children().next()
         .unwrap_or(expr_list);
-    infer_node_type(analysis, expr_node, table_idxs)
+    infer_node_type(expr_node, name_type)
 }
 
 /// Infer the type of a syntax node within an expression context.
-fn infer_node_type(analysis: &AnalysisResult, node: SyntaxNode<'_>, table_idxs: &[TableIndex]) -> Option<ValueType> {
+fn infer_node_type(node: SyntaxNode<'_>, name_type: &dyn Fn(&str) -> Option<ValueType>) -> Option<ValueType> {
     match node.kind() {
         SyntaxKind::UnaryExpression => {
             let op_token = node.children_with_tokens()
@@ -142,11 +156,11 @@ fn infer_node_type(analysis: &AnalysisResult, node: SyntaxNode<'_>, table_idxs: 
             if let Some(op) = op_token {
                 match op.kind() {
                     SyntaxKind::AndKeyword => {
-                        rhs.and_then(|r| infer_node_type(analysis, r, table_idxs))
+                        rhs.and_then(|r| infer_node_type(r, name_type))
                     }
                     SyntaxKind::OrKeyword => {
-                        let lhs_type = infer_node_type(analysis, lhs, table_idxs);
-                        let rhs_type = rhs.and_then(|r| infer_node_type(analysis, r, table_idxs));
+                        let lhs_type = infer_node_type(lhs, name_type);
+                        let rhs_type = rhs.and_then(|r| infer_node_type(r, name_type));
                         match (lhs_type, rhs_type) {
                             (Some(l), Some(r)) => Some(ValueType::make_union(vec![l, r])),
                             (Some(l), None) => Some(l),
@@ -175,7 +189,7 @@ fn infer_node_type(analysis: &AnalysisResult, node: SyntaxNode<'_>, table_idxs: 
         }
         SyntaxKind::GroupedExpression => {
             let inner = node.children().next()?;
-            infer_node_type(analysis, inner, table_idxs)
+            infer_node_type(inner, name_type)
         }
         SyntaxKind::NameRef | SyntaxKind::ExpressionList => {
             // NameRef wraps a single Name token; ExpressionList wraps expressions
@@ -183,16 +197,7 @@ fn infer_node_type(analysis: &AnalysisResult, node: SyntaxNode<'_>, table_idxs: 
                 match child {
                     crate::syntax::NodeOrToken::Token(token) => match token.kind() {
                         SyntaxKind::Name => {
-                            let word = token.text();
-                            for &idx in table_idxs {
-                                if let Some(fi) = analysis.get_field(idx, word) {
-                                    if let Some(ref ann) = fi.annotation {
-                                        return Some(ann.clone());
-                                    }
-                                    return analysis.resolve_expr_type(fi.expr);
-                                }
-                            }
-                            return None;
+                            return name_type(token.text());
                         }
                         SyntaxKind::NilKeyword => return Some(ValueType::Nil),
                         SyntaxKind::TrueKeyword => return Some(ValueType::Boolean(Some(true))),
@@ -202,7 +207,7 @@ fn infer_node_type(analysis: &AnalysisResult, node: SyntaxNode<'_>, table_idxs: 
                         _ => {}
                     }
                     crate::syntax::NodeOrToken::Node(child_node) => {
-                        if let Some(t) = infer_node_type(analysis, child_node, table_idxs) {
+                        if let Some(t) = infer_node_type(child_node, name_type) {
                             return Some(t);
                         }
                     }
@@ -213,7 +218,7 @@ fn infer_node_type(analysis: &AnalysisResult, node: SyntaxNode<'_>, table_idxs: 
         SyntaxKind::ReturnStatement => {
             // "return <expr>" — descend into the expression list child
             node.children().next()
-                .and_then(|child| infer_node_type(analysis, child, table_idxs))
+                .and_then(|child| infer_node_type(child, name_type))
         }
         _ => None,
     }

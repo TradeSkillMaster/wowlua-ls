@@ -119,6 +119,58 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                 }
             }
 
+            // ── @requires / @return self<X> must reference the method's class type params ──
+            let has_self_reparam = annotations.returns.iter().any(|r| {
+                matches!(r, crate::annotations::AnnotationType::Parameterized(n, _) if n == "self")
+            });
+            if !annotations.requires.is_empty() || has_self_reparam {
+                let method_class_type_params: Vec<String> = analysis.function_owner_class
+                    .get(&FunctionIndex(func_idx))
+                    .and_then(|cn| analysis.ir.classes.get(cn.as_str()))
+                    .map(|&tidx| analysis.ir.table(tidx).class_type_params.clone())
+                    .unwrap_or_default();
+
+                // @requires T: Constraint — T must be a class type param; the
+                // constraint type name must resolve.
+                for (pname, constraint) in &annotations.requires {
+                    let (s, e) = comment_ranges.iter()
+                        .find(|(text, _, _)| text.starts_with("---@requires") && Analysis::contains_word(text, pname))
+                        .map(|(_, s, e)| (*s, *e))
+                        .unwrap_or((func_start, func_end));
+                    if !method_class_type_params.contains(pname) {
+                        super::MALFORMED_ANNOTATION.emit(diags, format!(
+                            "@requires references `{pname}`, which is not a type parameter of the method's class"
+                        ), s, e);
+                        continue;
+                    }
+                    let parsed = crate::annotations::parse_type(constraint);
+                    analysis.ir.check_annotation_type_names(&parsed, generics, s, e, diags);
+                }
+
+                // @return self<X> — the number of type args must match the class's
+                // type-param arity (a non-generic class declares none).
+                for ret in &annotations.returns {
+                    if let crate::annotations::AnnotationType::Parameterized(name, args) = ret
+                        && name == "self"
+                        && method_class_type_params.len() != args.len()
+                    {
+                        let (s, e) = comment_ranges.iter()
+                            .find(|(text, _, _)| text.starts_with("---@return") && text.contains("self"))
+                            .map(|(_, s, e)| (*s, *e))
+                            .unwrap_or((func_start, func_end));
+                        let msg = if method_class_type_params.is_empty() {
+                            "@return self<...> requires the method's class to declare type parameters".to_string()
+                        } else {
+                            format!(
+                                "@return self<...> expects {} type argument(s) to match the class, found {}",
+                                method_class_type_params.len(), args.len()
+                            )
+                        };
+                        super::MALFORMED_ANNOTATION.emit(diags, msg, s, e);
+                    }
+                }
+            }
+
             // ── undefined-doc-name on @param, @return, @overload types ──
             for p in &annotations.params {
                 let (s, e) = comment_ranges.iter()

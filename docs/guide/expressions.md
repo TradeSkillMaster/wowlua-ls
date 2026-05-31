@@ -86,6 +86,34 @@ state:PublishBool([[scanProgress]])
 
 Without the second parameter (`expression<C>`), any return type is accepted.
 
+## Inferring the result type with a generic
+
+When the second type parameter is a `@generic`, it is **inferred** from the expression body rather than checked against it — and the inferred type flows into the method's return type. This lets a single method return a result type that depends on what the caller's expression evaluates to:
+
+```lua
+---@class ReactivePublisherSchema<R>
+local ReactivePublisherSchema = {}
+
+---@generic R
+---@param expr expression<ReactiveState, R>
+---@return ReactivePublisherSchema<R>
+function ReactiveState:Publisher(expr) end
+```
+
+The LS infers `R` from the expression and substitutes it into the return:
+
+```lua
+-- numProgress is a number field → R = number
+local p1 = state:Publisher([[progress + 1]])
+-- p1: ReactivePublisherSchema<number>
+
+-- comparison → R = boolean
+local p2 = state:Publisher([[progress == 1]])
+-- p2: ReactivePublisherSchema<boolean>
+```
+
+If the expression's type can't be inferred (for example it references an unknown name), `R` falls back to `any`.
+
 ## Additional functions with intersection types
 
 Expression DSLs often provide utility functions (like `min`, `max`) alongside state fields. Use an intersection type in the first parameter to compose the state class with a class declaring available functions:

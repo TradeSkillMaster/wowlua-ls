@@ -1,4 +1,4 @@
----@diagnostic disable: create-global
+---@diagnostic disable: create-global, missing-return
 ---@class ExprState
 ---@field progress number
 ---@field active boolean
@@ -129,3 +129,89 @@ local sw = SelfWithFuncs
 sw:compute([[clamp(value, 0, 100)]])
 --            ^ hover: (field) clamp: fun(v: number, lo: number, hi: number): number
 --                   ^ hover: (field) value: number
+
+-- ── Generic result type: R is inferred from the expression and flows to @return ──
+---@class ExprSchema<R>
+local ExprSchema = {}
+
+local ExprGen = {} ---@class ExprGenerator
+
+---@generic R
+---@param expr expression<ExprState, R>
+---@return ExprSchema<R>
+function ExprGen:Watch(expr) end
+
+---@type ExprGenerator
+local gen = {}
+
+-- Numeric expression binds R = number
+local numWatch = gen:Watch([[progress + count]])
+--    ^ hover: (local) numWatch: ExprSchema<number>
+
+-- Boolean expression binds R = boolean
+local boolWatch = gen:Watch([[active and progress > 0]])
+--    ^ hover: (local) boolWatch: ExprSchema<boolean>
+
+-- Single-field expression binds R = string
+local strWatch = gen:Watch([[name]])
+--    ^ hover: (local) strWatch: ExprSchema<string>
+
+-- Undefined field still flagged; R falls back to any when uninferable
+local anyWatch = gen:Watch([[unknownThing]])
+--    ^ hover: (local) anyWatch: ExprSchema<any>
+--                      ^ diag: undefined-field
+
+-- ── Generic R inferred from builder-defined (dynamic) fields ──
+-- The context class fields are declared via @builds-field, not @field.
+-- R should still be inferred from the expression body and flow to @return.
+---@class DynState
+local STATE_METHODS = {}
+
+---@generic R
+---@param expr expression<self, R>
+---@return ExprSchema<R>
+function STATE_METHODS:Publisher(expr) end
+
+---@class DynBuilder
+local DynBuilder = {}
+
+---@built-name 1
+---@return self
+function DynBuilder.Create(name) return DynBuilder end
+
+---@param key string
+---@builds-field 1 boolean
+---@return self
+function DynBuilder:AddBoolField(key) return self end
+
+---@param key string
+---@builds-field 1 number
+---@return self
+function DynBuilder:AddNumField(key) return self end
+
+---@return self
+function DynBuilder:Commit() return self end
+
+---@return built: DynState
+function DynBuilder:CreateState() end
+
+local dynState = DynBuilder.Create("MyDynState")
+	:AddBoolField("flag")
+	:AddNumField("amount")
+	:Commit()
+	:CreateState()
+
+-- Builder-defined boolean field binds R = boolean
+local flagPub = dynState:Publisher([[flag]])
+--    ^ hover: (local) flagPub: ExprSchema<boolean>
+
+-- Builder-defined number field binds R = number
+local amountPub = dynState:Publisher([[amount + 1]])
+--    ^ hover: (local) amountPub: ExprSchema<number>
+
+-- Works through a param typed as the @built-name class too
+---@param st MyDynState
+local function useDynParam(st)
+	local p = st:Publisher([[flag]])
+	--    ^ hover: (local) p: ExprSchema<boolean>
+end

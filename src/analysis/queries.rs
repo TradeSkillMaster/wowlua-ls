@@ -1111,7 +1111,13 @@ impl AnalysisResult {
                         }
                     };
                     let kind_label = if is_g_env { "global" } else if access_kind == FieldAccessKind::Colon { "method" } else { "field" };
-                    let type_str = format!("({}) {}", kind_label, self.format_function_decl(*func_idx, &qualified_name, skip_self));
+                    // For a method/field on a parameterized-class receiver, look up
+                    // the class type-param substitution (e.g. `T → string`) recorded
+                    // at call resolution, keyed by this method-name token's range,
+                    // so the displayed signature shows concrete bound types.
+                    let subs = self.method_name_range_at(tree, offset)
+                        .and_then(|r| self.method_decl_subs.get(&r));
+                    let type_str = format!("({}) {}", kind_label, self.format_function_decl(*func_idx, &qualified_name, skip_self, subs));
                     let doc = self.format_function_doc(*func_idx);
                     return Some(HoverResult { type_str, doc });
                 }
@@ -1279,7 +1285,7 @@ impl AnalysisResult {
                 let doc = self.doc_for_type(display_ref);
                 // Declaration-style for functions
                 if let ValueType::Function(Some(func_idx)) = display_ref {
-                    let type_str = format!("({}) {}", kind, self.format_function_decl(*func_idx, &name, false));
+                    let type_str = format!("({}) {}", kind, self.format_function_decl(*func_idx, &name, false, None));
                     return Some(HoverResult { type_str, doc });
                 }
                 // For params at declaration (not narrowed/reassigned), prefer annotation text
@@ -3706,6 +3712,27 @@ impl AnalysisResult {
     }
 
     /// Resolve a dot/colon chain at offset, returning (owning_table_idx, field_name, field_expr_id, access_kind).
+    /// Byte range of the `Name` token at `offset`, matching the `field_range`
+    /// stored on method/field `FieldAccess` exprs during lowering. Used to look
+    /// up `method_decl_subs` for hover type-variable substitution.
+    fn method_name_range_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(u32, u32)> {
+        let text_size = TextSize::from(offset);
+        let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
+            TokenAtOffset::Single(t) => t,
+            TokenAtOffset::Between(left, right) => {
+                if right.kind() == SyntaxKind::Name { right }
+                else if left.kind() == SyntaxKind::Name { left }
+                else { return None; }
+            }
+            TokenAtOffset::None => return None,
+        };
+        if token.kind() != SyntaxKind::Name {
+            return None;
+        }
+        let r = token.text_range();
+        Some((u32::from(r.start()), u32::from(r.end())))
+    }
+
     pub(crate) fn resolve_field_chain_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(TableIndex, String, ExprId, FieldAccessKind)> {
         let text_size = TextSize::from(offset);
         let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
@@ -5524,7 +5551,7 @@ impl AnalysisResult {
             all_args.push(vararg_str);
         }
         let rets: Vec<String> = if func.returns_self {
-            vec!["self".to_string()]
+            vec![Self::self_return_text(func)]
         } else if !func.return_annotations.is_empty() {
             func.return_annotations.iter().enumerate().map(|(i, vt)| {
                 let formatted = self.format_value_type_depth(vt, 1);
@@ -5572,67 +5599,8 @@ impl AnalysisResult {
             ValueType::String(Some(val)) => format!("\"{}\"", val),
             ValueType::String(None) => "string".to_string(),
             ValueType::Function(Some(func_idx)) => {
+                let primary = self.format_function_value(*func_idx, depth, None);
                 let func = self.func(*func_idx);
-                let args: Vec<String> = func.args.iter().enumerate().map(|(i, &sym_idx)| {
-                    let name = match &self.sym(sym_idx).id {
-                        SymbolIdentifier::Name(n) => n.clone(),
-                        _ => "?".to_string(),
-                    };
-                    let optional = func.param_optional.get(i).copied().unwrap_or(false);
-                    let ann_has_nil = func.param_annotations.get(i)
-                        .is_some_and(crate::annotations::annotation_type_is_nullable);
-                    let suffix = if optional && !ann_has_nil { "?" } else { "" };
-                    // Prefer raw annotation text (preserves alias names) over resolved type
-                    let type_str = self.param_annotation_text(func, i)
-                        .or_else(|| {
-                            // Use version 0 only (declaration type from @param), not a
-                            // later version from type-guard narrowing in the body.
-                            self.sym(sym_idx).versions.first()
-                                .and_then(|v| v.resolved_type.as_ref())
-                                .map(|rt| {
-                                    let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
-                                    // For "self" params in nested display (depth > 0),
-                                    // use high depth to prevent recursive expansion of
-                                    // anonymous table types (self refers back to the
-                                    // containing table, creating infinite nesting).
-                                    // Threshold 5 exceeds the anonymous-table cutoff
-                                    // (depth > 4) in the Table branch below.
-                                    let effective_depth = if name == "self" && depth > 0 {
-                                        depth.max(5)
-                                    } else {
-                                        depth + 1
-                                    };
-                                    self.format_type_depth(&display_type, effective_depth)
-                                })
-                        });
-                    match type_str {
-                        Some(t) => format!("{}{}: {}", name, suffix, t),
-                        None => format!("{}{}", name, suffix),
-                    }
-                }).collect();
-                let mut all_args = args;
-                if func.is_vararg {
-                    let vararg_str = match &func.vararg_annotation {
-                        Some(ann) => format_vararg_param(ann),
-                        None => "...".to_string(),
-                    };
-                    all_args.push(vararg_str);
-                }
-                let rets: Vec<String> = if func.returns_self {
-                    vec!["self".to_string()]
-                } else if !func.return_annotations.is_empty() {
-                    func.return_annotations.iter().enumerate().map(|(i, vt)| {
-                        let formatted = self.format_value_type_depth(vt, depth + 1);
-                        format_vararg_return(formatted, i, func)
-                    }).collect()
-                } else {
-                    self.format_inferred_returns(func, depth + 1)
-                };
-                let primary = if rets.is_empty() {
-                    format!("fun({})", all_args.join(", "))
-                } else {
-                    format!("fun({}): {}", all_args.join(", "), rets.join(", "))
-                };
                 if func.overloads.is_empty() || depth > 0 {
                     primary
                 } else {
@@ -5790,6 +5758,170 @@ impl AnalysisResult {
             ValueType::Userdata => "userdata".to_string(),
             ValueType::Thread => "thread".to_string(),
             ValueType::OpaqueAlias(name, _) => name.clone(),
+        }
+    }
+
+    /// Like `format_value_type_depth`, but substitutes class-level type
+    /// variables (e.g. `T → string`) using `subs` before formatting. Used by
+    /// hover on a method of a parameterized-class receiver so the displayed
+    /// signature shows the concrete bound types instead of bare `T`. Falls back
+    /// to the plain formatter whenever there's nothing to substitute, so it
+    /// stays byte-for-byte identical to existing output in the common case.
+    fn format_type_subst(
+        &self,
+        vt: &ValueType,
+        depth: usize,
+        subs: &HashMap<String, ValueType>,
+    ) -> String {
+        if depth > 8 {
+            return "?".to_string();
+        }
+        if subs.is_empty() || !self.type_contains_type_variable_deep(vt) {
+            return self.format_value_type_depth(vt, depth);
+        }
+        match vt {
+            ValueType::TypeVariable(name) => match subs.get(name) {
+                Some(t) => self.format_value_type_depth(t, depth),
+                None => name.clone(),
+            },
+            ValueType::Function(Some(func_idx)) => {
+                self.format_function_value(*func_idx, depth, Some(subs))
+            }
+            ValueType::Table(Some(table_idx)) => {
+                let table = self.table(*table_idx);
+                // Array/map types (no class name, has value_type): recurse into
+                // the element/key types so nested `T` is substituted.
+                if table.class_name.is_none()
+                    && let Some(ref val_vt) = table.value_type
+                {
+                    if depth > 4 {
+                        return "table".to_string();
+                    }
+                    let val_str = self.format_type_subst(val_vt, depth + 1, subs);
+                    return match &table.key_type {
+                        Some(ValueType::Number) | None if !table.is_explicit_map => {
+                            if matches!(val_vt, ValueType::Union(_) | ValueType::Intersection(_)) {
+                                format!("({})[]", val_str)
+                            } else {
+                                format!("{}[]", val_str)
+                            }
+                        }
+                        Some(key_vt) => {
+                            let key_str = self.format_type_subst(key_vt, depth + 1, subs);
+                            format!("table<{}, {}>", key_str, val_str)
+                        }
+                        None => format!("{}[]", val_str),
+                    };
+                }
+                // Named class tables collapse to their name at depth > 0, so the
+                // plain formatter is sufficient for nested class references.
+                self.format_value_type_depth(vt, depth)
+            }
+            ValueType::Union(types)
+                if types.len() == 2
+                    && types.iter().any(|t| matches!(t, ValueType::Nil))
+                    && types.iter().any(|t| !matches!(t, ValueType::Nil)) =>
+            {
+                let other = types.iter().find(|t| !matches!(t, ValueType::Nil)).unwrap();
+                let formatted = self.format_type_subst(other, depth + 1, subs);
+                if matches!(other, ValueType::Function(Some(_))) {
+                    format!("({})?", formatted)
+                } else {
+                    format!("{}?", formatted)
+                }
+            }
+            ValueType::Union(types) => {
+                let parts: Vec<String> = types.iter()
+                    .map(|t| self.format_type_subst(t, depth + 1, subs))
+                    .collect();
+                parts.join(" | ")
+            }
+            ValueType::Intersection(types) => {
+                let parts: Vec<String> = types.iter()
+                    .map(|t| self.format_type_subst(t, depth + 1, subs))
+                    .collect();
+                parts.join(" & ")
+            }
+            // OpaqueAlias always displays its alias name; the inner type is
+            // not shown, so no substitution is needed. Explicit arm avoids
+            // the `type_contains_type_variable_deep` guard triggering for an
+            // inner TypeVariable and then falling through without effect.
+            ValueType::OpaqueAlias(name, _) => name.clone(),
+            _ => self.format_value_type_depth(vt, depth),
+        }
+    }
+
+    /// Format a `fun(...)` value, optionally substituting class type variables
+    /// via `subs`. Shared implementation used by both `format_value_type_depth`
+    /// (no subs) and `format_type_subst` (with subs).
+    fn format_function_value(
+        &self,
+        func_idx: FunctionIndex,
+        depth: usize,
+        subs: Option<&HashMap<String, ValueType>>,
+    ) -> String {
+        let func = self.func(func_idx);
+        let args: Vec<String> = func.args.iter().enumerate().map(|(i, &sym_idx)| {
+            let name = match &self.sym(sym_idx).id {
+                SymbolIdentifier::Name(n) => n.clone(),
+                _ => "?".to_string(),
+            };
+            let optional = func.param_optional.get(i).copied().unwrap_or(false);
+            let ann_has_nil = func.param_annotations.get(i)
+                .is_some_and(crate::annotations::annotation_type_is_nullable);
+            let suffix = if optional && !ann_has_nil { "?" } else { "" };
+            let type_str = if let Some(s) = subs {
+                self.param_annotation_text_subst(func, i, s)
+            } else {
+                self.param_annotation_text(func, i)
+            }.or_else(|| {
+                self.sym(sym_idx).versions.first()
+                    .and_then(|v| v.resolved_type.as_ref())
+                    .map(|rt| {
+                        let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
+                        let effective_depth = if name == "self" && depth > 0 {
+                            depth.max(5)
+                        } else {
+                            depth + 1
+                        };
+                        if let Some(s) = subs {
+                            self.format_type_subst(&display_type, effective_depth, s)
+                        } else {
+                            self.format_type_depth(&display_type, effective_depth)
+                        }
+                    })
+            });
+            match type_str {
+                Some(t) => format!("{}{}: {}", name, suffix, t),
+                None => format!("{}{}", name, suffix),
+            }
+        }).collect();
+        let mut all_args = args;
+        if func.is_vararg {
+            let vararg_str = match &func.vararg_annotation {
+                Some(ann) => format_vararg_param(ann),
+                None => "...".to_string(),
+            };
+            all_args.push(vararg_str);
+        }
+        let rets: Vec<String> = if func.returns_self {
+            vec![Self::self_return_text(func)]
+        } else if !func.return_annotations.is_empty() {
+            func.return_annotations.iter().enumerate().map(|(i, vt)| {
+                let formatted = if let Some(s) = subs {
+                    self.format_type_subst(vt, depth + 1, s)
+                } else {
+                    self.format_value_type_depth(vt, depth + 1)
+                };
+                format_vararg_return(formatted, i, func)
+            }).collect()
+        } else {
+            self.format_inferred_returns(func, depth + 1)
+        };
+        if rets.is_empty() {
+            format!("fun({})", all_args.join(", "))
+        } else {
+            format!("fun({}): {}", all_args.join(", "), rets.join(", "))
         }
     }
 
@@ -5967,7 +6099,7 @@ impl AnalysisResult {
             .collect();
 
         let rets: Vec<String> = if func.returns_self {
-            vec!["self".to_string()]
+            vec![Self::self_return_text(func)]
         } else if !func.return_annotations.is_empty() {
             func.return_annotations.iter().enumerate().map(|(i, vt)| {
                 let formatted = self.format_value_type_depth(vt, 1);
@@ -6192,6 +6324,148 @@ impl AnalysisResult {
         }
     }
 
+    /// Like `param_annotation_text` but substitutes class type variables (e.g.
+    /// `T → string`) from `subs` into the raw annotation before formatting. This
+    /// is what lets hover show concrete bound types for a method called on a
+    /// parameterized-class receiver — the raw `@param func fun(value: T)` would
+    /// otherwise short-circuit before any resolved-type substitution applied.
+    fn param_annotation_text_subst(
+        &self,
+        func: &Function,
+        param_idx: usize,
+        subs: &HashMap<String, ValueType>,
+    ) -> Option<String> {
+        if subs.is_empty() {
+            return self.param_annotation_text(func, param_idx);
+        }
+        let ann = func.param_annotations.get(param_idx)?;
+        let ann = self.substitute_annotation_type_vars(ann, subs);
+        match &ann {
+            crate::annotations::AnnotationType::Simple(s) if s.is_empty() => None,
+            _ => {
+                if self.annotation_has_unresolvable(&ann, &func.generics) {
+                    return None;
+                }
+                let effective = match &ann {
+                    crate::annotations::AnnotationType::VarArgs(inner) => inner.as_ref(),
+                    other => other,
+                };
+                let formatted = crate::annotations::format_annotation_type(effective);
+                if formatted.is_empty() {
+                    return None;
+                }
+                if formatted == "?" {
+                    return Some("any?".to_string());
+                }
+                Some(formatted)
+            }
+        }
+    }
+
+    /// Format the `@return self` text for a method, expanding to `self<X>` when
+    /// the method has `@return self<X>` re-parameterization args.
+    fn self_return_text(func: &Function) -> String {
+        match &func.returns_self_type_args {
+            Some(args) if !args.is_empty() => {
+                let inner = args.iter()
+                    .map(crate::annotations::format_annotation_type)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("self<{inner}>")
+            }
+            _ => "self".to_string(),
+        }
+    }
+
+    /// Format the raw `@return` annotation at `index` for a parameterized class
+    /// type (e.g. `Schema<T>` / `Schema<string?>`), applying any class type-var
+    /// substitution from the receiver. The resolved `return_annotations` drop
+    /// class type args (they're tracked out-of-band), so a return like
+    /// `Schema<string?>` would otherwise display as the bare `Schema`; the raw
+    /// annotation is the only place the `<...>` survives. Returns None when
+    /// there is no raw annotation, when it is not a parameterized class type, or
+    /// when it references an unresolvable type — the caller then falls back to
+    /// the resolved return type formatting (preserving all other shapes such as
+    /// aliases, `fun()`, plain classes, and primitives).
+    fn return_annotation_text_subst(
+        &self,
+        func: &Function,
+        index: usize,
+        subs: &HashMap<String, ValueType>,
+    ) -> Option<String> {
+        let raw = func.return_annotations_raw.get(index)?;
+        let effective = match raw {
+            crate::annotations::AnnotationType::VarArgs(inner) => inner.as_ref(),
+            other => other,
+        };
+        // Only override the resolved formatting for parameterized class types,
+        // whose type args the resolved return type discards. All other shapes
+        // keep their existing resolved formatting.
+        if !matches!(effective, crate::annotations::AnnotationType::Parameterized(..)) {
+            return None;
+        }
+        // Gate on the *raw* annotation's type references, treating the
+        // substitution keys (the class type vars being bound) as resolvable.
+        // We can't gate on the post-substitution annotation because that
+        // formats concrete types back into `Simple` leaves (e.g. `string?`),
+        // which aren't valid type names and would be wrongly rejected.
+        let mut gen_ctx: Vec<(String, Option<ValueType>)> = func.generics.clone();
+        gen_ctx.extend(subs.keys().map(|k| (k.clone(), None)));
+        if self.annotation_has_unresolvable(effective, &gen_ctx) {
+            return None;
+        }
+        let ann = self.substitute_annotation_type_vars(effective, subs);
+        let formatted = crate::annotations::format_annotation_type(&ann);
+        if formatted.is_empty() || formatted == "?" {
+            return None;
+        }
+        Some(formatted)
+    }
+
+    /// Recursively replace `Simple(name)` annotation leaves whose name is a key in
+    /// `subs` with the formatted concrete type. Used by `param_annotation_text_subst`
+    /// to render bound class type variables.
+    fn substitute_annotation_type_vars(
+        &self,
+        ann: &crate::annotations::AnnotationType,
+        subs: &HashMap<String, ValueType>,
+    ) -> crate::annotations::AnnotationType {
+        use crate::annotations::{AnnotationType as AT, ParamInfo, TuplePosition};
+        match ann {
+            AT::Simple(s) => match subs.get(s) {
+                Some(vt) => AT::Simple(self.format_value_type_depth(vt, 1)),
+                None => ann.clone(),
+            },
+            AT::Union(parts) => AT::Union(parts.iter().map(|p| self.substitute_annotation_type_vars(p, subs)).collect()),
+            AT::Intersection(parts) => AT::Intersection(parts.iter().map(|p| self.substitute_annotation_type_vars(p, subs)).collect()),
+            AT::Array(inner) => AT::Array(Box::new(self.substitute_annotation_type_vars(inner, subs))),
+            AT::Parameterized(base, args) => AT::Parameterized(base.clone(), args.iter().map(|a| self.substitute_annotation_type_vars(a, subs)).collect()),
+            AT::Backtick(inner) => AT::Backtick(Box::new(self.substitute_annotation_type_vars(inner, subs))),
+            AT::NonNil(inner) => AT::NonNil(Box::new(self.substitute_annotation_type_vars(inner, subs))),
+            AT::VarArgs(inner) => AT::VarArgs(Box::new(self.substitute_annotation_type_vars(inner, subs))),
+            AT::Fun(params, returns, is_vararg) => AT::Fun(
+                params.iter().map(|p| ParamInfo {
+                    name: p.name.clone(),
+                    typ: self.substitute_annotation_type_vars(&p.typ, subs),
+                    optional: p.optional,
+                    description: p.description.clone(),
+                }).collect(),
+                returns.iter().map(|r| self.substitute_annotation_type_vars(r, subs)).collect(),
+                *is_vararg,
+            ),
+            AT::TableLiteral(fields) => AT::TableLiteral(
+                fields.iter().map(|(n, ft)| (n.clone(), self.substitute_annotation_type_vars(ft, subs))).collect(),
+            ),
+            AT::Tuple(positions, desc) => AT::Tuple(
+                positions.iter().map(|p| TuplePosition {
+                    typ: self.substitute_annotation_type_vars(&p.typ, subs),
+                    name: p.name.clone(),
+                }).collect(),
+                desc.clone(),
+            ),
+        }
+    }
+
     /// Check if an annotation type contains any Simple names that can't be
     /// resolved to a known type, class, or alias. This detects stale generic
     /// type variables (e.g. `T` from a parent scope) that were substituted
@@ -6327,7 +6601,15 @@ impl AnalysisResult {
         }).collect()
     }
 
-    fn format_function_decl(&self, func_idx: FunctionIndex, name: &str, skip_self: bool) -> String {
+    fn format_function_decl(
+        &self,
+        func_idx: FunctionIndex,
+        name: &str,
+        skip_self: bool,
+        subs: Option<&HashMap<String, ValueType>>,
+    ) -> String {
+        let empty = HashMap::new();
+        let subs = subs.unwrap_or(&empty);
         let func = self.func(func_idx);
         let args: Vec<String> = func.args.iter().enumerate()
             .filter(|&(i, &sym_idx)| {
@@ -6347,7 +6629,7 @@ impl AnalysisResult {
                     .is_some_and(crate::annotations::annotation_type_is_nullable);
                 let suffix = if optional && !ann_has_nil { "?" } else { "" };
                 // Prefer raw annotation text (preserves alias names) over resolved type
-                let type_str = self.param_annotation_text(func, i)
+                let type_str = self.param_annotation_text_subst(func, i, subs)
                     .or_else(|| {
                         // Use version 0 only (declaration type from @param), not a
                         // later version from type-guard narrowing in the body.
@@ -6355,7 +6637,7 @@ impl AnalysisResult {
                             .and_then(|v| v.resolved_type.as_ref())
                             .map(|rt| {
                                 let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
-                                self.format_type_depth(&display_type, 1)
+                                self.format_type_subst(&display_type, 1, subs)
                             })
                     });
                 match type_str {
@@ -6372,10 +6654,15 @@ impl AnalysisResult {
             all_args.push(vararg_str);
         }
         let rets: Vec<String> = if func.returns_self {
-            vec!["self".to_string()]
+            vec![Self::self_return_text(func)]
         } else if !func.return_annotations.is_empty() {
             func.return_annotations.iter().enumerate().map(|(i, vt)| {
-                let formatted = self.format_value_type_depth(vt, 1);
+                // Prefer the raw annotation (preserves `Parameterized` class
+                // type args like `Schema<T>`) with the receiver's class type-var
+                // substitution applied, so a method on a `Stream<string>` shows
+                // `-> Schema<string>` instead of the bare resolved `Schema`.
+                let formatted = self.return_annotation_text_subst(func, i, subs)
+                    .unwrap_or_else(|| self.format_type_subst(vt, 1, subs));
                 let with_vararg = format_vararg_return(formatted, i, func);
                 // Prepend `label: ` if a label exists for this position
                 match func.return_labels.get(i).and_then(|n| n.as_ref()) {
@@ -6408,12 +6695,12 @@ impl AnalysisResult {
                     .map(|p| {
                         let opt = if p.optional { "?" } else { "" };
                         match &p.typ {
-                            Some(vt) => format!("{}{}: {}", p.name, opt, self.format_value_type_depth(vt, 1)),
+                            Some(vt) => format!("{}{}: {}", p.name, opt, self.format_type_subst(vt, 1, subs)),
                             None => format!("{}{}", p.name, opt),
                         }
                     }).collect();
                 let ov_rets: Vec<String> = overload.returns.iter()
-                    .map(|vt| self.format_value_type_depth(vt, 1))
+                    .map(|vt| self.format_type_subst(vt, 1, subs))
                     .collect();
                 let ov_args_joined = ov_args.join(", ");
                 let ov_single = format!("\nfunction {}({})", name, ov_args_joined);
@@ -6437,7 +6724,7 @@ impl AnalysisResult {
             if !return_only.is_empty() {
                 let mut rows: Vec<(String, Option<String>)> = return_only.iter().map(|ovl| {
                     let parts: Vec<String> = ovl.returns.iter()
-                        .map(|vt| self.format_value_type_depth(vt, 1))
+                        .map(|vt| self.format_type_subst(vt, 1, subs))
                         .collect();
                     (format!("({})", parts.join(", ")), ovl.description.clone())
                 }).collect();

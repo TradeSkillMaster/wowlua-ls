@@ -8,11 +8,12 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 |---|---|
 | `deprecated` | Usage of `@deprecated` symbols |
 | `discard-returns` | Ignoring `@nodiscard` return values |
-| `type-mismatch` | Argument type vs `@param` mismatch |
+| `type-mismatch` | Argument type vs `@param` mismatch (including generic type arguments, e.g. `Container<number>` vs `Container<boolean>`) |
 | `return-mismatch` | Return type vs `@return` mismatch |
 | `field-type-mismatch` | Field assignment vs `@field` type mismatch |
 | `assign-type-mismatch` | Reassignment vs `@type` mismatch |
 | `generic-constraint-mismatch` | Generic argument doesn't satisfy class constraint |
+| `param-constraint-mismatch` | Method called when the receiver's `@requires` type-param constraint isn't satisfied |
 | `missing-parameter` | Missing required function arguments |
 | `redundant-parameter` | Extra function arguments |
 | `missing-return-value` | Return with fewer values than `@return` |

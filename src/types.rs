@@ -743,6 +743,20 @@ pub(crate) struct Function {
     /// to the function's return type. 1-based param index (not counting self).
     #[serde(default)]
     pub(crate) narrows_arg: Option<usize>,
+    /// `@requires T: Constraint` — the method may only be called when the
+    /// receiver's class type parameter `T` is bound to a type assignable to
+    /// `Constraint`. Stored as (param_name, constraint_type_string); the
+    /// constraint is resolved lazily via `resolve_class_constraint`.
+    /// Enforced by the `param-constraint-mismatch` diagnostic.
+    #[serde(default)]
+    pub(crate) requires_constraints: Vec<(String, String)>,
+    /// `@return self<X>` — the method returns the receiver re-parameterized
+    /// with the given class type arguments (e.g. `self<boolean>`). When set,
+    /// `returns_self` is also true; these raw annotations are resolved at the
+    /// call site and written into `call_type_args` so the result displays as
+    /// `Class<X>`.
+    #[serde(default)]
+    pub(crate) returns_self_type_args: Option<Vec<crate::annotations::AnnotationType>>,
 }
 
 /// Utility-type projection referencing a bound generic's function shape.
@@ -958,6 +972,10 @@ pub(crate) struct CallResolution {
     pub(crate) projected_f_idx: Option<FunctionIndex>,
     pub(crate) is_expansion: bool,
     pub(crate) first_arg_range: Option<(u32, u32)>,
+    /// For method calls on a parameterized receiver, the substitution of the
+    /// receiver class's type params to concrete types (e.g. `{T: boolean}`).
+    /// Used by the `param-constraint-mismatch` diagnostic to enforce `@requires`.
+    pub(crate) receiver_param_subs: std::collections::HashMap<String, ValueType>,
 }
 
 #[derive(Debug, Clone)]
@@ -969,6 +987,14 @@ pub(crate) struct ResolvedCallArg {
     pub(crate) primary_param_type: Option<ValueType>,
     pub(crate) start: u32,
     pub(crate) end: u32,
+    /// Generic type arguments of the argument expression, tracked out-of-band
+    /// (e.g. the `[boolean]` in `Schema<boolean>`). Empty when the argument has
+    /// no tracked type arguments. Used for generic-argument variance checking.
+    pub(crate) actual_type_args: Vec<ValueType>,
+    /// Parameterized class constraints from the raw parameter annotation: each
+    /// `(class_table_idx, resolved_type_args)` for a `Class<...>` annotation
+    /// (directly or as a union member). Empty for non-parameterized params.
+    pub(crate) expected_parameterized: Vec<(TableIndex, Vec<ValueType>)>,
 }
 
 // ── Expression IR ──────────────────────────────────────────────────────────────

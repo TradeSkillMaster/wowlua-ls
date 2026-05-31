@@ -85,6 +85,40 @@ pub(crate) fn resolve_primitive_type_name(name: &str) -> Option<ValueType> {
     }
 }
 
+/// Returns the base class name to use when linking a `@class Child : Parent`
+/// parent into the inheritance graph.
+///
+/// - A plain parent name (`Parent`) returns `Some("Parent")`.
+/// - A parameterized parent that purely forwards the child's own type
+///   parameters in order (`Child<T, U> : Parent<T, U>`) returns the base name
+///   (`Some("Parent")`), so the class links like an identity-forwarding
+///   subclass and type arguments can be compared positionally.
+/// - `table<K, V>` parents return `None` (handled separately via key/value
+///   types), as do non-identity parameterized parents (`Child<T> : Parent<string>`
+///   or reordered args), which we deliberately leave unlinked to avoid unsound
+///   positional type-argument comparisons.
+pub(crate) fn parent_class_lookup_name(
+    parent_name: &str,
+    child_type_params: &[String],
+) -> Option<String> {
+    if !parent_name.contains('<') {
+        return Some(parent_name.to_string());
+    }
+    if let AnnotationType::Parameterized(base, args) = parse_type(parent_name) {
+        if base == "table" {
+            return None;
+        }
+        let identity_forwarding = args.len() == child_type_params.len()
+            && args.iter().zip(child_type_params).all(|(a, p)| {
+                matches!(a, AnnotationType::Simple(n) if n == p)
+            });
+        if identity_forwarding {
+            return Some(base);
+        }
+    }
+    None
+}
+
 #[derive(Debug)]
 pub(crate) struct SelfFieldEntry {
     pub(crate) name: String,
@@ -460,6 +494,9 @@ pub(crate) struct AnnotationBlock {
     /// position within the annotation block for def_range lookup.
     pub(crate) event_batch_entries: Vec<(String, Vec<crate::pre_globals::EventPayloadParam>, usize)>,
     pub(crate) narrows_arg: Option<usize>,
+    /// `@requires T: Constraint` — receiver class type-param constraints for a
+    /// method. Each entry is (param_name, constraint_type_string).
+    pub(crate) requires: Vec<(String, String)>,
     /// Byte offset of the `---@class` comment token (for positional disambiguation
     /// when multiple `@class` declarations share the same name in one file).
     pub(crate) class_comment_start: Option<u32>,
@@ -1455,6 +1492,20 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     }
                 } else {
                     block.generics.push((part.to_string(), None));
+                }
+            }
+        } else if let Some(rest) = content.strip_prefix("@requires") {
+            // `@requires T: Constraint` — receiver class type-param constraint.
+            let rest = rest.trim();
+            for part in rest.split(',') {
+                let part = part.trim();
+                if part.is_empty() { continue; }
+                if let Some((name, constraint)) = part.split_once(':') {
+                    let name = name.trim();
+                    let constraint = constraint.trim();
+                    if !name.is_empty() && !constraint.is_empty() {
+                        block.requires.push((name.to_string(), constraint.to_string()));
+                    }
                 }
             }
         } else if content.starts_with("@private") {

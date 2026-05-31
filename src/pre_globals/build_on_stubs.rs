@@ -253,7 +253,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         let func_idx = PreResolvedGlobals::build_function(
                             &sig.params, &sig.returns, &[], &[], &[], None, Vec::new(),
                             false, false, None, None, &[],
-                            None, None, false, None, None, None, false, None, &[],
+                            None, None, false, None, None, None, Vec::new(), false, None, &[],
                             false, 0, 0,
                             dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                             &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
@@ -320,7 +320,7 @@ impl<'a> BuildOnStubsContext<'a> {
             let func_idx = PreResolvedGlobals::build_function(
                 &overload.params, &overload.returns, &[], &[], &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
-                None, None, false, None, None, None, false, Some(&class.name), &class.type_params,
+                None, None, false, None, None, None, Vec::new(), false, Some(&class.name), &class.type_params,
                 false, 0, 0,
                 dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                 &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
@@ -545,7 +545,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let func_idx = PreResolvedGlobals::build_function(
                     &g.params, &g.returns, &g.return_names, &g.return_descriptions, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, *is_colon,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, g.requires.clone(), *is_colon,
                     target_class_name.as_deref(), &target_class_type_params,
                     g.implicit_nil_return, g.flavors, g.flavor_guard,
                     dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
@@ -767,7 +767,7 @@ impl<'a> BuildOnStubsContext<'a> {
             let func_idx = PreResolvedGlobals::build_function(
                 std::slice::from_ref(&vararg_param), &[], &[], &[], &[], None, Vec::new(),
                 false, false, None, None, &[],
-                None, None, false, None, None, None, false, None, &[],
+                None, None, false, None, None, None, Vec::new(), false, None, &[],
                 false, 0, 0,
                 dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                 &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
@@ -800,14 +800,22 @@ impl<'a> BuildOnStubsContext<'a> {
         // Without topo sort, a child processed before its parent would miss
         // transitive ancestors (e.g. DestroyingScrollTable → ScrollTable → List → Element).
         {
+            // Resolve each class's parent names to the base class to link, handling
+            // identity-forwarding parameterized parents (`Child<T> : Parent<T>`).
+            // Indexed parallel to `ws_classes`.
+            let lookup_parents: Vec<Vec<String>> = ws_classes.iter()
+                .map(|c| c.parents.iter()
+                    .filter_map(|p| crate::annotations::parent_class_lookup_name(p, &c.type_params))
+                    .collect())
+                .collect();
             let mut ws_class_index: HashMap<&str, usize> = HashMap::new();
             for (i, class) in ws_classes.iter().enumerate() {
                 ws_class_index.insert(&class.name, i);
             }
             let mut children_of: HashMap<&str, Vec<usize>> = HashMap::new();
             let mut in_degree: Vec<usize> = vec![0; ws_classes.len()];
-            for (i, class) in ws_classes.iter().enumerate() {
-                for parent_name in &class.parents {
+            for (i, parents) in lookup_parents.iter().enumerate() {
+                for parent_name in parents {
                     // Only count in-degree for parents that are also workspace classes
                     if ws_class_index.contains_key(parent_name.as_str()) {
                         children_of.entry(parent_name.as_str()).or_default().push(i);
@@ -846,7 +854,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let Some(&child_table_idx) = self.classes.get(class.name.as_str()) else { continue };
                 let child_local = child_table_idx.ext_offset();
                 let mut transitive_parents: Vec<TableIndex> = self.tables[child_local].parent_classes.clone();
-                for parent_name in &class.parents {
+                for parent_name in &lookup_parents[idx] {
                     if let Some(&parent_idx) = self.classes.get(parent_name.as_str()) {
                         if !transitive_parents.contains(&parent_idx) {
                             transitive_parents.push(parent_idx);
@@ -862,7 +870,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 self.tables[child_local].parent_classes = transitive_parents;
                 // Inherit key_type/value_type from parent class chain
                 if self.tables[child_local].key_type.is_none() {
-                    for parent_name in &class.parents {
+                    for parent_name in &lookup_parents[idx] {
                         if let Some(&parent_idx) = self.classes.get(parent_name.as_str()) {
                             let parent_local = parent_idx.ext_offset();
                             if let (Some(kt), Some(vt)) = (
@@ -883,13 +891,13 @@ impl<'a> BuildOnStubsContext<'a> {
             // scan adds an empty-parent entry for the same class).
             // Note: iterates in insertion order, not topo order. This is safe because
             // duplicates are typically leaf classes (from @built-name), not parents.
-            for class in ws_classes.iter() {
+            for (ci, class) in ws_classes.iter().enumerate() {
                 if class.parents.is_empty() { continue; }
                 let Some(&child_table_idx) = self.classes.get(class.name.as_str()) else { continue };
                 let child_local = child_table_idx.ext_offset();
                 let mut accum = self.tables[child_local].parent_classes.clone();
                 let mut changed = false;
-                for parent_name in &class.parents {
+                for parent_name in &lookup_parents[ci] {
                     if let Some(&parent_idx) = self.classes.get(parent_name.as_str())
                         && !accum.contains(&parent_idx) {
                             accum.push(parent_idx);
@@ -1077,7 +1085,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let func_idx = PreResolvedGlobals::build_function(
                     &g.params, &g.returns, &g.return_names, &g.return_descriptions, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, false, None, &[],
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, g.requires.clone(), false, None, &[],
                     g.implicit_nil_return, g.flavors, g.flavor_guard,
                     dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                     &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,

@@ -97,6 +97,53 @@ Methods on a parameterized class automatically inherit the class-level type para
 function MyClass:Set(value) end
 ```
 
+### Type argument checking at call sites
+
+When an argument and parameter are the same parameterized class (or the argument is
+a subclass that forwards the type parameter, e.g. `Child<T> : Parent<T>`), the type
+arguments are compared too — not just the class itself:
+
+```lua
+---@param c Container<boolean>
+local function wantBool(c) end
+
+---@type Container<number>
+local nums = {}
+wantBool(nums)   -- type-mismatch: expected Container<boolean>, got Container<number>
+```
+
+A union type argument is tolerated when **any** of its members is compatible, so
+truthiness idioms whose inferred value type is a union containing the expected type
+(e.g. `Container<boolean | number>` against `Container<boolean>`) don't warn.
+Positions whose expected or actual type argument is unconstrained (`any` or an
+unresolved generic) are skipped.
+
+### Parameterized inheritance
+
+A subclass that forwards its type parameters to a parameterized parent inherits the
+parent's fields and methods with the parameter substituted, and is treated as a
+subtype for type-argument comparison:
+
+```lua
+---@class Box<T>
+---@field _value T
+local Box = {}
+---@return T
+function Box:Get() return self._value end
+
+---@class BoolBox<T> : Box<T>   -- forwards T to Box
+local BoolBox = {}
+
+---@type BoolBox<number>
+local b = {}
+local v = b:Get()   -- v: number  (inherited Box:Get with T = number)
+```
+
+Only **identity forwarding** parents (`Child<T> : Parent<T>`, same parameters in the
+same order) are linked this way. A parent that binds a concrete type
+(`Child<T> : Parent<string>`) or reorders parameters is not registered as a
+parameterized subtype, since the type arguments can't be compared positionally.
+
 ### Type parameter constraints
 
 ```lua

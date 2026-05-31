@@ -430,7 +430,8 @@ impl<'a> Analysis<'a> {
                 if class.parents.is_empty() { continue; }
                 let child_idx = class_table_indices[class_i];
                 for parent_name in &class.parents {
-                    if let Some(&parent_idx) = self.ir.classes.get(parent_name.as_str()) {
+                    let Some(lookup) = crate::annotations::parent_class_lookup_name(parent_name, &class.type_params) else { continue };
+                    if let Some(&parent_idx) = self.ir.classes.get(lookup.as_str()) {
                         let parent_fields: Vec<(String, FieldInfo)> =
                             self.ir.table(parent_idx).fields.iter()
                                 .map(|(k, v)| (k.clone(), v.clone()))
@@ -501,6 +502,7 @@ impl<'a> Analysis<'a> {
             let child_idx = class_table_indices[class_i];
             if child_idx.is_external() { continue; }
             let parent_indices: Vec<TableIndex> = class.parents.iter()
+                .filter_map(|p| crate::annotations::parent_class_lookup_name(p, &class.type_params))
                 .filter_map(|p| self.ir.classes.get(p.as_str()).copied())
                 .collect();
             let table = &mut self.ir.tables[child_idx.val()];
@@ -1610,6 +1612,8 @@ impl<'a> Analysis<'a> {
                 vararg_projection: None,
                 event_params: None,
                 narrows_arg: None,
+                requires_constraints: Vec::new(),
+                returns_self_type_args: None,
             });
 
             // Update the field annotation and expr.
@@ -2113,6 +2117,8 @@ impl<'a> Analysis<'a> {
             flavors: 0,
             flavor_guard: 0, return_projections: ret_projections, vararg_projection: vararg_proj, event_params: event_params_info,
             narrows_arg: None,
+            requires_constraints: Vec::new(),
+            returns_self_type_args: None,
         });
         ValueType::Function(Some(func_idx))
     }

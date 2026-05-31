@@ -1199,6 +1199,7 @@ fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
             && x.built_extends == y.built_extends
             && x.string_value == y.string_value
             && x.number_value == y.number_value
+            && x.requires == y.requires
     })
 }
 
@@ -6701,6 +6702,7 @@ mod tests {
                 flavor_guard: 0,
                 implicit_nil_return: false,
                 narrows_arg: None,
+                requires: Vec::new(),
             }
         }
 

@@ -270,6 +270,42 @@ impl Ir {
         }
     }
 
+    /// Deep check whether a type (or any nested table field / function
+    /// param-return type) still contains an unresolved generic type variable.
+    pub(crate) fn type_contains_type_variable_deep(&self, vt: &ValueType) -> bool {
+        let mut visited: HashSet<TableIndex> = HashSet::new();
+        self.type_contains_type_variable_deep_inner(vt, &mut visited)
+    }
+
+    fn type_contains_type_variable_deep_inner(&self, vt: &ValueType, visited: &mut HashSet<TableIndex>) -> bool {
+        match vt {
+            ValueType::TypeVariable(_) => true,
+            ValueType::Union(types) | ValueType::Intersection(types) => types.iter().any(|t| self.type_contains_type_variable_deep_inner(t, visited)),
+            ValueType::Table(Some(idx)) => {
+                if !visited.insert(*idx) { return false; }
+                let t = self.table(*idx);
+                if let Some(v) = &t.value_type && self.type_contains_type_variable_deep_inner(v, visited) { return true; }
+                if let Some(k) = &t.key_type && self.type_contains_type_variable_deep_inner(k, visited) { return true; }
+                t.fields.values().any(|fi| fi.annotation.as_ref().is_some_and(|a| self.type_contains_type_variable_deep_inner(a, visited)))
+            }
+            ValueType::Function(Some(idx)) => {
+                let idx = *idx;
+                (0..self.func(idx).args.len()).any(|i| {
+                    let sym_idx = self.func(idx).args[i];
+                    self.sym(sym_idx).versions.first()
+                        .and_then(|v| v.resolved_type.as_ref())
+                        .is_some_and(|t| self.type_contains_type_variable_deep_inner(t, visited))
+                })
+                || (0..self.func(idx).return_annotations.len()).any(|i| {
+                    let ret = &self.func(idx).return_annotations[i];
+                    self.type_contains_type_variable_deep_inner(ret, visited)
+                })
+            }
+            ValueType::OpaqueAlias(_, inner) => self.type_contains_type_variable_deep_inner(inner, visited),
+            _ => false,
+        }
+    }
+
     pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
         self.get_symbol_impl(id, scope_idx, None)
     }
@@ -1143,6 +1179,11 @@ pub struct AnalysisResult {
     pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) call_type_args: HashMap<ExprId, Vec<ValueType>>,
     pub(crate) field_type_args_cache: HashMap<(TableIndex, String), Vec<ValueType>>,
+    /// Class-level type-param substitutions (e.g. `T → string`) computed at each
+    /// method call site, keyed by the method-name token's byte range. Used by
+    /// hover to display concrete bound types in the method signature instead of
+    /// the bare class type variable.
+    pub(crate) method_decl_subs: HashMap<(u32, u32), HashMap<String, ValueType>>,
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) inherited_constructors: HashSet<FunctionIndex>,
     pub(crate) function_owner_class: HashMap<FunctionIndex, String>,
@@ -1197,6 +1238,7 @@ impl AnalysisResult {
     #[inline] pub(crate) fn func(&self, idx: FunctionIndex) -> &Function { self.ir.func(idx) }
     #[inline] pub(crate) fn expr(&self, idx: ExprId) -> &Expr { self.ir.expr(idx) }
     #[inline] pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo { self.ir.table(idx) }
+    #[inline] pub(crate) fn type_contains_type_variable_deep(&self, vt: &ValueType) -> bool { self.ir.type_contains_type_variable_deep(vt) }
     #[inline] pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> { self.ir.get_symbol(id, scope_idx) }
     #[inline] pub(crate) fn get_symbol_excluding(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex, exclude: SymbolIndex) -> Option<SymbolIndex> { self.ir.get_symbol_excluding(id, scope_idx, exclude) }
     #[inline] pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> { self.ir.get_field(table_idx, field_name) }
@@ -1448,6 +1490,11 @@ pub struct Analysis<'a> {
     /// re-materialize a fresh `Function(Some(idx))` per call site. Transient
     /// (per-Analysis), not serialized — dies with IR rebuild.
     pub(crate) field_type_args_cache: HashMap<(TableIndex, String), Vec<ValueType>>,
+    /// Class-level type-param substitutions (e.g. `T → string`) computed at each
+    /// method call site, keyed by the method-name token's byte range. Carried to
+    /// `AnalysisResult` so hover can show concrete bound types in the method
+    /// signature instead of the bare class type variable.
+    pub(crate) method_decl_subs: HashMap<(u32, u32), HashMap<String, ValueType>>,
     /// Multi-return sibling groups for return-only overload narrowing.
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
@@ -1655,6 +1702,7 @@ impl<'a> Analysis<'a> {
             call_type_args: HashMap::new(),
             call_site_generic_subs: HashMap::new(),
             field_type_args_cache: HashMap::new(),
+            method_decl_subs: HashMap::new(),
             multi_return_siblings: HashMap::new(),
             deferred_sibling_narrowings: Vec::new(),
             deferred_class_eq_narrowings: Vec::new(),
@@ -1718,6 +1766,7 @@ impl<'a> Analysis<'a> {
     #[inline] pub(crate) fn func(&self, idx: FunctionIndex) -> &Function { self.ir.func(idx) }
     #[inline] pub(crate) fn expr(&self, idx: ExprId) -> &Expr { self.ir.expr(idx) }
     #[inline] pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo { self.ir.table(idx) }
+    #[inline] pub(crate) fn type_contains_type_variable_deep(&self, vt: &ValueType) -> bool { self.ir.type_contains_type_variable_deep(vt) }
     #[inline] pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> { self.ir.get_symbol(id, scope_idx) }
     #[inline] pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> { self.ir.get_field(table_idx, field_name) }
 
@@ -1899,6 +1948,7 @@ impl<'a> Analysis<'a> {
             type_stripped_symbols: self.type_stripped_symbols,
             call_type_args: self.call_type_args,
             field_type_args_cache: self.field_type_args_cache,
+            method_decl_subs: self.method_decl_subs,
             referenced_symbols: self.referenced_symbols,
             inherited_constructors: self.inherited_constructors,
             function_owner_class: self.function_owner_class,

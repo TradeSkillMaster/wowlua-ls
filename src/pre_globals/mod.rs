@@ -947,7 +947,7 @@ impl BuildContext {
                         let func_idx = PreResolvedGlobals::build_function(
                             &sig.params, &sig.returns, &[], &[], &[], None, Vec::new(),
                             false, false, None, None, &[],
-                            None, None, false, None, None, None, false, None, &[],
+                            None, None, false, None, None, None, Vec::new(), false, None, &[],
                             false, 0, 0,
                             dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                             &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
@@ -1020,7 +1020,7 @@ impl BuildContext {
             let func_idx = PreResolvedGlobals::build_function(
                 &overload.params, &overload.returns, &[], &[], &class.overloads[1..], None, Vec::new(),
                 false, false, None, None, &class.generics,
-                None, None, false, None, None, None, false, Some(&class.name), &class.type_params,
+                None, None, false, None, None, None, Vec::new(), false, Some(&class.name), &class.type_params,
                 false, 0, 0,
                 DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
                 &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
@@ -1045,7 +1045,7 @@ impl BuildContext {
             let func_idx = PreResolvedGlobals::build_function(
                 std::slice::from_ref(&vararg_param), &[], &[], &[], &[], None, Vec::new(),
                 false, false, None, None, &[],
-                None, None, false, None, None, None, false, None, &[],
+                None, None, false, None, None, None, Vec::new(), false, None, &[],
                 false, 0, 0,
                 DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
                 &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
@@ -1236,7 +1236,7 @@ impl BuildContext {
                 let func_idx = PreResolvedGlobals::build_function(
                     &g.params, &g.returns, &g.return_names, &g.return_descriptions, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, *is_colon,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, g.requires.clone(), *is_colon,
                     target_class_name.as_deref(), &target_class_type_params,
                     g.implicit_nil_return, g.flavors, g.flavor_guard,
                     DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
@@ -1749,7 +1749,7 @@ impl BuildContext {
                 let func_idx = PreResolvedGlobals::build_function(
                     &g.params, &g.returns, &g.return_names, &g.return_descriptions, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, false, None, &[],
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, g.requires.clone(), false, None, &[],
                     g.implicit_nil_return, g.flavors, g.flavor_guard,
                     DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
                     &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
@@ -2747,6 +2747,8 @@ impl PreResolvedGlobals {
             return_projections: ret_projections,
             vararg_projection: vararg_proj, event_params: event_params_info,
             narrows_arg: None,
+            requires_constraints: Vec::new(),
+            returns_self_type_args: None,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -2773,6 +2775,7 @@ impl PreResolvedGlobals {
         type_narrows_raw: Option<(usize, usize)>,
         type_narrows_class_raw: Option<String>,
         narrows_arg_raw: Option<usize>,
+        requires_raw: Vec<(String, String)>,
         is_colon: bool,
         owner_class_name: Option<&str>,
         class_type_params: &[String],
@@ -2869,7 +2872,16 @@ impl PreResolvedGlobals {
             arg_symbols.push(sym_idx);
         }
 
-        let returns_self = returns.iter().any(|rt| matches!(rt, AnnotationType::Simple(s) if s == "self"));
+        let returns_self_type_args = returns.iter().find_map(|rt| {
+            if let AnnotationType::Parameterized(name, args) = rt
+                && name == "self"
+            {
+                return Some(args.clone());
+            }
+            None
+        });
+        let returns_self = returns_self_type_args.is_some()
+            || returns.iter().any(|rt| matches!(rt, AnnotationType::Simple(s) if s == "self"));
         let returns_built_entry = returns.iter().find(|rt| matches!(rt, AnnotationType::Simple(s) if s == "built" || s.starts_with("built:")));
         let returns_built = returns_built_entry.is_some();
         let returns_built_parent = returns_built_entry.and_then(|rt| {
@@ -2879,6 +2891,7 @@ impl PreResolvedGlobals {
         });
         let non_self_returns: Vec<&AnnotationType> = returns.iter()
             .filter(|rt| !matches!(rt, AnnotationType::Simple(s) if s == "self" || s == "built" || s.starts_with("built:")))
+            .filter(|rt| !matches!(rt, AnnotationType::Parameterized(name, _) if name == "self"))
             .collect();
 
         // Detect tuple-union / single-tuple return form.
@@ -3111,6 +3124,8 @@ impl PreResolvedGlobals {
             vararg_projection: vararg_proj,
             event_params: None,
             narrows_arg: narrows_arg_raw,
+            requires_constraints: requires_raw,
+            returns_self_type_args,
         });
 
         func_idx

@@ -840,6 +840,7 @@ fn finalize_frame(
             flavor_guard: 0,
             implicit_nil_return: false,
             narrows_arg: None,
+            requires: Vec::new(),
         });
     }
 
@@ -877,6 +878,7 @@ fn finalize_frame(
             flavor_guard: 0,
             implicit_nil_return: false,
             narrows_arg: None,
+            requires: Vec::new(),
         });
     }
 }

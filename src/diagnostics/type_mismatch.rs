@@ -39,6 +39,76 @@ fn is_class_table_for_func(actual: &ValueType, expected: &ValueType, analysis: &
     }
 }
 
+/// A type argument that conveys no constraint (an unresolved generic or `Any`),
+/// for which a variance comparison would be meaningless.
+fn is_unconstrained_type_arg(vt: &ValueType) -> bool {
+    matches!(vt, ValueType::Any | ValueType::TypeVariable(_))
+}
+
+/// Detect a generic type-argument (variance) violation that the structural
+/// class-subtype check ignores. Generic type arguments are tracked out-of-band
+/// (not part of `ValueType::Table`), so passing `Schema<BaseFrame>` where
+/// `SchemaBase<boolean>` is expected is class-compatible but argument-incompatible.
+///
+/// Conservative by design: only compares when the argument's class and the
+/// expected class have the same type-param arity (an identity mapping, covering
+/// the common `Child<T> : Parent<T>` forwarding case), and skips positions whose
+/// expected or actual type arg is unconstrained (`Any` / unresolved generic).
+/// Returns a diagnostic message when a concrete position is incompatible.
+fn generic_arg_variance_violation(
+    analysis: &AnalysisResult,
+    check: &ResolvedCallArg,
+    arg_type: &ValueType,
+) -> Option<String> {
+    if check.actual_type_args.is_empty() || check.expected_parameterized.is_empty() {
+        return None;
+    }
+    let ValueType::Table(Some(arg_idx)) = arg_type else { return None; };
+    let arg_idx = *arg_idx;
+    analysis.table(arg_idx).class_name.as_ref()?;
+    let arg_params = analysis.table(arg_idx).class_type_params.len();
+    if arg_params != check.actual_type_args.len() { return None; }
+
+    for (exp_idx, exp_args) in &check.expected_parameterized {
+        if analysis.table(*exp_idx).class_name.is_none() { continue; }
+        let related = arg_idx == *exp_idx || analysis.ir.is_subclass_of(arg_idx, *exp_idx);
+        if !related { continue; }
+        // Require an identity type-param mapping for the positional comparison to
+        // be sound (e.g. `Child<T> : Parent<T>`). Skip otherwise.
+        if analysis.table(*exp_idx).class_type_params.len() != arg_params { continue; }
+        if exp_args.len() != check.actual_type_args.len() { continue; }
+        for (act, exp) in check.actual_type_args.iter().zip(exp_args.iter()) {
+            if is_unconstrained_type_arg(act) || is_unconstrained_type_arg(exp) { continue; }
+            // A union actual type arg is tolerated when ANY member is compatible:
+            // this covers truthiness idioms like `x or <bool>` whose inferred value
+            // type is a union containing the expected type. Only flag when no member
+            // is compatible (e.g. `BaseFrame?` or `number` against `boolean`).
+            let members: Vec<&ValueType> = match act {
+                ValueType::Union(ms) => ms.iter().filter(|m| !matches!(m, ValueType::Nil)).collect(),
+                other => vec![other],
+            };
+            let compatible = members.iter()
+                .any(|m| m.is_assignable_to(exp) || analysis.is_table_subtype(m, exp));
+            if !compatible {
+                let fmt_args = |idx: TableIndex, args: &[ValueType]| -> String {
+                    let name = analysis.table(idx).class_name.clone().unwrap_or_default();
+                    let inner: Vec<String> = args.iter()
+                        .map(|t| analysis.format_value_type_depth(t, 1))
+                        .collect();
+                    format!("{}<{}>", name, inner.join(", "))
+                };
+                let expected_str = fmt_args(*exp_idx, exp_args);
+                let actual_str = fmt_args(arg_idx, &check.actual_type_args);
+                return Some(format!(
+                    "expected `{}` for parameter '{}', got `{}`",
+                    expected_str, check.param_name, actual_str,
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// Build related info pointing to the function definition where a parameter is declared.
 /// Only emitted for local functions (defined in the current file).
 fn param_declared_here(analysis: &AnalysisResult, func_idx: FunctionIndex) -> Vec<RelatedInfo> {
@@ -137,6 +207,17 @@ impl DiagnosticPass for TypeMismatch {
                             related,
                         );
                     }
+                } else if let Some(message) = generic_arg_variance_violation(analysis, check, &arg_type) {
+                    // Class hierarchy matched but the generic type arguments are
+                    // incompatible (e.g. `Schema<BaseFrame>` vs `SchemaBase<boolean>`).
+                    let related = param_declared_here(analysis, cr.func_idx);
+                    super::TYPE_MISMATCH.emit_with_related(
+                        diags,
+                        message,
+                        check.start as usize,
+                        check.end as usize,
+                        related,
+                    );
                 }
             }
         }

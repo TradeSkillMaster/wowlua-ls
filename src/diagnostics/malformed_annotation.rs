@@ -95,7 +95,7 @@ const KNOWN_TAGS: &[&str] = &[
     "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
     "generic", "private", "protected", "accessor", "diagnostic",
     "builds-field", "built-name", "built-extends", "type-narrows", "narrows-arg",
-    "correlated", "flavor-narrows", "event",
+    "correlated", "flavor-narrows", "event", "requires",
     "see", "vararg", "as", "cast", "operator", "module", "source",
     "version", "package", "async", "nodoc", "public",
 ];
@@ -292,6 +292,24 @@ impl DiagnosticPass for MalformedAnnotation {
                             .collect();
                         if !unknown.is_empty() {
                             Some(format!("@flavor-narrows has unknown flavor name(s): {}", unknown.join(", ")))
+                        } else {
+                            None
+                        }
+                    }
+                }
+                "requires" => {
+                    if rest.is_empty() {
+                        Some("@requires requires a type parameter and constraint (e.g. @requires T: boolean)".to_string())
+                    } else {
+                        let bad = rest.split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .any(|part| match part.split_once(':') {
+                                Some((n, c)) => n.trim().is_empty() || c.trim().is_empty(),
+                                None => true,
+                            });
+                        if bad {
+                            Some("@requires entries must have the form 'T: Constraint' (e.g. @requires T: boolean)".to_string())
                         } else {
                             None
                         }

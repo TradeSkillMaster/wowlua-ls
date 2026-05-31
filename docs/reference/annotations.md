@@ -43,6 +43,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@generic T` | Generic type parameter on a function. | [Generics](/guide/generics) |
 | `@generic T: Class` | Constrained generic. | [Generics](/guide/generics) |
 | `@generic T, ...M` | Variadic generic — collects excess arguments into an intersection. | [Generics](/guide/generics#variadic-generics) |
+| `@requires T: Constraint` | Method is only callable when the receiver's class type parameter `T` satisfies the constraint. | [Generics](/guide/generics) |
 | `` @param name `T` `` | Resolve string argument as a class name. | [Generics](/guide/generics) |
 | `@overload fun(...)` | Function overload signature. | [Generics](/guide/generics) |
 
@@ -58,6 +59,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@built-name idx` | Name the built type from a string argument. | [Builder Pattern](/guide/builder-pattern) |
 | `@built-extends` | Built type inherits from receiver's built type. | [Builder Pattern](/guide/builder-pattern) |
 | `@return self` | Method returns the receiver (for chaining). | [Builder Pattern](/guide/builder-pattern) |
+| `@return self<X>` | Method returns the receiver re-parameterized with type argument `X`. | [Builder Pattern](/guide/builder-pattern) |
 
 ## Narrowing and guard annotations
 
@@ -139,5 +141,6 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `returns<F>` | Function return type projection |
 | `expression<C>` | Expression string type — fields of class C become variables |
 | `expression<C, R>` | Expression string with return type constraint R |
+| `expression<C, R>` (R is `@generic`) | Result type R inferred from the expression and propagated to the return |
 | `expression<C & F>` | Expression string with additional functions/fields from F |
 | `expression<C & F, R>` | Expression with extra environment and return constraint |

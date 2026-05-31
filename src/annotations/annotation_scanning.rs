@@ -270,6 +270,10 @@ pub struct ExternalGlobal {
     /// `@narrows-arg N` — calling this function narrows the Nth argument's type.
     #[serde(default)]
     pub narrows_arg: Option<usize>,
+    /// `@requires T: Constraint` — receiver class type-param constraints for a
+    /// method. Each entry is (param_name, constraint_type_string).
+    #[serde(default)]
+    pub requires: Vec<(String, String)>,
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
@@ -650,6 +654,7 @@ pub(crate) fn scan_method_funcall_self_fields(
                 is_override: false, see: Vec::new(), flavors: 0, flavor_guard: 0,
                 implicit_nil_return: false,
                 narrows_arg: None,
+                requires: Vec::new(),
             });
         }
     }
