@@ -3135,17 +3135,17 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Detect field access guards in `and` LHS (e.g. `self.field and ...` or
-    /// `self.field ~= nil and ...`). Returns `(sym_idx, field_chain, strip_falsy)`
-    /// where `strip_falsy` is true for bare truthiness guards and false for
-    /// nil-only guards (`~= nil`).
-    pub(super) fn detect_and_lhs_field_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>, bool)> {
+    /// Detect field access guards in `and` LHS. Returns `(sym_idx, field_chain, GuardNarrow)`:
+    /// - `self.field and ...` → `StripFalsy` (bare truthiness)
+    /// - `self.field ~= nil and ...` → `StripNil`
+    /// - `type(self.field) == "type" and ...` → `FilterTo(type)`
+    pub(super) fn detect_and_lhs_field_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>, GuardNarrow)> {
         // Bare field truthiness: `self.field and ...` or `self._state.x and ...`
         if let Expression::Identifier(ident) = lhs {
             let names = ident.names();
             if names.len() >= 2 {
                 let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                return Some((sym_idx, names[1..].to_vec(), true));
+                return Some((sym_idx, names[1..].to_vec(), GuardNarrow::StripFalsy));
             }
         }
         // Field nil comparison: `self.field ~= nil and ...` or `self._state.x ~= nil and ...`
@@ -3164,10 +3164,22 @@ impl<'a> Analysis<'a> {
                         let names = ident.names();
                         if names.len() >= 2 {
                             let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                            return Some((sym_idx, names[1..].to_vec(), false));
+                            return Some((sym_idx, names[1..].to_vec(), GuardNarrow::StripNil));
                         }
                     }
                 }
+            }
+        // Field type guard: `type(self.field) == "number" and ...`
+        // Skip "nil" — `type(x) == "nil" and x` is nonsensical (RHS is always nil).
+        if let Expression::BinaryExpression(bin) = lhs
+            && matches!(bin.kind(), Operator::Equals) {
+                let terms = bin.get_terms();
+                if let [l, r] = terms.as_slice()
+                    && let Some((sym_idx, chain)) = self.extract_type_guard_field(l, r, scope_idx)
+                    && let Some(vt) = Self::extract_type_name_literal(l, r)
+                        .and_then(Self::type_name_to_value_type) {
+                        return Some((sym_idx, chain, GuardNarrow::FilterTo(vt)));
+                    }
             }
         None
     }
@@ -3299,13 +3311,13 @@ impl<'a> Analysis<'a> {
     /// Collect field-chain guards from all intermediate `and` operands.
     /// For `self.a and self.b and func(self.a, self.b)`, returns guards for
     /// both `self.a` and `self.b`. Each guard includes `strip_falsy`.
-    pub(super) fn collect_and_chain_field_guards(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Vec<(SymbolIndex, Vec<String>, bool)> {
+    pub(super) fn collect_and_chain_field_guards(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Vec<(SymbolIndex, Vec<String>, GuardNarrow)> {
         let mut guards = Vec::new();
         self.collect_and_chain_field_guards_inner(lhs, scope_idx, &mut guards);
         guards
     }
 
-    fn collect_and_chain_field_guards_inner(&self, expr: &Expression<'_>, scope_idx: ScopeIndex, guards: &mut Vec<(SymbolIndex, Vec<String>, bool)>) {
+    fn collect_and_chain_field_guards_inner(&self, expr: &Expression<'_>, scope_idx: ScopeIndex, guards: &mut Vec<(SymbolIndex, Vec<String>, GuardNarrow)>) {
         if let Expression::BinaryExpression(bin) = expr {
             if matches!(bin.kind(), Operator::And) {
                 let terms = bin.get_terms();

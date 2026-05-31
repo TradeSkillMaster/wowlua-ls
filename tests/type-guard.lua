@@ -327,3 +327,23 @@ local function testBoolGuardAliasAndChain(data)
     --    ^ hover: (local) x: false | string
 end
 _consume(testBoolGuardAliasAndChain)
+
+-- ── type() guard on field chain in and expression ────────────────────
+
+---@class TypeGuardSettings
+---@field value string | number
+---@field label string?
+
+---@param settings TypeGuardSettings
+local function testTypeGuardFieldInAnd(settings)
+    -- type(obj.field) == "number" and obj.field → field narrowed to number
+    local x = type(settings.value) == "number" and settings.value
+    --    ^ hover: (local) x: false | number
+    -- ternary pattern: type guard ensures numeric result
+    local y = type(settings.value) == "number" and settings.value or 0
+    --    ^ hover: (local) y: number
+    -- comparison on ternary result should not warn
+    local z = (type(settings.value) == "number" and settings.value or 0) < 100
+    --    ^ hover: (local) z: boolean
+end
+_consume(testTypeGuardFieldInAnd)
