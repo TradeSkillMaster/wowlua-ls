@@ -1090,6 +1090,27 @@ local function useCallbackField(c)
     --       ^ hover: (field) function MyCallbackContainer.handler(items: table<string, number>)
 end
 
+-- Parameterized alias with a fun() body, instantiated from a generic class's
+-- type parameter (the alias type param T binds to Box<T>'s T at the call site)
+---@alias BoxMapFunc<T> fun(value: T): T
+
+---@class Box<T>
+---@field value T
+local Box = {}
+
+---@param mapFunc BoxMapFunc<T>
+---@return T
+function Box:MapValue(mapFunc)
+    return mapFunc(self.value)
+end
+
+---@type Box<number>
+local mappedBox = {}
+local mappedResult = mappedBox:MapValue(function(v) return v + 1 end)
+--    ^ hover: (local) mappedResult: number
+--                                ^ hover: (method) function Box:MapValue(mapFunc: fun(value: number): number)
+--                                               ^ hover: (param) v: number
+
 -- ── Go-to-definition on class/alias names in annotations ────────────────────
 
 -- @type ClassName: def: on the class name in the annotation
