@@ -321,3 +321,13 @@ local function _earlyExitNeqLargeUnion(level)
     return true
 end
 _use(_earlyExitNeqLargeUnion)
+
+-- Logical or/and are always valid in Lua and must never produce invalid-op,
+-- even when both operands are nil (so the result type is unresolvable).
+-- Regression: previously emitted "cannot apply '?' to 'nil' and 'nil'".
+---@class NilFieldBag
+---@field a nil
+---@field b nil
+---@type NilFieldBag
+local _nilBag
+_use(_nilBag.a or _nilBag.b)

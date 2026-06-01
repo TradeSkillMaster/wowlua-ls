@@ -55,6 +55,9 @@ impl DiagnosticPass for InvalidOp {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for &(expr_id, start, end) in &analysis.ir.binary_op_sites {
             let Expr::BinaryOp { op, lhs, rhs } = analysis.ir.exprs[expr_id.val()] else { continue };
+            // Logical or/and are always valid in Lua (any value is truthy/falsy); they are
+            // tracked in binary_op_sites only for the redundant-or/redundant-and diagnostics.
+            if matches!(op, Operator::Or | Operator::And) { continue; }
             let Some(lhs_type) = analysis.resolve_expr_type(lhs) else { continue };
             let Some(rhs_type) = analysis.resolve_expr_type(rhs) else { continue };
             // Valid operation — no diagnostic needed
