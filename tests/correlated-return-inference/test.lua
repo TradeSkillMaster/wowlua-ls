@@ -1111,3 +1111,26 @@ local _ = info
 --        ^ hover: (local) info: table
 local _2 = newMsg
 --         ^ hover: (local) newMsg: string?
+
+-- ── Pass-through param reassigned in body: implicit generic still binds ──
+-- A parameter returned in one branch (pass-through → implicit T1) and also
+-- reassigned in the body before being returned in another branch. The two
+-- return shapes `(table, T1)` and `(table, string)` dedupe to a single
+-- distinct signature, so the synthesizer registers the T1 generic but bails
+-- before creating overloads. The inferred return `table, T1 | string` must
+-- still substitute T1 from the caller's argument so the second value resolves
+-- to `string` instead of `?`.
+
+local function transformMsg(msg)
+    local startIndex = nil
+    if cond then startIndex = 1 end
+    if not startIndex then
+        return {}, msg
+    end
+    msg = tostring(msg) .. "!"
+    return {}, msg
+end
+
+local stack3, newMsg3 = transformMsg("hello")
+local _ = newMsg3
+--        ^ hover: (local) newMsg3: string

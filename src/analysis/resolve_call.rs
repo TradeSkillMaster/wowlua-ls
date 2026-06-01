@@ -401,9 +401,13 @@ impl<'a> Analysis<'a> {
             }
             for (i, arg_expr_id) in args.iter().enumerate() {
                 if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
-                    // Check if this param's type is a TypeVariable
+                    // Check if this param's type is a TypeVariable. Use the
+                    // FIRST version (the parameter declaration) rather than the
+                    // last: a param reassigned in the body (`msg = gsub(msg, ...)`)
+                    // has its declared TypeVariable on version 0, while later
+                    // versions hold the reassigned concrete type.
                     let param_type = if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
-                        self.sym(param_sym_idx).versions.last()
+                        self.sym(param_sym_idx).versions.first()
                             .and_then(|ver| ver.resolved_type.clone())
                     } else {
                         None
@@ -1689,11 +1693,27 @@ impl<'a> Analysis<'a> {
             // caller already has FunctionRet at slot > 0 (from Phase 1's
             // `expand_tail_call_returns`) but the tail-call wrapper hasn't been
             // expanded yet by the Phase 2 pass (which runs only on stall).
-            if slot_type.is_none() && ret_index > 0 {
+            let inferred = if slot_type.is_none() && ret_index > 0 {
                 self.tail_call_passthrough_return(func_idx, ret_index)
             } else {
                 slot_type
-            }
+            };
+            // Substitute pass-through-param generics (e.g. a synthesized `T1`
+            // from `return ..., msg` where `msg` is an unannotated parameter)
+            // with the concrete types bound from this call's arguments. Without
+            // this, an inferred return like `T1 | string` stays unresolved and
+            // the `contains_type_variable` guard below drops it to `?` forever.
+            // No need to cache in call_site_generic_subs — that's only needed
+            // for overload sibling narrowing, which doesn't apply to the
+            // inferred-returns path.
+            inferred.map(|t| {
+                if generic_subs.is_empty() {
+                    t
+                } else {
+                    let substituted = self.substitute_generics_deep(&t, &generic_subs);
+                    self.ir.dedupe_union_tables(substituted)
+                }
+            })
         };
         // Implicit nil return: a bare `return` statement or fall-through
         // from the end of the function body contributes nil at every
