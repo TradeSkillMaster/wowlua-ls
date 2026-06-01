@@ -89,6 +89,20 @@ local function withGeneric(x)
 end
 _use(withGeneric)
 
+-- ── No diagnostic: lateinit (T!) field access ───────────────────────────────
+
+-- A lateinit field is typed non-nil for the LS but can be nil at runtime until
+-- first initialized via the `x = x or default` idiom, so `or` is not redundant.
+---@class LateInitHolder
+---@field cached number!
+local holder = {}
+
+function holder.Init()
+    holder.cached = holder.cached or 0
+    --                            ^ diag: none
+end
+_use(holder)
+
 -- ── Suppression ─────────────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: redundant-or
