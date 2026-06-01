@@ -103,6 +103,29 @@ function holder.Init()
 end
 _use(holder)
 
+-- ── No diagnostic: dictionary/array bracket lookup ──────────────────────────
+
+-- A `table<K, V>` lookup resolves to the element type `V` (non-nil for the LS),
+-- but a missing key returns nil at runtime, so `tbl[k] or default` is a valid
+-- fallback and `or` is not redundant.
+---@type table<string, number>
+local dict = {}
+_use((dict["missing"] or 9999) < 5)
+
+-- Array index can be out of bounds → nil at runtime.
+---@type number[]
+local arr = {}
+_use(arr[10] or 0)
+
+-- Literal key matching a declared @field resolves to the field type (guaranteed
+-- to exist), so `or` IS redundant here — not suppressed.
+---@class DictWithField : table<string, number>
+---@field name string
+---@type DictWithField
+local cfg
+_use(cfg["name"] or "default")
+--                ^ diag: redundant-or
+
 -- ── Suppression ─────────────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: redundant-or

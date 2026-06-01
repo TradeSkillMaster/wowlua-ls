@@ -29,6 +29,55 @@ fn any_table_has_lateinit_field(analysis: &AnalysisResult, ty: &ValueType, field
     }
 }
 
+/// Returns true when the LHS is a bracket index into a dictionary/array
+/// (`table<K, V>` or `V[]`) that resolves through the dictionary's `value_type`
+/// rather than a known named field. Such a lookup resolves to the element type `V`
+/// (typed non-nil for the LS), but a runtime lookup of a missing key — or an
+/// out-of-bounds array index — returns nil. The `tbl[k] or default` idiom is the
+/// standard way to supply a fallback for an absent key, so the `or` is not
+/// redundant.
+///
+/// If the bracket access has a literal key that matches a declared field on the
+/// table (e.g. `cfg["name"]` where `name` is a `@field`), the field is guaranteed
+/// to exist, so we do NOT suppress — the `or` really is redundant in that case.
+fn lhs_is_dynamic_index(analysis: &AnalysisResult, lhs: ExprId) -> bool {
+    let Expr::BracketIndex { table, literal_key, .. } = &analysis.ir.exprs[lhs.val()] else { return false };
+    let literal_key = literal_key.clone();
+    let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
+    let table_type = table_type.into_strip_opaque();
+    // If the literal key matches a declared field, the access is to a known field
+    // rather than a dynamic dictionary lookup — don't suppress.
+    if let Some(ref lk) = literal_key
+        && any_table_has_named_field(analysis, &table_type, lk) {
+            return false;
+    }
+    any_table_has_value_type(analysis, &table_type)
+}
+
+/// Recursively checks whether any table in a (possibly union/intersection) type
+/// has a declared field with the given name.
+fn any_table_has_named_field(analysis: &AnalysisResult, ty: &ValueType, field: &str) -> bool {
+    match ty {
+        ValueType::Table(Some(idx)) => analysis.get_field(*idx, field).is_some(),
+        ValueType::Union(types) | ValueType::Intersection(types) => {
+            types.iter().any(|t| any_table_has_named_field(analysis, t, field))
+        }
+        _ => false,
+    }
+}
+
+/// Recursively checks whether any table in a (possibly union/intersection) type
+/// is a dictionary/array (has an element `value_type`).
+fn any_table_has_value_type(analysis: &AnalysisResult, ty: &ValueType) -> bool {
+    match ty {
+        ValueType::Table(Some(idx)) => analysis.table(*idx).value_type.is_some(),
+        ValueType::Union(types) | ValueType::Intersection(types) => {
+            types.iter().any(|t| any_table_has_value_type(analysis, t))
+        }
+        _ => false,
+    }
+}
+
 /// Returns true for types where we cannot determine truthiness/falsiness.
 /// `TypeVariable` is included because `is_guaranteed_truthy()` returns true for it
 /// (type params are non-nil at the definition level), but at the diagnostic site we
@@ -58,6 +107,11 @@ impl DiagnosticPass for RedundantLogical {
             // Skip lateinit (`T!`) field accesses: they're non-nil for the LS but
             // get initialized via the `x = x or default` idiom at runtime.
             if matches!(op, Operator::Or) && lhs_is_lateinit_field(analysis, lhs) { continue; }
+
+            // Skip dictionary/array bracket lookups: the element type is non-nil
+            // for the LS, but a missing key / out-of-bounds index returns nil at
+            // runtime, so `tbl[k] or default` is a legitimate fallback.
+            if matches!(op, Operator::Or) && lhs_is_dynamic_index(analysis, lhs) { continue; }
 
             match op {
                 Operator::Or if lhs_type.is_guaranteed_truthy() => {
