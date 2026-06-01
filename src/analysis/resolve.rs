@@ -1742,6 +1742,35 @@ impl<'a> Analysis<'a> {
             NarrowKind::StripFalsy => Self::overload_type_survives_strip_falsy(t),
             NarrowKind::StripTruthy => Self::overload_type_survives_strip_truthy(t),
             NarrowKind::ClassEq(class_name) => self.overload_type_matches_class(t, class_name),
+            NarrowKind::NumCompare { op, bound } => Self::overload_type_survives_num_compare(t, *op, bound),
+        }
+    }
+
+    /// Check if an overload type at a position would survive a numeric comparison
+    /// (`value <op> bound`). A number-literal member is eliminated only when the
+    /// comparison is provably false; plain `number`/`any`/non-numeric members
+    /// survive (we don't track ranges, so they can't be ruled out).
+    fn overload_type_survives_num_compare(t: &ValueType, op: Operator, bound: &str) -> bool {
+        fn member_survives(m: &ValueType, op: Operator, bound: f64) -> bool {
+            match m {
+                ValueType::NumberLiteral(v) => match parse_num_literal_str(v) {
+                    Some(val) => match op {
+                        Operator::GreaterThan => val > bound,
+                        Operator::LessThan => val < bound,
+                        Operator::GreaterThanOrEquals => val >= bound,
+                        Operator::LessThanOrEquals => val <= bound,
+                        _ => true,
+                    },
+                    // Unparseable literal: keep it (can't disprove).
+                    None => true,
+                },
+                _ => true,
+            }
+        }
+        let Some(bound) = parse_num_literal_str(bound) else { return true };
+        match t {
+            ValueType::Union(ts) => ts.iter().any(|m| member_survives(m, op, bound)),
+            other => member_survives(other, op, bound),
         }
     }
 
@@ -2420,7 +2449,7 @@ impl<'a> Analysis<'a> {
                     (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
                     (None, Some(r)) if op == Operator::Or => Some(r),
                     (Some(ref l), None) if op == Operator::Or && l.is_guaranteed_truthy() => Some(l.clone()),
-                    (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
+                    (Some(ValueType::Number | ValueType::NumberLiteral(_)), None) | (None, Some(ValueType::Number | ValueType::NumberLiteral(_)))
                         if op.is_arithmetic() => Some(ValueType::Number),
                     (Some(ref t), None) | (None, Some(ref t))
                         if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String(None)),
@@ -2438,7 +2467,7 @@ impl<'a> Analysis<'a> {
                         Operator::Not => Some(ValueType::Boolean(None)),
                         Operator::Subtract => {
                             match ot {
-                                ValueType::Number => Some(ValueType::Number),
+                                ValueType::Number | ValueType::NumberLiteral(_) => Some(ValueType::Number),
                                 _ => self.resolve_unary_metamethod(op, ot),
                             }
                         }
@@ -3124,12 +3153,30 @@ impl<'a> Analysis<'a> {
 
 }
 
+/// Parse a number-literal type spelling (`0`, `-1`, `0xFF`, `3.14`, `1e9`) to f64.
+/// Handles an optional leading `-` and `0x`/`0X` hex; returns None if unparseable.
+pub(super) fn parse_num_literal_str(s: &str) -> Option<f64> {
+    let (neg, body) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
+    let val = if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16).ok()? as f64
+    } else {
+        body.parse::<f64>().ok()?
+    };
+    Some(if neg { -val } else { val })
+}
+
 /// Pure function for binary op type resolution (no `self` needed).
 /// Called from both `Analysis::resolve_binary_op` and `AnalysisResult::resolve_expr_type_inner`.
 pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
     // Unwrap opaque aliases — operators work on the inner type, results decay to base type
     let lhs_type = lhs_type.into_strip_opaque();
     let rhs_type = rhs_type.into_strip_opaque();
+    // Number literals decay to plain numbers under operators (we don't track ranges).
+    let lhs_type = lhs_type.into_decay_number_literal();
+    let rhs_type = rhs_type.into_decay_number_literal();
     match op {
         Operator::Or => {
             match (&lhs_type, &rhs_type) {

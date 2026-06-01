@@ -771,7 +771,7 @@
           "name": "keyword.operator.lua"
         },
         {
-          "begin": "(?=[a-zA-Z_\\.\\*\"'\\[])",
+          "begin": "(?=[a-zA-Z0-9_\\.\\*\"'\\[])",
           "end": "(?=->|[\\s\\)\\,\\?\\!\\:\\}\\|\\&\\`\\<\\>@#])",
           "patterns": [
             {"match": "(\\.\\.\\.)([a-zA-Z_][a-zA-Z0-9_\\.\\-]*)?[ \\t]*", "captures": {"1": {"name": "keyword.operator.lua"}, "2": {"name": "support.type.lua"}}},

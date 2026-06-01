@@ -1068,7 +1068,7 @@ impl Ir {
                 if (name.starts_with('"') && name.ends_with('"'))
                     || (name.starts_with('\'') && name.ends_with('\''))
                 { return; }
-                if name.bytes().all(|b| b.is_ascii_digit()) && !name.is_empty() { return; }
+                if crate::annotations::is_number_literal(name) { return; }
                 if self.classes.contains_key(name.as_str()) { return; }
                 if self.aliases.contains_key(name.as_str()) { return; }
                 if self.parameterized_aliases.contains_key(name.as_str()) { return; }
@@ -1430,6 +1430,10 @@ pub struct Analysis<'a> {
     pub(crate) falsy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) truthy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) class_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, String>>,
+    /// Symbols numerically compared against a literal bound (e.g. `if x > 1`).
+    /// Used only for sibling tuple-union case elimination — does NOT strip nil
+    /// from `x` itself. Stores the comparison oriented so `x <op> bound`.
+    pub(crate) num_compare_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, (crate::ast::Operator, String)>>,
     pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
     pub(crate) falsy_narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
     pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
@@ -1739,6 +1743,7 @@ impl<'a> Analysis<'a> {
             falsy_narrowed_symbols: HashMap::new(),
             truthy_narrowed_symbols: HashMap::new(),
             class_narrowed_symbols: HashMap::new(),
+            num_compare_narrowed_symbols: HashMap::new(),
             narrowed_fields: HashMap::new(),
             falsy_narrowed_fields: HashMap::new(),
             type_narrowed_symbols: HashMap::new(),

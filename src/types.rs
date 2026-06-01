@@ -239,6 +239,13 @@ pub(crate) enum ValueType {
     /// Nominally distinct alias: `@alias (opaque) PlayerID number`.
     /// The String is the alias name, the Box<ValueType> is the resolved inner type.
     OpaqueAlias(String, Box<ValueType>),
+    /// Number-literal type from an annotation, e.g. `@return (0, nil, nil)`.
+    /// The String preserves the source spelling (`0`, `-1`, `0xFF`) so the type
+    /// keeps `Eq`/`Hash` (f64 does not) and matches the `number_literals`
+    /// convention used elsewhere. Decays to plain `Number` under arithmetic.
+    /// Kept last so adding it doesn't shift serde variant indices in the
+    /// precomputed-stub blob.
+    NumberLiteral(String),
 }
 
 impl ValueType {
@@ -260,12 +267,23 @@ impl ValueType {
         t
     }
 
+    /// Decay a number-literal type to plain `Number`. We don't model numeric
+    /// ranges, so under arithmetic/comparison a literal behaves like any number
+    /// and the result is a plain number, not a literal.
+    pub(crate) fn into_decay_number_literal(self) -> ValueType {
+        match self {
+            ValueType::NumberLiteral(_) => ValueType::Number,
+            other => other,
+        }
+    }
+
     pub(crate) fn can_concat_to_string(&self) -> bool {
         match self {
             ValueType::Any => true,
             ValueType::Nil => false,
             ValueType::Boolean(_) => false,
             ValueType::Number => true,
+            ValueType::NumberLiteral(_) => true,
             ValueType::String(_) => true,
             ValueType::Function(_) => false,
             ValueType::Table(_) => false,
@@ -285,6 +303,7 @@ impl ValueType {
             ValueType::OpaqueAlias(_, inner) => inner.is_guaranteed_truthy(),
             other => matches!(other,
                 ValueType::Number
+                | ValueType::NumberLiteral(_)
                 | ValueType::String(_)
                 | ValueType::Function(_)
                 | ValueType::Table(_)
@@ -320,6 +339,10 @@ impl ValueType {
             (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
             // String types are mutually assignable (generic ↔ literal)
             (ValueType::String(_), ValueType::String(_)) => true,
+            // Number literal ↔ generic number are mutually assignable (we don't
+            // model numeric ranges, so a plain number may be any literal).
+            (ValueType::NumberLiteral(_), ValueType::Number)
+            | (ValueType::Number, ValueType::NumberLiteral(_)) => true,
             // Specific function/table assignable to generic
             (ValueType::Function(_), ValueType::Function(None)) => true,
             (ValueType::Table(_), ValueType::Table(None)) => true,
@@ -443,6 +466,8 @@ impl ValueType {
             (ValueType::Table(Some(idx)), ValueType::Table(None)) if enum_kind_of(*idx).is_enum() => false,
             (ValueType::Table(_), ValueType::Table(None)) => true,
             (ValueType::String(_), ValueType::String(None)) => true,
+            // A number literal is a number at runtime, so it matches a Number guard.
+            (ValueType::NumberLiteral(_), ValueType::Number) => true,
             (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
             (ValueType::Function(_), ValueType::Function(None)) => true,
             // Opaque aliases delegate to their inner type for type() guards
@@ -542,6 +567,11 @@ impl ValueType {
         // Collapse table variants: table | Table(idx) → table (generic subsumes specific)
         if deduped.contains(&ValueType::Table(None)) {
             deduped.retain(|t| !matches!(t, ValueType::Table(Some(_))));
+        }
+        // Collapse number-literal variants when a plain number is present:
+        // number | 0 → number (so slot-0 `number | 0` displays as `number`).
+        if deduped.contains(&ValueType::Number) {
+            deduped.retain(|t| !matches!(t, ValueType::NumberLiteral(_)));
         }
         if deduped.len() == 1 {
             deduped.into_iter().next().unwrap()
@@ -1132,6 +1162,11 @@ pub(crate) enum NarrowKind {
     /// Sibling was narrowed by equality to a class-typed value (e.g. `x == ERROR.MAX` where `ERROR.MAX: EnumValue`).
     /// Overload position's type must contain (or intersect) the named class.
     ClassEq(String),
+    /// Sibling was numerically compared against a literal bound (e.g. `if x > 1 then`).
+    /// Overload positions whose number-literal value provably fails `value <op> bound`
+    /// are eliminated (e.g. a `0` case is dropped by `> 1`). Plain `number`/`any` cases
+    /// survive since we don't track ranges.
+    NumCompare { op: Operator, bound: String },
 }
 
 #[derive(Debug, Clone)]

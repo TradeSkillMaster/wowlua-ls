@@ -375,3 +375,53 @@ local function strictPairs()
 --  ^ diag: grouped-return-mismatch
 end
 _consume(strictPairs)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Number-literal types in tuple-union cases (ValueType::NumberLiteral)
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- A numeric literal in a tuple-union case keeps its spelling rather than
+-- decaying to `any`. The slot-0 union `number | 0` collapses to `number`.
+---@return (number total, string label, number elapsed) | (0, nil, nil)
+local function getStats()
+    if math.random() > 0.5 then
+        return 5, "foo", 12
+    end
+    return 0, nil, nil
+end
+_consume(getStats)
+
+local s_total, s_label, s_elapsed = getStats()
+local _ = s_total
+--        ^ hover: (local) s_total: number
+local _ = s_label
+--        ^ hover: (local) s_label: string?
+local _ = s_elapsed
+--        ^ hover: (local) s_elapsed: number?
+
+-- A number-literal `@type` keeps its spelling on hover.
+---@type -1
+local negOne
+local _ = negOne
+--        ^ hover: (local) negOne: -1
+
+---@type 0xFF
+local hexByte
+local _ = hexByte
+--        ^ hover: (local) hexByte: 0xFF
+
+-- A plain number is assignable to a number-literal param (no type-mismatch),
+-- and arithmetic on a number-literal decays to plain `number`.
+---@param flag 0
+local function takesZero(flag) _consume(flag) end
+local someNum = 3
+takesZero(someNum)
+
+local sum = negOne + 1
+local _ = sum
+--        ^ hover: (local) sum: number
+
+-- Unary minus on a number-literal decays to plain number (not `?`).
+local negated = -negOne
+local _ = negated
+--        ^ hover: (local) negated: number

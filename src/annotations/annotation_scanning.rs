@@ -1010,6 +1010,49 @@ pub(crate) fn extract_fun_sig(
     }
 }
 
+/// Detect a numeric-literal annotation type spelling: decimal integer/float
+/// (`0`, `42`, `3.14`, `1e9`), hex (`0xFF`), optionally negated (`-1`).
+/// Used so `@return (0, nil, nil)` / `@type -1` resolve to `NumberLiteral`.
+pub(crate) fn is_number_literal(name: &str) -> bool {
+    let s = name.strip_prefix('-').unwrap_or(name);
+    if s.is_empty() {
+        return false;
+    }
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        return !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit());
+    }
+    // Decimal int or float with optional exponent: must start with a digit,
+    // contain only digits / a single dot / a single exponent marker.
+    if !s.bytes().next().is_some_and(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let mut seen_dot = false;
+    let mut seen_exp = false;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'0'..=b'9' => {}
+            b'.' if !seen_dot && !seen_exp => seen_dot = true,
+            b'e' | b'E' if !seen_exp => {
+                seen_exp = true;
+                // optional sign right after the exponent marker
+                if matches!(bytes.get(i + 1), Some(b'+') | Some(b'-')) {
+                    i += 1;
+                }
+                // exponent must have at least one digit
+                if !matches!(bytes.get(i + 1), Some(d) if d.is_ascii_digit()) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+        i += 1;
+    }
+    true
+}
+
 pub(crate) fn resolve_annotation_type(
     at: &AnnotationType, generics: &[(String, Option<String>)],
     classes: &std::collections::HashMap<String, TableIndex>,
@@ -1039,6 +1082,10 @@ pub(crate) fn resolve_annotation_type(
             {
                 let stripped = name.trim_matches(|c| c == '"' || c == '\'');
                 return Some(ValueType::String(Some(stripped.to_string())));
+            }
+            // Number-literal type, e.g. `@return (0, nil, nil)` or `@type -1`.
+            if is_number_literal(name) {
+                return Some(ValueType::NumberLiteral(name.clone()));
             }
             if let Some(&table_idx) = classes.get(name.as_str()) { return Some(ValueType::Table(Some(table_idx))); }
             if let Some(vt) = aliases.get(name.as_str()) { return Some(vt.clone()); }

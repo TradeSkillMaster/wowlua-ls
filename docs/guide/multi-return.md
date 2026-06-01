@@ -97,6 +97,32 @@ Variadic returns combine with tuple-union cases:
 
 After narrowing past the nil case, the vararg tail fills all remaining positions.
 
+## Number-literal cases
+
+A tuple-union case can use a number literal (`0`, `-1`, `0xFF`) as a sentinel:
+
+```lua
+---@return (number total, string topAddon, number elapsed)
+---      | (0, nil, nil)
+function GetStats() end
+```
+
+The literal keeps its spelling on hover (the slot-0 union `number | 0` collapses
+to `number`), and it participates in correlated narrowing. A numeric comparison
+against the literal eliminates the case it discriminates:
+
+```lua
+local total, topAddon, elapsed = GetStats()
+if total > 1 then
+    -- `> 1` drops the `(0, nil, nil)` case (0 > 1 is false), so the
+    -- correlated siblings narrow to their first-case types:
+    -- topAddon: string   elapsed: number
+end
+```
+
+Number literals decay to plain `number` under arithmetic — they only model
+distinct values for case discrimination, not numeric ranges.
+
 ## The `grouped-return-mismatch` diagnostic
 
 When a function has tuple-union returns, the LS enforces that every `return` statement matches one of the declared cases:

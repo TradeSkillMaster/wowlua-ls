@@ -1769,6 +1769,7 @@ pub(crate) use annotation_scanning::{
     scan_method_bare_self_fields,
 };
 pub(crate) use annotation_scanning::{
+    is_number_literal,
     is_select_varargs,
     reduce_to_fun_alias, resolve_annotation_type,
     extract_fun_sig,

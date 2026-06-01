@@ -370,6 +370,33 @@ impl<'a> Analysis<'a> {
                         self.try_narrow_field(&names, target_scope);
                     }
                 }
+                // Numeric comparison against a literal (`if x > 1`): record a
+                // NumCompare constraint on the bare symbol so tuple-union sibling
+                // cases whose number-literal value fails the comparison are
+                // eliminated. Does NOT strip nil from x itself.
+                if op.is_comparison() && is_then_branch
+                    && !matches!(op, Operator::Equals | Operator::NotEquals)
+                    && let [lhs, rhs] = terms.as_slice()
+                {
+                    let oriented = if let Expression::Identifier(id) = lhs {
+                        Self::extract_number_literal(rhs)
+                            .filter(|_| id.names_with_brackets().len() == 1 && !id.has_any_dynamic_bracket())
+                            .map(|n| (id.names_with_brackets()[0].clone(), op, n))
+                    } else if let Expression::Identifier(id) = rhs {
+                        Self::extract_number_literal(lhs)
+                            .filter(|_| id.names_with_brackets().len() == 1 && !id.has_any_dynamic_bracket())
+                            .map(|n| (id.names_with_brackets()[0].clone(), Self::flip_comparison(op), n))
+                    } else {
+                        None
+                    };
+                    if let Some((name, oriented_op, bound)) = oriented
+                        && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name), parent_scope)
+                    {
+                        self.num_compare_narrowed_symbols.entry(target_scope).or_default()
+                            .insert(sym_idx, (oriented_op, bound));
+                        self.narrow_siblings(sym_idx, target_scope);
+                    }
+                }
                 let is_neq = matches!(op, Operator::NotEquals);
                 let is_eq = matches!(op, Operator::Equals);
                 if !is_neq && !is_eq { return; }
@@ -1712,11 +1739,11 @@ impl<'a> Analysis<'a> {
         // version looks like a reassignment and prevents sibling narrowing in
         // compound guards like `if x and x > 0 then`.
         let mut expr = self.ir.expr(ts);
-        // Max chain depth: OverloadNarrow → SymbolRef → StripNil → SymbolRef →
-        // StripFalsy → SymbolRef → FunctionCall. Each narrowing layer adds at
-        // most 2 hops (the wrapper + its inner SymbolRef). Bump if new arms are
-        // added to the match below.
-        for _ in 0..6 {
+        // Max chain depth: CastRemove → SymbolRef → OverloadNarrow → SymbolRef →
+        // StripNil → SymbolRef → StripFalsy → SymbolRef → FunctionCall. Each
+        // narrowing layer adds at most 2 hops (the wrapper + its inner
+        // SymbolRef). Bump if new arms are added to the match below.
+        for _ in 0..8 {
             match expr {
                 Expr::FunctionCall { ret_index, .. } => return *ret_index != expected_ret_index,
                 Expr::SymbolRef(sym, ver_ref) => {
@@ -1737,6 +1764,13 @@ impl<'a> Analysis<'a> {
                 // it, so see through them too — otherwise a directly-guarded
                 // sibling can never get a correlated OverloadNarrow.
                 Expr::StripNil(inner) | Expr::StripFalsy(inner) => { expr = self.ir.expr(*inner); }
+                // Cast/type-filter versions come from a value-equality or type()
+                // guard on the sibling itself (e.g. `if name ~= "X" then`, which
+                // pushes a CastRemove). These refine the same multi-return value
+                // rather than reassign it, so see through them too — otherwise a
+                // sibling touched by such a guard never gets a correlated
+                // OverloadNarrow.
+                Expr::CastRemove(inner, _) | Expr::CastAdd(inner, _) | Expr::TypeFilter(inner, _) => { expr = self.ir.expr(*inner); }
                 _ => return true,
             }
         }
@@ -1826,6 +1860,14 @@ impl<'a> Analysis<'a> {
                 return Some(NarrowKind::StripFalsy);
             }
             return Some(NarrowKind::StripNil);
+        }
+        // NumCompare is the weakest narrowing (it doesn't strip nil), so only
+        // use it when the symbol isn't already truthy/nil-narrowed — otherwise
+        // a compound guard like `x and x > 0` would lose the nil elimination.
+        if let Some((op, bound)) = self.num_compare_narrowed_symbols.get(&scope_idx)
+            .and_then(|m| m.get(&sym_idx))
+        {
+            return Some(NarrowKind::NumCompare { op: *op, bound: bound.clone() });
         }
         None
     }
@@ -2488,14 +2530,26 @@ impl<'a> Analysis<'a> {
         matches!(expr, Expression::Literal(lit) if lit.is_nil())
     }
 
-    /// Extract a numeric literal value from an expression.
+    /// Flip a comparison operator so `LITERAL <op> symbol` becomes the
+    /// equivalent `symbol <flipped> LITERAL` (e.g. `1 < x` → `x > 1`).
+    fn flip_comparison(op: Operator) -> Operator {
+        match op {
+            Operator::LessThan => Operator::GreaterThan,
+            Operator::GreaterThan => Operator::LessThan,
+            Operator::LessThanOrEquals => Operator::GreaterThanOrEquals,
+            Operator::GreaterThanOrEquals => Operator::LessThanOrEquals,
+            other => other,
+        }
+    }
+
+    /// Extract the source text of a numeric literal from an expression.
     /// Handles plain number literals and unary-minus (e.g. `-1`).
-    fn extract_number_literal(expr: &Expression<'_>) -> Option<f64> {
+    fn extract_number_literal(expr: &Expression<'_>) -> Option<String> {
         match expr {
-            Expression::Literal(lit) => lit.get_number()?.parse::<f64>().ok(),
+            Expression::Literal(lit) => Some(lit.get_number()?.to_string()),
             Expression::UnaryExpression(u) if matches!(u.kind(), Operator::Subtract) => {
                 let inner = u.get_terms().into_iter().next()?;
-                Some(-Self::extract_number_literal(&inner)?)
+                Some(format!("-{}", Self::extract_number_literal(&inner)?))
             }
             _ => None,
         }

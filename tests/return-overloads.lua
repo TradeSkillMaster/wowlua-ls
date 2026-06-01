@@ -170,6 +170,71 @@ if g1 and g1 > 0 then
     --        ^ hover: (local) g3: number
 end
 
+-- ── And-chain: a string `~=` guard on a surviving sibling still narrows ──
+-- The `name ~= "skip"` term pushes a CastRemove version on `name`. Sibling
+-- narrowing (driven by the truthy `active` term, which eliminates the nil
+-- case) must see through that CastRemove rather than treat `name` as
+-- reassigned and skip it.
+
+---@return (string name, number level, boolean active)
+---      | (nil, nil, nil)
+local function castNarrow()
+    if math.random() > 0.5 then
+        return "Dot", 5, true
+    end
+end
+_consume(castNarrow)
+
+local cn1, cn2, cn3 = castNarrow()
+if cn3 and cn1 ~= "skip" then
+    local _ = cn1
+    --        ^ hover: (local) cn1: string
+    local _ = cn2
+    --        ^ hover: (local) cn2: number
+end
+
+-- ── Numeric discriminator: `if a > 0` eliminates the `0` literal case ──
+-- The success case has a number-literal-free slot 0; the failure case is
+-- discriminated purely by the literal `0`. A `> 0` guard drops the `0` case
+-- (0 > 0 is false), so the sibling narrows to its success-case type.
+
+---@return (number count, string label) | (0, nil)
+local function numDisc()
+    if math.random() > 0.5 then
+        return 5, "ok"
+    end
+    return 0, nil
+end
+_consume(numDisc)
+
+local nd1, nd2 = numDisc()
+if nd1 > 0 then
+    local _ = nd2
+    --        ^ hover: (local) nd2: string
+end
+
+-- ── Compound numeric + truthy: mirrors the real addon usage ──
+-- `(number, string, number) | (0, nil, nil)` with `if a > 1 and c then`.
+-- The `> 1` term drops the `0` case for the slot-0 discriminator and the
+-- truthy `c` term independently eliminates the nil case for slot 2.
+
+---@return (number total, string top, number elapsed) | (0, nil, nil)
+local function numTriple()
+    if math.random() > 0.5 then
+        return 9, "addon", 3
+    end
+    return 0, nil, nil
+end
+_consume(numTriple)
+
+local nt1, nt2, nt3 = numTriple()
+if nt1 > 1 and nt3 then
+    local _ = nt2
+    --        ^ hover: (local) nt2: string
+    local _ = nt3
+    --        ^ hover: (local) nt3: number
+end
+
 -- ══════════════════════════════════════════════════════════════════════════
 -- Callee-side enforcement: grouped-return-mismatch diagnostic
 -- ══════════════════════════════════════════════════════════════════════════

@@ -5692,6 +5692,7 @@ impl AnalysisResult {
             ValueType::Boolean(Some(false)) => "false".to_string(),
             ValueType::Boolean(None) => "boolean".to_string(),
             ValueType::Number => "number".to_string(),
+            ValueType::NumberLiteral(val) => val.clone(),
             ValueType::String(Some(val)) => format!("\"{}\"", val),
             ValueType::String(None) => "string".to_string(),
             ValueType::Function(Some(func_idx)) => {

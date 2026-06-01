@@ -138,6 +138,7 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `{f: T, g?: U}` | Anonymous table shape |
 | `"literal"` | String literal type |
 | `true`, `false` | Boolean literal types |
+| `0`, `-1`, `0xFF` | Number literal types (e.g. a `\| (0, nil, nil)` tuple-union case) |
 | `params<F>` | Function parameter projection (vararg only) |
 | `params<EventType>` | Event payload projection — types varargs per-event |
 | `returns<F>` | Function return type projection |

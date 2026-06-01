@@ -2503,6 +2503,19 @@ fn crossfile_return_overload_guarded_siblings() {
 }
 
 #[test]
+fn crossfile_numlit_tuple_narrowing() {
+    // Cross-file number-literal tuple-union narrowing: a `(.., ..) | (0, nil, nil)`
+    // return whose failure case is discriminated by the literal `0`. A
+    // `if total > 1 and topTime then` guard drops the `0` case (NumCompare on
+    // slot 0 + truthy on slot 2), narrowing both siblings to their success types.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/numlit_tuple_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_return_overload_synth() {
     // Cross-file sibling narrowing for SYNTHESIZED correlated return-only
     // overloads (unannotated function whose body matches the bare-return +

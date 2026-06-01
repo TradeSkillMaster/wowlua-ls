@@ -2921,11 +2921,11 @@ impl<'a> Analysis<'a> {
                         let lhs_ty = self.resolve_expr(lhs);
                         let rhs_ty = self.resolve_expr(rhs);
                         if let Some(s) = lhs_sym
-                            && matches!(rhs_ty, Some(ValueType::Number)) {
+                            && matches!(rhs_ty, Some(ValueType::Number | ValueType::NumberLiteral(_))) {
                                 record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, ValueType::Number);
                             }
                         if let Some(s) = rhs_sym
-                            && matches!(lhs_ty, Some(ValueType::Number)) {
+                            && matches!(lhs_ty, Some(ValueType::Number | ValueType::NumberLiteral(_))) {
                                 record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, ValueType::Number);
                             }
                     } else if op == Operator::Concatenate {
