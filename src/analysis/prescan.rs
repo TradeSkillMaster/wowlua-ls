@@ -2357,12 +2357,29 @@ impl<'a> Analysis<'a> {
                 // (the union case `(fun(): T) | T` falls through to here via the
                 // Union arm below).
                 if let Some(ref arg_ret) = type_info.ret {
-                    for ret_ann in returns {
+                    'ret_loop: for ret_ann in returns {
                         if let AnnotationType::Simple(name) = ret_ann
                             && generic_names.contains(name) && !subs.contains_key(name) {
                                 subs.insert(name.clone(), arg_ret.clone());
                                 break;
                             }
+                        // Handle T? = Union([Simple("T"), Simple("nil")]): strip
+                        // nil from the argument's return type and bind T.
+                        if let AnnotationType::Union(members) = ret_ann
+                            && members.iter().any(|m| matches!(m, AnnotationType::Simple(s) if s == "nil"))
+                        {
+                            for m in members {
+                                if let AnnotationType::Simple(name) = m
+                                    && generic_names.contains(name) && !subs.contains_key(name)
+                                {
+                                    let stripped = arg_ret.strip_nil();
+                                    if !matches!(stripped, ValueType::Nil) {
+                                        subs.insert(name.clone(), stripped);
+                                    }
+                                    break 'ret_loop;
+                                }
+                            }
+                        }
                     }
                 }
                 // fun(x: T, y: A): ... — infer generics from the argument

@@ -636,6 +636,56 @@ local un1 = newFromUnion(GenMyClass)
 local un2 = newFromUnion(function() return GenMyClass end)
 --    ^ hover: (local) un2: GenMyClass
 
+-- ── Infer T from `fun(): T?` parameter (optional return) ─────────────────────
+-- When the param annotation is `fun(): T?`, T should be bound from the argument
+-- function's return type with nil stripped.
+
+---@return number?
+local function maybeNumber() return 1 end
+
+---@return string
+local function alwaysString() return "" end
+
+---@generic T
+---@param factory fun(): T?
+---@return T
+---@diagnostic disable-next-line: missing-return
+local function makeFromOptionalFactory(factory) end
+
+local optF1 = makeFromOptionalFactory(maybeNumber)
+--    ^ hover: (local) optF1: number
+
+local optF2 = makeFromOptionalFactory(alwaysString)
+--    ^ hover: (local) optF2: string
+
+-- Bare nil return: T should not bind to nil, leaving the result unresolved.
+---@return nil
+local function returnsNil() return nil end
+local optF3 = makeFromOptionalFactory(returnsNil)
+--    ^ hover: (local) optF3: never
+
+-- Chained method call on parameterized class with fun(): T? generic binding.
+---@class OptContainer<T>
+local OptContainer = {}
+
+---@generic T
+---@param factory fun(): T?
+---@return OptContainer<T>
+---@diagnostic disable-next-line: missing-return
+function OptContainer.Create(factory) end
+
+---@param handler fun(value: T): boolean
+---@return self
+---@diagnostic disable-next-line: missing-return
+function OptContainer:Handle(handler) end
+
+---@diagnostic disable-next-line: missing-return
+OptContainer.Create(maybeNumber):Handle(function(value)
+--                                                ^ hover: (param) value: number
+    local optSum = value + 1
+    --    ^ hover: (local) optSum: number
+end)
+
 -- ── Parameterized return type carries inferred T to method calls ─────────────
 -- Regression: `New` returns `ObjectPool<T>`, so `pool:Get()` should resolve
 -- to `T` via the receiver-type_args path (common object pool pattern).
