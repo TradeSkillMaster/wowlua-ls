@@ -3184,14 +3184,27 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
             }
         },
         Operator::LessThan | Operator::GreaterThan | Operator::LessThanOrEquals | Operator::GreaterThanOrEquals => {
-            match (&lhs_type, &rhs_type) {
-                (ValueType::Number, ValueType::Number) => Some(ValueType::Boolean(None)),
-                (ValueType::String(_), ValueType::String(_)) => Some(ValueType::Boolean(None)),
-                (ValueType::Any, _) | (_, ValueType::Any) => Some(ValueType::Boolean(None)),
-                (ValueType::TypeVariable(_), _) | (_, ValueType::TypeVariable(_)) => Some(ValueType::Boolean(None)),
-                (ValueType::Table(_), _) | (_, ValueType::Table(_)) => Some(ValueType::Boolean(None)),
-                (ValueType::Userdata, _) | (_, ValueType::Userdata) => Some(ValueType::Boolean(None)),
-                _ => None,
+            fn can_ordered_cmp(lhs: &ValueType, rhs: &ValueType) -> bool {
+                match (lhs, rhs) {
+                    (ValueType::Number, ValueType::Number) => true,
+                    (ValueType::String(_), ValueType::String(_)) => true,
+                    (ValueType::Any, _) | (_, ValueType::Any) => true,
+                    (ValueType::TypeVariable(_), _) | (_, ValueType::TypeVariable(_)) => true,
+                    (ValueType::Table(_), _) | (_, ValueType::Table(_)) => true,
+                    (ValueType::Userdata, _) | (_, ValueType::Userdata) => true,
+                    (ValueType::Union(types), _) => types.iter().all(|t| can_ordered_cmp(t, rhs)),
+                    (_, ValueType::Union(types)) => types.iter().all(|t| can_ordered_cmp(lhs, t)),
+                    (ValueType::Intersection(types), _) => types.iter().any(|t| can_ordered_cmp(t, rhs)),
+                    (_, ValueType::Intersection(types)) => types.iter().any(|t| can_ordered_cmp(lhs, t)),
+                    (ValueType::OpaqueAlias(_, inner), _) => can_ordered_cmp(inner, rhs),
+                    (_, ValueType::OpaqueAlias(_, inner)) => can_ordered_cmp(lhs, inner),
+                    _ => false,
+                }
+            }
+            if can_ordered_cmp(&lhs_type, &rhs_type) {
+                Some(ValueType::Boolean(None))
+            } else {
+                None
             }
         }
         Operator::NotEquals | Operator::Equals => Some(ValueType::Boolean(None)),

@@ -164,6 +164,19 @@ local v4
 _use(v4 < v4)
 --   ^ diag: none
 
+-- Union with number members — no false positive (e.g. number | Enum.Quality)
+---@enum Quality
+local Quality = { Common = 1, Rare = 2, Epic = 3 }
+
+---@type number | Quality
+local numOrEnum
+_use(numOrEnum < 0)
+--   ^ diag: none
+_use(numOrEnum >= 5)
+--   ^ diag: none
+_use(0 < numOrEnum)
+--   ^ diag: none
+
 -- Suppress comparison diagnostic via @diagnostic
 ---@diagnostic disable-next-line: invalid-op
 _use(nil < 1)
