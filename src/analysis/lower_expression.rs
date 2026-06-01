@@ -307,6 +307,58 @@ impl<'a> Analysis<'a> {
                     for (sym, _) in &sibling_narrow_guards {
                         self.narrow_siblings(*sym, scope_idx);
                     }
+                    // Also narrow correlated locals (locals always assigned together in a
+                    // branchy reassignment pattern) for each guard symbol, mirroring the
+                    // if-branch narrowing path (`narrow_correlated_locals`). These share
+                    // the RHS scope with the code after the `and`, so capture pre-narrow
+                    // versions and tracking-map entries to restore them after the RHS.
+                    let mut correlated_restore: Vec<(SymbolIndex, usize)> = Vec::new();
+                    let mut correlated_tracking: Vec<SymbolIndex> = Vec::new();
+                    // Reuse guard_seen for dedup: correlated siblings that are
+                    // themselves guard symbols are already narrowed.
+                    let coalesce_syms: std::collections::HashSet<SymbolIndex> =
+                        coalesce_pre_narrow.iter().map(|(s, _)| *s).collect();
+                    for (sym, _) in &sibling_narrow_guards {
+                        for sib in self.correlated_local_siblings(*sym) {
+                            if sib.is_external()
+                                || !guard_seen.insert(sib)
+                                || coalesce_syms.contains(&sib)
+                            {
+                                continue;
+                            }
+                            let ver = self.ir.version_for_scope(sib, scope_idx);
+                            // Skip siblings already narrowed by `narrow_siblings`
+                            // (return-only overload path) — their OverloadNarrow
+                            // version already encodes the precise correlated type.
+                            let already_narrowed = self.ir.symbols[sib.val()].versions[ver]
+                                .type_source
+                                .is_some_and(|ts| matches!(self.ir.expr(ts), Expr::OverloadNarrow { .. }));
+                            if already_narrowed {
+                                continue;
+                            }
+                            if self.narrowed_symbols.entry(scope_idx).or_default().insert(sib) {
+                                correlated_tracking.push(sib);
+                            }
+                            self.push_strip_nil_version(sib, scope_idx);
+                            correlated_restore.push((sib, ver));
+                            // Mirror narrow_correlated_locals: propagate through
+                            // `x = x or sib` coalesce derivations.
+                            for derived in self.or_coalesce_derived(sib) {
+                                if derived.is_external()
+                                    || !guard_seen.insert(derived)
+                                    || coalesce_syms.contains(&derived)
+                                {
+                                    continue;
+                                }
+                                let dv = self.ir.version_for_scope(derived, scope_idx);
+                                if self.narrowed_symbols.entry(scope_idx).or_default().insert(derived) {
+                                    correlated_tracking.push(derived);
+                                }
+                                self.push_strip_nil_version(derived, scope_idx);
+                                correlated_restore.push((derived, dv));
+                            }
+                        }
+                    }
                     let expr_start = self.ir.exprs.len();
                     let rhs_id = self.lower_expression(rhs, scope_idx);
                     // Mark the RHS sub-tree as conditionally reached for short-circuit
@@ -435,6 +487,17 @@ impl<'a> Analysis<'a> {
                     for (sib, pre_ver) in sibling_restore.iter().rev() {
                         if self.ir.symbols[sib.val()].versions.len() > *pre_ver + 1 {
                             self.ir.push_alias_version(*sib, *pre_ver, scope_idx);
+                        }
+                    }
+                    // Remove correlated-local narrowing tracking and restore versions.
+                    for sym in correlated_tracking.iter().rev() {
+                        if let Some(set) = self.narrowed_symbols.get_mut(&scope_idx) {
+                            set.remove(sym);
+                        }
+                    }
+                    for (sym, pre_ver) in correlated_restore.iter().rev() {
+                        if self.ir.symbols[sym.val()].versions.len() > *pre_ver + 1 {
+                            self.ir.push_alias_version(*sym, *pre_ver, scope_idx);
                         }
                     }
                     // Restore original versions so code after `and` sees the un-narrowed types

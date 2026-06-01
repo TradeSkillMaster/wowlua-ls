@@ -331,3 +331,21 @@ _use(_earlyExitNeqLargeUnion)
 ---@type NilFieldBag
 local _nilBag
 _use(_nilBag.a or _nilBag.b)
+
+-- Correlated locals narrowed through an `and` guard: when `endPos` and `found`
+-- are always assigned together, guarding `found` in `found and (endPos + 1)`
+-- must narrow `endPos` to non-nil, so the `+` is valid (no invalid-op).
+-- Mirrors the real pattern `link and strsub(s, endIndex + 1)` where both came
+-- from the same multi-return.
+---@param cond boolean
+local function _andGuardCorrelated(cond)
+    local endPos = nil ---@type number?
+    local found = nil  ---@type string?
+    if cond then
+        endPos = 5
+        found = "x"
+    end
+    local _r = found and (endPos + 1)
+    _use(_r)
+end
+_use(_andGuardCorrelated)

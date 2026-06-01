@@ -147,6 +147,28 @@ local function thenBranch(cond1, cond2)
 end
 _consume(thenBranch)
 
+-- ── `and` expression narrows correlated sibling in its RHS ──────────────
+-- `qty and <expr>` should narrow the correlated sibling `side` within the
+-- RHS, mirroring the `if qty then` then-branch behavior above.
+
+---@param cond1 boolean
+---@param cond2 boolean
+local function andGuardNarrows(cond1, cond2)
+    local qty = nil  ---@type number?
+    local side = nil ---@type string?
+    if cond1 then
+        qty = 10
+        side = "left"
+    elseif cond2 then
+        qty = 20
+        side = "right"
+    end
+    local r = qty and (side .. "!")
+    --                 ^ hover: (local) side: string
+    _consume(r)
+end
+_consume(andGuardNarrows)
+
 -- ── Assert narrows correlated locals ────────────────────────────────────
 
 ---@param cond1 boolean

@@ -1965,23 +1965,26 @@ impl<'a> Analysis<'a> {
         self.correlated_locals.retain(|g| g.len() >= 2);
     }
 
+    /// Collect the sibling locals correlated with `sym_idx` (locals always assigned
+    /// together in the same branches). Excludes `sym_idx` itself. May contain
+    /// duplicates if `sym_idx` appears in multiple groups — callers are responsible
+    /// for deduplication (e.g. via a `HashSet`).
+    pub(super) fn correlated_local_siblings(&self, sym_idx: SymbolIndex) -> Vec<SymbolIndex> {
+        let mut siblings: Vec<SymbolIndex> = Vec::new();
+        for group in &self.correlated_locals {
+            if group.contains(&sym_idx) {
+                siblings.extend(group.iter().copied().filter(|&s| s != sym_idx));
+            }
+        }
+        siblings
+    }
+
     /// When a local variable from a correlated-local group is narrowed (nil stripped),
     /// also narrow all sibling locals in the same group. This handles the pattern where
     /// multiple locals are always assigned together in every branch of an if/elseif chain
     /// (without else), so guarding one implies all are non-nil.
     fn narrow_correlated_locals(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
-        // Find all groups containing sym_idx and collect sibling indices.
-        let mut siblings: Vec<SymbolIndex> = Vec::new();
-        for group in &self.correlated_locals {
-            if group.contains(&sym_idx) {
-                for &sibling in group {
-                    if sibling != sym_idx && !siblings.contains(&sibling) {
-                        siblings.push(sibling);
-                    }
-                }
-            }
-        }
-        for sibling in siblings {
+        for sibling in self.correlated_local_siblings(sym_idx) {
             // Correlation only tells us the sibling was assigned in the same
             // branches as the guard variable (i.e. it is non-nil). It does NOT
             // imply the sibling is truthy — a boolean sibling assigned `false`
