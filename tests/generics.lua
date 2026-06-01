@@ -1166,4 +1166,33 @@ local fpResult6 = funParamApply(mathRound, "oops")
 --    ^ hover: (local) fpResult6: string
 --                                ^ diag: type-mismatch
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2, mathRound, funParamApply, numToStr, unannotated, retBound, numId }
+-- ── Optional generic param after a nil arg (no false type-mismatch) ────────
+-- Regression: `@param key? K` resolves to `K | nil`. When an earlier arg binds
+-- a sibling generic from a nil value, substitution must not drop the unbound
+-- `K` and collapse `K | nil` to `nil` (which produced a bogus `expected nil`).
+
+---@generic V, K
+---@param value V
+---@param key? K
+local function ignoreIfEquals(value, key) return value, key end
+
+ignoreIfEquals(nil, "someKey")
+
+-- A non-nil first arg binding V must also leave the optional K param clean.
+ignoreIfEquals(42, "anotherKey")
+
+-- The fix must NOT over-suppress: when the optional param references a generic
+-- that IS bound from a sibling argument, a real mismatch is still reported.
+-- Here `key? V` resolves to `V | nil`; V is bound to number by `value`, so a
+-- string key remains a genuine type-mismatch (expected `number?`).
+---@generic V
+---@param value V
+---@param key? V
+local function pairSameGeneric(value, key) return value, key end
+
+pairSameGeneric(5, "str")
+--                 ^ diag: type-mismatch
+
+pairSameGeneric(5, 7)
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2, mathRound, funParamApply, numToStr, unannotated, retBound, numId, ignoreIfEquals, pairSameGeneric }

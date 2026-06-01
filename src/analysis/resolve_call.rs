@@ -2508,13 +2508,22 @@ impl<'a> Analysis<'a> {
                 subs.get(name).cloned().unwrap_or_else(|| vt.clone())
             }
             ValueType::Union(types) => {
+                // Keep unsubstituted type variables in place: dropping them would
+                // collapse an optional generic param `T | nil` to `nil` when T is
+                // unbound (e.g. excluded from substitution because it was bound from
+                // the very argument being checked), producing a bogus `expected nil`.
+                // Downstream callers treat a union still containing a type variable
+                // as unresolved and skip the check entirely.
                 let subst: Vec<_> = types.iter()
                     .map(|t| self.substitute_generics_deep(t, subs))
-                    .filter(|t| !matches!(t, ValueType::TypeVariable(_)))
                     .collect();
                 ValueType::make_union(subst)
             }
             ValueType::Intersection(types) => {
+                // Unlike unions (where dropping an unbound type variable narrows
+                // the type and causes false positives), dropping from an
+                // intersection *widens* it, which is safe — `T & U` with T
+                // unbound degrades to just `U`.
                 let subst: Vec<_> = types.iter()
                     .map(|t| self.substitute_generics_deep(t, subs))
                     .filter(|t| !matches!(t, ValueType::TypeVariable(_)))

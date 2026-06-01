@@ -381,3 +381,42 @@ leafStr:Toggle()
 ---@type Leaf<boolean>
 local leafBool = {}
 leafBool:Toggle()
+
+-- ── Optional keyof-constrained param on a chained method (unbound T) ─────────
+-- Regression: `@generic K: keyof T` makes `key? K` resolve to `K | nil`. On a
+-- receiver whose class type param T is unbound (here `---@type KChain` with no
+-- type arg), calling `(nil, "literalKey")` must NOT collapse `K | nil` to `nil`
+-- and emit a bogus `expected nil` type-mismatch. The first `nil` arg binds the
+-- sibling generic V; substitution must keep the unbound K so the param type is
+-- treated as unresolved and skipped. Each call returns `self` so the chain
+-- composes (mirrors a reactive publisher-schema builder chain).
+
+---@class KChain<T>
+local KChain = {}
+
+---@generic V, K: keyof T
+---@param value V
+---@param key? K
+---@return self
+function KChain:IgnoreIfEquals(value, key) return self end
+
+---@param value any
+---@return self
+function KChain:ReplaceWith(value) return self end
+
+---@type KChain
+local kchain = {}
+
+-- Multi-line chain: each call passes (nil, "literalKey") with no false positive.
+kchain
+	:IgnoreIfEquals(nil, "alpha")
+	:IgnoreIfEquals(nil, "beta")
+	:ReplaceWith(nil)
+
+-- Single-line chain resolves to self (the receiver type) the whole way down.
+local kchained = kchain:IgnoreIfEquals(nil, "alpha"):IgnoreIfEquals(nil, "beta"):ReplaceWith(nil)
+--    ^ hover: (local) kchained: KChain {
+
+-- A single call also resolves to self (returns the receiver type).
+local ksingle = kchain:IgnoreIfEquals(nil, "gamma")
+--    ^ hover: (local) ksingle: KChain {
