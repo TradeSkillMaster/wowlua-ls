@@ -105,6 +105,24 @@ local _u = #v3
 local _v = #42
 -- ^ diag: none
 
+-- In-place table conversion loop: #val should not warn when val was just read
+-- from a table whose elements are later overwritten (value_type self-widening)
+---@return string
+---@return string
+---@return string
+local function _splitData() return "", "", "" end
+local function _inPlaceConvert()
+    local parts = {_splitData()}
+    for i = 1, #parts do
+        local val = parts[i]
+        --    ^ hover: (local) val: string
+        local len = #val
+        _use(len)
+        parts[i] = 42
+    end
+end
+_inPlaceConvert()
+
 -- Ordered comparisons on incompatible types
 
 -- nil compared with number

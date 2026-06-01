@@ -475,12 +475,35 @@ impl<'a> Analysis<'a> {
 
             let bracket_fields = self.ir.bracket_key_fields[&table_idx].clone();
             let array_fields = self.ir.tables[table_idx.val()].array_fields.clone();
+            let constructor_bracket_count = self.ir.tables[table_idx.val()].constructor_bracket_count;
+            // When the table has array fields (e.g. `{strsplit(",", s)}`), only process
+            // constructor bracket fields on the first pass. Post-construction bracket
+            // assignments (entries beyond constructor_bracket_count) are deferred to the
+            // `already_resolved` branch on the next fixpoint iteration. This prevents
+            // self-referential widening: `tbl[i] = converted_val` would otherwise union
+            // with the original array field types on the same pass, causing reads like
+            // `local val = tbl[i]` to see both original and converted types.
+            // When there are no array fields (e.g. `local t = {}; t[1] = val`), process
+            // all bracket fields immediately since they are the only type source.
+            //
+            // ORDERING INVARIANT: This relies on BracketIndex expressions resolving in
+            // the fixpoint iteration where value_type is first set (from array fields).
+            // Once resolved, non-volatile expressions are removed from `pending` and
+            // won't be re-resolved when the `already_resolved` branch later replaces
+            // value_type with the post-construction assignment types.
+            let defer_post_construction = !array_fields.is_empty()
+                && bracket_fields.len() > constructor_bracket_count;
+            let effective_bracket_fields = if defer_post_construction {
+                &bracket_fields[..constructor_bracket_count]
+            } else {
+                &bracket_fields[..]
+            };
 
             let mut key_types: Vec<ValueType> = Vec::new();
             let mut val_types: Vec<ValueType> = Vec::new();
             let mut all_resolved = true;
 
-            for (key_expr, val_expr) in &bracket_fields {
+            for (key_expr, val_expr) in effective_bracket_fields {
                 if let Some(kt) = self.resolve_expr_to_broad_type(*key_expr) {
                     if !key_types.contains(&kt) { key_types.push(kt); }
                 } else {
@@ -519,7 +542,8 @@ impl<'a> Analysis<'a> {
             // for display purposes (hover/inlay hints). The resolved value_type
             // (union of both) is used for type checking; initial_value_type preserves
             // what the constructor produced so `{strsplit(","  , s)}` shows `string[]`.
-            if !array_fields.is_empty() && !bracket_fields.is_empty() {
+            let has_post_construction = bracket_fields.len() > constructor_bracket_count;
+            if !array_fields.is_empty() && has_post_construction {
                 let mut initial_types: Vec<ValueType> = Vec::new();
                 for af in &array_fields {
                     if let Some(vt) = self.resolve_expr_to_broad_type(*af)

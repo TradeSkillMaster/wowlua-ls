@@ -945,6 +945,13 @@ pub(crate) struct TableInfo {
     /// so no blob version bump is needed.
     #[serde(skip)]
     pub(crate) is_explicit_map: bool,
+    /// How many entries in `bracket_key_fields` came from the table constructor
+    /// (vs. post-construction bracket assignments like `tbl[i] = val`).
+    /// Used by `infer_bracket_field_types()` to defer post-construction bracket
+    /// assignments to a subsequent fixpoint iteration, so reads resolve against
+    /// the constructor's array-field types first.
+    #[serde(skip)]
+    pub(crate) constructor_bracket_count: usize,
     /// True when `value_type` was set from a type annotation (`@type T[]`, `table<K,V>`).
     /// Bracket assignments should not override annotation-derived value types.
     #[serde(skip)]
