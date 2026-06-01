@@ -1096,6 +1096,11 @@ fn detect_setmetatable_call(root: SyntaxNode<'_>, result: &mut ScanResult) {
         .map(|c| c.name.as_str())
         .collect();
 
+    // Lazily built: maps assignment-target variable name → class name for
+    // `---@class Foo` / `local Action = {}` where the variable name differs
+    // from the class name.
+    let mut var_to_class: Option<HashMap<String, String>> = None;
+
     for stmt in block.statements() {
         let Statement::FunctionCall(call) = stmt else { continue };
         // Match bare `setmetatable(...)` call (not method call)
@@ -1107,11 +1112,24 @@ fn detect_setmetatable_call(root: SyntaxNode<'_>, result: &mut ScanResult) {
         let arg_exprs = args.expressions();
         if arg_exprs.len() != 2 { continue; }
 
-        // First arg: a single name matching a known class
+        // First arg: a single name matching a known class (directly, or via a
+        // local variable annotated with `---@class`).
         let Expression::Identifier(first_ident) = &arg_exprs[0] else { continue };
         let first_names = first_ident.names();
         if first_names.len() != 1 { continue; }
-        if !class_names.contains(first_names[0].as_str()) { continue; }
+        let class_name = if class_names.contains(first_names[0].as_str()) {
+            first_names[0].clone()
+        } else {
+            let vtc = var_to_class.get_or_insert_with(|| {
+                let stmts: Vec<_> = block.statements().into_iter().collect();
+                annotation_scanning::build_var_to_class(&stmts)
+            });
+            if let Some(name) = vtc.get(first_names[0].as_str()) {
+                name.clone()
+            } else {
+                continue;
+            }
+        };
 
         // Second arg: table constructor containing `__call` field
         let Expression::TableConstructor(tc) = &arg_exprs[1] else { continue };
@@ -1119,7 +1137,7 @@ fn detect_setmetatable_call(root: SyntaxNode<'_>, result: &mut ScanResult) {
             matches!(f.kind(), Some(FieldKind::Named { name, .. }) if name == "__call")
         });
         if has_call_field {
-            result.callable_classes.insert(first_names[0].clone());
+            result.callable_classes.insert(class_name);
         }
     }
 }

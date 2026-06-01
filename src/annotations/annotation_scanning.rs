@@ -445,7 +445,7 @@ pub(super) fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<Ann
 /// Build a per-file mapping from variable names to `@class` names.
 /// Handles `--- @class Foo\nlocal Bar = ...`, inline `local Bar = ... ---@class Foo`,
 /// and global assignments `--- @class Foo\nBar = ...`.
-fn build_var_to_class(all_stmts: &[Statement<'_>]) -> HashMap<String, String> {
+pub(super) fn build_var_to_class(all_stmts: &[Statement<'_>]) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for stmt in all_stmts {
         match stmt {
