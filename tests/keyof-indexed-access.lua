@@ -320,3 +320,31 @@ getField(pt, "title")
 --            ^ diag: generic-constraint-mismatch
 getField(item, "x")
 --              ^ diag: generic-constraint-mismatch
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- keyof on colon-defined methods (function Class:Method) — not just @field
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+---@class ColonMethods
+local ColonMethods = {}
+
+function ColonMethods:Draw()
+end
+
+function ColonMethods:Reset()
+end
+
+---@type ColonMethods
+local cm = {}
+
+-- Colon-defined method names satisfy the keyof constraint
+callMethod(cm, "Draw")
+callMethod(cm, "Reset")
+
+-- Invalid method name still fails
+callMethod(cm, "Nope")
+--              ^ diag: generic-constraint-mismatch
+
+-- Completions offer colon-defined method names
+callMethod(cm, "")
+--              ^ comp: Draw, Reset  diag: generic-constraint-mismatch

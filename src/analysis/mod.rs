@@ -2311,6 +2311,8 @@ fn check_fields_impl(
             let actual_type = actual_field.annotation.clone().or_else(|| {
                 match ir.expr(actual_field.expr) {
                     Expr::Literal(vt) => Some(vt.clone()),
+                    Expr::FunctionDef(idx) => Some(ValueType::Function(Some(*idx))),
+                    Expr::TableConstructor(idx) => Some(ValueType::Table(Some(*idx))),
                     _ => resolved_expr_cache.get(actual_field.expr.val())
                         .and_then(|v| v.clone()),
                 }
@@ -2369,6 +2371,8 @@ fn collect_class_fields_inner_impl(
         let field_type = field.annotation.clone().or_else(|| {
             match ir.expr(field.expr) {
                 Expr::Literal(vt) => Some(vt.clone()),
+                Expr::FunctionDef(func_idx) => Some(ValueType::Function(Some(*func_idx))),
+                Expr::TableConstructor(idx) => Some(ValueType::Table(Some(*idx))),
                 _ => resolved_expr_cache.get(field.expr.val())
                     .and_then(|v| v.clone()),
             }
