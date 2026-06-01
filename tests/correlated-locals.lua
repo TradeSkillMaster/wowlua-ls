@@ -553,3 +553,102 @@ local function threeVarComplementary(a, b, c)
     end
 end
 _consume(threeVarComplementary)
+
+-- ── Guard implications: `if A and not B then return` ⟹ A truthy implies B non-nil ──
+
+---@param s string
+---@return number?
+local function _maxPrice(s) _consume(s) return 5 end
+
+-- Basic: after the guard, narrowing the antecedent narrows the consequent non-nil
+---@param itemString string?
+local function guardImplicationBasic(itemString)
+    local maxPrice = itemString and _maxPrice(itemString) or nil
+    if itemString and not maxPrice then return true end
+    if itemString then
+        local x = maxPrice
+        --    ^ hover: (local) x: number
+        _consume(x)
+    end
+    return false
+end
+_consume(guardImplicationBasic)
+
+-- Fires through an unrelated if/elseif chain (the elseif narrows the antecedent)
+---@param itemString string?
+local function guardImplicationElseif(itemString, flag)
+    local maxPrice = itemString and _maxPrice(itemString) or nil
+    if itemString and not maxPrice then return true end
+    if flag then
+        return true
+    elseif itemString then
+        local x = maxPrice
+        --    ^ hover: (local) x: number
+        _consume(x)
+    end
+    return false
+end
+_consume(guardImplicationElseif)
+
+-- Reassigning the consequent after the guard invalidates the implication
+---@param itemString string?
+local function guardImplicationReassign(itemString)
+    local maxPrice = itemString and _maxPrice(itemString) or nil
+    if itemString and not maxPrice then return true end
+    maxPrice = _maxPrice("other")
+    if itemString then
+        local x = maxPrice
+        --    ^ hover: (local) x: number?
+        _consume(x)
+    end
+    return false
+end
+_consume(guardImplicationReassign)
+
+-- A guard nested inside a conditional branch must NOT leak past that branch
+---@param itemString string?
+local function guardImplicationNested(itemString, cond)
+    local maxPrice = itemString and _maxPrice(itemString) or nil
+    if cond then
+        if itemString and not maxPrice then return true end
+    end
+    if itemString then
+        local x = maxPrice
+        --    ^ hover: (local) x: number?
+        _consume(x)
+    end
+    return false
+end
+_consume(guardImplicationNested)
+
+-- Multi-antecedent: both a AND b must be narrowed truthy before c is non-nil
+---@param a string?
+---@param b number?
+---@param c boolean?
+local function guardImplicationMultiAntecedent(a, b, c)
+    if a and b and not c then return end
+    if a then
+        if b then
+            local x = c
+            --    ^ hover: (local) x: true
+            _consume(x)
+        end
+    end
+    return false
+end
+_consume(guardImplicationMultiAntecedent)
+
+-- Multi-antecedent negative: only one of two antecedents narrowed → no narrowing
+---@param a string?
+---@param b number?
+---@param c boolean?
+local function guardImplicationPartialAntecedent(a, b, c)
+    if a and b and not c then return end
+    if a then
+        local x = c
+        --    ^ hover: (local) x: boolean?
+        _consume(x)
+    end
+    return false
+end
+_consume(guardImplicationPartialAntecedent)

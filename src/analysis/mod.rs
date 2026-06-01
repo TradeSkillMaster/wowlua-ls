@@ -1528,6 +1528,13 @@ pub struct Analysis<'a> {
     /// Groups of local variables that are always assigned together in if/elseif branches.
     /// When one is narrowed via nil guard, others should be narrowed too.
     pub(crate) correlated_locals: Vec<Vec<SymbolIndex>>,
+    /// Implications established by early-return guards of the form
+    /// `if A1 and ... and An and not B then return end`. Reaching past such a guard
+    /// means its condition was false, i.e. `(A1 and ... and An) ⟹ B is non-nil`.
+    /// Each entry: (antecedents, consequent, guard_scope). When every antecedent is
+    /// later narrowed truthy within `guard_scope` or a descendant, the consequent is
+    /// narrowed non-nil. Invalidated when any involved symbol is reassigned.
+    pub(crate) guard_implications: Vec<(Vec<SymbolIndex>, SymbolIndex, ScopeIndex)>,
     /// Asymmetric narrowing: when the key symbol is narrowed non-nil, every derived
     /// symbol in the value list is also narrowed. Populated from `x = x or y`
     /// assignments — if `y` is known non-nil, `x` (just assigned `x or y`) is too.
@@ -1723,6 +1730,7 @@ impl<'a> Analysis<'a> {
             deferred_class_eq_narrowings: Vec::new(),
             deferred_event_narrowings: Vec::new(),
             correlated_locals: Vec::new(),
+            guard_implications: Vec::new(),
             or_coalesce_derivations: HashMap::new(),
             conditionally_reached_exprs: HashSet::new(),
             synth_return_overload_refinements: Vec::new(),

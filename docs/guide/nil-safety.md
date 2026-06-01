@@ -256,6 +256,27 @@ if not tradeType then return end
 
 No annotation needed — the LS detects the pattern automatically.
 
+## Guard implications
+
+An early-exit guard that combines two variables establishes a relationship the LS remembers for the rest of the function. A guard of the form `if a and not b then return end` says "if `a` is set, then `b` must also be set" — so later, whenever `a` is narrowed truthy, `b` is narrowed non-nil too:
+
+```lua
+---@param itemString string?
+local function filter(itemString)
+    local maxPrice = itemString and GetMaxPrice(itemString) or nil
+    if itemString and not maxPrice then
+        return true -- no price configured for this item
+    end
+    -- ...
+    if itemString then
+        return buyout > maxPrice -- maxPrice narrowed to number, no warning
+    end
+    return false
+end
+```
+
+The guard rules out the "`itemString` set but `maxPrice` nil" case, so inside the later `if itemString then` branch `maxPrice` can't be nil. The relationship is dropped if either variable is reassigned, and it only applies after a guard that always runs (a guard nested inside another conditional doesn't leak out).
+
 ### Manual `@correlated` for locals
 
 When the automatic inference can't detect the correlation (e.g. variables assigned together across loop iterations), you can declare it manually:

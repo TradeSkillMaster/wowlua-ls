@@ -269,6 +269,7 @@ impl<'a> Analysis<'a> {
                             self.narrow_siblings(sym_idx, target_scope);
                             self.narrow_correlated_locals(sym_idx, target_scope);
                             self.narrow_or_coalesce_derived(sym_idx, target_scope, true);
+                            self.apply_guard_implications(sym_idx, target_scope);
                             // Boolean type-guard alias: `local b = type(x) == "string"; if b then`
                             self.try_apply_type_guard_alias(sym_idx, target_scope, true);
                         }
@@ -1193,6 +1194,7 @@ impl<'a> Analysis<'a> {
         self.narrow_siblings(sym_idx, scope_idx);
         self.narrow_correlated_locals(sym_idx, scope_idx);
         self.narrow_or_coalesce_derived(sym_idx, scope_idx, true);
+        self.apply_guard_implications(sym_idx, scope_idx);
     }
 
     /// Narrow the expression passed to `assert()`. Decomposes `and` chains so that
@@ -1875,6 +1877,83 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// For each early-exit branch whose condition is an `and`-chain with one or more
+    /// truthy terms and exactly one negated (`not B`) term, record the implication
+    /// `(all truthy terms) ⟹ B is non-nil`. Reaching code past the guard means the
+    /// condition was false (`not(A1 and ... and not B)` = `not A1 or ... or B`), so once
+    /// every truthy antecedent is later narrowed truthy, the consequent must be non-nil.
+    pub(super) fn detect_guard_implications(
+        &mut self,
+        exiting_branches: &[IfBranch<'_>],
+        scope_idx: ScopeIndex,
+    ) {
+        for branch in exiting_branches {
+            let Some(cond) = branch.expression() else { continue };
+            let Some((truthy, falsy)) =
+                Self::extract_and_truthiness_shape(&cond, &self.ir, scope_idx)
+            else {
+                continue;
+            };
+            // Need at least one antecedent and exactly one consequent: with multiple
+            // negated terms the negation is `B1 or B2 or ...`, which doesn't pin down
+            // any single consequent as non-nil.
+            if truthy.is_empty() || falsy.len() != 1 {
+                continue;
+            }
+            let consequent = falsy[0];
+            if truthy.contains(&consequent) {
+                continue;
+            }
+            // Avoid duplicate entries when multiple exiting branches share the same shape.
+            let already_exists = self.guard_implications.iter().any(|(a, c, s)| {
+                *c == consequent && *s == scope_idx && *a == truthy
+            });
+            if !already_exists {
+                self.guard_implications.push((truthy, consequent, scope_idx));
+            }
+        }
+    }
+
+    /// Remove every guard implication mentioning `sym_idx` (as an antecedent or the
+    /// consequent). Reassigning either side breaks the guarantee, so the implication
+    /// can no longer be applied.
+    pub(super) fn invalidate_guard_implications(&mut self, sym_idx: SymbolIndex) {
+        self.guard_implications
+            .retain(|(antecedents, consequent, _)| {
+                *consequent != sym_idx && !antecedents.contains(&sym_idx)
+            });
+    }
+
+    /// When a symbol is narrowed truthy in `scope_idx`, fire any guard implication whose
+    /// antecedents are now all truthy-narrowed in (a scope within) `guard_scope`'s subtree,
+    /// stripping falsy (nil + false) from the consequent. The guard `if A and not B then
+    /// return` means past it `not B` was false, i.e. B is truthy (not merely non-nil).
+    fn apply_guard_implications(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
+        let mut consequents: Vec<SymbolIndex> = Vec::new();
+        for (antecedents, consequent, guard_scope) in &self.guard_implications {
+            if !antecedents.contains(&sym_idx) {
+                continue;
+            }
+            // The implication only holds for code reached after the guard, i.e. within
+            // the guard's scope or a descendant of it.
+            if *guard_scope != scope_idx && !self.ir.is_ancestor_scope(*guard_scope, scope_idx) {
+                continue;
+            }
+            if antecedents
+                .iter()
+                .all(|&a| self.is_symbol_falsy_narrowed(a, scope_idx))
+                && !consequents.contains(consequent)
+            {
+                consequents.push(*consequent);
+            }
+        }
+        for consequent in consequents {
+            if !self.is_symbol_falsy_narrowed(consequent, scope_idx) {
+                self.narrow_symbol_strip_falsy(consequent, scope_idx);
+            }
+        }
+    }
+
     /// Remove `sym_idx` from every correlated-local group that contains it, then prune
     /// groups that have shrunk below two members. Called on any reassignment of `sym_idx`:
     /// writing to a variable after the correlated if/elseif branches breaks the
@@ -1934,6 +2013,7 @@ impl<'a> Analysis<'a> {
             if falsy {
                 self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(derived);
                 self.push_strip_falsy_version(derived, scope_idx);
+                self.apply_guard_implications(derived, scope_idx);
             } else {
                 self.push_strip_nil_version(derived, scope_idx);
             }

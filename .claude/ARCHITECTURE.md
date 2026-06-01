@@ -268,6 +268,15 @@ When multiple local variables are assigned in every explicit branch of an if/els
 
 **Narrowing**: `narrow_correlated_locals()` in narrowing.rs is called from `narrow_symbol_strip_nil()`, `narrow_symbol_strip_falsy()`, and direct narrowing insertion points in `analyze_nil_guard()`, `analyze_early_exit_guard()`, and `narrow_assert_expr()`. It looks up the symbol in `correlated_locals` groups and inserts sibling narrowings into `narrowed_symbols` (and `falsy_narrowed_symbols` if applicable).
 
+## Guard implications (`if A and not B then return`)
+An early-return guard `if A1 and ... and An and not B then return end` establishes, for code reached past it, the implication `(A1 and ... and An) ⟹ B is truthy` (the negation of the guard condition is `not A1 or ... or B`; `not B` being false means B is truthy). Stored as `guard_implications: Vec<(Vec<SymbolIndex>, SymbolIndex, ScopeIndex)>` on `Analysis` (antecedents, single consequent, the scope the guard lives in).
+
+**Detection**: `detect_guard_implications()` in narrowing.rs runs from build_ir.rs alongside `detect_complementary_exit_guards`, for every exiting branch of the early-exit prefix. It reuses `extract_and_truthiness_shape()` and records an entry only when there is ≥1 truthy antecedent and exactly one negated term (multiple negated terms give `B1 or B2 or ...`, which pins down no single consequent). Duplicate entries are avoided by checking existing implications before pushing.
+
+**Application**: `apply_guard_implications()` fires from `narrow_symbol_strip_falsy()`, the bare-identifier then-branch insert in `analyze_nil_guard_inner()`, and `narrow_or_coalesce_derived()` (falsy branch). When a symbol that is an antecedent gets narrowed truthy in a scope, and (a) that scope is within the guard's scope subtree (`is_ancestor_scope`, guarding against guards nested in conditional branches leaking out) and (b) every antecedent is now `falsy_narrowed` in that scope, the consequent is `narrow_symbol_strip_falsy`-ed. The consequent is claimed truthy (falsy-stripped), not merely non-nil: the guard `if A and not B then return` means `not B` was false past the guard, i.e. B is truthy.
+
+**Invalidation**: `invalidate_guard_implications()` runs at both reassignment sites in build_ir.rs (alongside `invalidate_correlated_locals`), dropping any implication that mentions the reassigned symbol as antecedent or consequent.
+
 ## `x = x or y` coalesce narrowing
 The idiom `x = x or y` makes `x` non-nil whenever `y` is non-nil: either the old `x` was truthy (kept) or `y` is used (and `y` non-nil means the result is non-nil). Narrowing is one-directional — narrowing `y` narrows `x`, but narrowing `x` tells you nothing about `y`. Stored as `or_coalesce_derivations: HashMap<SymbolIndex, Vec<SymbolIndex>>` (source `y` → derived `x`s).
 

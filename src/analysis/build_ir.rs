@@ -952,6 +952,11 @@ impl<'a> Analysis<'a> {
                     if exiting_prefix_len >= 2 {
                         self.detect_complementary_exit_guards(&branches[..exiting_prefix_len], scope_idx);
                     }
+                    // Guard implications: `if A and not B then return` establishes
+                    // `A ⟹ B is non-nil` for code reached past the guard.
+                    if exiting_prefix_len >= 1 {
+                        self.detect_guard_implications(&branches[..exiting_prefix_len], scope_idx);
+                    }
                     // Ensure-initialized: `if not x.f then x.f = val end`
                     // Only for single-branch if without else.
                     if branches.len() == 1 && !has_else
@@ -2136,6 +2141,7 @@ impl<'a> Analysis<'a> {
                                         }
                                         // Reassignment breaks any correlated-local group for this symbol.
                                         self.invalidate_correlated_locals(symbol_idx);
+                                        self.invalidate_guard_implications(symbol_idx);
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                                         let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
@@ -2221,6 +2227,7 @@ impl<'a> Analysis<'a> {
                                         self.maybe_register_or_coalesce(symbol_idx, root_name, expression, scope_idx, false);
                                         // Reassignment breaks any correlated-local group for this symbol.
                                         self.invalidate_correlated_locals(symbol_idx);
+                                        self.invalidate_guard_implications(symbol_idx);
                                         if let Some(expr_id) = type_source {
                                             self.ir.set_type_source(symbol_idx, expr_id);
                                             // Track multi-return siblings from function calls
