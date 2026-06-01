@@ -1280,6 +1280,10 @@ impl<'a> Analysis<'a> {
                     for &(ret_index, sibling_idx) in &siblings {
                         if sibling_idx == sym_idx { continue; }
                         if self.narrow_kind_for(sibling_idx, scope_idx).is_some() { continue; }
+                        // Skip siblings reassigned (including via @cast) since
+                        // the multi-return assignment — a user-specified type
+                        // override takes precedence over inferred sibling narrowing.
+                        if self.sibling_was_reassigned(sibling_idx, scope_idx, ret_index) { continue; }
                         if let Some(new_ver) = self.ir.push_overload_narrow_version(
                             sibling_idx, scope_idx, func_expr, ret_index, narrowed_info.clone(),
                         ) {

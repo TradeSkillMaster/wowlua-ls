@@ -252,3 +252,47 @@ local lineDefVar = nil
 
 ---@cast lineDefVar AsDefClass
 --                  ^ def: local 234:1  hover: (class) AsDefClass
+
+-- ── @cast with deferred class-eq sibling narrowing (regression) ───────────
+-- When a multi-return function uses tuple-union @return with a class-typed
+-- discriminant, and the function is forward-declared (resolved in Phase 2),
+-- @cast on a sibling should take precedence over deferred OverloadNarrow.
+
+---@class CastErrKind
+---@field MIN number
+---@field MAX number
+
+---@type CastErrKind
+local CEK = { MIN = 1, MAX = 2 }
+
+local castNs = {}
+
+---@param str string
+---@return number
+local function castNeedsStr(str)
+    return #str
+end
+
+local function castMultiRetTest()
+    local ok, errKind, errVal = castNs.validate("test")
+    if ok or not errKind then
+        return ok
+    elseif errKind == CEK.MIN then
+        ---@cast errVal string
+        local r = castNeedsStr(errVal)
+--                              ^ hover: (local) errVal: string
+    elseif errKind == CEK.MAX then
+        ---@cast errVal number
+        local r = errVal + 1
+--                 ^ hover: (local) errVal: number
+    else
+        error("bad")
+    end
+end
+
+---@return (true)
+---|       (false, CastErrKind errKind, string errVal)
+---|       (false, CastErrKind errKind, number errVal)
+function castNs.validate(item)
+    return true
+end
