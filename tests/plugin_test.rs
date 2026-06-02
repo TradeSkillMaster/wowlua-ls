@@ -19,7 +19,7 @@ fn analyze_with_plugins_and_globals(lua_source: &str, plugin_paths: &[PathBuf], 
     let result = analysis.into_result();
 
     let mut engine = PluginEngine::new(plugin_paths);
-    let diags = engine.run_plugins(&result, lua_source, "test://file.lua", "file.lua");
+    let diags = engine.run_plugins(&result, lua_source, "test://file.lua", "file.lua", plugin_paths);
     diags.into_iter().map(|d| (d.code, d.message)).collect()
 }
 

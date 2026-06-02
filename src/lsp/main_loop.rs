@@ -516,13 +516,14 @@ impl WorkspaceState {
     /// Run plugins against an analysis result and return diagnostics.
     /// Returns empty vec when no plugins are loaded.
     fn run_plugins(&mut self, result: &AnalysisResult, text: &str, uri: &lsp_types::Uri, file_path: &Path) -> Vec<diagnostics::PluginDiag> {
+        let allowed = self.configs.plugins_for(file_path);
         if let Some(ref mut engine) = self.plugin_engine {
             let uri_str = uri.to_string();
             let file_name = file_path
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            return engine.run_plugins(result, text, &uri_str, &file_name)
+            return engine.run_plugins(result, text, &uri_str, &file_name, &allowed)
                 .into_iter()
                 .map(|d| diagnostics::PluginDiag {
                     code: d.code,

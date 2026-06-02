@@ -114,6 +114,7 @@ impl PluginEngine {
         source: &str,
         file_uri: &str,
         file_name: &str,
+        allowed: &[PathBuf],
     ) -> Vec<PluginDiagnostic> {
         let analysis = Arc::new(query::AnalysisSnapshot::from_result(analysis));
         let mut all_diags = Vec::new();
@@ -121,6 +122,11 @@ impl PluginEngine {
         for plugin in &mut self.plugins {
             if plugin.failures >= MAX_FAILURES {
                 continue; // disabled after too many consecutive failures
+            }
+            // Plugins are isolated per-file: only run those declared by the
+            // file's nearest config (matched by source path).
+            if !allowed.contains(&plugin.source_path) {
+                continue;
             }
 
             match Self::run_single_plugin(

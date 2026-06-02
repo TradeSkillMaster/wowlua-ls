@@ -270,46 +270,38 @@ impl ProjectConfigs {
         self.toc_file_flavors.extend(toc_data.file_flavors);
     }
 
-    /// Check if a path is ignored by any ancestor config.
-    /// Each config's ignore patterns are checked relative to that config's directory.
-    /// Files listed in `plugins` are never ignored (the user explicitly opted in).
+    /// Check if a path is ignored. Isolated: only the nearest ancestor config's
+    /// `ignore` patterns apply (checked relative to that config's directory).
+    /// Files listed in the nearest config's `plugins` are never ignored.
     pub fn is_ignored(&self, absolute_path: &Path) -> bool {
-        // Never ignore files that are configured as plugins
-        for (config_dir, config) in &self.entries {
-            for p in &config.plugins {
-                let resolved = config_dir.join(p);
-                if resolved == absolute_path {
-                    return false;
-                }
+        let Some((config_dir, config)) = self.nearest_entry(absolute_path) else {
+            return false;
+        };
+        // Never ignore files that are configured as plugins in the nearest config
+        for p in &config.plugins {
+            if config_dir.join(p) == absolute_path {
+                return false;
             }
         }
-        for (config_dir, config) in &self.entries {
-            if absolute_path.starts_with(config_dir)
-                && let Ok(relative) = absolute_path.strip_prefix(config_dir)
-                    && config.is_ignored(relative) {
-                        return true;
-                    }
-        }
-        false
+        absolute_path.strip_prefix(config_dir)
+            .map(|relative| config.is_ignored(relative))
+            .unwrap_or(false)
     }
 
     /// Check if a path is a library path (scanned but diagnostics suppressed).
-    /// Checks both relative patterns (relative to each config's directory) and
-    /// absolute patterns (matched directly against the full path).
+    /// Absolute library patterns are matched workspace-wide (external scan dirs);
+    /// relative patterns are isolated to the nearest ancestor config.
     pub fn is_library(&self, absolute_path: &Path) -> bool {
-        // Check absolute library patterns from any config
+        // Absolute library patterns from any config (external scan targets).
         for (_, config) in &self.entries {
             if config.matches_absolute_library(absolute_path) {
                 return true;
             }
         }
-        // Check relative patterns against ancestor configs
-        for (config_dir, config) in &self.entries {
-            if absolute_path.starts_with(config_dir)
-                && let Ok(relative) = absolute_path.strip_prefix(config_dir)
-                    && config.is_library(relative) {
-                        return true;
-                    }
+        // Relative patterns: only the nearest ancestor config applies.
+        if let Some((config_dir, config)) = self.nearest_entry(absolute_path)
+            && let Ok(relative) = absolute_path.strip_prefix(config_dir) {
+            return config.is_library(relative);
         }
         false
     }
@@ -329,21 +321,12 @@ impl ProjectConfigs {
         dirs
     }
 
-    /// Collect all plugin paths from configs applicable to a file.
-    /// Nearest (deepest) config with a `plugins` key wins (not merged hierarchically).
+    /// Plugin paths applicable to a file. Isolated: only the nearest ancestor
+    /// config's `plugins` apply (no inheritance from parent configs).
     pub fn plugins_for(&self, file_path: &Path) -> Vec<PathBuf> {
-        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
-            .filter(|(dir, _)| file_path.starts_with(dir))
-            .collect();
-        ancestors.sort_by_key(|(dir, _)| dir.components().count());
-
-        // Take plugins from the deepest config that has any
-        for (_, config) in ancestors.iter().rev() {
-            if !config.plugins.is_empty() {
-                return config.plugins.clone();
-            }
-        }
-        Vec::new()
+        self.nearest_config(file_path)
+            .map(|config| config.plugins.clone())
+            .unwrap_or_default()
     }
 
     /// Collect all unique plugin paths across all configs in the workspace.
@@ -361,20 +344,16 @@ impl ProjectConfigs {
     }
 
     /// Get effective disabled diagnostics for a file.
-    /// Starts from `DEFAULT_DISABLED_CODES`, then layers ancestor configs outer-to-inner:
-    /// each config's `disable` list is unioned in, then its `enable` list is removed.
+    /// Isolated: starts from `DEFAULT_DISABLED_CODES`, then applies only the
+    /// nearest ancestor config's `disable` list (unioned in) and `enable` list
+    /// (removed). Parent configs do not contribute.
     pub fn disabled_diagnostics_for(&self, file_path: &Path) -> HashSet<String> {
         let mut result: HashSet<String> = crate::diagnostics::DEFAULT_DISABLED_CODES
             .iter()
             .map(|s| s.to_string())
             .collect();
 
-        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
-            .filter(|(dir, _)| file_path.starts_with(dir))
-            .collect();
-        ancestors.sort_by_key(|(dir, _)| dir.components().count());
-
-        for (_, config) in ancestors {
+        if let Some(config) = self.nearest_config(file_path) {
             result.extend(config.disabled_diagnostics.iter().cloned());
             for code in &config.enabled_diagnostics {
                 result.remove(code);
@@ -384,79 +363,47 @@ impl ProjectConfigs {
     }
 
     /// Get effective framexml setting for a file.
-    /// Nearest (deepest) config with a `framexml` key wins. Default is `true`.
+    /// Isolated: only the nearest config's `framexml` value counts. Default `true`.
     pub fn framexml_enabled_for(&self, file_path: &Path) -> bool {
-        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
-            .filter(|(dir, _)| file_path.starts_with(dir))
-            .collect();
-        ancestors.sort_by_key(|(dir, _)| dir.components().count());
-        // Deepest config with a framexml setting wins
-        for (_, config) in ancestors.iter().rev() {
-            if let Some(val) = config.framexml {
-                return val;
-            }
-        }
-        true // default: FrameXML globals are available
+        self.nearest_bool(file_path, |c| c.framexml, true)
     }
 
     /// Get effective severity overrides for a file.
-    /// Nearest (deepest) config wins per diagnostic code, with parent as fallback.
+    /// Isolated: only the nearest config's severity map applies.
     pub fn severity_overrides_for(&self, file_path: &Path) -> HashMap<String, DiagnosticSeverity> {
-        // Collect ancestors sorted by depth (shallowest first), then overlay
-        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
-            .filter(|(dir, _)| file_path.starts_with(dir))
-            .collect();
-        ancestors.sort_by_key(|(dir, _)| dir.components().count());
-
-        let mut result = HashMap::new();
-        for (_, config) in ancestors {
-            // Deeper configs override shallower ones
-            for (code, severity) in &config.severity_overrides {
-                result.insert(code.clone(), *severity);
-            }
-        }
-        result
+        self.nearest_config(file_path)
+            .map(|config| config.severity_overrides.clone())
+            .unwrap_or_default()
     }
 
-    /// Get effective allowed read globals for a file (union of all ancestor configs).
+    /// Get effective allowed read globals for a file.
+    /// Isolated: only the nearest config's read globals apply. TOC
+    /// `SavedVariables` are merged into the config entry for the directory
+    /// containing the `.toc` file — a child config in a subdirectory will NOT
+    /// see the parent's TOC-derived globals unless it is in the same directory.
     pub fn allowed_read_globals_for(&self, file_path: &Path) -> AllowedGlobals {
-        let mut result = AllowedGlobals::default();
-        for (config_dir, config) in &self.entries {
-            if file_path.starts_with(config_dir) {
-                result.extend(&config.allowed_read_globals);
-            }
-        }
-        result
+        self.nearest_config(file_path)
+            .map(|c| c.allowed_read_globals.clone())
+            .unwrap_or_default()
     }
 
-    /// Get effective allowed write globals for a file (union of all ancestor configs).
+    /// Get effective allowed write globals for a file.
+    /// Isolated: only the nearest config's write globals.
     pub fn allowed_write_globals_for(&self, file_path: &Path) -> AllowedGlobals {
-        let mut result = AllowedGlobals::default();
-        for (config_dir, config) in &self.entries {
-            if file_path.starts_with(config_dir) {
-                result.extend(&config.allowed_write_globals);
-            }
-        }
-        result
+        self.nearest_config(file_path)
+            .map(|c| c.allowed_write_globals.clone())
+            .unwrap_or_default()
     }
 
-    /// Get effective flavor mask for a file. Deepest config with a non-zero
-    /// `flavors` value wins as the project-level mask. If the file also has
-    /// a TOC-derived flavor mask (from being listed in a flavor-specific TOC),
-    /// the two are intersected. Returns 0 if no config declares flavors
-    /// (disables flavor filtering entirely).
+    /// Get effective flavor mask for a file. Isolated: the nearest config's
+    /// `flavors` value is the project-level mask (0 if unset, even when a parent
+    /// declares flavors). If the file also has a TOC-derived flavor mask (from
+    /// being listed in a flavor-specific TOC), the two are intersected. Returns 0
+    /// if the nearest config declares no flavors (disables flavor filtering).
     pub fn flavors_for(&self, file_path: &Path) -> u8 {
-        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
-            .filter(|(dir, _)| file_path.starts_with(dir))
-            .collect();
-        ancestors.sort_by_key(|(dir, _)| dir.components().count());
-        let mut project_flavors = 0u8;
-        for (_, config) in ancestors.iter().rev() {
-            if config.flavors != 0 {
-                project_flavors = config.flavors;
-                break;
-            }
-        }
+        let project_flavors = self.nearest_config(file_path)
+            .map(|c| c.flavors)
+            .unwrap_or(0);
 
         if let Some(&toc_flavors) = self.toc_file_flavors.get(file_path) {
             if project_flavors != 0 {
@@ -470,19 +417,19 @@ impl ProjectConfigs {
     }
 
     pub fn backward_param_types_for(&self, file_path: &Path) -> bool {
-        self.deepest_bool(file_path, |c| c.backward_param_types, true)
+        self.nearest_bool(file_path, |c| c.backward_param_types, true)
     }
 
     pub fn correlated_return_overloads_for(&self, file_path: &Path) -> bool {
-        self.deepest_bool(file_path, |c| c.correlated_return_overloads, true)
+        self.nearest_bool(file_path, |c| c.correlated_return_overloads, true)
     }
 
     pub fn implicit_protected_prefix_for(&self, file_path: &Path) -> bool {
-        self.deepest_bool(file_path, |c| c.implicit_protected_prefix, false)
+        self.nearest_bool(file_path, |c| c.implicit_protected_prefix, false)
     }
 
     pub fn allow_slash_commands_for(&self, file_path: &Path) -> bool {
-        self.deepest_bool(file_path, |c| c.allow_slash_commands, true)
+        self.nearest_bool(file_path, |c| c.allow_slash_commands, true)
     }
 
     pub fn hint_enable_for(&self, file_path: &Path) -> bool {
@@ -586,16 +533,39 @@ impl ProjectConfigs {
     }
 
     fn deepest_bool(&self, file_path: &Path, field: fn(&ProjectConfig) -> Option<bool>, default: bool) -> bool {
-        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
-            .filter(|(dir, _)| file_path.starts_with(dir))
-            .collect();
-        ancestors.sort_by_key(|(dir, _)| dir.components().count());
-        for (_, config) in ancestors.iter().rev() {
-            if let Some(val) = field(config) {
-                return val;
+        let mut best: Option<(usize, bool)> = None;
+        for (dir, config) in &self.entries {
+            if file_path.starts_with(dir) && let Some(val) = field(config) {
+                let depth = dir.components().count();
+                if best.is_none_or(|(d, _)| depth > d) {
+                    best = Some((depth, val));
+                }
             }
         }
-        default
+        best.map_or(default, |(_, val)| val)
+    }
+
+    /// The single nearest (deepest) ancestor config for a file, or `None` if no
+    /// discovered config directory is an ancestor. Used for *isolated* settings
+    /// (those that affect diagnostics), where only the nearest config applies and
+    /// unset keys fall back to hardcoded defaults rather than inheriting from a
+    /// parent config. See the "Hierarchy behavior" section of the configuration
+    /// docs for the isolate-vs-inherit policy.
+    fn nearest_config(&self, file_path: &Path) -> Option<&ProjectConfig> {
+        self.nearest_entry(file_path).map(|(_, config)| config)
+    }
+
+    /// The nearest ancestor config entry (directory + config) for a path.
+    fn nearest_entry(&self, file_path: &Path) -> Option<&(PathBuf, ProjectConfig)> {
+        self.entries.iter()
+            .filter(|(dir, _)| file_path.starts_with(dir))
+            .max_by_key(|(dir, _)| dir.components().count())
+    }
+
+    /// Like `deepest_bool` but *isolated*: only the nearest config's value counts,
+    /// with no parent fallback. Unset → `default`.
+    fn nearest_bool(&self, file_path: &Path, field: fn(&ProjectConfig) -> Option<bool>, default: bool) -> bool {
+        self.nearest_config(file_path).and_then(field).unwrap_or(default)
     }
 }
 
@@ -1284,8 +1254,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&sub).unwrap();
 
-        // Root ignores "Libs/"
-        std::fs::write(root.join(".wowluarc.json"), r#"{"ignore": ["Libs/"]}"#).unwrap();
+        // Root ignores "Libs/" and "Shared/"
+        std::fs::write(root.join(".wowluarc.json"), r#"{"ignore": ["Libs/", "Shared/"]}"#).unwrap();
         // SubAddon ignores "Generated/"
         std::fs::write(sub.join(".wowluarc.json"), r#"{"ignore": ["Generated/"]}"#).unwrap();
 
@@ -1297,8 +1267,10 @@ mod tests {
         assert!(configs.is_ignored(&root.join("Libs/foo.lua")));
         // SubAddon config ignores Generated/ relative to SubAddon
         assert!(configs.is_ignored(&sub.join("Generated/data.lua")));
-        // SubAddon/Libs is NOT ignored (root's "Libs/" is relative to root, not subtree)
-        assert!(!configs.is_ignored(&sub.join("Libs/bar.lua")));
+        // Isolated: SubAddon does NOT inherit root's ignore patterns, so a
+        // "Shared/" path under SubAddon is NOT ignored even though the root
+        // config ignores "Shared/".
+        assert!(!configs.is_ignored(&sub.join("Shared/bar.lua")));
         // Root/Generated is NOT ignored (only SubAddon has that rule)
         assert!(!configs.is_ignored(&root.join("Generated/stuff.lua")));
         // Normal files not ignored
@@ -1342,14 +1314,15 @@ mod tests {
         let root_severity = configs.severity_overrides_for(&root.join("init.lua"));
         assert_eq!(root_severity.get("undefined-global"), Some(&DiagnosticSeverity::ERROR));
 
-        // SubAddon file: union of root + sub disabled, sub overrides severity
+        // SubAddon file: isolated — only the sub config applies, nothing inherited
+        // from root.
         let sub_disabled = configs.disabled_diagnostics_for(&sub.join("main.lua"));
-        assert!(sub_disabled.contains("unused-local")); // from root
+        assert!(!sub_disabled.contains("unused-local")); // NOT inherited from root
         assert!(sub_disabled.contains("inject-field")); // from sub
 
         let sub_severity = configs.severity_overrides_for(&sub.join("main.lua"));
-        assert_eq!(sub_severity.get("undefined-global"), Some(&DiagnosticSeverity::HINT)); // sub overrides
-        assert_eq!(sub_severity.get("inject-field"), Some(&DiagnosticSeverity::WARNING)); // inherited from root
+        assert_eq!(sub_severity.get("undefined-global"), Some(&DiagnosticSeverity::HINT)); // sub's own
+        assert_eq!(sub_severity.get("inject-field"), None); // NOT inherited from root
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1359,25 +1332,33 @@ mod tests {
         let root = std::env::temp_dir().join("wowlua_ls_test_framexml");
         let lib = root.join("Lib");
         let ui = root.join("UI");
+        let data = root.join("Data");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&lib).unwrap();
         std::fs::create_dir_all(&ui).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
 
         // Root disables framexml
         std::fs::write(root.join(".wowluarc.json"), r#"{"framexml": false}"#).unwrap();
         // UI re-enables framexml
         std::fs::write(ui.join(".wowluarc.json"), r#"{"framexml": true}"#).unwrap();
+        // Data has its own config but does NOT set framexml
+        std::fs::write(data.join(".wowluarc.json"), r#"{"globals": {"read": ["X"]}}"#).unwrap();
 
         let mut configs = ProjectConfigs::default();
         configs.try_load(&root);
         configs.try_load(&ui);
+        configs.try_load(&data);
 
         // Root files: framexml disabled
         assert!(!configs.framexml_enabled_for(&root.join("init.lua")));
-        // Lib files: inherit root's framexml=false
+        // Lib files: no own config → nearest is root → false
         assert!(!configs.framexml_enabled_for(&lib.join("util.lua")));
         // UI files: framexml re-enabled
         assert!(configs.framexml_enabled_for(&ui.join("panel.lua")));
+        // Data files: isolated — Data's own config doesn't set framexml, so it
+        // falls back to the DEFAULT (true), NOT to root's false.
+        assert!(configs.framexml_enabled_for(&data.join("tables.lua")));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1432,13 +1413,13 @@ mod tests {
         assert!(root_read.contains("LibStub"));
         assert!(!root_read.contains("AceDB"));
 
-        // Sub file: union of root + sub
+        // Sub file: isolated — only the sub config's globals, NOT root's.
         let sub_read = configs.allowed_read_globals_for(&sub.join("main.lua"));
-        assert!(sub_read.contains("LibStub"));
+        assert!(!sub_read.contains("LibStub")); // NOT inherited from root
         assert!(sub_read.contains("AceDB"));
 
         let sub_write = configs.allowed_write_globals_for(&sub.join("main.lua"));
-        assert!(sub_write.contains("RootGlobal"));
+        assert!(!sub_write.contains("RootGlobal")); // NOT inherited from root
         assert!(sub_write.contains("SubGlobal"));
 
         let _ = std::fs::remove_dir_all(&root);
@@ -1543,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hierarchical_enable_overrides_parent_disable() {
+    fn test_isolated_child_does_not_inherit_parent_disable() {
         let root = std::env::temp_dir().join("wowlua_ls_test_hier_enable");
         let sub = root.join("SubAddon");
         let _ = std::fs::remove_dir_all(&root);
@@ -1553,9 +1534,10 @@ mod tests {
         std::fs::write(root.join(".wowluarc.json"), r#"{
             "diagnostics": { "disable": ["inject-field"] }
         }"#).unwrap();
-        // Child re-enables it.
+        // Child has its own config that disables something else and does NOT
+        // mention `inject-field`.
         std::fs::write(sub.join(".wowluarc.json"), r#"{
-            "diagnostics": { "enable": ["inject-field"] }
+            "diagnostics": { "disable": ["undefined-global"] }
         }"#).unwrap();
 
         let mut configs = ProjectConfigs::default();
@@ -1565,8 +1547,42 @@ mod tests {
         let root_disabled = configs.disabled_diagnostics_for(&root.join("init.lua"));
         assert!(root_disabled.contains("inject-field"));
 
+        // Isolated: the child's config fully replaces the parent's. `inject-field`
+        // is NOT inherited as disabled; the child's own `undefined-global` is.
         let sub_disabled = configs.disabled_diagnostics_for(&sub.join("main.lua"));
         assert!(!sub_disabled.contains("inject-field"));
+        assert!(sub_disabled.contains("undefined-global"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_plugins_isolated_child_blocks_parent() {
+        let root = std::env::temp_dir().join("wowlua_ls_test_plugins_iso");
+        let sub = root.join("Sub");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // Parent declares a plugin.
+        std::fs::write(root.join(".wowluarc.json"), r#"{
+            "plugins": ["my_plugin.lua"]
+        }"#).unwrap();
+        // Child has its own config but does NOT mention plugins.
+        std::fs::write(sub.join(".wowluarc.json"), r#"{
+            "framexml": false
+        }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&root);
+        configs.try_load(&sub);
+
+        // Root file sees the parent's plugin.
+        let root_plugins = configs.plugins_for(&root.join("init.lua"));
+        assert_eq!(root_plugins.len(), 1);
+
+        // Isolated: the child config blocks the parent's plugins — no plugins run.
+        let sub_plugins = configs.plugins_for(&sub.join("main.lua"));
+        assert!(sub_plugins.is_empty(), "child config should block parent plugins");
 
         let _ = std::fs::remove_dir_all(&root);
     }

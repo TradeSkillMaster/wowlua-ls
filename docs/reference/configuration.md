@@ -81,7 +81,7 @@ Not needed for single-addon projects.
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Paths to Lua diagnostic plugin scripts. Relative to the config file's directory. The nearest (deepest) config with a `plugins` key wins — plugin lists are not merged across ancestors. See the [Diagnostic Plugins guide](/guide/plugins) for the full API.
+Paths to Lua diagnostic plugin scripts. Relative to the config file's directory. Isolated per file: only the plugins declared by a file's nearest config run against it — plugin lists are not inherited from parent configs. See the [Diagnostic Plugins guide](/guide/plugins) for the full API.
 
 ```json
 { "plugins": [".wowlua-ls/my-check.lua"] }
@@ -293,21 +293,30 @@ Override severity for specific diagnostic codes.
 
 ## Hierarchy behavior
 
-| Setting | Merge behavior |
+When `.wowluarc.json` files are nested, settings combine according to one of two policies:
+
+- **Isolated** — the single **nearest** ancestor config fully determines the setting. Keys it does not set fall back to their **default**, *not* to a parent config's value. This applies to everything that affects diagnostics, so that running a check from a subdirectory produces the same results as running it from the project root (configs above the scan root are never consulted).
+- **Inherited** — the deepest config that sets the key wins, falling back to ancestor configs and then the default. This applies to editor-experience settings that do not affect diagnostics.
+
+| Setting | Policy |
 |---|---|
-| `addon_root` | Nearest (deepest) config wins |
-| `plugins` | Nearest (deepest) config wins |
-| `ignore` | Relative to containing directory |
-| `library` | Relative to containing directory |
-| `framexml` | Nearest (deepest) config wins |
-| `flavors` | Nearest (deepest) config wins |
-| `globals.read` | Unioned across ancestors |
-| `globals.write` | Unioned across ancestors |
-| `globals.allow_slash_commands` | Nearest (deepest) config wins |
-| `inference.*` | Nearest (deepest) config wins |
-| `hint.*` | Nearest (deepest) config wins |
-| `codeLens.*` | Nearest (deepest) config wins |
-| `editor.*` | Nearest (deepest) config wins |
-| `diagnostics.disable` | Unioned across ancestors |
-| `diagnostics.enable` | Applied after `disable` at each level |
-| `diagnostics.severity` | Deeper configs take precedence |
+| `diagnostics.disable` | **Isolated** — nearest config's `disable` only |
+| `diagnostics.enable` | **Isolated** — applied after the nearest config's `disable` |
+| `diagnostics.severity` | **Isolated** — nearest config's severity map only |
+| `globals.read` | **Isolated** — nearest config only (includes that directory's `.toc` `SavedVariables`) |
+| `globals.write` | **Isolated** — nearest config only |
+| `globals.allow_slash_commands` | **Isolated** |
+| `framexml` | **Isolated** |
+| `flavors` | **Isolated** (then intersected with any TOC-derived per-file mask) |
+| `inference.*` | **Isolated** |
+| `ignore` | **Isolated** — nearest config's patterns, relative to its directory |
+| `library` | **Isolated** for relative patterns; absolute library directories are scanned workspace-wide |
+| `plugins` | **Isolated** — only the nearest config's plugins run against a file |
+| `hint.*` | Inherited |
+| `codeLens.*` | Inherited |
+| `editor.*` | Inherited |
+| `addon_root` | Nearest (deepest) `addon_root: true` wins (structural) |
+
+::: warning Isolated settings do not inherit
+If a nested directory has its own `.wowluarc.json`, it only inherits the **inherited** settings above. Any **isolated** setting it does not restate reverts to its default — it does *not* pick up the parent's value. For example, a subdirectory config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` settings unless it repeats them. This also applies to auto-discovered TOC `SavedVariables` globals — they are merged into the config entry for the directory containing the `.toc` file, so a child config in a subdirectory will not see them.
+:::

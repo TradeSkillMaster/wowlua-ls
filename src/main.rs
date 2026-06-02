@@ -282,7 +282,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         if let Some(ref mut engine) = plugin_engine {
             let uri_str = format!("file://{}", file_path.display());
             let file_name = file_path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-            let pdiags = engine.run_plugins(&result, &s, &uri_str, &file_name);
+            let allowed = project_configs.plugins_for(&file_path);
+            let pdiags = engine.run_plugins(&result, &s, &uri_str, &file_name, &allowed);
             for d in &pdiags {
                 if file_disabled.contains(&d.code) { continue; }
                 let start = numbers.from_offset(d.start);
@@ -800,7 +801,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 if let Some(ref mut engine) = plugin_engine {
                     let uri_str = format!("file://{}", path.display());
                     let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-                    let pdiags = engine.run_plugins(&ar, &text, &uri_str, &file_name);
+                    let allowed = project_configs.plugins_for(path);
+                    let pdiags = engine.run_plugins(&ar, &text, &uri_str, &file_name, &allowed);
                     for d in &pdiags {
                         emit_diag(&d.code, d.severity, d.start, &d.message);
                     }
