@@ -2458,3 +2458,45 @@ for k, v in pairs(mixedTbl) do
     local _ = v + 1
     -- ^ diag: none
 end
+
+-- ════════════════════════════════════════════════════════════════════════
+-- Numeric comparison guard strips nil from the compared symbol
+-- ════════════════════════════════════════════════════════════════════════
+-- `if n > 0` errors at runtime when n is nil ("attempt to compare nil with
+-- number"), so reaching the then-branch proves n is non-nil. The compared
+-- value must narrow to non-nil and be safe to pass to a non-nil parameter.
+
+---@param _n number
+local function _useNum(_n) end
+
+-- Single-return number?
+---@return number?
+local function _maybeCount() return 1 end
+
+local nc = _maybeCount()
+if nc > 0 then
+    local _ = nc
+    --        ^ hover: (local) nc: number
+    -- Passing the narrowed value must NOT emit need-check-nil (the bug).
+    _useNum(nc)
+end
+
+-- Multi-return scalar (no tuple-union overloads), mirroring the addon case:
+-- `local ok, inv, chg = f()` then `if inv > 0 then use(inv) end`.
+---@return boolean
+---@return number?
+---@return number?
+local function _process() return true, 1, 2 end
+
+local _ok, inv, chg = _process()
+if inv > 0 then
+    local _ = inv
+    --        ^ hover: (local) inv: number
+    _useNum(inv)
+end
+if chg >= 1 then
+    local _ = chg
+    --        ^ hover: (local) chg: number
+    _useNum(chg)
+end
+_consume(_ok)

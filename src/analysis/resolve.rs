@@ -1753,6 +1753,9 @@ impl<'a> Analysis<'a> {
     fn overload_type_survives_num_compare(t: &ValueType, op: Operator, bound: &str) -> bool {
         fn member_survives(m: &ValueType, op: Operator, bound: f64) -> bool {
             match m {
+                // An ordered comparison errors at runtime on nil, so a nil case
+                // cannot reach the then-branch — eliminate it.
+                ValueType::Nil => false,
                 ValueType::NumberLiteral(v) => match parse_num_literal_str(v) {
                     Some(val) => match op {
                         Operator::GreaterThan => val > bound,

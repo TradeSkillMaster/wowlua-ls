@@ -213,6 +213,26 @@ if nd1 > 0 then
     --        ^ hover: (local) nd2: string
 end
 
+-- ── Nil-slot elimination: `if a > 0` eliminates a pure-nil slot-0 case ──
+-- Unlike the `0` literal above, this tests the `Nil => false` path in
+-- `overload_type_survives_num_compare` — an ordered comparison errors on nil,
+-- so nil cases cannot survive the then-branch.
+
+---@return (number count, string label) | (nil, nil)
+local function numOrNil()
+    if math.random() > 0.5 then
+        return 5, "ok"
+    end
+    return nil, nil
+end
+_consume(numOrNil)
+
+local nn1, nn2 = numOrNil()
+if nn1 > 0 then
+    local _ = nn2
+    --        ^ hover: (local) nn2: string
+end
+
 -- ── Compound numeric + truthy: mirrors the real addon usage ──
 -- `(number, string, number) | (0, nil, nil)` with `if a > 1 and c then`.
 -- The `> 1` term drops the `0` case for the slot-0 discriminator and the

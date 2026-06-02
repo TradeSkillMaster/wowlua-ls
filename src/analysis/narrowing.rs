@@ -373,7 +373,10 @@ impl<'a> Analysis<'a> {
                 // Numeric comparison against a literal (`if x > 1`): record a
                 // NumCompare constraint on the bare symbol so tuple-union sibling
                 // cases whose number-literal value fails the comparison are
-                // eliminated. Does NOT strip nil from x itself.
+                // eliminated. Also strips nil from x in the then-branch: an
+                // ordered comparison (`<`/`>`/`<=`/`>=`) errors at runtime if x
+                // is nil (`attempt to compare nil with number`), so reaching the
+                // then-branch proves x is non-nil.
                 if op.is_comparison() && is_then_branch
                     && !matches!(op, Operator::Equals | Operator::NotEquals)
                     && let [lhs, rhs] = terms.as_slice()
@@ -394,7 +397,20 @@ impl<'a> Analysis<'a> {
                     {
                         self.num_compare_narrowed_symbols.entry(target_scope).or_default()
                             .insert(sym_idx, (oriented_op, bound));
-                        self.narrow_siblings(sym_idx, target_scope);
+                        // Reaching the then-branch proves x is non-nil; strip nil
+                        // from x's own type so `need-check-nil` and type-mismatch
+                        // checks see the narrowed type. `narrow_kind_for` still
+                        // reports `NumCompare` for x (checked before plain
+                        // `StripNil`), preserving tuple-union sibling elimination.
+                        let is_tuple_union = self.narrow_siblings(sym_idx, target_scope);
+                        // For a plain scalar (not a tuple-union multi-return value),
+                        // strip nil from x's own type. Tuple-union members are
+                        // narrowed by the `OverloadNarrow` machinery instead; a
+                        // crude `StripNil` version would clobber that resolution.
+                        if !is_tuple_union && !sym_idx.is_external() {
+                            self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            self.push_strip_nil_version(sym_idx, target_scope);
+                        }
                     }
                 }
                 let is_neq = matches!(op, Operator::NotEquals);
@@ -1686,25 +1702,30 @@ impl<'a> Analysis<'a> {
     /// Narrow multi-return siblings when a symbol from a return-only overload group is narrowed.
     /// Uses OverloadNarrow expressions to filter return-only overloads and compute precise
     /// union types for each sibling, propagating narrowing to ALL return siblings.
-    pub(super) fn narrow_siblings(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
-        let Some(siblings) = self.multi_return_siblings.get(&sym_idx).cloned() else { return };
+    ///
+    /// Returns `true` if `sym_idx` participates in a return-only overload (tuple-union)
+    /// group — i.e. the sibling-narrowing machinery (either applied directly or deferred)
+    /// owns the narrowing of this group. Callers use this to avoid pushing a crude
+    /// `StripNil` version on top, which would clobber the `OverloadNarrow` resolution.
+    pub(super) fn narrow_siblings(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        let Some(siblings) = self.multi_return_siblings.get(&sym_idx).cloned() else { return false };
         // Check that the function has return-only overloads by tracing from any sibling's
         // type_source (a FunctionCall expr) → func expr → symbol → FunctionDef → overloads
         let func_expr = match self.check_return_only_overloads_from_siblings(&siblings) {
             OverloadCheck::HasOverloads(fe) => fe,
-            OverloadCheck::NoOverloads => return,
+            OverloadCheck::NoOverloads => return false,
             OverloadCheck::Deferred(func_expr) => {
                 // Can't resolve at build time (cross-file FieldAccess) — defer to resolve phase
                 let narrowed_info = self.collect_narrowed_sibling_info(&siblings, scope_idx);
                 self.deferred_sibling_narrowings.push(DeferredSiblingNarrowing {
                     func_expr, siblings, scope: scope_idx, narrowed: narrowed_info,
                 });
-                return;
+                return true;
             }
         };
         // Collect ALL narrowed siblings in this scope (including sym_idx which was just narrowed)
         let narrowed_info = self.collect_narrowed_sibling_info(&siblings, scope_idx);
-        if narrowed_info.is_empty() { return; }
+        if narrowed_info.is_empty() { return true; }
         // Create OverloadNarrow versions for all non-guarded siblings.
         // Do NOT add siblings to narrowed_symbols — the OverloadNarrow expression
         // already computes the correct type (which may still include nil).
@@ -1720,6 +1741,7 @@ impl<'a> Analysis<'a> {
                 sibling_idx, scope_idx, func_expr, ret_index, narrowed_info.clone(),
             );
         }
+        true
     }
 
     /// Check whether a sibling symbol has been reassigned since the multi-return
@@ -1855,19 +1877,26 @@ impl<'a> Analysis<'a> {
         if self.truthy_narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx)) {
             return Some(NarrowKind::StripTruthy);
         }
-        if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx)) {
-            if self.falsy_narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx)) {
-                return Some(NarrowKind::StripFalsy);
-            }
-            return Some(NarrowKind::StripNil);
+        // Falsy narrowing strips `false` in addition to nil, so it must win over
+        // a plain numeric comparison.
+        if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx))
+            && self.falsy_narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx))
+        {
+            return Some(NarrowKind::StripFalsy);
         }
-        // NumCompare is the weakest narrowing (it doesn't strip nil), so only
-        // use it when the symbol isn't already truthy/nil-narrowed — otherwise
-        // a compound guard like `x and x > 0` would lose the nil elimination.
+        // NumCompare implies non-nil (an ordered comparison errors on nil) AND
+        // eliminates failing number-literal tuple-union cases, so it is at least
+        // as strong as plain `StripNil`. Prefer it over `StripNil` when both
+        // apply (e.g. a bare `if x > 0`), but keep it after truthy/falsy so a
+        // compound guard like `x and x > 0` retains the stronger truthiness
+        // narrowing.
         if let Some((op, bound)) = self.num_compare_narrowed_symbols.get(&scope_idx)
             .and_then(|m| m.get(&sym_idx))
         {
             return Some(NarrowKind::NumCompare { op: *op, bound: bound.clone() });
+        }
+        if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx)) {
+            return Some(NarrowKind::StripNil);
         }
         None
     }
