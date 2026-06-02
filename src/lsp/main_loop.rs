@@ -727,14 +727,36 @@ fn spawn_warm(
         let _guard = WakeGuard(Some(wake_tx));
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            compute_ws_diagnostics(
+            let compute = || compute_ws_diagnostics(
                 &inputs.paths,
                 &inputs.pre_globals,
                 &inputs.configs,
                 &inputs.plugin_codes,
                 inputs.affected.as_ref(),
                 inputs.prior.as_deref(),
-            )
+            );
+            // Cap parallelism so at least one core stays free for the single-threaded
+            // LSP main loop. `compute_ws_diagnostics` fans out over every workspace
+            // file via rayon's global pool; left unbounded it saturates all cores and
+            // starves the main thread, making interactive requests (hover, code
+            // actions) appear frozen for the whole duration of the warm on large
+            // workspaces. Running it inside a dedicated pool of `cpus - 1` threads
+            // keeps the editor responsive while the warm proceeds in the background.
+            let threads = std::thread::available_parallelism()
+                .map(|n| n.get().saturating_sub(1).max(1))
+                .unwrap_or(1);
+            static WARM_POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+            let pool = WARM_POOL.get_or_init(|| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap_or_else(|e| {
+                        log::warn!("Failed to build warm thread pool ({e}), falling back to single-threaded");
+                        rayon::ThreadPoolBuilder::new().num_threads(1).build()
+                            .expect("single-threaded pool should always build")
+                    })
+            });
+            pool.install(compute)
         }));
         match result {
             Ok(diagnostics) => {
@@ -1666,6 +1688,7 @@ pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> 
     // later via `build_on_stubs`. Needed for the `defaultLibrary` semantic token
     // modifier, which should only apply to actual WoW API stubs.
     stubs.pre_globals.stub_symbols_end = stubs.pre_globals.symbols.len();
+    stubs.pre_globals.stub_functions_end = stubs.pre_globals.functions.len();
     stubs.pre_globals.fixup_enum_tables();
     // FrameXML files use the addon namespace pattern internally; clear any
     // stale addon table from the blob so it doesn't leak into user addons.
@@ -2003,23 +2026,14 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     ws.rebuild();
     log::debug!("Rebuilt workspace index in {:.1?}", rebuild_start.elapsed());
 
-    // Pre-warm workspace diagnostic cache during startup so the first
-    // `workspace/diagnostic` request from the editor is a cache hit.
-    // Skip for Neovim — it uses push-only diagnostics (workspace_diagnostics
-    // is false) so this cache would never be consumed.
-    if !is_neovim && !ws.ws_file_globals.is_empty() {
-        if supports_progress {
-            let file_count = ws.ws_file_globals.len();
-            send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
-                message: Some(format!("Checking {} workspace files\u{2026}", file_count)),
-                percentage: Some(90),
-                cancellable: Some(false),
-            }));
-        }
-        let cache_start = std::time::Instant::now();
-        ws.warm_ws_diagnostic_cache(None);
-        log::debug!("Warmed workspace diagnostic cache at startup in {:.1?}", cache_start.elapsed());
-    }
+    // The workspace-diagnostic cache is warmed on a background thread by
+    // `main_loop` immediately after it starts (see the `spawn_warm` call there).
+    // It used to be warmed synchronously HERE, before the request loop began —
+    // but on large workspaces that blocked every incoming request (hover, code
+    // actions, per-file diagnostics) for the full multi-second warm, so the
+    // editor appeared frozen right after opening a project. The pull handler
+    // serves stale/empty results without blocking while the warm runs, and a
+    // diagnostic refresh re-pull picks up the fresh cache once it completes.
 
     if supports_progress {
         send_progress(&connection, &progress_token, WorkDoneProgress::End(WorkDoneProgressEnd {
@@ -2146,6 +2160,19 @@ fn main_loop(
     // falling back to full. The in-flight flag itself lives on
     // `ws.warm_in_flight` so request handlers can consult it.
     let mut pending_rewarm: Option<RebuildScope> = None;
+
+    // Kick off the initial workspace-diagnostic warm on a background thread so
+    // the loop can serve requests immediately. This replaces the old
+    // synchronous startup warm (which blocked all requests until it finished).
+    // While the warm is in flight, `handle_workspace_diagnostic` serves the
+    // stale/empty cache without recomputing; when it lands, the top-of-loop
+    // drain installs the result and sends a diagnostic refresh so the editor
+    // re-pulls the now-complete workspace diagnostics.
+    if client.diagnostic_refresh && !ws.ws_file_globals.is_empty() {
+        let inputs = ws.warm_inputs(None);
+        ws.warm_in_flight = true;
+        spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
+    }
 
     loop {
         // Drain any completed background warms. A result whose generation still
@@ -2400,8 +2427,45 @@ fn main_loop(
 
             // Try parallel batch analysis when many files are dirty (e.g. initial load).
             // This avoids analyzing 20+ files sequentially at ~100ms each.
+            //
+            // Process in small chunks and drain pending interactive requests
+            // between chunks. A single rayon batch over all dirty docs blocks the
+            // (single-threaded) main loop for its entire duration — on a large
+            // workspace a Full rebuild marks every OPEN document dirty, so editing
+            // one file froze hover/code-actions for seconds while all the others
+            // were re-analyzed. Chunking bounds that stall to roughly one chunk's
+            // analysis time: between chunks the editor's hover/completion/code-action
+            // requests are served from the still-consistent cached analysis.
+            // ~400ms per chunk at ~100ms/file; keeps drain latency sub-second
+            const BATCH_CHUNK: usize = 4;
             let did_batch = if dirty_uris.len() >= 3 {
-                try_batch_analyze(&dirty_uris, &mut documents, &ws)
+                let mut all_ok = true;
+                let gen_before = ws.ws_generation;
+                for chunk in dirty_uris.chunks(BATCH_CHUNK) {
+                    // Serve any requests that arrived since the last chunk so the
+                    // editor stays responsive instead of waiting out the whole batch.
+                    let (drained, shutdown) = drain_pending_requests(&connection, &mut documents, &mut ws, client.snippets);
+                    if shutdown { return Ok(()); }
+                    for not in drained {
+                        handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter);
+                    }
+                    // A notification may have triggered a workspace rebuild,
+                    // bumping ws_generation and rebuilding pre_globals. Already-
+                    // processed chunks used the old state; bail to the sequential
+                    // path which handles rebuilds natively.
+                    if ws.ws_generation != gen_before {
+                        all_ok = false;
+                        break;
+                    }
+                    // A file that would trigger a workspace rebuild makes the batch
+                    // bail (no side effects); fall back to the sequential path for
+                    // the remaining still-dirty docs, which handles rebuilds safely.
+                    if !try_batch_analyze(chunk, &mut documents, &ws) {
+                        all_ok = false;
+                        break;
+                    }
+                }
+                all_ok
             } else {
                 false
             };

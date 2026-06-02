@@ -222,6 +222,15 @@ impl Ir {
         self.addon_table_override.or(self.ext.addon_table_idx)
     }
 
+    /// Whether an EXT-space function came from the precomputed WoW API stubs
+    /// (vs. being a cross-file workspace global discovered in user code).
+    /// Stub declarations have a placeholder empty body that must not be read
+    /// as a confident nil return.
+    #[inline]
+    pub(crate) fn is_stub_function(&self, func_idx: FunctionIndex) -> bool {
+        func_idx.is_external() && func_idx.ext_offset() < self.ext.stub_functions_end
+    }
+
     /// Check if a table index represents the `_G` global environment table.
     /// Matches both the external `_G` symbol's table and per-file `@class _G`
     /// overlay tables that shadow it.

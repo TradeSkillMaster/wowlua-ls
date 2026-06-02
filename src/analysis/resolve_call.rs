@@ -1721,7 +1721,17 @@ impl<'a> Analysis<'a> {
         // synthesized return-only overloads, union nil into the inferred
         // type. If the resolved type is unknown (None), leave it alone —
         // we don't have enough signal to decide.
+        //
+        // Skip this for precomputed WoW API stubs: a generated stub
+        // declaration (`function Name(args) end`) has an empty placeholder
+        // body, which would otherwise be read as a confident nil return.
+        // Absence of a `@return` on a stub means the return is *unknown*, not
+        // nil, so leaving it as None avoids false-positive type-mismatches
+        // when the call result flows into a typed parameter (e.g. spread into
+        // a vararg). Cross-file workspace globals are also external but DO
+        // have a real analyzed body, so they keep the nil inference.
         let ret_type = if !synthesized_return_only
+            && !self.ir.is_stub_function(func_idx)
             && self.func(func_idx).return_annotations.is_empty()
             && self.func(func_idx).implicit_nil_return
         {

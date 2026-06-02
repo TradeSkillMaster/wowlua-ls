@@ -241,8 +241,22 @@ pub struct PreResolvedGlobals {
     /// Function index for the built-in `getmetatable()` — used for metatable type inference.
     pub(crate) getmetatable_func_idx: Option<FunctionIndex>,
     /// Number of `symbols` entries that came from the precomputed WoW API stubs.
+    /// `serde(default)` (not `skip`) because this field was already present in the
+    /// serialized blob when it was introduced. Changing to `skip` would require
+    /// regenerating the blob, while `default` lets old blobs deserialize with 0
+    /// (harmless: `is_stub_symbol` just won't fire the `defaultLibrary` modifier
+    /// until the blob is regenerated). Contrast with `stub_functions_end` below,
+    /// which was added later as `skip` + load-time initialization to avoid a regen.
     #[serde(default)]
     pub(crate) stub_symbols_end: usize,
+    /// Number of `functions` entries that came from the precomputed WoW API
+    /// stubs. Functions added later by `build_on_stubs` (cross-file workspace
+    /// globals) have a higher external offset. Used to tell a generated stub
+    /// declaration (empty placeholder body) from real cross-file user code.
+    /// Computed at load time (`load_precomputed_stubs`), so it is skipped by
+    /// the (non-self-describing) bincode blob to avoid forcing a regeneration.
+    #[serde(skip)]
+    pub(crate) stub_functions_end: usize,
     /// Event types: event_type_name → event_name → payload.
     /// Populated from `@event TypeName "EVENT_NAME"` annotations.
     #[serde(default)]
@@ -2210,6 +2224,7 @@ impl BuildContext {
             setmetatable_func_idx: self.setmetatable_func_idx,
             getmetatable_func_idx: self.getmetatable_func_idx,
             stub_symbols_end: 0,
+            stub_functions_end: 0,
             event_types: HashMap::new(),
             event_locations: HashMap::new(),
             declared_class_fields: self.declared_class_fields,
@@ -2305,6 +2320,7 @@ impl PreResolvedGlobals {
             setmetatable_func_idx: None,
             getmetatable_func_idx: None,
             stub_symbols_end: 0,
+            stub_functions_end: 0,
             event_types: HashMap::new(),
             event_locations: HashMap::new(),
             declared_class_fields: HashMap::new(),

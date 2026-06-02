@@ -1094,3 +1094,11 @@ local lsFn3, lsErr3 = loadstring("bad code")
 if lsFn3 then return end
 local _ = lsErr3
 --        ^ hover: (local) lsErr3: string
+
+-- Regression: a stub declaration with no @return (e.g. RunScript) has an
+-- UNKNOWN return, not a confident nil. The empty placeholder body of a
+-- generated stub must not be read as a nil-returning function. Spreading
+-- such a call into a typed vararg (`strjoin(sep, ...: string | number)`)
+-- must NOT flag type-mismatch.
+local _joinedVoid = strjoin(", ", RunScript("test"))
+--    ^ hover: (local) _joinedVoid: string

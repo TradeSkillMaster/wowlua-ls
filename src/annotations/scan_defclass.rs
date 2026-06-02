@@ -528,7 +528,14 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
         for (&result_idx, fields) in &class_field_all {
             let existing: HashSet<String> = results[result_idx].fields.iter()
                 .map(|(name, _, _)| name.clone()).collect();
-            for (field_name, field_type) in fields {
+            // Sort by field name for deterministic output: `class_field_all` is a
+            // HashMap whose iteration order varies run-to-run. Without this, the
+            // pushed field order is non-deterministic, which makes `class_semantic_eq`
+            // (an order-sensitive Vec comparison) report phantom changes on re-scan,
+            // triggering unnecessary Full workspace rebuilds.
+            let mut sorted: Vec<_> = fields.iter().collect();
+            sorted.sort_by(|a, b| a.0.cmp(b.0));
+            for (field_name, field_type) in sorted {
                 if !existing.contains(field_name) {
                     results[result_idx].fields.push((
                         field_name.clone(),
@@ -902,5 +909,55 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>,
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_defclass_calls;
+    use crate::annotations::{AnnotationType, ClassDecl, ParamInfo};
+    use crate::annotations::annotation_scanning::{ExternalGlobal, ExternalGlobalKind};
+    use crate::syntax::SyntaxNode;
+
+    fn make_defclass_global() -> ExternalGlobal {
+        let mut g = ExternalGlobal::for_test("DefineClass", ExternalGlobalKind::Function);
+        g.params = vec![ParamInfo {
+            name: "name".into(),
+            typ: AnnotationType::Backtick(Box::new(AnnotationType::Simple("T".into()))),
+            optional: false,
+            description: None,
+        }];
+        g.returns = vec![AnnotationType::Simple("T".into())];
+        g.defclass = Some("T".to_string());
+        g
+    }
+
+    // Regression: class-level static fields (ClassName.FIELD = expr) discovered via
+    // a @defclass scan must come out in a deterministic (sorted) order. They are
+    // collected from a HashMap whose iteration order varies between scans; without
+    // sorting, `class_semantic_eq` (an order-sensitive Vec comparison) reports
+    // phantom changes on re-scan, triggering needless Full workspace rebuilds.
+    #[test]
+    fn defclass_static_fields_are_sorted() {
+        let globals = vec![make_defclass_global()];
+        // A class with a constructor method so the second pass (which collects
+        // class-level static fields) runs.
+        let mut dummy = ClassDecl::for_test("Dummy");
+        dummy.constructor_methods = vec!["__init".to_string()];
+        let classes = vec![dummy];
+
+        let src = "local Obj = DefineClass(\"MyClass\")\n\
+                   Obj.ZEBRA = 1\n\
+                   Obj.APPLE = 2\n\
+                   Obj.MANGO = 3\n";
+        let tree = crate::syntax::parser::parse(src);
+        let root = SyntaxNode::new_root(&tree);
+        let result = scan_defclass_calls(root, &globals, &classes, false);
+
+        let my = result.iter().find(|c| c.name == "MyClass")
+            .expect("should discover MyClass from defclass call");
+        let names: Vec<&str> = my.fields.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["APPLE", "MANGO", "ZEBRA"],
+            "class-level static fields must be in deterministic sorted order");
     }
 }

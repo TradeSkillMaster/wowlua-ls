@@ -401,40 +401,7 @@ mod tests {
     use super::scan_built_name_calls;
 
     fn make_external_global(name: &str, kind: ExternalGlobalKind) -> ExternalGlobal {
-        ExternalGlobal {
-            name: name.to_string(),
-            kind,
-            params: Vec::new(),
-            returns: Vec::new(),
-            return_names: Vec::new(),
-            return_descriptions: Vec::new(),
-            overloads: Vec::new(),
-            doc: None,
-            deprecated: false,
-            nodiscard: false,
-            constructor: false,
-            visibility: Visibility::Public,
-            generics: Vec::new(),
-            defclass: None,
-            defclass_parent: None,
-            source_path: None,
-            def_start: 0,
-            def_end: 0,
-            builds_field: None,
-            built_name: None,
-            built_extends: false,
-            type_narrows: None,
-            type_narrows_class: None,
-            string_value: None,
-            number_value: None,
-            is_override: false,
-            see: Vec::new(),
-            flavors: 0,
-            flavor_guard: 0,
-            implicit_nil_return: false,
-            narrows_arg: None,
-            requires: Vec::new(),
-        }
+        ExternalGlobal::for_test(name, kind)
     }
 
     fn parse_tree(text: &str) -> crate::syntax::tree::SyntaxTree {

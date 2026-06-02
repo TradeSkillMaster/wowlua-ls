@@ -1534,6 +1534,7 @@ impl<'a> BuildOnStubsContext<'a> {
             setmetatable_func_idx: self.stubs_base.setmetatable_func_idx,
             getmetatable_func_idx: self.stubs_base.getmetatable_func_idx,
             stub_symbols_end: self.stubs_base.stub_symbols_end,
+            stub_functions_end: self.stubs_base.stub_functions_end,
             event_types: self.stubs_base.event_types.clone(),
             event_locations: self.stubs_base.event_locations.clone(),
             declared_class_fields: self.declared_class_fields,
