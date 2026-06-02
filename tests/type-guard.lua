@@ -347,3 +347,58 @@ local function testTypeGuardFieldInAnd(settings)
     --    ^ hover: (local) z: boolean
 end
 _consume(testTypeGuardFieldInAnd)
+
+-- ── Elseif chain: early-exit type guard must not leak into sibling branches ──
+
+---@param x any
+local function testElseifTypeGuardEarlyExit(x)
+    if x == nil then
+        return false
+    elseif type(x) ~= "table" then
+        -- then-branch: x is NOT table (CastRemove, but any absorbs the narrowing)
+        local a = x
+        --    ^ hover: (local) a: any
+        return false
+    elseif x then
+        -- else-branch: x IS table (from inverse of preceding condition)
+        local b = x
+        --    ^ hover: (local) b: table
+    end
+end
+_consume(testElseifTypeGuardEarlyExit)
+
+-- Same pattern with a union type where narrowing is visibly effective
+---@param x string|number|table
+local function testElseifTypeGuardEarlyExitUnion(x)
+    if x == nil then
+        return false
+    elseif type(x) ~= "table" then
+        -- then-branch: table stripped from union
+        local a = x
+        --    ^ hover: (local) a: string | number
+        return false
+    elseif x then
+        -- else-branch: only table survives
+        local b = x
+        --    ^ hover: (local) b: table
+    end
+end
+_consume(testElseifTypeGuardEarlyExitUnion)
+
+-- Symmetric: early-exit with == (strip path)
+---@param x string|number|table
+local function testElseifTypeGuardEarlyExitStrip(x)
+    if x == nil then
+        return false
+    elseif type(x) == "table" then
+        -- then-branch: only table
+        local a = x
+        --    ^ hover: (local) a: table
+        return false
+    elseif x then
+        -- else-branch: table stripped from union
+        local b = x
+        --    ^ hover: (local) b: string | number
+    end
+end
+_consume(testElseifTypeGuardEarlyExitStrip)

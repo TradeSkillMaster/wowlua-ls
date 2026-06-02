@@ -894,15 +894,16 @@ impl<'a> Analysis<'a> {
                                     // `if type(x) ~= "nil" then return end` → x IS nil after (no useful narrowing)
                                 } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     if strip_type_guard {
-                                        self.add_type_stripped(scope_idx, sym_idx, vt.clone());
-                                        // Use ancestors-only lookup to avoid picking up
-                                        // then-branch versions that would corrupt the result.
+                                        // Don't call add_type_stripped here — the parent-scope
+                                        // entry would leak into elseif body scopes via
+                                        // scope_map_get ancestor walking in get_type_stripping.
+                                        // The version pushed below has creation_order gating
+                                        // that correctly limits visibility to post-chain code.
                                         self.push_strip_type_version(sym_idx, vt.clone(), scope_idx, true);
                                     } else {
-                                        self.type_filtered_symbols.entry(scope_idx).or_default()
-                                            .insert(sym_idx, vt.clone());
-                                        // Use ancestors-only lookup to avoid picking up
-                                        // then-branch versions that would corrupt the result.
+                                        // Same rationale: don't add to type_filtered_symbols —
+                                        // the parent-scope entry would leak into elseif body
+                                        // scopes via scope_map_get ancestor walking.
                                         self.push_type_filter_version(sym_idx, vt, scope_idx, true);
                                     }
                                 }
