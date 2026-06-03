@@ -1399,16 +1399,14 @@ impl AnalysisResult {
         scope_idx: ScopeIndex,
         scopes: &[Scope],
     ) -> bool {
+        // Exact match only: narrowing `a.b` must NOT cascade to `a.b.c`.
+        // Prefix matching would cause diagnostics (e.g. need-check-nil) to
+        // be incorrectly suppressed on sub-fields that haven't been proven
+        // non-nil — only the narrowed chain itself should match.
         ancestor_scopes(scopes, scope_idx).any(|si| {
             let Some(narrowed) = map.get(&si) else { return false };
             let key = (sym_idx, fields.to_vec());
-            if narrowed.contains(&key) {
-                return true;
-            }
-            (1..fields.len()).any(|len| {
-                let prefix = (sym_idx, fields[..len].to_vec());
-                narrowed.contains(&prefix)
-            })
+            narrowed.contains(&key)
         })
     }
 }
@@ -1937,16 +1935,14 @@ impl<'a> Analysis<'a> {
         scope_idx: ScopeIndex,
         scopes: &[Scope],
     ) -> bool {
+        // Exact match only: narrowing `a.b` must NOT cascade to `a.b.c`.
+        // The intermediate expression (`a.b`) already gets StripNil/StripFalsy
+        // at its own lowering step; applying it again to the outer access
+        // would incorrectly strip nil from the sub-field's declared type.
         ancestor_scopes(scopes, scope_idx).any(|si| {
             let Some(narrowed) = map.get(&si) else { return false };
             let key = (sym_idx, fields.to_vec());
-            if narrowed.contains(&key) {
-                return true;
-            }
-            (1..fields.len()).any(|len| {
-                let prefix = (sym_idx, fields[..len].to_vec());
-                narrowed.contains(&prefix)
-            })
+            narrowed.contains(&key)
         })
     }
 

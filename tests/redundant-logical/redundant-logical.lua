@@ -145,6 +145,29 @@ if private.storage.quantities then
     end
 end
 
+-- ── No diagnostic: sub-field of narrowed parent ─────────────────────────────
+
+-- When `obj.parent` is narrowed via assert(), accessing `obj.parent.field`
+-- on a sub-field typed `string?` must NOT have its nil stripped. The `or`
+-- provides a fallback for the nilable sub-field and is not redundant.
+---@class SlotInfoData
+---@field slotText string?
+---@field slotId number
+
+---@class ReagentData
+---@field slotInfo SlotInfoData?
+---@field required boolean
+
+---@param data ReagentData
+local function processReagent(data)
+    assert(data.slotInfo)
+    -- diag: none needed here because redundant-or is HINT-level (harness exempts HINTs)
+    local text = data.slotInfo.slotText or "default"
+    --                                  ^ diag: none
+    _use(text, data.slotInfo.slotId)
+end
+_use(processReagent)
+
 -- ── Suppression ─────────────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: redundant-or
