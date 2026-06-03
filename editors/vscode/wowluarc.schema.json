@@ -189,7 +189,7 @@
           "type": "array",
           "items": { "$ref": "#/$defs/diagnosticCode" },
           "default": [],
-          "description": "Diagnostic codes to enable. Used for default-off diagnostics (need-check-nil, implicit-nil-return, unused-vararg, incomplete-signature-doc, unknown-*-type) or to override a parent config's disable list."
+          "description": "Diagnostic codes to enable. Used for default-off diagnostics (need-check-nil, nil-index, implicit-nil-return, invalid-op, unused-vararg, incomplete-signature-doc, redundant-or, redundant-and, unknown-*-type) or to override a parent config's disable list."
         },
         "severity": {
           "type": "object",
@@ -212,7 +212,6 @@
         "access-protected",
         "assign-type-mismatch",
         "builds-field-not-self",
-        "call-arity",
         "cannot-call",
         "circle-doc-class",
         "code-after-break",
@@ -247,8 +246,12 @@
         "multi-return-projection",
         "need-check-nil",
         "nil-index",
+        "nil-table-key",
         "not-precedence",
+        "param-constraint-mismatch",
+        "redundant-and",
         "redundant-class-generic",
+        "redundant-or",
         "redundant-parameter",
         "redundant-return",
         "redundant-return-value",
