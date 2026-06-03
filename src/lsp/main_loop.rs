@@ -4597,9 +4597,9 @@ fn make_nil_coalesce_action(
     let diag_end = super::lsp_position_to_offset(text, diag.range.end.line, diag.range.end.character, utf8);
 
     // Locate the IR binary-op site whose range matches the diagnostic.
-    let &(expr_id, _, _) = analysis.ir.binary_op_sites.iter()
-        .find(|&&(_, s, e)| s == diag_start && e == diag_end)?;
-    let crate::types::Expr::BinaryOp { lhs, rhs, .. } = analysis.ir.exprs[expr_id.val()] else { return None };
+    let site = analysis.ir.binary_op_sites.iter()
+        .find(|s| s.expr_start == diag_start && s.expr_end == diag_end)?;
+    let crate::types::Expr::BinaryOp { lhs, rhs, .. } = analysis.ir.exprs[site.expr_id.val()] else { return None };
 
     // Determine the coalesce default for each operand (None if not nilable num/str).
     let lhs_default = analysis.resolve_expr_type(lhs).as_ref().and_then(nil_coalesce_default);

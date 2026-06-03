@@ -95,8 +95,8 @@ fn is_permissive(ty: &ValueType) -> bool {
 
 impl DiagnosticPass for RedundantLogical {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        for &(expr_id, start, end) in &analysis.ir.binary_op_sites {
-            let Expr::BinaryOp { op, lhs, .. } = analysis.ir.exprs[expr_id.val()] else { continue };
+        for site in &analysis.ir.binary_op_sites {
+            let Expr::BinaryOp { op, lhs, .. } = analysis.ir.exprs[site.expr_id.val()] else { continue };
 
             if !matches!(op, Operator::Or | Operator::And) { continue; }
 
@@ -119,8 +119,8 @@ impl DiagnosticPass for RedundantLogical {
                     super::REDUNDANT_OR.emit(
                         diags,
                         format!("`or` is redundant \u{2014} left side is always truthy (`{type_str}`)"),
-                        start as usize,
-                        end as usize,
+                        site.op_start as usize,
+                        site.op_end as usize,
                     );
                 }
                 Operator::And if lhs_type.is_guaranteed_falsy() => {
@@ -128,8 +128,8 @@ impl DiagnosticPass for RedundantLogical {
                     super::REDUNDANT_AND.emit(
                         diags,
                         format!("`and` is redundant \u{2014} left side is always falsy (`{type_str}`)"),
-                        start as usize,
-                        end as usize,
+                        site.op_start as usize,
+                        site.op_end as usize,
                     );
                 }
                 _ => {}

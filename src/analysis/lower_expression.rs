@@ -522,7 +522,17 @@ impl<'a> Analysis<'a> {
                         || matches!(op, Operator::Or | Operator::And)
                     {
                         let r = b.syntax().text_range();
-                        self.ir.binary_op_sites.push((expr_id, u32::from(r.start()), u32::from(r.end())));
+                        let op_r = b.op_token_range().unwrap_or_else(|| {
+                            debug_assert!(false, "BinaryExpression missing op token");
+                            r
+                        });
+                        self.ir.binary_op_sites.push(super::BinaryOpSite {
+                            expr_id,
+                            expr_start: u32::from(r.start()),
+                            expr_end: u32::from(r.end()),
+                            op_start: u32::from(op_r.start()),
+                            op_end: u32::from(op_r.end()),
+                        });
                     }
                     expr_id
                 } else {

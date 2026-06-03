@@ -622,29 +622,36 @@ impl<'a> AstNode<'a> for BinaryExpression<'a> {
     }
 }
 
+fn syntax_kind_to_operator(kind: SyntaxKind) -> Option<Operator> {
+    match kind {
+        SyntaxKind::OrKeyword => Some(Operator::Or),
+        SyntaxKind::AndKeyword => Some(Operator::And),
+        SyntaxKind::LessThan => Some(Operator::LessThan),
+        SyntaxKind::GreaterThan => Some(Operator::GreaterThan),
+        SyntaxKind::LessThanOrEquals => Some(Operator::LessThanOrEquals),
+        SyntaxKind::GreaterThanOrEquals => Some(Operator::GreaterThanOrEquals),
+        SyntaxKind::NotEqualsBoolean => Some(Operator::NotEquals),
+        SyntaxKind::EqualsBoolean => Some(Operator::Equals),
+        SyntaxKind::DoubleDot => Some(Operator::Concatenate),
+        SyntaxKind::Plus => Some(Operator::Add),
+        SyntaxKind::Minus => Some(Operator::Subtract),
+        SyntaxKind::Asterisk => Some(Operator::Multiply),
+        SyntaxKind::Slash => Some(Operator::Divide),
+        SyntaxKind::Modulo => Some(Operator::Modulo),
+        SyntaxKind::Hat => Some(Operator::Hat),
+        _ => None,
+    }
+}
+
 impl<'a> BinaryExpression<'a> {
     pub(crate) fn kind(&self) -> Operator {
-        let some_op = self.node.children_with_tokens().find_map(|node|
-            match node.kind() {
-                SyntaxKind::OrKeyword => Some(Operator::Or),
-                SyntaxKind::AndKeyword => Some(Operator::And),
-                SyntaxKind::LessThan => Some(Operator::LessThan),
-                SyntaxKind::GreaterThan => Some(Operator::GreaterThan),
-                SyntaxKind::LessThanOrEquals => Some(Operator::LessThanOrEquals),
-                SyntaxKind::GreaterThanOrEquals => Some(Operator::GreaterThanOrEquals),
-                SyntaxKind::NotEqualsBoolean => Some(Operator::NotEquals),
-                SyntaxKind::EqualsBoolean => Some(Operator::Equals),
-                SyntaxKind::DoubleDot => Some(Operator::Concatenate),
-                SyntaxKind::Plus => Some(Operator::Add),
-                SyntaxKind::Minus => Some(Operator::Subtract),
-                SyntaxKind::Asterisk => Some(Operator::Multiply),
-                SyntaxKind::Slash => Some(Operator::Divide),
-                SyntaxKind::Modulo => Some(Operator::Modulo),
-                SyntaxKind::Hat => Some(Operator::Hat),
-                _ => None,
-            }
-        );
-        some_op.unwrap_or(Operator::None)
+        self.node.children_with_tokens()
+            .find_map(|node| syntax_kind_to_operator(node.kind()))
+            .unwrap_or(Operator::None)
+    }
+    pub(crate) fn op_token_range(&self) -> Option<crate::syntax::TextRange> {
+        self.node.children_with_tokens()
+            .find_map(|node| syntax_kind_to_operator(node.kind()).map(|_| node.text_range()))
     }
     pub(crate) fn get_terms(&self) -> Vec<Expression<'a>> {
         self.node.children().filter_map(Expression::cast).collect()

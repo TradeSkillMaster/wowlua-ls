@@ -18,6 +18,19 @@ use crate::types::*;
 use crate::config::AllowedGlobals;
 use crate::pre_globals::PreResolvedGlobals;
 
+/// A tracked binary-op site for diagnostics (`invalid-op`, `redundant-or`/`redundant-and`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BinaryOpSite {
+    pub expr_id: ExprId,
+    /// Byte range of the full binary expression (used by `invalid-op`).
+    pub expr_start: u32,
+    pub expr_end: u32,
+    /// Byte range of the operator token itself, e.g. the `or` keyword or `+` symbol
+    /// (used by `redundant-or`/`redundant-and`).
+    pub op_start: u32,
+    pub op_end: u32,
+}
+
 // ── Call-site self_offset ───────────────────────────────────────────────────
 
 pub(crate) fn call_self_offset(
@@ -105,9 +118,8 @@ pub(crate) struct Ir {
     /// Each entry is (key_expr_id, key_start, key_end) covering both reads and writes.
     pub(crate) bracket_index_sites: Vec<(ExprId, u32, u32)>,
     /// Binary-op sites for `invalid-op` and `redundant-or`/`redundant-and` diagnostics.
-    /// Each entry is (binary_op_expr_id, start, end) covering arithmetic, concatenation,
-    /// comparison, and logical ops.
-    pub(crate) binary_op_sites: Vec<(ExprId, u32, u32)>,
+    /// Covers arithmetic, concatenation, comparison, and logical ops.
+    pub(crate) binary_op_sites: Vec<BinaryOpSite>,
     /// Unary-op sites for `invalid-op` and `need-check-nil` diagnostics (currently `#` length operator).
     /// Each entry is (unary_op_expr_id, start, end).
     pub(crate) unary_op_sites: Vec<(ExprId, u32, u32)>,
