@@ -2465,6 +2465,8 @@ impl<'a> Analysis<'a> {
                 let operand = *operand;
                 let operand_type = self.resolve_expr(operand);
                 return match operand_type {
+                    // Unresolved operand: `not` still produces boolean (Lua semantics)
+                    None if op == Operator::Not => Some(ValueType::Boolean(None)),
                     None => None,
                     Some(ref ot) => match op {
                         Operator::Not => Some(ValueType::Boolean(None)),

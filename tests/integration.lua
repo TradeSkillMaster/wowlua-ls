@@ -78,6 +78,18 @@ local maybeNum = nil
 local ternary = maybeNum and true or false
 --    ^ hover: (local) ternary: boolean  def: local
 
+-- ── `not` on unresolved operand still produces boolean ──────────────
+-- Prevents `not x and func() or nil` from collapsing to nil when x is unresolved.
+local function _notUnresolved(unknownParam)
+    local notResult = not unknownParam
+    --    ^ hover: (local) notResult: boolean  def: local
+    ---@return string
+    local function getStr() return "" end
+    local andOrResult = not unknownParam and getStr() or nil
+    --    ^ hover: (local) andOrResult: string?  def: local
+end
+local _ = _notUnresolved
+
 -- ── Dotted method with unresolved intermediate should not leak to root table ──
 local MyObj = {}
 MyObj.knownField = 1
