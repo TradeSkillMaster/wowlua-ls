@@ -1,5 +1,5 @@
 -- Test: redundant-or and redundant-and diagnostics
----@diagnostic disable: unused-local, unused-function
+---@diagnostic disable: unused-local, unused-function, undefined-global
 
 local function _use(...) end
 
@@ -111,11 +111,13 @@ _use(holder)
 ---@type table<string, number>
 local dict = {}
 _use((dict["missing"] or 9999) < 5)
+--                   ^ diag: none
 
 -- Array index can be out of bounds → nil at runtime.
 ---@type number[]
 local arr = {}
 _use(arr[10] or 0)
+--         ^ diag: none
 
 -- Literal key matching a declared @field resolves to the field type (guaranteed
 -- to exist), so `or` IS redundant here — not suppressed.
@@ -125,6 +127,23 @@ _use(arr[10] or 0)
 local cfg
 _use(cfg["name"] or "default")
 --                ^ diag: redundant-or
+
+-- Bracket index through a field chain inside a nil-guarded scope (StripNil
+-- wrapping): the BracketIndex is wrapped in StripNil by narrowing, but the
+-- `or` fallback is still valid for missing dictionary keys.
+local private = {
+    storage = {
+        quantities = nil, ---@type table<string,number>
+    },
+}
+---@type table<string, boolean>
+local items = {}
+if private.storage.quantities then
+    for key in pairs(items) do
+        _use(private.storage.quantities[key] or 0)
+        --                                    ^ diag: none
+    end
+end
 
 -- ── Suppression ─────────────────────────────────────────────────────────────
 

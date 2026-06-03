@@ -5,12 +5,27 @@ use super::{DiagnosticPass, WowDiagnostic};
 
 pub(crate) struct RedundantLogical;
 
+/// Unwrap StripNil / StripFalsy / Grouped wrappers to reach the underlying
+/// expression. Narrowing (e.g. nil-guard scopes) can wrap the LHS in these,
+/// but the suppression checks need to see the original expression.
+fn unwrap_to_inner(exprs: &[Expr], mut id: ExprId) -> ExprId {
+    loop {
+        match &exprs[id.val()] {
+            Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner) | Expr::Grouped(inner) => {
+                id = *inner;
+            }
+            _ => return id,
+        }
+    }
+}
+
 /// Returns true when the LHS expression is a field access to a `lateinit` (`T!`)
 /// field. Such fields are typed non-nil for the language server (so accessing them
 /// doesn't require a nil check), but can be nil at runtime until first initialized.
 /// The `x = x or default` idiom is exactly how such fields get initialized, so we
 /// must not flag the `or` as redundant.
 fn lhs_is_lateinit_field(analysis: &AnalysisResult, lhs: ExprId) -> bool {
+    let lhs = unwrap_to_inner(&analysis.ir.exprs, lhs);
     let Expr::FieldAccess { table, field, .. } = &analysis.ir.exprs[lhs.val()] else { return false };
     let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
     let table_type = table_type.into_strip_opaque();
@@ -41,6 +56,7 @@ fn any_table_has_lateinit_field(analysis: &AnalysisResult, ty: &ValueType, field
 /// table (e.g. `cfg["name"]` where `name` is a `@field`), the field is guaranteed
 /// to exist, so we do NOT suppress — the `or` really is redundant in that case.
 fn lhs_is_dynamic_index(analysis: &AnalysisResult, lhs: ExprId) -> bool {
+    let lhs = unwrap_to_inner(&analysis.ir.exprs, lhs);
     let Expr::BracketIndex { table, literal_key, .. } = &analysis.ir.exprs[lhs.val()] else { return false };
     let literal_key = literal_key.clone();
     let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
