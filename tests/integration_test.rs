@@ -1022,7 +1022,7 @@ fn document_highlight() {
 #[test]
 fn redundant_logical() {
     run_annotation_tests(&TestConfig {
-        lua_file: "tests/redundant-logical.lua",
+        lua_file: "tests/redundant-logical/redundant-logical.lua",
         with_stubs: false,
         scan_dir: None,
     });
