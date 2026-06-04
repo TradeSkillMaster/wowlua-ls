@@ -248,3 +248,21 @@ local s1 = 2 or 0
 
 ---@diagnostic disable-next-line: redundant-and
 local s2 = nil and 1
+
+-- ── No diagnostic: unresolved LHS in `X or nil` ────────────────────────────
+
+-- When the LHS of `or` is unresolved (None), the `or nil` pattern must not
+-- collapse the whole expression to `nil`. The variable assigned from such an
+-- expression should be unknown, not guaranteed falsy.
+local tbl = {}
+function tbl.doStuff(key, value, context, path)
+    local info = context.tableLookupFunc and context.tableLookupFunc(value) or nil
+    if info and context.depth <= context.maxDepth then
+        print(info)
+    end
+    local info2 = context.tableLookupFunc and context.tableLookupFunc(value) or false
+    if info2 and context.depth <= context.maxDepth then
+        print(info2)
+    end
+end
+_use(tbl)

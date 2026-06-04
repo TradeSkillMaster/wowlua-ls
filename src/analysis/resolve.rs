@@ -2471,7 +2471,10 @@ impl<'a> Analysis<'a> {
                 let rhs_type = self.resolve_expr(rhs);
                 return match (lhs_type, rhs_type) {
                     (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
-                    (None, Some(r)) if op == Operator::Or => Some(r),
+                    // When RHS is guaranteed falsy, returning it alone ignores
+                    // the unknown LHS and causes false-positive redundant-and
+                    // downstream (e.g. `local info = ctx.f and ctx.f() or nil`).
+                    (None, Some(r)) if op == Operator::Or && !r.is_guaranteed_falsy() => Some(r),
                     (Some(ref l), None) if op == Operator::Or && l.is_guaranteed_truthy() => Some(l.clone()),
                     (Some(ValueType::Number | ValueType::NumberLiteral(_)), None) | (None, Some(ValueType::Number | ValueType::NumberLiteral(_)))
                         if op.is_arithmetic() => Some(ValueType::Number),
