@@ -2957,15 +2957,11 @@ impl<'a> Analysis<'a> {
                         // parameters with a default value. Track that the param can
                         // be nil so the inferred type includes nil.
                         if let Some(s) = lhs_sym {
+                            // Note: this flag only takes effect when the param also
+                            // has baseline hints from other usage sites (the final
+                            // loop iterates `baseline_hints`). A param used *only*
+                            // in `param or expr` with no other evidence stays `?`.
                             or_lhs_params.insert(s);
-                            // The RHS type is also a hint for the param's type, e.g.
-                            // `val = val or 42` hints that val is `number`.
-                            if let Some(rhs_ty) = self.resolve_expr(rhs) {
-                                let rhs_ty = rhs_ty.strip_nil();
-                                if !matches!(rhs_ty, ValueType::Any | ValueType::Nil) {
-                                    record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, rhs_ty);
-                                }
-                            }
                         }
                     }
                 }

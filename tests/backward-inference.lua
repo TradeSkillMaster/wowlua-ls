@@ -914,10 +914,10 @@ local function withOrDefault(val)
     _takesNumber(val)
 end
 
--- The RHS of `or` also serves as a type hint, so even without a separate call
--- site the param type is inferred from the default value.
+-- The `or` RHS is a default value, not evidence of the param's type — only
+-- other usage sites (like `_takesNumber`) contribute type hints.
 local function orDefaultOnly(val)
---                           ^ hover: (param) val: number?
+--                           ^ hover: (param) val: ?
     val = val or 42
     return val
 end
@@ -929,4 +929,19 @@ local function withAnnotatedOr(val)
 --                             ^ hover: (param) val: number
     val = val or 42
     _takesNumber(val)
+end
+
+-- `param or false` is a nil-coalescing sentinel — don't infer `false` as param type.
+-- Uses table-store context to verify the hint isn't recorded even when the `or`
+-- result flows into a typed container.
+local function withOrFalse(param)
+--                         ^ hover: (param) param: ?
+    local arr = {}
+    arr[1] = param or false
+end
+
+-- `param or true` is equally a nil-coalescing sentinel
+local function withOrTrue(param)
+--                        ^ hover: (param) param: ?
+    local flag = param or true
 end
