@@ -168,6 +168,45 @@ local function processReagent(data)
 end
 _use(processReagent)
 
+-- ── No diagnostic: deferred sibling narrowing must skip guard symbol ─────────
+-- When a multi-return function is a forward-declared field access, sibling
+-- narrowing is deferred to the fixpoint. The deferred path must skip the
+-- guard symbol (the symbol whose truthiness triggers the `and`) to avoid
+-- rewriting its own LHS reference to the narrowed type.
+
+local helper = {}
+
+---@param side string
+---@return number
+function helper.getVal(side)
+    return 1
+end
+
+-- Forward reference: helper.split is used before its definition, so sibling
+-- narrowing is deferred to the resolve phase.
+local function doOffsets()
+    local a, b = helper.split()
+    local x = a and ((a == "X" and 1 or -1) * helper.getVal(a)) or 0
+    --                                                             ^ diag: none
+    local y = b and ((b == "Y" and 1 or -1) * helper.getVal(b)) or 0
+    --                                                             ^ diag: none
+    return x, y
+end
+_use(doOffsets)
+
+-- Defined after usage — triggers OverloadCheck::Deferred for sibling narrowing.
+function helper.split()
+    if true then
+        return "X", "Y"
+    elseif true then
+        return nil, "Y"
+    elseif true then
+        return "X", nil
+    else
+        return nil, nil
+    end
+end
+
 -- ── Suppression ─────────────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: redundant-or

@@ -626,6 +626,27 @@ impl<'a> Analysis<'a> {
             };
             if has_return_overloads {
                 for &(ret_index, sibling_idx) in &entry.siblings {
+                    // Skip the guard symbol(s) — they already have their own
+                    // StripNil/StripFalsy version from the build_ir phase.
+                    // Creating an OverloadNarrow for a guard and rewriting its
+                    // refs would apply the narrowed type beyond the `and` RHS
+                    // scope (e.g. to the LHS of the `and` expression), causing
+                    // false-positive `redundant-or` diagnostics.
+                    //
+                    // This is the deferred-path equivalent of `narrow_siblings`'
+                    // `sibling_idx == sym_idx` check — since the triggering
+                    // symbol index is not stored in the deferred entry, we match
+                    // by return position instead. This is slightly broader: when
+                    // multiple positions are narrowed (e.g. `a and b and <expr>`),
+                    // ALL siblings at narrowed positions are skipped, whereas the
+                    // non-deferred path only skips the single `sym_idx` per call.
+                    // The `sort_by_key(|e| e.narrowed.len())` ordering mitigates
+                    // this: smaller (less-narrowed) entries run first, giving
+                    // siblings their OverloadNarrow before a broader entry skips
+                    // them.
+                    if entry.narrowed.iter().any(|(pos, _)| *pos == ret_index) {
+                        continue;
+                    }
                     // Skip siblings reassigned since the multi-return assignment.
                     // `sibling_was_reassigned` sees through OverloadNarrow versions
                     // so a partial deferred entry (processed earlier by the
