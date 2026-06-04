@@ -119,6 +119,27 @@ fn any_table_is_unclassed(analysis: &AnalysisResult, ty: &ValueType) -> bool {
     }
 }
 
+/// Returns true when the LHS is a symbol reference whose initial definition
+/// (version 0) resolved to a type that is not guaranteed truthy. This catches
+/// the common `x = x or default` idiom inside loops where `x` starts as nil
+/// but the fixpoint resolution makes the merged version appear always truthy
+/// after branch merges in the loop body. Only version 0 is checked — if the
+/// initial definition is truthy but some intermediate reassignment is nilable,
+/// that's a different pattern that doesn't need this suppression.
+fn lhs_initial_version_is_nilable(analysis: &AnalysisResult, lhs: ExprId) -> bool {
+    let lhs = unwrap_to_inner(&analysis.ir.exprs, lhs);
+    let Expr::SymbolRef(sym_idx, ver_idx) = &analysis.ir.exprs[lhs.val()] else { return false };
+    let sym_idx = *sym_idx;
+    let ver_idx = *ver_idx;
+    if sym_idx.is_external() || ver_idx == 0 { return false; }
+    let sym = &analysis.ir.symbols[sym_idx.val()];
+    match &sym.versions[0].resolved_type {
+        Some(t) if !t.is_guaranteed_truthy() => true,
+        None => true,
+        _ => false,
+    }
+}
+
 /// Returns true when the LHS is a reference to a function parameter that has no
 /// explicit `@param` annotation. Such parameters get their type from backward
 /// inference (call-site propagation), which may resolve to a non-nil type like
@@ -168,6 +189,12 @@ impl DiagnosticPass for RedundantLogical {
             // inferred from writes, not declared via @field, so the field may be
             // nil at runtime even though the LS resolves it to a non-nil type.
             if matches!(op, Operator::Or) && lhs_is_field_on_unclassed_table(analysis, lhs) { continue; }
+
+            // Skip symbols whose initial definition (version 0) was nil/falsy:
+            // loop-body branch merges can make a later version appear always
+            // truthy, but the variable may still be nil on the first iteration.
+            // The `x = x or default` pattern inside a loop is not redundant.
+            if matches!(op, Operator::Or) && lhs_initial_version_is_nilable(analysis, lhs) { continue; }
 
             match op {
                 Operator::Or if lhs_type.is_guaranteed_truthy() => {

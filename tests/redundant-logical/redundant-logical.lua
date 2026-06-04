@@ -241,6 +241,63 @@ local function withAnnotated(val)
 end
 _use(withAnnotated(10))
 
+-- ── No diagnostic: nil-initialized variable with or-default in loop ─────────
+
+-- A variable initialized to nil that gets assigned via `x = x or default`
+-- inside a loop body: on the first iteration x is nil, so the `or` is not
+-- redundant even though fixpoint resolution merges the type to table.
+local function loopInit()
+    local groups = nil
+    local items = nil
+    for _, part in ipairs({"a","b","c"}) do
+        if part == "a" then
+            groups = groups or {}
+            groups[part] = true
+        elseif part == "b" then
+            items = items or {}
+            groups = groups or {}
+            groups[part] = true
+            items[part] = "x"
+        end
+    end
+    return items, groups
+end
+_use(loopInit)
+
+-- Uninitialized local (implicitly nil) — same suppression applies.
+local function loopUninit()
+    local result
+    for _, part in ipairs({"a","b"}) do
+        result = result or {}
+        result[part] = true
+    end
+    return result
+end
+_use(loopUninit)
+
+-- Variable initialized to false (falsy but non-nil) inside a loop.
+local function loopFalseInit()
+    local found = false
+    for _, part in ipairs({"a","b"}) do
+        found = found or (part == "a")
+    end
+    return found
+end
+_use(loopFalseInit)
+
+-- But a variable initialized to a table is genuinely always truthy — the `or`
+-- IS redundant regardless of the loop.
+local function loopAlreadyInit()
+    local tbl = {}
+    for _, part in ipairs({"a","b"}) do
+        tbl = tbl or {}
+        --      ^ diag: redundant-or
+        tbl[part] = true
+    end
+    return tbl
+end
+_use(loopAlreadyInit)
+
 -- ── Suppression ─────────────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: redundant-or
