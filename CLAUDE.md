@@ -145,6 +145,7 @@ Diagnostic modules under `src/diagnostics/` (40 modules implementing `Diagnostic
 - `trailing_space.rs` — lines ending with whitespace (`trailing-space`, HINT)
 - `not_precedence.rs` — `not x <cmp> y` parsing as `(not x) <cmp> y` (`not-precedence`, HINT)
 - `redundant_logical.rs` — redundant `or`/`and` where LHS truthiness/falsiness makes RHS unreachable (`redundant-or`, `redundant-and`, HINT)
+- `redundant_condition.rs` — `if`/`elseif`/`while`/`repeat...until` condition whose type is always truthy or always falsy (`redundant-condition`, HINT, default-disabled)
 - `unused_vararg.rs` — functions declaring `...` but never referencing it (`unused-vararg`, HINT, default-disabled)
 
 **Unknown-type diagnostics (strict typing, all default-disabled):**
@@ -285,6 +286,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/stylistic.lua` — Stylistic HINT diagnostics: `empty-block`, `redundant-return`, `trailing-space`
 - `tests/not-precedence.lua` — Operator precedence: `not x <cmp> y` parses as `(not x) <cmp> y` (`not-precedence`)
 - `tests/redundant-logical.lua` — `redundant-or` (truthy LHS makes `or` RHS dead code) and `redundant-and` (falsy LHS makes `and` RHS dead code) HINT diagnostics, `@diagnostic` suppression
+- `tests/redundant-condition/` — `redundant-condition` (always-truthy/falsy `if`/`elseif`/`while` conditions) HINT diagnostic; `.wowluarc.json` enables the default-disabled code
 - `tests/syntax-coverage.lua` — Broad syntax construct coverage: numeric literals, long strings, unary/binary operators, repeat/until, for-step, semicolons, no-paren calls, anonymous functions, multi-dot definitions, code-after-break, long bracket comments, forward-declared locals, nested function returns, bracket-keyed tables, multi-target assignment, conditional function defs, higher-order functions, module patterns, closures, reassignment, colon methods
 - `tests/convergence.lua` — Fixpoint convergence regression: 60 reverse-order function calls testing inner loop optimization
 - `tests/metatable-type-i.lua` — Metatable type inference: `setmetatable()` + `__index` field propagation, chained metatables, self-referential `mt.__index = mt`, factory functions, instance field priority (--with-stubs)

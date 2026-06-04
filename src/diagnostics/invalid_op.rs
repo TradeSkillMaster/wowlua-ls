@@ -1,7 +1,7 @@
 use crate::analysis::AnalysisResult;
 use crate::ast::Operator;
 use crate::types::{Expr, ValueType};
-use super::{DiagnosticPass, WowDiagnostic};
+use super::{DiagnosticPass, WowDiagnostic, is_type_permissive};
 
 pub(crate) struct InvalidOp;
 
@@ -22,15 +22,6 @@ fn op_symbol(op: Operator) -> &'static str {
     }
 }
 
-/// Returns true for types that should suppress the diagnostic (unknown, permissive).
-fn is_permissive(ty: &ValueType) -> bool {
-    match ty {
-        ValueType::Any | ValueType::TypeVariable(_) => true,
-        ValueType::Union(types) => types.iter().any(is_permissive),
-        ValueType::OpaqueAlias(_, inner) => is_permissive(inner),
-        _ => false,
-    }
-}
 
 /// Returns true if the type supports the `#` (length) operator.
 /// Valid for strings and tables (which may have `__len`).
@@ -63,7 +54,7 @@ impl DiagnosticPass for InvalidOp {
             // Valid operation — no diagnostic needed
             if analysis.resolve_expr_type(site.expr_id).is_some() { continue; }
             // Permissive types (Any, TypeVariable) — skip to avoid noise
-            if is_permissive(&lhs_type) || is_permissive(&rhs_type) { continue; }
+            if is_type_permissive(&lhs_type) || is_type_permissive(&rhs_type) { continue; }
 
             let sym = op_symbol(op);
             let lhs_str = analysis.format_type_depth(&lhs_type, 1);
@@ -87,7 +78,7 @@ impl DiagnosticPass for InvalidOp {
         for &(expr_id, start, end) in &analysis.ir.unary_op_sites {
             let Expr::UnaryOp { operand, .. } = analysis.ir.exprs[expr_id.val()] else { continue };
             let Some(operand_type) = analysis.resolve_expr_type(operand) else { continue };
-            if is_permissive(&operand_type) { continue; }
+            if is_type_permissive(&operand_type) { continue; }
             if supports_length(&operand_type) { continue; }
 
             let type_str = analysis.format_type_depth(&operand_type, 1);

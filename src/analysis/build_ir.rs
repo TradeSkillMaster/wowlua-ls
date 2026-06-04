@@ -818,7 +818,8 @@ impl<'a> Analysis<'a> {
                 },
                 Statement::While(while_loop) => {
                     if let Some(cond) = while_loop.condition() {
-                        self.lower_expression(&cond, scope_idx);
+                        let expr_id = self.lower_expression(&cond, scope_idx);
+                        self.ir.record_condition_site(expr_id, cond.syntax().text_range());
                     }
                     if let Some(inner_block) = while_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
@@ -853,7 +854,8 @@ impl<'a> Analysis<'a> {
                 },
                 Statement::Repeat(repeat_loop) => {
                     if let Some(cond) = repeat_loop.condition() {
-                        self.lower_expression(&cond, scope_idx);
+                        let expr_id = self.lower_expression(&cond, scope_idx);
+                        self.ir.record_condition_site(expr_id, cond.syntax().text_range());
                     }
                     if let Some(inner_block) = repeat_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
@@ -876,7 +878,8 @@ impl<'a> Analysis<'a> {
                         if i == 0 {
                             // First branch: lower condition in parent scope
                             if let Some(cond) = branch.expression() {
-                                self.lower_expression(&cond, scope_idx);
+                                let expr_id = self.lower_expression(&cond, scope_idx);
+                                self.ir.record_condition_site(expr_id, cond.syntax().text_range());
                             }
                         }
                         if let Some(inner_block) = branch.block() {
@@ -893,7 +896,8 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                                 if let Some(cond) = branch.expression() {
-                                    self.lower_expression(&cond, new_scope_idx);
+                                    let expr_id = self.lower_expression(&cond, new_scope_idx);
+                                    self.ir.record_condition_site(expr_id, cond.syntax().text_range());
                                 }
                             }
                             if let Some(cond) = branch.expression() {

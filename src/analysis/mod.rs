@@ -31,6 +31,16 @@ pub(crate) struct BinaryOpSite {
     pub op_end: u32,
 }
 
+/// A tracked condition site for `redundant-condition` diagnostics.
+/// Covers `if`/`elseif`/`while`/`repeat...until` conditions.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ConditionSite {
+    pub expr_id: ExprId,
+    /// Byte range of the condition expression.
+    pub start: u32,
+    pub end: u32,
+}
+
 // ── Call-site self_offset ───────────────────────────────────────────────────
 
 pub(crate) fn call_self_offset(
@@ -120,6 +130,9 @@ pub(crate) struct Ir {
     /// Binary-op sites for `invalid-op` and `redundant-or`/`redundant-and` diagnostics.
     /// Covers arithmetic, concatenation, comparison, and logical ops.
     pub(crate) binary_op_sites: Vec<BinaryOpSite>,
+    /// Condition sites for `redundant-condition` diagnostics.
+    /// Covers `if`/`elseif` and `while` conditions.
+    pub(crate) condition_sites: Vec<ConditionSite>,
     /// Unary-op sites for `invalid-op` and `need-check-nil` diagnostics (currently `#` length operator).
     /// Each entry is (unary_op_expr_id, start, end).
     pub(crate) unary_op_sites: Vec<(ExprId, u32, u32)>,
@@ -226,6 +239,15 @@ pub(super) fn table_indices_from_type(vt: &ValueType) -> Vec<TableIndex> {
 }
 
 impl Ir {
+    /// Record a condition expression for `redundant-condition` diagnostics.
+    pub(crate) fn record_condition_site(&mut self, expr_id: ExprId, range: crate::syntax::tree::TextRange) {
+        self.condition_sites.push(ConditionSite {
+            expr_id,
+            start: u32::from(range.start()),
+            end: u32::from(range.end()),
+        });
+    }
+
     /// Get the addon namespace table index for this file. Prefers the per-file
     /// override (set when multi-addon workspace isolation is active), falling
     /// back to the global addon table from `PreResolvedGlobals`.
@@ -1741,6 +1763,7 @@ impl<'a> Analysis<'a> {
                 bracket_key_fields: HashMap::new(),
                 bracket_index_sites: Vec::new(),
                 binary_op_sites: Vec::new(),
+                condition_sites: Vec::new(),
                 unary_op_sites: Vec::new(),
                 class_def_ranges: HashMap::new(),
                 class_table_by_offset: HashMap::new(),

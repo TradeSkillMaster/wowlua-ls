@@ -1024,6 +1024,15 @@ fn redundant_logical() {
 }
 
 #[test]
+fn redundant_condition() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/redundant-condition/test.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn references() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/references.lua",

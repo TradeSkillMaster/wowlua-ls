@@ -30,6 +30,7 @@ mod nil_table_key;
 mod not_precedence;
 mod param_constraint_mismatch;
 mod redefined_local;
+mod redundant_condition;
 mod redundant_logical;
 mod return_mismatch;
 mod shadowed_local;
@@ -144,6 +145,7 @@ pub(crate) const REDUNDANT_RETURN: DiagnosticDef        = DiagnosticDef { code: 
 pub(crate) const NOT_PRECEDENCE: DiagnosticDef          = DiagnosticDef { code: "not-precedence",           severity: DiagnosticSeverity::HINT };
 pub(crate) const REDUNDANT_OR: DiagnosticDef            = DiagnosticDef { code: "redundant-or",             severity: DiagnosticSeverity::HINT };
 pub(crate) const REDUNDANT_AND: DiagnosticDef           = DiagnosticDef { code: "redundant-and",            severity: DiagnosticSeverity::HINT };
+pub(crate) const REDUNDANT_CONDITION: DiagnosticDef     = DiagnosticDef { code: "redundant-condition",      severity: DiagnosticSeverity::HINT };
 pub(crate) const WRONG_FLAVOR_API: DiagnosticDef        = DiagnosticDef { code: "wrong-flavor-api",         severity: DiagnosticSeverity::WARNING };
 pub(crate) const UNKNOWN_PARAM_TYPE: DiagnosticDef      = DiagnosticDef { code: "unknown-param-type",       severity: DiagnosticSeverity::HINT };
 pub(crate) const UNKNOWN_RETURN_TYPE: DiagnosticDef     = DiagnosticDef { code: "unknown-return-type",      severity: DiagnosticSeverity::HINT };
@@ -177,7 +179,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
     &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SHADOWED_LOCAL,
     &MIXED_ENUM_VALUES, &INVALID_CLASS_PARENT, &INVALID_OP, &NIL_TABLE_KEY, &SAFETY_LIMIT,
-    &REDUNDANT_OR, &REDUNDANT_AND,
+    &REDUNDANT_OR, &REDUNDANT_AND, &REDUNDANT_CONDITION,
 ];
 
 pub(crate) fn append_structural_mismatch_suffix(
@@ -276,6 +278,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &cannot_call::CannotCall,
         &invalid_op::InvalidOp,
         &redundant_logical::RedundantLogical,
+        &redundant_condition::RedundantCondition,
         &multi_return_projection::MultiReturnProjection,
         &discard_returns::DiscardReturns,
         &wrong_flavor_api::WrongFlavorApi,
@@ -399,7 +402,23 @@ pub(crate) const DEFAULT_DISABLED_CODES: &[&str] = &[
     INVALID_OP.code,
     REDUNDANT_OR.code,
     REDUNDANT_AND.code,
+    REDUNDANT_CONDITION.code,
 ];
+
+/// Returns true for types where we cannot determine truthiness/falsiness.
+/// `TypeVariable` is included because `is_guaranteed_truthy()` returns true for it
+/// (type params are non-nil at the definition level), but at the diagnostic site we
+/// don't know the concrete type the caller will substitute — it could be nilable.
+/// Unions containing Any or TypeVariable are also conservative: a `number | any` arm
+/// means partial inference, so we skip rather than risk a false positive.
+pub(crate) fn is_type_permissive(ty: &ValueType) -> bool {
+    match ty {
+        ValueType::Any | ValueType::TypeVariable(_) => true,
+        ValueType::Union(types) => types.iter().any(is_type_permissive),
+        ValueType::OpaqueAlias(_, inner) => is_type_permissive(inner),
+        _ => false,
+    }
+}
 
 pub(crate) fn known_codes() -> Vec<&'static str> {
     let mut codes: Vec<&'static str> = CATALOG.iter().map(|d| d.code).collect();

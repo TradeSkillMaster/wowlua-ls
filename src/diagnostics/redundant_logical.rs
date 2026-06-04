@@ -1,7 +1,7 @@
 use crate::analysis::AnalysisResult;
 use crate::ast::Operator;
 use crate::types::{Expr, ExprId, ValueType};
-use super::{DiagnosticPass, WowDiagnostic};
+use super::{DiagnosticPass, WowDiagnostic, is_type_permissive};
 
 pub(crate) struct RedundantLogical;
 
@@ -114,21 +114,6 @@ fn lhs_is_unannotated_param(analysis: &AnalysisResult, lhs: ExprId) -> bool {
     false
 }
 
-/// Returns true for types where we cannot determine truthiness/falsiness.
-/// `TypeVariable` is included because `is_guaranteed_truthy()` returns true for it
-/// (type params are non-nil at the definition level), but at the diagnostic site we
-/// don't know the concrete type the caller will substitute — it could be nilable.
-/// Unions containing Any or TypeVariable are also conservative: a `number | any` arm
-/// means partial inference, so we skip rather than risk a false positive.
-fn is_permissive(ty: &ValueType) -> bool {
-    match ty {
-        ValueType::Any | ValueType::TypeVariable(_) => true,
-        ValueType::Union(types) => types.iter().any(is_permissive),
-        ValueType::OpaqueAlias(_, inner) => is_permissive(inner),
-        _ => false,
-    }
-}
-
 impl DiagnosticPass for RedundantLogical {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for site in &analysis.ir.binary_op_sites {
@@ -138,7 +123,7 @@ impl DiagnosticPass for RedundantLogical {
 
             let Some(lhs_type) = analysis.resolve_expr_type(lhs) else { continue };
 
-            if is_permissive(&lhs_type) { continue; }
+            if is_type_permissive(&lhs_type) { continue; }
 
             // Skip lateinit (`T!`) field accesses: they're non-nil for the LS but
             // get initialized via the `x = x or default` idiom at runtime.
