@@ -141,7 +141,21 @@ if private.storage.quantities then
     end
 end
 
-<<<<<<< HEAD
+-- ── No diagnostic: field on bare (non-@class) table ─────────────────────────
+
+-- On a table without @class, field existence is inferred from writes, not
+-- guaranteed by a schema. `tbl.field = tbl.field or default` is the standard
+-- idiom for initializing fields on reused tables (e.g. object pool recycling).
+local function poolExample()
+    ---@type table[]
+    local pool = {}
+    local obj = table.remove(pool) or {}
+    obj.data = obj.data or {}
+    obj.data.count = 1
+    _use(obj)
+end
+_use(poolExample)
+
 -- ── No diagnostic: sub-field of narrowed parent ─────────────────────────────
 
 -- When `obj.parent` is narrowed via assert(), accessing `obj.parent.field`
