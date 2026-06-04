@@ -439,29 +439,33 @@ impl Ir {
     /// Separate `{}` literals across branches produce distinct `TableIndex`
     /// values but render identically as `table`, so multiple such members
     /// collapse to a single representative. Class tables with the same
-    /// `class_name` also collapse to the first occurrence. Non-empty
-    /// anonymous tables (with declared fields / key-value types / parents
-    /// / metatables) are left as-is — their shapes may genuinely differ even
-    /// when indices are distinct, and structural comparison is out of scope
-    /// here. Applied after `ValueType::make_union` at union-producing sites
-    /// (branch merge, function return aggregation, binary op resolve).
+    /// `class_name` also collapse to the first occurrence. Anonymous tables
+    /// with identical structural shape (same key_type/value_type and no
+    /// named fields, parents, or metatables) also collapse — including bare
+    /// `{}` tables which produce signature `(None, None)`. Applied after
+    /// `ValueType::make_union` at union-producing sites (branch merge,
+    /// function return aggregation, binary op resolve).
     pub(crate) fn dedupe_union_tables(&self, vt: ValueType) -> ValueType {
         let ValueType::Union(members) = vt else { return vt };
         let mut result: Vec<ValueType> = Vec::with_capacity(members.len());
-        let mut seen_anon = false;
         let mut seen_class_names: Vec<String> = Vec::new();
+        // Structural signatures for anonymous tables: (key_type, value_type).
+        // Empty tables (`{}`) produce `(None, None)`, map tables produce
+        // `(Some(K), Some(V))`, etc.
+        let mut seen_anon_sigs: Vec<(Option<ValueType>, Option<ValueType>)> = Vec::new();
         for m in members {
             match &m {
                 ValueType::Table(Some(idx)) => {
-                    if let Some(cn) = self.table(*idx).class_name.clone() {
+                    let t = self.table(*idx);
+                    if let Some(cn) = t.class_name.clone() {
                         if seen_class_names.iter().any(|n| n == &cn) {
                             continue;
                         }
                         seen_class_names.push(cn);
                         result.push(m);
-                    } else if self.is_anonymous_empty_table(*idx) {
-                        if !seen_anon {
-                            seen_anon = true;
+                    } else if let Some(sig) = Self::anonymous_table_sig(t) {
+                        if !seen_anon_sigs.contains(&sig) {
+                            seen_anon_sigs.push(sig);
                             result.push(m);
                         }
                     } else if !result.contains(&m) {
@@ -476,6 +480,33 @@ impl Ir {
             }
         }
         ValueType::make_union(result)
+    }
+
+    /// Returns a structural signature `(key_type, value_type)` for anonymous
+    /// tables that carry no complex structure beyond key/value types — no
+    /// named fields, parents, metatables, call signatures, or enums. Empty
+    /// tables (`{}`) return `Some((None, None))`, map tables return
+    /// `Some((Some(K), Some(V)))`. Returns `None` for tables with named
+    /// fields or other properties that require deeper comparison.
+    ///
+    /// Note: the comparison is shallow — `ValueType` equality for nested
+    /// `Table(Some(idx))` references is index-based, not structural. In
+    /// practice key/value types from `table<K, V>` annotations are primitives
+    /// or class names, so this doesn't arise.
+    fn anonymous_table_sig(t: &TableInfo) -> Option<(Option<ValueType>, Option<ValueType>)> {
+        if t.class_name.is_some()
+            || !t.fields.is_empty()
+            || !t.array_fields.is_empty()
+            || !t.parent_classes.is_empty()
+            || t.metatable.is_some()
+            || t.metatable_index.is_some()
+            || t.call_func.is_some()
+            || t.built_table.is_some()
+            || t.enum_kind.is_enum()
+        {
+            return None;
+        }
+        Some((t.key_type.clone(), t.value_type.clone()))
     }
 
     /// Create a new symbol version whose type_source is `StripNil(previous_version)`.

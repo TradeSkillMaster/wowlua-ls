@@ -1302,3 +1302,13 @@ end
 
 local commaRetResult = commaRetFunc()
 --    ^ hover: (local) commaRetResult: CommaRetA?  def: local
+
+-- Test: duplicate table types in union should be deduplicated
+---@class DedupTableHolder
+---@field selected? table<string, true>
+---@field unselected? table<string, true>
+
+---@type DedupTableHolder
+local dedupHolder = nil ---@diagnostic disable-line: assign-type-mismatch
+local dedupTbl = dedupHolder.selected or dedupHolder.unselected
+--    ^ hover: (local) dedupTbl: table<string, true>?
