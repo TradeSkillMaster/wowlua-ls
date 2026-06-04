@@ -314,11 +314,23 @@ pub(super) fn resolve_expr_type_impl(
                         } else {
                             std::iter::once(primary).chain(extras).collect()
                         };
+                        let mut has_unresolvable = false;
                         for eid in all_exprs {
-                            if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1)
-                                && !field_types.contains(&vt) {
+                            if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1) {
+                                if !field_types.contains(&vt) {
                                     field_types.push(vt);
                                 }
+                            } else {
+                                has_unresolvable = true;
+                            }
+                        }
+                        // If the primary was a nil placeholder (skipped) and
+                        // any reassignment couldn't be resolved, the field
+                        // could hold any type — widen to Any.
+                        if has_unresolvable && skip_primary
+                            && !field_types.contains(&ValueType::Any)
+                        {
+                            field_types.push(ValueType::Any);
                         }
                     }
                     // If own field resolved only to Table(None) placeholders and the

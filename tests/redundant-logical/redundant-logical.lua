@@ -323,3 +323,27 @@ function tbl.doStuff(key, value, context, path)
     end
 end
 _use(tbl)
+
+-- ── No diagnostic: field with unresolvable extra_exprs ────────────────────
+
+-- When a field is initialized to nil in a table constructor but reassigned
+-- from a callback parameter whose type can't be resolved, the field type
+-- should widen to `any?` (not just `nil`), so `and` is not redundant.
+local state = {
+    enabled = nil,
+}
+
+local function setupCallbacks(registerFn)
+    registerFn(function(enabled)
+        state.enabled = enabled
+    end)
+end
+_use(setupCallbacks)
+
+local function process()
+    if state.enabled and state.enabled ~= "skip" then
+--           ^ hover: (field) enabled: any
+        _use(state.enabled)
+    end
+end
+_use(process)

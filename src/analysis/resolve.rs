@@ -1991,11 +1991,20 @@ impl<'a> Analysis<'a> {
                         std::iter::once(expr).chain(extras.iter().copied()).collect()
                     };
                     let mut types: Vec<ValueType> = Vec::new();
+                    let mut has_unresolvable = false;
                     for e in all_exprs {
-                        if let Some(vt) = self.resolve_expr(e)
-                            && !types.contains(&vt) {
+                        if let Some(vt) = self.resolve_expr(e) {
+                            if !types.contains(&vt) {
                                 types.push(vt);
                             }
+                        } else {
+                            has_unresolvable = true;
+                        }
+                    }
+                    if has_unresolvable && skip_primary
+                        && !types.contains(&ValueType::Any)
+                    {
+                        types.push(ValueType::Any);
                     }
                     if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
                 });
