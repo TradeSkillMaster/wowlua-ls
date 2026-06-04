@@ -394,6 +394,9 @@ pub(super) fn resolve_expr_type_impl(
             match &table_type {
                 ValueType::Table(Some(idx)) => ir.table(*idx).value_type.clone(),
                 ValueType::Union(types) => {
+                    if types.iter().any(|t| matches!(t, ValueType::Table(None))) {
+                        return Some(ValueType::Any);
+                    }
                     let mut vts: Vec<ValueType> = Vec::new();
                     for t in types {
                         if let ValueType::Table(Some(idx)) = t
@@ -402,6 +405,7 @@ pub(super) fn resolve_expr_type_impl(
                     }
                     if vts.is_empty() { None } else { Some(ValueType::make_union(vts)) }
                 }
+                ValueType::Table(None) => Some(ValueType::Any),
                 _ => None,
             }
         }

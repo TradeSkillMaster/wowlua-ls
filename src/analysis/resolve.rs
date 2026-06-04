@@ -2858,6 +2858,10 @@ impl<'a> Analysis<'a> {
                         vt
                     }
                     ValueType::Union(types) => {
+                        // If any member is plain `table`, bracket access is `any`.
+                        if types.iter().any(|t| matches!(t, ValueType::Table(None))) {
+                            return Some(ValueType::Any);
+                        }
                         let mut value_types: Vec<ValueType> = Vec::new();
                         let key_type_resolved = self.resolve_expr(*key);
                         for t in types {
@@ -2891,6 +2895,9 @@ impl<'a> Analysis<'a> {
                         if value_types.is_empty() { None }
                         else { Some(ValueType::make_union(value_types)) }
                     }
+                    // Plain `table` (no type params) is the most generic dictionary —
+                    // bracket access yields any.
+                    ValueType::Table(None) => Some(ValueType::Any),
                     _ => None,
                 }
             }

@@ -1312,3 +1312,15 @@ local commaRetResult = commaRetFunc()
 local dedupHolder = nil ---@diagnostic disable-line: assign-type-mismatch
 local dedupTbl = dedupHolder.selected or dedupHolder.unselected
 --    ^ hover: (local) dedupTbl: table<string, true>?
+
+-- Regression: bracket index on plain (unparameterized) `table` should resolve to any, not nil
+---@type table
+local plainTable = {}
+local plainVal = plainTable["key"]
+--    ^ hover: (local) plainVal: any
+
+-- Regression: bracket index on `table` inside a union should also resolve to any
+---@type table | number
+local plainUnionTable = {} ---@diagnostic disable-line: assign-type-mismatch
+local plainUnionVal = plainUnionTable["key"]
+--    ^ hover: (local) plainUnionVal: any
