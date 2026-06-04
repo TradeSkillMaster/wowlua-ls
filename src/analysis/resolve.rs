@@ -2313,15 +2313,28 @@ impl<'a> Analysis<'a> {
     /// Unlike `PartialEq`, this considers two `Table(Some(idx))` values equivalent
     /// when they have the same class name and key/value types (even if their indices differ).
     fn types_equivalent(&self, a: &ValueType, b: &ValueType) -> bool {
+        self.types_equivalent_depth(a, b, 0)
+    }
+
+    fn types_equivalent_depth(&self, a: &ValueType, b: &ValueType, depth: usize) -> bool {
         if a == b { return true; }
+        if depth > 8 { return false; }
         match (a, b) {
             (ValueType::Table(Some(ai)), ValueType::Table(Some(bi))) => {
                 let ta = self.table(*ai);
                 let tb = self.table(*bi);
                 ta.class_name == tb.class_name
-                    && ta.value_type == tb.value_type
-                    && ta.key_type == tb.key_type
+                    && self.opt_types_equivalent_depth(&ta.value_type, &tb.value_type, depth + 1)
+                    && self.opt_types_equivalent_depth(&ta.key_type, &tb.key_type, depth + 1)
             }
+            _ => false,
+        }
+    }
+
+    fn opt_types_equivalent_depth(&self, a: &Option<ValueType>, b: &Option<ValueType>, depth: usize) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => self.types_equivalent_depth(a, b, depth),
+            (None, None) => true,
             _ => false,
         }
     }
@@ -2931,9 +2944,9 @@ impl<'a> Analysis<'a> {
                                 // var_idx 0: nil terminates the for-in loop (language guarantee).
                                 // Other positions: strip nil when annotated with ! (e.g. V!).
                                 if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective_var_idx) {
-                                    return Some(vt.strip_nil());
+                                    return Some(self.ir.dedupe_union_tables(vt.strip_nil()));
                                 }
-                                return ret_vt;
+                                return Some(self.ir.dedupe_union_tables(vt.clone()));
                             }
                         // Try return symbol
                         let func_scope = self.func(func_idx).scope;
@@ -2944,9 +2957,9 @@ impl<'a> Analysis<'a> {
                             if let Some(ref vt) = ret_type
                                 && !vt.contains_type_variable() {
                                     if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective_var_idx) {
-                                        return Some(vt.strip_nil());
+                                        return Some(self.ir.dedupe_union_tables(vt.strip_nil()));
                                     }
-                                    return ret_type;
+                                    return ret_type.map(|t| self.ir.dedupe_union_tables(t));
                                 }
                         }
                         // For generic iterators with state expression (e.g. `for k, v in next, tbl`):
@@ -2964,7 +2977,7 @@ impl<'a> Analysis<'a> {
                                                 .collect();
                                             if !key_types.is_empty() {
                                                 // Control variable is never nil inside the loop body
-                                                return Some(ValueType::make_union(key_types).strip_nil());
+                                                return Some(self.ir.dedupe_union_tables(ValueType::make_union(key_types)).strip_nil());
                                             }
                                         }
                                         1 => {
@@ -2974,7 +2987,7 @@ impl<'a> Analysis<'a> {
                                             if !val_types.is_empty() {
                                                 // Lua tables cannot store nil values, so iteration
                                                 // never yields nil — strip nil from the value type.
-                                                return Some(ValueType::make_union(val_types).strip_nil());
+                                                return Some(self.ir.dedupe_union_tables(ValueType::make_union(val_types)).strip_nil());
                                             }
                                         }
                                         _ => {}
@@ -3059,7 +3072,7 @@ impl<'a> Analysis<'a> {
                                         .filter_map(|&ti| self.table(ti).key_type.clone())
                                         .collect();
                                     if !key_types.is_empty() {
-                                        return Some(ValueType::make_union(key_types).strip_nil());
+                                        return Some(self.ir.dedupe_union_tables(ValueType::make_union(key_types)).strip_nil());
                                     }
                                 }
                                 1 => {
@@ -3067,7 +3080,7 @@ impl<'a> Analysis<'a> {
                                         .filter_map(|&ti| self.table(ti).value_type.clone())
                                         .collect();
                                     if !val_types.is_empty() {
-                                        return Some(ValueType::make_union(val_types).strip_nil());
+                                        return Some(self.ir.dedupe_union_tables(ValueType::make_union(val_types)).strip_nil());
                                     }
                                 }
                                 _ => {}

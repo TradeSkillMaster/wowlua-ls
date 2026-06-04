@@ -471,10 +471,10 @@ impl Ir {
         let ValueType::Union(members) = vt else { return vt };
         let mut result: Vec<ValueType> = Vec::with_capacity(members.len());
         let mut seen_class_names: Vec<String> = Vec::new();
-        // Structural signatures for anonymous tables: (key_type, value_type).
-        // Empty tables (`{}`) produce `(None, None)`, map tables produce
-        // `(Some(K), Some(V))`, etc.
-        let mut seen_anon_sigs: Vec<(Option<ValueType>, Option<ValueType>)> = Vec::new();
+        // Structural string signatures for anonymous tables, computed
+        // recursively so nested table types (e.g. `string[][]`) are compared
+        // by structure rather than by index.
+        let mut seen_anon_sigs: Vec<String> = Vec::new();
         for m in members {
             match &m {
                 ValueType::Table(Some(idx)) => {
@@ -485,7 +485,7 @@ impl Ir {
                         }
                         seen_class_names.push(cn);
                         result.push(m);
-                    } else if let Some(sig) = Self::anonymous_table_sig(t) {
+                    } else if let Some(sig) = self.anonymous_table_sig(t) {
                         if !seen_anon_sigs.contains(&sig) {
                             seen_anon_sigs.push(sig);
                             result.push(m);
@@ -504,21 +504,13 @@ impl Ir {
         ValueType::make_union(result)
     }
 
-    /// Returns a structural signature `(key_type, value_type)` for anonymous
-    /// tables that carry no complex structure beyond key/value types — no
-    /// named fields, parents, metatables, call signatures, or enums. Empty
-    /// tables (`{}`) return `Some((None, None))`, map tables return
-    /// `Some((Some(K), Some(V)))`. Returns `None` for tables with named
-    /// fields or other properties that require deeper comparison.
-    ///
-    /// Note: the comparison is shallow — `ValueType` equality for nested
-    /// `Table(Some(idx))` references is index-based, not structural. In
-    /// practice key/value types from `table<K, V>` annotations are primitives
-    /// or class names, so this doesn't arise.
-    fn anonymous_table_sig(t: &TableInfo) -> Option<(Option<ValueType>, Option<ValueType>)> {
+    /// Returns a structural string signature for anonymous tables that carry
+    /// no complex structure beyond key/value types. The signature is computed
+    /// recursively so nested table references (e.g. `string[][]`) are compared
+    /// by structure rather than by table index.
+    fn anonymous_table_sig(&self, t: &TableInfo) -> Option<String> {
         if t.class_name.is_some()
             || !t.fields.is_empty()
-            || !t.array_fields.is_empty()
             || !t.parent_classes.is_empty()
             || t.metatable.is_some()
             || t.metatable_index.is_some()
@@ -528,7 +520,62 @@ impl Ir {
         {
             return None;
         }
-        Some((t.key_type.clone(), t.value_type.clone()))
+        // Tables with array_fields but no resolved key/value types haven't been
+        // processed yet — different unresolved tables could have different element
+        // types, so we can't safely produce a signature.
+        if !t.array_fields.is_empty() && t.key_type.is_none() && t.value_type.is_none() {
+            return None;
+        }
+        let k = self.type_sig_str(t.key_type.as_ref(), 0);
+        let v = self.type_sig_str(t.value_type.as_ref(), 0);
+        Some(format!("{k}:{v}"))
+    }
+
+    /// Recursive structural string for a ValueType, used for dedup comparison.
+    /// Resolves `Table(Some(idx))` to its contents instead of using the index.
+    fn type_sig_str(&self, vt: Option<&ValueType>, depth: usize) -> String {
+        if depth > 8 { return String::from("?"); }
+        let Some(vt) = vt else { return String::from("_"); };
+        match vt {
+            ValueType::Any => "any".into(),
+            ValueType::Nil => "nil".into(),
+            ValueType::Boolean(b) => match b {
+                Some(true) => "true".into(),
+                Some(false) => "false".into(),
+                None => "boolean".into(),
+            },
+            ValueType::Number => "number".into(),
+            ValueType::NumberLiteral(v) => format!("#{v}"),
+            ValueType::String(Some(s)) => format!("\"{s}\""),
+            ValueType::String(None) => "string".into(),
+            ValueType::Function(_) => "function".into(),
+            ValueType::Userdata => "userdata".into(),
+            ValueType::Thread => "thread".into(),
+            ValueType::TypeVariable(name) => format!("${name}"),
+            ValueType::OpaqueAlias(name, _) => format!("@{name}"),
+            ValueType::Table(None) => "table".into(),
+            ValueType::Table(Some(idx)) => {
+                let t = self.table(*idx);
+                if let Some(ref cn) = t.class_name {
+                    return cn.clone();
+                }
+                let k = self.type_sig_str(t.key_type.as_ref(), depth + 1);
+                let v = self.type_sig_str(t.value_type.as_ref(), depth + 1);
+                format!("T({k},{v})")
+            }
+            ValueType::Union(members) => {
+                let parts: Vec<String> = members.iter()
+                    .map(|m| self.type_sig_str(Some(m), depth + 1))
+                    .collect();
+                format!("U({})", parts.join("|"))
+            }
+            ValueType::Intersection(members) => {
+                let parts: Vec<String> = members.iter()
+                    .map(|m| self.type_sig_str(Some(m), depth + 1))
+                    .collect();
+                format!("I({})", parts.join("&"))
+            }
+        }
     }
 
     /// Create a new symbol version whose type_source is `StripNil(previous_version)`.

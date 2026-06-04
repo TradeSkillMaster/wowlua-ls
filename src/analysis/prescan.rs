@@ -2287,7 +2287,7 @@ impl<'a> Analysis<'a> {
                                             .filter_map(|&ti| self.ir.table(ti).value_type.clone())
                                             .collect();
                                         if !val_types.is_empty() {
-                                            subs.insert(v_name.clone(), ValueType::make_union(val_types));
+                                            subs.insert(v_name.clone(), self.ir.dedupe_union_tables(ValueType::make_union(val_types)));
                                         } else {
                                             // Collect exprs first to avoid borrow conflict with resolve_expr
                                             let field_exprs: Vec<ExprId> = table_indices.iter()
@@ -2297,7 +2297,7 @@ impl<'a> Analysis<'a> {
                                                 .filter_map(|&expr_id| self.resolve_expr(expr_id))
                                                 .collect();
                                             if let Some(union_type) = Self::union_of(field_types) {
-                                                subs.insert(v_name.clone(), union_type);
+                                                subs.insert(v_name.clone(), self.ir.dedupe_union_tables(union_type));
                                             }
                                         }
                                     }

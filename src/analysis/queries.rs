@@ -5845,21 +5845,33 @@ impl AnalysisResult {
                 if string_literal_count > MAX_STRING_LITERALS {
                     let mut parts: Vec<String> = Vec::new();
                     let mut shown_strings = 0;
+                    let mut total_unique_strings = 0;
                     for t in types {
                         if matches!(t, ValueType::String(Some(_))) {
-                            if shown_strings < MAX_STRING_LITERALS {
-                                parts.push(self.format_value_type_depth(t, depth + 1));
-                                shown_strings += 1;
+                            let s = self.format_value_type_depth(t, depth + 1);
+                            if !parts.contains(&s) {
+                                total_unique_strings += 1;
+                                if shown_strings < MAX_STRING_LITERALS {
+                                    parts.push(s);
+                                    shown_strings += 1;
+                                }
                             }
                         } else {
-                            parts.push(self.format_value_type_depth(t, depth + 1));
+                            let s = self.format_value_type_depth(t, depth + 1);
+                            if !parts.contains(&s) { parts.push(s); }
                         }
                     }
-                    let remaining = string_literal_count - MAX_STRING_LITERALS;
-                    parts.push(format!("({} more)", remaining));
+                    let remaining = total_unique_strings - shown_strings;
+                    if remaining > 0 {
+                        parts.push(format!("({} more)", remaining));
+                    }
                     parts.join(" | ")
                 } else {
-                    let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth + 1)).collect();
+                    let mut parts: Vec<String> = Vec::new();
+                    for t in types {
+                        let s = self.format_value_type_depth(t, depth + 1);
+                        if !parts.contains(&s) { parts.push(s); }
+                    }
                     parts.join(" | ")
                 }
             }

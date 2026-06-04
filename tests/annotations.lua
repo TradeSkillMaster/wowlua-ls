@@ -1324,3 +1324,14 @@ local plainVal = plainTable["key"]
 local plainUnionTable = {} ---@diagnostic disable-line: assign-type-mismatch
 local plainUnionVal = plainUnionTable["key"]
 --    ^ hover: (local) plainUnionVal: any
+
+-- Test: duplicate nested array types in union should be deduplicated
+---@class DedupNestedHolder
+---@field a string[][]
+---@field b string[][]
+---@field c string[][]
+
+---@type DedupNestedHolder
+local dedupNested = nil ---@diagnostic disable-line: assign-type-mismatch
+local dedupNestedTbl = dedupNested.a or dedupNested.b or dedupNested.c
+--    ^ hover: (local) dedupNestedTbl: string[][]
