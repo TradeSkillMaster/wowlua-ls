@@ -2884,7 +2884,9 @@ impl<'a> Analysis<'a> {
                 let mut combined = sym_hints.baseline.clone();
                 combined.extend(sym_hints.narrowing.iter().cloned());
                 let inferred = intersect_hints(&combined, &is_subtype).unwrap_or(baseline_intersect);
-                let inferred = if baseline_has_nil && !inferred.contains_nil() {
+                // used_as_or_lhs: `param or default` idiom implies the param
+                // can be nil at runtime (see detection in collect_backward_inference_hints).
+                let inferred = if (baseline_has_nil || sym_hints.used_as_or_lhs) && !inferred.contains_nil() {
                     ValueType::union(inferred, ValueType::Nil)
                 } else {
                     inferred
@@ -2916,6 +2918,7 @@ impl<'a> Analysis<'a> {
         let mut baseline_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
         let mut narrowing_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
         let mut caller_types: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
+        let mut or_lhs_params: HashSet<SymbolIndex> = HashSet::new();
         let concat_hint = ValueType::union(ValueType::String(None), ValueType::Number);
 
         for expr_id in 0..self.ir.exprs.len() {
@@ -2949,6 +2952,21 @@ impl<'a> Analysis<'a> {
                             && lhs_ty.as_ref().is_some_and(|t| t.can_concat_to_string()) {
                                 record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, concat_hint.clone());
                             }
+                    } else if op == Operator::Or {
+                        // `param or default` is the standard Lua idiom for optional
+                        // parameters with a default value. Track that the param can
+                        // be nil so the inferred type includes nil.
+                        if let Some(s) = lhs_sym {
+                            or_lhs_params.insert(s);
+                            // The RHS type is also a hint for the param's type, e.g.
+                            // `val = val or 42` hints that val is `number`.
+                            if let Some(rhs_ty) = self.resolve_expr(rhs) {
+                                let rhs_ty = rhs_ty.strip_nil();
+                                if !matches!(rhs_ty, ValueType::Any | ValueType::Nil) {
+                                    record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, rhs_ty);
+                                }
+                            }
+                        }
                     }
                 }
                 Expr::UnaryOp { op, operand } => {
@@ -3161,7 +3179,8 @@ impl<'a> Analysis<'a> {
                 .filter(|t| !matches!(t, ValueType::Any))
                 .collect();
             let caller = caller_types.remove(&s).unwrap_or_default();
-            out.insert(s, BackwardInferenceHints { baseline, narrowing, caller });
+            let used_as_or_lhs = or_lhs_params.contains(&s);
+            out.insert(s, BackwardInferenceHints { baseline, narrowing, caller, used_as_or_lhs });
         }
         out
     }
@@ -3679,6 +3698,10 @@ struct BackwardInferenceHints {
     baseline: Vec<ValueType>,
     narrowing: Vec<ValueType>,
     caller: Vec<ValueType>,
+    /// The parameter appeared as the LHS of an `or` expression (`param or default`),
+    /// which is the standard Lua idiom for optional/default parameters. This means
+    /// the parameter can be nil at runtime, so the inferred type should include nil.
+    used_as_or_lhs: bool,
 }
 
 impl BackwardInferenceSignature {

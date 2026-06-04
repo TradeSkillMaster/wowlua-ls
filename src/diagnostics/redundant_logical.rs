@@ -94,6 +94,26 @@ fn any_table_has_value_type(analysis: &AnalysisResult, ty: &ValueType) -> bool {
     }
 }
 
+/// Returns true when the LHS is a reference to a function parameter that has no
+/// explicit `@param` annotation. Such parameters get their type from backward
+/// inference (call-site propagation), which may resolve to a non-nil type like
+/// `Frame` even though the parameter is intended to be optional. The
+/// `param = param or default` idiom is the standard Lua way to express default
+/// parameter values, so the `or` is not redundant.
+fn lhs_is_unannotated_param(analysis: &AnalysisResult, lhs: ExprId) -> bool {
+    let lhs = unwrap_to_inner(&analysis.ir.exprs, lhs);
+    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[lhs.val()] else { return false };
+    let sym_idx = *sym_idx;
+    if sym_idx.is_external() { return false; }
+    for func in &analysis.ir.functions {
+        if let Some(pos) = func.args.iter().position(|&s| s == sym_idx) {
+            return func.param_annotations.get(pos)
+                .is_none_or(|ann| matches!(ann, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
+        }
+    }
+    false
+}
+
 /// Returns true for types where we cannot determine truthiness/falsiness.
 /// `TypeVariable` is included because `is_guaranteed_truthy()` returns true for it
 /// (type params are non-nil at the definition level), but at the diagnostic site we
@@ -128,6 +148,11 @@ impl DiagnosticPass for RedundantLogical {
             // for the LS, but a missing key / out-of-bounds index returns nil at
             // runtime, so `tbl[k] or default` is a legitimate fallback.
             if matches!(op, Operator::Or) && lhs_is_dynamic_index(analysis, lhs) { continue; }
+
+            // Skip unannotated function parameters: their type comes from backward
+            // inference which may not account for nil/missing arguments. The
+            // `param = param or default` idiom is standard for optional params.
+            if matches!(op, Operator::Or) && lhs_is_unannotated_param(analysis, lhs) { continue; }
 
             match op {
                 Operator::Or if lhs_type.is_guaranteed_truthy() => {

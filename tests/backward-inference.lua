@@ -932,3 +932,33 @@ local function processQueue(queue)
     end
     local item = queue[1]
 end
+
+-- ── `param or default` idiom makes param nilable ──
+-- When an unannotated parameter is used as the LHS of `or`, the inferred type
+-- should include nil — the `param = param or default` pattern is the standard
+-- Lua idiom for optional parameters with default values.
+---@param n number
+local function _takesNumber(n) end
+
+local function withOrDefault(val)
+--                           ^ hover: (param) val: number?
+    val = val or 42
+    _takesNumber(val)
+end
+
+-- The RHS of `or` also serves as a type hint, so even without a separate call
+-- site the param type is inferred from the default value.
+local function orDefaultOnly(val)
+--                           ^ hover: (param) val: number?
+    val = val or 42
+    return val
+end
+
+-- When the parameter IS explicitly annotated, the `or` doesn't add nil — the
+-- annotation is authoritative.
+---@param val number
+local function withAnnotatedOr(val)
+--                             ^ hover: (param) val: number
+    val = val or 42
+    _takesNumber(val)
+end

@@ -145,6 +145,7 @@ if private.storage.quantities then
     end
 end
 
+<<<<<<< HEAD
 -- ── No diagnostic: sub-field of narrowed parent ─────────────────────────────
 
 -- When `obj.parent` is narrowed via assert(), accessing `obj.parent.field`
@@ -206,6 +207,30 @@ function helper.split()
         return nil, nil
     end
 end
+
+-- ── No diagnostic: unannotated param with `or` default ──────────────────────
+
+-- Backward inference adds nil to the inferred type when the param is used as
+-- the LHS of `or`, so `redundant-or` does not fire.
+---@param n number
+local function _takesNum(n) end
+
+local function orDefault(val)
+    val = val or 42
+    _takesNum(val)
+end
+_use(orDefault)
+
+-- But if a parameter IS explicitly annotated as a truthy type, the `or` IS
+-- redundant since the caller is declaring the type contract.
+---@param val number
+---@return number
+local function withAnnotated(val)
+    val = val or 42
+    --        ^ diag: redundant-or
+    return val
+end
+_use(withAnnotated(10))
 
 -- ── Suppression ─────────────────────────────────────────────────────────────
 
