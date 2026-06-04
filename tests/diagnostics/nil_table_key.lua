@@ -6,7 +6,6 @@
 -- ^ diag: nil-table-key
 
 ---@class GoodKeyClass : table<string, number>
--- ^ diag: none
 
 ---@class NilKeyUnion : table<string|nil, number>
 -- ^ diag: nil-table-key
@@ -20,7 +19,6 @@
 ---@field items table<string?, number>
 -- ^ diag: nil-table-key
 ---@field good table<string, number>
--- ^ diag: none
 local _fieldTest
 
 -- ── @alias ──────────────────────────────────────────────────────────────────
@@ -29,7 +27,6 @@ local _fieldTest
 -- ^ diag: nil-table-key
 
 ---@alias GoodMap table<string, number>
--- ^ diag: none
 
 -- ── @type on variables ──────────────────────────────────────────────────────
 
@@ -43,12 +40,10 @@ local _nilUnionKeyVar
 
 ---@type table<string, number>
 local _goodKeyVar
--- ^ diag: none
 
 -- Value type nil is fine
 ---@type table<string, number?>
 local _nilValueVar
--- ^ diag: none
 
 -- ── @param ──────────────────────────────────────────────────────────────────
 
@@ -58,7 +53,6 @@ local function _paramNilKey(t) return t end
 
 ---@param t table<string, number>
 local function _paramGoodKey(t) return t end
--- ^ diag: none
 
 -- ── @return ─────────────────────────────────────────────────────────────────
 
@@ -68,7 +62,6 @@ local function _returnNilKey() return {} end
 
 ---@return table<string, number>
 local function _returnGoodKey() return {} end
--- ^ diag: none
 
 -- ── Nested table types ──────────────────────────────────────────────────────
 
@@ -78,7 +71,6 @@ local _nestedNilKey
 
 ---@type table<string, table<string, number>>
 local _nestedGoodKey
--- ^ diag: none
 
 -- ── @overload ───────────────────────────────────────────────────────────────
 
@@ -88,11 +80,9 @@ local function _overloadNilKey() end
 
 ---@overload fun(t: table<string, number>): boolean
 local function _overloadGoodKey() end
--- ^ diag: none
 
 -- ── @diagnostic suppression ─────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: nil-table-key
 ---@type table<nil, number>
 local _suppressedVar
--- ^ diag: none

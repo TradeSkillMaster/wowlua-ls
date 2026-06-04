@@ -5,4 +5,4 @@
 local DupMethodUser = {}
 
 DupMethodUser:Print("hello", "world")
--- ^ diag: none
+--            ^ hover: (method) function DupMethodUser:Print(chatframe: Frame, ...: any)

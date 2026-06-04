@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Field / method access is intentionally left to the editor's built-in Lua
 -- grammar — the LS emits no semantic token for these cases.
 

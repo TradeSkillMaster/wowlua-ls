@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file addon namespace alias test: local aliased from addon namespace field
 -- Tests that function return types resolve when callee root is an addon-ns alias
 local addonName, ns = ...

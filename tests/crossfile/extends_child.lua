@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file @built-extends test: child overrides parent's @built-name schema field
 -- Tests field_built_names substitution in PreResolvedGlobals inheritance.
 

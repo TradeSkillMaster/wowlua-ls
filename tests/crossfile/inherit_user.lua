@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file inheritance test: child class inherits from cross-file parent
 
 -- Define child class that inherits from cross-file InhRect (which inherits InhShape)

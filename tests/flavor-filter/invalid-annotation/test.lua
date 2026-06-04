@@ -22,13 +22,11 @@ local function Bad3() return true end
 
 -- All valid → no diagnostic on the annotation.
 ---@flavor-narrows retail, classic
--- ^ diag: none
 ---@return boolean
 local function Good1() return true end
 
 -- Canonical single flavor → no diagnostic.
 ---@flavor-narrows classic_era
--- ^ diag: none
 ---@return boolean
 local function Good2() return true end
 

@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- AddonB should see its own namespace fields
 local _, ns = ...
 local b = ns.addonBField

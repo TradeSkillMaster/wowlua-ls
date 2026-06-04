@@ -7,4 +7,3 @@ _consume(MouseIsOver)
 
 -- Core WoW API globals (non-FrameXML) should still be available
 _consume(CreateFrame)
---       ^ diag: none

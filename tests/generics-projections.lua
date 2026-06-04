@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Test: `params<F>` and `returns<F>` utility-type projections.
 
 ---@class GenericRegistry<F>
@@ -33,9 +34,6 @@ local argReg = {}
 
 -- Correct args: no diag.
 argReg:Call("k", "Shou", 3)
---          ^ diag: none
---                ^ diag: none
---                        ^ diag: none
 
 -- Wrong type at vararg position: type-mismatch.
 argReg:Call("k", 42, 3)
@@ -117,7 +115,6 @@ function BadPosClass:BadGeneric() end
 ---@param anyReg GenericRegistry
 local function usingUnbound(anyReg)
     anyReg:Call("k", 1, "s", 5)
-    --    ^ diag: none
 end
 
 -- ── Inline fun() with params<F> projection ──────────────────────────────────
@@ -230,6 +227,5 @@ local s4 = mySelect(4, multiRet())
 
 -- No multi-return-projection diagnostic (offset projection suppresses it)
 local noWarn = mySelect(1, multiRet())
---                      ^ diag: none
 
 _G.useProjections = { frameReg, argReg, multiReg, tupleReg, BadPosClass, BadRetClass, peek, truncated, tupleOut, usingUnbound, wrapString, wrapped, wrapKeyed, keyed, keyedResult, wrapIdentity, identity, idResult, wrapWithCtx, ctxWrapped, add, mySelect, multiRet, s1, s2, s3, s4, noWarn }

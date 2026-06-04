@@ -5,7 +5,6 @@ local Svc = Component:Include("IncTestService")
 
 -- Method defined in include_component.lua should resolve
 Svc:GetCount()
--- ^ diag: none
 
 -- Field assigned in include_component.lua should not produce undefined-field
 local s = Svc.STATUS

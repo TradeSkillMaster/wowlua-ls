@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file funcall test: assigns function call return value to addon field
 local addonName, ns = ...
 ns.Comp = ns.Factory:NewComponent()

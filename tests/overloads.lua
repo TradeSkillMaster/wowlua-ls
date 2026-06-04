@@ -1,3 +1,4 @@
+---@diagnostic disable: shadowed-local, unused-local
 -- Test: @overload resolution
 
 -- math.random has overloads:
@@ -25,14 +26,11 @@ local e = tonumber("FF", 16)   -- 2 args -> overload: integer
 
 local t = {}
 table.insert(t, "hello")      -- 2 args -> overload (no return)
--- ^ diag: none
 table.insert(t, 1, "hello")   -- 3 args -> primary (no return)
--- ^ diag: none
 
 -- empty table {} should be assignable to T[] param (no type-mismatch)
 local t2 = {}
 tinsert(t2, 42)
--- ^ diag: none
 
 -- table with named fields should match 2-arg overload (not 3-arg primary)
 -- Regression: { compressed = true } was rejected by overload compatibility check
@@ -40,7 +38,6 @@ tinsert(t2, 42)
 -- falling through to the 3-arg primary and producing false type-mismatch.
 local mixed = { compressed = true }
 tinsert(mixed, "hello")
--- ^ diag: none
 
 -- non-table arg to tinsert should still produce type-mismatch
 tinsert("not_a_table", 42)
@@ -54,25 +51,21 @@ tinsert("not_a_table", 42)
 -- The overload `self` param must not be counted against call-site arg count.
 local f = CreateFrame("Frame") ---@type Frame
 f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 100, 100)
--- ^ diag: none
 
 -- 3-arg SetPoint: should match primary (point, relativeTo, relativePoint) not the
 -- short overload (point, ofsx, ofsy) which expects numbers for args 2 & 3.
 f:SetPoint("TOPLEFT", UIParent, "TOPLEFT")
--- ^ diag: none
 
 -- 3-arg SetPoint with offsets only: multiple overloads tie at 0 mismatches
 -- (both the (point, relativeTo?, ofsx?, ofsy?) and (point, ofsx?, ofsy?) overloads
 -- accept (string, number, number)) — no false positive from primary's relativePoint param.
 f:SetPoint("BOTTOMLEFT", 10, 10)
--- ^ diag: none
 
 -- hooksecurefunc has overloads:
 --   fun(name: `F`, hook: F) — the 2-arg generic form
 --   primary: fun(tbl: table, name: string, hook: function)
 -- When calling with 3 args, the base signature should match, not the 2-arg overload.
 hooksecurefunc(f, "SetPoint", function() end)
--- ^ diag: none
 
 -- hooksecurefunc 2-arg form: callback params inferred from hooked function.
 -- The @generic F: function + @overload fun(name: `F`, hook: F) resolves the
@@ -81,11 +74,9 @@ hooksecurefunc("UnitName", function(unit)
     local _hsUnit = unit
     --    ^ hover: (local) _hsUnit: string
 end)
--- ^ diag: none
 
 -- hooksecurefunc with unknown function name: params stay untyped, no false diagnostics.
 hooksecurefunc("NonExistentFunction", function(x)
--- ^ diag: none
     local _hsUnknown = x
     --    ^ hover: (local) _hsUnknown: ?
 end)
@@ -102,15 +93,15 @@ local ctver = ctlib.Version
 --    ^ hover: (local) ctver: number
 
 local ctsilent = LibStub("CallableTestLib", true)
---    ^ hover: (local) ctsilent: CallableTestLib?  diag: none
+--    ^ hover: (local) ctsilent: CallableTestLib?
 print(ctsilent)
 
 local ctget = LibStub:GetLibrary("CallableTestLib", true)
---    ^ hover: (local) ctget: CallableTestLib?  diag: none
+--    ^ hover: (local) ctget: CallableTestLib?
 print(ctget)
 
 local ctget2 = LibStub:GetLibrary("CallableTestLib")
---    ^ hover: (local) ctget2: CallableTestLib  diag: none
+--    ^ hover: (local) ctget2: CallableTestLib
 print(ctget2)
 
 -- Unknown library name: backtick generic should resolve to any, not string
@@ -122,7 +113,7 @@ local unknownLib2 = LibStub("UnknownLib-1.0")
 -- Backtick generic through a variable (not a string literal)
 local libName = "CallableTestLib"
 local ctvar = LibStub:GetLibrary(libName)
---    ^ hover: (local) ctvar: CallableTestLib  diag: none
+--    ^ hover: (local) ctvar: CallableTestLib
 print(ctvar)
 
 -- Unknown library name through a variable: should resolve to any, not string
@@ -160,13 +151,9 @@ local cf = coerce(kind, 42)
 local function on(kind, handler) end
 
 on("one", function(x) end)
--- ^ diag: none
 on("two", function(x, y) end)
--- ^ diag: none
 on("one", function() end)
--- ^ diag: none
 on("two", function(x) end)
--- ^ diag: none
 
 -- String-literal dispatch with method self param (inline @type)
 ---@class ScriptHost
@@ -178,11 +165,8 @@ local _SH = {}
 function _SH:SetScript(script, handler) end
 local sh = {} ---@type ScriptHost
 sh:SetScript("OnDone", function(self) end)
--- ^ diag: none
 sh:SetScript("OnCleanup", function() end)
--- ^ diag: none
 sh:SetScript("OnDone", function() end)
--- ^ diag: none
 sh:SetScript("OnCleanup", function(self) end)
 --                         ^ diag: type-mismatch
 
@@ -199,7 +183,6 @@ local eb = CreateFrame("EditBox")
 ---@param frame Frame
 local function _takeFrame(frame) end
 _takeFrame(eb)
--- ^ diag: none
 
 ---@class TestMixin
 ---@field DoSomething fun(self)
@@ -207,7 +190,6 @@ _takeFrame(eb)
 -- CreateFrame with template: overload should return T & Tp (intersection type).
 local _cfWithTemplate = CreateFrame("Frame", nil, nil, "TestMixin")
 --     ^ hover: (local) _cfWithTemplate: Frame & TestMixin
---     ^ diag: none
 
 ---@class TestMixin2
 ---@field DoOtherThing fun(self)
@@ -215,7 +197,6 @@ local _cfWithTemplate = CreateFrame("Frame", nil, nil, "TestMixin")
 -- CreateFrame with comma-separated templates: should produce intersection of all parts.
 local _cfMultiTmpl = CreateFrame("Frame", nil, nil, "TestMixin, TestMixin2")
 --     ^ hover: (local) _cfMultiTmpl: Frame & TestMixin & TestMixin2
---     ^ diag: none
 
 ---@class TestMixin3
 ---@field DoThirdThing fun(self)
@@ -237,7 +218,6 @@ local _cfPartialUnknown = CreateFrame("Frame", nil, nil, "TestMixin, NonExistent
 -- not select the template-requiring overload that produces a false positive type-mismatch.
 local _cfNilTemplate = CreateFrame("Slider", nil, nil, nil)
 --     ^ hover: (local) _cfNilTemplate: Slider
---     ^ diag: none
 
 -- AceGUI:Create() overloads: string-literal dispatch returns specific widget types.
 -- Regression: "Button" used to resolve to WoW's Button frame class via the
@@ -250,13 +230,9 @@ local _agHeading = _ag:Create("Heading")
 local _agFrame = _ag:Create("Frame")
 --     ^ hover: (local) _agFrame: AceGUIFrame
 _agFrame:SetTitle("Test")
--- ^ diag: none
 _agFrame:SetLayout("Flow")
--- ^ diag: none
 _agFrame:AddChild(_agBtn)
--- ^ diag: none
 _agBtn:SetText("Click Me")
--- ^ diag: none
 local _agBtnFrame = _agBtn.frame
 --     ^ hover: (local) _agBtnFrame: Frame
 local _agBtnUserdata = _agBtn.userdata
@@ -270,17 +246,14 @@ local _aceAddon = LibStub("AceAddon-3.0")
 -- NewAddon with table-first overload: @defclass fires through the overload
 -- fun(self, object: table, name: `T`, ...: string): T, creating "TestAddon".
 _aceAddon:NewAddon({}, "TestAddon")
--- ^ diag: none
 -- GetAddon("TestAddon") uses backtick generic; "TestAddon" was @defclass'd
 -- via the table-first overload above, so backtick resolution returns TestAddon.
 local _aceAddonByName = _aceAddon:GetAddon("TestAddon")
 --     ^ hover: (local) _aceAddonByName: TestAddon
 _aceAddonByName:GetName()
--- ^ diag: none
 local _aceModule = _aceAddonByName:NewModule("TestModule")
 --     ^ hover: (local) _aceModule: TestModule
 _aceModule:GetName()
--- ^ diag: none
 
 -- ── need-check-nil suppressed when primary signature param allows nil ───────
 -- When an overload's param is non-optional but the primary signature's
@@ -298,7 +271,6 @@ local function createWidget(frameType, name, parent, template) return {} end
 
 local _maybeTemplate = true and "MyTemplate" or nil ---@type string | nil
 local _widget = createWidget("Button", "MyBtn", nil, _maybeTemplate)
---                                                    ^ diag: none
 
 -- Regression: varargs overload should match when arg count exceeds
 -- non-vararg param count (e.g. AceConsole:Print with optional first Frame param)
@@ -310,7 +282,6 @@ local TestMixin = {}
 function TestMixin:Print(...) end
 
 TestMixin:Print("hello", "world")
--- ^ diag: none
 
 -- ── Mixin / CreateFromMixins / CreateAndInitFromMixin ────────────────────
 
@@ -335,7 +306,6 @@ local MixinDelta = {} ---@type MixinDelta
 local _mxFrame = {}
 local _mxOne = Mixin(_mxFrame, MixinAlpha)
 --     ^ hover: (local) _mxOne: Frame & MixinAlpha
---     ^ diag: none
 
 -- Mixin: two mixins
 local _mxTwo = Mixin(_mxFrame, MixinAlpha, MixinBeta)
@@ -349,7 +319,6 @@ local _mxThree = Mixin(_mxFrame, MixinAlpha, MixinBeta, MixinGamma)
 local _cfmOne = CreateFromMixins(MixinAlpha)
 --              ^ hover: (global) function CreateFromMixins(...M)\n  -> & ...M
 --     ^ hover: (local) _cfmOne: MixinAlpha
---     ^ diag: none
 
 -- CreateFromMixins: two mixins
 local _cfmTwo = CreateFromMixins(MixinAlpha, MixinBeta)
@@ -362,25 +331,23 @@ local _cfmThree = CreateFromMixins(MixinAlpha, MixinBeta, MixinGamma)
 -- CreateAndInitFromMixin: returns the mixin type
 local _caimOne = CreateAndInitFromMixin(MixinAlpha)
 --     ^ hover: (local) _caimOne: MixinAlpha
---     ^ diag: none
 
 -- Field access on Mixin result: hover/def on intersection method
 local _mxAccess = Mixin(_mxFrame, MixinAlpha)
 _mxAccess:alphaMethod()
---        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 318:1  diag: none
+--        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 289:1
 
 -- Field access on CreateFromMixins intersection
 local _cfmAccess = CreateFromMixins(MixinAlpha, MixinBeta)
 _cfmAccess:alphaMethod()
---         ^ hover: (method) function MixinAlpha:alphaMethod()  diag: none
+--         ^ hover: (method) function MixinAlpha:alphaMethod()
 _cfmAccess:betaMethod()
---         ^ hover: (method) function MixinBeta:betaMethod()  diag: none
+--         ^ hover: (method) function MixinBeta:betaMethod()
 
 -- Mixin: four mixins (proves variadic generics, no 3-mixin cap)
 local _mxFour = Mixin(_mxFrame, MixinAlpha, MixinBeta, MixinGamma, MixinDelta)
 --     ^ hover: (local) _mxFour: Frame & MixinAlpha & MixinBeta & MixinGamma & MixinDelta
 _mxFour:deltaMethod()
--- ^ diag: none
 
 -- CreateFromMixins: four mixins
 local _cfmFour = CreateFromMixins(MixinAlpha, MixinBeta, MixinGamma, MixinDelta)
@@ -393,16 +360,16 @@ Mixin(_naFrame, MixinAlpha)
 local _naAfter = _naFrame
 --     ^ hover: (local) _naAfter: Frame & MixinAlpha
 _naFrame:alphaMethod()
---       ^ hover: (method) function MixinAlpha:alphaMethod()  diag: none
+--       ^ hover: (method) function MixinAlpha:alphaMethod()
 
 -- @narrows-arg: multiple mixins in bare call
 ---@type Frame
 local _naFrame2 = {}
 Mixin(_naFrame2, MixinAlpha, MixinBeta)
 _naFrame2:alphaMethod()
---        ^ hover: (method) function MixinAlpha:alphaMethod()  diag: none
+--        ^ hover: (method) function MixinAlpha:alphaMethod()
 _naFrame2:betaMethod()
---        ^ hover: (method) function MixinBeta:betaMethod()  diag: none
+--        ^ hover: (method) function MixinBeta:betaMethod()
 
 -- GetCursorInfo has 8 zero-param overloads with different return types.
 -- When no overload can be discriminated (all match equally), return types

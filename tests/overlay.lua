@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Per-file overlay test: fields added to class-typed local variables
 ---@class Widget
 ---@field id number
@@ -28,7 +29,6 @@ function Container:Setup()
     self.inner.extra = 42
     local _val = self.inner.extra
     --                      ^ hover: (field) extra: number
-    --                      ^ diag: none
 end
 
 -- Deep chain where root table is known but intermediate table
@@ -41,5 +41,4 @@ function Panel:Init()
     self.header.label = "test"
     local _lab = self.header.label
     --                       ^ hover: (field) label: string
-    --                       ^ diag: none
 end

@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Tests for dot/bracket access on function call return values
 
 ---@class FuncResult
@@ -158,4 +159,3 @@ local sf = {}
 
 -- The second (frame, true) should call GetScript's return, not be appended to GetScript's args
 sf:GetScript("OnClick")(sf, "LeftButton")
--- ^ diag: none

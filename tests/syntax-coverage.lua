@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, undefined-global
+---@diagnostic disable: create-global, undefined-global, unused-function, unused-local
 -- Test: broad syntax construct coverage with explicit hover/def/diag assertions.
 
 local function _consume(...) end

@@ -10,10 +10,8 @@ local obj = {}
 
 -- Should NOT warn: field exists
 _consume(obj.name)
---           ^ diag: none
 
 _consume(obj.health)
--- ^ diag: none
 
 -- Should warn: field doesn't exist on @class
 _consume(obj.nonexistent)
@@ -22,7 +20,6 @@ _consume(obj.nonexistent)
 -- Should NOT warn: suppressed
 ---@diagnostic disable-next-line: undefined-field
 _consume(obj.fake)
--- ^ diag: none
 
 -- Regression: undefined-field inside a function return should not produce duplicate diagnostics
 -- (the fixpoint resolve loop used to emit the diagnostic once per iteration)
@@ -39,11 +36,11 @@ local UntypedFieldClass = {}
 
 function UntypedFieldClass:init(val)
     self.dynamic = val
+    -- ^ diag: inject-field
 end
 
 function UntypedFieldClass:getDynamic()
     return self.dynamic
-    --          ^ diag: none
 end
 
 -- Field initially nil, reassigned to a typed value (extra_exprs path)
@@ -95,9 +92,9 @@ _consume(testOptionalField)
 ---@type FieldWithDescription
 local fwd = {}
 _consume(fwd.price)
---           ^ hover: (field) price: number  diag: none
+--           ^ hover: (field) price: number
 _consume(fwd.label)
---           ^ hover: (field) label: string  diag: none
+--           ^ hover: (field) label: string
 
 -- Regression: @field with alias type should not be silently dropped.
 ---@alias myID integer
@@ -107,7 +104,7 @@ _consume(fwd.label)
 ---@type FieldWithAlias
 local fwa = {}
 _consume(fwa.icon)
---           ^ hover: (field) icon: number  diag: none
+--           ^ hover: (field) icon: number
 
 -- Deep chain field injection: self.sub.field = expr should suppress undefined-field
 ---@class DeepInjectTarget
@@ -119,7 +116,7 @@ local deepHost = {} ---@type DeepInjectHost
 
 deepHost.sub.extra = 42
 local _de = deepHost.sub.extra
---                       ^ hover: (field) extra: number  diag: none
+--                       ^ hover: (field) extra: number
 
 -- Runtime field assignment on non-self class-typed local should track the field
 ---@class NonSelfFieldClass
@@ -158,7 +155,7 @@ container.target = DeepNilReassignTarget
 
 container.target.injected = 42
 local _dri = container.target.injected
---                            ^ hover: (field) injected: number  diag: none
+--                            ^ hover: (field) injected: number
 
 -- Regression: nil-guard narrowing before dot-syntax function definition
 -- should NOT produce undefined-field on the function name
@@ -169,7 +166,7 @@ local ngLib = {}
 if not ngLib then return end
 
 function ngLib.ShouldLoadData(arg)
---              ^ hover: (field) function NilGuardFuncDef.ShouldLoadData(arg)  diag: none
+--              ^ hover: (field) function NilGuardFuncDef.ShouldLoadData(arg)
     return true
 end
 
@@ -183,7 +180,7 @@ local pp = {} ---@type PartialClass
 
 -- Declared @field should still resolve
 _consume(pp.name)
---           ^ hover: (field) name: string  diag: none
+--           ^ hover: (field) name: string
 
 -- (partial) is parse-only — undeclared field access still warns
 _consume(pp.dynamicStuff)
@@ -194,7 +191,7 @@ _consume(pp.dynamicStuff)
 ---@field id number
 local ew = {} ---@type ExactWidget
 _consume(ew.id)
---           ^ hover: (field) id: number  diag: none
+--           ^ hover: (field) id: number
 _consume(ew.missing)
 --           ^ diag: undefined-field
 
@@ -217,7 +214,7 @@ end
 ---@type DotMixin2
 local dm2 = {}
 dm2:GetValue()
---   ^ hover: (method) function DotMixin2:GetValue()  diag: none
+--   ^ hover: (method) function DotMixin2:GetValue()
 
 -- 3-level chain: t.sub.field = {}
 local _ns3 = {}
@@ -233,7 +230,7 @@ end
 ---@type DotMixin3
 local dm3 = {}
 dm3:OnLoad()
---   ^ hover: (method) function DotMixin3:OnLoad()  diag: none
+--   ^ hover: (method) function DotMixin3:OnLoad()
 
 -- Nonexistent field on dotted-chain class should still warn
 _consume(dm3.fake)

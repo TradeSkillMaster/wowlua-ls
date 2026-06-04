@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file test: methods defined inside do...end blocks should be visible
 local addonName, ns = ...
 local DBC = ns.DBC

@@ -7,7 +7,6 @@ AbbreviateLargeNumbers(1)
 -- Guarded by WOW_PROJECT_ID == WOW_PROJECT_MAINLINE → then-branch is retail only, OK.
 if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
     AbbreviateLargeNumbers(2)
-    -- ^ diag: none
 else
     -- else-branch excludes retail → classic_era only. AbbreviateLargeNumbers is retail-only → warn.
     AbbreviateLargeNumbers(3)
@@ -22,5 +21,4 @@ AbandonQuest()
 -- Inside a classic_era guard, the call is valid.
 if WOW_PROJECT_ID == WOW_PROJECT_CLASSIC then
     AbandonQuest()
-    -- ^ diag: none
 end

@@ -53,11 +53,10 @@ W.SubPanel.InnerTexture = innerTex
 ---@class PipelineContract : Frame
 ---@field declared Texture
 local C = CreateFrame("Frame", "PipelineContractFrame", UIParent)
+--    ^ hover: (local) C: PipelineContract {
 
 local declaredTex = C:CreateTexture(nil, "OVERLAY")
 C.declared = declaredTex
--- ^ diag: none
 
 local undeclaredTex = C:CreateTexture(nil, "BACKGROUND")
 C.undeclared = undeclaredTex
--- ^ diag: none

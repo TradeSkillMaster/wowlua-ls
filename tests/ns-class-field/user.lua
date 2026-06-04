@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Accesses namespace fields via bare access (no @type annotation).
 -- @field annotations from the @class should be visible cross-file.
 local _, ns = ...

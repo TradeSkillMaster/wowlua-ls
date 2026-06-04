@@ -7,10 +7,9 @@ local _, ns = ...
 local reg1 = ns.GenericReg.New()
 
 local out1 = reg1:Invoke("k", 5)
---    ^ hover: (local) out1: string  diag: none
+--    ^ hover: (local) out1: string
 
 reg1:InvokeAll(5)
---             ^ diag: none
 
 reg1:InvokeAll("wrong")
 --             ^ diag: type-mismatch
@@ -20,7 +19,6 @@ reg1:InvokeAll("wrong")
 local reg2 = ns.GenericReg.New()
 
 reg2:InvokeAll({["a"] = 1})
---             ^ diag: none
 
 reg2:InvokeAll(42)
 --             ^ diag: type-mismatch
@@ -32,7 +30,6 @@ local private = {
 }
 
 private.callbacks:InvokeAll(true)
---                          ^ diag: none
 
 private.callbacks:InvokeAll("wrong")
 --                          ^ diag: type-mismatch
@@ -45,7 +42,6 @@ local reg3 = ns.GenericReg.New()
 ---@return SpecialItem
 local function makeSpecial(name) return ns.SpecialItem end
 reg3:Register(makeSpecial)
---            ^ diag: none
 
 ---@param name string
 ---@return string

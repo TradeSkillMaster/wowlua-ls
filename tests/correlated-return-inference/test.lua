@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: redundant-return, shadowed-local, undefined-global, unused-local
 -- Test: correlated return-only overload inference
 -- With `inference.correlated_return_overloads: true`, functions that have no
 -- @return annotations and whose return statements form a clean all-set-or-all-nil
@@ -432,7 +432,6 @@ local function filterMsgExplicit(msg)
     end
     if result then
         return nil, result
-        -- ^ diag: none
     end
 end
 _consume(filterMsgExplicit)

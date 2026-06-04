@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file self-field test: child class accessing parent's typed self-fields
 
 ---@class SFChild : SFBase

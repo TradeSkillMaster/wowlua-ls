@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file test: accesses namespace fields WITHOUT @type annotation.
 -- Fields assigned to addon namespace in ns_class_defs.lua should be visible
 -- through the addon namespace table directly (no @type needed).

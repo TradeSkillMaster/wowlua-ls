@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file test: per-field ---@type annotations preserved across files
 local _, ns = ...
 

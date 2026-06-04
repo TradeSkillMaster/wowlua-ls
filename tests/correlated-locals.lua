@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-local
 local function _consume(...) end
 
 ---@param n number
@@ -26,9 +26,7 @@ local function basicCorrelation(cond1, cond2)
     local a = money
     --    ^ hover: (local) a: number
     _takeNum(money)
-    -- ^ diag: none
     _takeStr(tradeType)
-    -- ^ diag: none
 end
 _consume(basicCorrelation)
 
@@ -50,7 +48,6 @@ local function earlyExitNilEq(cond1, cond2)
     local b = amount
     --    ^ hover: (local) b: number
     _takeNum(amount)
-    -- ^ diag: none
 end
 _consume(earlyExitNilEq)
 
@@ -73,7 +70,6 @@ local function reverseGuard(cond1, cond2)
     local c = label
     --    ^ hover: (local) c: string
     _takeStr(label)
-    -- ^ diag: none
 end
 _consume(reverseGuard)
 
@@ -142,7 +138,6 @@ local function thenBranch(cond1, cond2)
         local i = side
         --    ^ hover: (local) i: string
         _takeStr(side)
-        -- ^ diag: none
     end
 end
 _consume(thenBranch)
@@ -328,7 +323,6 @@ local function narrowedFieldBranchMerge()
     local r = location
     --    ^ hover: (local) r: string
     _doLog("INFO", location)
-    -- ^ diag: none
 end
 _consume(narrowedFieldBranchMerge, _setOverride)
 
@@ -399,9 +393,7 @@ local function exitingMiddleBranch(mode, fallback)
     local v = value
     --    ^ hover: (local) v: number
     _takeStr(reason)
-    -- ^ diag: none
     _takeNum(value)
-    -- ^ diag: none
 end
 _consume(exitingMiddleBranch)
 

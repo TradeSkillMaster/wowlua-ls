@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Opaque alias: nominally distinct type aliases via @alias (opaque)
 
 ---@alias (opaque) PlayerID number
@@ -25,16 +26,13 @@ local ans = "YES"
 local function lookupPlayer(id) end
 
 lookupPlayer(42)
---           ^ diag: none
 
 ---@param a Answer
 local function processAnswer(a) end
 
 processAnswer("YES")
---            ^ diag: none
 
 processAnswer("NO")
---            ^ diag: none
 
 -- ── Cross-alias ERROR (the money case) ──────────────────────────────────
 
@@ -53,20 +51,17 @@ processAnswer(tog)
 local function useNumber(n) end
 
 useNumber(pid)
---        ^ diag: none
 
 ---@param s string
 local function useString(s) end
 
 useString(ans)
---        ^ diag: none
 
 -- ── Same alias OK ───────────────────────────────────────────────────────
 
 ---@type PlayerID
 local pid2 = 42
 lookupPlayer(pid2)
---           ^ diag: none
 
 -- ── Arithmetic decays to base type ──────────────────────────────────────
 
@@ -82,10 +77,8 @@ local diff = pid - pid2
 local function maybePlayer(x) end
 
 maybePlayer(nil)
---          ^ diag: none
 
 maybePlayer(42)
---          ^ diag: none
 
 maybePlayer(iid)
 --          ^ diag: type-mismatch
@@ -99,7 +92,6 @@ local newPid = createPlayer()
 --    ^ hover: (local) newPid: PlayerID
 
 lookupPlayer(newPid)
---           ^ diag: none
 
 -- ── Comparison works ────────────────────────────────────────────────────
 
@@ -134,7 +126,6 @@ local cb = getCallback()
 local function invokeCallback(f) end
 
 invokeCallback(cb)
---             ^ diag: none
 
 local otherCb = getOtherCallback()
 invokeCallback(otherCb)

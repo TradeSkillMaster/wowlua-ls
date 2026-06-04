@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: shadowed-local, undefined-global, unused-function, unused-local
 -- Inlay hint tests: `hint:` asserts the inlay hint label at the caret position.
 -- The caret must point to the exact byte offset where the hint is emitted:
 --   - Parameter names: start of the argument expression

@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-local
 -- Cross-file overlay test: uses fields defined in overlay_defs.lua
 ---@type MyAddon
 local addon = MyAddon
@@ -11,13 +11,13 @@ addon:Run()
 
 -- Function-call-result field should not produce undefined-field
 local _w = addon.widget
---               ^ diag: none  def: external
+--               ^ def: external
 
 -- Method defined on @type-annotated local (overlay_ext.lua) should be visible
 addon:ExtraMethod()
 --    ^ hover: (method) function MyAddon:ExtraMethod()  def: external
 local _ef = addon.extraField
---                ^ diag: none  def: external
+--                ^ def: external
 
 local c = GLOBAL_REGISTRY.count
 --    ^ hover: (local) c: number  def: local

@@ -1,4 +1,4 @@
----@diagnostic disable: create-global
+---@diagnostic disable: create-global, unused-function, unused-local
 -- Code lens: "N usages" on function definitions
 
 -- Top-level function

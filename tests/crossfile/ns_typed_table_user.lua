@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file test: access @type table<K,V> fields from addon namespace
 
 local _, ns = ...

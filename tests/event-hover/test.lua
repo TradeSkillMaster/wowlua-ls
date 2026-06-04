@@ -1,3 +1,4 @@
+---@diagnostic disable: shadowed-local, unused-function, unused-local
 ---@type EventFrame
 local f = nil
 
@@ -106,14 +107,14 @@ end
 ---@param ev AnyGameEvent
 local function handleEvent(ev) end
 local _h = handleEvent
---    ^ hover: (local) function _h(ev: AnyGameEvent)  diag: none
+--    ^ hover: (local) function _h(ev: AnyGameEvent)
 
 -- ── Standalone function with params<EventType> (no callback/SetScript) ──
 
 ---@param action ActionEvent
 ---@param ... params<ActionEvent>
 local function handleAction(action, ...)
---                          ^ hover: (param) action: ActionEvent  diag: none
+--                          ^ hover: (param) action: ActionEvent
     if action == "DO_PROCESS" then
         local success, canRetry = ...
         local s = success
@@ -144,7 +145,7 @@ handleAction("DO_SKIP")
 ---@param action A
 ---@param ... params<A>
 local function handleActionGeneric(action, ...)
---                                 ^ hover: (param) action: A  diag: none
+--                                 ^ hover: (param) action: A
     if action == "DO_PROCESS" then
         local success, canRetry = ...
         local s = success
@@ -164,7 +165,6 @@ handleActionGeneric("DO_PROCESS", true, false)
 -- No doc-func-no-function on @param inside @event blocks (regression test)
 ---@event ActionEvent "DO_REFRESH"
 ---@param count number
--- ^ diag: none
 
 -- ── Event string hover in equality comparison ──
 

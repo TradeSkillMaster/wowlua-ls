@@ -1,4 +1,4 @@
----@diagnostic disable: create-global
+---@diagnostic disable: create-global, unused-local
 -- Cross-file test: @class on a global assignment should merge with cross-file class definition
 
 ---@class MixinItem

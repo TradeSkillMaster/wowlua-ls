@@ -112,7 +112,6 @@ _consume(testFieldTypeNilEarlyExit)
 local function testFieldNilCheckSuppressed(obj)
     if type(obj.data) == "table" then
         obj.data.x = 1
-        -- ^ diag: none
     end
 end
 _consume(testFieldNilCheckSuppressed)
@@ -121,7 +120,6 @@ _consume(testFieldNilCheckSuppressed)
 local function testFieldNilCheckAssertSuppressed(obj)
     assert(type(obj.data) == "table")
     obj.data.x = 1
-    -- ^ diag: none
 end
 _consume(testFieldNilCheckAssertSuppressed)
 
@@ -250,7 +248,6 @@ local function testFieldLiteralNoDiag(self)
         self._page = 0
     elseif self._specifiedPage then
         self._page = self._specifiedPage
-        -- ^ diag: none
     end
 end
 _consume(testFieldLiteralNoDiag)

@@ -1,3 +1,4 @@
+---@diagnostic disable: shadowed-local, unused-local
 -- Cross-file test: builder chain assigned to a defclass class field (static field)
 -- Tests that overlay field expressions on external tables get resolved by the fixpoint
 -- loop, and that top-level class field assignments don't fire inject-field.
@@ -11,7 +12,6 @@ Element._SCHEMA = Schema:AddTypedString("label"):AddTypedNumber("count"):AddType
 
 -- No inject-field on the static field assignment
 Element._ACTION_LIST = {}
--- ^ diag: none
 
 -- Built type should be accessible via CreateInstance()
 local inst = Element._SCHEMA:CreateInstance()

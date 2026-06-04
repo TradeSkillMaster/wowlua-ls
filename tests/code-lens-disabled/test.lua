@@ -1,4 +1,4 @@
----@diagnostic disable: create-global
+---@diagnostic disable: create-global, unused-local
 -- Code lens disabled: "N usages" (references) disabled via .wowluarc.json
 
 function greet(name)

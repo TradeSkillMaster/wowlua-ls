@@ -12,11 +12,9 @@ local name = addon:GetName()
 --    ^ hover: (local) name: string
 
 addon:Enable()
--- ^ diag: none
 
 -- Custom method defined in aceaddon_defs.lua should be visible
 addon:CustomMethod()
--- ^ diag: none
 
 -- GetAddon with an unknown name: backtick can't resolve, falls back to any
 local unknown = AceAddonLib:GetAddon("NonExistentAddon")

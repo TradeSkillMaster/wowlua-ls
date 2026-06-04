@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-local
 -- Test: nil-index diagnostic
 local function _consume(...) end
 
@@ -36,7 +36,6 @@ _consume(writeNilKey)
 local function guardedRead(key)
     if key then
         local val = lookup[key]
-        --                  ^ diag: none
         _consume(val)
     end
 end
@@ -46,7 +45,6 @@ _consume(guardedRead)
 local function guardedWrite(key)
     if key ~= nil then
         lookup[key] = 42
-        --     ^ diag: none
     end
 end
 _consume(guardedWrite)
@@ -58,7 +56,6 @@ _consume(guardedWrite)
 ---@param key string
 local function safeKey(key)
     local val = lookup[key]
-    --                  ^ diag: none
     _consume(val)
 end
 _consume(safeKey)
@@ -69,7 +66,6 @@ _consume(safeKey)
 
 local function literalKey()
     local val = lookup["hello"]
-    --                  ^ diag: none
     _consume(val)
 end
 _consume(literalKey)
@@ -95,7 +91,6 @@ local tblVal = tbl["x"]
 ---@param key string?
 local function andGuard(key)
     local val = key and lookup[key]
-    --                          ^ diag: none
     _consume(val)
 end
 _consume(andGuard)
@@ -109,7 +104,6 @@ local function andGuardDerived(key)
     local data = key and lookup[key]
     if data then
         lookup[key] = 42
-        --     ^ diag: none
     end
 end
 _consume(andGuardDerived)
@@ -123,7 +117,6 @@ local function andGuardNeqNil(key)
     local data = key and lookup[key]
     if data ~= nil then
         lookup[key] = 42
-        --     ^ diag: none
     end
 end
 _consume(andGuardNeqNil)
@@ -139,7 +132,6 @@ local function andGuardEarlyExit(key)
         return
     end
     lookup[key] = 42
-    --     ^ diag: none
 end
 _consume(andGuardEarlyExit)
 
@@ -154,7 +146,6 @@ local function andGuardNotExit(key)
         error("missing")
     end
     lookup[key] = 42
-    --     ^ diag: none
 end
 _consume(andGuardNotExit)
 
@@ -167,7 +158,6 @@ local function andGuardAssert(key)
     local data = key and lookup[key]
     assert(data)
     lookup[key] = 42
-    --     ^ diag: none
 end
 _consume(andGuardAssert)
 
@@ -180,7 +170,6 @@ local function andGuardElse(key)
     local data = key and lookup[key]
     if data then
         lookup[key] = 42
-        --     ^ diag: none
     else
         lookup[key] = 0
         --     ^ diag: nil-index
@@ -203,7 +192,6 @@ local function validateFilter()
     local isValid, errType, errArg = parseFilter("test")
     if not isValid then
         local msg = lookup[errType]
-        --                ^ diag: none
         _consume(msg, errArg)
     end
 end

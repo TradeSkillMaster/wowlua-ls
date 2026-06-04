@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: shadowed-local, undefined-global, unused-local
 -- Test: @generic type parameter support
 
 -- ── Simple pass-through generic ──────────────────────────────────────────────
@@ -31,11 +31,9 @@ local d = abslike(10)
 
 -- Should NOT warn: unconstrained generic params accept anything
 identity("hello")
--- ^ diag: none
 
 -- Should NOT warn: number satisfies constraint `number`
 abslike(42)
--- ^ diag: none
 
 -- ── Generic constraint violations ──────────────────────────────────────────
 
@@ -54,7 +52,6 @@ local function stronly(v) return v end
 
 -- Should NOT warn: string satisfies constraint `string`
 stronly("ok")
---      ^ diag: none
 
 -- Should WARN: number does not satisfy constraint `string`
 stronly(42)
@@ -81,11 +78,9 @@ local dog = { name = "Rex", breed = "Lab" }
 
 -- Should NOT warn: Animal satisfies Animal constraint
 getName(animal)
---      ^ diag: none
 
 -- Should NOT warn: Dog (subclass of Animal) satisfies Animal constraint
 getName(dog)
---      ^ diag: none
 
 -- Should WARN: number does not satisfy Animal constraint
 getName(42)
@@ -102,7 +97,6 @@ local function cloneAnimal(pet) return pet end
 ---@param pet T
 ---@return T
 local function wrapAnimal(pet) return cloneAnimal(pet) end
---                                               ^ diag: none
 
 -- Use wrapAnimal to avoid unused-function
 wrapAnimal(animal)
@@ -234,7 +228,6 @@ local directAnim = createAnim("BtAlpha")
 local btCfg = nil
 local _varAnim = createAnim(btCfg.type)
 --    ^ hover: (local) _varAnim: BtAlpha | BtScale
---                               ^ diag: none
 
 -- Single string literal type from variable
 ---@type 'BtScale'
@@ -328,7 +321,6 @@ local tbl = wrapTable(42)
 local function EnumNew(name, values) return values end
 
 local STATE = EnumNew("STATE", {
---                              ^ diag: none
     RESET = 1, ---@type EnumValue
     STARTED = 2, ---@type EnumValue
     DONE = 3, ---@type EnumValue
@@ -525,12 +517,10 @@ local function genericInsert(list, val) end
 ---@type (string|number)[]
 local unionArr = {}
 genericInsert(unionArr, "hi")
--- ^ diag: none
 
 ---@type string[] | GenItemKey[]
 local unionOfArrays = {}
 genericInsert(unionOfArrays, "hi")
--- ^ diag: none
 
 -- ── Nil-union does not trigger generic constraint mismatch ───────────────
 
@@ -543,7 +533,6 @@ local function passthrough(tbl) return tbl end
 ---@type table?
 local maybeTable = {}
 passthrough(maybeTable)
--- ^ diag: none
 
 -- Pure nil should still trigger generic-constraint-mismatch
 passthrough(nil)
@@ -553,7 +542,6 @@ passthrough(nil)
 ---@type number?
 local maybeNum = 5
 abslike(maybeNum)
--- ^ diag: none
 
 -- String does not satisfy number constraint (even without nil)
 abslike("bad2")
@@ -578,7 +566,6 @@ local childVal = 10
 -- accum may be nil, but in `accum and numMin(accum, childVal)`, accum is
 -- narrowed to non-nil for the RHS. The generic should infer from childVal.
 accum = accum and numMin(accum, childVal) or childVal
---                       ^ diag: none
 
 -- ── Unresolved generic type variable should be dropped from union/intersection ──
 
@@ -763,7 +750,6 @@ voidReg:Register(wrongHandler)
 
 local function rightHandler() end
 voidReg:Register(rightHandler)
---               ^ diag: none
 
 -- Primitive generic receiver-bound also enforces @param.
 ---@class GenContainerStrict<T>
@@ -779,7 +765,6 @@ nbox:Put("hi")
 --       ^ diag: type-mismatch
 
 nbox:Put(5)
---       ^ diag: none
 
 _G.useGap3 = { wrongHandler, rightHandler }
 
@@ -872,7 +857,6 @@ end
 ---@return P
 local function outerForward(x)
     return innerForward(x)
---                       ^ diag: none
 end
 
 -- ── Field-assignment type_args propagation ──────────────────────────────────
@@ -914,7 +898,6 @@ local fpItem = fp.catPool:Get()
 ---@param task GenMyClass
 local function freeTask(task)
     fp.catPool:Recycle(task)
-    --                 ^ diag: none
 end
 
 -- ── Class-level generics inherited by nested sub-table methods ──────────────
@@ -935,7 +918,6 @@ GenericMap.__private = {}
 ---@param valueType `V`
 ---@param lookupFunc fun(key: K): V
 function GenericMap.__private:Init(keyType, valueType, lookupFunc)
---                                 ^ diag: none
     self._keyType = keyType
     self._valueType = valueType
     self._func = lookupFunc
@@ -956,7 +938,6 @@ NestOuter.NestInner.sub = {}
 ---@param val U
 ---@return U
 function NestOuter.NestInner.sub:Transform(val)
---                                         ^ diag: none
     return val
 end
 
@@ -976,7 +957,6 @@ local function generic_next_like(tbl) end
 ---@type GenClassForNext
 local classItem = nil
 generic_next_like(classItem)
---                ^ diag: none
 
 -- ── Backtick generic with primitive type names ────────────────────────────
 -- Regression: `"string"` passed to a backtick param should resolve to the
@@ -994,14 +974,12 @@ local function getName() return "" end
 
 local f1 = makeField("string", getName)
 --    ^ hover: (local) f1: string  def: local
--- ^ diag: none
 
 ---@return number
 local function getCount() return 0 end
 
 local f2 = makeField("number", getCount)
 --    ^ hover: (local) f2: number  def: local
--- ^ diag: none
 
 -- ── Array element type from union with hash table ─────────────────────────
 -- Regression: V[] generic should only bind from array members, not table<K,V>

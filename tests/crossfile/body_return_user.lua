@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file body-inferred return type test: usage
 -- Verifies that cross-file callers see the body-inferred return
 -- types (arity and coarse types) even without @return annotations.

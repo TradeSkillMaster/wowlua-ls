@@ -2,7 +2,7 @@
 -- The constructor must still be recognized via DefineClass.
 
 local inst = DefineClass("ReactiveOneShot")()
---    ^ hover: (local) inst: ReactiveOneShot  diag: none
+--    ^ hover: (local) inst: ReactiveOneShot
 
 -- Constructor field from __init must be visible cross-file
 local v = inst._value

@@ -1,4 +1,4 @@
----@diagnostic disable: unused-local
+---@diagnostic disable: shadowed-local, unused-function, unused-local
 
 -- ============================================================================
 -- Direct tail-call forwarding: return Func1(...)

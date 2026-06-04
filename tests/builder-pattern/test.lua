@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, undefined-global
+---@diagnostic disable: create-global, shadowed-local, undefined-global, unused-function, unused-local
 -- Test: @builds-field builder pattern (single-file)
 
 ---@class BuilderSchema
@@ -63,7 +63,6 @@ local nm = inst2.name
 
 -- Inherited method from BuiltBase
 inst2:GetValue("x")
--- ^ diag: none
 
 -- ── @return built with no prior @builds-field calls ─────────────────
 
@@ -308,7 +307,6 @@ end
 
 ---@class MyBuiltType
 ---@correlated label, count
--- ^ diag: none
 
 -- ── @built-name malformed diagnostics ────────────────────────────────
 
@@ -330,7 +328,6 @@ end
 ---@param name string
 ---@built-name 1
 ---@built-extends
--- ^ diag: none
 ---@return self
 function Schema:Extend(name)
     return self
@@ -477,7 +474,6 @@ local optRead = optInst.thing
 
 -- Assigning a concrete value to an optional field should not trigger field-type-mismatch
 optInst.thing = OptVal
--- ^ diag: none
 
 -- ── Long builder chain regression test (>100 chained calls) ──────────
 -- Previously hit the 200-depth recursion limit in resolve_expr.
@@ -516,7 +512,6 @@ local longChain = Schema
     :AddBool("f146"):AddBool("f147"):AddBool("f148"):AddBool("f149"):AddBool("f150")
 
 -- No safety-limit error should be emitted
--- ^ diag: none
 
 -- ── @built-name class: call-site diagnostics re-run after class discovery ──
 -- Regression test: when a function param is typed as a @built-name class,
@@ -594,7 +589,6 @@ local ls = LSchema:AddHandler("myHandler"):Commit()
 if ls.myHandler then
     ls.myHandler:Cancel()
     ls.myHandler = nil
-    -- ^ diag: none
 end
 
 -- ── inject-field on @param of built type with mixed @field + built fields ─
@@ -630,7 +624,6 @@ local MIXED = MixedBuiltSchema.Create("MixedState")
 ---@param state MixedState
 function assignMixedBuilt(state)
     state.dynamicField = 42
-    -- ^ diag: none
 end
 
 -- ── @class overlay on @built-name types ─────────────────────────────
@@ -700,15 +693,12 @@ local ovItems = ovInst.items
 
 -- No inject-field for built fields
 ovInst.builtLabel = "x"
--- ^ diag: none
 
 -- No inject-field for overlay fields
 ovInst.extra = true
--- ^ diag: none
 
 -- No inject-field for overridden fields
 ovInst.items = {}
--- ^ diag: none
 
 -- Inject-field still fires for truly undefined fields
 ovInst.unknownField = 1

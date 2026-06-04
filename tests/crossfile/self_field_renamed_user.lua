@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file self-field test: consumer re-declares class with a different variable name
 -- Verifies that typed self-fields from the lib file are visible here.
 

@@ -26,18 +26,14 @@ local _ = obj._db
 -- ── No need-check-nil on lateinit field access ─────────────────────────
 
 obj._db:Query()
--- ^ diag: none
 
 obj._clause:Build()
--- ^ diag: none
 
 -- ── No field-type-mismatch on nil assignment to lateinit field ─────────
 
 obj._db = nil
--- ^ diag: none
 
 obj._clause = nil
--- ^ diag: none
 
 -- ── field-type-mismatch still fires for wrong non-nil type on lateinit ─
 
@@ -71,12 +67,10 @@ local _ = InlinePooled.data
 -- ── No need-check-nil on inline lateinit field ──────────────────────────
 
 _consume(InlinePooled.data:upper())
---                    ^ diag: none
 
 -- ── No field-type-mismatch when nil assigned to inline lateinit ─────────
 
 InlinePooled.data = nil
--- ^ diag: none
 
 -- ── field-type-mismatch still fires for wrong type ──────────────────────
 
@@ -88,7 +82,6 @@ InlinePooled.count = "hello"
 ---@type LateinitDB?
 local maybeDb = nil
 obj._db = maybeDb
--- ^ diag: none
 
 -- ============================================================================
 -- Inline ---@type T! inside table constructor (regression: was false positive)
@@ -103,10 +96,8 @@ local _ = tbl.result
 --            ^ hover: (field) result: boolean!
 
 tbl.result = nil
--- ^ diag: none
 
 tbl.result = true
--- ^ diag: none
 
 tbl.result = "wrong"
 -- ^ diag: field-type-mismatch

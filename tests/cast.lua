@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-function, unused-local
 -- Tests for @cast and @as annotations
 
 -- ── @cast Replace ──────────────────────────────────────────────────────────────
@@ -61,7 +61,6 @@ print(c)
 function AsReturnTarget:GetCached()
     return self.cache --[[@as string]]
 end
---  ^ diag: none
 
 -- ── @cast malformed diagnostics ────────────────────────────────────────────────
 
@@ -89,7 +88,6 @@ end
 ---@type CastBase
 local cb = { foo = 1 }
 castInsideFn(cb)
---           ^ diag: none
 
 -- ── @cast add type already present (idempotent) ─────────────────────────────
 
@@ -217,7 +215,6 @@ print(remUnknown)
 local knownCast = nil
 
 ---@cast knownCast CastKnown
---^ diag: none
 print(knownCast)
 
 -- ── @cast with block comment syntax and unknown type ──────────────────────────
@@ -235,7 +232,7 @@ print(blockCast)
 ---@field value number
 
 local asDefVar = nil --[[@as AsDefClass]]
---                           ^ def: local 234:1  hover: (class) AsDefClass
+--                           ^ def: local 231:1  hover: (class) AsDefClass
 
 -- ── @cast (block comment) go-to-definition on class type ────────────────────
 
@@ -243,7 +240,7 @@ local asDefVar = nil --[[@as AsDefClass]]
 local blockDefVar = nil
 
 --[[@cast blockDefVar AsDefClass]]
---                    ^ def: local 234:1  hover: (class) AsDefClass
+--                    ^ def: local 231:1  hover: (class) AsDefClass
 
 -- ── @cast (line comment) go-to-definition on class type ─────────────────────
 
@@ -251,7 +248,7 @@ local blockDefVar = nil
 local lineDefVar = nil
 
 ---@cast lineDefVar AsDefClass
---                  ^ def: local 234:1  hover: (class) AsDefClass
+--                  ^ def: local 231:1  hover: (class) AsDefClass
 
 -- ── @cast with deferred class-eq sibling narrowing (regression) ───────────
 -- When a multi-return function uses tuple-union @return with a class-typed

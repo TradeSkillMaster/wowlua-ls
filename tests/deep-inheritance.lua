@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Test: deep class inheritance
 -- Hierarchy: Object -> ScriptRegion -> Region -> Frame -> Button
 

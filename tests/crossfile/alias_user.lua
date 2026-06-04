@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-function, unused-local
 -- Cross-file alias test: uses aliases defined in alias_defs.lua
 
 -- Union alias in @type

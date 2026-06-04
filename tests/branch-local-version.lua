@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Regression: branch merge must not create versions for branch-local variables
 -- in the parent scope. When a variable is declared with `local` inside a branch
 -- (e.g. from multi-return destructuring inside an if-body), the branch merge
@@ -16,7 +17,7 @@ local reason, seller, auctionId = getData()
 seller = seller or ""
 auctionId = auctionId or 0
 local _x = seller .. "test"
---         ^ hover: (local) seller: string  diag: none
+--         ^ hover: (local) seller: string
 
 -- Pattern 2: Local nil, assigned in branches, conditionally reassigned, then narrowed
 -- Mirrors `stackLine = numSubs > 0 and parsedStackLine or nil` from real code.
@@ -31,7 +32,7 @@ stackLine = numSubs > 0 and stackLine or nil
 --^ hover: (local) stackLine: string?
 if stackLine then
     local _y = stackLine .. "!"
-    --         ^ hover: (local) stackLine: string  diag: none
+    --         ^ hover: (local) stackLine: string
 end
 
 -- Pattern 3: Inside a while loop
@@ -47,7 +48,7 @@ while true do
     --^ hover: (local) line: string?
     if line then
         local _z = line .. "!"
-        --         ^ hover: (local) line: string  diag: none
+        --         ^ hover: (local) line: string
     end
     level = level + 1
 end

@@ -62,7 +62,6 @@ local w = f4()
 -- ── @return-annotated infinite-loop function should NOT get missing-return ─
 ---@return string name
 local function f5()
--- ^ diag: none
     while true do
         if true then
             return "ok"

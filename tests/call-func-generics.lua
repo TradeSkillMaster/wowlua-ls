@@ -1,3 +1,4 @@
+---@diagnostic disable: shadowed-local, unused-local
 -- Test: class type param substitution into call_func (@overload) resolution
 
 -- ── Basic: parameterized class with returns<F> projection ───────────────────
@@ -140,7 +141,6 @@ function Emitter:Emit(...) end
 ---@type Emitter<fun(name: string, count: number)>
 local em1 = {}
 em1:Emit("hello", 42)
---       ^ diag: none
 
 em1:Emit(123, 42)
 --       ^ diag: type-mismatch

@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file @class + @type test: uses classes defined in xtype_defs.lua
 
 -- Basic: @type annotation resolves cross-file @class fields

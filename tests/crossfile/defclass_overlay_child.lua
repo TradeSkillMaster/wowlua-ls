@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file defclass overlay test: child class with @class overlay that overrides a field.
 -- Regression test: adding @field via @class overlay must NOT lose __super from defclass inheritance.
 
@@ -22,10 +23,8 @@ local sup = OverlayChild.__super
 
 -- Inherited baseMethod should work directly on the child too
 OverlayChild:baseMethod()
--- ^ diag: none
 
 -- __super calls inside methods should not produce warnings
 function OverlayChild:DoStuff()
     self.__super:baseMethod()
-    --           ^ diag: none
 end

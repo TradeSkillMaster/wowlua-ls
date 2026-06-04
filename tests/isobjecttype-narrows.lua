@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-function, unused-local
 -- Tests for IsObjectType() narrowing via @type-narrows 0 1 on FrameScriptObject
 
 -- ── Then-branch narrowing ────────────────────────────────────────────────────
@@ -36,7 +37,6 @@ end
 local function test_return_narrowed(frame)
     if frame:IsObjectType("Button") then
         return frame
-        -- ^ diag: none
     end
 end
 
@@ -49,7 +49,6 @@ local function useButton(btn) end
 local function test_param_narrowed(frame)
     if frame:IsObjectType("Button") then
         useButton(frame)
-        -- ^ diag: none
     end
 end
 

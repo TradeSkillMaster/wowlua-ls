@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Tests for @accessor annotation (transparent access modifier fields)
 
 ---@class AccessorTestClass
@@ -26,9 +27,7 @@ end
 -- Public method
 function ATC:PublicMethod()
     self:SecretMethod()
-    --   ^ diag: none
     self:InternalMethod()
-    --   ^ diag: none
 end
 
 -- Hover from outside should not show private/protected methods
@@ -44,7 +43,6 @@ _consume(ATC:InternalMethod())
 
 -- Public method should be accessible
 _consume(ATC:PublicMethod())
---           ^ diag: none
 
 -- Hover should resolve the method on the class
 local s = ATC:SecretMethod()
@@ -64,9 +62,7 @@ end
 
 function CAC:ChildPublic()
     self:ChildSecret()
-    --   ^ diag: none
     self:SecretMethod()
-    --   ^ diag: none
 end
 
 _consume(CAC:ChildSecret())
@@ -86,12 +82,10 @@ end
 
 function PAC:DirectMethod()
     self:MixinMethod()
-    --   ^ diag: none
 end
 
 -- Methods through bare @accessor should be public
 _consume(PAC:MixinMethod())
---           ^ diag: none
 
 -- ── Dot-defined accessor methods called with colon syntax ───────────────────
 
@@ -109,7 +103,6 @@ end
 
 -- Colon call should not produce missing-param for cls
 SAC:_ExtendStateSchema()
---  ^ diag: none
 
 ---@return string
 function SAC.__static._AddActionScripts(cls, ...)
@@ -118,7 +111,6 @@ end
 
 -- Colon call with extra args should also work
 SAC:_AddActionScripts("OnShow", "OnHide")
---  ^ diag: none
 
 -- ── Deep inheritance (grandchild inherits accessor from grandparent) ────────
 

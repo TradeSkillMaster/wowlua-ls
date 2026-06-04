@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Test: invalid-op diagnostic (arithmetic/concatenation on incompatible types)
 local function _use(...) end
 
@@ -19,23 +20,17 @@ local _d = nil + 1
 
 -- Valid arithmetic — no diagnostic
 local _e = 1 + 2
---         ^ diag: none
 local _f = 10 % 3
---         ^ diag: none
 local _g = 2 ^ 8
---         ^ diag: none
 
 -- Valid concatenation — no diagnostic
 local _h = "hello" .. " world"
---         ^ diag: none
 local _i = "val=" .. 42
---         ^ diag: none
 
 -- Any-typed operand — no diagnostic
 ---@param x any
 local function _withAny(x)
     _use(x + 1)
-    --   ^ diag: none
 end
 
 -- Concatenation on non-stringable types
@@ -56,12 +51,10 @@ local v1
 ---@type Vec
 local v2
 _use(v1 + v2)
---   ^ diag: none
 
 -- Suppress via @diagnostic
 ---@diagnostic disable-next-line: invalid-op
 local _m = "hello" + "world"
--- ^ diag: none
 
 -- Length operator (#) on invalid types
 local _n = #42
@@ -78,32 +71,26 @@ local _q = #someFn
 
 -- Length operator on valid types — no diagnostic
 local _r = #"hello"
---         ^ diag: none
 local _s = #{ 1, 2, 3 }
---         ^ diag: none
 
 ---@type string|table
 local strOrTbl
 local _t = #strOrTbl
---         ^ diag: none
 
 -- Any-typed — no diagnostic
 ---@param x any
 local function _withAnyLen(x)
     _use(#x)
-    --   ^ diag: none
 end
 
 -- @class table — operator checks suppressed (metamethods possible)
 ---@type Vec
 local v3
 local _u = #v3
---         ^ diag: none
 
 -- Suppress # diagnostic via @diagnostic
 ---@diagnostic disable-next-line: invalid-op
 local _v = #42
--- ^ diag: none
 
 -- In-place table conversion loop: #val should not warn when val was just read
 -- from a table whose elements are later overwritten (value_type self-widening)
@@ -145,24 +132,19 @@ _use("hello" <= 42)
 
 -- Valid comparisons — no diagnostic
 _use(1 < 2)
---   ^ diag: none
 _use(10 >= 3)
---   ^ diag: none
 _use("a" < "b")
---   ^ diag: none
 
 -- Any-typed operand in comparison — no diagnostic
 ---@param x any
 local function _withAnyCmp(x)
     _use(x < 1)
-    --   ^ diag: none
 end
 
 -- @class table — operator checks suppressed (metamethods possible)
 ---@type Vec
 local v4
 _use(v4 < v4)
---   ^ diag: none
 
 -- Union with number members — no false positive (e.g. number | Enum.Quality)
 ---@enum Quality
@@ -171,16 +153,12 @@ local Quality = { Common = 1, Rare = 2, Epic = 3 }
 ---@type number | Quality
 local numOrEnum
 _use(numOrEnum < 0)
---   ^ diag: none
 _use(numOrEnum >= 5)
---   ^ diag: none
 _use(0 < numOrEnum)
---   ^ diag: none
 
 -- Suppress comparison diagnostic via @diagnostic
 ---@diagnostic disable-next-line: invalid-op
 _use(nil < 1)
--- ^ diag: none
 
 -- `(field or 0) > 0` narrows a nilable field to non-nil — concat is then valid
 ---@class ConcatNarrow
@@ -193,7 +171,6 @@ local _ConcatNarrow
 local function _concatNarrowField(obj)
     if (obj.count or 0) > 0 then
         _use("n:" .. obj.count)
-        --   ^ diag: none
     end
     -- Wrong default: `(x or 5) > 0` is true even when nil, so no narrowing.
     if (obj.count or 5) > 0 then
@@ -208,7 +185,6 @@ _use(_concatNarrowField)
 local function _concatNarrowDeepField(obj)
     if (obj.inner.count or 0) > 0 then
         _use("n:" .. obj.inner.count)
-        --   ^ diag: none
     end
 end
 _use(_concatNarrowDeepField)

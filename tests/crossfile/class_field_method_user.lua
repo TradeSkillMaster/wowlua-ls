@@ -8,16 +8,13 @@ local Lib = {}
 -- Cross-file methods should be accessible (not undefined-field)
 Lib:ReleaseItem("test")
 --  ^ hover: (method) function FieldMethodLib:ReleaseItem(tooltip: string)  def: external
---  ^ diag: none
 
 Lib:GetName()
 --  ^ hover: (method) function FieldMethodLib:GetName()  def: external
---  ^ diag: none
 
 -- Cross-file dot-style function field should also be accessible
 Lib.IsValid("x")
 --  ^ hover: (field) function FieldMethodLib.IsValid(key: string)  def: external
---  ^ diag: none
 
 -- @field from this file should work
 local e = Lib.enabled

@@ -5,17 +5,15 @@
 ---@type CrossFileColor | CrossFilePrimary
 local colorOrPrimary
 TakeCrossFileColor(colorOrPrimary)
---                 ^ diag: none
+--                 ^ hover: (local) colorOrPrimary: CrossFileColor | "red" | "green"
 
 -- String literal that is a valid enum member value: no mismatch (structural subtype)
 ---@type "red"
 local redStr
 TakeCrossFileColor(redStr)
---                 ^ diag: none
 
 -- String literal that is NOT a declared enum value: the LS intentionally accepts it
 -- (member-value checking for string enums is a known limitation of String(_) broadening).
 ---@type "not_a_member"
 local wrongStr
 TakeCrossFileColor(wrongStr)
---                 ^ diag: none

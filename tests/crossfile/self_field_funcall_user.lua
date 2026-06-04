@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file funcall self-field test: consumer re-declares the class with a
 -- different variable name and accesses fields set via CreateFrame / CreateFontString.
 -- Without the fix, these show "undefined field" because:
@@ -14,5 +15,4 @@ function Addon:UpdateUI()
     --             ^ hover: (field) label: FontString  def: external
     -- Verify the field is usable (no undefined-field diagnostic)
     self.mainFrame:Show()
-    --  ^ diag: none
 end

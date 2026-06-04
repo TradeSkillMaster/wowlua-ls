@@ -1,5 +1,5 @@
 -- Test: redundant-or and redundant-and diagnostics
----@diagnostic disable: unused-local, unused-function, undefined-global
+---@diagnostic disable: unused-local, unused-function, undefined-global, shadowed-local
 
 local function _use(...) end
 
@@ -99,7 +99,6 @@ local holder = {}
 
 function holder.Init()
     holder.cached = holder.cached or 0
-    --                            ^ diag: none
 end
 _use(holder)
 
@@ -111,13 +110,11 @@ _use(holder)
 ---@type table<string, number>
 local dict = {}
 _use((dict["missing"] or 9999) < 5)
---                   ^ diag: none
 
 -- Array index can be out of bounds → nil at runtime.
 ---@type number[]
 local arr = {}
 _use(arr[10] or 0)
---         ^ diag: none
 
 -- Literal key matching a declared @field resolves to the field type (guaranteed
 -- to exist), so `or` IS redundant here — not suppressed.
@@ -141,7 +138,6 @@ local items = {}
 if private.storage.quantities then
     for key in pairs(items) do
         _use(private.storage.quantities[key] or 0)
-        --                                    ^ diag: none
     end
 end
 
@@ -162,9 +158,8 @@ end
 ---@param data ReagentData
 local function processReagent(data)
     assert(data.slotInfo)
-    -- diag: none needed here because redundant-or is HINT-level (harness exempts HINTs)
+    -- slotText is string?, so the 'or' is meaningful (no redundant-or)
     local text = data.slotInfo.slotText or "default"
-    --                                  ^ diag: none
     _use(text, data.slotInfo.slotId)
 end
 _use(processReagent)

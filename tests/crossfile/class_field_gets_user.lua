@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file class field type test: accessing fields from another file
 
 ---@type CFGDisplay

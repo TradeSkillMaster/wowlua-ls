@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, undefined-global
+---@diagnostic disable: create-global, undefined-global, unused-local
 -- Cross-file chain test: uses Include to get a class from another file,
 -- then exercises method chains with @return self and resolves the final type.
 -- Tests: auto-created class tables from pre_globals + external expr cycle detection.
@@ -13,11 +13,10 @@ local db = Schema:AddField("name"):AddNumberField("count"):AddField("label"):Com
 
 -- Method on the result of the chain should resolve
 db.Query()
--- ^ diag: none
 
 -- Chain via From():Include() (3-part chain)
 local Schema2 = Component:From("ChainTestComponent"):Include("ChainSchema")
---     ^ hover: (local) Schema2: ChainSchema {  diag: unused-local
+--     ^ hover: (local) Schema2: ChainSchema {
 
 -- Field initially nil, reassigned from a method chain (tests extra_exprs in field resolution)
 ---@class ChainPrivate
@@ -27,11 +26,11 @@ private.myDB = Schema:AddField("x"):AddNumberField("y"):Commit()
 
 -- Hover on the reassigned field resolves through @field annotation
 local r = private.myDB
---    ^ hover: (local) r: ChainSchemaResult {  diag: unused-local
+--    ^ hover: (local) r: ChainSchemaResult {
 
 -- Method hover on a field resolved via annotation (resolve_identifier_to_table path)
 private.myDB:Query()
---           ^ hover: (method) function ChainSchemaResult:Query()  diag: none
+--           ^ hover: (method) function ChainSchemaResult:Query()
 
 -- ── @builds-field builder pattern ────────────────────────────────────────
 
@@ -55,12 +54,13 @@ local nm = inst2.name
 
 -- Inherited method from ChainBuiltBase
 inst2:GetValue("x")
--- ^ diag: none
 
 -- Non-literal field name: graceful degradation (no crash, treated as regular @return self)
 local varName = "dynamic"
+---@diagnostic enable: unused-local
 local inst3 = Schema:AddTypedString(varName):CreateInstance()
 --    ^ diag: unused-local  diag: undefined-field
+---@diagnostic disable: unused-local
 
 -- ── @built-extends type compatibility ──────────────────────────────────────
 
@@ -87,7 +87,6 @@ function acceptChainBase(state)
 end
 
 acceptChainBase(childInst)
--- ^ diag: none
 
 -- ── Opaque reference chain via addon namespace ──────────────────────────
 
@@ -96,10 +95,10 @@ acceptChainBase(childInst)
 -- @return T with backtick param binding to the target class.
 local ChainOpaqueApp = select(2, ...).ChainOpaqueApp
 local Svc = ChainOpaqueApp:From("ChainOpaqueApp"):Include("ChainOpaqueSvc")
---    ^ hover: (local) Svc: ChainOpaqueSvc {  diag: unused-local
+--    ^ hover: (local) Svc: ChainOpaqueSvc {
 
 -- Negative: a plain table without :From() should NOT magically resolve
 -- just because the string arg matches a class name.
 local PlainTbl = {}
 local Schema4 = PlainTbl:From("ChainTestComponent"):Include("ChainSchema")
---     ^ hover: (local) Schema4: ?  diag: unused-local
+--     ^ hover: (local) Schema4: ?

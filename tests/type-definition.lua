@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Tests for textDocument/typeDefinition (Go to Type Definition)
 
 ---@class Widget
@@ -5,7 +6,7 @@
 
 -- Variable typed as a @class: typedef navigates to the class declaration
 local w = {} ---@type Widget
---    ^ hover: (local) w: Widget  typedef: local 3:1
+--    ^ hover: (local) w: Widget  typedef: local 4:1
 
 ---@class Container
 ---@field count number
@@ -14,7 +15,7 @@ local w = {} ---@type Widget
 ---@param c Container
 local function useContainer(c)
     local _ = c
-    --        ^ hover: (param) c: Container  typedef: local 10:1
+    --        ^ hover: (param) c: Container  typedef: local 11:1
 end
 local _ = useContainer
 
@@ -22,7 +23,7 @@ local _ = useContainer
 ---@class Node
 
 local myNode = {} ---@type Node
---    ^ hover: (local) myNode: Node  typedef: local 22:1
+--    ^ hover: (local) myNode: Node  typedef: local 23:1
 _ = myNode
 
 -- Primitive types: typedef returns None
@@ -36,14 +37,14 @@ local s = "hello"
 ---@class Wrapper
 
 local mixed = nil ---@type Wrapper | nil
---    ^ typedef: local 36:1
+--    ^ typedef: local 37:1
 _ = mixed
 
 -- OpaqueAlias: navigate to the alias declaration
 ---@alias (opaque) ItemId number
 
 local itemId = 1 ---@type ItemId
---    ^ typedef: local 43:1
+--    ^ typedef: local 44:1
 _ = itemId
 
 -- Field access: typedef navigates to the field's type class
@@ -55,5 +56,5 @@ _ = itemId
 
 local outer = {} ---@type Outer
 local inner = outer.child
---                  ^^^^^ typedef: local 50:1
+--                  ^^^^^ typedef: local 51:1
 _ = inner

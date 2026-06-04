@@ -11,7 +11,6 @@ if cond then end
 
 if cond then
     print("a")
--- ^ diag: none
 end
 
 if cond then print("a") elseif not cond then end
@@ -22,13 +21,10 @@ if cond then print("a") else end
 
 if cond then
     print("a")
--- ^ diag: none
 elseif not cond then
     print("b")
--- ^ diag: none
 else
     print("c")
--- ^ diag: none
 end
 
 while cond do end
@@ -36,7 +32,6 @@ while cond do end
 
 while cond do
     break
--- ^ diag: none
 end
 
 for i = 1, 10 do end
@@ -44,7 +39,6 @@ for i = 1, 10 do end
 
 for i = 1, 10 do
     print(i)
--- ^ diag: none
 end
 
 for _, v in ipairs({1, 2}) do end
@@ -52,7 +46,6 @@ for _, v in ipairs({1, 2}) do end
 
 for _, v in ipairs({1, 2}) do
     print(v)
--- ^ diag: none
 end
 
 repeat until cond
@@ -60,59 +53,47 @@ repeat until cond
 
 repeat
     print("once")
--- ^ diag: none
 until cond
 
 -- A single `break` or `return` still counts as a statement (not empty).
 for i = 1, 10 do return end
--- ^ diag: none
 
 -- empty-block suppression via disable-next-line
 ---@diagnostic disable-next-line: empty-block
 if cond then end
--- ^ diag: none
 
 -- A short comment inside an otherwise-empty block marks an intentional
 -- fall-through and suppresses empty-block (matches sumneko/LuaLS).
 if cond then
--- ^ diag: none
     -- pass
 end
 
 if cond then
     -- Moving to the same index
--- ^ diag: none
 elseif not cond then
     -- Do nothing
--- ^ diag: none
 else
     -- TODO: handle this case
--- ^ diag: none
 end
 
 while cond do
--- ^ diag: none
     -- just ignore this
 end
 
 for i = 1, 10 do
--- ^ diag: none
     -- continue looping
 end
 
 for _, v in ipairs({1, 2}) do
--- ^ diag: none
     -- skip
 end
 
 repeat
--- ^ diag: none
     -- no-op
 until cond
 
 -- A long-bracket comment also suppresses empty-block.
 if cond then
--- ^ diag: none
     --[[ intentional fall-through ]]
 end
 
@@ -126,31 +107,26 @@ end
 
 local function returnsValue()
     return 1
---  ^ diag: none
 end
 
 local function returnsNil()
     return nil
---  ^ diag: none
 end
 
 local function earlyReturn(x)
     if x then return end
-    --        ^ diag: none
     print("after")
 end
 
 local function returnInBranch(x)
     if x then
         return
-    --  ^ diag: none
     end
     print("past")
 end
 
 local function noReturnStatement()
     print("done")
---  ^ diag: none
 end
 
 -- redundant-return suppression via disable-next-line
@@ -158,13 +134,11 @@ local function suppressed()
     print("x")
     ---@diagnostic disable-next-line: redundant-return
     return
---  ^ diag: none
 end
 
 -- ── trailing-space ──────────────────────────────────────────────────────────
 
 local cleanLine = "no trailing"
---    ^ diag: none
 
 local dirtyLine = "has trailing"   
 --    ^ diag: trailing-space
@@ -173,7 +147,6 @@ local anotherDirty = "also trailing"
 --    ^ diag: trailing-space
 
 local spacedOutCode = 42
---    ^ diag: none
 
 -- Blank lines with only whitespace should NOT fire trailing-space.
 -- The following line intentionally contains only whitespace characters:
@@ -185,4 +158,3 @@ local spacedOutCode = 42
 -- trailing-space suppression via disable-next-line
 ---@diagnostic disable-next-line: trailing-space
 local suppressedTrailing = "ok"  
---    ^ diag: none

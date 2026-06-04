@@ -7,6 +7,7 @@
 
 ---@diagnostic disable: unused-function, unused-local, create-global, missing-return, redundant-return, incomplete-signature-doc
 
+---@diagnostic disable-next-line: unknown-return-type
 local function _consume(...) return ... end
 
 -- ── unknown-param-type ───────────────────────────────────────────────────
@@ -15,13 +16,13 @@ local function _consume(...) return ... end
 local function passthrough(mystery)
 --                         ^ diag: unknown-param-type
     return mystery
+    -- ^ diag: unknown-return-type
 end
 _consume(passthrough)
 
 -- No fire: annotated.
 ---@param x number
 local function annotated(x)
---                       ^ diag: none
     return x
 end
 _consume(annotated)
@@ -29,14 +30,12 @@ _consume(annotated)
 -- No fire: explicit `any` — user opted in.
 ---@param x any
 local function explicit_any(x)
---                          ^ diag: none
     return x
 end
 _consume(explicit_any)
 
 -- No fire: backward inference determines the type from body arithmetic.
 local function inferred(n)
---                      ^ diag: none
     return n + 1
 end
 _consume(inferred)
@@ -52,8 +51,8 @@ _consume(obj)
 -- they have no name to flag and don't appear in Function.args. An unannotated
 -- vararg should not trigger unknown-param-type.
 local function varargFn(...)
---                      ^ diag: none
     return select("#", ...)
+    -- ^ diag: unknown-return-type
 end
 _consume(varargFn)
 
@@ -66,19 +65,16 @@ _consume(u)
 
 -- No fire: number literal.
 local k = 42
---    ^ diag: none
 _consume(k)
 
 -- No fire: explicit `---@type any`.
 ---@type any
 local anyLocal = passthrough(nil)
---    ^ diag: none
 _consume(anyLocal)
 
 -- No fire: typed annotation.
 ---@type string
 local strLocal = passthrough(nil)
---    ^ diag: none
 _consume(strLocal)
 
 -- ── unknown-return-type ──────────────────────────────────────────────────
@@ -93,7 +89,6 @@ _consume(returnsUnknown)
 -- No fire: returns a typed value.
 local function returnsTyped()
     return 1
---  ^ diag: none
 end
 _consume(returnsTyped)
 
@@ -102,7 +97,6 @@ _consume(returnsTyped)
 ---@return any
 local function returnsAny()
     return passthrough(nil)
---  ^ diag: none
 end
 _consume(returnsAny)
 
@@ -117,14 +111,12 @@ Cls.mystery = passthrough(nil)
 
 -- No fire: field assigned to a typed value.
 Cls.known = 42
---  ^ diag: none
 
 -- No fire: @field-declared; annotation is the source of truth.
 ---@class AnnotatedFieldCls
 ---@field mystery any
 local Ac = {}
 Ac.mystery = passthrough(nil)
---  ^ diag: none
 
 _consume(Cls)
 _consume(Ac)
@@ -133,7 +125,7 @@ _consume(Ac)
 
 ---@diagnostic disable-next-line: unknown-param-type
 local function suppressedParam(mystery)
---                             ^ diag: none
     return mystery
+    -- ^ diag: unknown-return-type
 end
 _consume(suppressedParam)

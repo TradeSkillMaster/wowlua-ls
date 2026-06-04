@@ -2,7 +2,6 @@
 -- APIs should NOT produce a wrong-flavor-api diagnostic in this directory.
 
 AbbreviateLargeNumbers(1)
--- ^ diag: none
+-- ^ hover: (global) function AbbreviateLargeNumbers(number: number, options?: NumberAbbrevOptions)
 
 AbandonQuest()
--- ^ diag: none

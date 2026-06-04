@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-local
 -- Child class (3-level deep) whose parent's any-typed _handle field is
 -- overridden with a concrete type. The parent field was discovered by the
 -- defclass constructor scan and propagated to the child's own table, so the

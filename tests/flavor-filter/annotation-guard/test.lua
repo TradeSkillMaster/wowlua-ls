@@ -30,7 +30,6 @@ AbbreviateLargeNumbers(1)
 -- Single-flavor guard: then-branch narrows to retail.
 if IsRetail() then
     AbbreviateLargeNumbers(2)
-    -- ^ diag: none
 else
     -- else-branch excludes retail → classic_era only.
     AbbreviateLargeNumbers(3)
@@ -41,7 +40,6 @@ end
 -- `if Env.IsNonRetail() then` (narrowed to classic_era) it's valid.
 if Env.IsNonRetail() then
     AbandonQuest()
-    -- ^ diag: none
 end
 
 -- Multi-flavor guard doesn't further narrow — unguarded call still warns.
@@ -52,11 +50,9 @@ end
 
 -- `and` short-circuit: LHS flavor guard narrows the RHS.
 if IsRetail() and AbbreviateLargeNumbers(5) then return end
---                ^ diag: none
 
 -- `and` short-circuit with dotted guard.
 if Env.IsNonRetail() and AbandonQuest() then return end
---                       ^ diag: none
 
 -- `and` short-circuit: guard doesn't apply outside the `and`.
 if IsRetail() and AbbreviateLargeNumbers(6) then return end
@@ -66,7 +62,6 @@ AbbreviateLargeNumbers(7)
 -- `and` chain: multiple conditions before the guarded call.
 local x = true
 if x and IsRetail() and AbbreviateLargeNumbers(8) then return end
---                       ^ diag: none
 
 -- `and` short-circuit: guard doesn't suppress non-matching flavor.
 if Env.IsNonRetail() and AbbreviateLargeNumbers(9) then return end
@@ -75,5 +70,4 @@ if Env.IsNonRetail() and AbbreviateLargeNumbers(9) then return end
 -- Nested `and` within a scope-level flavor guard: both compose correctly.
 if IsRetail() then
     if true and AbbreviateLargeNumbers(10) then return end
-    --          ^ diag: none
 end

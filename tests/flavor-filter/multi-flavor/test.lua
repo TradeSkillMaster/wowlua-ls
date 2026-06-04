@@ -3,7 +3,6 @@
 
 -- CreateFrame is available in all flavors — OK.
 local _f = CreateFrame("Frame")
---         ^ diag: none
 
 -- AbbreviateLargeNumbers is retail-only. Missing classic → warn.
 AbbreviateLargeNumbers(500)
@@ -17,4 +16,3 @@ AbandonQuest()
 -- GameTooltip:SetHyperlink is defined in vendor stubs but absent from Blizzard's
 -- retail WidgetAPI.lua. It works in all flavors — no false positive.
 GameTooltip:SetHyperlink("item:12345")
---          ^ diag: none

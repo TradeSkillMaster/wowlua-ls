@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-local
 -- Tuple-union `@return` syntax: new multi-value return form.
 -- Replaces the old `@return T name` + `@overload return:` pattern with a
 -- single `@return (T1 name1, T2 name2) | (U1, U2) desc` line.
@@ -163,7 +163,6 @@ _consume(mixedForm)
 ---@return (number uuid, ...any)
 ---      | (nil)
 local function getFields(n, ...)
---            ^ diag: none
     if n == 0 then return nil end
     return n, ...
 end
@@ -194,7 +193,6 @@ local _ = ef_a
 ---@return (nil)
 ---      | (string name, number level)
 local function shortFirst()
---            ^ diag: none
     return nil
 end
 _consume(shortFirst)
@@ -252,7 +250,6 @@ local _ = gs
 ---@param n number
 ---@return (number uuid, ...any) | (nil)
 local function inlineUnion(n, ...)
---            ^ diag: none
     if n < 1 then
         return nil
     end
@@ -270,7 +267,6 @@ local _ = iu
 -- Three-case inline union
 ---@return (true) | (false, string) | (nil)
 local function threeCase()
---            ^ diag: none
     return true
 end
 _consume(threeCase)
@@ -334,13 +330,9 @@ local function getItemInfo(slotId)
     local info = _getItemInfo_cache
     if not info then
         return nil, nil, nil, nil, nil
---      ^ diag: none
     end
---  ^ diag: none
     return info.iconFileID, info.stackCount, info.hyperlink, info.itemID, info.isBound
---  ^ diag: none
 end
---  ^ diag: none
 _consume(getItemInfo)
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -358,7 +350,6 @@ local function getWithEnum()
     ---@type TupleEnumVal
     local e
     return n, e
---  ^ diag: none
 end
 _consume(getWithEnum)
 

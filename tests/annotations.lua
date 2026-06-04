@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, undefined-global
+---@diagnostic disable: create-global, shadowed-local, undefined-global, unused-function, unused-local
 -- Test: annotation-driven type resolution
 -- Tests @param, @return, @type, @class, @field, @alias, optional params
 
@@ -416,7 +416,7 @@ ns.factory.create("x"):setName("hi")
 
 -- No false undefined-global on chained methods after a call
 factory.create("x"):setName("hi"):setCount(1)
---                                 ^ hover: (method) function Builder:setCount(val: number)  diag: none
+--                                 ^ hover: (method) function Builder:setCount(val: number)
 
 -- Chained calls on fun() field annotations (fields declared as fun(...): Class)
 ---@class ChainableWidget
@@ -449,7 +449,6 @@ local ml = myObj.lookup
 ---@field name string
 local _itc = {}
 _itc.data = {} ---@type table<string, number>
---   ^ diag: none
 
 -- Inline @type with unresolvable class name should fall back to expression type
 -- and emit undefined-doc-name diagnostic
@@ -462,9 +461,8 @@ _iuf.data2 = {} ---@type NonExistentClass
 -- {[K]: V} syntax resolves to table<K, V> (map type)
 local mapObj = {}
 mapObj.scores = {} ---@type {[string]: number}
---     ^ hover: (field) scores: table<string, number>  diag: none
+--     ^ hover: (field) scores: table<string, number>
 mapObj.scores["hello"] = 42
---     ^ diag: none
 
 -- Inline ---@type inside table constructor braces used as field value
 local tcObj = {
@@ -564,7 +562,6 @@ OnEvent(function(name)
     local n = name
 --        ^ hover: (local) n: string
     return true
---         ^ diag: none
 end)
 
 -- Return type mismatch in inline function
@@ -580,7 +577,6 @@ end
 
 Process(function(x)
     return "hello", x
---                  ^ diag: none
 end)
 
 Process(function(x)
@@ -604,7 +600,6 @@ end
 
 Untyped(function(x)
     return 42
---         ^ diag: none
 end)
 
 -- Inline function parameter types propagated through function alias
@@ -1283,7 +1278,6 @@ function sendMsg(prefix, text, callbackFn, callbackArg) end
 --       ^ hover: (global) function sendMsg(\nprefix: string,\ntext: string,\ncallbackFn: function?,\ncallbackArg: any?\n)
 
 sendMsg("test", "hello")
--- ^ diag: none
 
 -- Regression: table | SomeClass should collapse to bare table
 ---@class TableSubsume

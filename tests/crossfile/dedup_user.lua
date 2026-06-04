@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 ---@type MixinA
 local obj = nil
 

@@ -9,20 +9,17 @@
 local Widget = CreateFrame("Frame", "InjectClassNameTestFrame", UIParent)
 
 local pulse = Widget:CreateTexture(nil, "BACKGROUND")
+--    ^ hover: (local) pulse: Texture {
 Widget.Pulse = pulse
--- ^ diag: none
 
 local bg = Widget:CreateTexture(nil, "BACKGROUND")
 Widget.Background = bg
---     ^ diag: none
 
 local flash = Widget:CreateTexture(nil, "OVERLAY")
 Widget.Flash = flash
--- ^ diag: none
 
 local cd = CreateFrame("Cooldown", nil, Widget, "CooldownFrameTemplate")
 Widget.secondWindCharge = cd
--- ^ diag: none
 
 -- @class-annotated variables are class definitions — inject-field does not fire
 -- even when @field annotations exist (the variable IS the class, not an instance).
@@ -32,7 +29,5 @@ local Annotated = CreateFrame("Frame", "InjectClassNameAnnotated", UIParent)
 
 local tex = Annotated:CreateTexture(nil, "OVERLAY")
 Annotated.Overlay = tex
--- ^ diag: none
 
 Annotated.Background = tex
--- ^ diag: none

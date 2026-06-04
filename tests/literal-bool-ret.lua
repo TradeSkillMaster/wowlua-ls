@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-function, unused-local
 -- Tests for literal boolean return type narrowing on union discriminators.
 -- When a union type A | B has a method where A:Method() returns literal `false`
 -- and B:Method() returns literal `true`, the LS narrows the union in branches.
@@ -189,7 +189,6 @@ local function expectSubRow(subRow) end
 function BoolRetContainer:test_field_chain_discrimination()
     if self._state.selectedRow and self._state.selectedRow:IsSubRow() then
         expectSubRow(self._state.selectedRow)
-        -- ^ diag: none
     end
 end
 
@@ -199,7 +198,6 @@ function BoolRetContainer:test_field_chain_early_exit()
     if not self._state.selectedRow then return end
     if not self._state.selectedRow:IsSubRow() then return end
     expectSubRow(self._state.selectedRow)
-    -- ^ diag: none
 end
 
 -- ── Assert narrowing on field-access-derived union ──────────────────────

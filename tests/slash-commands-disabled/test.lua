@@ -10,7 +10,6 @@ SLASH_MYADDON2 = "/ma"
 
 -- Should warn: reading an undefined SLASH_ global
 _consume(SLASH_MYADDON1)
---       ^ diag: none
 
 -- The above SLASH_MYADDON1 is defined earlier in the file, so it resolves.
 -- Test a truly undefined SLASH_ read:

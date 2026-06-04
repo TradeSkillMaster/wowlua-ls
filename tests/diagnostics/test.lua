@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, undefined-global, redundant-or, redundant-and
+---@diagnostic disable: create-global, redundant-and, redundant-or, shadowed-local, undefined-global, unused-function, unused-local
 -- Test: semantic diagnostics (@deprecated, @nodiscard, @diagnostic suppression)
 local function _consume(...) end
 
@@ -22,7 +22,6 @@ mustUse()
 
 -- Should NOT warn: return value used
 _consume(mustUse())
--- ^ diag: none
 
 -- Should warn: deprecated (return value used but still deprecated)
 _consume(oldFunc())
@@ -31,19 +30,15 @@ _consume(oldFunc())
 -- Should NOT warn: suppressed by disable-next-line
 ---@diagnostic disable-next-line: deprecated
 oldFunc()
--- ^ diag: none
 
 -- Should NOT warn: suppressed by disable-next-line (all codes)
 ---@diagnostic disable-next-line
 mustUse()
--- ^ diag: none
 
 -- Should NOT warn: inside disable range
 ---@diagnostic disable: deprecated
 oldFunc()
--- ^ diag: none
 oldFunc()
--- ^ diag: none
 ---@diagnostic enable: deprecated
 
 -- Should warn again: outside disable range
@@ -52,7 +47,6 @@ oldFunc()
 
 -- Should NOT warn: suppressed by disable-line on same line
 oldFunc() ---@diagnostic disable-line: deprecated
--- ^ diag: none
 
 -- Should warn: deprecated method called via self:Method()
 ---@class DeprMethodHost
@@ -78,7 +72,6 @@ typed("hello", "world")
 
 -- Should NOT warn: correct types
 typed(42, "ok")
---    ^ diag: none
 
 -- Should warn: boolean where number expected
 typed(true, "ok")
@@ -92,7 +85,6 @@ typed(42, 99)
 ---@param a number|nil
 local function optParam(a) end
 optParam(nil)
---       ^ diag: none
 
 -- Should warn: string is not number|nil
 optParam("nope")
@@ -105,18 +97,14 @@ local function innerOpt(x, y) _consume(x, y) end
 ---@param a? number
 ---@param b? number
 local function outerOpt(a, b) innerOpt(a, b) end
---                                        ^ diag: none
 outerOpt(1, 2)
 
 -- Should NOT warn: callback with fewer params than expected (extra args discarded)
 ---@param cb fun(x: number, y: string)
 local function takesCb(cb) _consume(cb) end
 takesCb(function() end)
--- ^ diag: none
 takesCb(function(x) end)
--- ^ diag: none
 takesCb(function(x, y) end)
--- ^ diag: none
 -- Should warn: callback with MORE params than expected
 takesCb(function(x, y, z) end)
 --      ^ diag: type-mismatch
@@ -127,7 +115,6 @@ local function takesUnion(data) _consume(data) end
 ---@return nil|string|number|function
 local function getReorderedUnion() return nil end
 takesUnion(getReorderedUnion())
---         ^ diag: none
 
 -- Should NOT warn: identical generic table types with different internal indices
 ---@param data table<string, table<string, number>>
@@ -135,7 +122,6 @@ local function takesNestedTable(data) _consume(data) end
 ---@return table<string, table<string, number>>
 local function getNestedTable() return {} end
 takesNestedTable(getNestedTable())
---               ^ diag: none
 
 -- Should NOT warn: identical T[] | nil union types
 ---@param data string[]|nil
@@ -143,17 +129,14 @@ local function takesOptArray(data) _consume(data) end
 ---@return string[]|nil
 local function getOptArray() return nil end
 takesOptArray(getOptArray())
---            ^ diag: none
 
 -- Should NOT warn: suppressed
 ---@diagnostic disable-next-line: type-mismatch
 typed("hello", "world")
---    ^ diag: none
 
 -- Should NOT warn: `bool and number or number` is always number
 local flag = true
 typed(flag and 5 or 3, "ok")
---    ^ diag: none
 
 -- Should NOT warn: assert() narrows nil out of union types
 ---@return number?
@@ -161,7 +144,6 @@ local function maybeNum() return 1 end
 local narrowed_val = maybeNum()
 assert(narrowed_val)
 typed(narrowed_val, "ok")
---    ^ diag: none
 
 -- ── Return type mismatch ────────────────────────────────────────────────────
 
@@ -171,11 +153,9 @@ local function retNum() return "hello" end
 
 ---@return number
 local function retNumOk() return 42 end
---                               ^ diag: none
 
 ---@return string|number
 local function retUnion() return "hello" end
---                               ^ diag: none
 
 ---@return string
 local function retNil() return nil end
@@ -185,7 +165,6 @@ local function retNil() return nil end
 ---@return number
 ---@diagnostic disable-next-line: return-mismatch
 local function retSuppressed() return "hello" end
--- ^ diag: none
 
 _consume(retNum, retNumOk, retUnion, retNil, retSuppressed)
 
@@ -196,7 +175,7 @@ local nilInitTbl = {
 nilInitTbl.value = "hello"
 ---@return string
 local function retNilInit() return nilInitTbl.value end
---                                            ^ hover: (field) value: string  diag: none
+--                                            ^ hover: (field) value: string
 _consume(retNilInit)
 
 -- ── Field assignment type mismatch ──────────────────────────────────────────
@@ -212,14 +191,12 @@ fobj.health = "wrong"
 
 ---@diagnostic disable-next-line: duplicate-set-field
 fobj.health = 42
---            ^ diag: none
 
 fobj.name = 123
 --          ^ diag: field-type-mismatch
 
 ---@diagnostic disable-next-line: duplicate-set-field
 fobj.name = "ok"
---          ^ diag: none
 
 -- Untyped field — injecting undeclared field on @class
 fobj.other = "anything"
@@ -228,7 +205,6 @@ fobj.other = "anything"
 -- Suppression works
 ---@diagnostic disable-next-line: field-type-mismatch, duplicate-set-field
 fobj.health = "suppressed"
--- ^ diag: none
 
 -- ── Constructor field type mismatch against @class @field ──────────────────
 
@@ -239,7 +215,6 @@ local ctorBad = {
     health = "wrong",
 --  ^ diag: field-type-mismatch
     name = "ok",
---  ^ diag: none
 }
 _consume(ctorBad)
 
@@ -248,7 +223,6 @@ _consume(ctorBad)
 ---@field value number
 local ctorNil = {
     value = nil,
---  ^ diag: none
 }
 _consume(ctorNil)
 
@@ -260,7 +234,7 @@ local ctorAccess = {
 --  ^ diag: field-type-mismatch
 }
 local ctorVal = ctorAccess.health
---                         ^ hover: (field) health: number  diag: none
+--                         ^ hover: (field) health: number
 _consume(ctorVal)
 
 -- Suppression works on constructor fields
@@ -269,7 +243,6 @@ _consume(ctorVal)
 local ctorSup = {
     ---@diagnostic disable-next-line: field-type-mismatch
     count = "suppressed",
---  ^ diag: none
 }
 _consume(ctorSup)
 
@@ -280,56 +253,47 @@ local t1 = { a = 1, b = 2, a = 3 }
 _consume(t1)
 
 local t2 = { a = 1, b = 2 }
---           ^ diag: none
 _consume(t2)
 
 -- ── Unused local ───────────────────────────────────────────────────────────
+---@diagnostic enable: unused-local
 
 local unused_var = 42
 -- ^ diag: unused-local
 
 local used_var = 10
 _consume(used_var)
--- ^ diag: none
 
 local _ = "ignore me"
--- ^ diag: none
+---@diagnostic disable: unused-local
 
 local _unused = "also ignore"
--- ^ diag: none
 
 local bracketTbl = {}
 local dataIndex = 1
 _consume(bracketTbl[dataIndex])
---       ^ diag: none
---                  ^ diag: none
 
 -- Variables used as bracket keys in dotted expressions should not be unused
 local dottedTbl = { sub = {} }
 local key = "x"
 local dottedResult = dottedTbl.sub[key]
---                                 ^ diag: none
 _consume(dottedResult)
 
 -- Variables used in control flow conditions should not be unused
 local cond_var = true
 if cond_var then _consume(1) end
--- ^ diag: none
 
 local while_var = false
 while while_var do break end
--- ^ diag: none
 
 -- Variables used as bracket index keys should not be unused
 local idx_key = "hello"
 local idx_tbl = {}
 idx_tbl[idx_key] = true
--- ^ diag: none
 
 -- Variables used in for-in iterator expressions should not be unused
 local iter_src = { 1, 2, 3 }
 for _, v in _consume(iter_src) do _consume(v) end
--- ^ diag: none
 
 -- Variables used as bracket keys in table constructors should not be unused
 local tc_key = "x"
@@ -338,7 +302,6 @@ local tc_result = {
     [tc_key] = "val",
     [tc_tbl.sub.ARMOR] = "armor",
 }
---  ^ diag: none
 _consume(tc_result)
 
 -- Variables used as RHS of bracket-indexed dotted assignments should not be unused
@@ -347,28 +310,23 @@ local bi_info = {}
 local bi_part = "sub"
 bi_info[bi_part] = {}
 bi_info[bi_part].width = bi_width
---                        ^ diag: none
 
 -- Variables used as bracket keys in deeply nested assignment LHS should not be unused
 local bi_field = "x"
 local bi_priv = { temp = {} }
 bi_priv.temp[bi_field] = {}
 bi_priv.temp[bi_field].items = true
---           ^ diag: none
 
 -- Variables used as arguments in chained function calls should not be unused
 local cc_arg = 42
 local function cc_outer(x) return function() return x end end
 local cc_result = cc_outer(cc_arg)()
---                         ^ diag: none
 _consume(cc_result)
 
 -- Variables used inside parenthesized expression calls should not be unused
 local fmt_alt = tostring
 local fmt_def = tostring
 local pe_result = (fmt_alt or fmt_def)(42)
---                 ^ diag: none
---                            ^ diag: none
 _consume(pe_result)
 
 -- ── Redundant parameter ────────────────────────────────────────────────────
@@ -381,13 +339,11 @@ _consume(two_args(1, 2, 3))
 --                      ^ diag: redundant-parameter
 
 _consume(two_args(1, 2))
--- ^ diag: none
 
 -- Function with explicit "self" parameter (not colon syntax) should not strip self
 local function explicit_self(self, index) _consume(self) _consume(index) end
 local orig = explicit_self
 orig(nil, 1)
--- ^ diag: none
 
 -- ── Missing parameter ──────────────────────────────────────────────────────
 
@@ -399,10 +355,8 @@ _consume(two_args(1))
 local function opt_arg(a, b) return a end
 
 _consume(opt_arg(1))
--- ^ diag: none
 
 _consume(opt_arg(1, 2))
--- ^ diag: none
 
 -- Nullable type syntax `type?` should also make param optional
 ---@param a number
@@ -410,15 +364,12 @@ _consume(opt_arg(1, 2))
 local function opt_arg_nullable(a, b) return a end
 
 _consume(opt_arg_nullable(1))
--- ^ diag: none
 
 _consume(opt_arg_nullable(1, 2))
--- ^ diag: none
 
 -- Passing varargs to a function should not trigger missing-parameter
 local function vararg_fwd(...)
     _consume(two_args(...))
---          ^ diag: none
 end
 _consume(vararg_fwd)
 
@@ -428,16 +379,13 @@ _consume(vararg_fwd)
 ---@overload fun(x?: number): number
 local function ov_optional(x, y) return x + y end
 _consume(ov_optional())
--- ^ diag: none
 _consume(ov_optional(1))
--- ^ diag: none
 
 -- Overload with varargs should satisfy redundant-parameter check
 ---@param x number
 ---@overload fun(x: number, ...: any): number
 local function ov_vararg(x) return x end
 _consume(ov_vararg(1, 2, 3))
--- ^ diag: none
 
 -- ── Redefined local ──────────────────────────────────────────────────────
 
@@ -465,6 +413,7 @@ local redef_b = function() end
 --    ^ hover: (local) function redef_b()  diag: redefined-local
 
 -- Shadowing in inner scope
+---@diagnostic enable: shadowed-local
 local shadow_x = 1
 do
     local shadow_x = 2
@@ -472,11 +421,11 @@ do
     _consume(shadow_x)
 end
 _consume(shadow_x)
+---@diagnostic disable: shadowed-local
 
 -- Underscore prefix: no warning
 local _temp = 1
 local _temp = 2
--- ^ diag: none
 
 -- Conditional reassignment should not trigger redefined-local
 local function test_cond_redef()
@@ -485,7 +434,6 @@ local function test_cond_redef()
         a = nil
     end
     _consume(a)
-    -- ^ diag: none
 end
 _consume(test_cond_redef)
 
@@ -496,7 +444,6 @@ local function test_multi_redef()
         x = nil
     end
     _consume(x, y)
-    -- ^ diag: none
 end
 _consume(test_multi_redef)
 
@@ -509,7 +456,6 @@ local function test_else_redef()
         val = "b"
     end
     _consume(val)
-    -- ^ diag: none
 end
 _consume(test_else_redef)
 
@@ -521,17 +467,14 @@ typed_n = "wrong"
 --        ^ diag: assign-type-mismatch
 
 typed_n = 99
---        ^ diag: none
 
 ---@type string|number
 local typed_union = "hello"
 typed_union = 42
---            ^ diag: none
 
 -- Suppression works
 ---@diagnostic disable-next-line: assign-type-mismatch
 typed_n = "suppressed"
--- ^ diag: none
 
 -- ── Missing return value ─────────────────────────────────────────────────
 
@@ -562,7 +505,6 @@ _consume(bare_return_mixed)
 ---@return number
 local function ok_return()
     return 42
-    -- ^ diag: none
 end
 _consume(ok_return)
 
@@ -571,7 +513,6 @@ _consume(ok_return)
 ---@return string
 local function two_returns()
     return 1, "hi"
-    -- ^ diag: none
 end
 
 -- Forwarding multi-return via function call: types match
@@ -579,7 +520,6 @@ end
 ---@return string
 local function forward_match()
     return two_returns()
-    -- ^ diag: none
 end
 _consume(forward_match)
 
@@ -597,7 +537,6 @@ _consume(forward_mismatch)
 local function and_chain_with_local()
     local x = true
     return x and true
-    -- ^ diag: none
 end
 _consume(and_chain_with_local)
 
@@ -605,7 +544,6 @@ _consume(and_chain_with_local)
 local function and_chain_comparison_with_local()
     local x = 5
     return x == 1 and x ~= 2 and not (x == 3)
-    -- ^ diag: none
 end
 _consume(and_chain_comparison_with_local)
 
@@ -615,7 +553,6 @@ _consume(and_chain_comparison_with_local)
 ---@return string?
 local function partial_return_optional()
     return false
-    -- ^ diag: none
 end
 _consume(partial_return_optional)
 
@@ -635,10 +572,8 @@ _consume(partial_return_mixed)
 local function partial_return_any_optional(flag)
     if flag then
         return nil
-        -- ^ diag: none
     end
     return 42
-    -- ^ diag: none
 end
 _consume(partial_return_any_optional)
 
@@ -655,7 +590,6 @@ local function has_return()
     return 1
 end
 _consume(has_return)
--- ^ diag: none
 
 ---@return number
 local function branched_return(x)
@@ -666,13 +600,11 @@ local function branched_return(x)
     end
 end
 _consume(branched_return)
--- ^ diag: none
 
 -- All-optional returns: falling off the end is fine (returns nil)
 ---@return number?
 ---@return string?
 local function no_return_all_optional()
--- ^ diag: none
 end
 _consume(no_return_all_optional)
 
@@ -716,7 +648,6 @@ _consume(test_break)
 ---@type InjectTest
 local iobj = {}
 iobj.name = "ok"
---          ^ diag: none
 
 iobj.unknown = 42
 --   ^ diag: inject-field
@@ -727,12 +658,10 @@ iobj.unknown = 42
 local _ici = {}
 iobj._inner = _ici
 iobj._inner.width = 10
---          ^ diag: none
 
 -- Suppression works
 ---@diagnostic disable-next-line: inject-field
 iobj.other = 99
--- ^ diag: none
 
 -- ── @class (partial) is parse-only — inject-field still fires ───────────
 
@@ -741,7 +670,6 @@ iobj.other = 99
 local pij = {} ---@type PartialInject
 
 pij.name = "ok"
---  ^ diag: none
 
 pij.dynamicField = 42
 --  ^ diag: inject-field
@@ -762,9 +690,7 @@ local ConstructorChild = {}
 -- Child class defines __init — inherits constructor status from parent
 function ConstructorChild:__init()
     self._childField = 42
---       ^ diag: none
     self._params = {}
---       ^ diag: none
 end
 
 -- Non-constructor method should still get inject-field
@@ -781,15 +707,12 @@ local MethodLevelCtor = {}
 ---@constructor
 function MethodLevelCtor:Create()
     self._data = nil
---       ^ diag: none
 end
 
 -- Reassigning a field set in constructor should NOT trigger inject-field
 function ConstructorChild:Acquire()
     self._childField = 99
---       ^ diag: none
     self._params = { 1, 2 }
---       ^ diag: none
 end
 
 -- Global constructor name propagation: a class with no inheritance chain
@@ -800,7 +723,6 @@ local UnrelatedCtorClass = {}
 
 function UnrelatedCtorClass:__init()
     self._data = nil
---       ^ diag: none
 end
 
 function UnrelatedCtorClass:other()
@@ -819,7 +741,6 @@ function CtorArityTest:Create(name, hp)
 end
 
 local ok = CtorArityTest("test", 100)
--- ^ diag: none
 
 local bad = CtorArityTest("test")
 -- ^ diag: missing-parameter
@@ -840,14 +761,13 @@ _consume(testUndefined)
 ---@param a number
 ---@param b number
 local function testDefinedOk(a, b) end
--- ^ diag: none
 _consume(testDefinedOk)
 
 ---@param x number
 ---@param ... string
 ---@diagnostic disable-next-line: incomplete-signature-doc
 local function testVarargParam(x, ...) return x, ... end
---              ^ hover: (local) function testVarargParam(x: number, ...: string)  diag: none
+--              ^ hover: (local) function testVarargParam(x: number, ...: string)
 _consume(testVarargParam)
 
 -- ── Duplicate doc param ────────────────────────────────────────────────
@@ -897,7 +817,6 @@ _consume(testDupParam)
 ---@alias SuppressedDupAlias string
 ---@diagnostic disable-next-line: duplicate-doc-alias
 ---@alias SuppressedDupAlias number
--- ^ diag: none
 
 -- ── Unknown diagnostic code ────────────────────────────────────────────
 
@@ -908,17 +827,14 @@ local _suppressed = nil
 -- LuaLS alias codes should NOT trigger unknown-diag-code and should suppress
 ---@diagnostic disable-next-line: param-type-mismatch
 typed("hello", "world")
--- ^ diag: none
 
 ---@return number
 ---@diagnostic disable-next-line: return-type-mismatch
 local function retAliasSuppress() return "hello" end
--- ^ diag: none
 _consume(retAliasSuppress)
 
 -- Verify the alias itself doesn't trigger unknown-diag-code
 ---@diagnostic disable-next-line: param-type-mismatch, return-type-mismatch
--- ^ diag: none
 
 -- ── Redundant return value ──────────────────────────────────────────────
 
@@ -929,21 +845,17 @@ local function retExtra() return 1, 2 end
 ---@return number
 ---@return string
 local function retExtraOk() return 1, "hi" end
---                                  ^ diag: none
 
 ---@return number
 local function retExactOk() return 1 end
---                                 ^ diag: none
 
 ---@return fun(): number, string, number, number @Iterator with fields: `index`, `name`, `path`, `time`
 ---@return nil
 ---@return number
 local function retFunMultiReturn() return function() return 1, "a", 2, 3 end, nil, 0 end
---                                                                              ^ diag: none
 
 ---@return fun(): number, string
 local function retFunSingle() return function() return 1, "a" end end
---                                                               ^ diag: none
 
 _consume(retExtra, retExtraOk, retExactOk, retFunMultiReturn, retFunSingle)
 
@@ -953,11 +865,9 @@ local rv_a, rv_b = 1, 2, 3
 --                        ^ diag: redundant-value
 
 local rv_c, rv_d = 1, 2
--- ^ diag: none
 
 -- Function call last — no warning (multi-return)
 local rv_e, rv_f = retExtraOk()
--- ^ diag: none
 
 _consume(rv_a, rv_b, rv_c, rv_d, rv_e, rv_f)
 
@@ -967,7 +877,6 @@ local ub_a, ub_b, ub_c = 1
 -- ^ diag: unbalanced-assignments
 
 local ub_d, ub_e = 1, 2
--- ^ diag: none
 
 -- Function call last — warn when arity is known and exceeded
 local ub_f, ub_g, ub_h = retExtraOk()
@@ -975,7 +884,6 @@ local ub_f, ub_g, ub_h = retExtraOk()
 
 -- Exact match — no warning
 local ub_i, ub_j = retExtraOk()
--- ^ diag: none
 
 -- Single return, multiple variables
 ---@return number
@@ -988,7 +896,6 @@ local ub_k, ub_l = retSingle()
 ---@return ...string
 local function retVararg() return 1, "a", "b" end
 local ub_m, ub_n, ub_o, ub_p = retVararg()
--- ^ diag: none
 
 -- Void function (no @return, no body returns)
 local function retVoid() end
@@ -1006,7 +913,6 @@ local ub_u, ub_v, ub_w = 1, retSingle()
 
 -- Mixed: scalar + function call, exact match
 local ub_x, ub_y = 1, retSingle()
--- ^ diag: none
 
 -- Non-local assignment with function call
 ub_f, ub_g, ub_h = retSingle()
@@ -1021,7 +927,6 @@ local function ub_wrap(fn) return fn() end
 ---@return string
 local function ub_two_ret() return 1, "hi" end
 local ub_z1, ub_z2 = ub_wrap(ub_two_ret)
--- ^ diag: none
 local ub_z3, ub_z4, ub_z5 = ub_wrap(ub_two_ret)
 -- ^ diag: unbalanced-assignments
 
@@ -1029,7 +934,6 @@ local ub_z3, ub_z4, ub_z5 = ub_wrap(ub_two_ret)
 -- Arity is unknown (bar may return more values), so no warning.
 local function ub_tail_wrap() return ub_two_ret() end
 local ub_tw1, ub_tw2 = ub_tail_wrap()
--- ^ diag: none
 
 -- Inferred arity with literal returns (not a tail call) — arity IS known
 local function ub_literal_two() return 1, "hi" end
@@ -1051,11 +955,9 @@ _consume(ub_tw1, ub_tw2, ub_lt1, ub_lt2, ub_lt3, ub_tail_wrap, ub_literal_two)
 ---@type DupSetTest
 local dsobj = {}
 dsobj.x = 1
--- ^ diag: none
 dsobj.x = 2
 -- ^ diag: duplicate-set-field
 dsobj.y = "a"
--- ^ diag: none
 
 -- Bracket pattern: set flag, do other work on same table, unset flag
 ---@class BracketState
@@ -1065,10 +967,8 @@ dsobj.y = "a"
 ---@type BracketState
 local bstate = {}
 bstate.switching = true
---      ^ diag: none
 bstate.frameState = 1
 bstate.switching = false
---      ^ diag: none
 
 -- Runtime state re-assignment separated by function calls (not a constructor)
 ---@class RuntimeState
@@ -1078,10 +978,8 @@ bstate.switching = false
 ---@type RuntimeState
 local rstate = {}
 rstate.switching = true
---      ^ diag: none
 _consume(rstate)
 rstate.switching = false
---      ^ diag: none
 
 _consume(dsobj, bstate, rstate)
 
@@ -1099,21 +997,15 @@ local function transform(s, a, b) return s end
 ---@type TransformTest
 local tobj = {}
 tobj.content = transform(tobj.content, "a", "b")
---    ^ diag: none
 tobj.content = transform(tobj.content, "c", "d")
---    ^ diag: none
 tobj.content = transform(tobj.content, "e", "f")
---    ^ diag: none
 
 -- Also works with concatenation and arithmetic transforms
 tobj.content = tobj.content .. " suffix"
---    ^ diag: none
 tobj.count = tobj.count + 1
---   ^ diag: none
 
 -- But truly dead writes (RHS does NOT read the same field) still fire
 tobj.content = "reset"
---    ^ diag: none
 tobj.content = "overwrite"
 --    ^ diag: duplicate-set-field
 
@@ -1121,39 +1013,35 @@ tobj.content = "overwrite"
 ---@type TransformTest
 local tobj2 = {}
 tobj2.content = "first"
---     ^ diag: none
 tobj2.content = tostring(tobj2.count)
 --     ^ diag: duplicate-set-field
 
 _consume(tobj, tobj2, transform)
 
 -- ── Unused function ─────────────────────────────────────────────────────
+---@diagnostic enable: unused-function
 
 local function unusedFunc() return 0 end
 -- ^ diag: unused-function
 
 local function usedFunc() return 1 end
 _consume(usedFunc())
--- ^ diag: none
 
 -- Table used only as method/field definition target should not be unused
 local MethodHost = {}
---    ^ diag: none
+---@diagnostic disable: unused-function
 function MethodHost:doSomething() end
 
 local DotHost = {}
---    ^ diag: none
 function DotHost.staticFunc() end
 
 -- Function stored in table by bracket index should be considered used
 local function TableStoredFunc() return 1 end
---             ^ diag: none
 local tbl = {}
 tbl[1] = TableStoredFunc
 
 -- Function stored via dotted bracket assignment should be considered used
 local function DottedTableStoredFunc() return 2 end
---             ^ diag: none
 local holder = { hooks = {} }
 holder.hooks["key"] = DottedTableStoredFunc
 
@@ -1171,7 +1059,6 @@ local mdobj = {}
 
 -- Correct types via colon call — no warning
 mdobj:doStuff(1, "hi")
--- ^ diag: none
 
 -- Wrong types via colon call — should warn on first arg (x expects number)
 mdobj:doStuff("wrong", 42)
@@ -1186,7 +1073,6 @@ mdobj:doStuff("wrong", 42)
 -- Should NOT warn: @field with @class
 ---@class DFNCTestClass
 ---@field validField string
--- ^ diag: none
 
 -- Suppress the unused-local for the class variable
 local _dfncObj = {} ---@type DFNCTestClass
@@ -1206,12 +1092,10 @@ local mf1 = { name = "bob" }
 -- All required fields provided — no warning
 ---@class MissingFieldsTest
 local mf2 = { name = "bob", hp = 100, tag = "npc" }
--- ^ diag: none
 
 -- Empty constructor — no warning (deliberate deferred init)
 ---@class MissingFieldsTest
 local mf3 = {}
--- ^ diag: none
 
 -- @type variant: partial init should also warn
 ---@type MissingFieldsTest
@@ -1221,12 +1105,10 @@ local mf4 = { name = "alice" }
 -- @type variant: all fields — no warning
 ---@type MissingFieldsTest
 local mf5 = { name = "alice", hp = 50, tag = "player" }
--- ^ diag: none
 
 -- @type variant: empty — no warning
 ---@type MissingFieldsTest
 local mf6 = {}
--- ^ diag: none
 
 -- Optional fields should not be required
 ---@class OptFieldTest
@@ -1236,13 +1118,11 @@ local mf6 = {}
 
 ---@class OptFieldTest
 local mf7 = { name = "bob" }
--- ^ diag: none
 
 -- Suppression works
 ---@class MissingFieldsTest
 ---@diagnostic disable-next-line: missing-fields
 local mf8 = { name = "only name" }
--- ^ diag: none
 
 -- Function fields should not be required
 ---@class FuncFieldTest
@@ -1251,7 +1131,6 @@ local mf8 = { name = "only name" }
 
 ---@class FuncFieldTest
 local mf9 = { name = "btn" }
--- ^ diag: none
 
 -- Nested table constructors in table<K, V> where V is a class
 ---@class NestedClassTest
@@ -1261,7 +1140,6 @@ local mf9 = { name = "btn" }
 ---@type table<string, NestedClassTest>
 local nested1 = {
     complete = { x = 1, y = 2 },
-    -- ^ diag: none
     incomplete = { x = 1 },
     --         ^ diag: missing-fields
 }
@@ -1273,7 +1151,6 @@ local nfh = {}
 ---@type table<string, NestedClassTest>
 nfh.items = {
     ok = { x = 10, y = 20 },
-    -- ^ diag: none
     bad = { y = 5 },
     --    ^ diag: missing-fields
 }
@@ -1343,12 +1220,10 @@ local malformed2f_arr = {}
 
 -- @class with colon is fine
 ---@class VigorColorOk : table<number, number>
--- ^ diag: none
 local malformed2f = {}
 
 -- @class with own type params and colon is fine
 ---@class GenChildOk<K,V> : table<K, V>
--- ^ diag: none
 local malformed2g = {}
 
 -- @param without name and type
@@ -1379,22 +1254,18 @@ local function malformed5c() end
 -- @return with comma inside parameterized type (valid, no diagnostic)
 ---@return table<string, number>
 local function notMalformedReturn1() return {} end
---                                   ^ diag: none
 
 -- @return with fun() multi-return (valid, no diagnostic)
 ---@return fun(): string, number
 local function notMalformedReturn2() return function() return "a", 1 end end
---                                                                  ^ diag: none
 
 -- @return with description containing commas after the type (valid, no diagnostic)
 ---@return table<string, number> @Fields: `key`, `value`, `extra`
 local function notMalformedReturn3() return {} end
---                                   ^ diag: none
 
 -- @return with description (no @ separator) containing commas (valid, no diagnostic)
 ---@return boolean Whether a, b, or c is valid
 local function notMalformedReturn4() return true end
---                                   ^ diag: none
 
 -- @type without a type
 ---@type
@@ -1473,7 +1344,6 @@ local validVar = 1
 ---|'"A"'
 ---|'"B"'
 local _useMultiAlias = nil ---@type ValidMultiAlias
--- ^ diag: none
 
 ---@deprecated
 local function validDepr() end
@@ -1481,7 +1351,6 @@ local function validDepr() end
 -- Suppression should work
 ---@diagnostic disable-next-line: malformed-annotation
 ---@retrun number
--- ^ diag: none
 local malformed8 = 1
 
 -- @event without type and name
@@ -1496,27 +1365,22 @@ local malformed10 = nil
 
 -- Valid @event should NOT warn
 ---@event MyEvent "SOME_EVENT"
--- ^ diag: none
 local malformed11 = nil
 
 -- @event with @param should NOT warn doc-func-no-function
 ---@event MyEvent "SOME_OTHER_EVENT"
 ---@param someId number
--- ^ diag: none
 ---@param someName string
--- ^ diag: none
 local malformed12 = nil
 
 -- Batch @event with ---| continuations should NOT warn
 ---@event MyEvent
--- ^ diag: none
 ---| "BATCH_ONE" -> x: number
 ---| "BATCH_TWO"
 local malformed13 = nil
 
 -- Bare @return with ---| continuations should NOT warn
 ---@return
--- ^ diag: none
 ---| boolean, string
 ---| false, nil
 local function notMalformedReturn5()
@@ -1537,9 +1401,7 @@ local function needsStr(x) return x end
 ---@param s string?
 local function nilGuardAnd(s)
     if s ~= nil and needsStr(s) then
---                           ^ diag: none
         needsStr(s)
---               ^ diag: none
     end
 end
 _consume(nilGuardAnd)
@@ -1556,9 +1418,7 @@ _consume(noGuard)
 ---@param s string?
 local function truthyAndGuard(s)
     if s and needsStr(s) then
---                    ^ diag: none
         needsStr(s)
---               ^ diag: none
     end
 end
 _consume(truthyAndGuard)
@@ -1568,7 +1428,6 @@ _consume(truthyAndGuard)
 local function nilGuardElse(s)
     if s ~= nil then
         needsStr(s)
---               ^ diag: none
     else
         needsStr(s)
 --               ^ diag: type-mismatch
@@ -1586,9 +1445,7 @@ local function type(x) return "" end
 local function typeGuardAndInsideOr(v)
     if type(v) == "string" or type(v) == "number" then
         if type(v) == "string" and needsStr(v) then
---                                          ^ diag: none
             needsStr(v)
---                   ^ diag: none
         end
     end
 end
@@ -1617,9 +1474,7 @@ _consume(hoverVersions)
 ---@param s string?
 local function andBothSides(s)
     if s ~= nil and needsStr(s) == "ok" then
---                           ^ diag: none
         needsStr(s)
---               ^ diag: none
     end
 end
 _consume(andBothSides)
@@ -1629,7 +1484,6 @@ _consume(andBothSides)
 local function truthyIfThen(s)
     if s then
         needsStr(s)
---               ^ diag: none
     end
 end
 _consume(truthyIfThen)
@@ -1642,7 +1496,6 @@ local function eqNilElse(s)
 --               ^ diag: type-mismatch
     else
         needsStr(s)
---               ^ diag: none
     end
 end
 _consume(eqNilElse)
@@ -1654,7 +1507,6 @@ local function orElseNarrow(value)
         _consume(value)
     else
         needsStr(value)
---               ^ diag: none
     end
 end
 _consume(orElseNarrow)
@@ -1663,7 +1515,6 @@ _consume(orElseNarrow)
 ---@param s string?
 local function notOrGuard(s)
     if not s or needsStr(s) == "ok" then
---                       ^ diag: none
         _consume(s)
     end
 end
@@ -1673,7 +1524,6 @@ _consume(notOrGuard)
 ---@param s string?
 local function eqNilOrGuard(s)
     if s == nil or needsStr(s) == "ok" then
---                          ^ diag: none
         _consume(s)
     end
 end
@@ -1684,7 +1534,6 @@ _consume(eqNilOrGuard)
 local function guardNoLeak(s)
     if s ~= nil then
         needsStr(s)
---               ^ diag: none
     end
     needsStr(s)
 --           ^ diag: need-check-nil
@@ -1699,7 +1548,6 @@ assertFieldObj.code = nil
 
 assert(assertFieldObj.code)
 needsStr(assertFieldObj.code)
---                      ^ diag: none
 
 -- assert() narrows self.field in methods
 ---@class AssertSelfObj
@@ -1709,7 +1557,6 @@ needsStr(assertFieldObj.code)
 local function useSelfField(obj)
     assert(obj.tag)
     needsStr(obj.tag)
---              ^ diag: none
 end
 _consume(useSelfField)
 
@@ -1718,7 +1565,6 @@ _consume(useSelfField)
 local function ifSelfField(obj)
     if obj.tag then
         needsStr(obj.tag)
---                  ^ diag: none
     end
 end
 _consume(ifSelfField)
@@ -1733,10 +1579,8 @@ local function cachedTypeGuard(val)
     local t = type(val)
     if t == "string" then
         needsStr(val)
---               ^ diag: none
     elseif t == "number" then
         needsNum(val)
---               ^ diag: none
     end
 end
 _consume(cachedTypeGuard)
@@ -1746,10 +1590,8 @@ _consume(cachedTypeGuard)
 local function directTypeGuard(val)
     if type(val) == "string" then
         needsStr(val)
---               ^ diag: none
     elseif type(val) == "number" then
         needsNum(val)
---               ^ diag: none
     end
 end
 _consume(directTypeGuard)
@@ -1764,7 +1606,6 @@ local function inverseTypeGuard(val)
     end
     -- val should be narrowed to InverseGuardClass here
     val:SomeMethod()
---  ^ diag: none
 end
 _consume(inverseTypeGuard)
 
@@ -1773,10 +1614,8 @@ _consume(inverseTypeGuard)
 local function inverseTypeGuardElse(val)
     if type(val) == "string" then
         needsStr(val)
---               ^ diag: none
     else
         needsNum(val)
---               ^ diag: none
     end
 end
 _consume(inverseTypeGuardElse)
@@ -1786,9 +1625,7 @@ _consume(inverseTypeGuardElse)
 local function cachedTypeGuardAnd(val)
     local t = type(val)
     if t == "string" and needsStr(val) then
---                               ^ diag: none
         needsStr(val)
---               ^ diag: none
     end
 end
 _consume(cachedTypeGuardAnd)
@@ -1801,14 +1638,11 @@ local function requiresAny(x) return x end
 
 -- Passing nil explicitly is fine: nil is a value and `any` accepts all values
 _consume(requiresAny(nil))
--- ^ diag: none
 
 -- Passing different types is fine — `any` must not adopt the first call's type
 _consume(requiresAny(42))
--- ^ diag: none
 
 _consume(requiresAny("hi"))
--- ^ diag: none
 
 -- Omitting the argument is an error: `any` is not optional
 _consume(requiresAny())
@@ -1819,13 +1653,10 @@ _consume(requiresAny())
 local function optionalAny(x) return x end
 
 _consume(optionalAny())
--- ^ diag: none
 
 _consume(optionalAny(nil))
--- ^ diag: none
 
 _consume(optionalAny(42))
--- ^ diag: none
 
 -- @return any shows in hover and function signature
 ---@return any
@@ -1850,17 +1681,14 @@ local anyField = returnsAny().something
 ---@param n number
 local function takesNumber(n) return n end
 _consume(takesNumber(returnsAny()))
--- ^ diag: none
 
 -- No type-mismatch when typed value passed to any param
 _consume(requiresAny(takesNumber(1)))
--- ^ diag: none
 
 -- @param takes priority over call-site union inference
 ---@param z number
 local function annotatedOverride(z) return z end
 annotatedOverride(42)
--- ^ diag: none
 annotatedOverride("wrong")
 --                ^ diag: type-mismatch
 
@@ -1871,20 +1699,15 @@ local function unannotatedHelper(a, b, c, d)
     return a, b, c, d
 end
 unannotatedHelper("x", 1, true, nil)
--- ^ diag: none
 unannotatedHelper("y", nil, false)
--- ^ diag: none
 unannotatedHelper("z")
--- ^ diag: none
 
 -- Nil arg to unannotated param: no warning (nil is always plausible)
 local function unannotatedNilOk(x, y)
     return x, y
 end
 unannotatedNilOk("hello", 1)
--- ^ diag: none
 unannotatedNilOk(nil, nil)
--- ^ diag: none
 
 -- Annotated param DOES warn for nil when not optional
 ---@param x number
@@ -1896,7 +1719,6 @@ annotatedNoNil(nil)
 ---@param x? number
 local function annotatedOptNil(x) return x end
 annotatedOptNil(nil)
--- ^ diag: none
 
 -- Missing annotated required param still warns
 ---@param a number
@@ -1910,11 +1732,8 @@ local function inferOptional(a, b, c)
     return a, b, c
 end
 inferOptional("x", 1, true)
--- ^ diag: none
 inferOptional("x", 1)
--- ^ diag: none
 inferOptional("x")
--- ^ diag: none
 
 -- Mixed: first param annotated, trailing params unannotated
 ---@param a number
@@ -1922,11 +1741,9 @@ local function mixedAnnotation(a, b, c)
     return a, b, c
 end
 mixedAnnotation(1, "x", true)
--- ^ diag: none
 mixedAnnotation("wrong", "x")
 --              ^ diag: type-mismatch
 mixedAnnotation(1)
--- ^ diag: none
 
 -- ── Structural array types should match in return type checks ─────────────────
 
@@ -1937,7 +1754,6 @@ local _DiagRangeTestObj = { items = {} }
 ---@return string[]
 local function returnDiagRange()
     return _DiagRangeTestObj.items
-    --                      ^ diag: none
 end
 _consume(returnDiagRange)
 
@@ -1947,7 +1763,6 @@ local _diagArrayTyped = {}
 ---@return number[]
 local function returnArrayTyped()
     return _diagArrayTyped
-    --     ^ diag: none
 end
 _consume(returnArrayTyped)
 
@@ -1969,7 +1784,6 @@ local _diagSpaceAnnotObj = { name = "test" }
 ---@return _DiagSpaceAnnotClass
 local function returnSpaceAnnot()
     return _diagSpaceAnnotObj
-    --     ^ diag: none
 end
 _consume(returnSpaceAnnot)
 
@@ -1980,11 +1794,9 @@ local function _diagTakeStringArray(names) _consume(names) end
 
 local _diagStringArr = { "alpha", "beta", "gamma" }
 _diagTakeStringArray(_diagStringArr)
---                   ^ diag: none
 
 -- Direct literal too
 _diagTakeStringArray({ "one", "two" })
---                   ^ diag: none
 
 -- Wrong element type should still warn
 _diagTakeStringArray({ 1, 2, 3 })
@@ -2000,14 +1812,12 @@ local function _diagTakeString(s) _consume(s) end
 local _diagPrice = false
 if not _diagPrice then return end
 _diagTakeString(_diagPrice)
---              ^ diag: none
 
 -- Bare truthiness guard in `if x then` also strips false
 ---@type string|false
 local _diagPrice2 = false
 if _diagPrice2 then
     _diagTakeString(_diagPrice2)
-    --              ^ diag: none
 end
 
 -- assert() also strips false
@@ -2015,7 +1825,6 @@ end
 local _diagPrice3 = false
 assert(_diagPrice3)
 _diagTakeString(_diagPrice3)
---              ^ diag: none
 
 -- `x ~= nil` should NOT strip false (only tests for nil)
 ---@type string|false|nil
@@ -2039,12 +1848,10 @@ local function _diagBranchType(x)
         -- ^ diag: assign-type-mismatch
     elseif timeLeft >= 1 then
         _diagTakeNum(timeLeft)
-        --           ^ diag: none
         timeLeft = "days"
         -- ^ diag: assign-type-mismatch
     else
         _diagTakeNum(timeLeft)
-        --           ^ diag: none
         timeLeft = "hours"
         -- ^ diag: assign-type-mismatch
     end
@@ -2061,7 +1868,6 @@ local function _andAnyTonumber()
     a = a and tonumber(a)
     b = b and tonumber(b)
     return a, a or b
-    -- ^ diag: none
 end
 _consume(_andAnyTonumber)
 
@@ -2085,15 +1891,12 @@ local _enumVal = TestQuality.Poor
 
 -- Enum value passed where number expected: should be OK
 _diagTakeNumber(TestQuality.Poor)
---              ^ diag: none
 
 -- Number passed where enum expected: should be OK
 _diagTakeEnum(42)
---            ^ diag: none
 
 -- Enum value passed where enum expected: should be OK
 _diagTakeEnum(TestQuality.Rare)
---            ^ diag: none
 
 -- String passed where enum expected: should still error
 _diagTakeEnum("bad")
@@ -2102,13 +1905,11 @@ _diagTakeEnum("bad")
 ---@return number
 local function _diagReturnEnum()
     return TestQuality.Common
-    --     ^ diag: none
 end
 
 ---@return TestEnum.Quality
 local function _diagReturnNumber()
     return 5
-    --     ^ diag: none
 end
 
 -- Enum with negative values should show literal values in hover
@@ -2133,16 +1934,13 @@ local _TestPowerType = { Mana = 0, Rage = 1 }
 local function _diagTakePowerType(powerType) return powerType end
 
 _diagTakePowerType(0)
---                 ^ diag: none
 _diagTakePowerType(_TestPowerType.Mana)
---                 ^ diag: none
 _diagTakePowerType("bad")
 --                 ^ diag: type-mismatch
 
 ---@param n number
 local function _diagTakeNumberPower(n) return n end
 _diagTakeNumberPower(_TestPowerType.Rage)
---                   ^ diag: none
 
 -- ── String enum ↔ string compatibility ──────────────────────────────────────
 
@@ -2161,15 +1959,12 @@ local function _diagTakeString(s) return s end
 
 -- String enum value passed where string expected: should be OK
 _diagTakeString(TestStatus.Active)
---              ^ diag: none
 
 -- String passed where string enum expected: should be OK
 _diagTakeStatus("custom")
---              ^ diag: none
 
 -- String enum value passed where enum expected: should be OK
 _diagTakeStatus(TestStatus.Pending)
---              ^ diag: none
 
 -- Number passed where string enum expected: should error
 _diagTakeStatus(42)
@@ -2182,13 +1977,11 @@ _diagTakeNumber(TestStatus.Active)
 ---@return string
 local function _diagReturnStringEnum()
     return TestStatus.Active
-    --     ^ diag: none
 end
 
 ---@return TestStringEnum.Status
 local function _diagReturnString()
     return "custom"
-    --     ^ diag: none
 end
 
 -- ── Mixed enum values diagnostic ────────────────────────────────────────────
@@ -2211,7 +2004,6 @@ local _TestBoolEnum = {
 
 ---@enum (key) TestKeyEnum.Settings
 local _TEST_KEY_DEFAULTS = {
---    ^ diag: none
     showTooltip = true,
     maxRetries = 5,
     prefix = "My",
@@ -2225,7 +2017,6 @@ local function _diagTakeStr2(s) return s end
 
 -- String passed where key enum expected: OK (string enum)
 _diagTakeKeySetting("showTooltip")
---                  ^ diag: none
 
 -- Number passed where key enum expected: type-mismatch
 _diagTakeKeySetting(42)
@@ -2235,12 +2026,10 @@ _diagTakeKeySetting(42)
 ---@type TestKeyEnum.Settings
 local _keyEnumVal
 _diagTakeStr2(_keyEnumVal)
---            ^ diag: none
 
 -- Key enum with mixed-type values: no diagnostic (values are irrelevant)
 ---@enum (key) TestKeyEnum.MixedVals
 local _TEST_MIXED_KEY = {
---    ^ diag: none
     enabled = true,
     count = 5,
     name = "test",
@@ -2266,13 +2055,11 @@ local function _diagTakeColor(color) return color end
 ---@type TestStringEnum.Color | TestStringEnum.PrimaryColors
 local _unionColorVar
 _diagTakeColor(_unionColorVar)
---             ^ diag: none
 
 -- String literal that is a valid enum value: no mismatch (structural subtype)
 ---@type "red"
 local _redLiteral
 _diagTakeColor(_redLiteral)
---             ^ diag: none
 
 -- And-chain narrowing: all operands should be narrowed to non-nil for the RHS
 ---@return number?
@@ -2284,7 +2071,6 @@ local function _takeTwoNums(x, y) return x + y end
 local _andA = _maybeNum()
 local _andB = _maybeNum()
 local _andResult = _andA and _andB and _takeTwoNums(_andA, _andB)
---                                                  ^ diag: none
 
 -- ── If-without-else branch merge: variable reassigned inside if block ────────
 -- When a variable is assigned in an if-block without else, the post-if type
@@ -2346,7 +2132,6 @@ local GoodCtorSelf = {}
 ---@constructor
 ---@return self
 function GoodCtorSelf:Create()
--- ^ diag: none
     return self
 end
 
@@ -2357,7 +2142,6 @@ local NoReturnCtor = {}
 
 ---@constructor
 function NoReturnCtor:Init()
--- ^ diag: none
 end
 
 -- ── type() guard + reassignment: post-branch narrowing ───────────────────
@@ -2374,7 +2158,6 @@ local function takeString(x) _consume(x) end
 local trbData = nil
 if type(trbData) == "number" then
     takeNumber(trbData)
---             ^ diag: none
 elseif type(trbData) == "function" then
     trbData = trbData()
 end
@@ -2390,7 +2173,6 @@ takeNumber(trbData)
 local trbData2 = nil
 if type(trbData2) == "number" then
     takeNumber(trbData2)
---             ^ diag: none
     takeString(trbData2)
 --             ^ diag: type-mismatch
 elseif type(trbData2) == "function" then
@@ -2459,13 +2241,11 @@ local function _closureReassignApply(fn) return 0 end
 -- Direct reassignment: no type-mismatch on the argument
 local _crVal1 = "hello"
 _crVal1 = _closureReassignParse(_crVal1)
--- ^ diag: none
 
 -- Closure capturing a variable reassigned by the enclosing assignment:
 -- the closure's return should be string (pre-assignment type), not number.
 local _crVal2 = "hello"
 _crVal2 = _closureReassignApply(function() return _crVal2 end)
--- ^ diag: none
 
 -- Multi-return assignment: LHS variable used as RHS argument should not
 -- produce a false type-mismatch when the return type differs from the param type.
@@ -2482,7 +2262,6 @@ end
 local function _multiRetTest(value, flag)
     local errMsg = nil
     value, errMsg = _multiRetParse(value, flag)
-    --                              ^ diag: none
     if not value then
         return false, errMsg
     end
@@ -2647,19 +2426,16 @@ local DiagCallbackOwner = {}
 -- Colon call with one explicit arg: should not produce type-mismatch or missing-parameter
 function DiagCallbackOwner:invokeCallback()
     self:_callback(42)
-    --             ^ diag: none
 end
 
 -- Colon call with no explicit args: should not produce missing-parameter
 function DiagCallbackOwner:invokeNoArg()
     self:_noArgCallback()
-    -- ^ diag: none
 end
 
 -- Colon call with optional arg omitted: should not produce missing-parameter
 function DiagCallbackOwner:invokeOptional()
     self:_optCallback()
-    -- ^ diag: none
 end
 
 -- Colon call with wrong type: should produce type-mismatch (arg matched to correct param)
@@ -2690,14 +2466,12 @@ bracketTbl[1] = "hello"
 bracketTbl[2] = "world"
 -- Type of bracketTbl should still be table, not table|string
 _consume(acceptTable(bracketTbl))
---                   ^ diag: none
 
 -- Set-style: tbl[key] = true should not make tbl become table|true
 local setTbl = {}
 setTbl["a"] = true
 setTbl["b"] = true
 _consume(acceptTable(setTbl))
---                   ^ diag: none
 
 -- ═══════════════════════════════════════════════════════════
 -- Regression: bracket-indexed access should not fire duplicate-set-field
@@ -2711,9 +2485,7 @@ local BracketDupTest = {}
 function BracketDupTest:Fill()
     self._data[1] = 10
     self._data[2] = 20
-    --              ^ diag: none
     self._data[3] = 30
-    --              ^ diag: none
 end
 _consume(BracketDupTest)
 
@@ -2728,7 +2500,6 @@ local DynKeyTest = {}
 
 function DynKeyTest:SetByKey(key, val)
     self[key] = val
-    --          ^ diag: none
 end
 _consume(DynKeyTest)
 
@@ -2763,9 +2534,7 @@ local function needString(s) return s end
 function MultiRetFieldTest:use()
     -- Fields should have types from the multi-return, not nil
     _consume(needNumber(self._a))
-    --                  ^ diag: none
     _consume(needString(self._b))
-    --                  ^ diag: none
 end
 _consume(MultiRetFieldTest)
 
@@ -2775,7 +2544,6 @@ _consume(MultiRetFieldTest)
 local function optionalParamFunc(x, y) end
 
 optionalParamFunc(1, nil)
---                   ^ diag: none
 
 -- Bug 8 regression: return-self-class-name should NOT fire when the method
 -- doesn't actually return bare `self` (e.g. returns self._parent)
@@ -2785,7 +2553,6 @@ local DiagParentClass = {}
 
 ---@return DiagParentClass
 function DiagParentClass:GetParent()
--- ^ diag: none
     return self._parent
 end
 
@@ -2804,17 +2571,14 @@ local function getUnknownCallback() return function() end end
 
 local unknownCb = getUnknownCallback()
 unknownCb(1, 2, 3)
---        ^ diag: none
 
 -- Direct call variant
 getUnknownCallback()(1, 2, 3)
---                   ^ diag: none
 
 -- Bare 'function' type (Function(None)) should also not fire
 ---@type function
 local bareFn
 bareFn(1, 2, 3)
---     ^ diag: none
 
 -- ── return-mismatch: table constructor vs intersection with table literal shape ──
 
@@ -2824,7 +2588,6 @@ bareFn(1, 2, 3)
 local function buildTaggedArray()
     local result = { tagged = true }
     return result
-    --     ^ diag: none
 end
 _consume(buildTaggedArray)
 
@@ -2835,7 +2598,6 @@ _consume(buildTaggedArray)
 ---@param tbl _DiagOrderedArr<string, number>
 local function _diagUseOrderedArr(tbl)
     _consume(tbl[1])
-    -- ^ diag: none
 end
 _consume(_diagUseOrderedArr)
 
@@ -2847,14 +2609,12 @@ _consume(_diagUseOrderedArr)
 
 ---@return number?
 local function retNullableOk() return 42 end
---                                    ^ diag: none
 _consume(retNullableOk)
 
 -- ── return-mismatch: nullable return accepts explicit nil ──
 
 ---@return number?
 local function retNullableNil() return nil end
---                                     ^ diag: none
 _consume(retNullableNil)
 
 -- ── return-mismatch: multi-return with first position correct, second wrong ──
@@ -2870,7 +2630,6 @@ _consume(retMultiPosMismatch)
 ---@return number
 ---@return string
 local function retMultiPosOk() return 1, "ok" end
---                                    ^ diag: none
 _consume(retMultiPosOk)
 
 -- ── type-mismatch: subclass satisfies parent-typed param ──
@@ -2886,7 +2645,6 @@ local function feedAnimal(animal) _consume(animal) end
 ---@type _DiagDog
 local myDog
 feedAnimal(myDog)
---         ^ diag: none
 
 -- ── type-mismatch: unrelated class fails parent-typed param ──
 
@@ -2903,7 +2661,6 @@ feedAnimal(myCar)
 ---@type string | number
 local unionVar = "hello"
 unionVar = 42
--- ^ diag: none
 _consume(unionVar)
 
 -- ── assign-type-mismatch: reassignment with wrong type for union ──
@@ -2923,7 +2680,6 @@ _consume(unionVar2)
 
 function _DiagMapHolder:Reset()
     self.data = {}
-    --          ^ diag: none
 end
 
 -- ── field-type-mismatch: @type on assignment acts as cast, not constraint ──
@@ -2937,7 +2693,6 @@ local _DiagCastHolder = {}
 function _DiagCastHolder:Init()
     ---@type _DiagCastDB
     self.db = {}
-    --       ^ diag: none
 end
 
 -- ── field-type-mismatch: nullable field assigned nil is OK ──
@@ -2949,7 +2704,6 @@ end
 ---@type _DiagConfig
 local config
 config.description = nil
---                   ^ diag: none
 
 -- ── return-mismatch: nullable field returned as non-nullable ──
 
@@ -2972,7 +2726,6 @@ greetPerson(nil)
 ---@param name string?
 local function greetOptional(name) _consume(name) end
 greetOptional(nil)
---            ^ diag: none
 
 -- ── return-mismatch: table element type mutation via bracket assignment ──
 
@@ -2991,7 +2744,6 @@ local function convertElements()
     return parts
 --         ^ hover: (local) parts: number[]
 end
--- ^ diag: none
 
 -- Bracket assignment replaces value_type (not widens). This is imprecise
 -- for partial mutation — only data[1] is converted here, so the true type
@@ -3005,7 +2757,6 @@ local function convertSingleElement()
     -- ^ diag: type-mismatch
     return data
 end
--- ^ diag: none
 
 -- ── implicit_protected_prefix default-off regression ──────────────────────
 -- Without inference.implicit_protected_prefix: true, _-prefixed runtime
@@ -3020,7 +2771,6 @@ function ipdo:Init()
 end
 
 _consume(ipdo._internal)
---            ^ diag: none
 
 -- ── Regression: same expected/actual type should not trigger type-mismatch ──
 -- When generic substitution produces the same type on both sides,
@@ -3033,7 +2783,6 @@ local function appendItem(list, value) end
 ---@type string[]
 local strArr = {}
 appendItem(strArr, "hello")
---                 ^ diag: none
 
 -- ── Regression: TypeVariable is assignable in both directions ───────────────
 -- Unresolved generics should not cause spurious type-mismatch warnings.
@@ -3045,7 +2794,6 @@ local function getFromTable(tbl, key) end
 ---@type table<string, number>
 local kvMap = {}
 getFromTable(kvMap, "test")
---                  ^ diag: none
 
 -- ── Regression: plain table assignable to plain table ─────────────────────────
 -- Two different anonymous tables (both {}) should be compatible.
@@ -3054,14 +2802,12 @@ local plainMod, plainPublic = {}, {}
 function plainPublic:OnMsg(event, func)
 end
 plainPublic.OnMsg(plainMod, "TestEvent")
---                ^ diag: none
 
 -- Also test direct function with table param
 ---@param t table
 local function acceptGenericTable(t) end
 local someTable = {}
 acceptGenericTable(someTable)
---                 ^ diag: none
 
 -- Ensure real mismatches still fire: string is not a table
 plainPublic.OnMsg("notATable", "TestEvent")
@@ -3072,7 +2818,6 @@ local richTable = { x = 1, y = 2 }
 function plainPublic:OnData(data)
 end
 plainPublic.OnData(richTable, {})
---                 ^ diag: none
 
 -- Backward-inferred param with runtime table-with-fields type: still OK
 local registry = {}
@@ -3082,7 +2827,6 @@ local function wrapRegister(tbl)
     registry.Register(tbl, "event")
 end
 wrapRegister({})
---           ^ diag: none
 
 -- Anonymous table shape annotation should still enforce structure
 ---@param opts {name: string, count: number}
@@ -3097,7 +2841,6 @@ useOpts({})
 local intersectCallable
 
 intersectCallable("ok")
---                ^ diag: none
 
 intersectCallable(123)
 --                ^ diag: type-mismatch
@@ -3106,7 +2849,6 @@ intersectCallable(123)
 local intersectCallable2
 
 intersectCallable2(1, "hello")
---                 ^ diag: none
 
 intersectCallable2(1, 2)
 --                    ^ diag: type-mismatch
@@ -3119,7 +2861,6 @@ unionCallable(123)
 --            ^ diag: type-mismatch
 
 unionCallable("ok")
---            ^ diag: none
 
 -- ── @param / function-level annotations not on a function ─────────────────
 
@@ -3157,28 +2898,23 @@ local _dfnfVar6 = nil
 ---@param a string
 ---@return number
 local function _dfnfGoodFunc(a) return 1 end
--- ^ diag: none
 
 -- Should NOT warn: @deprecated above a function
 ---@deprecated
 local function _dfnfOldFunc() end
--- ^ diag: none
 
 -- Should NOT warn: @param above function statement
 ---@param x number
 function _dfnfGlobalFunc(x) end
--- ^ diag: none
 
 -- Should NOT warn: @param above local-assign function
 ---@param x number
 local _dfnfAssignFunc = function(x) end
--- ^ diag: none
 
 -- Should NOT warn: @param above table-assign function
 local _dfnfTbl = {}
 ---@param x number
 _dfnfTbl.method = function(x) end
--- ^ diag: none
 
 -- Should warn: blank line separates annotation from function
 ---@param a string
@@ -3200,32 +2936,27 @@ local _dfnfMixed = {} ---@type DFNFMixedClass
 -- Should NOT warn: @overload on a @class block (callable class)
 ---@class DFNFCallableClass<F>
 ---@overload fun(): returns<F>
--- ^ diag: none
 local _dfnfCallable = {}
 
 -- Should NOT warn: @deprecated on a @class block
 ---@class DFNFDeprecatedClass
 ---@deprecated
--- ^ diag: none
 local _dfnfDepClass = {}
 
 -- Should NOT warn: @overload + @deprecated together on a @class block
 ---@class DFNFCallableDepClass
 ---@overload fun(): string
 ---@deprecated
--- ^ diag: none
 local _dfnfCallDep = {}
 
 -- Should NOT warn: @constructor on a @class block (names the constructor method)
 ---@class DFNFCtorClass
 ---@constructor __init
--- ^ diag: none
 local _dfnfCtorClass = {}
 
 -- Should NOT warn: bare @constructor on a @class block
 ---@class DFNFCtorBareClass
 ---@constructor
--- ^ diag: none
 local _dfnfCtorBare = {}
 
 -- Should warn: @constructor above a variable
@@ -3239,13 +2970,11 @@ local _dfnfTableCtorMixin = {
     ---@param x number
     ---@return string
     SetValue = function(self, x)
---             ^ diag: none
         return tostring(x)
     end,
 
     ---@deprecated
     OldMethod = function()
---              ^ diag: none
     end,
 }
 
@@ -3273,12 +3002,10 @@ local _dfnfMultiMethod = {
     ---@param a number
     ---@return number
     First = function(a) return a end,
---          ^ diag: none
 
     ---@param b string
     ---@return string
     Second = function(b) return b end,
---           ^ diag: none
 }
 
 -- Should NOT warn: @return above `A.func = B and function() end`
@@ -3287,7 +3014,6 @@ do
     local _dfnfAndCond = true
     ---@return any
     _dfnfAndTbl.func = _dfnfAndCond and function()
-    -- ^ diag: none
         return true
     end
 end
@@ -3298,7 +3024,6 @@ do
     ---@param a string
     ---@return number
     local _dfnfAndFunc = _dfnfAndLocal and function(a)
-    -- ^ diag: none
         return #a
     end
     local _dfnfAndResult = _dfnfAndFunc("hi")
@@ -3310,7 +3035,6 @@ do
     local _dfnfOrCond = nil
     ---@return boolean
     _dfnfOrCond = _dfnfOrCond or function()
-    -- ^ diag: none
         return true
     end
 end
@@ -3321,7 +3045,6 @@ do
     local _dfnfChainB = true
     ---@return string
     local _dfnfChainFunc = _dfnfChainA and _dfnfChainB and function()
-    -- ^ diag: none
         return "ok"
     end
 end
@@ -3330,7 +3053,6 @@ end
 local _dfnfFieldAndTbl = {
     ---@return boolean
     fn = true and function()
---               ^ diag: none
         return true
     end,
 }
@@ -3388,10 +3110,8 @@ do
     if not A["x"] then
         A["x"] = {}
         consume_list(A["x"])
-        --           ^ diag: none
     end
     consume_list(A["x"])
-    --           ^ diag: none
 end
 
 -- Bracket-access nil comparison guard
@@ -3400,7 +3120,6 @@ do
     B["y"] = nil
     if B["y"] ~= nil then
         consume_list(B["y"])
-        --           ^ diag: none
     end
 end
 
@@ -3412,7 +3131,6 @@ do
         C["x"] = {}
     end
     consume_list(C.x)
-    --           ^ diag: none
 end
 
 -- Bracket-access early-exit guard
@@ -3421,7 +3139,6 @@ do
     D["x"] = nil
     if not D["x"] then return end
     consume_list(D["x"])
-    --           ^ diag: none
 end
 
 -- Bracket-access with dot-access assignment inside guard
@@ -3432,7 +3149,6 @@ do
         E["x"] = {}
     end
     consume_list(E["x"])
-    --           ^ diag: none
 end
 
 -- Nested bracket chains: t["a"]["b"]
@@ -3453,7 +3169,6 @@ do
     local key = "x"
     if G[key] then
         consume_list(G[key])
-        --           ^ diag: none
     end
 end
 
@@ -3474,13 +3189,11 @@ do
     ---@type TestEnumValue
     local val = nil
     use_enum(val)
-    --       ^ diag: none
 
     ---@param op TestEnumBase
     local function use_base(op)
     end
     use_base(val)
-    --       ^ diag: none
 
     ---@param op string
     local function use_string(op)
@@ -3500,7 +3213,6 @@ do
     local function use_pool(pool)
     end
     use_pool(widget)
-    --       ^ diag: none
 
     -- Circular value_type: no infinite recursion
     ---@class TestCircA
@@ -3513,7 +3225,6 @@ do
     local function use_circ(x)
     end
     use_circ(circ_a)
-    --       ^ diag: none
 end
 
 -- Intersection-to-intersection assignability
@@ -3524,7 +3235,6 @@ do
     ---@type IntTableMix
     local mix = nil
     accept_mix(mix)
-    --         ^ diag: none
 
     ---@alias IntTableA number[] & table<string, number>
     ---@alias IntTableB number[] & table<string, number>
@@ -3533,7 +3243,6 @@ do
     ---@type IntTableB
     local b_val = nil
     accept_a(b_val)
-    --       ^ diag: none
 end
 
 -- Class table with table<K,V> parent assignable to table<K,V> param
@@ -3544,7 +3253,6 @@ do
     ---@type AssignTestDict
     local dict = nil
     accept_str_num(dict)
-    --             ^ diag: none
 
     -- Class fields incompatible with expected table<K,V> should still warn
     ---@class AssignTestWrongFields
@@ -3581,18 +3289,15 @@ function CallbackSelfRenameHost:setHandler(handler) end
 
 -- Underscore instead of self — types are identical, should not warn
 CallbackSelfRenameHost:setHandler(function(_, value) end)
---                                ^ diag: none
 
 -- Named something else — still positionally correct
 CallbackSelfRenameHost:setHandler(function(host, value) end)
---                                ^ diag: none
 
 ---@param handler fun(self: CallbackSelfRenameHost, event: string, ...)
 function CallbackSelfRenameHost:setEventHandler(handler) end
 
 -- Vararg callback with renamed self
 CallbackSelfRenameHost:setEventHandler(function(_, event, ...) end)
---                                     ^ diag: none
 
 -- ── Cannot call ──────────────────────────────────────────────────────────
 
@@ -3631,7 +3336,6 @@ local nothingResult = nothing()
 -- Should NOT warn: calling a function
 local function greet() return "hi" end
 greet()
--- ^ diag: none
 
 -- Should NOT warn: calling a @class with @constructor
 ---@class CannotCallCtorTest
@@ -3639,32 +3343,27 @@ greet()
 local CannotCallCtorTest = {}
 function CannotCallCtorTest:New() end
 local inst = CannotCallCtorTest()
--- ^ diag: none
 
 -- Should NOT warn: calling any-typed variable
 ---@type any
 local anything = nil
 anything()
--- ^ diag: none
 
 -- Should NOT warn: calling a fun() typed variable
 ---@type fun()
 local cb = function() end
 cb()
--- ^ diag: none
 
 -- Should NOT warn: calling a table with __call metamethod
 local callableTable = setmetatable({}, {
     __call = function(self) return 1 end
 })
 local callableResult = callableTable()
--- ^ diag: none
 
 -- Should NOT warn: union containing a callable member
 ---@type number | fun(): string
 local maybeCallable = nil
 local maybeResult = maybeCallable()
--- ^ diag: none
 
 -- Should warn: union of all non-callable types
 ---@type number | string
@@ -3679,7 +3378,6 @@ _consume(tblResult, numResult, strResult, flagResult, nothingResult, inst, calla
 local function dotCallHelper() end
 dotCallHelper()
 ("some string"):upper()
--- ^ diag: none
 
 -- Should NOT warn: field initialized to nil then assigned from untyped varargs
 -- (the unresolvable assignment means the field could be any type)
@@ -3693,11 +3391,11 @@ local function test_field_untyped_varargs()
     end
     setup(print)
     return obj._handler()
-    --     ^ diag: none
 end
 _consume(test_field_untyped_varargs)
 
 -- ── Shadowed local ───────────────────────────────────────────────────────
+---@diagnostic enable: shadowed-local
 
 -- If-block shadow
 local function test_shadow_if()
@@ -3750,7 +3448,6 @@ local function test_shadow_underscore()
     local _tmp = 1
     do
         local _tmp = 2
-        -- ^ diag: none
         _consume(_tmp)
     end
     _consume(_tmp)
@@ -3762,7 +3459,6 @@ local function test_no_shadow()
     local a = 1
     do
         local b = 2
-        -- ^ diag: none
         _consume(a, b)
     end
 end
@@ -3789,14 +3485,13 @@ _consume(test_shadow_multi)
 local function test_shadow_later_decl()
     if true then
         local value = 0
-        -- ^ diag: none
         _consume(value)
     end
     local value = 1
-    --    ^ diag: none
     _consume(value)
 end
 _consume(test_shadow_later_decl)
+---@diagnostic disable: shadowed-local
 
 -- ── field-type-mismatch: @type {shape}[] array element field checking ──────
 
@@ -3804,7 +3499,6 @@ _consume(test_shadow_later_decl)
 ---@type {name: string, value: number}[]
 local shapeArr = {
     { name = "ok", value = 42 },
-    --             ^ diag: none
     { name = "bad", value = "oops" },
     --              ^ diag: field-type-mismatch
 }
@@ -3814,9 +3508,7 @@ _consume(shapeArr)
 ---@type {id: number, label: string}[]
 local goodArr = {
     { id = 1, label = "first" },
-    --        ^ diag: none
     { id = 2, label = "second" },
-    --        ^ diag: none
 }
 _consume(goodArr)
 
@@ -3824,7 +3516,6 @@ _consume(goodArr)
 ---@type {name: string, count: number}[]
 local nilArr = {
     { name = "test", count = nil },
-    --               ^ diag: none
 }
 _consume(nilArr)
 
@@ -3836,7 +3527,6 @@ _consume(nilArr)
 ---@type _DiagArrElem[]
 local classArr = {
     { id = 1, label = "ok" },
-    --        ^ diag: none
     { id = 2, label = 99 },
     --        ^ diag: field-type-mismatch
 }
@@ -3851,7 +3541,6 @@ _consume(emptyArr)
 ---@type {x: number, y: number, z: number}[]
 local multiArr = {
     { x = 1, y = 2, z = 3 },
-    --       ^ diag: none
     { x = 1, y = "wrong", z = 3 },
     --       ^ diag: field-type-mismatch
 }
@@ -3861,7 +3550,6 @@ _consume(multiArr)
 ---@type {tag: string, val: number}[] | nil
 local nullableArr = {
     { tag = "ok", val = 1 },
-    --            ^ diag: none
     { tag = "bad", val = "wrong" },
     --             ^ diag: field-type-mismatch
 }
@@ -3876,24 +3564,19 @@ _consume(nullableArr)
 ---@field x number
 local ClassDefBasic = {}
 ClassDefBasic.__index = ClassDefBasic
---            ^ diag: none
 ClassDefBasic.y = 2
---            ^ diag: none
 
 -- Positive: @class without @field — no field contract, no inject-field
 ---@class ClassDefNoField
 local ClassDefNoField = {}
 ClassDefNoField.a = 1
---              ^ diag: none
 ClassDefNoField.b = "two"
---              ^ diag: none
 
 -- Positive: @class inside a function (original bug report)
 local function _classDefInner()
     ---@class ClassDefBasic
     local obj = {}
     obj.bar = "baz"
-    --  ^ diag: none
 end
 
 -- Positive: global @class definition
@@ -3901,13 +3584,11 @@ end
 ---@field id number
 ClassDefGlobal = {}
 ClassDefGlobal.extra = true
---             ^ diag: none
 
 -- Positive: @class with inheritance
 ---@class ClassDefChild : ClassDefBasic
 local ClassDefChild = {}
 ClassDefChild.childField = "ok"
---            ^ diag: none
 
 -- Negative: @type instance (preceding annotation) — inject-field fires
 ---@type ClassDefBasic
@@ -3934,7 +3615,6 @@ classDefFromCall.injected = 99
 ---@type ClassDefBasic
 local classDefInst2 = {}
 classDefInst2.x = 42
---            ^ diag: none
 
 -- ── @class on nested constructor field — subclass passed to parent param ──────
 -- Regression: @class on a field inside a table constructor was not linking the
@@ -3965,7 +3645,7 @@ local _nestedDb = {}
 
 -- Subclass field passed to parent param: no inject-field
 _useNestedCtorItem(_nestedDb.child)
---                           ^ hover: (field) child: NestedCtorChild  diag: none
+--                           ^ hover: (field) child: NestedCtorChild
 
 -- Nested @class with explicit @field: annotated fields take priority over
 -- constructor-inferred fields, and the class type is still correct.
@@ -3993,11 +3673,11 @@ end
 
 -- Subclass with @field passed to parent param: no inject-field
 _useNestedFieldItem(_nestedFieldDb.entry)
---                                 ^ hover: (field) entry: NestedCtorFieldChild  diag: none
+--                                 ^ hover: (field) entry: NestedCtorFieldChild
 
 -- Declared @field is accessible on the subclass
 local _nestedTag = _nestedFieldDb.entry.tag
---                                      ^ hover: (field) tag: string  diag: none
+--                                      ^ hover: (field) tag: string
 
 -- ── recursive deep-copy: return-mismatch on recursive table type ──────────────
 -- Regression test: a recursive function whose return type includes a table
@@ -4041,9 +3721,7 @@ local _mutateMap = { a = "one", b = "two" }
 local function _transformValue(key) return {} end
 for part, key in pairs(_mutateMap) do
     _mutateMap[part] = _transformValue(key)
---                     ^ diag: none
 end
---             ^ diag: none
 
 -- Regression: @return annotation should not be widened by body-inferred types.
 -- A function annotated `@return Foo|nil` whose body returns a supertype (Bar)
@@ -4068,7 +3746,6 @@ local function _needChild(c) return c end
 local child = _getChild()
 if child then
     _needChild(child)
-    -- ^ diag: none
 end
 
 -- Vararg type checking: arguments to ... should be type-checked
@@ -4082,7 +3759,6 @@ _vaMin(2, nil)
 _vaMin(2, "hi")
 --        ^ diag: type-mismatch
 _vaMin(2, 3)
--- ^ diag: none
 _vaMin(2, 3, "bad")
 --           ^ diag: type-mismatch
 
@@ -4098,7 +3774,6 @@ _vaGenMin(2, nil)
 _vaGenMin(2, "hi")
 --           ^ diag: type-mismatch
 _vaGenMin(2, 3)
--- ^ diag: none
 
 -- Vararg type checking with no positional params
 ---@param ... string
@@ -4107,7 +3782,6 @@ local function _vaOnly(...) end
 _vaOnly(42)
 --      ^ diag: type-mismatch
 _vaOnly("ok")
--- ^ diag: none
 
 -- Should warn: annotations at end of file (no following code)
 ---@param a string

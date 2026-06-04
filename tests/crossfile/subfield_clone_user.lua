@@ -11,12 +11,10 @@ local _sd = host.SpeedDisplay
 -- Sub-field access — should find Speed on the cloned table, not undefined-field
 local _spd = host.SpeedDisplay.Speed
 --    ^ hover: (local) _spd: Cooldown {
---                             ^ diag: none
 
 -- Second sub-field chain
 local _txt = host.TextDisplay.Text
 --    ^ hover: (local) _txt: Frame {
---                            ^ diag: none
 
 -- Direct field still works on the parent
 local _td = host.TextDisplay

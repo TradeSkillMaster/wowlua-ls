@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file global function and variable test: usage
 
 -- Global variable access

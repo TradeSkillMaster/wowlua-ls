@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Child class: overrides parent's any-typed _widget field with a concrete type
 local RPParent = RPDefine("RPParent")
 local RPChild = RPDefine("RPChild", RPParent)

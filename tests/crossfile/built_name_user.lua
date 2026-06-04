@@ -1,4 +1,4 @@
----@diagnostic disable: create-global
+---@diagnostic disable: create-global, unused-local
 -- Cross-file @built-name test: calling @built-name through wrapper functions.
 -- Tests that @built-name propagates through wrapper functions for both
 -- cross-file class discovery and per-file built-name resolution.
@@ -43,7 +43,6 @@ function acceptBaseState(state)
     --    ^ hover: (local) bv: number
 end
 acceptBaseState(STATE)
--- ^ diag: none
 
 -- Generic @builds-field with backtick string literal and @param reference
 local STATE3 = BNBuilder.CreateSchema("MY_BN_STATE3")
@@ -73,7 +72,6 @@ function useLateinitBuiltField(state)
     --    ^ hover: (field) handler: BNFieldBase!  diag: undefined-field
     if state.handler then
         state.handler = nil
-        -- ^ diag: none
     end
 end
 
@@ -83,9 +81,7 @@ end
 ---@param state MY_BN_STATE
 function assignBuiltField(state)
     state.label = "updated"
-    -- ^ diag: none
     state.count = 99
-    -- ^ diag: none
 end
 
 -- ── @class overlay on @built-name preserves parent_classes ──────────
@@ -104,7 +100,6 @@ local OV_SCHEMA = BNBuilder.CreateSchema("BNOverlayState")
 
 -- Overlay type inherits BNStateBase parent from @return built : BNStateBase
 acceptBaseState(OV_SCHEMA)
--- ^ diag: none
 
 -- Overlay fields merged with built fields
 ---@param state BNOverlayState
@@ -123,6 +118,5 @@ local maybeFB = nil
 ---@param state BNOverlayState
 function assignOverlayLateinit(state)
     state.deferredItem = maybeFB
-    -- ^ diag: none
 end
 

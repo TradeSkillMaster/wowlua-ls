@@ -6,8 +6,6 @@ AbbreviateLargeNumbers(1)
 
 ---@diagnostic disable-next-line: wrong-flavor-api
 AbbreviateLargeNumbers(2)
--- ^ diag: none
 
 -- Also suppressible via its LuaLS-style alias? For now just the exact code.
 AbbreviateLargeNumbers(3) ---@diagnostic disable-line: wrong-flavor-api
--- ^ diag: none

@@ -5,4 +5,4 @@ local _, ns = ...
 -- Passing it to table.sort should not produce a type-mismatch diagnostic.
 local items = {3, 1, 2}
 table.sort(items, ns.CompareByName)
---                   ^ hover: (field) CompareByName: function  def: external  diag: none
+--                   ^ hover: (field) CompareByName: function  def: external

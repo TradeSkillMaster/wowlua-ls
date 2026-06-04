@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file defclass enum field go-to-definition test:
 -- Accesses defclass fields defined in nested_enum_user.lua from another file.
 ---@type MY_ENUM

@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file bare self-field test: consumer accessing inferred fields
 
 ---@class BareFieldChild : BareFieldClass

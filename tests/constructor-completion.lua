@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-local
 -- Table constructor field completions: when typing inside a table constructor
 -- whose expected type is a known class, offer that class's fields.
 

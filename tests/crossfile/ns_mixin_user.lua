@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file test: Mixin() with addon namespace @class field preserves class name
 local _, ns = ...
 

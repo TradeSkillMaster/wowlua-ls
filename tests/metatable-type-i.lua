@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-function, unused-local
 -- Test: metatable / setmetatable type inference
 -- Requires: --with-stubs
 --
@@ -308,7 +309,6 @@ local STORE_MT = { __index = MappedStore }
 ---@return MappedStore
 function MappedStore.New()
     return setmetatable({}, STORE_MT)
-    -- ^ diag: none
 end
 
 -- ============================================================================
@@ -333,7 +333,6 @@ local function createReader()
     local reader = setmetatable({}, READER_MT)
     --    ^ hover: (local) reader: MapReader
     return reader
-    -- ^ diag: none
 end
 
 -- ============================================================================
@@ -364,7 +363,6 @@ local function createView()
     local view = setmetatable({}, VIEW_OBJ_MT)
     --    ^ hover: (local) view: ViewObj
     return view
-    -- ^ diag: none
 end
 
 local v = createView()
@@ -441,7 +439,6 @@ local ArityCheck = setmetatable({}, {
 })
 
 ArityCheck("hello", 42)
--- ^ diag: none
 
 ArityCheck("hello")
 -- ^ diag: missing-parameter
@@ -462,10 +459,8 @@ local ArityOptional = setmetatable({}, {
 })
 
 ArityOptional("hello")
--- ^ diag: none
 
 ArityOptional("hello", 42)
--- ^ diag: none
 
 ArityOptional()
 -- ^ diag: missing-parameter
@@ -477,10 +472,8 @@ local ArityNoAnnot = setmetatable({}, {
 })
 
 ArityNoAnnot()
--- ^ diag: none
 
 ArityNoAnnot(1, 2)
--- ^ diag: none
 
 ArityNoAnnot(1, 2, 3)
 --               ^ diag: redundant-parameter
@@ -494,7 +487,6 @@ end
 
 local AritySeparate = setmetatable({}, { __call = separateCallImpl })
 AritySeparate("hello", 42)
--- ^ diag: none
 
 AritySeparate("hello")
 -- ^ diag: missing-parameter
@@ -518,7 +510,6 @@ ArityNoSelf("x")
 -- ^ diag: missing-parameter
 
 ArityNoSelf("x", 42)
--- ^ diag: none
 
 -- __call: @return on table field function propagates return type
 local AnnotatedCallable = setmetatable({}, {
@@ -551,7 +542,6 @@ local cnsr = CallNotSelf(10)
 --    ^ hover: (local) cnsr: number
 
 CallNotSelf(10)
--- ^ diag: none
 
 CallNotSelf()
 -- ^ diag: missing-parameter

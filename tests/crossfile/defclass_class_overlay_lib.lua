@@ -17,13 +17,13 @@ end
 function ReactiveOneShot.__static.Get(value)
 --                       ^ hover: (accessor) __static: ReactiveOneShot {
     local obj = ReactiveOneShot()
-    --    ^ hover: (local) obj: ReactiveOneShot  diag: none
+    --    ^ hover: (local) obj: ReactiveOneShot
     return obj
 end
 
 -- Cross-file constructor call via DefineClass
 local inst = DefineClass("ReactiveOneShot")()
---    ^ hover: (local) inst: ReactiveOneShot  diag: none
+--    ^ hover: (local) inst: ReactiveOneShot
 
 -- Constructor field from __init must be visible
 local v = inst._value

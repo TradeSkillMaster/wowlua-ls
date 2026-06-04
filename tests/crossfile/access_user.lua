@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file access modifier test: accesses private/protected fields from outside
 
 ---@type AccessWidget
@@ -9,7 +10,6 @@ local n = w.name
 
 -- Public method call should produce no access diagnostic
 _ = w:GetName()
--- ^ diag: none
 
 -- Private field from outside: should error
 local s = w._secret

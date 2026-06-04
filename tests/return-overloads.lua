@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-local
 local function _consume(...) end
 
 -- ── All-or-nothing: tuple-union returns ──────────────────────────────
@@ -265,7 +265,6 @@ end
 ---      | (nil, nil)
 local function validAll()
     return "Alice", 42
-    -- ^ diag: none
 end
 _consume(validAll)
 
@@ -276,7 +275,6 @@ _consume(validAll)
 local function validNone()
     ---@diagnostic disable-next-line: redundant-return
     return
-    -- ^ diag: none
 end
 _consume(validNone)
 
@@ -306,7 +304,6 @@ _consume(invalidReversed)
 ---      | (nil, nil)
 local function validAllNil()
     return nil, nil
-    -- ^ diag: none
 end
 _consume(validAllNil)
 
@@ -337,7 +334,6 @@ _consume(mixedStyle)
 ---@return (string name, number level)
 ---      | (nil)
 local function maybeMissing()
---            ^ diag: none
     if math.random() > 0.5 then
         return "hi", 1
     else
@@ -375,7 +371,6 @@ _consume(innerFunc)
 ---@return ...any
 local function delegatingFunc(...)
     return innerFunc(1, ...)
-    -- ^ diag: none
 end
 _consume(delegatingFunc)
 
@@ -427,7 +422,6 @@ local _ = sc_b
 ---@return ...number
 local function varRetExtra()
     return "hi", 1, 2, 3
-    -- ^ diag: none
 end
 _consume(varRetExtra)
 
@@ -436,7 +430,6 @@ _consume(varRetExtra)
 ---@return ...number
 local function varRetMin()
     return "hi"
-    -- ^ diag: none
 end
 _consume(varRetMin)
 
@@ -445,7 +438,6 @@ _consume(varRetMin)
 ---@return number ...
 local function getScoresTrailing()
     return "Alice", 10, 20, 30
-    -- ^ diag: none
 end
 local tName, tSc = getScoresTrailing()
 --    ^ hover: (local) tName: string
@@ -886,7 +878,6 @@ _consume(parseInner)
 local function parseOuter(str)
     local isValid, errType, errArg = parseInner(str, {})
     return isValid, errType, errArg
-    -- ^ diag: none
 end
 _consume(parseOuter)
 

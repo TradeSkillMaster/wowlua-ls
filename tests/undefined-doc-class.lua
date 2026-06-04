@@ -12,7 +12,6 @@ local function _consume(...) end
 
 ---@class ChildOfKnown : KnownClass
 ---@field extra string
--- ^ diag: none
 
 ---@class ChildOfUnknown : MissingParent
 -- ^ diag: undefined-doc-class
@@ -20,10 +19,8 @@ local function _consume(...) end
 -- ── Built-in types as @class parents should not trigger ─────────────────
 
 ---@class UserdataChild : userdata
--- ^ diag: none
 
 ---@class UnknownChild : unknown
--- ^ diag: none
 
 -- ── Inline table type parent should not trigger ──────────────────────
 
@@ -32,12 +29,10 @@ local function _consume(...) end
 ---@type OrderedTableTest<string, number>
 local _orderedTable = {}
 _consume(_orderedTable)
--- ^ diag: none
 
 -- ── Parameterized table<K,V> parent should not trigger ─────────────
 
 ---@class DictClass : table<string, number>
--- ^ diag: none
 
 ---@class TypoDict : tabel<string, number>
 -- ^ diag: undefined-doc-class
@@ -104,14 +99,12 @@ _consume(_orderedTable)
 -- Alias to a class should be fine
 ---@alias MyClass KnownClass
 ---@class AliasClass : MyClass
--- ^ diag: none
 
 -- ── Parameterized class parent should not trigger ────────────────────
 
 ---@class GenericBase<T>
 
 ---@class GenericChild<T> : GenericBase<T>
--- ^ diag: none
 
 ---@class BadGenericChild : Tabel<string>
 -- ^ diag: undefined-doc-class
@@ -120,10 +113,8 @@ _consume(_orderedTable)
 
 ---@diagnostic disable: undefined-doc-class
 ---@class SuppressedChild : MissingSuppressedParent
--- ^ diag: none
 ---@diagnostic enable: undefined-doc-class
 
 ---@diagnostic disable: invalid-class-parent
 ---@class SuppressedPrim : number
--- ^ diag: none
 ---@diagnostic enable: invalid-class-parent

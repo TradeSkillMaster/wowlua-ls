@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Deep hierarchy: RPElement → RPContainer → RPBaseFrame
 -- Class definitions are in rhs_propagate_deep_defs.lua (separate file).
 -- This file only defines methods on the already-existing external classes,

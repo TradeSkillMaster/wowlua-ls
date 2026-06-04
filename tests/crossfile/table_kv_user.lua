@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-function, unused-local
 -- Cross-file test: bracket access on @field table<K,V> from another file
 
 ---@type XWidgetPool

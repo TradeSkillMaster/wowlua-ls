@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-function
 -- Regression test: field assignments on values read from a bracket-accessed
 -- table must not leak back into the table's inferred value_type.
 

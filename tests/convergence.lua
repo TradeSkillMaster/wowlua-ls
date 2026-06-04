@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Regression test for fixpoint convergence:
 -- 60 functions defined in reverse dependency order.
 -- Without the inner fixpoint loop, this would need 60 outer

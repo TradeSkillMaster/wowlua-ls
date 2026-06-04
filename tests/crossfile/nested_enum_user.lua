@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file nested enum test: uses NewNested with nested table literals
 local MY_ENUM = XEnumNewNested("MY_ENUM", {
     GROUP_A = {
@@ -21,7 +22,6 @@ local flat = MY_ENUM.FLAT
 
 -- Defclass enum should be assignable to parent class XEnumObject
 XEnumIsType(MY_ENUM)
--- ^ diag: none
 
 -- Deep nested enum (3+ levels cross-file)
 local DEEP_ENUM = XEnumNewNested("DEEP_ENUM", {
@@ -47,4 +47,3 @@ Wrapper.ENUM = MY_ENUM
 local ref = Wrapper.ENUM
 --    ^ hover: (local) ref: MY_ENUM  def: local
 XEnumIsType(Wrapper.ENUM)
--- ^ diag: none

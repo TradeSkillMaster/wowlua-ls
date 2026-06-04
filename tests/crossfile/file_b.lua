@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file test: file B uses a different variable name but sees file A's fields
 local addonName, addon = ...
 local v = addon.version

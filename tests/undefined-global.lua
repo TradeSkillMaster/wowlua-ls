@@ -8,7 +8,6 @@ _consume(CretaeFrame)
 
 -- Should NOT warn: real WoW API global
 _consume(CreateFrame)
---       ^ diag: none
 
 -- Should warn: non-existent global
 _consume(nonExistentGlobal123)
@@ -16,22 +15,18 @@ _consume(nonExistentGlobal123)
 
 -- Should NOT warn: real WoW global (FrameXML stub)
 _consume(WOW_PROJECT_ID)
---       ^ diag: none
 
 -- Should NOT warn: _G is a built-in Lua global
 _consume(_G)
---       ^ diag: none
 
 -- Should NOT warn: suppressed
 ---@diagnostic disable-next-line: undefined-global
 _consume(totallyFakeGlobal)
--- ^ diag: none
 
 -- Should NOT warn: field access on grouped expression (not a global)
 local t1 = { hex = "red" }
 local t2 = { hex = "blue" }
 local _color = (t1 or t2).hex
---                         ^ diag: none
 
 -- Should NOT warn: bare local declaration without assignment
 local subject
@@ -39,25 +34,21 @@ if true then
     subject = "hello"
 end
 _consume(subject)
---       ^ hover: (local) subject: string  diag: none
+--       ^ hover: (local) subject: string
 
 -- Writing to `_G.<known-global>` is a plain global assignment, not field
 -- injection on the `_G` class.
 _G.print = function() end
--- ^ diag: none
 _G.CreateFrame = nil
--- ^ diag: none
 
 -- Writing to `_G` via a local alias (common FrameXML-override idiom) also
 -- bypasses inject-field when the name is a known global.
 local gAlias = _G
 gAlias.ChatFrame_OnEvent = function() end
---     ^ diag: none
 
 -- Genuinely unknown names on `_G` via a local alias — `_G` is not a @class
 -- table, so inject-field does not fire.
 gAlias.ThisIsNotARealGlobal = 1
---     ^ diag: none
 
 -- Workspace-defined globals (declared in the same file or another file) are
 -- also recognized — matching `undefined-global`'s scope walk.
@@ -66,9 +57,7 @@ function MyAddonGlobalFn() end
 ---@diagnostic disable-next-line: create-global
 MyAddonGlobalVar = 1
 _G.MyAddonGlobalFn = function() end
--- ^ diag: none
 gAlias.MyAddonGlobalVar = 2
---     ^ diag: none
 
 -- Global assignment inside nested blocks (do, if, while, for) should be
 -- visible at file scope and produce create-global, not undefined-global.
@@ -78,7 +67,7 @@ do
     --  ^ hover: (global) NestedDoGlobal: string = "test"
 end
 _consume(NestedDoGlobal)
---       ^ hover: (global) NestedDoGlobal: string  diag: none
+--       ^ hover: (global) NestedDoGlobal: string
 
 if true then
     ---@diagnostic disable-next-line: create-global
@@ -86,7 +75,7 @@ if true then
     --  ^ hover: (global) NestedIfGlobal: number = 42
 end
 _consume(NestedIfGlobal)
---       ^ hover: (global) NestedIfGlobal: number  diag: none
+--       ^ hover: (global) NestedIfGlobal: number
 
 -- Without suppression, assignment should produce create-global
 do
@@ -101,25 +90,22 @@ do
     --       ^ hover: (global) function NestedDoFunc()
 end
 _consume(NestedDoFunc)
---       ^ hover: (global) function NestedDoFunc()  diag: none
+--       ^ hover: (global) function NestedDoFunc()
 
 -- Explicit global creation via _G should NOT produce create-global
 _G.ExplicitNewGlobal = "test"
--- ^ diag: none
 _consume(ExplicitNewGlobal)
---       ^ hover: (global) ExplicitNewGlobal: string = "test"  diag: none
+--       ^ hover: (global) ExplicitNewGlobal: string = "test"
 
 _G["BracketNewGlobal"] = 99
--- ^ diag: none
 _consume(BracketNewGlobal)
---       ^ hover: (global) BracketNewGlobal: number = 99  diag: none
+--       ^ hover: (global) BracketNewGlobal: number = 99
 
 ---@param x number
 ---@return string
 _G.ExplicitNewFunc = function(x) return tostring(x) end
--- ^ diag: none
 _consume(ExplicitNewFunc)
---       ^ hover: (global) function ExplicitNewFunc(x: number)  diag: none
+--       ^ hover: (global) function ExplicitNewFunc(x: number)
 
 -- Bracket-index expressions inside assignment targets are value reads,
 -- not assignment targets themselves — they should fire undefined-global.
@@ -138,7 +124,5 @@ obj.sub[undefinedDeep] = 1
 --      ^ diag: undefined-global
 -- The base of the bracket access is still an assignment target (no warning):
 tbl[print] = 2
---  ^ diag: none
 -- Known local used as nested bracket index — no warning:
 tbl[tbl[k]] = 3
---      ^ diag: none

@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file test: access table literal fields from namespace
 
 local _, ns = ...

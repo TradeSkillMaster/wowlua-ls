@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-function
 -- Test: backward inference disabled via .wowluarc.json config
 -- With `backward_param_types: false`, unannotated params stay untyped.
 

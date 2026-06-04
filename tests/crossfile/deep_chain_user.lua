@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Deep cross-file test: consumes 4+ part chains defined in deep_chain_defs.lua
 local _, addon = ...
 

@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Test: misuse of @requires and @return self<X>
 --
 -- @requires gates a method on the receiver's class type parameter, and

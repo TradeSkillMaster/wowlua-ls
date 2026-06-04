@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, undefined-global
+---@diagnostic disable: create-global, undefined-global, unused-function, unused-local
 local function _consume(...) end
 
 ---@class NilCheckFrame
@@ -21,7 +21,6 @@ local _ = f1
 
 if f1 then
     f1.name = "hello"
-    -- ^ diag: none
     local _ = f1
     --        ^ hover: (local) f1: NilCheckFrame {
 end
@@ -32,7 +31,6 @@ end
 local f2 = nil
 if f2 ~= nil then
     f2.name = "hello"
-    -- ^ diag: none
     --    ^ hover: (field) name: string
 end
 
@@ -44,7 +42,6 @@ if f3 == nil then
     _consume("nil")
 else
     f3.name = "hello"
-    -- ^ diag: none
 end
 
 -- ── Non-nullable: no warning ─────────────────────────────────────────────
@@ -52,7 +49,6 @@ end
 ---@type NilCheckFrame
 local f4 = {}
 f4.name = "hello"
--- ^ diag: none
 
 -- ── Method call on nullable ──────────────────────────────────────────────
 
@@ -65,7 +61,6 @@ f5:Show()
 
 if f5 then
     f5:Show()
-    -- ^ diag: none
 end
 
 -- ── Nested scope inherits narrowing ──────────────────────────────────────
@@ -75,7 +70,6 @@ local f6 = nil
 if f6 then
     if true then
         f6.name = "nested"
-        -- ^ diag: none
     end
 end
 
@@ -87,7 +81,6 @@ local function useFrame(f)
     -- ^ diag: need-check-nil
     if f then
         f.name = "hello"
-        -- ^ diag: none
     end
 end
 _consume(useFrame)
@@ -98,7 +91,6 @@ _consume(useFrame)
 local f8 = nil
 assert(f8)
 f8.name = "hello"
--- ^ diag: none
 local _ = f8
 --        ^ hover: (local) f8: NilCheckFrame {
 
@@ -112,11 +104,8 @@ local f8b = nil
 local f8c = nil
 assert(f8a and f8b and f8c)
 f8a.name = "hello"
--- ^ diag: none
 f8b.name = "hello"
--- ^ diag: none
 f8c.name = "hello"
--- ^ diag: none
 
 -- ── Early-exit with `not x` ─────────────────────────────────────────────
 
@@ -126,7 +115,6 @@ if not f9 then
     error("expected f9")
 end
 f9.name = "hello"
--- ^ diag: none
 local _ = f9
 --        ^ hover: (local) f9: NilCheckFrame {
 
@@ -138,7 +126,6 @@ if f10 == nil then
     return
 end
 f10.name = "hello"
--- ^ diag: none
 
 -- ── While loop condition narrows ────────────────────────────────────────
 
@@ -148,7 +135,6 @@ while f11 do
     local _ = f11
     --        ^ hover: (local) f11: NilCheckFrame {
     f11.name = "ok"
-    -- ^ diag: none
 end
 
 -- ── While loop condition narrows (with reassignment) ───────────────────
@@ -161,9 +147,7 @@ end
 local node = nil
 while node do
     node.name = "ok"
-    -- ^ diag: none
     node = node.next
-    -- ^ diag: none
 end
 
 -- ── Suppression ──────────────────────────────────────────────────────────
@@ -172,7 +156,6 @@ end
 local f7 = nil
 ---@diagnostic disable-next-line: need-check-nil
 f7.name = "suppressed"
--- ^ diag: none
 
 -- ── and-condition propagates nil guard ─────────────────────────────────
 
@@ -180,7 +163,6 @@ f7.name = "suppressed"
 local f12 = nil
 if f12 ~= nil and f12.name then
     f12.name = "ok"
-    -- ^ diag: none
 end
 
 -- ── and-condition: hover shows narrowed type on RHS ───────────────────
@@ -202,7 +184,6 @@ local _ = f13
 local f14 = nil
 if f14 and f14.name then
     f14.name = "ok"
-    -- ^ diag: none
 end
 
 -- ── chained and with two guards ───────────────────────────────────────
@@ -213,9 +194,7 @@ local f15 = nil
 local f16 = nil
 if f15 ~= nil and f16 ~= nil then
     f15.name = "ok"
-    -- ^ diag: none
     f16.name = "ok"
-    -- ^ diag: none
 end
 
 -- ── cached type() guard ─────────────────────────────────────────────
@@ -225,16 +204,13 @@ local f17 = nil
 local f17type = type(f17)
 if f17type == "table" then
     f17.name = "ok"
-    -- ^ diag: none
 end
 
 ---@type NilCheckFrame|nil
 local f18 = nil
 local f18type = type(f18)
 if f18type == "table" and f18.name then
---                            ^ diag: none
     f18.name = "ok"
-    -- ^ diag: none
 end
 
 -- ── Assignment narrows field ────────────────────────────────────────────
@@ -249,9 +225,7 @@ local createBtn
 local function testAssignNarrow(state)
     state.btn = state.btn or createBtn()
     state.btn:Show()
-    -- ^ diag: none
     state.btn.name = "ok"
-    -- ^ diag: none
 end
 _consume(testAssignNarrow)
 
@@ -266,7 +240,6 @@ _consume(testAssignNarrow)
 local function getParent(self)
     assert(self._parent)
     return self._parent
-    -- ^ diag: none
 end
 _consume(getParent)
 
@@ -282,7 +255,6 @@ _consume(getParent)
 local function getBareNilField(self)
     assert(self._data)
     return self._data
-    -- ^ diag: none
 end
 _consume(getBareNilField)
 
@@ -305,9 +277,7 @@ local function testEnsureInit(state)
         state.btn = createBtn()
     end
     state.btn:Show()
-    -- ^ diag: none
     state.btn.name = "ok"
-    -- ^ diag: none
 end
 _consume(testEnsureInit)
 
@@ -318,7 +288,6 @@ local function testEnsureInitEq(state)
         state.btn = createBtn()
     end
     state.btn:Show()
-    -- ^ diag: none
 end
 _consume(testEnsureInitEq)
 
@@ -327,7 +296,6 @@ _consume(testEnsureInitEq)
 ---@param self NilCheckElement
 local function testAndFieldGuard(self)
     local parentId = self._parent and self._parent._id
-    --                                              ^ diag: none
     _consume(parentId)
 end
 _consume(testAndFieldGuard)
@@ -336,7 +304,6 @@ _consume(testAndFieldGuard)
 ---@param self NilCheckElement
 local function testAndFieldGuardNeq(self)
     local parentId = self._parent ~= nil and self._parent._id
-    --                                                    ^ diag: none
     _consume(parentId)
 end
 _consume(testAndFieldGuardNeq)
@@ -352,7 +319,6 @@ _consume(testAndFieldGuardNeq)
 ---@param self NilCheckDeepObj
 local function testAndFieldChainGuard(self)
     local id = self._state.x and self._state.x._id
-    --                                        ^ diag: none
     _consume(id)
 end
 _consume(testAndFieldChainGuard)
@@ -361,7 +327,6 @@ _consume(testAndFieldChainGuard)
 ---@param self NilCheckDeepObj
 local function testAndFieldChainGuardNeq(self)
     local id = self._state.x ~= nil and self._state.x._id
-    --                                                ^ diag: none
     _consume(id)
 end
 _consume(testAndFieldChainGuardNeq)
@@ -396,9 +361,7 @@ local function _elseifNarrow(x)
     if not x then
         return
     elseif x:len() > 5 then
-        --  ^ diag: none
         return x:upper()
-        --      ^ diag: none
     end
 end
 
@@ -407,9 +370,7 @@ local f_elseif = nil
 if f_elseif == nil then
     error("missing")
 elseif f_elseif.name == "test" then
-    --            ^ diag: none
     f_elseif:Show()
-    -- ^ diag: none
 end
 
 -- Early-exit narrowing with `or` and else branch present
@@ -419,12 +380,9 @@ local function _elseifOrNarrow(a, b)
     if not a or not b then
         return
     elseif a.name ~= b.name then
-        --    ^ diag: none
         a:Show()
-        -- ^ diag: none
     else
         b:Show()
-        -- ^ diag: none
     end
 end
 
@@ -458,9 +416,7 @@ local notUnary1 = nil
 if not notUnary1 then
     error("missing")
 elseif notUnary1.name == "test" then
-    --              ^ diag: none
     notUnary1:Show()
-    -- ^ diag: none
 end
 
 -- Variant: `if not x then return end; x.field` (early-exit)
@@ -476,25 +432,20 @@ notUnary2.name = "ok"
 ---@type NilCheckFrame|nil
 local f30 = nil
 local _ = f30 and f30.name
---                ^ diag: none
 
 ---@type NilCheckFrame|nil
 local f31 = nil
 local _ = f31 and f31:Show()
---                ^ diag: none
 
 -- Chained and: first guard suppresses nil-checks in entire RHS
 ---@type NilCheckFrame|nil
 local f32 = nil
 local _ = f32 and f32.name ~= "" and f32.name
---                ^ diag: none
--- ^ diag: none
 
 -- Ternary idiom: middle operand is guarded by `and`
 ---@type NilCheckFrame|nil
 local f33 = nil
 local _ = f33 and f33.name or "fallback"
---                ^ diag: none
 
 -- Ternary idiom: `or` fallback is NOT guarded — `x` is nil in the `or` branch
 ---@type NilCheckFrame|nil
@@ -527,7 +478,6 @@ else
     query1 = createQuery()
 end
 query1:ResetOrderBy()
--- ^ diag: none
 local _ = query1
 --        ^ hover: (local) query1: BranchQuery
 
@@ -540,7 +490,6 @@ local function testGuardElseAssign(q)
         q = createQuery()
     end
     q:OrderBy("name", true)
-    -- ^ diag: none
 end
 _consume(testGuardElseAssign)
 
@@ -555,7 +504,6 @@ else
 end
 if true then
     query3:ResetOrderBy()
-    -- ^ diag: none
 end
 
 -- Pattern 4: Without else, usage in nested scope — should still warn
@@ -585,12 +533,9 @@ local function _elseifNoReturn(lowestAuction)
     if not lowestAuction then
         reason = "none"
     elseif lowestAuction.hasInvalidSeller then
-        --                ^ diag: none
         reason = "invalid"
     elseif lowestAuction.buyout > 100 then
-        --               ^ diag: none
         reason = lowestAuction.seller
-        --                     ^ diag: none
     end
     return reason
 end
@@ -612,9 +557,7 @@ local function _elseifMultiBranchExit(lowestAuction, cancelRepost)
     end
     -- All branches above return, so lowestAuction is non-nil here
     if lowestAuction.buyout > 100 then
-        --               ^ diag: none
         return lowestAuction.seller
-        --                   ^ diag: none
     end
     return ""
 end
@@ -637,7 +580,6 @@ _acceptsFunction(_maybeFunc)
 local _definiteFunc
 
 _acceptsFunction(_definiteFunc)
---               ^ diag: none
 _consume(_acceptsFunction, _maybeFunc, _definiteFunc)
 
 -- ── self.field narrowing (if self.field then self.field:Method()) ────
@@ -657,9 +599,7 @@ _consume(_acceptsFunction, _maybeFunc, _definiteFunc)
 local function testSelfFieldBasic(self)
     if self._state.subMenu then
         self._state.subMenu:Show()
-        -- ^ diag: none
         self._state.subMenu.name = "ok"
-        -- ^ diag: none
     end
 end
 _consume(testSelfFieldBasic)
@@ -678,7 +618,6 @@ _consume(testSelfFieldBasic)
 local function testSelfFieldTwoLevel(self)
     if self._state.inner.widget then
         self._state.inner.widget:Show()
-        -- ^ diag: none
     end
 end
 _consume(testSelfFieldTwoLevel)
@@ -690,9 +629,7 @@ local function testSelfFieldEarlyExit(self)
         return
     end
     self._state.subMenu:Show()
-    -- ^ diag: none
     self._state.subMenu.name = "ok"
-    -- ^ diag: none
 end
 _consume(testSelfFieldEarlyExit)
 
@@ -703,7 +640,6 @@ local function testSelfFieldEarlyExitEqNil(self)
         return
     end
     self._state.subMenu:Show()
-    -- ^ diag: none
 end
 _consume(testSelfFieldEarlyExitEqNil)
 
@@ -712,7 +648,6 @@ _consume(testSelfFieldEarlyExitEqNil)
 local function testSelfFieldNeqNil(self)
     if self._state.subMenu ~= nil then
         self._state.subMenu:Show()
-        -- ^ diag: none
     end
 end
 _consume(testSelfFieldNeqNil)
@@ -840,7 +775,6 @@ _consume(earlyReturnUnionType)
 local function testAssertFieldNarrow(self)
     assert(self._child)
     self._child:Show()
-    -- ^ diag: none
 end
 _consume(testAssertFieldNarrow)
 
@@ -887,7 +821,6 @@ local function testFieldNarrowLocalEarlyExit(state)
     local frame = state.frame
     --    ^ hover: (local) frame: FieldNarrowContainer
     frame:Hide()
-    -- ^ diag: none
 end
 _consume(testFieldNarrowLocalEarlyExit)
 
@@ -898,7 +831,6 @@ local function testFieldNarrowLocalTruthiness(state)
         local frame = state.frame
         --    ^ hover: (local) frame: FieldNarrowContainer
         frame:Hide()
-        -- ^ diag: none
     end
 end
 _consume(testFieldNarrowLocalTruthiness)
@@ -926,7 +858,6 @@ local function testFieldNarrowTypeMismatch(self)
         local oldPath = self._path
         --    ^ hover: (local) oldPath: string
         _acceptPath(oldPath)
-        -- ^ diag: none
     end
 end
 _consume(testFieldNarrowTypeMismatch, _acceptPath)
@@ -949,7 +880,6 @@ _consume(testNilCallNoGuard)
 local function testNilCallGuarded(self)
     if self._callback then
         self:_callback("test")
-        -- ^ diag: none
     end
 end
 _consume(testNilCallGuarded)
@@ -959,7 +889,6 @@ _consume(testNilCallGuarded)
 local function testNilCallAssert(self)
     assert(self._callback)
     self:_callback("test")
-    -- ^ diag: none
 end
 _consume(testNilCallAssert)
 
@@ -968,7 +897,6 @@ _consume(testNilCallAssert)
 local function testNilCallEarlyExit(self)
     if not self._callback then return end
     self:_callback("test")
-    -- ^ diag: none
 end
 _consume(testNilCallEarlyExit)
 
@@ -981,7 +909,6 @@ maybeFunc()
 -- Local variable guarded — should suppress
 if maybeFunc then
     maybeFunc()
-    -- ^ diag: none
 end
 
 -- `and`-guard should suppress call-on-nil for field calls
@@ -992,12 +919,10 @@ local AndCallGuardObj = {}
 
 function AndCallGuardObj:testColon()
     local _ = self.callback and self:callback()
-    -- ^ diag: none
 end
 
 function AndCallGuardObj:testDot()
     local _ = self.dotCallback and self.dotCallback("a", "b")
-    -- ^ diag: none
 end
 
 -- Without guard — should still warn
@@ -1014,7 +939,6 @@ local breakItem = nil
 for i = 1, 10 do
     if not breakItem then break end
     breakItem:Show()
-    -- ^ diag: none
 end
 
 -- Break after reassignment inside preceding if-block
@@ -1032,7 +956,6 @@ while true do
         break
     end
     breakRow:Show()
-    -- ^ diag: none
 end
 
 -- ── and-narrowing suppresses need-check-nil for function args ────────
@@ -1043,7 +966,6 @@ local function takeNum(n) return n end
 ---@param x number?
 local function testAndNarrowArg(x)
     local _ = x and takeNum(x)
-    -- ^ diag: none
 end
 
 ---@param x number?
@@ -1064,7 +986,6 @@ end
 ---@param y number?
 local function testAndChainNarrow(x, y)
     local _ = x and y and takeNum(x)
-    -- ^ diag: none
 end
 
 -- ── If-block reassignment merged back to outer scope ────────────────────
@@ -1128,7 +1049,6 @@ local CorrTypeMismatch = {}
 local function useCorrTypeMismatch(self)
     if self.name then
         _takeStrNum(self.name, self.count)
-        -- ^ diag: none
     end
 end
 
@@ -1158,7 +1078,6 @@ local function _takeNum(n) end
 local function earlyExitCorr(self)
     if not self.handler then return end
     _takeNum(self.money)
-    -- ^ diag: none
 end
 
 -- ── @correlated: multiple groups ─────────────────────────────────────────────
@@ -1200,7 +1119,6 @@ end
 local function useInheritedCorr(self)
     if self.x then
         _takeStrNum(self.x, self.y)
-        -- ^ diag: none
     end
 end
 
@@ -1219,7 +1137,6 @@ end
 local function useNestedCorr(self)
     if self.auction.itemString then
         _takeStrNum(self.auction.itemString, self.auction.duration)
-        -- ^ diag: none
     end
 end
 
@@ -1249,7 +1166,6 @@ local function _takeSixArgs(s, d, b, bo, st, u) end
 local function useNestedCorrAsArgs(self)
     if self._auction.itemString then
         _takeSixArgs(self._auction.itemString, self._auction.duration, self._auction.bid, self._auction.buyout, self._auction.stackSize, self._auction.undercut)
-        -- ^ diag: none
     end
 end
 
@@ -1266,7 +1182,6 @@ local CorrFrame = {}
 function CorrDialogWithMethod:PostAuction()
     if self._auction.itemString then
         self._frame:SetAuction(self._auction.itemString, self._auction.duration, self._auction.bid, self._auction.buyout, self._auction.stackSize, self._auction.undercut)
-        -- ^ diag: none
     end
 end
 
@@ -1289,7 +1204,6 @@ end
 function CorrDialogRuntime:DoPost()
     if self._auction.itemString then
         _takeSixArgs(self._auction.itemString, self._auction.duration, self._auction.bid, self._auction.buyout, self._auction.stackSize, self._auction.undercut)
-        -- ^ diag: none
     end
 end
 
@@ -1309,11 +1223,9 @@ local function falsyCorrTest(self)
     if not self.active then
         -- Inside negated guard: active is nil|false, data should NOT be narrowed
         _consume(self.data)
-        --            ^ diag: none
     else
         -- Else-branch: active is truthy, correlated siblings are also narrowed
         _takeStr(self.data)
-        -- ^ diag: none
     end
 end
 
@@ -1410,7 +1322,6 @@ nilEdge.handler()
 -- Guarded invocation is safe
 if nilEdge.handler then
     nilEdge.handler()
-    --      ^ diag: none
 end
 
 -- ── Negation guard + reassignment pattern ──
@@ -1442,7 +1353,6 @@ _consume(mutualA, mutualB)
 local linkedNode = nil
 while linkedNode do
     _consume(linkedNode.value)
-    --       ^ diag: none
     linkedNode = linkedNode.next
 end
 
@@ -1465,7 +1375,6 @@ while not whileFrame do
     whileFrame = {} --[[@as NilCheckFrame]]
 end
 whileFrame:Show()
--- ^ diag: none
 
 -- Nil comparison: `while x == nil do ... end` → x is non-nil after
 
@@ -1566,9 +1475,11 @@ local ParamCallHolder = {}
 ---@param func fun(): number?
 function ParamCallHolder:SetFunc(func)
     self._func = func
+    ---@diagnostic enable: unused-local
     local result = func()
     --             ^ diag: unused-local
     --      ^ hover: (local) result: number?
+    ---@diagnostic disable: unused-local
 end
 
 -- Edge case: fun()? — nullable void function (? on the function itself)
@@ -1590,7 +1501,6 @@ end
 function ParamCallHolder:CallStrFunc(strFunc)
     local s = strFunc(1)
     --    ^ hover: (local) s: string?
-    --        ^ diag: none
     _consume(s)
 end
 
@@ -1611,15 +1521,12 @@ local function _strLen(s) return #s end
 function AndFieldTest:TestFieldAnd()
     -- Field access narrowed through `and` (bare truthiness guard)
     local _ = self._data and _strLen(self._data) or 0
-    --                                    ^ diag: none
 
     -- Nested field access: `self._sub and self._sub.value`
     local _ = self._sub and self._sub.value or nil
-    --                            ^ diag: none
 
     -- Field ~= nil guard in and: `self._data ~= nil and ...`
     local _ = self._data ~= nil and _strLen(self._data) or 0
-    --                                       ^ diag: none
 
     -- After the and-expression, field should NOT be narrowed
     local _ = self._data
@@ -1629,20 +1536,17 @@ end
 -- Chained field-and: `self._data and self._sub and func(self._data, self._sub)`
 function AndFieldTest:TestChainedFieldAnd()
     local _ = self._data and self._sub and _strLen(self._data) or 0
-    --                                              ^ diag: none
 end
 
 -- Chained ~= nil guards through and (StripNil path)
 function AndFieldTest:TestNilCheckChain()
     ---@type number
     local _ = self._sub ~= nil and self._sub.value ~= nil and self._sub.value or 0
-    --                                  ^ diag: none
 end
 
 -- Mixed bare-truthiness and ~= nil in chain
 function AndFieldTest:TestMixedChain()
     local _ = self._sub and self._sub.value ~= nil and self._sub.value or 0
-    --                           ^ diag: none
 end
 
 -- ── Multi-level field chain narrowing in and-expressions ───────────────
@@ -1658,11 +1562,9 @@ local mlnt = {}
 
 -- Two-level chain: bare truthiness guard
 local _ = mlnt.state.icon and _strLen(mlnt.state.icon)
---                                              ^ diag: none
 
 -- Two-level chain: ~= nil guard
 local _ = mlnt.state.icon ~= nil and _strLen(mlnt.state.icon)
---                                                     ^ diag: none
 
 -- ── `x = x or y` coalesce narrowing ──────────────────────────────────────
 -- When `x = x or y` is assigned, narrowing `y` (non-nil) propagates to `x`.
@@ -1678,7 +1580,6 @@ local function _coalesceOr(link, itemLinkIn)
     itemLink = itemLink or link
     -- Inside `or` RHS: link narrowed truthy, so itemLink (coalesce-derived) is too.
     if not link or _takeString(itemLink) ~= _takeString(link) then
-        --                        ^ diag: none
         return itemLink
     end
     return itemLink
@@ -1692,7 +1593,6 @@ local function _coalesceOrAndChain(link, itemLinkIn)
     itemLink = itemLink or link
     -- Inside `and` RHS: link narrowed truthy → itemLink also narrowed.
     local _ = link and _takeString(itemLink)
-    --                                 ^ diag: none
     return _
 end
 _consume(_coalesceOrAndChain)
@@ -1716,7 +1616,6 @@ local function _coalesceFromNonNilSource(y, xIn)
     x = x or y
     if y ~= nil then
         return _takeString(x)
-        --                    ^ diag: none
     end
     return x
 end
@@ -1745,7 +1644,6 @@ local function _coalesceAssertOnSource(y, xIn)
     x = x or y
     assert(y)
     return _takeString(x)
-    --                    ^ diag: none
 end
 _consume(_coalesceAssertOnSource)
 
@@ -1797,7 +1695,6 @@ local function _andOrNilLocalDecl(link)
     end
     -- itemString narrowed non-nil → link also narrowed.
     return _takeString(link)
-    --                    ^ diag: none
 end
 _consume(_andOrNilLocalDecl)
 
@@ -1810,7 +1707,6 @@ local function _andOrNilReassign(link)
         return 0
     end
     return _takeString(link)
-    --                    ^ diag: none
 end
 _consume(_andOrNilReassign)
 
@@ -1865,7 +1761,6 @@ local function _coalesceViaCorrelated(cond, aIn, bIn, xIn)
     if a ~= nil then
         -- a narrowed → correlated narrows b → coalesce narrows x.
         return _takeString(x)
-        --                    ^ diag: none
     end
     return x
 end
@@ -1877,7 +1772,6 @@ local function _andOrNilThenBranch(sel)
     local idx = sel and #sel or nil
     if idx then
         return _takeString(sel)
-        --                    ^ diag: none
     end
     return 0
 end
@@ -1889,7 +1783,6 @@ local function _andOrNilThenBranchNeqNil(sel)
     local idx = sel and #sel or nil
     if idx ~= nil then
         return _takeString(sel)
-        --                    ^ diag: none
     end
     return 0
 end
@@ -1915,7 +1808,6 @@ local function _andOrNilTypeNotNil(sel)
     local idx = sel and #sel or nil
     if type(idx) ~= "nil" then
         return _takeString(sel)
-        --                    ^ diag: none
     end
     return 0
 end
@@ -1927,7 +1819,6 @@ local function _andOrNilTypePositive(sel)
     local idx = sel and #sel or nil
     if type(idx) == "number" then
         return _takeString(sel)
-        --                    ^ diag: none
     end
     return 0
 end
@@ -1939,7 +1830,6 @@ local function _andOrNilAssertNeqNil(sel)
     local idx = sel and #sel or nil
     assert(idx ~= nil)
     return _takeString(sel)
-    --                    ^ diag: none
 end
 _consume(_andOrNilAssertNeqNil)
 
@@ -1949,7 +1839,6 @@ local function _andOrNilAssertType(sel)
     local idx = sel and #sel or nil
     assert(type(idx) == "number")
     return _takeString(sel)
-    --                    ^ diag: none
 end
 _consume(_andOrNilAssertType)
 
@@ -1962,7 +1851,7 @@ local function _andOrNilOrTermUnion(kind)
     if idx == 5 or idx == 6 then
         -- idx narrowed to `number` (no nil), kind narrowed via coalesce.
         return _takeString(kind)
-        --                    ^ hover: (param) kind: "a" | "b" | "c"  diag: none
+        --                    ^ hover: (param) kind: "a" | "b" | "c"
     end
     return "x"
 end
@@ -1986,7 +1875,6 @@ local function _dedupOrAssignTable(takeTable, cond1, cond2)
     --    ^ hover: (local) u: table?
     if t then
         takeTable(t)
-        --         ^ diag: none
     end
 end
 _consume(_dedupOrAssignTable)
@@ -2019,9 +1907,7 @@ local function _deferredSiblingAssert()
     -- Post-guard, siblings narrow from `any | nil` to `any`. `any` satisfies
     -- every annotated param type, so no `need-check-nil` fires.
     _takeString(name)
-    --          ^ diag: none
     _takeNum(count)
-    --       ^ diag: none
 end
 _consume(_deferredSiblingAssert)
 
@@ -2029,9 +1915,7 @@ local function _deferredSiblingBare()
     local a, b, c = _getDeferredQuery():GetNth("x", "y")
     if a then
         _takeString(b)
-        --          ^ diag: none
         _takeNum(c)
-        --       ^ diag: none
     end
 end
 _consume(_deferredSiblingBare)
@@ -2053,7 +1937,6 @@ local function _takeNum(_x) end
 local function testBracketAccessEarlyExit(info)
     if not info.reagents[1].itemID then return end
     _takeNum(info.reagents[1].itemID)
-    --                          ^ diag: none
 end
 _consume(testBracketAccessEarlyExit)
 
@@ -2062,7 +1945,6 @@ _consume(testBracketAccessEarlyExit)
 local function testBracketAccessTruthiness(info)
     if info.reagents[1].itemID then
         _takeNum(info.reagents[1].itemID)
-        --                          ^ diag: none
     end
 end
 _consume(testBracketAccessTruthiness)
@@ -2080,7 +1962,6 @@ _consume(testBracketAccessNoGuard)
 local function testBracketAccessNilCompare(info)
     if info.reagents[1].itemID == nil then return end
     _takeNum(info.reagents[1].itemID)
-    --                          ^ diag: none
 end
 _consume(testBracketAccessNilCompare)
 
@@ -2089,7 +1970,6 @@ _consume(testBracketAccessNilCompare)
 local function testBracketNullableBase(info)
     if not info.first then return end
     info.first.itemID = 123
-    -- ^ diag: none
 end
 _consume(testBracketNullableBase)
 
@@ -2108,7 +1988,6 @@ local function nilInitCompleteIfElse(cond, id)
         x = "world"
     end
     _takeStr(x)
-    --       ^ diag: none
     --       ^ hover: (local) x: string
 end
 _consume(nilInitCompleteIfElse)
@@ -2126,7 +2005,6 @@ local function nilInitEarlyExit(cond, spellId)
         indirectId = spellId
     end
     _takeNum(indirectId)
-    --       ^ diag: none
     --       ^ hover: (local) indirectId: number
 end
 _consume(nilInitEarlyExit)
@@ -2146,7 +2024,6 @@ local function nilInitAssertNarrow(cond)
         assert(itemStr)
     end
     _takeStr(itemStr)
-    --       ^ diag: none
     --       ^ hover: (local) itemStr: string
 end
 _consume(nilInitAssertNarrow)
@@ -2261,7 +2138,6 @@ local function testRenarrowAfterReassignInLoop(getLine, matchLine)
         if stackLine then
             local _ = matchLine(stackLine, "x")
             --                  ^ hover: (local) stackLine: string
-            -- ^ diag: none
         end
     end
 end
@@ -2302,7 +2178,6 @@ local function testBracketEnsureInit()
     local info = dialogs[DIALOG_KEY]
     --    ^ hover: (local) info: table
     info.timeout = 5
-    -- ^ diag: none
 end
 _consume(testBracketEnsureInit)
 
@@ -2314,7 +2189,6 @@ local function testBracketEnsureInitEq()
     local info2 = dialogs[DIALOG_KEY]
     --    ^ hover: (local) info2: table
     info2.timeout = 5
-    -- ^ diag: none
 end
 _consume(testBracketEnsureInitEq)
 
@@ -2329,7 +2203,6 @@ local function testBracketNarrow(name)
         local pt = POINTS[name]
         --    ^ hover: (local) pt: {
         pt.anchor = "TOP"
-        -- ^ diag: none
     end
 end
 _consume(testBracketNarrow)
@@ -2342,7 +2215,6 @@ local function testBracketNarrowElseif(name, flag)
         local pt = POINTS[name]
         --    ^ hover: (local) pt: {
         pt.x = 10
-        -- ^ diag: none
     end
 end
 _consume(testBracketNarrowElseif)
@@ -2353,7 +2225,6 @@ local function testBracketEarlyExit(name)
     local pt = POINTS[name]
     --    ^ hover: (local) pt: {
     pt.anchor = "TOP"
-    -- ^ diag: none
 end
 _consume(testBracketEarlyExit)
 
@@ -2363,7 +2234,6 @@ local function testBracketAssert(name)
     local pt = POINTS[name]
     --    ^ hover: (local) pt: {
     pt.anchor = "TOP"
-    -- ^ diag: none
 end
 _consume(testBracketAssert)
 
@@ -2388,14 +2258,12 @@ local _lenBad = #maybeStr
 ---@type string
 local definiteStr = "hello"
 local _lenOk = #definiteStr
---             ^ diag: none
 
 -- Nil guard suppresses the diagnostic
 ---@type string?
 local guardedStr = nil
 if guardedStr then
     local _lenGuarded = #guardedStr
-    --                  ^ diag: none
 end
 
 -- Nil comparison guard
@@ -2403,7 +2271,6 @@ end
 local cmpGuarded = nil
 if cmpGuarded ~= nil then
     local _lenCmpGuarded = #cmpGuarded
-    --                     ^ diag: none
 end
 
 -- Table type that is nullable
@@ -2416,7 +2283,6 @@ local _tblLen = #maybeTbl
 ---@type string?
 local andStr = nil
 local _andLen = andStr and #andStr or 0
---                         ^ diag: none
 
 -- ── pairs/ipairs nil-stripping ───────────────────────────────────────────
 -- Iterating a nullable-element array or table with pairs()/ipairs() should
@@ -2432,14 +2298,12 @@ local nilRows = {}
 for _, row in ipairs(nilRows) do
 --     ^ hover: (local) row: NilStripRow
     local _ = row.id
-    -- ^ diag: none
 end
 
 -- pairs: value is NilStripRow, not NilStripRow?  (row starts at col 8)
 for _, row in pairs(nilRows) do
 --     ^ hover: (local) row: NilStripRow
     local _ = row.id
-    -- ^ diag: none
 end
 
 -- Direct index access is still nullable  (_directRow starts at col 7)
@@ -2454,9 +2318,7 @@ for k, v in pairs(mixedTbl) do
 --  ^ hover: (local) k: string
 --     ^ hover: (local) v: number
     local _ = k .. "x"
-    -- ^ diag: none
     local _ = v + 1
-    -- ^ diag: none
 end
 
 -- ════════════════════════════════════════════════════════════════════════

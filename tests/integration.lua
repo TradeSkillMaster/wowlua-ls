@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, undefined-global
+---@diagnostic disable: create-global, redundant-return, shadowed-local, undefined-global, unused-function, unused-local
 -- wowlua_ls integration test
 -- Annotations on the line below code use caret to mark test column
 -- Format: --  caret hover: TYPE  def: local|external|None

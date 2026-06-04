@@ -31,26 +31,22 @@ _consume(tbl)
 local function pack(...)
     return {...}
 end
--- ^ diag: none
 _consume(pack)
 
 local function count(...)
     return select("#", ...)
 end
--- ^ diag: none
 _consume(count)
 
 local function forward(...)
     return _consume(...)
 end
--- ^ diag: none
 _consume(forward)
 
 local function first(...)
     local a = ...
     return a
 end
--- ^ diag: none
 _consume(first)
 
 -- ── No fire: function has no `...` at all ────────────────────────────────
@@ -58,7 +54,6 @@ _consume(first)
 local function plain(a, b)
     return a + b
 end
--- ^ diag: none
 _consume(plain)
 
 -- ── Nested inner functions don't count as using the outer `...` ──────────
@@ -81,5 +76,4 @@ _consume(outer_with_inner)
 local function suppressed(...)
     return 1
 end
--- ^ diag: none
 _consume(suppressed)

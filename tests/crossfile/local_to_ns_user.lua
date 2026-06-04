@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file test: accessing namespace fields that were assigned from locals
 local addonName, addon = ...
 

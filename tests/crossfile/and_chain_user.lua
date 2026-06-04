@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file test: and-chaining on addon namespace fields (usage)
 local _, ns = ...
 

@@ -7,7 +7,7 @@
 ---@param obj LibHelper
 ---@return string
 function FormatHelper(obj)
+--       ^ hover: (global) function FormatHelper(obj: LibHelper)
     local unused = 42
-    -- ^ diag: none
     return obj.name
 end

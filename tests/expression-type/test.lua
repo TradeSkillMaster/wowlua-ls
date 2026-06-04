@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, missing-return
+---@diagnostic disable: create-global, missing-return, unused-function, unused-local
 ---@class ExprState
 ---@field progress number
 ---@field active boolean
@@ -29,15 +29,13 @@ checkBool([[name]])
 
 -- No mismatch when return type is unconstrained
 checkAny([[name]])
---          ^ hover: (field) name: string  diag: none
+--          ^ hover: (field) name: string
 
 -- Boolean expression matches boolean constraint
 checkBool([[progress == 1]])
--- ^ diag: none
 
 -- Numeric expression matches number constraint
 checkNum([[progress + count]])
--- ^ diag: none
 
 -- Numeric expression doesn't match boolean constraint
 checkBool([[progress + count]])
@@ -53,11 +51,9 @@ checkBool("progress == 1")
 
 -- not operator infers boolean
 checkBool([[not active]])
--- ^ diag: none
 
 -- Comparison operators infer boolean
 checkBool([[count > 0]])
--- ^ diag: none
 
 -- Semantic tokens for expression identifiers
 checkBool([[progress == 1 and not active]])
@@ -100,7 +96,6 @@ function checkIntersect(expr) end
 checkIntersect([[min(progress, count)]])
 --                ^ hover: (field) min: fun(a: number, b: number): number  tok: function
 --                    ^ hover: (field) progress: number
--- ^ diag: none
 
 -- Hover and def on function from intersected class
 checkIntersect([[max(progress, count)]])

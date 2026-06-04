@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: empty-block, redundant-return, undefined-global, unused-function, unused-local
 -- Test: backward type inference from body usage
 
 -- ── Signal 1: arithmetic with a typed-number operand → number ──
@@ -86,7 +86,6 @@ end
 ---@type string[] | nil
 local _maybeStrList = nil
 local _fsl = forwardOptStringList(_maybeStrList)
---                                ^ diag: none
 
 -- `table<K,V>` also has to keep the typed value_type through the hint.
 ---@param tbl table<string, number>
@@ -139,7 +138,6 @@ local function uses_optional(x)
     return x.field
 end
 uses_optional({field = 1})
---            ^ diag: none
 
 -- Non-optional callee still drives a baseline: `x` is inferred as `table`.
 ---@param t table
@@ -151,7 +149,6 @@ local function uses_required(x)
     return x.field
 end
 uses_required({field = 1})
---            ^ diag: none
 
 -- Explicit `T | nil` (no `?`) is also treated as optional — the annotation
 -- type contains nil, so the same narrowing-only rule applies.
@@ -164,7 +161,6 @@ local function uses_nilable(x)
     return x.field
 end
 uses_nilable({field = 1})
---           ^ diag: none
 
 -- Colon-call variant: the optional-flag check must honour self_offset so the
 -- second declared param's `?` still classifies the first *arg* correctly.
@@ -181,7 +177,6 @@ end
 ---@type string | nil
 local maybeStr = nil
 local _cfo = colonForwardOpt(maybeStr)
---                           ^ diag: none
 
 -- ── Compatible signals → narrowest common type (intersection) ──
 -- `a + 1` demands `number`; `a .. "x"` accepts `string | number`. The narrowest
@@ -230,7 +225,6 @@ end
 local myBuf = {} ---@type MyItem[]
 local myObj = {} ---@type MyItem
 addItem(myBuf, myObj)
---             ^ diag: none
 
 -- ── Regression: wide stub hint intersected with typed-field hint ──
 -- A permissive function param (like the `strlower(s: string | number)` stub)
@@ -254,7 +248,6 @@ end
 ---@type BIBox
 local bibox = setmetatable({ name = nil }, BIBox)
 setBoxName(bibox, "Alice")
---                ^ diag: none
 
 -- ── Regression: wide stub hint intersected with typed-return hint ──
 -- `@return string | nil` on a function combined with the permissive stub
@@ -267,7 +260,6 @@ local function getLowerName(n)
     return n
 end
 local _gn = getLowerName("Alice")
---                       ^ diag: none
 
 -- ── Multi-stall propagation: inferred param type flows to caller's param ──
 -- `inner`'s `x` is backward-inferred to `number` from `x + 1`. On a later
@@ -298,7 +290,6 @@ local function narrowedCaller(p)
     end
 end
 narrowedCaller(nil)
---            ^ diag: none
 
 -- Arithmetic use under a nil guard must also be skipped — `p + 1` would
 -- otherwise hint `number` and tighten the param.
@@ -309,7 +300,6 @@ local function narrowedArith(p)
     end
 end
 narrowedArith(nil)
---           ^ diag: none
 
 -- Concatenation use under a nil guard must also be skipped — `p .. "x"`
 -- would otherwise hint `string | number`.
@@ -320,7 +310,6 @@ local function narrowedConcat(p)
     end
 end
 narrowedConcat(nil)
---            ^ diag: none
 
 -- ── Short-circuit RHS: conditionally-reached baseline hint is narrowing-only ──
 -- In `guard and takesStringAnd(other)`, the call runs only when `guard` is truthy.
@@ -335,8 +324,6 @@ local function andCaller(guard, other)
     if guard and takesStringAnd(other) then end
 end
 andCaller(nil, nil)
---        ^ diag: none
---             ^ diag: none
 
 -- ── `if` block body: every use is conditionally reached ──
 ---@param s string
@@ -349,8 +336,6 @@ local function ifCaller(cond, s)
     end
 end
 ifCaller(nil, nil)
---       ^ diag: none
---            ^ diag: none
 
 -- ── Short-circuit `or` RHS: conditionally-reached baseline hint is narrowing-only ──
 -- `fallback or takesStringOr(other)` — the call runs only when `fallback` is
@@ -364,8 +349,6 @@ local function orCaller(fallback, other)
     return fallback or takesStringOr(other)
 end
 orCaller(nil, nil)
---       ^ diag: none
---            ^ diag: none
 
 -- ── `elseif` body: every use is conditionally reached ──
 ---@param s string
@@ -379,7 +362,6 @@ local function elseifCaller(cond, other, s)
     end
 end
 elseifCaller(nil, nil, nil)
---                     ^ diag: none
 
 -- ── `else` body: every use is conditionally reached ──
 ---@param s string
@@ -393,7 +375,6 @@ local function elseCaller(cond, s)
     end
 end
 elseCaller(nil, nil)
---              ^ diag: none
 
 -- ── `while` body: every use is conditionally reached ──
 ---@param s string
@@ -407,7 +388,6 @@ local function whileCaller(cond, s)
     end
 end
 whileCaller(nil, nil)
---               ^ diag: none
 
 -- ── `for-in` body: every use is conditionally reached ──
 ---@param s string
@@ -420,7 +400,6 @@ local function forInCaller(t, s)
     end
 end
 forInCaller({}, nil)
---              ^ diag: none
 
 -- ── Numeric `for` body: every use is conditionally reached ──
 -- Range can be empty (`for i = 1, 0 do`), so the body may not run at all.
@@ -434,7 +413,6 @@ local function forNumCaller(n, s)
     end
 end
 forNumCaller(0, nil)
---              ^ diag: none
 
 -- ── None-wrapping shape: `a == b and takesString(s)` ──
 -- The parser produces `BinaryExpr(None, [==, BinaryExpr(And+==, ...)])` for
@@ -448,7 +426,6 @@ local function noneCaller(a, b, s)
     if a == b and takesStringNone(s) then end
 end
 noneCaller(nil, nil, nil)
---                   ^ diag: none
 
 -- ── `repeat` body: always runs ≥ 1 time, so inherits parent's conditionality ──
 -- A `repeat ... until c` body always executes at least once, so a call inside
@@ -549,7 +526,6 @@ local function optCaller(cond, sel)
     end
 end
 optCaller(true, nil)
---              ^ diag: none
 
 -- ── Regression: narrowing that contradicts the baseline falls back to baseline ──
 -- `p + 1` unconditionally → baseline `number`. A conditional `takesStr(p: string)`
@@ -569,7 +545,6 @@ local function contraCaller(cond, p)
     end
 end
 contraCaller(true, 5)
---                 ^ diag: none
 contraCaller(true, nil)
 --                 ^ diag: type-mismatch
 
@@ -604,7 +579,6 @@ local msFish = nil
 
 msRegister(msBird)
 msRegister(msFish)
---         ^ diag: none
 
 -- Conditional third call with a third unrelated class must not re-enable
 -- inference of a single type either.
@@ -615,7 +589,6 @@ local MsRockClass = {}
 local msRock = nil
 if msBird then
     msRegister(msRock)
-    --         ^ diag: none
 end
 
 -- ── Caller-arg disagreement with body inference still fires type-mismatch ──
@@ -656,7 +629,6 @@ local msCircle = nil
 
 msShapeFwd(msShape)
 msShapeFwd(msCircle)
---         ^ diag: none
 
 -- ── Method-call callers: self_offset is honoured ──
 -- Colon-call syntax consumes the first param as `self`, so `obj:m(foo)` maps
@@ -682,7 +654,6 @@ local msUnrelated = nil
 
 msCaller:process(msShape)
 msCaller:process(msUnrelated)
---               ^ diag: none
 
 -- ── Overloaded callee in the body: each arity-matched overload contributes
 -- hints, and multi-site disjoint callers still bail. Regression: the overload
@@ -709,7 +680,6 @@ local msOther = nil
 
 msOverloadFwd(msShape)
 msOverloadFwd(msOther)
---            ^ diag: none
 
 -- ── Unbound generic inside a `T[]` hint must be dropped ──
 -- `unpack(list: T[])` paired with a non-`T` sibling position binds nothing, so
@@ -726,11 +696,9 @@ local function ugForwardAll(rows)
     local _ = unpack(rows)
     for _, row in ipairs(rows) do
         ugUseRow(row)
---               ^ diag: none
     end
 end
 ugForwardAll({})
---           ^ diag: none
 
 -- ── Unbound generic inside Union/nested-field hints must also be dropped ──
 -- A hint like `T[] | U` wraps the unbound-generic array in a Union; a hint

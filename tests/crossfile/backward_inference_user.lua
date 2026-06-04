@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-function
 -- Cross-file backward inference: inferring param type from a typed
 -- function defined in another file.
 

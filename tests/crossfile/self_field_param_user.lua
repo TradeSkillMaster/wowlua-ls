@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-function, unused-local
 -- Cross-file self-field test: accessing fields via @param-typed function parameter
 
 --- @param builder ParamFieldClass

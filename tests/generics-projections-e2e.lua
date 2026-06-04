@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-local
 -- End-to-end test covering Gaps 1–4 together: a fictional `GenericRegistry<F>`
 -- class exercised through the dominant idioms (class field, table-constructor
 -- field) with both registration and dispatch.
@@ -59,11 +59,9 @@ local privateTable = {
 ---@param f E2EFrame
 local function rightTableHandler(v, f) end
 privateTable.callbacks:Add(rightTableHandler)
---                         ^ diag: none
 
 -- Dispatch with right types
 privateTable.callbacks:CallAll(true, E2EFrame)
---                             ^ diag: none
 
 -- Dispatch with wrong type (Gap 4)
 privateTable.callbacks:CallAll("not a boolean", E2EFrame)
@@ -116,7 +114,6 @@ local widgetReg = GenericRegistry.NewList()
 ---@return DerivedWidget
 local function makeDerived(name) return DerivedWidget end
 widgetReg:Add(makeDerived)
---            ^ diag: none
 
 ---@param name string
 ---@return string
@@ -137,17 +134,14 @@ function RedundantGenClass:OldStyleAdd(value) end
 
 ---@param value T
 function RedundantGenClass:NewStyleAdd(value) end
---                         ^ diag: none
 
 ---@generic U
 ---@param factory U
 function RedundantGenClass:MethodOwnGeneric(factory) end
---                         ^ diag: none
 
 -- @type T inside a generic class method should not trigger undefined-doc-name
 function RedundantGenClass:Init()
     self._stored = nil ---@type T
-    --                          ^ diag: none
 end
 
 -- ── Path 7: class-level type param constraints ────────────────────────────────
@@ -166,7 +160,6 @@ function ConstrainedBox:Get() end
 local strBox = {}
 --    ^ hover: (local) strBox: ConstrainedBox<string>
 strBox:Set("hello")
---         ^ diag: none
 
 strBox:Set(42)
 --         ^ diag: type-mismatch
@@ -226,7 +219,6 @@ local boolVal = boolMap[42]
 local holder = {}
 holder.myMap = TypedMap.Create("string", "number")
 --     ^ hover: (field) myMap: TypedMap<string, number>
---                             ^ diag: none
 
 -- nil-initialized field reassigned later
 local container = {
@@ -234,7 +226,6 @@ local container = {
 }
 container.data = TypedMap.Create("number", "boolean")
 --         ^ hover: (field) data: TypedMap<number, boolean>
---                               ^ diag: none
 
 -- method call on nil-initialized field propagates receiver type_args
 local container2 = {

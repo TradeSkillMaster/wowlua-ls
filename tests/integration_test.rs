@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
-use lsp_types::DiagnosticSeverity;
-
 use wowlua_ls::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 use wowlua_ls::annotations;
 use wowlua_ls::config::ProjectConfigs;
@@ -614,16 +612,14 @@ fn run_annotation_tests(config: &TestConfig) {
         }
     }
 
-    // Fail on any WARNING/ERROR diagnostics not covered by a `diag:` assertion.
-    // HINT diagnostics (unused-local, unused-function, etc.) are not required to
-    // be asserted — they are noisy in test code that creates locals/functions just
-    // for hover/def assertions.  HINT diagnostics are still fully testable via
-    // explicit `diag:` assertions in dedicated test files.
-    for (line, code, msg, is_hint) in &diag_lines {
-        if !is_hint && !diag_asserted_lines.contains(line) {
+    // Fail on any diagnostic not covered by a `diag:` assertion (syntax errors
+    // are still exempted — they are structural parse failures whose codes are
+    // free-form messages that can't be suppressed via `---@diagnostic disable`).
+    for (line, code, msg, is_syntax_error) in &diag_lines {
+        if !is_syntax_error && !diag_asserted_lines.contains(line) {
             failures.push(format!(
-                "  {}:{}\n    unasserted diagnostic: {} ({})\n    add `-- ^ diag: {}` or `-- ^ diag: none` to assert this diagnostic",
-                config.lua_file, line, code, msg, code
+                "  {}:{}\n    unasserted diagnostic: {} ({})\n    add `-- ^ diag: {}` or suppress with `---@diagnostic disable: {}`",
+                config.lua_file, line, code, msg, code, code
             ));
         }
     }
@@ -715,7 +711,7 @@ fn extract_field(s: &str, prefix: &str) -> Option<String> {
 }
 
 /// Collect all diagnostics from in-process analysis.
-/// Returns vec of (1-based line number, diagnostic code, message, is_hint).
+/// Returns vec of (1-based line number, diagnostic code, message, is_syntax_error).
 fn collect_diagnostics_inprocess(
     tree: &SyntaxTree,
     analysis: &AnalysisResult,
@@ -740,8 +736,7 @@ fn collect_diagnostics_inprocess(
         let start = numbers.from_offset(d.start);
         let start_line = start.0.0;
         if !lsp::diagnostics::is_suppressed(d.code, start_line, suppressions) {
-            let is_hint = d.severity == DiagnosticSeverity::HINT;
-            diags.push((start_line + 1, d.code.to_string(), d.message.clone(), is_hint));
+            diags.push((start_line + 1, d.code.to_string(), d.message.clone(), false));
         }
     }
     diags

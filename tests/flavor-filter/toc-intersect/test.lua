@@ -8,4 +8,3 @@ AbbreviateLargeNumbers(100)
 
 -- CreateFrame is available everywhere — no warning.
 local _f = CreateFrame("Frame", "MyFrame")
---         ^ diag: none

@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: shadowed-local, undefined-global, unused-function, unused-local
 -- wowlua_ls integration test (with stubs)
 -- Requires: --with-stubs
 
@@ -44,7 +44,6 @@ local pOk2, pName, pLevel, pActive = pcall(getInfoPcall)
 
 -- pcall validates argument types via params<F>
 pcall(greetPcall, "ok")
--- ^ diag: none
 pcall(greetPcall, 42)
 --                ^ diag: type-mismatch
 
@@ -199,7 +198,6 @@ local expansion = LE_EXPANSION_CLASSIC
 ---@type string[]
 local names = {}
 tinsert(names, "hello")
--- ^ diag: none
 tinsert(names, 42)
 --             ^ diag: type-mismatch
 
@@ -307,19 +305,16 @@ end
 ---@type Frame
 local myFrame2 = nil
 GameTooltip.Show(myFrame2)
--- ^ diag: none
 
 -- ── Keyword-named parameters (e.g. `repeat`) should still be parsed ─────────
 
 DoTradeSkill(1, 5)
 -- ^ hover: (global) function DoTradeSkill(index: number, repeat: number)  def: external
--- ^ diag: none
 
 -- ── setfenv: `async fun(...)` in union should parse as function ─────────
 
 local function myFunc() end
 setfenv(myFunc, {})
--- ^ diag: none
 
 -- ── coroutine library stubs ─────────────────────────────────────────────
 
@@ -352,13 +347,13 @@ local _g_b = _G["TestGlobalFromG"]
 -- _G bracket with variable key should not emit diagnostics
 local _g_dyn_name = "Dynamic"
 _G[_g_dyn_name] = true
--- ^ diag: none
 
 -- _G dot access reads resolve to globals
 local _g_c = _G.print
 --    ^ hover: (local) function _g_c(...: any)
 
 -- _G dot access on table globals (no undefined-field)
+---@diagnostic enable: unused-local
 local gStr = _G.string
 --    ^ diag: unused-local
 local gTbl = _G.table
@@ -382,6 +377,7 @@ local gIndCf = _g_indirect.CreateFrame
 --    ^ diag: unused-local
 local gIndType = _g_indirect.type
 --    ^ diag: unused-local
+---@diagnostic disable: unused-local
 
 -- Definition on indirect _G field resolves to the global
 local _g_e = _g_indirect.type
@@ -418,7 +414,6 @@ function _annot_def_test(f) end
 -- CreateFrame("Frame", nil, nil, "BackdropTemplate") returns Frame & BackdropTemplate
 local _bdFrame = CreateFrame("Frame", nil, nil, "BackdropTemplate")
 --    ^ hover: (local) _bdFrame: BackdropTemplate {
---    ^ diag: none
 
 -- CreateFrame("Frame", nil, parent) with 3 args should resolve generics, not show T & Tp | T
 ---@type Frame
@@ -436,9 +431,7 @@ local _craftBtn = CraftCreateButton
 
 -- ── WoW Enum types (Enum.X) accept plain number ───────────────────────────
 local _power = UnitPower("player", 0)
---                                 ^ diag: none
 local _power2 = UnitPower("player", Enum.PowerType.Mana)
---                                  ^ diag: none
 
 -- ── AceGUI:Create() type narrowing ──────────────────────────────────────────
 
@@ -454,7 +447,6 @@ aceBtn:SetDisabled(true)
 aceBtn:SetCallback("OnClick", function() end)
 --     ^ hover: (method) function AceGUIButton:SetCallback(name: string, func: function)
 aceBtn:SetDisabled(true)
---     ^ diag: none
 
 local aceDrop = AceGUI:Create("Dropdown")
 --    ^ hover: (local) aceDrop: AceGUIDropdown {
@@ -463,9 +455,7 @@ aceDrop:SetLabel("Pick one")
 aceDrop:SetList({})
 --      ^ hover: (method) function AceGUIDropdown:SetList(list: table<any, string>, order?: any[])
 aceDrop:SetValue("foo")
---      ^ diag: none
 aceDrop:SetMultiselect(false)
---      ^ diag: none
 
 local aceFrame = AceGUI:Create("Frame")
 --    ^ hover: (local) aceFrame: AceGUIFrame {
@@ -476,7 +466,6 @@ aceFrame:SetStatusText("Ready")
 aceFrame:AddChild(aceBtn)
 --       ^ hover: (method) function AceGUIFrame:AddChild(widget: AceGUIWidget, beforeWidget?: AceGUIWidget)
 aceFrame:SetLayout("Flow")
---       ^ diag: none
 
 local aceSlider = AceGUI:Create("Slider")
 --    ^ hover: (local) aceSlider: AceGUISlider {
@@ -488,18 +477,13 @@ local aceTree = AceGUI:Create("TreeGroup")
 aceTree:SetTree({})
 --      ^ hover: (method) function AceGUITreeGroup:SetTree(tree: table, filter?: boolean)
 aceTree:SetStatusTable({})
---      ^ diag: none
 
 -- debugstack: all params optional
 local _ds1 = debugstack()
 --            ^ hover: (global) function debugstack(\ncoroutine: thread,\nstart?: number,\ncount1?: number,\ncount2?: number\n)\n-> string\nfunction debugstack(start?: number, count1?: number, count2?: number)\n-> string  def: external
---            ^ diag: none
 local _ds2 = debugstack(2)
---            ^ diag: none
 local _ds3 = debugstack(2, 10)
---            ^ diag: none
 local _ds4 = debugstack(2, 10, 5)
---            ^ diag: none
 
 -- ── ipairs over class array fields ──────────────────────────────────────
 
@@ -557,11 +541,9 @@ do
     end
     evtFrame:SetScript('OnEvent', evtFrame.OnEvent)
     --                                     ^ hover: (field) function Frame.OnEvent(self: Frame, e, ...)
-    --                                     ^ diag: none
 
     -- Dot-method assignment on CreateFrame result
     evtFrame.OnClick = function(self) end
-    --       ^ diag: none
     local _ref = evtFrame.OnClick
     --                    ^ hover: (field) function Frame.OnClick(self)
 end
@@ -681,7 +663,6 @@ end
 do
     local uf = CreateFrame('Frame')
     uf:SetScript("OnEvent", function(_, _, unit)
---                           ^ diag: none
         local u = unit
     end)
 end
@@ -709,7 +690,6 @@ end
 do
     local tt = CreateFrame("GameTooltip", nil, UIParent, "GameTooltipTemplate")
     tt:SetOwner(_G.WorldFrame, "ANCHOR_NONE")
-    -- ^ diag: none
 end
 
 -- ── Regression: class-eq narrowing with external symbol must not crash ────
@@ -803,18 +783,14 @@ do
     -- on the vararg arguments (regression: projected_f_idx was checking
     -- against F's parameters instead of being skipped for returns<F>)
     local _selRet1 = select(2, GetSpellInfo(1))
-    --    ^ diag: none
     local _selRet2 = select(3, GetSpellInfo(1))
-    --    ^ diag: none
 
     -- strsplit returns vararg strings; select(N, strsplit(...)) should be string, not nil
     local piece1 = select(1, strsplit(":", "a:b:c"))
     --    ^ hover: (local) piece1: string
     local piece3 = select(3, strsplit(":", "a:b:c"))
     --    ^ hover: (local) piece3: string
-    --    ^ diag: none
     local _mid = strsplit(",", piece3)
-    --    ^ diag: none
 
     -- Table constructor from strsplit + bracket mutation: hover should show the
     -- initial constructor type (string[]), not the post-mutation type (number[]).
@@ -890,7 +866,6 @@ end
 local function _mergeData(tbl)
     local loadedData = _loadData()
     local existing = tbl[next(loadedData.fieldLookup)]
-    --                       ^ diag: none
     local _ = existing
 end
 local _ = _mergeData
@@ -930,7 +905,6 @@ function OverlayPanel:Init()
     self.display.wrapped = CreateFrame("Frame", nil, self.display)
     self.display.wrapped:SetSize(10, 10)
     --                       ^ hover: (method) function Frame:SetSize(x: uiUnit, y: uiUnit)
-    --                       ^ diag: none
 end
 
 -- ── String method calls on variables ─────────────────────────────────────────
@@ -1008,18 +982,15 @@ local isOn = myAddon:IsEnabled()
 
 -- FramePool and ObjectPool are defined types — no undefined-doc-name
 ---@type FramePool<Frame>
---       ^ diag: none
 local _testFramePool = nil
 
 ---@type ObjectPool<Button>
---       ^ diag: none
 local _testObjPool = nil
 
 -- ObjectPoolBaseMixin methods are accessible on pool objects (regression:
 -- semicolon inline @class pattern `local Foo = {};---@class Foo` was
 -- silently dropping methods — ensure the mixin class still has its methods)
 ---@type ObjectPoolBaseMixin
---       ^ diag: none
 local _mixin = nil
 
 -- CreateObjectPool returns a typed ObjectPool<T> where T comes from the creator
@@ -1072,7 +1043,6 @@ local function useFrame(f) end
 local commaRetFrame2 = getFrameAndName()
 if commaRetFrame2 then
     useFrame(commaRetFrame2)
-    -- ^ diag: none
 end
 
 -- ── loadstring tuple-union return ───────────────────────────────────────────

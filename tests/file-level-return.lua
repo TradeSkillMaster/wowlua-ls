@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Regression: file-level return { ... } should lower expressions
 -- so that function parameters, table constructors, and nested
 -- scopes are all properly registered in the IR.

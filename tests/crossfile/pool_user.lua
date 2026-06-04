@@ -11,7 +11,7 @@ local private = {
 function private.FreeCat(task)
     ns.RemoveTask(task)
     private.catPool:Recycle(task)
-    --                      ^ diag: none
+    --                      ^ hover: (param) task: XCat
 end
 
 -- Field assignment variant
@@ -21,7 +21,7 @@ private2.catPool = ns.XPool.New(ns.XCat)
 function private2.FreeCat(task)
     ns.RemoveTask(task)
     private2.catPool:Recycle(task)
-    --                       ^ diag: none
+    --                       ^ hover: (param) task: XCat
 end
 
 _G.usePoolUser = { private, private2 }

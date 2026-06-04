@@ -49,7 +49,7 @@ end
 -- bare self-field scan captures _label so inject-field does not fire
 function MyComp:Init(label)
     self._label = label
---  ^ hover: (param) self: MyComp  diag: none
+--  ^ hover: (param) self: MyComp
 end
 
 ---@return UnrelatedInfo
@@ -67,6 +67,7 @@ MyComp._SCHEMA = CreateSchema("MY_COMP")
 -- class "localHelper" that polluted the field type with a union.
 local localHelper = MyComp.MakeInfo()
 localHelper.flag = true
+-- ^ diag: inject-field
 MyComp._helper = localHelper
 --     ^ hover: (field) _helper: UnrelatedInfo {
 

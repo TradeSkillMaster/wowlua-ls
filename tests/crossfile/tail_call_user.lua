@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Cross-file tail-call return type test: usage
 -- Verifies that cross-file callers of a tail-call wrapper function
 -- see the concrete return types resolved from the same-file callee.
@@ -10,4 +11,3 @@ local _ = a
 --        ^ hover: (local) a: string  def: local
 local _ = b
 --        ^ hover: (local) b: number  def: local
---        ^ diag: none

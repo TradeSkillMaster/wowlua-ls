@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-function, unused-local
 -- Tests for @type-narrows custom type guard narrowing
 
 ---@class Animal
@@ -177,7 +177,7 @@ local function reassign_in_narrow(val)
     if type(val) == "number" then
         val = numToStr(val)
         return val
-        --     ^ hover: (param) val: string  diag: none
+        --     ^ hover: (param) val: string
     end
     return val
     --     ^ hover: (param) val: string

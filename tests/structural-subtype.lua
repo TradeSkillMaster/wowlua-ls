@@ -41,11 +41,9 @@ end
 
 -- Should NOT warn: table literal has all required fields with matching types
 useLine({ label = "hello", content = "world" })
---       ^ diag: none
 
 -- Should NOT warn: table literal has matching fields
 usePoint({ x = 1, y = 2 })
---        ^ diag: none
 
 -- Should HINT: extra field not in class definition
 useLine({ label = "hello", content = "world", extra = true })
@@ -53,11 +51,9 @@ useLine({ label = "hello", content = "world", extra = true })
 
 -- Should NOT warn: optional field omitted
 useOptional({ name = "test" })
---           ^ diag: none
 
 -- Should NOT warn: optional field provided
 useOptional({ name = "test", tag = "v1" })
---           ^ diag: none
 
 -- Should WARN: missing required field 'content'
 useLine({ label = "hello" })
@@ -81,7 +77,6 @@ useChild({ sides = 4 })
 
 -- Should NOT warn: inherited field satisfied, no excess
 useChild({ sides = 4, color = "red" })
---        ^ diag: none
 
 -- Should HINT: excess field on child class
 useChild({ sides = 4, color = "red", weight = 10 })
@@ -96,14 +91,12 @@ useLine(assigned)
 -- No excess in @type assignment
 ---@type ContentLine
 local clean = { label = "hello", content = "world" }
---            ^ diag: none
 useLine(clean)
 
 -- Regression: tinsert with typed array of @class
 ---@type ContentLine[]
 local lines = {}
 tinsert(lines, { label = "hello", content = "world" })
--- ^ diag: none
 
 -- Nil-valued fields in constructors are placeholders, not type errors
 ---@class InitContext
@@ -113,7 +106,6 @@ tinsert(lines, { label = "hello", content = "world" })
 
 ---@type InitContext
 local ctx = { path = "test", ready = nil, callback = nil }
---          ^ diag: none
 _consume(ctx)
 
 -- But non-nil mismatched types should still be caught
@@ -135,7 +127,6 @@ end
 ---@type table<string,number>|MixedEntry[]
 local mixed = {}
 useArray(mixed)
--- ^ diag: none
 
 -- Standalone table<K,V> without an array member in the union should still warn
 ---@type table<string,number>
@@ -170,7 +161,6 @@ useArray(wrongArray)
 ---@type table<string,boolean>|MixedEntry[]
 local unrelatedHash = {}
 useArray(unrelatedHash)
--- ^ diag: none
 
 -- Hash-map exemption only applies when expected is array-shaped, not any type
 ---@param s string
@@ -188,7 +178,6 @@ useString(mixedStr)
 ---@type table<"x"|"y", number>
 local dictPoint = {}
 usePoint(dictPoint)
--- ^ diag: none
 
 -- Should work with a single literal key matching a single-field class
 ---@class SingleField
@@ -199,7 +188,6 @@ local function useSingle(sf) return sf.x end
 ---@type table<"x", number>
 local single = {}
 useSingle(single)
--- ^ diag: none
 
 -- Should fail: key set missing required field 'y'
 ---@type table<"x", number>
@@ -225,13 +213,11 @@ local function useRGBA(color) return color.r end
 ---@type table<"r"|"g"|"b", number>
 local noAlpha = {}
 useRGBA(noAlpha)
--- ^ diag: none
 
 -- Should work: all four keys present
 ---@type table<"r"|"g"|"b"|"a", number>
 local fullRGBA = {}
 useRGBA(fullRGBA)
--- ^ diag: none
 
 -- Non-literal key type should NOT match (no guarantee of named fields)
 ---@type table<string, number>
@@ -257,7 +243,6 @@ useColorChild(missingInherited)
 ---@type table<"r"|"g"|"b", number>
 local fullInherited = {}
 useColorChild(fullInherited)
--- ^ diag: none
 
 -- Should match vacuously: class with no fields at all
 ---@class EmptyClass
@@ -267,4 +252,3 @@ local function useEmpty(e) end
 ---@type table<"x", number>
 local anyDict = {}
 useEmpty(anyDict)
--- ^ diag: none

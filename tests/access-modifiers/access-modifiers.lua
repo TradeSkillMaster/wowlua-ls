@@ -7,9 +7,7 @@ local obj = {} ---@type TestObj
 local function _consume(...) end
 function obj:method()
     _consume(self.secret)
-    --            ^ diag: none
     _consume(self.internal)
-    --            ^ diag: none
 end
 
 -- Hover from outside should not show private/protected fields
@@ -41,10 +39,8 @@ _consume(obj:protectedMethod())
 -- LuaLS "invisible" alias suppresses access diagnostics
 ---@diagnostic disable-next-line: invisible
 _consume(obj.secret)
---           ^ diag: none
 ---@diagnostic disable-next-line: invisible
 _consume(obj.internal)
---           ^ diag: none
 
 -- Colon-less syntax warns about missing ':' and does NOT suppress
 _consume(obj.secret) ---@diagnostic disable-line invisible
@@ -54,9 +50,7 @@ _consume(obj.secret) ---@diagnostic disable-line invisible
 -- Calling from inside a method of the same class
 function obj:otherMethod()
     _consume(self:privateMethod())
-    --            ^ diag: none
     _consume(self:protectedMethod())
-    --            ^ diag: none
 end
 
 -- ── Explicit @field without visibility keyword → public ──────────────────
@@ -69,15 +63,12 @@ local eft = {} ---@type ExplicitFieldTest
 
 -- @field _hidden (no visibility keyword) → public: author could have written @field protected
 _consume(eft._hidden)
---            ^ diag: none
 
 -- @field __dunder (no visibility keyword) → public
 _consume(eft.__dunder)
---            ^ diag: none
 
 -- @field visible → public
 _consume(eft.visible)
---            ^ diag: none
 
 -- ── Explicit visibility keywords still respected ─────────────────────────
 
@@ -88,7 +79,6 @@ _consume(eft.visible)
 local evt = {} ---@type ExplicitVisTest
 
 _consume(evt._exposed)
---            ^ diag: none
 
 _consume(evt._guarded)
 --            ^ diag: access-protected
@@ -99,9 +89,7 @@ _consume(evt._secret)
 -- Same-class access to explicit protected/private works
 function evt:myMethod()
     _consume(self._guarded)
-    --            ^ diag: none
     _consume(self._secret)
-    --            ^ diag: none
 end
 
 -- Subclass access to explicit protected works
@@ -110,7 +98,6 @@ local evc = {} ---@type ExplicitVisChild
 
 function evc:childMethod()
     _consume(self._guarded)
-    --            ^ diag: none
 end
 
 -- ── Implicit protected does NOT apply to methods ────────────────────────
@@ -124,7 +111,6 @@ end
 
 -- _-prefixed methods stay public (only fields get implicit protected)
 _consume(imt:_helperMethod())
---            ^ diag: none
 
 -- ── Runtime self._field assignment gets implicit protected ──────────────
 
@@ -134,7 +120,6 @@ local rft = {} ---@type RuntimeFieldTest
 
 function rft:Init()
     self._data = 42
-    --   ^ diag: none
 end
 
 -- self._data inside a method → implicit protected (class defining its own field)
@@ -151,7 +136,6 @@ local sat = {} ---@type StaticAccessTest
 function sat.GetSecret(instance)
     ---@cast instance StaticAccessTest
     return instance._secret
-    --              ^ diag: none
 end
 
 -- ── Plain tables (no @class) should NOT get implicit protected ──────────
@@ -163,11 +147,8 @@ plain.visible = true
 
 -- _-prefixed fields on plain tables stay public (no false positive)
 _consume(plain._version)
---             ^ diag: none
 _consume(plain._hash)
---             ^ diag: none
 _consume(plain.visible)
---             ^ diag: none
 
 -- ── Ad-hoc injected fields on @class should NOT get implicit protected ──
 
@@ -177,9 +158,8 @@ local ahit = {} ---@type AdHocInjectTest
 
 -- Declared @field without visibility keyword: public (author could have written @field protected)
 _consume(ahit._declared)
---            ^ diag: none
 
--- Ad-hoc field injection from outside: should NOT warn
+-- Ad-hoc field injection from outside: should NOT warn (access-private/protected)
 ahit._adhocField = "hello"
+-- ^ diag: inject-field
 _consume(ahit._adhocField)
---            ^ diag: none

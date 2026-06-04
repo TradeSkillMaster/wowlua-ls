@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Regression test: from_scan flag ensures workspace-scanned field assignments
 -- (strings, numbers) are filtered by prescan.rs when the local class has
 -- @field annotations, preserving inject-field diagnostics for undeclared fields.
@@ -13,9 +14,7 @@ local obj = {}
 
 -- Declared fields — no diagnostic
 obj.declared_name = "test"
--- ^ diag: none
 obj.declared_count = 1
--- ^ diag: none
 
 -- Scanned fields from defs file — still inject-field because @field contract
 -- means only declared fields are valid.

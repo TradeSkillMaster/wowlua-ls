@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-function, unused-local
 -- Tests for LSP semantic-token classification (the `tok:` assertion).
 --
 -- The feature is intentionally narrow: it only emits a `function` token for

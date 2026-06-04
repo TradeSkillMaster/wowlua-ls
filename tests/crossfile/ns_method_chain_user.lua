@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, unused-local
 -- Cross-file test: exercises method chains on @class-typed addon namespace fields.
 -- Regression test: methods defined on ns.Foo must be available on class Foo when
 -- resolved via generic return types (e.g. From("Foo"):Include("Bar")).
@@ -18,4 +18,3 @@ local Svc2 = NsMcComponent:From("NsMcComponent"):Include("NsMcService")
 
 -- Method on the resolved service should work
 Svc:GetCount()
---  ^ diag: none

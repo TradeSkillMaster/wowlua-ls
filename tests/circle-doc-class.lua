@@ -32,5 +32,4 @@
 ---@field base_val number
 
 ---@class Child : Base
--- ^ diag: none
 ---@field child_val string

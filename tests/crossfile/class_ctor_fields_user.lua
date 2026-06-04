@@ -4,57 +4,57 @@ local StatusType = ns.StatusType
 local ItemKind = ns.ItemKind
 
 local _a = StatusType.Active
---                    ^ hover: (field) Active: string  diag: none
+--                    ^ hover: (field) Active: string
 local _b = StatusType.Pending
---                    ^ hover: (field) Pending: number  diag: none
+--                    ^ hover: (field) Pending: number
 local _c = StatusType.Enabled
---                    ^ hover: (field) Enabled: boolean  diag: none
+--                    ^ hover: (field) Enabled: boolean
 -- Constructor fields should not produce undefined-field
 local _d = StatusType.Inactive
---                    ^ hover: (field) Inactive: string  diag: none
+--                    ^ hover: (field) Inactive: string
 
 -- @field annotations should still work alongside constructor fields
 local _e = ItemKind.Weapon
---                  ^ hover: (field) Weapon: string  diag: none
+--                  ^ hover: (field) Weapon: string
 local _f = ItemKind.Special
---                  ^ hover: (field) function ItemKind.Special()  diag: none
+--                  ^ hover: (field) function ItemKind.Special()
 
 -- Global assignment class constructor fields should also work
 ---@type GlobalClassCtor
 local _gobj = {} ---@type GlobalClassCtor
 local _g = _gobj.Foo
---               ^ hover: (field) Foo: string  diag: none
+--               ^ hover: (field) Foo: string
 local _h = _gobj.Bar
---               ^ hover: (field) Bar: number  diag: none
+--               ^ hover: (field) Bar: number
 
 -- Function-call constructor fields should not produce undefined-field cross-file
 local CallCtorFields = ns.CallCtorFields
 local _call1 = CallCtorFields.FromCall
---                            ^ hover: (field) FromCall: any  diag: none
+--                            ^ hover: (field) FromCall: any
 local _call2 = CallCtorFields.FromMethod
---                            ^ hover: (field) FromMethod: any  diag: none
+--                            ^ hover: (field) FromMethod: any
 local _call3 = CallCtorFields.Literal
---                            ^ hover: (field) Literal: string  diag: none
+--                            ^ hover: (field) Literal: string
 
 -- Expression-based constructor fields should resolve cross-file
 local ExprFields = ns.ExprFields
 local _cmp = ExprFields.CompareResult
---                      ^ hover: (field) CompareResult: boolean  diag: none
+--                      ^ hover: (field) CompareResult: boolean
 local _and = ExprFields.LogicalAnd
---                      ^ hover: (field) LogicalAnd: boolean  diag: none
+--                      ^ hover: (field) LogicalAnd: boolean
 local _chain = ExprFields.ChainedExpr
---                        ^ hover: (field) ChainedExpr: boolean  diag: none
+--                        ^ hover: (field) ChainedExpr: boolean
 local _neg = ExprFields.Negated
---                      ^ hover: (field) Negated: boolean  diag: none
+--                      ^ hover: (field) Negated: boolean
 local _cat = ExprFields.Concat
---                      ^ hover: (field) Concat: string  diag: none
+--                      ^ hover: (field) Concat: string
 local _arith = ExprFields.Arithmetic
---                        ^ hover: (field) Arithmetic: number  diag: none
+--                        ^ hover: (field) Arithmetic: number
 local _len = ExprFields.HashLen
---                      ^ hover: (field) HashLen: number  diag: none
+--                      ^ hover: (field) HashLen: number
 local _or = ExprFields.OrFallback
---                     ^ hover: (field) OrFallback: string  diag: none
+--                     ^ hover: (field) OrFallback: string
 local _negexpr = ExprFields.NegExpr
---                          ^ hover: (field) NegExpr: number  diag: none
+--                          ^ hover: (field) NegExpr: number
 local _lit = ExprFields.Literal
---                      ^ hover: (field) Literal: string  diag: none
+--                      ^ hover: (field) Literal: string

@@ -1,3 +1,4 @@
+---@diagnostic disable: unused-local
 -- Tests for XML frame/template scanning
 
 -- Virtual template creates a class with the right parents and fields
@@ -33,13 +34,13 @@ local fade = btn.FadeAnim
 
 -- Non-virtual frame creates a global (no undefined-global)
 local _pf = PlayerInfoFrame
---     ^ hover: (local) _pf: PlayerInfoFrame {  diag: none
+--     ^ hover: (local) _pf: PlayerInfoFrame {
 
 -- $parent-resolved globals exist
 local _pic = PlayerInfoFrameContainer
---     ^ hover: (local) _pic: PlayerInfoFrameContainer {  diag: none
+--     ^ hover: (local) _pic: PlayerInfoFrameContainer {
 local _pii = PlayerInfoFrameIcon
---     ^ hover: (local) _pii: PlayerInfoFrameIcon {  diag: none
+--     ^ hover: (local) _pii: PlayerInfoFrameIcon {
 
 -- Intrinsic element creates proper class
 ---@type CustomButton
@@ -48,7 +49,7 @@ local cb
 
 -- Intrinsic usage creates proper global
 local _sb = SpecialButton
---     ^ hover: (local) _sb: SpecialButton {  diag: none
+--     ^ hover: (local) _sb: SpecialButton {
 
 -- Top-level texture template creates a class
 ---@type WoodTileTemplate
@@ -92,9 +93,9 @@ local SearchMixin = {}
 
 function SearchMixin:OnLoad()
     self.InputBox:SetText("")
-    --   ^ hover: (field) InputBox: EditBox  diag: none
+    --   ^ hover: (field) InputBox: EditBox
     self.SearchButton:Enable()
-    --   ^ hover: (field) SearchButton: Button  diag: none
+    --   ^ hover: (field) SearchButton: Button
 end
 
 -- Nested parentKey propagation: unnamed child frames with parentKey should
@@ -107,10 +108,10 @@ local DialogFrameMixin = {}
 function DialogFrameMixin:Init()
     -- Sidebar comes from XML parentKey, ActionBtn is a nested parentKey inside it
     self.Sidebar.ActionBtn:Enable()
-    --           ^ hover: (field) ActionBtn: Button  diag: none
+    --           ^ hover: (field) ActionBtn: Button
     -- Template fields are still accessible through the base type
     self.Sidebar.Title:SetText("test")
-    --           ^ hover: (field) Title: FontString  diag: none
+    --           ^ hover: (field) Title: FontString
 end
 
 -- User @class overrides XML-generated field types: the XML scanner infers
@@ -130,7 +131,7 @@ function MyPanelMixin:DoSomething()
     local hdr = self.Header
     --    ^ hover: (local) hdr: MyPanelHeader
     self.Header.CloseBtn:Enable()
-    --          ^ hover: (field) CloseBtn: Button  diag: none
+    --          ^ hover: (field) CloseBtn: Button
 end
 
 -- Hyphenated names should not create globals (invalid Lua identifier)

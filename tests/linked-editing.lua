@@ -1,4 +1,4 @@
----@diagnostic disable: create-global
+---@diagnostic disable: create-global, shadowed-local, unused-local
 -- wowlua_ls linked editing ranges test
 
 -- Basic local variable: all references returned
