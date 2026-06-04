@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::types::*;
 use super::{AnalysisResult, Ir};
 use crate::syntax::SyntaxKind;
-use crate::syntax::tree::SyntaxTree;
+use crate::syntax::tree::{SyntaxTree, TokenId};
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, TokenAtOffset};
 use crate::ast::{AstNode, Expression, ForInLoop, FunctionCall, FunctionDefinition, Identifier, LocalAssign, Operator};
 
@@ -8185,13 +8185,16 @@ impl AnalysisResult {
     }
 
     fn def_name_token_offset(&self, tree: &SyntaxTree, def_start: u32, def_end: u32, name: &str) -> Option<u32> {
-        let root = SyntaxNode::new_root(tree);
-        for token in root.descendants_with_tokens().filter_map(|it| it.into_token()) {
-            let start = u32::from(token.text_range().start());
-            if start > def_end { break; }
-            if start < def_start { continue; }
-            if token.kind() == SyntaxKind::Name && token.text() == name {
-                return Some(start);
+        // Binary-search into the flat token array (sorted by byte offset)
+        // instead of walking the entire tree from the root. O(log N + k)
+        // where k is the number of tokens in the def_start..def_end range.
+        let tokens = &tree.tokens;
+        debug_assert!(tokens.len() <= u32::MAX as usize, "token count exceeds u32 — TokenId would overflow");
+        let start_idx = tokens.partition_point(|t| t.start < def_start);
+        for (i, t) in tokens[start_idx..].iter().enumerate() {
+            if t.start > def_end { break; }
+            if t.kind == SyntaxKind::Name && tree.token_text(TokenId((start_idx + i) as u32)) == name {
+                return Some(t.start);
             }
         }
         None

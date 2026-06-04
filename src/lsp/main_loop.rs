@@ -133,6 +133,10 @@ struct Document {
     /// didOpen pushes, and the pull handler; used by didChange line-shifting
     /// for push-only clients.
     cached_diagnostics: Option<Vec<lsp_types::Diagnostic>>,
+    /// Sequence number stamped on each stub/meta didOpen so background analysis
+    /// results can be matched to the correct open generation. Zero for non-stub
+    /// documents.
+    stub_open_seq: u64,
 }
 
 /// Cached workspace diagnostics: (generation, vec of (uri_string, diagnostics)).
@@ -598,6 +602,28 @@ struct WarmInputs {
 struct WarmResult {
     generation: u64,
     diagnostics: Vec<(String, Vec<lsp_types::Diagnostic>)>,
+}
+
+/// Output of a background stub-file parse + analysis, used to patch a
+/// previously-empty document entry once the work completes off-thread.
+struct StubAnalysisResult {
+    uri_key: String,
+    /// Sequence number from the didOpen that spawned this work. Must match the
+    /// document's `stub_open_seq` for the result to be installed — a mismatch
+    /// means the file was closed and reopened (or replaced) in the interim and
+    /// this result is stale.
+    open_seq: u64,
+    tree: SyntaxTree,
+    analysis: AnalysisResult,
+}
+
+/// Channels for spawning background stub-file analysis from notification handlers.
+struct BackgroundChannels {
+    stub_tx: crossbeam_channel::Sender<StubAnalysisResult>,
+    wake_tx: crossbeam_channel::Sender<()>,
+    /// Monotonic counter for stamping each stub didOpen so stale results from
+    /// a close+reopen cycle can be rejected by the drain loop.
+    stub_open_counter: std::sync::atomic::AtomicU64,
 }
 
 /// Soundness predicate for incremental warm reuse: a file may keep its prior
@@ -1962,6 +1988,10 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // Overlap stubs loading with workspace scan Pass 1 (parse + scan).
     // Pass 1 doesn't need stubs; only Pass 2 (defclass/built-name) does.
     let stubs_handle = std::thread::spawn(load_stubs);
+    // Pre-warm the stub file contents blob (used by go-to-definition on external
+    // symbols). Without this, the first go-to-definition pays a multi-second
+    // decompression penalty. The OnceLock inside handles synchronization.
+    std::thread::spawn(|| { stub_file_contents(); });
 
     // Workspace scan Pass 1: file discovery + parse + annotation scan (no stubs dependency)
     let mut configs = crate::config::ProjectConfigs::default();
@@ -2162,6 +2192,19 @@ fn main_loop(
     // `ws.warm_in_flight` so request handlers can consult it.
     let mut pending_rewarm: Option<RebuildScope> = None;
 
+    // Background stub-file analysis channel. Stub files are parsed + analyzed
+    // off the main thread so large generated files (e.g. ClassicGlobals.lua,
+    // 2.4 MB) don't block the LSP loop. Results are drained at the top of
+    // each loop iteration and patched into the document map. The sequence
+    // counter stamps each didOpen so stale results from a close+reopen cycle
+    // are rejected.
+    let (stub_tx, stub_rx) = crossbeam_channel::unbounded::<StubAnalysisResult>();
+    let bg = BackgroundChannels {
+        stub_tx,
+        wake_tx: wake_tx.clone(),
+        stub_open_counter: std::sync::atomic::AtomicU64::new(0),
+    };
+
     // Kick off the initial workspace-diagnostic warm on a background thread so
     // the loop can serve requests immediately. This replaces the old
     // synchronous startup warm (which blocked all requests until it finished).
@@ -2221,6 +2264,20 @@ fn main_loop(
                     // but defensively put the scope back.
                     pending_rewarm = Some(scope);
                 }
+            }
+        }
+
+        // Drain completed background stub analyses and patch into documents.
+        while let Ok(res) = stub_rx.try_recv() {
+            // Only install if the document is still open and the sequence
+            // number matches the didOpen that spawned this work. A mismatch
+            // means the file was closed and reopened in the interim.
+            if let Some(doc) = documents.get_mut(&res.uri_key)
+                && doc.stub_open_seq == res.open_seq
+                && doc.analysis.is_none()
+            {
+                doc.tree = Some(res.tree);
+                doc.analysis = Some(res.analysis);
             }
         }
 
@@ -2300,7 +2357,7 @@ fn main_loop(
         // the next recv_timeout is measured from the most recent user edit.
         let has_did_change = notifications.iter().any(|n| n.method == "textDocument/didChange");
         for not in notifications {
-            handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter);
+            handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter, &bg);
         }
         if has_did_change {
             last_dirty_at = Some(Instant::now());
@@ -2366,7 +2423,7 @@ fn main_loop(
                             let result = Some(analyze_lua_parsed(
                                 &uri, &ws.pre_globals, &ws.configs, &tree,
                             ));
-                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         }
                     }
                 }
@@ -2448,7 +2505,7 @@ fn main_loop(
                     let (drained, shutdown) = drain_pending_requests(&connection, &mut documents, &mut ws, client.snippets);
                     if shutdown { return Ok(()); }
                     for not in drained {
-                        handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter);
+                        handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter, &bg);
                     }
                     // A notification may have triggered a workspace rebuild,
                     // bumping ws_generation and rebuilding pre_globals. Already-
@@ -2489,7 +2546,7 @@ fn main_loop(
                     if shutdown { return Ok(()); }
                     if !drained.is_empty() {
                         for not in drained {
-                            handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter);
+                            handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter, &bg);
                         }
                         if documents.get(uri_str).is_some_and(|d| d.dirty) {
                         } else {
@@ -2508,7 +2565,7 @@ fn main_loop(
                     if doc.toc.is_some() {
                         let text = doc.pending_text.unwrap_or(doc.text);
                         let toc = crate::toc::parse_toc(&text);
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         continue;
                     }
                     {
@@ -2528,7 +2585,7 @@ fn main_loop(
                         let text = doc.pending_text.unwrap_or(doc.text);
 
                         if is_ignored_uri(&uri, &ws.configs) {
-                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                             continue;
                         }
 
@@ -2567,7 +2624,7 @@ fn main_loop(
 
                         let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                         let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         if rebuilt {
                             had_workspace_rebuild = true;
                             warm_scope = warm_scope.merge(rebuild_scope);
@@ -2920,6 +2977,21 @@ fn handle_request(
                         })
                     });
                     send_response(connection, id, &result);
+                    return;
+                }
+                // Show "Loading…" while background stub analysis is in progress
+                if is_stub_path(&uri)
+                    && let Some(doc) = documents.get(&uri.to_string())
+                    && doc.analysis.is_none()
+                {
+                    let loading = Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: "*Loading…*".to_string(),
+                        }),
+                        range: None,
+                    });
+                    send_response(connection, id, &loading);
                     return;
                 }
                 let result = with_doc_at_position(documents, &uri, position, |_doc, tree, analysis, offset| {
@@ -3422,6 +3494,11 @@ fn handle_request(
         "textDocument/codeLens" => {
             if let Ok((id, params)) = cast_req::<request::CodeLensRequest>(req) {
                 let uri = params.text_document.uri;
+                // Skip code lens for stub files — no value in showing usages/overrides there.
+                if is_stub_path(&uri) {
+                    send_response(connection, id, &Option::<Vec<CodeLens>>::None);
+                    return;
+                }
                 let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                 let cl_config = ws.configs.code_lens_config_for(&file_path);
 
@@ -4856,6 +4933,7 @@ fn make_disable_file_action(
 }
 
 /// Handle an LSP notification (didChange, didOpen, didSave, didClose).
+#[allow(clippy::too_many_arguments)] // internal dispatch function; bundling further adds indirection
 fn handle_notification(
     connection: &Connection,
     documents: &mut HashMap<String, Document>,
@@ -4864,6 +4942,7 @@ fn handle_notification(
     analysis_token: &Option<NumberOrString>,
     client: &ClientSupport,
     progress_counter: &mut i32,
+    bg: &BackgroundChannels,
 ) {
     match &*not.method {
         "textDocument/didChange" => {
@@ -5000,20 +5079,34 @@ fn handle_notification(
                 if params.text_document.language_id == "lua" {
                     if crate::has_shebang(&text) {
                         // Store with analysis: None so didChange ignores subsequent edits.
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         return;
                     }
-                    // Stub files: run analysis (so hover/go-to-definition work)
-                    // but skip workspace rebuild to avoid multi-second delays.
-                    // Defense-in-depth: also check for ---@meta in text.
+                    // Stub / @meta files: store text immediately (so the editor
+                    // can display the file) and parse + analyze on a background
+                    // thread so large generated files (e.g. ClassicGlobals.lua,
+                    // 2.4 MB) don't block the main loop. When the background
+                    // analysis completes, the result is drained at the top of
+                    // the loop and patched into the document.
                     if is_stub_path(&uri) || text_has_meta(&text) {
-                        let tree = parse_lua(&text);
-                        let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+                        let uri_key = uri.to_string();
+                        let seq = bg.stub_open_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        documents.insert(uri_key.clone(), Document { text: text.clone(), pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: seq });
+                        let pre_globals = Arc::clone(&ws.pre_globals);
+                        let configs = Arc::clone(&ws.configs);
+                        let uri_clone = uri.clone();
+                        let tx = bg.stub_tx.clone();
+                        let wtx = bg.wake_tx.clone();
+                        std::thread::spawn(move || {
+                            let tree = parse_lua(&text);
+                            let analysis = analyze_lua_parsed(&uri_clone, &pre_globals, &configs, &tree);
+                            let _ = tx.send(StubAnalysisResult { uri_key, open_seq: seq, tree, analysis });
+                            let _ = wtx.send(());
+                        });
                         return;
                     }
                     if is_ignored_uri(&uri, &ws.configs) {
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         return;
                     }
                     // Show progress while analyzing the newly opened file
@@ -5050,7 +5143,7 @@ fn handle_notification(
                     result.plugin_diag_codes = ws.plugin_codes();
                     let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                     let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                     if rebuilt {
                         if let Some(ref token) = open_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -5095,10 +5188,10 @@ fn handle_notification(
                 }
                 if params.text_document.language_id == "toc" {
                     let toc = crate::toc::parse_toc(&text);
-                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                     return;
                 }
-                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
             }
         }
         "textDocument/didSave" => {
@@ -5122,8 +5215,8 @@ fn handle_notification(
             if let Ok(params) = cast_not::<notification::DidCloseTextDocument>(not) {
                 let uri_str = params.text_document.uri.to_string();
                 // Stub files never participate in workspace diagnostics.
-                // Defense-in-depth: also check is_meta (analysis is always
-                // present for Lua files that passed didOpen's stub/shebang checks).
+                // Defense-in-depth: also check is_meta (analysis may be None
+                // for stubs whose background analysis hasn't completed yet).
                 let is_meta_doc = documents.get(&uri_str).is_some_and(|d|
                     d.analysis.as_ref().is_some_and(|a| a.is_meta())
                 );
@@ -6228,11 +6321,11 @@ fn reanalyze_open_documents(
         let Ok(uri) = lsp_types::Uri::from_str(&uri_str) else { continue };
         let text = doc.pending_text.as_ref().unwrap_or(&doc.text).clone();
         if is_ignored_uri(&uri, configs) {
-            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
             continue;
         }
         let (tree, result) = analyze_lua(&uri, &text, pre_globals, configs);
-        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
     }
 }
 
@@ -6441,10 +6534,10 @@ fn try_batch_analyze(
 
     for f in parsed {
         if f.ignored {
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
         } else {
             let analysis = result_map.remove(&f.uri_str);
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
         }
     }
 
@@ -6632,7 +6725,7 @@ fn handle_document_diagnostic(
 ) -> DocumentDiagnosticReportResult {
     // Stub files should never produce diagnostics in the Problems panel.
     // Defense-in-depth: also check the analysis result's is_meta flag
-    // (analysis is always available for open documents at this point).
+    // (analysis may be None for stubs whose background analysis hasn't landed).
     let uri_str = uri.to_string();
     if is_stub_path(uri)
         || documents.get(&uri_str)
