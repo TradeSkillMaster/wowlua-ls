@@ -4576,3 +4576,195 @@ fn library_dirs_external() {
     });
 }
 
+// ── Disable-directive merging (no duplicate comments) ────────────────────────
+
+/// Helper: create a fake LSP diagnostic at the given line/col range with the given code.
+fn make_lsp_diag(code: &str, start_line: u32, start_char: u32, end_line: u32, end_char: u32) -> lsp_types::Diagnostic {
+    use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range};
+    lsp_types::Diagnostic {
+        range: Range {
+            start: Position { line: start_line, character: start_char },
+            end: Position { line: end_line, character: end_char },
+        },
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String(code.to_string())),
+        source: Some("wowlua_ls".to_string()),
+        message: "test".to_string(),
+        ..Default::default()
+    }
+}
+
+/// Extract the text edit from a named code action.
+fn find_action_edit<'a>(
+    actions: &'a [lsp_types::CodeActionOrCommand],
+    title_contains: &str,
+) -> Option<&'a lsp_types::TextEdit> {
+    actions.iter().find_map(|a| {
+        if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a {
+            if ca.title.contains(title_contains) {
+                let changes = ca.edit.as_ref()?.changes.as_ref()?;
+                return changes.values().next()?.first();
+            }
+        }
+        None
+    })
+}
+
+#[test]
+fn disable_line_merges_into_existing_directive() {
+    let src = "local x = foo.bar ---@diagnostic disable-line: undefined-field\n";
+    let diag = make_lsp_diag("redundant-or", 0, 10, 0, 17);
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let edit = find_action_edit(&actions, "Disable `redundant-or` on this line")
+        .expect("should have disable-line action");
+    let result = apply_text_edit(src, edit);
+    // Should append to existing directive, not create a new one
+    assert!(
+        result.contains("---@diagnostic disable-line: undefined-field, redundant-or"),
+        "expected merged directive, got: {:?}", result,
+    );
+    assert_eq!(
+        result.matches("---@diagnostic disable-line:").count(), 1,
+        "should have exactly one disable-line directive",
+    );
+}
+
+#[test]
+fn disable_line_no_duplicate_when_code_already_present() {
+    let src = "local x = foo.bar ---@diagnostic disable-line: undefined-field\n";
+    let diag = make_lsp_diag("undefined-field", 0, 10, 0, 17);
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let edit = find_action_edit(&actions, "Disable `undefined-field` on this line")
+        .expect("should have disable-line action");
+    let result = apply_text_edit(src, edit);
+    // Code is already present — should not duplicate
+    assert_eq!(result, src, "should be unchanged when code already present");
+}
+
+#[test]
+fn disable_next_line_merges_into_existing_directive() {
+    let src = "---@diagnostic disable-next-line: undefined-field\nlocal x = foo.bar\n";
+    let diag = make_lsp_diag("redundant-or", 1, 10, 1, 17);
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let edit = find_action_edit(&actions, "Disable `redundant-or` for this line (above)")
+        .expect("should have disable-next-line action");
+    let result = apply_text_edit(src, edit);
+    assert!(
+        result.contains("---@diagnostic disable-next-line: undefined-field, redundant-or"),
+        "expected merged directive, got: {:?}", result,
+    );
+    // Should NOT have inserted a second line
+    assert_eq!(
+        result.matches("---@diagnostic disable-next-line:").count(), 1,
+        "should have exactly one disable-next-line directive",
+    );
+}
+
+#[test]
+fn disable_next_line_no_duplicate_when_code_already_present() {
+    let src = "---@diagnostic disable-next-line: undefined-field\nlocal x = foo.bar\n";
+    let diag = make_lsp_diag("undefined-field", 1, 10, 1, 17);
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let edit = find_action_edit(&actions, "Disable `undefined-field` for this line (above)")
+        .expect("should have disable-next-line action");
+    let result = apply_text_edit(src, edit);
+    assert_eq!(result, src, "should be unchanged when code already present");
+}
+
+#[test]
+fn disable_next_line_merges_indented_directive() {
+    let src = "function foo()\n    ---@diagnostic disable-next-line: undefined-field\n    local x = bar.baz\nend\n";
+    let diag = make_lsp_diag("redundant-or", 2, 14, 2, 21);
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let edit = find_action_edit(&actions, "Disable `redundant-or` for this line (above)")
+        .expect("should have disable-next-line action");
+    let result = apply_text_edit(src, edit);
+    assert!(
+        result.contains("    ---@diagnostic disable-next-line: undefined-field, redundant-or"),
+        "expected merged indented directive, got: {:?}", result,
+    );
+    assert_eq!(
+        result.matches("---@diagnostic disable-next-line:").count(), 1,
+        "should have exactly one disable-next-line directive",
+    );
+}
+
+#[test]
+fn disable_file_merges_into_existing_directive() {
+    let src = "---@diagnostic disable: unused-local\nlocal x = foo.bar\n";
+    let diag = make_lsp_diag("undefined-field", 1, 10, 1, 17);
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let edit = find_action_edit(&actions, "Disable `undefined-field` for this file")
+        .expect("should have disable-file action");
+    let result = apply_text_edit(src, edit);
+    assert!(
+        result.contains("---@diagnostic disable: unused-local, undefined-field"),
+        "expected merged directive, got: {:?}", result,
+    );
+    assert_eq!(
+        result.matches("---@diagnostic disable:").count(), 1,
+        "should have exactly one file-level disable directive (not counting disable-line/disable-next-line)",
+    );
+}
+
+#[test]
+fn disable_file_merges_directive_after_comment_header() {
+    // Directive on line 2 (after a comment block) — should still be found and merged.
+    let src = "--- My addon module\n--- License: MIT\n---@diagnostic disable: unused-local\nlocal x = foo.bar\n";
+    let diag = make_lsp_diag("undefined-field", 3, 10, 3, 17);
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let edit = find_action_edit(&actions, "Disable `undefined-field` for this file")
+        .expect("should have disable-file action");
+    let result = apply_text_edit(src, edit);
+    assert!(
+        result.contains("---@diagnostic disable: unused-local, undefined-field"),
+        "expected merged directive on line 2, got: {:?}", result,
+    );
+    // Should NOT have inserted at line 0
+    assert!(
+        result.starts_with("--- My addon module"),
+        "should preserve comment header, got: {:?}", result,
+    );
+}
+
+#[test]
+fn disable_file_skips_directive_inside_code() {
+    // A disable directive that appears AFTER code lines should not be merged into;
+    // a new file-level directive should be inserted at line 0 instead.
+    let src = "local x = 1\n---@diagnostic disable: unused-local\nlocal y = foo.bar\n";
+    let diag = make_lsp_diag("undefined-field", 2, 10, 2, 17);
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let edit = find_action_edit(&actions, "Disable `undefined-field` for this file")
+        .expect("should have disable-file action");
+    let result = apply_text_edit(src, edit);
+    // Should insert a NEW directive at line 0, not merge into the one after code
+    assert!(
+        result.starts_with("---@diagnostic disable: undefined-field\n"),
+        "expected new directive at line 0, got: {:?}", result,
+    );
+    // The original scoped directive should be untouched
+    assert!(
+        result.contains("---@diagnostic disable: unused-local\n"),
+        "original scoped directive should be preserved, got: {:?}", result,
+    );
+}
+
+#[test]
+fn disable_file_no_duplicate_when_code_already_present() {
+    let src = "---@diagnostic disable: undefined-field\nlocal x = foo.bar\n";
+    let diag = make_lsp_diag("undefined-field", 1, 10, 1, 17);
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let edit = find_action_edit(&actions, "Disable `undefined-field` for this file")
+        .expect("should have disable-file action");
+    let result = apply_text_edit(src, edit);
+    assert_eq!(result, src, "should be unchanged when code already present");
+}

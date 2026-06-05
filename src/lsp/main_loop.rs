@@ -3874,7 +3874,7 @@ pub fn compute_code_actions(
         ));
 
         actions.push(CodeActionOrCommand::CodeAction(
-            make_disable_file_action(uri, diag, code_str),
+            make_disable_file_action(uri, text, diag, code_str),
         ));
     }
 
@@ -4828,6 +4828,31 @@ fn find_assignment_in_line(line: &str, name: &str) -> Option<usize> {
 }
 
 #[allow(clippy::mutable_key_type)]
+/// If `codes_text` (the part after a `---@diagnostic disable*:` marker) already
+/// contains `code`, return a no-op edit; otherwise return an edit that appends
+/// `, code` at column `trimmed_len` on `line`.
+fn merge_diagnostic_codes_edit(
+    line: u32,
+    trimmed_len: u32,
+    codes_text: &str,
+    code: &str,
+) -> lsp_types::TextEdit {
+    let existing: Vec<&str> = codes_text.split(',').map(|s| s.trim()).collect();
+    let pos = Position { line, character: trimmed_len };
+    if existing.contains(&code) {
+        lsp_types::TextEdit {
+            range: Range { start: pos, end: pos },
+            new_text: String::new(),
+        }
+    } else {
+        lsp_types::TextEdit {
+            range: Range { start: pos, end: pos },
+            new_text: format!(", {}", code),
+        }
+    }
+}
+
+#[allow(clippy::mutable_key_type)]
 fn make_disable_line_action(
     uri: &lsp_types::Uri,
     text: &str,
@@ -4835,17 +4860,21 @@ fn make_disable_line_action(
     code: &str,
 ) -> CodeAction {
     let target_line = diag.range.start.line;
-    let line_end_char = text.split('\n')
+    let line_text = text.split('\n')
         .nth(target_line as usize)
-        .map(|l| l.len() as u32)
-        .unwrap_or(0);
+        .unwrap_or("");
+    let line_trimmed = line_text.trim_end();
 
-    let insert_text = format!(" ---@diagnostic disable-line: {}", code);
-    let insert_pos = Position { line: target_line, character: line_end_char };
-
-    let edit = lsp_types::TextEdit {
-        range: Range { start: insert_pos, end: insert_pos },
-        new_text: insert_text,
+    let marker = "---@diagnostic disable-line:";
+    let edit = if let Some(pos) = line_trimmed.find(marker) {
+        let codes_text = &line_trimmed[pos + marker.len()..];
+        merge_diagnostic_codes_edit(target_line, line_trimmed.len() as u32, codes_text, code)
+    } else {
+        let insert_pos = Position { line: target_line, character: line_text.len() as u32 };
+        lsp_types::TextEdit {
+            range: Range { start: insert_pos, end: insert_pos },
+            new_text: format!(" ---@diagnostic disable-line: {}", code),
+        }
     };
 
     let mut changes = HashMap::new();
@@ -4872,20 +4901,20 @@ fn make_disable_next_line_action(
 ) -> CodeAction {
     let target_line = diag.range.start.line;
 
-    let indent = text.split('\n')
-        .nth(target_line as usize)
-        .map(|line| {
-            let trimmed = line.trim_start();
-            &line[..line.len() - trimmed.len()]
-        })
-        .unwrap_or("");
+    let marker = "---@diagnostic disable-next-line:";
 
-    let insert_text = format!("{}---@diagnostic disable-next-line: {}\n", indent, code);
-    let insert_pos = Position { line: target_line, character: 0 };
-
-    let edit = lsp_types::TextEdit {
-        range: Range { start: insert_pos, end: insert_pos },
-        new_text: insert_text,
+    // Check if the previous line already has a disable-next-line directive
+    let edit = if target_line > 0 {
+        let prev_line = text.split('\n').nth((target_line - 1) as usize).unwrap_or("");
+        let prev_trimmed = prev_line.trim_end();
+        let prev_content = prev_trimmed.trim_start();
+        if let Some(codes_text) = prev_content.strip_prefix(marker) {
+            merge_diagnostic_codes_edit(target_line - 1, prev_trimmed.len() as u32, codes_text, code)
+        } else {
+            make_new_disable_next_line_edit(text, target_line, code)
+        }
+    } else {
+        make_new_disable_next_line_edit(text, target_line, code)
     };
 
     let mut changes = HashMap::new();
@@ -4903,18 +4932,58 @@ fn make_disable_next_line_action(
     }
 }
 
+fn make_new_disable_next_line_edit(text: &str, target_line: u32, code: &str) -> lsp_types::TextEdit {
+    let indent = text.split('\n')
+        .nth(target_line as usize)
+        .map(|line| {
+            let trimmed = line.trim_start();
+            &line[..line.len() - trimmed.len()]
+        })
+        .unwrap_or("");
+    let insert_text = format!("{}---@diagnostic disable-next-line: {}\n", indent, code);
+    let insert_pos = Position { line: target_line, character: 0 };
+    lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text: insert_text,
+    }
+}
+
 #[allow(clippy::mutable_key_type)]
 fn make_disable_file_action(
     uri: &lsp_types::Uri,
+    text: &str,
     diag: &lsp_types::Diagnostic,
     code: &str,
 ) -> CodeAction {
-    let insert_text = format!("---@diagnostic disable: {}\n", code);
-    let insert_pos = Position { line: 0, character: 0 };
+    let marker = "---@diagnostic disable:";
 
-    let edit = lsp_types::TextEdit {
-        range: Range { start: insert_pos, end: insert_pos },
-        new_text: insert_text,
+    // Search the comment-only prefix of the file for an existing file-level
+    // disable directive. Stop at the first line that is neither blank nor a
+    // `---` comment so we don't merge into a scoped directive buried inside a
+    // function body.
+    let mut found: Option<(u32, &str)> = None;
+    for (line_idx, line) in text.split('\n').enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(marker) {
+            found = Some((line_idx as u32, line));
+            break;
+        }
+        if !trimmed.is_empty() && !trimmed.starts_with("---") && !trimmed.starts_with("#!") {
+            break; // first non-comment code line — stop searching
+        }
+    }
+
+    let edit = if let Some((line_idx, line_text)) = found {
+        let line_trimmed = line_text.trim_end();
+        let content = line_trimmed.trim_start();
+        let codes_text = content.strip_prefix(marker).unwrap_or("");
+        merge_diagnostic_codes_edit(line_idx, line_trimmed.len() as u32, codes_text, code)
+    } else {
+        let insert_pos = Position { line: 0, character: 0 };
+        lsp_types::TextEdit {
+            range: Range { start: insert_pos, end: insert_pos },
+            new_text: format!("---@diagnostic disable: {}\n", code),
+        }
     };
 
     let mut changes = HashMap::new();
