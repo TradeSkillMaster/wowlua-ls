@@ -102,6 +102,71 @@ function holder.Init()
 end
 _use(holder)
 
+-- Lateinit field in an `and` chain: `x.field and true or false` — the `or`
+-- applies to the `and` result, and since the `and` LHS is a lateinit field
+-- that can be nil at runtime, the `and` result can be falsy too.
+---@class LateInitRow
+---@field _timeLeft number!
+---@type LateInitRow
+local row
+
+local function hasRawData()
+    return row._timeLeft and true or false
+end
+_use(hasRawData)
+
+-- Dynamic index in an `and` chain: `tbl[k] and v or default` — the bracket
+-- lookup may return nil at runtime for missing keys.
+---@type table<string, number>
+local scores = {}
+local function getScore(key)
+    return scores[key] and scores[key] > 0 or false
+end
+_use(getScore)
+
+-- Unannotated param in an `and` chain: `param and true or false` — the param
+-- may be nil/missing at runtime despite backward inference typing it non-nil.
+---@param n number
+local function _takesNum2(n) end
+
+local function checkParam(val)
+    _takesNum2(val)
+    return val and true or false
+end
+_use(checkParam)
+
+-- Field on unclassed table in an `and` chain: `obj.field and true or false` —
+-- the field is inferred from writes but may be nil at runtime.
+local function checkUnclassed()
+    ---@type table[]
+    local pool = {}
+    local obj = table.remove(pool) or {}
+    obj.ready = true
+    return obj.ready and 1 or 0
+end
+_use(checkUnclassed)
+
+-- Deeper and-chain: `a and b and c or d` — all operands are checked.
+---@class DeepChainObj
+---@field enabled number!
+---@field level number!
+---@type DeepChainObj
+local dco
+
+local function deepChainCheck()
+    return dco.enabled and dco.level and true or false
+end
+_use(deepChainCheck)
+
+-- And-chain where the RHS (not LHS) is the suppressible operand:
+-- `cond and tbl[k] or default`.
+---@type table<string, string>
+local labels = {}
+local function andRhsSuppressed(key)
+    return key ~= "" and labels[key] or "unknown"
+end
+_use(andRhsSuppressed)
+
 -- ── No diagnostic: dictionary/array bracket lookup ──────────────────────────
 
 -- A `table<K, V>` lookup resolves to the element type `V` (non-nil for the LS),
