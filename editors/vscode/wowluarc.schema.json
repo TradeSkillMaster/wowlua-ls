@@ -251,6 +251,7 @@
         "param-constraint-mismatch",
         "redundant-and",
         "redundant-class-generic",
+        "redundant-condition",
         "redundant-or",
         "redundant-parameter",
         "redundant-return",
