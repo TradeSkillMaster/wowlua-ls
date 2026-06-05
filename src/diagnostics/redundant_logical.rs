@@ -165,26 +165,15 @@ fn lhs_symbol_has_reassignment(analysis: &AnalysisResult, lhs: ExprId) -> bool {
     sym.versions.iter().skip(1).any(|v| v.def_node.start != v0_start)
 }
 
-/// Collects all leaf operands from a nested `and` chain inside the `or`'s LHS.
-/// For `a and b and c or d` (parsed as `((a and b) and c) or d`), this collects
-/// `[a, b, c]`. If the `or`'s LHS is not an `and` expression, returns an empty
-/// vec. Lua's `and` returns the first falsy operand or the last operand, so if
-/// ANY operand in the chain can be falsy at runtime (despite the LS typing), the
-/// whole `and` result can be falsy and the `or` is not redundant.
-fn collect_and_chain_operands(exprs: &[Expr], or_lhs: ExprId) -> Vec<ExprId> {
-    let mut result = Vec::new();
-    collect_and_chain_inner(exprs, or_lhs, &mut result);
-    result
-}
-
-fn collect_and_chain_inner(exprs: &[Expr], id: ExprId, out: &mut Vec<ExprId>) {
-    let id = unwrap_to_inner(exprs, id);
-    if let Expr::BinaryOp { op: Operator::And, lhs, rhs, .. } = &exprs[id.val()] {
-        collect_and_chain_inner(exprs, *lhs, out);
-        collect_and_chain_inner(exprs, *rhs, out);
-    } else {
-        out.push(id);
-    }
+/// Returns true when the LHS of an `or` is itself an `and` expression, i.e.
+/// `x and y or z`. This is the standard Lua ternary idiom: the developer
+/// intends `or z` as the else-branch (fallback when `x` is falsy at runtime).
+/// Even if the LS resolves `x` as always truthy — making `x and y` always
+/// evaluate to `y` — the `or z` expresses a conditional intent that should not
+/// be flagged as redundant.
+fn lhs_is_and_expression(exprs: &[Expr], lhs: ExprId) -> bool {
+    let lhs = unwrap_to_inner(exprs, lhs);
+    matches!(&exprs[lhs.val()], Expr::BinaryOp { op: Operator::And, .. })
 }
 
 /// Returns true when the LHS is a reference to a function parameter that has no
@@ -218,46 +207,35 @@ impl DiagnosticPass for RedundantLogical {
 
             if is_type_permissive(&lhs_type) { continue; }
 
-            // For `x and y or z` (or deeper chains like `a and b and c or d`),
-            // collect all leaf operands from the `and` chain. If ANY operand can
-            // be falsy at runtime (despite the LS typing it truthy), the whole
-            // `and` result can be falsy and the `or` is not redundant.
-            let and_operands = if matches!(op, Operator::Or) {
-                collect_and_chain_operands(&analysis.ir.exprs, lhs)
-            } else {
-                Vec::new()
-            };
-
-            // Helper: check whether the direct LHS or any operand in an inner
-            // `and` chain satisfies a suppression predicate.
-            let or_suppressed = |check: fn(&AnalysisResult, ExprId) -> bool| -> bool {
-                check(analysis, lhs) || and_operands.iter().any(|&id| check(analysis, id))
-            };
+            // Skip the Lua ternary idiom `x and y or z`: the `or z` is the
+            // else-branch and shouldn't be flagged even if the LS thinks
+            // `x and y` is always truthy.
+            if matches!(op, Operator::Or) && lhs_is_and_expression(&analysis.ir.exprs, lhs) { continue; }
 
             // Skip lateinit (`T!`) field accesses: they're non-nil for the LS but
             // get initialized via the `x = x or default` idiom at runtime.
-            if matches!(op, Operator::Or) && or_suppressed(lhs_is_lateinit_field) { continue; }
+            if matches!(op, Operator::Or) && lhs_is_lateinit_field(analysis, lhs) { continue; }
 
             // Skip dictionary/array bracket lookups: the element type is non-nil
             // for the LS, but a missing key / out-of-bounds index returns nil at
             // runtime, so `tbl[k] or default` is a legitimate fallback.
-            if matches!(op, Operator::Or) && or_suppressed(lhs_is_dynamic_index) { continue; }
+            if matches!(op, Operator::Or) && lhs_is_dynamic_index(analysis, lhs) { continue; }
 
             // Skip unannotated function parameters: their type comes from backward
             // inference which may not account for nil/missing arguments. The
             // `param = param or default` idiom is standard for optional params.
-            if matches!(op, Operator::Or) && or_suppressed(lhs_is_unannotated_param) { continue; }
+            if matches!(op, Operator::Or) && lhs_is_unannotated_param(analysis, lhs) { continue; }
 
             // Skip field access on bare (non-@class) tables: field existence is
             // inferred from writes, not declared via @field, so the field may be
             // nil at runtime even though the LS resolves it to a non-nil type.
-            if matches!(op, Operator::Or) && or_suppressed(lhs_is_field_on_unclassed_table) { continue; }
+            if matches!(op, Operator::Or) && lhs_is_field_on_unclassed_table(analysis, lhs) { continue; }
 
             // Skip symbols whose initial definition (version 0) was nil/falsy:
             // loop-body branch merges can make a later version appear always
             // truthy, but the variable may still be nil on the first iteration.
             // The `x = x or default` pattern inside a loop is not redundant.
-            if matches!(op, Operator::Or) && or_suppressed(lhs_initial_version_is_nilable) { continue; }
+            if matches!(op, Operator::Or) && lhs_initial_version_is_nilable(analysis, lhs) { continue; }
 
             // Skip nil/false-initialized variables that have been reassigned:
             // the variable may hold a non-nil value after a loop iteration or

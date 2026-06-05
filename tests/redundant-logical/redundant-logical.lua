@@ -468,6 +468,33 @@ local function _orNilTail(tree, node)
 end
 _use(_orNilTail)
 
+-- ── No diagnostic: Lua ternary idiom `x and y or z` ─────────────────────────
+
+-- The `x and y or z` pattern is Lua's standard ternary idiom. Even if the LS
+-- resolves `x` as always truthy, the `or z` is the intended else-branch and
+-- should not be flagged.
+---@class SlicePart
+---@field id number
+
+---@class SliceParts
+---@field CENTER SlicePart
+---@field TOP SlicePart
+---@field BOTTOM SlicePart
+
+---@type SliceParts
+local parts
+
+---@type string
+local relFrame
+local mapped = relFrame and parts[relFrame] or nil
+_use(mapped)
+
+-- Same pattern with a non-nil fallback instead of nil.
+---@type string
+local key
+local val = key and parts[key] or "default"
+_use(val)
+
 -- ── Still diagnostic: literal nil in and ────────────────────────────────────
 
 -- A literal nil (not a variable) used directly in `and` is always redundant.
