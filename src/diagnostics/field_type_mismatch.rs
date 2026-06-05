@@ -24,6 +24,20 @@ impl DiagnosticPass for FieldTypeMismatch {
             let Some(field_info) = analysis.get_field(fa.table_idx, &fa.field_name) else { continue };
             let Some(ref expected) = field_info.annotation else { continue };
             let Some(actual) = analysis.resolve_expr_type(fa.actual_expr) else { continue };
+            // Skip when the expected type is an inferred structural table from
+            // workspace scanning and the actual value is also a table.  These
+            // annotations capture the constructor's initial shape, but later
+            // field additions can grow the underlying table, making the
+            // constructor appear to have fewer fields than expected — a false
+            // positive.  We only skip when the actual is a table (the
+            // incremental-build scenario); genuinely wrong types (e.g. a string
+            // where a table was expected) still fire the diagnostic.
+            if field_info.from_scan
+                && matches!(expected, ValueType::Table(Some(idx)) if analysis.table(*idx).class_name.is_none())
+                && matches!(actual, ValueType::Table(_))
+            {
+                continue;
+            }
             if fa.lateinit {
                 if matches!(actual, ValueType::Nil) { continue; }
                 let stripped = actual.strip_nil();

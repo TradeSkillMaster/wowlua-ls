@@ -2312,6 +2312,25 @@ fn crossfile_inline_type_field() {
 }
 
 #[test]
+fn crossfile_incremental_table() {
+    // Incrementally-built table fields: constructor provides some fields,
+    // later statements add more. Must not emit field-type-mismatch on
+    // the initial constructor.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/incremental_table_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+    // Also verify from the defining file's perspective (exercises the
+    // from_scan skip in field_type_mismatch Phase 1).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/incremental_table_lib.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_bracket_write() {
     // Bracket-access writes (ns.field[key] = val) should not override field type
     run_annotation_tests(&TestConfig {
