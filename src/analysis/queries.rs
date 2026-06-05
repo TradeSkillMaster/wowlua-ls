@@ -819,7 +819,7 @@ impl AnalysisResult {
 
     pub fn definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
         // Try field access first so that a same-named global doesn't shadow the field.
-        if let Some((table_idx, field_name, expr_id, _)) = self.resolve_field_chain_at(tree, offset) {
+        if let Some((table_idx, field_name, expr_id, _, _)) = self.resolve_field_chain_at(tree, offset) {
             if let Some(result) = self.definition_for_expr(expr_id) {
                 return Some(result);
             }
@@ -912,7 +912,7 @@ impl AnalysisResult {
         // field position, so the is_field_position guard below would also return None.
         // We return None explicitly here to make that intent clear and prevent symbol
         // lookup from returning the container variable's type for a non-navigable field.
-        if let Some((table_idx, field_name, expr_id, _)) = self.resolve_field_chain_at(tree, offset) {
+        if let Some((table_idx, field_name, expr_id, _, _)) = self.resolve_field_chain_at(tree, offset) {
             let resolved_type = self.resolve_expr_type(expr_id).or_else(|| {
                 self.get_field(table_idx, &field_name)
                     .and_then(|fi| fi.annotation.clone())
@@ -1115,7 +1115,7 @@ impl AnalysisResult {
         };
         // Try field access first (e.g. "GetText" in Inbox.GetText) so that
         // a same-named global doesn't shadow the field result.
-        if let Some((table_idx, field_name, expr_id, access_kind)) = self.resolve_field_chain_at(tree, offset) {
+        if let Some((table_idx, field_name, expr_id, access_kind, receiver_tables)) = self.resolve_field_chain_at(tree, offset) {
             let is_g_env = self.ir.is_global_env(table_idx);
             // Try to resolve the field's type for function detection
             let resolved_type = self.resolve_expr_type(expr_id);
@@ -1144,8 +1144,28 @@ impl AnalysisResult {
                     // so the displayed signature shows concrete bound types.
                     let subs = self.method_name_range_at(tree, offset)
                         .and_then(|r| self.method_decl_subs.get(&r));
-                    let type_str = format!("({}) {}", kind_label, self.format_function_decl(*func_idx, &qualified_name, skip_self, subs));
-                    let doc = self.format_function_doc(*func_idx);
+                    let mut type_str = format!("({}) {}", kind_label, self.format_function_decl(*func_idx, &qualified_name, skip_self, subs));
+                    let mut doc = self.format_function_doc(*func_idx);
+                    // When the receiver is a union type, collect additional function
+                    // signatures from other union members for the hover display.
+                    if !is_g_env && receiver_tables.len() > 1 {
+                        let all_fields = self.find_all_fields_in_tables(&receiver_tables, &field_name);
+                        for (alt_table_idx, alt_expr_id) in all_fields {
+                            if alt_table_idx == table_idx { continue; }
+                            let Some(ValueType::Function(Some(alt_func_idx))) = self.resolve_expr_type(alt_expr_id) else { continue };
+                            let alt_name = self.table(alt_table_idx).class_name.as_ref()
+                                .map(|n| format!("{}{}{}", n, sep, field_name))
+                                .unwrap_or_else(|| field_name.clone());
+                            type_str.push_str(&format!("\n({}) {}", kind_label,
+                                self.format_function_decl(alt_func_idx, &alt_name, skip_self, None)));
+                            if let Some(alt_doc) = self.format_function_doc(alt_func_idx) {
+                                doc = Some(match doc {
+                                    Some(d) => format!("{}\n\n---\n\n{}", d, alt_doc),
+                                    None => alt_doc,
+                                });
+                            }
+                        }
+                    }
                     return Some(HoverResult { type_str, doc });
                 }
 
@@ -2010,21 +2030,35 @@ impl AnalysisResult {
     /// Find a field by name across multiple tables and their parent classes.
     /// Returns the owning table index and the field's expr id.
     fn find_field_in_tables(&self, table_indices: &[TableIndex], field_name: &str) -> Option<(TableIndex, ExprId)> {
-        // First check direct fields on all tables
+        self.find_all_fields_in_tables(table_indices, field_name).into_iter().next()
+    }
+
+    /// Collect all (table_idx, expr_id) pairs for a field across multiple tables
+    /// and their parent classes. Checks direct fields first, then parent classes.
+    /// Each table appears at most once (deduped). Used by `find_field_in_tables`
+    /// (first match) and hover (all matches for union receiver display).
+    fn find_all_fields_in_tables(&self, table_indices: &[TableIndex], field_name: &str) -> Vec<(TableIndex, ExprId)> {
+        let mut results = Vec::new();
+        let mut seen_tables: HashSet<TableIndex> = HashSet::new();
+        // Direct fields first
         for &idx in table_indices {
-            if let Some(fi) = self.get_field(idx, field_name) {
-                return Some((idx, fi.expr));
+            if let Some(fi) = self.get_field(idx, field_name)
+                && seen_tables.insert(idx)
+            {
+                results.push((idx, fi.expr));
             }
         }
-        // Then check parent classes of all tables
+        // Then parent classes
         for &idx in table_indices {
             for &parent_idx in &self.table(idx).parent_classes.clone() {
-                if let Some(fi) = self.get_field(parent_idx, field_name) {
-                    return Some((parent_idx, fi.expr));
+                if let Some(fi) = self.get_field(parent_idx, field_name)
+                    && seen_tables.insert(parent_idx)
+                {
+                    results.push((parent_idx, fi.expr));
                 }
             }
         }
-        None
+        results
     }
 
     /// Look up a global symbol by name in scope0 (local and external).
@@ -3101,7 +3135,7 @@ impl AnalysisResult {
         let name_offset = u32::from(last_name.text_range().start());
 
         // Try field chain first (e.g. reward.type)
-        if let Some((_, _, expr_id, _)) = self.resolve_field_chain_at(tree, name_offset) {
+        if let Some((_, _, expr_id, _, _)) = self.resolve_field_chain_at(tree, name_offset) {
             return self.resolve_expr_type(expr_id);
         }
 
@@ -3809,7 +3843,11 @@ impl AnalysisResult {
         Some((u32::from(r.start()), u32::from(r.end())))
     }
 
-    pub(crate) fn resolve_field_chain_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(TableIndex, String, ExprId, FieldAccessKind)> {
+    /// Resolve a field access chain at the given offset.
+    /// Returns (table_idx, field_name, expr_id, access_kind, all_receiver_tables).
+    /// The 5th element contains all table indices from the receiver's union type
+    /// (for union hover display); it's empty for non-union receivers.
+    pub(crate) fn resolve_field_chain_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(TableIndex, String, ExprId, FieldAccessKind, Vec<TableIndex>)> {
         let text_size = TextSize::from(offset);
         let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
             TokenAtOffset::Single(t) => t,
@@ -3835,7 +3873,7 @@ impl AnalysisResult {
                 // Resolve receiver to all table indices (intersection-aware).
                 let table_indices = self.resolve_receiver_to_all_tables(&parent, text_size);
                 if let Some((table_idx, expr_id)) = self.find_field_in_tables(&table_indices, &method_name) {
-                    return Some((table_idx, method_name, expr_id, FieldAccessKind::Colon));
+                    return Some((table_idx, method_name, expr_id, FieldAccessKind::Colon, table_indices));
                 }
             }
             return None;
@@ -3863,12 +3901,12 @@ impl AnalysisResult {
             // Resolve receiver to all table indices (intersection-aware)
             let table_indices = self.resolve_receiver_to_all_tables(&parent, text_size);
             if let Some((table_idx, expr_id)) = self.find_field_in_tables(&table_indices, &field_name) {
-                return Some((table_idx, field_name, expr_id, access));
+                return Some((table_idx, field_name, expr_id, access, table_indices));
             }
             // Check _G.field redirect
             for &idx in &table_indices {
-                if let Some(result) = self.resolve_g_env_field(idx, &field_name, access) {
-                    return Some(result);
+                if let Some((ti, fn_, ei, ak)) = self.resolve_g_env_field(idx, &field_name, access) {
+                    return Some((ti, fn_, ei, ak, Vec::new()));
                 }
             }
             return None;
@@ -3885,12 +3923,12 @@ impl AnalysisResult {
                                 let field_name = names[0].text().to_string();
                                 let access = Self::detect_access_before_token(&parent, &token);
                                 if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
-                                    return Some((table_idx, field_name, fi.expr, access));
+                                    return Some((table_idx, field_name, fi.expr, access, Vec::new()));
                                 }
                                 // Check parent classes
                                 for &parent_idx in &self.table(table_idx).parent_classes.clone() {
                                     if let Some(fi) = self.table(parent_idx).fields.get(&field_name) {
-                                        return Some((parent_idx, field_name, fi.expr, access));
+                                        return Some((parent_idx, field_name, fi.expr, access, Vec::new()));
                                     }
                                 }
                             }
@@ -3907,11 +3945,11 @@ impl AnalysisResult {
                             let field_name = names[0].text().to_string();
                             let access = Self::detect_access_before_token(&parent, &token);
                             if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
-                                return Some((table_idx, field_name, fi.expr, access));
+                                return Some((table_idx, field_name, fi.expr, access, Vec::new()));
                             }
                             for &parent_idx in &self.table(table_idx).parent_classes.clone() {
                                 if let Some(fi) = self.table(parent_idx).fields.get(&field_name) {
-                                    return Some((parent_idx, field_name, fi.expr, access));
+                                    return Some((parent_idx, field_name, fi.expr, access, Vec::new()));
                                 }
                             }
                         }
@@ -3961,14 +3999,15 @@ impl AnalysisResult {
         let field_name = names[our_index].text().to_string();
         let access = Self::detect_access_before_token(&parent, &token);
         if let Some(fi) = self.get_field(table_idx, &field_name) {
-            return Some((table_idx, field_name, fi.expr, access));
+            return Some((table_idx, field_name, fi.expr, access, Vec::new()));
         }
         for &parent_idx in &self.table(table_idx).parent_classes.clone() {
             if let Some(fi) = self.get_field(parent_idx, &field_name) {
-                return Some((parent_idx, field_name, fi.expr, access));
+                return Some((parent_idx, field_name, fi.expr, access, Vec::new()));
             }
         }
         self.resolve_g_env_field(table_idx, &field_name, access)
+            .map(|(ti, fn_, ei, ak)| (ti, fn_, ei, ak, Vec::new()))
     }
 
     /// When `table_idx` is the global environment (`_G`), look up `field_name` as a
@@ -4579,7 +4618,7 @@ impl AnalysisResult {
     pub fn reference_target_at(&self, tree: &SyntaxTree, offset: u32) -> Option<ReferenceTarget> {
         if let Some((symbol_idx, name, _)) = self.find_symbol_at(tree, offset) {
             Some(ReferenceTarget::Symbol { idx: symbol_idx, name })
-        } else if let Some((table_idx, field_name, _, _)) = self.resolve_field_chain_at(tree, offset) {
+        } else if let Some((table_idx, field_name, _, _, _)) = self.resolve_field_chain_at(tree, offset) {
             Some(ReferenceTarget::Field { table_idx, field_name })
         } else if let Some((sym_idx, name, _)) = self.find_param_in_annotation_at(tree, offset) {
             Some(ReferenceTarget::Symbol { idx: sym_idx, name })
@@ -5257,7 +5296,7 @@ impl AnalysisResult {
                 return Some((token.text_range(), name));
             }
             // Try field
-            if let Some((table_idx, _, _, _)) = self.resolve_field_chain_at(tree, offset) {
+            if let Some((table_idx, _, _, _, _)) = self.resolve_field_chain_at(tree, offset) {
                 if table_idx.is_external() {
                     return None;
                 }
@@ -7357,7 +7396,7 @@ impl AnalysisResult {
             return Some((func_idx, display));
         }
         // Try field-based resolution (cursor on a method name like `Foo:Bar`).
-        if let Some((table_idx, field_name, expr_id, access_kind)) = self.resolve_field_chain_at(tree, offset)
+        if let Some((table_idx, field_name, expr_id, access_kind, _)) = self.resolve_field_chain_at(tree, offset)
         {
             let field_type = self.resolve_expr_type(expr_id);
             if let Some(ValueType::Function(Some(func_idx))) = field_type {

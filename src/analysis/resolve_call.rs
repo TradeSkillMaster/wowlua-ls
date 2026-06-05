@@ -119,6 +119,15 @@ impl<'a> Analysis<'a> {
         let mut constructor_table_idx: Option<TableIndex> = None;
         let mut call_func_table_idx: Option<TableIndex> = None;
         let mut call_func_is_metamethod = false;
+        // When the callee is a union of functions (e.g. method call on `A | B`),
+        // stores the non-primary function indices so their return types can be
+        // merged with the primary's result. Only consumed at the `@return`
+        // annotation and matching-overload return paths — special return
+        // semantics (@return self, @constructor, @return built, generic
+        // substitution, projections) bypass the merge via early returns. This
+        // is acceptable: those features are class-specific and unlikely to
+        // coexist across union members with the same method name.
+        let mut union_alt_func_indices: Vec<FunctionIndex> = Vec::new();
         let func_idx = match func_type {
             ValueType::Function(Some(idx)) => idx,
             ValueType::Table(Some(table_idx)) => {
@@ -135,11 +144,15 @@ impl<'a> Analysis<'a> {
                 }
             }
             ValueType::Union(ref types) | ValueType::Intersection(ref types) => {
-                let func_from_composite = types.iter().find_map(|t| match t {
+                let all_funcs: Vec<FunctionIndex> = types.iter().filter_map(|t| match t {
                     ValueType::Function(Some(idx)) => Some(*idx),
                     _ => None,
-                });
-                func_from_composite?
+                }).collect();
+                if all_funcs.is_empty() { return None; }
+                if all_funcs.len() > 1 {
+                    union_alt_func_indices = all_funcs[1..].to_vec();
+                }
+                all_funcs[0]
             }
             _ => return None,
         };
@@ -1502,6 +1515,9 @@ impl<'a> Analysis<'a> {
                 }
             });
         if let Some(rt) = return_type {
+            if !union_alt_func_indices.is_empty() {
+                return Some(self.merge_union_alt_returns(rt, &union_alt_func_indices, ret_index));
+            }
             return Some(rt);
         }
 
@@ -1841,7 +1857,7 @@ impl<'a> Analysis<'a> {
                 }
             }
         // If return-only overloads imply nil at this position, union with nil
-        if return_overloads_may_nil {
+        let ret_type = if return_overloads_may_nil {
             match ret_type {
                 Some(vt) if !vt.contains_nil() && !matches!(vt, ValueType::Any) => {
                     Some(ValueType::make_union(vec![vt, ValueType::Nil]))
@@ -1850,7 +1866,37 @@ impl<'a> Analysis<'a> {
             }
         } else {
             ret_type
+        };
+        // When the callee expression was a union of functions (e.g. method
+        // call on `A | B`), union the primary return type with the return
+        // types from the alternative functions.
+        if !union_alt_func_indices.is_empty() {
+            if let Some(primary) = ret_type {
+                Some(self.merge_union_alt_returns(primary, &union_alt_func_indices, ret_index))
+            } else {
+                ret_type
+            }
+        } else {
+            ret_type
         }
+    }
+
+    /// Merge a primary return type with the `@return` annotations from
+    /// alternative union-member functions at the given `ret_index`.
+    fn merge_union_alt_returns(
+        &self, primary: ValueType, alt_indices: &[FunctionIndex], ret_index: usize,
+    ) -> ValueType {
+        let mut parts = vec![primary];
+        for &alt_idx in alt_indices {
+            let alt_anns = &self.func(alt_idx).return_annotations;
+            let has_vararg = self.func(alt_idx).has_vararg_return;
+            if let Some(vt) = alt_anns.get(ret_index).cloned()
+                .or_else(|| if has_vararg { alt_anns.last().cloned() } else { None })
+            {
+                parts.push(vt);
+            }
+        }
+        ValueType::make_union(parts)
     }
 
     // ── Metatable helpers ─────────────────────────────────────────────────────

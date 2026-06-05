@@ -159,3 +159,40 @@ local sf = {}
 
 -- The second (frame, true) should call GetScript's return, not be appended to GetScript's args
 sf:GetScript("OnClick")(sf, "LeftButton")
+
+-- ── Method call on union receiver: return types merged from all members ──────
+
+---@class UnionMemberA
+local UnionMemberA = {}
+
+---@return nil buyout
+---@return nil itemBuyout
+---@return number? minPrice
+function UnionMemberA:GetPrices()
+    return nil, nil, 100
+end
+
+---@class UnionMemberB
+local UnionMemberB = {}
+
+---@return number buyout
+---@return number itemBuyout
+---@return nil minPrice
+function UnionMemberB:GetPrices()
+    return 50, 25, nil
+end
+
+---@type UnionMemberA | UnionMemberB
+local member = {}
+
+local buyout, itemBuyout, minPrice = member:GetPrices()
+--    ^ hover: (local) buyout: number?
+--              ^ hover: (local) itemBuyout: number?
+--                        ^ hover: (local) minPrice: number?
+-- Multi-line hover: \n separates lines (exact match when expected contains \n).
+-- Expected:
+--   (method) function UnionMemberA:GetPrices()
+--     -> buyout: nil, itemBuyout: nil, minPrice: number?
+--   (method) function UnionMemberB:GetPrices()
+--     -> buyout: number, itemBuyout: number, minPrice: nil
+--                                              ^ hover: (method) function UnionMemberA:GetPrices()\n-> buyout: nil, itemBuyout: nil, minPrice: number?\n(method) function UnionMemberB:GetPrices()\n-> buyout: number, itemBuyout: number, minPrice: nil
