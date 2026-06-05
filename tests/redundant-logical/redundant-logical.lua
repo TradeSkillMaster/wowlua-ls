@@ -347,3 +347,69 @@ local function process()
     end
 end
 _use(process)
+
+-- ── No diagnostic: nil-initialized accumulator in loop ──────────────────────
+
+-- A variable initialized to nil and reassigned inside a loop may hold a
+-- non-nil value on subsequent iterations. The `x and f(x)` guard is the
+-- standard Lua accumulator idiom — not genuinely redundant.
+local function _loopAccum(items)
+    local total = nil
+    for _, v in ipairs(items) do
+        total = total and (total + v) or v
+    end
+    return total
+end
+_use(_loopAccum)
+
+-- ── No diagnostic: nil-initialized conditional assignment ───────────────────
+
+-- A variable initialized to nil and conditionally assigned in a loop/branch
+-- may not be nil at point of use. The `and` guard is a safe-access pattern.
+local function _condAssign(items)
+    local first, second = nil, nil
+    for _, v in ipairs(items) do
+        if not first then
+            first = v
+        elseif not second then
+            second = v
+        end
+    end
+    local result = second and (first + second) or first
+    return result
+end
+_use(_condAssign)
+
+-- ── No diagnostic: or-nil tail with unresolved LHS ─────────────────────────
+
+-- When the LHS of `or` is unresolved and the RHS is nil, the expression
+-- should stay unresolved — not collapse to nil. This prevents cascading
+-- false `redundant-and` diagnostics downstream.
+---@param tree any
+---@param node any
+local function _orNilTail(tree, node)
+    local left, right = tree:GetChildren(node)
+    local leftKind = tree:GetData(left, "kind")
+    local rightKind = tree:GetData(right, "kind")
+    local leftVal = tree:GetData(left, "val")
+    local rightVal = tree:GetData(right, "val")
+    local picked = (leftKind == "CONST" and leftVal) or (rightKind == "CONST" and rightVal) or nil
+    -- `picked` must stay unresolved (?) — NOT collapse to nil from the `or nil` tail.
+    if picked and picked == 0 then
+    -- ^ hover: (local) picked: ?
+        return true
+    end
+    return false
+end
+_use(_orNilTail)
+
+-- ── Still diagnostic: literal nil in and ────────────────────────────────────
+
+-- A literal nil (not a variable) used directly in `and` is always redundant.
+local j = nil and "hello"
+--        ^ diag: redundant-and
+
+-- A variable that is nil and was NEVER reassigned is genuinely always nil.
+local neverSet = nil
+local k = neverSet and "hello"
+--        ^ diag: redundant-and

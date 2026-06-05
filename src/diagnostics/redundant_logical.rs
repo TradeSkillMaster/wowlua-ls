@@ -140,6 +140,31 @@ fn lhs_initial_version_is_nilable(analysis: &AnalysisResult, lhs: ExprId) -> boo
     }
 }
 
+/// Returns true when the LHS is a bare symbol that has been genuinely
+/// reassigned (has a version with a different `def_node` from the initial
+/// declaration). This pattern is ubiquitous in Lua for nullable accumulators
+/// and conditional initialization in loops, e.g.:
+///
+///   local x = nil
+///   for ... do x = x and f(x) or v end
+///   local y = nil; if cond then y = val end; if y and ... then ... end
+///
+/// The LS processes loop bodies once, so it sees the initial nil version at the
+/// `and` site. But on subsequent iterations (or after the conditional branch),
+/// the variable may hold a non-nil value.
+fn lhs_symbol_has_reassignment(analysis: &AnalysisResult, lhs: ExprId) -> bool {
+    let lhs = unwrap_to_inner(&analysis.ir.exprs, lhs);
+    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[lhs.val()] else { return false };
+    let sym_idx = *sym_idx;
+    if sym_idx.is_external() { return false; }
+    let sym = analysis.sym(sym_idx);
+    // Check that at least one version comes from a genuine reassignment (different
+    // def_node) rather than from narrowing (which reuses the original def_node).
+    let Some(v0) = sym.versions.first() else { return false };
+    let v0_start = v0.def_node.start;
+    sym.versions.iter().skip(1).any(|v| v.def_node.start != v0_start)
+}
+
 /// Returns true when the LHS is a reference to a function parameter that has no
 /// explicit `@param` annotation. Such parameters get their type from backward
 /// inference (call-site propagation), which may resolve to a non-nil type like
@@ -195,6 +220,15 @@ impl DiagnosticPass for RedundantLogical {
             // truthy, but the variable may still be nil on the first iteration.
             // The `x = x or default` pattern inside a loop is not redundant.
             if matches!(op, Operator::Or) && lhs_initial_version_is_nilable(analysis, lhs) { continue; }
+
+            // Skip nil/false-initialized variables that have been reassigned:
+            // the variable may hold a non-nil value after a loop iteration or
+            // conditional branch, even though the LS sees the initial falsy
+            // version at this expression site. Only `And` needs this guard —
+            // `redundant-or` fires on guaranteed-truthy LHS, which doesn't
+            // apply to nil/false-initialized variables.
+            if matches!(op, Operator::And) && lhs_type.is_guaranteed_falsy()
+                && lhs_symbol_has_reassignment(analysis, lhs) { continue; }
 
             match op {
                 Operator::Or if lhs_type.is_guaranteed_truthy() => {
