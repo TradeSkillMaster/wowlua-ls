@@ -1072,3 +1072,20 @@ local _ = lsErr3
 -- must NOT flag type-mismatch.
 local _joinedVoid = strjoin(", ", RunScript("test"))
 --    ^ hover: (local) _joinedVoid: string
+
+-- ── Factory function return types (CreateFromMixins inference) ─────────────
+
+-- CreateTreeDataProvider returns LinearizedTreeDataProviderMixin
+local _tdp = CreateTreeDataProvider()
+--    ^ hover: (local) _tdp: LinearizedTreeDataProviderMixin
+
+-- CreateDataProvider returns DataProviderMixin
+local _dp = CreateDataProvider()
+--    ^ hover: (local) _dp: DataProviderMixin
+
+-- Methods on factory-created objects resolve correctly
+_tdp:Insert("hello")
+--   ^ hover: (method) function LinearizedTreeDataProviderMixin:Insert(data)
+
+_dp:GetSize()
+--  ^ hover: (method) function DataProviderMixin:GetSize()

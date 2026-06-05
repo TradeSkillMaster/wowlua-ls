@@ -1770,6 +1770,8 @@ impl<'a> Analysis<'a> {
             match expr {
                 Expr::FunctionCall { ret_index, .. } => return *ret_index != expected_ret_index,
                 Expr::SymbolRef(sym, ver_ref) => {
+                    // External symbols don't exist in per-file ir.symbols — bail out.
+                    if sym.val() >= EXT_BASE { return true; }
                     let ref_ver = &self.ir.symbols[sym.val()].versions[*ver_ref];
                     match ref_ver.type_source {
                         Some(inner_ts) => { expr = self.ir.expr(inner_ts); }

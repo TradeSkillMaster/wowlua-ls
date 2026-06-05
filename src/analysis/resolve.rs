@@ -1025,6 +1025,10 @@ impl<'a> Analysis<'a> {
             Expr::SymbolRef(sym, ver) => (*sym, *ver),
             _ => return None,
         };
+        // External symbols don't exist in per-file ir.symbols — bail out.
+        if sym_ref.0.val() >= EXT_BASE {
+            return None;
+        }
         let sym = &self.ir.symbols[sym_ref.0.val()];
         let ver = sym.versions.get(sym_ref.1)?;
         let inner_ts = ver.type_source?;

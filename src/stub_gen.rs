@@ -1594,6 +1594,241 @@ fn generate_global_stubs(
     (strings_lines.join("\n") + "\n", vars_lines.join("\n") + "\n", colors_lua)
 }
 
+
+/// Scan all `.lua` files under `dir` for global function definitions that have
+/// `---@return` annotations.  Returns the set of function names that already have
+/// return type annotations (and thus should not be overridden by inferred stubs).
+fn get_functions_with_return(dir: &Path) -> HashSet<String> {
+    let func_re = regex_lite::Regex::new(r"(?m)^function\s+([A-Za-z_]\w*)\s*\(").unwrap();
+    let mut result = HashSet::new();
+    let mut lua_files = Vec::new();
+    collect_lua_paths(dir, &mut lua_files);
+    for path in &lua_files {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            let lines: Vec<&str> = content.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if let Some(cap) = func_re.captures(line) {
+                    let name = cap.get(1).unwrap().as_str();
+                    // Look backward from this function definition for ---@return
+                    // in the preceding annotation block (consecutive --- lines).
+                    let mut j = i;
+                    while j > 0 {
+                        j -= 1;
+                        let prev = lines[j].trim();
+                        if prev.starts_with("---") {
+                            if prev.starts_with("---@return") {
+                                result.insert(name.to_string());
+                                break;
+                            }
+                        } else {
+                            break; // End of annotation block
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Inferred return type information for a global function.
+struct InferredReturn {
+    /// Parameter names from the function signature.
+    params: Vec<String>,
+    /// Formatted return type strings (one per return position).
+    returns: Vec<String>,
+}
+
+/// Run the analysis engine on FrameXML Lua source files to infer return types
+/// for global functions that lack `@return` annotations in the vendor stubs.
+///
+/// This is strictly more powerful than regex-based pattern matching — it catches
+/// `CreateFromMixins`, `setmetatable` factories, tail calls through annotated
+/// functions, and any other pattern the type inference engine handles.
+fn infer_fxml_return_types(
+    ui_source_dir: &Path,
+    pre_globals: std::sync::Arc<crate::pre_globals::PreResolvedGlobals>,
+    needs_return: &HashSet<String>,
+) -> HashMap<String, InferredReturn> {
+    use rayon::prelude::*;
+    use crate::analysis::{Analysis, AnalysisConfig};
+    use crate::types::{SymbolIdentifier, ValueType};
+
+    if needs_return.is_empty() {
+        return HashMap::new();
+    }
+
+    let interface_dir = ui_source_dir.join("Interface");
+    if !interface_dir.is_dir() {
+        return HashMap::new();
+    }
+
+    let mut lua_files = Vec::new();
+    collect_lua_paths(&interface_dir, &mut lua_files);
+
+    // Regex for top-level global assignments: `GlobalName = expr`
+    // (but NOT local declarations or function definitions).
+    // Limitation: matches any column-0 uppercase assignment regardless of scope
+    // nesting.  This is acceptable for Blizzard FrameXML which conventionally
+    // indents code inside function bodies/do-end blocks, so column-0 uppercase
+    // assignments are reliably top-level mixin definitions.
+    let global_assign_re = regex_lite::Regex::new(r"^[A-Z]\w+\s*=\s").unwrap();
+
+    // Pre-filter regex: quickly check if a file contains any global function
+    // definition (column-0 `function Name(`).  Files without this pattern
+    // can't define any function we care about, avoiding expensive analysis.
+    let func_def_re = regex_lite::Regex::new(r"(?m)^function [A-Z]").unwrap();
+
+    // Analyze files in parallel — each file gets its own Analysis instance
+    // with a shared (Arc) copy of PreResolvedGlobals.  The filter + analysis
+    // runs in a single pass to avoid double file reads.
+    let per_file_results: Vec<Vec<(String, InferredReturn)>> = lua_files.par_iter().map(|path| {
+        let Ok(raw_content) = std::fs::read_to_string(path) else { return vec![] };
+
+        // Quick pre-filter: skip files with no global function definitions.
+        if !func_def_re.is_match(&raw_content) {
+            return vec![];
+        }
+
+        // Comment out top-level global assignments to prevent shadowing of
+        // precomputed stub classes. FrameXML source defines mixin globals via
+        // chains like `TreeDataProviderMixin = CreateFromMixins(CallbackRegistryMixin)`,
+        // which collapses class types to the chain root. By removing these, the
+        // analysis resolves mixin names from the stubs (where they have @class types).
+        let content: String = raw_content.lines()
+            .map(|line| {
+                if global_assign_re.is_match(line) {
+                    format!("--{line}")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let tree = crate::syntax::parser::parse(&content);
+        let mut analysis = Analysis::new_with_tree(&tree, pre_globals.clone(), AnalysisConfig::default());
+        analysis.resolve_types();
+        let ar = analysis.into_result();
+
+        // Walk scope 0 symbols to find global function definitions.
+        if ar.ir.scopes.is_empty() {
+            return vec![];
+        }
+        let mut file_results = Vec::new();
+        for (sym_id, &sym_idx) in &ar.ir.scopes[0].symbols {
+            let SymbolIdentifier::Name(name) = sym_id else { continue };
+            if !needs_return.contains(name) {
+                continue;
+            }
+            // External symbols don't exist in per-file ir.symbols — bail out.
+            if sym_idx.val() >= crate::types::EXT_BASE {
+                continue;
+            }
+            let sym = &ar.ir.symbols[sym_idx.val()];
+            let Some(ver) = sym.versions.first() else { continue };
+            let Some(ref resolved) = ver.resolved_type else { continue };
+            let ValueType::Function(Some(func_idx)) = resolved else { continue };
+            if func_idx.val() >= crate::types::EXT_BASE {
+                continue;
+            }
+            let func = &ar.ir.functions[func_idx.val()];
+
+            // Extract return types: prefer explicit annotations, fall back to inferred.
+            let return_types: Vec<String> = if !func.return_annotations.is_empty() {
+                func.return_annotations.iter()
+                    .map(|vt| ar.format_type_depth(vt, 1))
+                    .collect()
+            } else {
+                ar.format_inferred_returns(func, 1)
+            };
+
+            // Skip functions where inference produced nothing useful.
+            if return_types.is_empty()
+                || return_types.iter().all(|t| t == "any" || t == "?" || t == "nil")
+            {
+                continue;
+            }
+
+            // Extract parameter names.
+            let params: Vec<String> = func.args.iter().filter_map(|&arg_idx| {
+                if arg_idx.val() >= crate::types::EXT_BASE {
+                    return None;
+                }
+                Some(match &ar.ir.symbols[arg_idx.val()].id {
+                    SymbolIdentifier::Name(n) => n.clone(),
+                    _ => "_".to_string(),
+                })
+            }).collect();
+
+            file_results.push((name.clone(), InferredReturn { params, returns: return_types }));
+        }
+        file_results
+    }).collect();
+
+    per_file_results.into_iter().flatten().collect()
+}
+
+/// Generate override stubs for FrameXML functions whose return types were
+/// inferred by the analysis engine.  Only emits stubs for functions whose
+/// existing vendor definition lacks a `@return` annotation.  Forwards any
+/// existing `@param` annotations from the pass 1 globals so the override
+/// doesn't drop typed parameter information.
+fn generate_inferred_return_stubs(
+    inferred: &HashMap<String, InferredReturn>,
+    stubs_dir: &Path,
+    pass1_globals: &[crate::annotations::ExternalGlobal],
+) -> String {
+    if inferred.is_empty() {
+        return "---@meta _\n".to_string();
+    }
+    use crate::annotations::ParamInfo;
+    use crate::annotations::annotation_types::format_annotation_type;
+
+    // Find functions that already have @return annotations in vendor stubs.
+    let already_annotated = get_functions_with_return(stubs_dir);
+
+    // Build a lookup from pass 1 globals: name → params, for forwarding
+    // existing @param annotations into the generated override stubs.
+    let mut vendor_params: HashMap<&str, &[ParamInfo]> = HashMap::new();
+    for g in pass1_globals {
+        if !g.params.is_empty() {
+            vendor_params.insert(&g.name, &g.params);
+        }
+    }
+
+    let mut lines = vec![
+        "---@meta _".to_string(),
+        "-- FrameXML function return types (auto-inferred by analysis engine)".to_string(),
+        String::new(),
+    ];
+    let mut names: Vec<&String> = inferred.keys()
+        .filter(|n| !already_annotated.contains(n.as_str()))
+        .collect();
+    names.sort();
+    for name in &names {
+        let info = &inferred[*name];
+        // Forward existing @param annotations from vendor stubs so the
+        // override doesn't drop typed parameter information.
+        if let Some(params) = vendor_params.get(name.as_str()) {
+            for p in *params {
+                let opt = if p.optional { "?" } else { "" };
+                let typ = format_annotation_type(&p.typ);
+                lines.push(format!("---@param {}{opt} {typ}", p.name));
+            }
+        }
+        for ret in &info.returns {
+            lines.push(format!("---@return {ret}"));
+        }
+        let params_str = info.params.join(", ");
+        lines.push(format!("function {name}({params_str}) end"));
+        lines.push(String::new());
+    }
+    log::info!("  InferredReturns: {} functions with inferred return types ({} skipped, already annotated)",
+        names.len(), inferred.len() - names.len());
+    lines.join("\n") + "\n"
+}
+
 // ── Classic stubs generation (replaces generate_classic_stubs.py) ──────────────
 
 fn fetch_url(url: &str, post_data: Option<&[(&str, &str)]>) -> Result<String, String> {
@@ -4180,7 +4415,7 @@ pub fn regenerate_stubs() {
     //
     // retail_api_doc and retail_fxml_consts are also threaded into generate_classic_stubs
     // so collect_classic_only_constants can diff against retail without a second scan.
-    let (global_constants, retail_enums, extra_fxml_globals, retail_api_doc, retail_fxml_consts) = if has_retail_ui {
+    let (global_constants, retail_enums, extra_fxml_globals, retail_api_doc, retail_fxml_consts, fxml_func_names) = if has_retail_ui {
         log::info!("Extracting retail constants and enums from APIDocumentation + FrameXML...");
         let api_doc = parse_api_doc_dir(&retail_ui_dir);
         // Single Interface/ tree walk: collect both constant assignments and standalone
@@ -4206,12 +4441,12 @@ pub fn regenerate_stubs() {
         // FramePool_HideAndClearAnchors are absent from the resources list).
         log::info!("  Discovered {} standalone FrameXML global functions", fxml_funcs.len());
         let mut extra: HashSet<String> = fxml_consts.keys().cloned().collect();
-        extra.extend(fxml_funcs);
+        extra.extend(fxml_funcs.iter().cloned());
 
         let enums = api_doc.enums.clone();
-        (constants, enums, extra, Some(api_doc), fxml_consts)
+        (constants, enums, extra, Some(api_doc), fxml_consts, fxml_funcs)
     } else {
-        (HashMap::new(), HashMap::new(), HashSet::new(), None, HashMap::new())
+        (HashMap::new(), HashMap::new(), HashSet::new(), None, HashMap::new(), HashSet::new())
     };
     phase!("extract retail constants/enums (FrameXML walk)");
 
@@ -4491,16 +4726,17 @@ pub fn regenerate_stubs() {
 
     // Step 6: Collect all stub file paths for scanning
     log::info!("Scanning stubs...");
-    let mut paths = Vec::new();
     let mut override_set = std::collections::HashSet::new();
 
-    // Collect overrides first (to determine which vendor files to skip)
+    // Collect override stems (to determine which vendor files to skip)
     let mut override_stems = HashSet::new();
-    let mut override_paths = Vec::new();
-    collect_lua_paths(&overrides_dir, &mut override_paths);
-    for p in &override_paths {
-        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-            override_stems.insert(stem.to_string());
+    {
+        let mut override_paths = Vec::new();
+        collect_lua_paths(&overrides_dir, &mut override_paths);
+        for p in &override_paths {
+            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                override_stems.insert(stem.to_string());
+            }
         }
     }
     // Skip Ketho's vendor files that we now generate from upstream sources
@@ -4509,42 +4745,12 @@ pub fn regenerate_stubs() {
     override_stems.insert("Enum".to_string());
     override_stems.insert("CVar".to_string());
 
-    for vendor_dir in &vendor_dirs {
-        let mut vendor_paths = Vec::new();
-        if vendor_dir.is_dir() {
-            collect_lua_paths(vendor_dir, &mut vendor_paths);
-        }
-        for p in vendor_paths {
-            let dominated = p.file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|stem| override_stems.contains(stem));
-            if !dominated {
-                paths.push(p);
-            }
-        }
-    }
-
-    // Generated stubs
-    collect_lua_paths(&gen_dir, &mut paths);
-
-    // Add overrides last (same logic as collect_stub_paths)
-    for p in &override_paths {
-        // Skip generated files from overrides since we generated fresh ones
-        if let Some(fname) = p.file_name().and_then(|n| n.to_str())
-            && matches!(fname, "GlobalStrings.lua" | "GlobalVariables.lua" | "GlobalColors.lua") {
-                continue;
-            }
-        override_set.insert(p.clone());
-    }
-    paths.extend(override_paths.into_iter().filter(|p| {
-        p.file_name().and_then(|n| n.to_str())
-            .is_none_or(|n| !matches!(n, "GlobalStrings.lua" | "GlobalVariables.lua" | "GlobalColors.lua"))
-    }));
+    let mut paths = collect_stub_scan_paths(&vendor_dirs, &gen_dir, &overrides_dir, &override_stems, &mut override_set);
 
     phase!("write generated stubs + enum/constants merge");
-    let (classes, mut aliases, mut globals, _addon_ns_class_names, stub_events, _callable_classes) =
+    let (mut classes, mut aliases, mut globals, _addon_ns_class_names, stub_events, _callable_classes) =
         crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
-    phase!("scan_paths_with_overrides (parse all stubs)");
+    phase!("scan_paths_with_overrides (pass 1)");
 
     // Step 6b: Apply flavor bitmask data derived from BlizzardInterfaceResources branch diffs
     apply_flavor_data(&mut globals, &branch_data.flavor_map);
@@ -4558,11 +4764,59 @@ pub fn regenerate_stubs() {
     // FrameEvent from BlizzardType.lua) can resolve during the build phase.
     crate::annotations::register_event_type_aliases(&mut aliases, &stub_events);
 
-    // Step 6: Build PreResolvedGlobals
-    log::info!("Building PreResolvedGlobals...");
+    // Step 6: Build PreResolvedGlobals (Pass 1 — used for FrameXML return type inference)
+    log::info!("Building PreResolvedGlobals (pass 1)...");
     let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new(), &std::collections::HashSet::new());
     pre_globals.merge_events(&stub_events);
-    phase!("PreResolvedGlobals::build");
+    phase!("PreResolvedGlobals::build (pass 1)");
+
+    // Step 6c: Infer return types for FrameXML functions by running the analysis engine
+    // on the raw Blizzard source files against the Pass 1 stubs. This catches factory
+    // functions (CreateFromMixins), setmetatable patterns, tail calls through annotated
+    // functions, and any other pattern the type inference engine handles.
+    if has_retail_ui {
+        log::info!("Inferring FrameXML function return types via analysis engine...");
+        // Use the FrameXML function name set directly — these are functions defined
+        // in the FrameXML Lua source (not C-level APIs) that we can analyze.
+        log::info!("  {} FrameXML global function definitions to analyze", fxml_func_names.len());
+
+        let inferred = infer_fxml_return_types(
+            &retail_ui_dir,
+            std::sync::Arc::new(pre_globals),
+            &fxml_func_names,
+        );
+        log::info!("  Inferred return types for {} functions", inferred.len());
+        phase!("infer_fxml_return_types");
+
+        // Generate override stubs with @return annotations (and forwarded @param
+        // annotations from vendor stubs) and re-scan.
+        let inferred_returns_lua = generate_inferred_return_stubs(&inferred, &combined_stubs, &globals);
+        let inferred_returns_path = gen_dir.join("InferredReturns.lua");
+        std::fs::write(&inferred_returns_path, &inferred_returns_lua).unwrap();
+        override_set.insert(inferred_returns_path);
+
+        // Pass 2: re-scan all stubs (including InferredReturns.lua) and rebuild.
+        log::info!("Re-scanning stubs with inferred returns (pass 2)...");
+        paths = collect_stub_scan_paths(&vendor_dirs, &gen_dir, &overrides_dir, &override_stems, &mut override_set);
+
+        let (classes2, aliases2, globals2, _, stub_events2, _) =
+            crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
+        phase!("scan_paths_with_overrides (pass 2)");
+
+        // Replace globals/classes/aliases with the enriched Pass 2 versions.
+        classes = classes2;
+        globals = globals2;
+        apply_flavor_data(&mut globals, &branch_data.flavor_map);
+        globals.retain(|g| g.name != crate::annotations::ADDON_NS_NAME);
+        aliases = aliases2;
+        crate::annotations::register_event_type_aliases(&mut aliases, &stub_events2);
+
+        log::info!("Building PreResolvedGlobals (pass 2)...");
+        pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new(), &std::collections::HashSet::new());
+        pre_globals.merge_events(&stub_events2);
+        phase!("PreResolvedGlobals::build (pass 2)");
+    }
+
     log::info!("  Event types: {} types, {} total events",
         pre_globals.event_types.len(),
         pre_globals.event_types.values().map(|m| m.len()).sum::<usize>());
@@ -4732,6 +4986,54 @@ pub fn regenerate_stubs() {
 
     log::debug!("[TIMING] {:<40} {:>8.2}s", "TOTAL", timing_total.elapsed().as_secs_f64());
     log::info!("Done!");
+}
+
+/// Collect all stub scan paths: vendor files (excluding overridden stems),
+/// generated stubs, and override files (excluding freshly-generated ones).
+fn collect_stub_scan_paths(
+    vendor_dirs: &[PathBuf],
+    gen_dir: &Path,
+    overrides_dir: &Path,
+    override_stems: &HashSet<String>,
+    override_set: &mut HashSet<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    // Vendor stubs (skip files whose stems are overridden)
+    for vendor_dir in vendor_dirs {
+        let mut vendor_paths = Vec::new();
+        if vendor_dir.is_dir() {
+            collect_lua_paths(vendor_dir, &mut vendor_paths);
+        }
+        for p in vendor_paths {
+            let dominated = p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|stem| override_stems.contains(stem));
+            if !dominated {
+                paths.push(p);
+            }
+        }
+    }
+
+    // Generated stubs
+    collect_lua_paths(gen_dir, &mut paths);
+
+    // Override stubs (skip generated files we already emitted fresh)
+    let mut override_paths = Vec::new();
+    collect_lua_paths(overrides_dir, &mut override_paths);
+    for p in &override_paths {
+        if let Some(fname) = p.file_name().and_then(|n| n.to_str())
+            && matches!(fname, "GlobalStrings.lua" | "GlobalVariables.lua" | "GlobalColors.lua") {
+                continue;
+            }
+        override_set.insert(p.clone());
+    }
+    paths.extend(override_paths.into_iter().filter(|p| {
+        p.file_name().and_then(|n| n.to_str())
+            .is_none_or(|n| !matches!(n, "GlobalStrings.lua" | "GlobalVariables.lua" | "GlobalColors.lua"))
+    }));
+
+    paths
 }
 
 fn collect_lua_paths(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -5825,6 +6127,47 @@ Gets the item."#;
         assert!(!out.contains("GetText"), "GetText should be filtered out: {out}");
         // Unknown API should not appear
         assert!(!out.contains("DoSomething"), "unmapped ScriptObject should be filtered: {out}");
+    }
+
+    #[test]
+    fn test_scan_interface_lua_combined() {
+        let tmp = std::env::temp_dir().join("wowlua-ls-test-scan-combined");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let interface_dir = tmp.join("Interface/AddOns/Blizzard_Test");
+        std::fs::create_dir_all(&interface_dir).unwrap();
+
+        std::fs::write(interface_dir.join("Test.lua"), r#"
+MY_CONSTANT = 42
+
+function CreateDataProvider(tbl)
+    local dp = CreateFromMixins(DataProviderMixin);
+    dp:Init(tbl);
+    return dp;
+end
+
+function CreateTreeDataProvider()
+    local dp = CreateFromMixins(LinearizedTreeDataProviderMixin);
+    dp:Init();
+    return dp;
+end
+
+-- Short name — should be skipped
+function Mk()
+    return nil;
+end
+"#).unwrap();
+
+        let (consts, funcs) = scan_interface_lua_combined(&tmp);
+
+        // Constants discovered
+        assert!(consts.contains_key("MY_CONSTANT"), "should find MY_CONSTANT");
+
+        // Function names discovered (>= 3 chars only)
+        assert!(funcs.contains("CreateDataProvider"), "should find CreateDataProvider");
+        assert!(funcs.contains("CreateTreeDataProvider"), "should find CreateTreeDataProvider");
+        assert!(!funcs.contains("Mk"), "should skip short name Mk");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
 
