@@ -2778,18 +2778,26 @@ impl AnalysisResult {
     /// Returns `None` if the function has no params (caller should use plain text).
     fn build_func_call_snippet(&self, label: &str, func_idx: crate::types::FunctionIndex, skip_self: bool) -> Option<String> {
         let func = self.func(func_idx);
-        let mut param_names: Vec<String> = func.args.iter()
-            .filter_map(|&sym_idx| {
+        let self_offset = if skip_self && func.args.first()
+            .map(|&sym_idx| self.sym(sym_idx).id == crate::types::SymbolIdentifier::Name("self".into()))
+            .unwrap_or(false)
+        { 1 } else { 0 };
+        // Zip args with their optionality flags so filter_map keeps them aligned
+        let mut params: Vec<(String, bool)> = func.args[self_offset..].iter()
+            .zip(&func.param_optional[self_offset..])
+            .filter_map(|(&sym_idx, &opt)| {
                 if let crate::types::SymbolIdentifier::Name(n) = &self.sym(sym_idx).id {
-                    Some(n.clone())
+                    Some((n.clone(), opt))
                 } else {
                     None
                 }
             })
             .collect();
-        if skip_self && param_names.first().map(|n| n == "self").unwrap_or(false) {
-            param_names.remove(0);
+        // Trim trailing optional parameters from the snippet
+        while params.last().is_some_and(|(_, opt)| *opt) {
+            params.pop();
         }
+        let param_names: Vec<String> = params.into_iter().map(|(n, _)| n).collect();
         if param_names.is_empty() && !func.is_vararg {
             // No params: no snippet needed, return plain `label()`
             return None;

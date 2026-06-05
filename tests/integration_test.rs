@@ -4403,6 +4403,90 @@ fn snippet_suppressed_when_parens_follow() {
 }
 
 #[test]
+fn snippet_omits_trailing_optional_params() {
+    // When completing a function call, trailing optional parameters should not
+    // get placeholder tab stops in the snippet.
+    let source = "---@param x number\n---@param y? string\n---@param z? boolean\nlocal function greet(x, y, z) end\nprint(gre)\n";
+    // Cursor right after "gre", before the closing ")"
+    let cursor = source.find("(gre)").unwrap() as u32 + 4;
+    assert_eq!(source.as_bytes()[(cursor - 1) as usize], b'e');
+
+    let tree = wowlua_ls::syntax::parser::parse(source);
+    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let items = result.completions_at(&tree, cursor, source, true).unwrap();
+    let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
+    let snippet = greet.insert_text.as_ref().expect("should have snippet");
+    // Only required param `x` should appear; optional `y` and `z` should be omitted
+    assert_eq!(snippet, "greet(${1:x})", "trailing optional params should be omitted, got: {}", snippet);
+}
+
+#[test]
+fn snippet_keeps_optional_before_required() {
+    // Optional params that are NOT trailing (i.e., a required param follows) should still appear.
+    let source = "---@param x? number\n---@param y string\nlocal function greet(x, y) end\nprint(gre)\n";
+    let cursor = source.find("(gre)").unwrap() as u32 + 4;
+
+    let tree = wowlua_ls::syntax::parser::parse(source);
+    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let items = result.completions_at(&tree, cursor, source, true).unwrap();
+    let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
+    let snippet = greet.insert_text.as_ref().expect("should have snippet");
+    // Both params should appear since optional `x` is not trailing
+    assert_eq!(snippet, "greet(${1:x}, ${2:y})", "non-trailing optional params should be kept, got: {}", snippet);
+}
+
+#[test]
+fn snippet_all_optional_becomes_no_snippet() {
+    // If all params are optional, the snippet should be omitted (plain label).
+    let source = "---@param x? number\n---@param y? string\nlocal function greet(x, y) end\nprint(gre)\n";
+    let cursor = source.find("(gre)").unwrap() as u32 + 4;
+
+    let tree = wowlua_ls::syntax::parser::parse(source);
+    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let items = result.completions_at(&tree, cursor, source, true).unwrap();
+    let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
+    // No snippet — plain completion with just parens added by the editor
+    assert!(
+        greet.insert_text.is_none(),
+        "all-optional params should produce no snippet, got: {:?}",
+        greet.insert_text
+    );
+}
+
+#[test]
+fn snippet_method_trailing_optional_with_self() {
+    // Colon-method completion should skip self AND trim trailing optional params.
+    let source = "---@class Foo\nlocal Foo = {}\n---@param x number\n---@param y? string\nfunction Foo:bar(x, y) end\nFoo:ba\nprint(Foo)\n";
+    // Cursor right after "ba" in "Foo:ba"
+    let cursor = source.find(":ba\n").unwrap() as u32 + 3;
+    assert_eq!(source.as_bytes()[(cursor - 1) as usize], b'a');
+
+    let tree = wowlua_ls::syntax::parser::parse(source);
+    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let items = result.completions_at(&tree, cursor, source, true).unwrap();
+    let bar = items.iter().find(|c| c.label == "bar").expect("should find 'bar'");
+    let snippet = bar.insert_text.as_ref().expect("should have snippet");
+    // self is skipped (colon syntax), trailing optional `y` is trimmed, only `x` remains
+    assert_eq!(snippet, "bar(${1:x})", "method snippet should skip self and trim trailing optional, got: {}", snippet);
+}
+
+#[test]
 fn library_dirs_user() {
     // User file should see types from library directory
     run_annotation_tests(&TestConfig {
@@ -4491,3 +4575,4 @@ fn library_dirs_external() {
         scan_dir: Some("tests/library-dirs-external/addon"),
     });
 }
+
