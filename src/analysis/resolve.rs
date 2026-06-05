@@ -3250,11 +3250,16 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
                     Some(ValueType::union(ValueType::Boolean(Some(true)), rhs_type.clone()))
                 },
                 (ValueType::Union(types), _) => {
-                    let has_falsy = types.iter().any(|t| matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))));
+                    let has_falsy = types.iter().any(|t| matches!(t, ValueType::Nil | ValueType::Boolean(Some(false)) | ValueType::Boolean(None)));
                     if has_falsy {
                         let mut remaining: Vec<ValueType> = types.iter()
-                            .filter(|t| !matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))))
-                            .cloned().collect();
+                            .filter_map(|t| match t {
+                                ValueType::Nil | ValueType::Boolean(Some(false)) => None,
+                                // Boolean(None) can be false; keep only the truthy part
+                                ValueType::Boolean(None) => Some(ValueType::Boolean(Some(true))),
+                                other => Some(other.clone()),
+                            })
+                            .collect();
                         remaining.push(rhs_type.clone());
                         Some(ValueType::make_union(remaining))
                     } else {
@@ -3272,8 +3277,13 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
                 (ValueType::Nil, _) | (ValueType::Boolean(Some(false)), _) => Some(lhs_type),
                 (ValueType::Union(types), _) => {
                     let falsy: Vec<ValueType> = types.iter()
-                        .filter(|t| matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))))
-                        .cloned().collect();
+                        .filter_map(|t| match t {
+                            ValueType::Nil | ValueType::Boolean(Some(false)) => Some(t.clone()),
+                            // Boolean(None) can be false; extract the falsy part
+                            ValueType::Boolean(None) => Some(ValueType::Boolean(Some(false))),
+                            _ => None,
+                        })
+                        .collect();
                     if falsy.is_empty() {
                         Some(rhs_type)
                     } else {

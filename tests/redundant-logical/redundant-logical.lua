@@ -505,3 +505,28 @@ local j = nil and "hello"
 local neverSet = nil
 local k = neverSet and "hello"
 --        ^ diag: redundant-and
+
+-- ── No diagnostic: boolean in union makes or-chain not always truthy ────────
+
+-- `val or flag` = number | boolean; boolean can be false, so `or false` is reachable.
+---@param flag boolean
+---@param val number?
+local function boolUnionAndTrueOrFalse(flag, val)
+    local result = (val or flag) and true or false
+    return result
+end
+_use(boolUnionAndTrueOrFalse)
+
+-- Same pattern with a longer or-chain (regression for the original report).
+---@param flag1 boolean
+---@param flag2 boolean
+---@param sold boolean
+local function boolInUnionOr(flag1, flag2, sold)
+    local duration = flag1 and 5 or nil
+    local keyword = flag2 and "text" or nil
+    local bid = nil
+    if flag1 then bid = false elseif flag2 then bid = true end
+    local hasFilter = (duration or keyword or bid ~= nil or sold) and true or false
+    return hasFilter
+end
+_use(boolInUnionOr)
