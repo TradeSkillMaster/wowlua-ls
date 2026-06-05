@@ -94,26 +94,55 @@ fn any_table_has_value_type(analysis: &AnalysisResult, ty: &ValueType) -> bool {
     }
 }
 
-/// Returns true when the LHS is a field access on a bare (non-`@class`) table.
-/// On such tables, field existence is not schema-guaranteed — the LS infers
-/// field types from writes it observes, but the field may be nil at runtime if
-/// it hasn't been set yet. The `x = x.field or default` idiom is standard for
-/// initializing fields on reused tables.
-fn lhs_is_field_on_unclassed_table(analysis: &AnalysisResult, lhs: ExprId) -> bool {
+/// Returns true when the LHS is a field access where field existence is not
+/// schema-guaranteed. This covers two cases:
+/// 1. Bare (non-`@class`) tables: field types are inferred from writes, not
+///    declared via `@field`, so the field may be nil at runtime.
+/// 2. `@class` tables where the field is NOT directly annotated on the table
+///    itself (ignoring parent classes). Even if a parent class declares the
+///    field, Lua class inheritance only provides type information — it does not
+///    guarantee the field has been initialized on the receiver object.
+///
+/// In both cases, `x.field = x.field or default` is a standard Lua idiom and
+/// the `or` is not redundant.
+fn lhs_is_field_without_annotation(analysis: &AnalysisResult, lhs: ExprId) -> bool {
     let lhs = unwrap_to_inner(&analysis.ir.exprs, lhs);
-    let Expr::FieldAccess { table, .. } = &analysis.ir.exprs[lhs.val()] else { return false };
-    let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
+    let Expr::FieldAccess { table, field, .. } = &analysis.ir.exprs[lhs.val()] else { return false };
+    let table_expr = *table;
+    let field = field.as_str();
+    let Some(table_type) = analysis.resolve_expr_type(table_expr) else { return false };
     let table_type = table_type.into_strip_opaque();
-    any_table_is_unclassed(analysis, &table_type)
+    any_table_lacks_direct_field_annotation(analysis, &table_type, field)
 }
 
 /// Recursively checks whether any table in a (possibly union/intersection) type
-/// is a bare table without a `@class` declaration.
-fn any_table_is_unclassed(analysis: &AnalysisResult, ty: &ValueType) -> bool {
+/// either has no `@class` declaration, or is a `@class` table that does NOT have
+/// the given field directly authored (via `@field`) on itself.
+///
+/// Prescan copies annotated fields from parent classes into child tables, so a
+/// child's `fields` HashMap can contain an inherited entry with `annotation.is_some()`.
+/// To distinguish direct from inherited, we check whether ANY parent class also
+/// has the same annotated field. If so, the child's entry is a copy and the field
+/// is not schema-guaranteed on the child itself.
+fn any_table_lacks_direct_field_annotation(analysis: &AnalysisResult, ty: &ValueType, field: &str) -> bool {
     match ty {
-        ValueType::Table(Some(idx)) => analysis.table(*idx).class_name.is_none(),
+        ValueType::Table(Some(idx)) => {
+            let table = analysis.table(*idx);
+            // Bare table (no @class) — fields are never schema-guaranteed.
+            if table.class_name.is_none() { return true; }
+            // No annotated field at all → suppress.
+            let Some(fi) = table.fields.get(field) else { return true; };
+            if fi.annotation.is_none() { return true; }
+            // The field has an annotation — check if it was inherited from a parent.
+            // If any parent also has this annotated field, the child's entry is a
+            // prescan copy, not a direct `@field` declaration.
+            table.parent_classes.iter().any(|&parent_idx| {
+                analysis.table(parent_idx).fields.get(field)
+                    .is_some_and(|pfi| pfi.annotation.is_some())
+            })
+        }
         ValueType::Union(types) | ValueType::Intersection(types) => {
-            types.iter().any(|t| any_table_is_unclassed(analysis, t))
+            types.iter().any(|t| any_table_lacks_direct_field_annotation(analysis, t, field))
         }
         _ => false,
     }
@@ -226,10 +255,11 @@ impl DiagnosticPass for RedundantLogical {
             // `param = param or default` idiom is standard for optional params.
             if matches!(op, Operator::Or) && lhs_is_unannotated_param(analysis, lhs) { continue; }
 
-            // Skip field access on bare (non-@class) tables: field existence is
-            // inferred from writes, not declared via @field, so the field may be
-            // nil at runtime even though the LS resolves it to a non-nil type.
-            if matches!(op, Operator::Or) && lhs_is_field_on_unclassed_table(analysis, lhs) { continue; }
+            // Skip field accesses where the field lacks a direct @field annotation:
+            // bare tables (no @class) and @class tables where the field is only
+            // inherited or code-discovered. In both cases the field may be nil at
+            // runtime, so `x.field = x.field or default` is a legitimate idiom.
+            if matches!(op, Operator::Or) && lhs_is_field_without_annotation(analysis, lhs) { continue; }
 
             // Skip symbols whose initial definition (version 0) was nil/falsy:
             // loop-body branch merges can make a later version appear always

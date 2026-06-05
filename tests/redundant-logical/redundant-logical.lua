@@ -530,3 +530,43 @@ local function boolInUnionOr(flag1, flag2, sold)
     return hasFilter
 end
 _use(boolInUnionOr)
+
+-- ── No diagnostic: undeclared (inject) field on @class table ───────────────
+
+-- A field access on a @class table where the field is NOT declared via @field.
+-- Such fields are inject-fields set by code, not schema-guaranteed to exist.
+-- The `x.field = x.field or default` idiom is standard for initializing them.
+---@class PickerFrame
+---@field SetColorRGB fun(self: PickerFrame, r: number, g: number, b: number)
+
+---@type PickerFrame
+local picker
+
+---@diagnostic disable: inject-field
+picker.previousValues = picker.previousValues or {}
+picker.previousValues.r = 1
+picker.previousValues.g = 2
+picker.previousValues.b = 3
+_use(picker)
+
+-- Inherited @field from a parent class: the child's own table does not directly
+-- declare the field, so initialization is not guaranteed on the child instance.
+---@class BaseFrame
+---@field data table
+
+---@class ChildFrame : BaseFrame
+---@type ChildFrame
+local child
+
+---@diagnostic disable-next-line: inject-field
+child.data = child.data or {}
+_use(child)
+
+-- Declared @field on a @class IS guaranteed to exist, so `or` is still redundant.
+---@class ConfigHolder
+---@field settings table
+---@type ConfigHolder
+local cfgHolder
+local s = cfgHolder.settings or {}
+--                            ^ diag: redundant-or
+_use(s)
