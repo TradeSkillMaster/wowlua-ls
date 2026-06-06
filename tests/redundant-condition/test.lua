@@ -350,6 +350,54 @@ if ready then
     _use(ready)
 end
 
+-- For-in loop variant: boolean flags checked after loop
+local allReady = true
+for _item in items() do
+    allReady = false
+end
+if allReady then end
+
+local anyBad = false
+for _item in items() do
+    anyBad = true
+end
+if anyBad then end
+
+-- Multiple flags from same preceding for-in loop
+local allGood = true
+local anyError = false
+for _item in items() do
+    allGood = false
+    anyError = true
+end
+if allGood then end
+if anyError then end
+
+-- Compound condition referencing preceding-loop variables
+local flagA = true
+local flagB = false
+for _item in items() do
+    flagA = false
+    flagB = true
+end
+if flagA and flagB then end
+
+-- `not` wrapper with preceding-loop variable
+local done = false
+for _item in items() do
+    done = true
+end
+if not done then end
+
+-- Variable whose defining expression references a loop-reassigned variable
+-- (one level of transitive expansion)
+local picked = nil
+for _item in items() do
+    picked = getChild()
+end
+local derived = someFunc() and picked or nil
+if derived then end
+
 -- Variable NOT reassigned inside the loop — still diagnose after the loop
 local neverModified = 42
 for j = 1, 3 do
@@ -366,6 +414,16 @@ for j = 1, 3 do
     beforeLoop = false
 end
 _use(beforeLoop)
+
+-- Two-level transitive chain — known limitation (only one level is followed)
+local loopFlag = true
+for _item in items() do
+    loopFlag = false
+end
+local mid = loopFlag
+local chained = mid
+if chained then end
+-- ^ diag: redundant-condition
 
 -- ── Suppression ──────────────────────────────────────────────────────────────
 

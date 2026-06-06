@@ -53,11 +53,12 @@ impl DiagnosticPass for RedundantCondition {
     }
 }
 
-/// Collect all `SymbolRef`s reachable from the condition expression by
-/// unwrapping narrowing wrappers, `not`, and `and`/`or` operands.
-fn collect_symbol_refs(ir: &crate::analysis::Ir, expr_id: ExprId, out: &mut Vec<SymbolIndex>) {
+/// Collect all `SymbolRef`s (with version indices) reachable from an
+/// expression by unwrapping narrowing wrappers, `not`, and `and`/`or`
+/// operands.
+fn collect_symbol_refs(ir: &crate::analysis::Ir, expr_id: ExprId, out: &mut Vec<(SymbolIndex, usize)>) {
     match ir.expr(expr_id) {
-        Expr::SymbolRef(sym_idx, _) => out.push(*sym_idx),
+        Expr::SymbolRef(sym_idx, ver_idx) => out.push((*sym_idx, *ver_idx)),
         Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner)
         | Expr::Grouped(inner) => collect_symbol_refs(ir, *inner, out),
         Expr::UnaryOp { op: Operator::Not, operand } => collect_symbol_refs(ir, *operand, out),
@@ -83,7 +84,7 @@ fn is_loop_reassigned_condition(
     collect_symbol_refs(ir, expr_id, &mut sym_refs);
     if sym_refs.is_empty() { return false; }
 
-    let local_syms: Vec<_> = sym_refs.iter().filter_map(|&idx| {
+    let local_syms: Vec<_> = sym_refs.iter().filter_map(|&(idx, _)| {
         if idx.is_external() { return None; }
         Some((idx, ir.sym(idx)))
     }).collect();
@@ -108,7 +109,7 @@ fn is_loop_reassigned_condition(
     // Case 2: condition is after a preceding loop. A variable defined before
     // the loop but reassigned inside it may hold either its pre-loop or
     // in-loop value. Only suppress when the loop ends before the condition.
-    local_syms.iter().any(|(_, sym)| {
+    if local_syms.iter().any(|(_, sym)| {
         sym.versions.iter().any(|ver| {
             // Find the innermost loop enclosing this version's creation scope.
             let Some(ver_loop) = find_enclosing_loop(ir, ver.created_in_scope) else { return false };
@@ -119,6 +120,15 @@ fn is_loop_reassigned_condition(
             let Some(&(_, loop_end, _)) = ir.block_scopes.iter().find(|&&(_, _, s)| s == ver_loop) else { return false };
             loop_end <= offset
         })
+    }) {
+        return true;
+    }
+
+    // Case 3: transitive — the condition references a variable whose defining
+    // expression depends on a loop-reassigned variable (one level deep).
+    // Handles patterns like `local result = expr and loopVar or nil`.
+    sym_refs.iter().any(|&(sym_idx, ver_idx)| {
+        sym_def_has_loop_reassigned_dep(ir, sym_idx, ver_idx, offset)
     })
 }
 
@@ -130,4 +140,35 @@ fn find_enclosing_loop(ir: &crate::analysis::Ir, scope: ScopeIndex) -> Option<Sc
 /// Returns true if `scope` is `container` or a descendant of `container`.
 fn is_scope_inside(ir: &crate::analysis::Ir, scope: ScopeIndex, container: ScopeIndex) -> bool {
     ancestor_scopes(&ir.scopes, scope).any(|s| s == container)
+}
+
+/// One level of transitive expansion: check if the visible version's defining
+/// expression references symbols that have preceding loop versions.  This
+/// handles cases like `local result = expr and loopVar or nil`.
+///
+/// Deeper chains (e.g. `local a = loopVar; local b = a; if b then`) are not
+/// followed — the second indirection is a known limitation.
+fn sym_def_has_loop_reassigned_dep(
+    ir: &crate::analysis::Ir,
+    sym_idx: SymbolIndex,
+    ver_idx: usize,
+    offset: u32,
+) -> bool {
+    if sym_idx.is_external() { return false; }
+    let sym = ir.sym(sym_idx);
+    let Some(ver) = sym.versions.get(ver_idx) else { return false };
+    let Some(src) = ver.type_source else { return false };
+
+    let mut dep_refs = Vec::new();
+    collect_symbol_refs(ir, src, &mut dep_refs);
+    dep_refs.iter().any(|&(dep_sym_idx, _)| {
+        if dep_sym_idx.is_external() { return false; }
+        let dep_sym = ir.sym(dep_sym_idx);
+        dep_sym.versions.iter().any(|dep_ver| {
+            let Some(ver_loop) = find_enclosing_loop(ir, dep_ver.created_in_scope) else { return false };
+            if is_scope_inside(ir, dep_sym.scope_idx, ver_loop) { return false; }
+            let Some(&(_, loop_end, _)) = ir.block_scopes.iter().find(|&&(_, _, s)| s == ver_loop) else { return false };
+            loop_end <= offset
+        })
+    })
 }
