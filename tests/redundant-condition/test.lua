@@ -247,6 +247,34 @@ for i = 1, 5 do
 end
 _use(left, right)
 
+-- While-loop condition variable reassigned inside body (string param)
+---@param name string
+local function whileCondReassign(name)
+    while name do
+        _use(name)
+        name = getNext()
+    end
+end
+_use(whileCondReassign)
+
+-- While-loop condition variable reassigned inside body (local)
+local function whileCondReassignLocal()
+    local item = getFirst()
+    while item do
+        _use(item)
+        item = getNext()
+    end
+end
+_use(whileCondReassignLocal)
+
+-- While-loop condition NOT reassigned — still diagnose
+---@param name string
+local function whileCondNotReassigned(name)
+    while name do break end
+    --    ^ diag: redundant-condition
+end
+_use(whileCondNotReassigned)
+
 -- repeat...until with reassigned variable
 local repFound = nil
 repeat

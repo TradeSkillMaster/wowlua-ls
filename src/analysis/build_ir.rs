@@ -817,23 +817,28 @@ impl<'a> Analysis<'a> {
                     }
                 },
                 Statement::While(while_loop) => {
-                    if let Some(cond) = while_loop.condition() {
+                    let cond_info = while_loop.condition().map(|cond| {
                         let expr_id = self.lower_expression(&cond, scope_idx);
-                        self.ir.record_condition_site(expr_id, cond.syntax().text_range());
-                    }
+                        let range = cond.syntax().text_range();
+                        (expr_id, range, cond)
+                    });
                     if let Some(inner_block) = while_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         self.ir.scopes[new_scope_idx.val()].is_loop = true;
-                        if let Some(cond) = while_loop.condition() {
+                        // Record condition site after loop scope exists so the
+                        // loop-reassignment suppression can find it (the while
+                        // condition is lowered in the parent scope).
+                        if let Some((expr_id, range, ref cond)) = cond_info {
+                            self.ir.record_loop_condition_site(expr_id, range, new_scope_idx);
                             // Narrow the loop body scope (condition is true inside the loop)
-                            self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, true);
+                            self.analyze_nil_guard(cond, scope_idx, new_scope_idx, true);
                             // Collect post-loop narrowings: when the loop exits normally
                             // (condition is false), narrow symbols accordingly.
                             // Skip for `while true` (infinite loop) and loops with break.
-                            let is_literal_true = matches!(&cond,
+                            let is_literal_true = matches!(cond,
                                 Expression::Literal(lit) if lit.get_bool() == Some(true));
                             if !is_literal_true && !Self::block_contains_break(&inner_block) {
-                                let symbols = self.collect_while_exit_narrowings(&cond, scope_idx);
+                                let symbols = self.collect_while_exit_narrowings(cond, scope_idx);
                                 pending_while_narrowings.push(PendingWhileNarrowing {
                                     body_scope: new_scope_idx,
                                     parent_scope: scope_idx,
@@ -850,6 +855,9 @@ impl<'a> Analysis<'a> {
                             // While body may not execute (condition may be false on entry).
                             is_conditional: true,
                         });
+                    } else if let Some((expr_id, range, _)) = cond_info {
+                        // No block to form a loop scope; record without loop hint.
+                        self.ir.record_condition_site(expr_id, range);
                     }
                 },
                 Statement::Repeat(repeat_loop) => {
@@ -864,7 +872,7 @@ impl<'a> Analysis<'a> {
                         // diagnostic can find it (the `until` condition is lowered
                         // in the parent scope, not the loop body scope).
                         if let Some((expr_id, range)) = cond_info {
-                            self.ir.record_repeat_condition_site(expr_id, range, new_scope_idx);
+                            self.ir.record_loop_condition_site(expr_id, range, new_scope_idx);
                         }
                         stack.push(Frame {
                             block: inner_block,

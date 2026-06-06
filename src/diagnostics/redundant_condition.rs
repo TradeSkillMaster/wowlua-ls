@@ -29,7 +29,7 @@ impl DiagnosticPass for RedundantCondition {
             // that is reassigned within the loop body. The variable's type may
             // differ across iterations even though Phase 1 only saw the
             // pre-loop version when lowering the condition expression.
-            if is_loop_reassigned_condition(&analysis.ir, site.expr_id, site.start, site.repeat_loop_scope) {
+            if is_loop_reassigned_condition(&analysis.ir, site.expr_id, site.start, site.loop_scope) {
                 continue;
             }
 
@@ -68,16 +68,16 @@ fn is_loop_reassigned_condition(
     ir: &crate::analysis::Ir,
     expr_id: ExprId,
     offset: u32,
-    repeat_loop_scope: Option<ScopeIndex>,
+    loop_scope_hint: Option<ScopeIndex>,
 ) -> bool {
     let mut sym_refs = Vec::new();
     collect_symbol_refs(ir, expr_id, &mut sym_refs);
     if sym_refs.is_empty() { return false; }
 
-    // Find the enclosing loop scope. For `repeat...until`, the condition is in
-    // the parent scope so ancestor-walking won't find the loop body — use the
-    // stored scope instead.
-    let loop_scope = repeat_loop_scope.or_else(|| {
+    // Find the enclosing loop scope. For `while` and `repeat...until`, the
+    // condition is in the parent scope so ancestor-walking won't find the loop
+    // body — use the stored scope instead.
+    let loop_scope = loop_scope_hint.or_else(|| {
         let cond_scope = ir.scope_at_offset(offset)?;
         find_enclosing_loop(ir, cond_scope)
     });
