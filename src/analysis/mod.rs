@@ -39,6 +39,10 @@ pub(crate) struct ConditionSite {
     /// Byte range of the condition expression.
     pub start: u32,
     pub end: u32,
+    /// For `repeat...until` conditions, the loop body scope. The `until`
+    /// condition is lowered in the parent scope, so `scope_at_offset` won't
+    /// find the loop — this field bridges the gap.
+    pub repeat_loop_scope: Option<ScopeIndex>,
 }
 
 // ── Call-site self_offset ───────────────────────────────────────────────────
@@ -245,6 +249,17 @@ impl Ir {
             expr_id,
             start: u32::from(range.start()),
             end: u32::from(range.end()),
+            repeat_loop_scope: None,
+        });
+    }
+
+    /// Record a `repeat...until` condition with its loop body scope.
+    pub(crate) fn record_repeat_condition_site(&mut self, expr_id: ExprId, range: crate::syntax::tree::TextRange, loop_scope: ScopeIndex) {
+        self.condition_sites.push(ConditionSite {
+            expr_id,
+            start: u32::from(range.start()),
+            end: u32::from(range.end()),
+            repeat_loop_scope: Some(loop_scope),
         });
     }
 

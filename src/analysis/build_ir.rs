@@ -853,13 +853,19 @@ impl<'a> Analysis<'a> {
                     }
                 },
                 Statement::Repeat(repeat_loop) => {
-                    if let Some(cond) = repeat_loop.condition() {
+                    let cond_info = repeat_loop.condition().map(|cond| {
                         let expr_id = self.lower_expression(&cond, scope_idx);
-                        self.ir.record_condition_site(expr_id, cond.syntax().text_range());
-                    }
+                        (expr_id, cond.syntax().text_range())
+                    });
                     if let Some(inner_block) = repeat_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         self.ir.scopes[new_scope_idx.val()].is_loop = true;
+                        // Record condition site after loop scope exists so the
+                        // diagnostic can find it (the `until` condition is lowered
+                        // in the parent scope, not the loop body scope).
+                        if let Some((expr_id, range)) = cond_info {
+                            self.ir.record_repeat_condition_site(expr_id, range, new_scope_idx);
+                        }
                         stack.push(Frame {
                             block: inner_block,
                             next_stmt: 0,
@@ -869,6 +875,8 @@ impl<'a> Analysis<'a> {
                             // Repeat body always executes at least once; inherit parent.
                             is_conditional: frame_is_conditional,
                         });
+                    } else if let Some((expr_id, range)) = cond_info {
+                        self.ir.record_condition_site(expr_id, range);
                     }
                 },
                 Statement::If(if_chain) => {

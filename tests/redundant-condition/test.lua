@@ -175,6 +175,99 @@ local reassigned = nil
 if math.random() > 0.5 then reassigned = "value" end
 if reassigned then end
 
+-- ── No diagnostic: variable reassigned inside loop ─────────────────────────
+
+-- "Find exactly one" pattern: variable initialised to nil, checked at the top
+-- of the loop body, and reassigned later in the body.
+local result = nil
+for i = 1, 10 do
+    if result then
+        result = nil
+        break
+    end
+    result = getItem(i)
+end
+_use(result)
+
+-- Numeric for with nil-init and reassignment
+local found = nil
+for k = 1, 5 do
+    if found then
+        break
+    end
+    found = lookup(k)
+end
+_use(found)
+
+-- While loop variant
+local hit = nil
+while hasNext() do
+    if hit then
+        break
+    end
+    hit = fetch()
+end
+_use(hit)
+
+-- Variable NOT reassigned inside the loop — still diagnose
+local neverSet = nil
+for j = 1, 3 do
+    if neverSet then end
+    -- ^ diag: redundant-condition
+    _use(j)
+end
+_use(neverSet)
+
+-- Always-truthy inside a loop, but variable not reassigned — still diagnose
+local alwaysNum = 42
+for j = 1, 3 do
+    if alwaysNum then end
+    -- ^ diag: redundant-condition
+    _use(j)
+end
+
+-- `not` wrapper: variable reassigned inside loop
+local notFound = nil
+for i = 1, 10 do
+    if not notFound then
+        notFound = search(i)
+    end
+end
+_use(notFound)
+
+-- `and`/`or` compound condition with reassigned variable
+local left = nil
+local right = nil
+for i = 1, 5 do
+    if left and right then
+        break
+    end
+    left = getLeft(i)
+    right = getRight(i)
+end
+_use(left, right)
+
+-- repeat...until with reassigned variable
+local repFound = nil
+repeat
+    repFound = search()
+until repFound
+_use(repFound)
+
+-- repeat...until with `not`: variable starts truthy, reassigned inside
+local repDone = true
+repeat
+    repDone = checkDone()
+until not repDone
+_use(repDone)
+
+-- repeat...until: variable NOT reassigned — still diagnose
+local repNever = nil
+repeat
+    _use(1)
+until repNever
+--    ^ diag: redundant-condition
+
 -- ── Suppression ──────────────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: redundant-condition
