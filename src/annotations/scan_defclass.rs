@@ -831,8 +831,10 @@ fn resolve_funcall_return_type(
 
     let func_path = names.join(".");
     if let Some(returns) = global_returns.get(&func_path) {
-        // For method calls (2+ names), the receiver class is names[0]
-        let receiver = if names.len() >= 2 { Some(names[0].as_str()) } else { None };
+        // For method calls (2+ names), the receiver is the name before the
+        // method — names[names.len()-2], not names[0] — so deep chains like
+        // Parent.Sub:Method() resolve `self` to "Sub", not "Parent".
+        let receiver = if names.len() >= 2 { Some(names[names.len() - 2].as_str()) } else { None };
         let chain_type = pick_effective_return(returns, receiver)?;
         return Some(ResolvedReturn { chain_type, built_name: None });
     }

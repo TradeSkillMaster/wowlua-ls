@@ -483,6 +483,14 @@ pub(super) fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<Ann
 // ── Typed self-field scanning ───────────────────────────────────────────────
 
 /// Build a per-file mapping from variable names to `@class` names.
+/// For a colon-syntax method with `names`, return the receiver name — the name
+/// just before the method name (i.e. the table that `self` refers to).
+/// For `function Parent.Sub:Method()` (names = ["Parent","Sub","Method"]),
+/// returns "Sub", not "Parent".
+fn receiver_name(names: &[String]) -> &str {
+    &names[names.len() - 2]
+}
+
 /// Handles `--- @class Foo\nlocal Bar = ...`, inline `local Bar = ... ---@class Foo`,
 /// and global assignments `--- @class Foo\nBar = ...`.
 pub(super) fn build_var_to_class(all_stmts: &[Statement<'_>]) -> HashMap<String, String> {
@@ -512,6 +520,13 @@ pub(super) fn build_var_to_class(all_stmts: &[Statement<'_>]) -> HashMap<String,
                             let names = idents[0].names();
                             if names.len() == 1 {
                                 map.insert(names[0].clone(), class_name);
+                            } else if names.len() >= 2 {
+                                // Also capture the last segment of multi-part
+                                // assignments (e.g. `---@class Sub\nParent.Sub = {}`)
+                                // so deep-chain methods like `Parent.Sub:Method()`
+                                // can resolve the receiver "Sub" → class name.
+                                let last = &names[names.len() - 1];
+                                map.insert(last.clone(), class_name);
                             }
                         }
                     }
@@ -541,9 +556,13 @@ pub(crate) fn scan_method_typed_self_fields(
         if !ident.is_call_to_self() { continue; }
         let names = ident.names();
         if names.len() < 2 { continue; }
-        let receiver = &names[0];
+        // For deep chains like `function addonTable.SubModule:Method()`,
+        // `self` refers to the table before the colon — not names[0].
+        // Using names[0] would misattribute self-fields to the root table's
+        // class instead of the sub-table's class.
+        let receiver = receiver_name(&names);
         let class_name = if known_classes.contains(receiver) {
-            receiver.clone()
+            receiver.to_string()
         } else if let Some(cn) = var_to_class.get(receiver).filter(|cn| known_classes.contains(*cn)) {
             cn.clone()
         } else {
@@ -657,9 +676,9 @@ pub(crate) fn scan_method_funcall_self_fields(
         if !ident.is_call_to_self() { continue; }
         let names = ident.names();
         if names.len() < 2 { continue; }
-        let receiver = &names[0];
+        let receiver = receiver_name(&names);
         let class_name = if known_classes.contains(receiver) {
-            receiver.clone()
+            receiver.to_string()
         } else if let Some(cn) = var_to_class.get(receiver).filter(|cn| known_classes.contains(*cn)) {
             cn.clone()
         } else {
@@ -823,9 +842,9 @@ pub(crate) fn scan_method_bare_self_fields(
         if !ident.is_call_to_self() { continue; }
         let names = ident.names();
         if names.len() < 2 { continue; }
-        let receiver = &names[0];
+        let receiver = receiver_name(&names);
         let class_name = if known_classes.contains(receiver) {
-            receiver.clone()
+            receiver.to_string()
         } else if let Some(cn) = var_to_class.get(receiver).filter(|cn| known_classes.contains(*cn)) {
             cn.clone()
         } else {
