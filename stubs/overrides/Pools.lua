@@ -10,6 +10,7 @@ local ObjectPool = {}
 
 ---Acquires an object from the pool, creating one if necessary.
 ---@return T
+---@return boolean isNew
 function ObjectPool:Acquire() end
 
 ---Releases the given object back into the pool.
@@ -45,6 +46,7 @@ local FramePool = {}
 
 ---Acquires a frame from the pool, creating one if necessary.
 ---@return T & Tp
+---@return boolean isNew
 function FramePool:Acquire() end
 
 ---Releases the given frame back into the pool.
@@ -95,11 +97,12 @@ function FramePoolCollection:GetOrCreatePool(frameType, parent, template, resetF
 ---When both frameType and template are string literals, returns the intersection
 ---type matching what GetOrCreatePool/CreatePool would have produced.
 ---@generic T, Tp
----@overload fun(self: FramePoolCollection, frameType: `T`|FrameType, parent?: any, template: `Tp`|string): T & Tp
+---@overload fun(self: FramePoolCollection, frameType: `T`|FrameType, parent?: any, template: `Tp`|string): T & Tp, boolean
 ---@param frameType FrameType
 ---@param parent? any
 ---@param template? string
 ---@return Frame
+---@return boolean isNew
 function FramePoolCollection:Acquire(frameType, parent, template) end
 
 ---Releases all active objects in all pools back into their respective pools.

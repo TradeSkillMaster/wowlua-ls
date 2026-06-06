@@ -999,8 +999,15 @@ local function makeBtn()
     return CreateFrame("Button")
 end
 local btnPool = CreateObjectPool(makeBtn)
-local acquiredBtn = btnPool:Acquire()
+local acquiredBtn, acquiredBtnIsNew = btnPool:Acquire()
 --    ^ hover: (local) acquiredBtn: Button
+--                     ^ hover: (local) acquiredBtnIsNew: boolean
+
+-- FramePool:Acquire() also returns (T & Tp, boolean)
+---@type FramePool<Button>
+local framePool
+local fpFrame, fpIsNew = framePool:Acquire()
+--             ^ hover: (local) fpIsNew: boolean
 
 -- CreateFramePoolCollection returns a FramePoolCollection
 local poolColl = CreateFramePoolCollection()
