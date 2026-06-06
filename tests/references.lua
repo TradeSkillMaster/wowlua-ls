@@ -1,4 +1,4 @@
----@diagnostic disable: shadowed-local, unused-function, unused-local
+---@diagnostic disable: shadowed-local, unused-function, unused-local, redefined-local
 -- wowlua_ls references test
 
 -- Basic local variable
@@ -101,4 +101,66 @@ end
 --        ^ refs: 102:28, 103:12
 local function find_target(target)
     return target
+end
+
+-- Method references via field chains and function call results
+---@class RefWidget
+---@field value number
+local RefWidget = {}
+
+---@return RefWidget
+local function createWidget()
+    return RefWidget
+end
+
+function RefWidget:Reset()
+    self.value = 0
+end
+
+---@class RefContainer
+---@field widget RefWidget
+local RefContainer = {}
+
+---@return RefContainer
+local function createContainer()
+    return RefContainer
+end
+
+-- Direct method call
+local w = createWidget()
+w:Reset()
+--^ refs: 116:20, 131:3, 135:16, 140:10
+
+-- Method call on function result (the regression case)
+createWidget():Reset()
+--             ^ refs: 116:20, 131:3, 135:16, 140:10
+
+-- Method call through field chain
+local c = createContainer()
+c.widget:Reset()
+--       ^ refs: 116:20, 131:3, 135:16, 140:10
+
+-- Negative test: different class with same method name should NOT cross-match
+---@class RefTimer
+local RefTimer = {}
+function RefTimer:Reset()
+    -- different Reset, different class
+end
+local tmr = RefTimer
+tmr:Reset()
+--  ^ refs: 146:19, 150:5
+
+-- Inherited field: child class references resolve to parent's field
+---@class RefBaseItem
+local RefBaseItem = {}
+function RefBaseItem:GetName()
+    return "base"
+end
+---@class RefSpecialItem : RefBaseItem
+local RefSpecialItem = {}
+---@type RefSpecialItem
+local item = nil
+if item then
+    item:GetName()
+    --   ^ refs: 156:22, 164:10
 end

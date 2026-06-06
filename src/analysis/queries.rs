@@ -5,7 +5,7 @@ use super::{AnalysisResult, Ir};
 use crate::syntax::SyntaxKind;
 use crate::syntax::tree::{SyntaxTree, TokenId};
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, TokenAtOffset};
-use crate::ast::{AstNode, Expression, ForInLoop, FunctionCall, FunctionDefinition, Identifier, LocalAssign, Operator};
+use crate::ast::{AstNode, Expression, ForInLoop, FunctionCall, FunctionDefinition, LocalAssign, Operator};
 
 /// JSON data key: byte offset where the completion's text_edit range starts.
 pub const DATA_REPLACE_START: &str = "replace_start";
@@ -3894,9 +3894,17 @@ impl AnalysisResult {
             }
             TokenAtOffset::None => return None,
         };
+        self.resolve_field_chain_for_token(token)
+    }
+
+    /// Resolve a field access chain for a pre-found Name token.
+    /// Same as `resolve_field_chain_at` but avoids redundant O(log n) tree traversal
+    /// when the caller already has the token (e.g. from a `descendants_with_tokens` walk).
+    fn resolve_field_chain_for_token(&self, token: SyntaxToken<'_>) -> Option<(TableIndex, String, ExprId, FieldAccessKind, Vec<TableIndex>)> {
         if token.kind() != SyntaxKind::Name {
             return None;
         }
+        let text_size = token.text_range().start();
         let parent = token.parent()?;
 
         // Handle method name in FunctionCall/MethodCall: expr:method(args)
@@ -4095,6 +4103,31 @@ impl AnalysisResult {
             return Self::extract_table_idx(&global_type);
         }
         None
+    }
+
+    /// Check whether two table indices refer to tables connected by inheritance.
+    /// Returns `true` if `a` is an ancestor of `b` or `b` is an ancestor of `a`.
+    /// Used by find-references to match inherited fields: `resolve_field_chain_at`
+    /// returns the parent class that owns a field, but the target may be the child
+    /// class (or vice versa).
+    fn tables_share_field_owner(&self, a: TableIndex, b: TableIndex) -> bool {
+        // Check if a is an ancestor of b
+        let is_ancestor = |ancestor: TableIndex, descendant: TableIndex| -> bool {
+            for &parent_idx in &self.table(descendant).parent_classes {
+                if parent_idx == ancestor { return true; }
+            }
+            // For cross-file: local class → ext class via class_name
+            if ancestor.is_external() && !descendant.is_external()
+                && let Some(cn) = &self.table(descendant).class_name
+                && let Some(ext_idx) = self.ir.ext.classes.get(cn).copied()
+            {
+                for &parent_idx in &self.table(ext_idx).parent_classes {
+                    if parent_idx == ancestor { return true; }
+                }
+            }
+            false
+        };
+        is_ancestor(a, b) || is_ancestor(b, a)
     }
 
     /// Detect whether the separator before a Name token in an Identifier is a colon or dot.
@@ -5059,102 +5092,39 @@ impl AnalysisResult {
             }
             ReferenceTarget::Field { table_idx, field_name } => {
                 let table_idx = *table_idx;
-                // Field reference: find all Name tokens in dot/colon chains that resolve to the same table+field
+                // Field reference: find all Name tokens that resolve to the same table+field
+                // via resolve_field_chain_for_token, which correctly handles method calls on
+                // function call results, intermediate field chains, and colon-syntax definitions.
+                // The accept logic also handles cross-file class_name matching (local @class
+                // tables promoted to their EXT_BASE+ counterpart) and inherited fields (the
+                // resolved table may be a parent class of the target, or vice versa).
                 let mut results = Vec::new();
                 for token in SyntaxNode::new_root(tree).descendants_with_tokens().filter_map(|it| it.into_token()) {
                     if token.kind() != SyntaxKind::Name || token.text() != field_name.as_str() {
                         continue;
                     }
-                    // Must be in a multi-part Identifier and not the root name.
-                    // For parser2's DotAccess/MethodCall, the Name token is a direct child
-                    // with the base expression as a child node (not a sibling Name token).
-                    let parent = match token.parent() {
-                        Some(p) if p.kind().is_identifier() => p,
-                        _ => continue,
-                    };
-                    let parent_kind = parent.kind();
-                    // For DotAccess/MethodCall: single direct Name is the field, base is a child node
-                    let is_parser2_field = matches!(parent_kind, SyntaxKind::DotAccess | SyntaxKind::MethodCall)
-                        && parent.children().any(|c| c.kind().is_identifier() || c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall);
-                    // For the old-style flat Identifier, collect the Name tokens once and
-                    // reuse them both for locating the root name and walking intermediates.
-                    let flat_names: Vec<SyntaxToken<'_>> = if is_parser2_field {
-                        Vec::new()
-                    } else {
-                        let all: Vec<_> = parent.children_with_tokens()
-                            .filter_map(|it| it.into_token())
-                            .filter(|t| t.kind() == SyntaxKind::Name)
-                            .collect();
-                        if all.len() < 2 { continue; }
-                        all
-                    };
-                    // Position of the caret-matched token in the flat chain (0 = root name).
-                    let our_idx = if is_parser2_field {
-                        0
-                    } else {
-                        match flat_names.iter().position(|n| n.text_range() == token.text_range()) {
-                            Some(idx) if idx > 0 => idx,
-                            _ => continue,
+                    if let Some((resolved_table, _, _, _, _)) = self.resolve_field_chain_for_token(token) {
+                        let accept = if resolved_table == table_idx {
+                            true
+                        } else if table_idx.is_external() && !resolved_table.is_external() {
+                            // Cross-file field search: the file that declares `@class X` keeps a
+                            // local table for it with `class_name = "X"`; fields defined on that
+                            // local (e.g. `function X:Method() end`) should be matched for an
+                            // external `X` target too.
+                            let ext_for_local = self.table(resolved_table).class_name.as_ref()
+                                .and_then(|n| self.ir.ext.classes.get(n).copied());
+                            ext_for_local == Some(table_idx)
+                        } else if self.tables_share_field_owner(table_idx, resolved_table) {
+                            // Inherited field: the target may be a child class while the resolved
+                            // table is the parent that owns the field (or vice versa). Check if
+                            // one is an ancestor of the other via parent_classes chains.
+                            true
+                        } else {
+                            false
+                        };
+                        if accept {
+                            results.push(token.text_range());
                         }
-                    };
-                    let root_name = if is_parser2_field {
-                        // Parser2 DotAccess: walk nested identifiers to find root name
-                        let Some(ident) = Identifier::cast(parent) else { continue };
-                        let chain_names = ident.names();
-                        if chain_names.is_empty() { continue; }
-                        chain_names[0].clone()
-                    } else {
-                        flat_names[0].text().to_string()
-                    };
-                    let text_size = token.text_range().start();
-                    let scope_idx = match self.scope_at_offset(text_size) {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    let sym_idx = match self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx) {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    let ver = match self.sym(sym_idx).versions.last() {
-                        Some(v) => v,
-                        None => continue,
-                    };
-                    let resolved = match ver.resolved_type.as_ref().and_then(Self::extract_table_idx) {
-                        Some(idx) => idx,
-                        _ => continue,
-                    };
-                    let mut cur_table = resolved;
-                    let mut matched = true;
-                    if !is_parser2_field {
-                        // Old-style flat Identifier: walk intermediate names up to (but not including)
-                        // our token's position.
-                        for name_token in &flat_names[1..our_idx] {
-                            let n = name_token.text().to_string();
-                            match self.get_field(cur_table, &n) {
-                                Some(field_info) => match self.resolve_expr_type(field_info.expr).as_ref().and_then(Self::extract_table_idx) {
-                                    Some(next) => cur_table = next,
-                                    _ => { matched = false; break; }
-                                },
-                                None => { matched = false; break; }
-                            }
-                        }
-                    }
-                    // For parser2 DotAccess: cur_table is already the direct parent table
-                    let accept = if matched && cur_table == table_idx {
-                        true
-                    } else if matched && table_idx.is_external() && !cur_table.is_external() {
-                        // Cross-file field search: the file that declares `@class X` keeps a
-                        // local table for it with `class_name = "X"`; fields defined on that
-                        // local (e.g. `function X:Method() end`) should be matched for an
-                        // external `X` target too.
-                        let ext_for_local = self.table(cur_table).class_name.as_ref()
-                            .and_then(|n| self.ir.ext.classes.get(n).copied());
-                        ext_for_local == Some(table_idx)
-                    } else {
-                        false
-                    };
-                    if accept {
-                        results.push(token.text_range());
                     }
                 }
 
