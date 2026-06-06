@@ -6214,7 +6214,7 @@ impl AnalysisResult {
         // Overload signatures (skip return-only overloads)
         for overload in &func.overloads {
             if overload.is_return_only { continue; }
-            let sig = self.build_overload_signature_info(overload);
+            let sig = self.build_overload_signature_info(overload, is_colon);
             let param_count = sig.params.len();
             let is_vararg = overload.is_vararg;
             signatures.push(sig);
@@ -6315,13 +6315,15 @@ impl AnalysisResult {
         SignatureInfo { label, params, param_docs, doc: func.doc.clone() }
     }
 
-    fn build_overload_signature_info(&self, overload: &ResolvedOverload) -> SignatureInfo {
-        let params: Vec<String> = overload.params.iter().map(|p| {
-            match &p.typ {
-                Some(vt) => format!("{}: {}", p.name, self.format_value_type_depth(vt, 1)),
-                None => p.name.clone(),
-            }
-        }).collect();
+    fn build_overload_signature_info(&self, overload: &ResolvedOverload, skip_self: bool) -> SignatureInfo {
+        let params: Vec<String> = overload.params.iter()
+            .filter(|p| !(skip_self && p.name == "self"))
+            .map(|p| {
+                match &p.typ {
+                    Some(vt) => format!("{}: {}", p.name, self.format_value_type_depth(vt, 1)),
+                    None => p.name.clone(),
+                }
+            }).collect();
 
         let rets: Vec<String> = overload.returns.iter()
             .map(|vt| self.format_value_type_depth(vt, 1))

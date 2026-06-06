@@ -823,14 +823,33 @@ impl<'a> Analysis<'a> {
                     if zero_mismatch.len() == 1 {
                         Some(zero_mismatch[0])
                     } else {
-                        // Multiple equally-good overloads: union their returns at ret_index.
-                        // Diagnostics will fall through to the primary signature, which is
-                        // acceptable for indistinguishable overloads (typically zero-param).
-                        let types: Vec<ValueType> = zero_mismatch.iter()
-                            .map(|o| o.return_type_at(ret_index))
+                        // Multiple overloads with 0 mismatches — prefer the one whose
+                        // non-self param count best matches the arg count (tightest arity).
+                        // Vararg overloads get a slight penalty so a non-vararg exact
+                        // match is preferred over a vararg with fewer declared params.
+                        let with_arity: Vec<(&ResolvedOverload, usize)> = zero_mismatch.iter()
+                            .map(|&o| {
+                                let off = ovl_self_off(&o);
+                                let non_self = o.params.len() - off;
+                                let distance = (non_self as isize - n_args as isize).unsigned_abs();
+                                let score = if o.is_vararg && non_self <= n_args { distance + 1 } else { distance };
+                                (o, score)
+                            })
                             .collect();
-                        ambiguous_overload_ret_type = Some(ValueType::make_union(types));
-                        None
+                        let best_score = with_arity.iter().map(|(_, s)| *s).min()
+                            .expect("zero_mismatch has >= 2 elements");
+                        let best_count = with_arity.iter().filter(|(_, s)| *s == best_score).count();
+                        if best_count == 1 {
+                            let (best, _) = with_arity.into_iter().find(|(_, s)| *s == best_score).unwrap();
+                            Some(best)
+                        } else {
+                            // Still ambiguous: union their returns at ret_index.
+                            let types: Vec<ValueType> = zero_mismatch.iter()
+                                .map(|o| o.return_type_at(ret_index))
+                                .collect();
+                            ambiguous_overload_ret_type = Some(ValueType::make_union(types));
+                            None
+                        }
                     }
                 } else {
                     None

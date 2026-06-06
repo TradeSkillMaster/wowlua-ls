@@ -380,3 +380,11 @@ local _, cursorId = GetCursorInfo()
 --       ^ hover: (local) cursorId: number | string
 local _, _, cursorItem = GetCursorInfo()
 --          ^ hover: (local) cursorItem: string | number | nil
+
+-- SetPoint with 3 args should pick the (point, ofsx, ofsy) overload,
+-- not fall back to the primary signature's (relativeTo, relativePoint).
+---@type Button
+local _spBtn
+_spBtn:SetPoint("TOPLEFT", -10, 10)
+--                         ^ hint: ofsx:
+--                              ^ hint: ofsy:
