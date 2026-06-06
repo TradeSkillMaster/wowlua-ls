@@ -39,6 +39,8 @@ pub(crate) struct ConditionSite {
     /// Byte range of the condition expression.
     pub start: u32,
     pub end: u32,
+    /// Whether this is a loop condition (`while` or `repeat...until`).
+    pub is_loop: bool,
     /// For `while` and `repeat...until` conditions, the loop body scope.
     /// Both are lowered in the parent scope, so `scope_at_offset` won't
     /// find the loop — this field bridges the gap.
@@ -244,11 +246,12 @@ pub(super) fn table_indices_from_type(vt: &ValueType) -> Vec<TableIndex> {
 
 impl Ir {
     /// Record a condition expression for `redundant-condition` diagnostics.
-    pub(crate) fn record_condition_site(&mut self, expr_id: ExprId, range: crate::syntax::tree::TextRange) {
+    pub(crate) fn record_condition_site(&mut self, expr_id: ExprId, range: crate::syntax::tree::TextRange, is_loop: bool) {
         self.condition_sites.push(ConditionSite {
             expr_id,
             start: u32::from(range.start()),
             end: u32::from(range.end()),
+            is_loop,
             loop_scope: None,
         });
     }
@@ -259,6 +262,7 @@ impl Ir {
             expr_id,
             start: u32::from(range.start()),
             end: u32::from(range.end()),
+            is_loop: true,
             loop_scope: Some(loop_scope),
         });
     }

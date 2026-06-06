@@ -1,6 +1,6 @@
 use crate::analysis::{AnalysisResult, ancestor_scopes};
 use crate::ast::Operator;
-use crate::types::{Expr, ExprId, ScopeIndex, SymbolIndex};
+use crate::types::{Expr, ExprId, ScopeIndex, SymbolIndex, ValueType};
 use super::{DiagnosticPass, WowDiagnostic, is_type_permissive, is_expr_truthiness_uncertain};
 
 pub(crate) struct RedundantCondition;
@@ -11,6 +11,14 @@ impl DiagnosticPass for RedundantCondition {
             let Some(cond_type) = analysis.resolve_expr_type(site.expr_id) else { continue };
 
             if is_type_permissive(&cond_type) { continue; }
+
+            // Skip boolean literals in loop conditions (`while true do`,
+            // `repeat...until false`) — these are standard infinite-loop idioms.
+            // Non-loop contexts (`if true`, `if false`, `elseif true`) are still
+            // flagged as they typically indicate dead code or a forgotten condition.
+            if site.is_loop && matches!(analysis.ir.expr(site.expr_id), Expr::Literal(ValueType::Boolean(Some(_)))) {
+                continue;
+            }
 
             // Skip expressions whose truthiness can't be reliably determined
             // from static types (lateinit fields, unannotated fields, dynamic

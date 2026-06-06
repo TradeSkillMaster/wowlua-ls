@@ -857,7 +857,7 @@ impl<'a> Analysis<'a> {
                         });
                     } else if let Some((expr_id, range, _)) = cond_info {
                         // No block to form a loop scope; record without loop hint.
-                        self.ir.record_condition_site(expr_id, range);
+                        self.ir.record_condition_site(expr_id, range, true);
                     }
                 },
                 Statement::Repeat(repeat_loop) => {
@@ -884,7 +884,7 @@ impl<'a> Analysis<'a> {
                             is_conditional: frame_is_conditional,
                         });
                     } else if let Some((expr_id, range)) = cond_info {
-                        self.ir.record_condition_site(expr_id, range);
+                        self.ir.record_condition_site(expr_id, range, true);
                     }
                 },
                 Statement::If(if_chain) => {
@@ -895,7 +895,7 @@ impl<'a> Analysis<'a> {
                             // First branch: lower condition in parent scope
                             if let Some(cond) = branch.expression() {
                                 let expr_id = self.lower_expression(&cond, scope_idx);
-                                self.ir.record_condition_site(expr_id, cond.syntax().text_range());
+                                self.ir.record_condition_site(expr_id, cond.syntax().text_range(), false);
                             }
                         }
                         if let Some(inner_block) = branch.block() {
@@ -913,7 +913,7 @@ impl<'a> Analysis<'a> {
                                 }
                                 if let Some(cond) = branch.expression() {
                                     let expr_id = self.lower_expression(&cond, new_scope_idx);
-                                    self.ir.record_condition_site(expr_id, cond.syntax().text_range());
+                                    self.ir.record_condition_site(expr_id, cond.syntax().text_range(), false);
                                 }
                             }
                             if let Some(cond) = branch.expression() {

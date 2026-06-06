@@ -53,9 +53,8 @@ if false then end
 
 -- ── Always truthy: while ─────────────────────────────────────────────────────
 
--- `while true` is a common idiom; still flagged for strict users
+-- `while true` is a common idiom — not flagged
 while true do break end
---    ^ diag: redundant-condition
 
 -- Number condition
 ---@type number
@@ -76,15 +75,13 @@ end
 
 -- ── Always truthy: repeat...until ─────────────────────────────────────────────
 
--- `repeat...until true` always exits after one iteration
+-- `repeat...until true` always exits after one iteration — not flagged
 repeat break until true
---                ^ diag: redundant-condition
 
--- ── Always falsy: repeat...until ─────────────────────────────────────────────
+-- ── repeat...until false ────────────────────────────────────────────────────
 
--- `repeat...until false` is an infinite loop
+-- `repeat...until false` is an infinite loop — not flagged
 repeat break until false
---                 ^ diag: redundant-condition
 
 -- ── No diagnostic: compound conditions ───────────────────────────────────────
 
@@ -372,5 +369,7 @@ _use(beforeLoop)
 
 -- ── Suppression ──────────────────────────────────────────────────────────────
 
+---@type number
+local suppressed
 ---@diagnostic disable-next-line: redundant-condition
-if true then end
+if suppressed then end
