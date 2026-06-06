@@ -201,6 +201,10 @@ struct WorkspaceState {
     /// will deliver fresh results via a second diagnostic refresh. This keeps the
     /// main loop responsive instead of blocking on a full re-analysis.
     warm_in_flight: bool,
+    /// Set by `handle_workspace_diagnostic` when the cache is stale but we
+    /// don't want to block the main loop with a synchronous warm. The main
+    /// loop checks this flag and spawns a background warm instead.
+    pending_lazy_warm: bool,
 }
 
 /// Collect (class_name, field_name) pairs from all @field entries on the given classes.
@@ -452,40 +456,6 @@ impl WorkspaceState {
         // flicker). A fresh full warm overwrites them when no prior is reusable.
     }
 
-    /// Pre-compute workspace diagnostics for all unopened files so the next
-    /// `workspace/diagnostic` request is a cache hit. Call after a workspace
-    /// rebuild (Phase 4) to avoid a 10+ second synchronous recompute in the
-    /// request handler (Phase 3) that blocks hover/completion/etc.
-    /// Recompute the workspace diagnostic cache.
-    ///
-    /// When `affected` is `Some(names)` and a prior cache exists, this performs an
-    /// *incremental* warm: a workspace file is re-analyzed only when its source
-    /// text mentions one of the affected declaration names (the transitive
-    /// reverse-dependency closure of what changed); otherwise its prior
-    /// diagnostics are reused verbatim. When `affected` is `None` (startup,
-    /// lazy recompute, or a non-name-diffable change like defclass/events), every
-    /// file is re-analyzed.
-    fn warm_ws_diagnostic_cache(&mut self, affected: Option<&HashSet<String>>) {
-        let paths = self.ws_lua_paths();
-        let plugin_codes = self.plugin_codes();
-        // Take the prior cache so untouched files can reuse their diagnostics.
-        // Only valid for incremental warms (`affected.is_some()`).
-        let prior = self.cached_ws_diagnostics.take();
-        let prior_entries = match (&affected, &prior) {
-            (Some(_), Some((_, entries))) => Some(entries.as_slice()),
-            _ => None,
-        };
-        let disk_results = compute_ws_diagnostics(
-            &paths,
-            &self.pre_globals,
-            &self.configs,
-            &plugin_codes,
-            affected,
-            prior_entries,
-        );
-        self.cached_ws_diagnostics = Some((self.ws_generation, disk_results));
-    }
-
     /// All workspace `.lua` paths (the set warmed for closed-file diagnostics).
     fn ws_lua_paths(&self) -> Vec<PathBuf> {
         self.ws_file_globals
@@ -579,6 +549,7 @@ impl WorkspaceState {
             ws_generation: 0,
             cached_ws_diagnostics: None,
             warm_in_flight: false,
+            pending_lazy_warm: false,
         }
     }
 }
@@ -674,8 +645,8 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// Pure (no `&self`) workspace-diagnostic computation, shared by the synchronous
-/// warm (`warm_ws_diagnostic_cache`) and the background worker (`spawn_warm`).
+/// Pure (no `&self`) workspace-diagnostic computation used by the background
+/// worker (`spawn_warm`).
 ///
 /// Re-reads, re-parses and re-analyzes each `.lua` path in parallel. When
 /// `affected` is `Some` and `prior` is present, a file whose text mentions none
@@ -2047,6 +2018,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ws_generation: 0,
         cached_ws_diagnostics: None,
         warm_in_flight: false,
+        pending_lazy_warm: false,
     };
     let plugin_paths = ws.configs.all_plugins();
     if !plugin_paths.is_empty() {
@@ -2267,6 +2239,17 @@ fn main_loop(
             }
         }
 
+        // Spawn a background warm if handle_workspace_diagnostic deferred one.
+        // This replaces the old synchronous warm_ws_diagnostic_cache() call that
+        // blocked the main loop for 10+ seconds on large workspaces.
+        if ws.pending_lazy_warm && !ws.warm_in_flight {
+            ws.pending_lazy_warm = false;
+            log::debug!("Spawning deferred background warm (full)");
+            let inputs = ws.warm_inputs(None);
+            ws.warm_in_flight = true;
+            spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
+        }
+
         // Drain completed background stub analyses and patch into documents.
         while let Ok(res) = stub_rx.try_recv() {
             // Only install if the document is still open and the sequence
@@ -2435,7 +2418,7 @@ fn main_loop(
         // Phase 3: Handle all requests (now with up-to-date text and analysis
         // for the requested documents).
         for req in requests {
-            handle_request(&connection, &mut documents, &mut ws, req, client.snippets, client.progress, &mut progress_counter);
+            handle_request(&connection, &mut documents, &mut ws, req, client.snippets);
         }
 
         // Phase 4: Re-analyze any dirty documents once the debounce
@@ -2821,9 +2804,7 @@ fn drain_pending_requests(
                     let _ = connection.sender.send(Message::Response(resp));
                     return (pending_notifications, true);
                 }
-                // Progress is disabled in drain path (supports_progress=false), so
-                // the counter is unused; pass a throwaway mutable reference.
-                handle_request(connection, documents, ws, req, client_snippet_support, false, &mut 0);
+                handle_request(connection, documents, ws, req, client_snippet_support);
             }
             Message::Notification(not) => pending_notifications.push(not),
             Message::Response(_) => {}
@@ -2888,8 +2869,6 @@ fn handle_request(
     ws: &mut WorkspaceState,
     req: Request,
     client_snippet_support: bool,
-    supports_progress: bool,
-    progress_counter: &mut i32,
 ) {
     let method = req.method.clone();
     let req_start = std::time::Instant::now();
@@ -3671,40 +3650,9 @@ fn handle_request(
         }
         "workspace/diagnostic" => {
             if let Ok((id, _params)) = cast_req::<request::WorkspaceDiagnosticRequest>(req) {
-                // Show progress only when a full recomputation will occur (first
-                // request or after workspace state changed). Cached responses are
-                // near-instant and don't need a spinner.
-                let will_recompute = !ws.warm_in_flight
-                    && match &ws.cached_ws_diagnostics {
-                        Some((cached_gen, _)) => *cached_gen != ws.ws_generation,
-                        None => true,
-                    };
-                let file_count = ws.ws_file_globals.len();
-                let token = if supports_progress && will_recompute && file_count > 0 {
-                    let t = NumberOrString::Number(*progress_counter);
-                    *progress_counter += 1;
-                    let create_req = Request::new(
-                        RequestId::from(*progress_counter),
-                        "window/workDoneProgress/create".to_string(),
-                        lsp_types::WorkDoneProgressCreateParams { token: t.clone() },
-                    );
-                    let _ = connection.sender.send(Message::Request(create_req));
-                    send_progress(connection, &t, WorkDoneProgress::Begin(WorkDoneProgressBegin {
-                        title: "wowlua_ls: Analyzing".to_string(),
-                        message: Some(format!("Checking {} workspace files\u{2026}", file_count)),
-                        percentage: Some(0),
-                        cancellable: Some(false),
-                    }));
-                    Some(t)
-                } else {
-                    None
-                };
-                let (result, _) = handle_workspace_diagnostic(documents, ws);
-                if let Some(ref t) = token {
-                    send_progress(connection, t, WorkDoneProgress::End(WorkDoneProgressEnd {
-                        message: Some("Ready".to_string()),
-                    }));
-                }
+                // Never recompute synchronously — serve from cache (possibly
+                // stale) and let the background warm populate fresh results.
+                let result = handle_workspace_diagnostic(documents, ws);
                 send_response(connection, id, &result);
             }
         }
@@ -6907,12 +6855,10 @@ fn handle_document_diagnostic(
 /// hundreds of files on every request (which blocks the server and causes
 /// "Loading..." delays on hover).
 ///
-/// Returns `(result, needs_recompute)` — the bool indicates whether a full
-/// workspace re-analysis was performed (for progress reporting by the caller).
 fn handle_workspace_diagnostic(
     documents: &HashMap<String, Document>,
     ws: &mut WorkspaceState,
-) -> (WorkspaceDiagnosticReportResult, bool) {
+) -> WorkspaceDiagnosticReportResult {
     let mut items: Vec<WorkspaceDocumentDiagnosticReport> = Vec::new();
 
     // Skip open documents — they are served by textDocument/diagnostic.
@@ -6920,18 +6866,20 @@ fn handle_workspace_diagnostic(
     // pull from both workspace/diagnostic and textDocument/diagnostic and
     // display both sets independently.
     let open_uri_strs: HashSet<&str> = documents.keys().map(|s| s.as_str()).collect();
-    let current_gen = ws.ws_generation;
-    // When a background warm is in flight, serve the prior (stale) cache rather
-    // than recomputing synchronously — the warm will deliver fresh results via a
-    // second diagnostic refresh shortly. This keeps the pull handler from
-    // blocking the main loop on a full re-analysis (the whole point of Option 1).
-    let needs_recompute = !ws.warm_in_flight
-        && match ws.cached_ws_diagnostics {
-            Some((cached_gen, _)) => cached_gen != current_gen,
+    // Never recompute synchronously — a full workspace re-analysis blocks
+    // the main loop for 10+ seconds on large projects. Instead, serve the
+    // stale (or empty) cache and set `pending_lazy_warm` so the main loop
+    // spawns a background warm. When the warm finishes, a diagnostic refresh
+    // notifies the editor to re-pull.
+    if !ws.warm_in_flight {
+        let cache_stale = match ws.cached_ws_diagnostics {
+            Some((cached_gen, _)) => cached_gen != ws.ws_generation,
             None => true,
         };
-    if needs_recompute {
-        ws.warm_ws_diagnostic_cache(None);
+        if cache_stale {
+            log::debug!("Deferring workspace diagnostic warm to background (cache stale)");
+            ws.pending_lazy_warm = true;
+        }
     }
 
     if let Some((_, ref cached)) = ws.cached_ws_diagnostics {
@@ -6956,7 +6904,7 @@ fn handle_workspace_diagnostic(
         }
     }
 
-    (WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items }), needs_recompute)
+    WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items })
 }
 
 /// Search workspace symbols by name query. Returns matching `SymbolInformation`
