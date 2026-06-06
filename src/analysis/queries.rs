@@ -820,18 +820,24 @@ impl AnalysisResult {
     pub fn definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
         // Try field access first so that a same-named global doesn't shadow the field.
         if let Some((table_idx, field_name, expr_id, _, _)) = self.resolve_field_chain_at(tree, offset) {
-            if let Some(result) = self.definition_for_expr(expr_id) {
-                return Some(result);
-            }
-            // Fall back to the field's definition range (e.g. table constructor field)
+            // Check the field's local definition range first (from @field annotation,
+            // table constructor, or field assignment site). This prevents jumping to an
+            // unrelated external file when the field is defined in the current file.
+            // Guard: get_field() walks parent classes and metatables, so `fi` could
+            // originate from a different table; the external check prevents using an
+            // overlay field on an external table as a local definition.
             if let Some(fi) = self.get_field(table_idx, &field_name)
-                && let Some((start, end)) = fi.def_range {
+                && let Some((start, end)) = fi.def_range
+                && !table_idx.is_external() {
                     let range = TextRange::new(
                         TextSize::from(start),
                         TextSize::from(end),
                     );
                     return Some(DefinitionResult::Local(range));
                 }
+            if let Some(result) = self.definition_for_expr(expr_id) {
+                return Some(result);
+            }
             // Fall back to external field location (stubs / workspace @field annotations)
             if let Some(loc) = self.find_external_field_location(table_idx, &field_name) {
                 return Some(DefinitionResult::External(loc.clone()));

@@ -184,6 +184,22 @@ local _fn = f.name
 local _fw = f.width
 --            ^ hover: (field) width: number  def: local
 
+-- Regression: go-to-definition on @field prefers the annotation over the assignment expr
+---@class FieldDefTarget
+---@field pool Widget
+local fieldDefTarget = {} ---@diagnostic disable-line: assign-type-mismatch, missing-fields
+---@type Widget
+fieldDefTarget.pool = nil ---@diagnostic disable-line: assign-type-mismatch
+local _fdp = fieldDefTarget.pool
+--                          ^ hover: (field) pool: Widget  def: local
+
+-- Same regression without imperative assignment: def_range unambiguously from @field
+---@class FieldDefClean
+---@field tag string
+local fieldDefClean = {} ---@diagnostic disable-line: assign-type-mismatch, missing-fields
+local _fdc = fieldDefClean.tag
+--                         ^ hover: (field) tag: string  def: local
+
 ---@param name? string
 ---@return number numSites
 function optionalTest(name)
