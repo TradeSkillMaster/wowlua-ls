@@ -832,6 +832,31 @@ local forInTbl = {}
 for _, _ in pairs(forInTbl) d
 --                            ^ comp: do
 
+-- Regression: symbols defined at the cursor position (phantom symbols from
+-- incomplete definitions) are filtered from completions, but real symbols
+-- with the same prefix are kept.
+---@class CompTestTable
+---@field fieldName string
+---@field fieldNameExtra number
+local CodeGen = {} ---@type CompTestTable
+local CodeGenTooltip = 2
+local Codex = 3
+
+-- Case 1: fully-typed real symbol at a usage site — CodeGen is NOT filtered
+-- because it was defined elsewhere, not at the cursor position.
+---@diagnostic disable-next-line: unused-local
+local refExact = CodeGen
+--                        ^ comp: CodeGen, CodeGenTooltip
+-- Case 2: global function definition — phantom `CodeG` filtered
+function CodeG
+--            ^ comp: CodeGen, CodeGenTooltip
+-- Case 3: local function definition — phantom `CodeG` filtered
+local function CodeG
+--                  ^ comp: CodeGen, CodeGenTooltip
+-- Case 4: dot-access partial field — phantom `fieldN` filtered
+CodeGen.fieldN
+--            ^ comp: fieldName, fieldNameExtra
+
 -- Bracket access on a table whose fields are all the same type should return that type as nilable.
 -- Dynamic key on all-string fields → string?
 local LABEL_MAP = { alpha = "first", beta = "second", gamma = "third" }

@@ -2530,7 +2530,17 @@ impl AnalysisResult {
                             if has_prefix && !name.to_ascii_lowercase().starts_with(&prefix_lower) {
                                 continue;
                             }
-                            let resolved = self.sym(sym_idx).versions.iter().rev()
+                            // Skip symbols defined at the cursor — these are
+                            // phantom symbols the parser created from the name
+                            // currently being typed (e.g. `function CodeG`).
+                            let sym = self.sym(sym_idx);
+                            if sym.versions.iter().any(|v| {
+                                let d = &v.def_node;
+                                offset >= d.start && offset < d.end
+                            }) {
+                                continue;
+                            }
+                            let resolved = sym.versions.iter().rev()
                                 .find_map(|v| v.resolved_type.as_ref());
                             let kind = match resolved {
                                 Some(ValueType::Function(_)) => CompletionItemKind::FUNCTION,
