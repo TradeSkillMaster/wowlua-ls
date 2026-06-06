@@ -148,6 +148,33 @@ local function conditionalAssign(cond)
 end
 _use(conditionalAssign)
 
+-- ── No diagnostic: lateinit fields ──────────────────────────────────────────
+-- Lateinit (`T!`) fields are typed non-nil for the LS but can be nil at
+-- runtime until initialized, so `if obj.field then` is not redundant.
+
+---@class LateinitState
+---@field handler fun()!
+---@field tracker number!
+
+---@param state LateinitState
+local function checkLateinit(state)
+    if state.handler then
+        state.handler()
+    end
+    if state.tracker then
+        _use(state.tracker)
+    end
+end
+_use(checkLateinit)
+
+-- ── No diagnostic: conditionally-assigned variable resolves to union ─────────
+-- After `if cond then x = val end`, the LS merges branches and resolves `x` as
+-- `string?` (neither guaranteed-truthy nor guaranteed-falsy), so no diagnostic.
+
+local reassigned = nil
+if math.random() > 0.5 then reassigned = "value" end
+if reassigned then end
+
 -- ── Suppression ──────────────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: redundant-condition

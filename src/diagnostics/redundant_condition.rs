@@ -1,5 +1,5 @@
 use crate::analysis::AnalysisResult;
-use super::{DiagnosticPass, WowDiagnostic, is_type_permissive};
+use super::{DiagnosticPass, WowDiagnostic, is_type_permissive, is_expr_truthiness_uncertain};
 
 pub(crate) struct RedundantCondition;
 
@@ -9,6 +9,11 @@ impl DiagnosticPass for RedundantCondition {
             let Some(cond_type) = analysis.resolve_expr_type(site.expr_id) else { continue };
 
             if is_type_permissive(&cond_type) { continue; }
+
+            // Skip expressions whose truthiness can't be reliably determined
+            // from static types (lateinit fields, unannotated fields, dynamic
+            // indices, unannotated parameters).
+            if is_expr_truthiness_uncertain(analysis, site.expr_id) { continue; }
 
             if cond_type.is_guaranteed_truthy() {
                 let type_str = analysis.format_type_depth(&cond_type, 1);

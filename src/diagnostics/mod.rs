@@ -55,7 +55,7 @@ use lsp_types::DiagnosticSeverity;
 use crate::analysis::{AnalysisResult, StructuralMismatchDetail};
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::SyntaxTree;
-use crate::types::{InjectFieldCheck, ValueType};
+use crate::types::{Expr, ExprId, InjectFieldCheck, ValueType};
 
 // ── Diagnostic catalog ─────────────────────────────────────────────────────────
 
@@ -416,6 +416,153 @@ pub(crate) fn is_type_permissive(ty: &ValueType) -> bool {
         ValueType::Any | ValueType::TypeVariable(_) => true,
         ValueType::Union(types) => types.iter().any(is_type_permissive),
         ValueType::OpaqueAlias(_, inner) => is_type_permissive(inner),
+        _ => false,
+    }
+}
+
+// ── Shared truthiness-uncertainty helpers ─────────────────────────────────────
+// These detect expressions whose static type may diverge from runtime reality,
+// causing `is_guaranteed_truthy/falsy` to give wrong answers. Used by both
+// `redundant-condition` and `redundant-or`/`redundant-and` to suppress false
+// positives from a single source of truth.
+
+/// Unwrap StripNil / StripFalsy / StripTruthy / Grouped wrappers to reach the
+/// underlying expression. Narrowing scopes wrap expressions in these, but
+/// suppression checks need to see the original expression.
+pub(crate) fn unwrap_to_inner_expr(exprs: &[Expr], mut id: ExprId) -> ExprId {
+    loop {
+        match &exprs[id.val()] {
+            Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner) | Expr::Grouped(inner) => {
+                id = *inner;
+            }
+            _ => return id,
+        }
+    }
+}
+
+/// Returns true when the truthiness/falsiness of an expression cannot be
+/// reliably determined from static types alone. Covers cases where the LS's
+/// resolved type diverges from runtime reality:
+///
+/// - **lateinit fields** (`T!`): typed non-nil for the LS but can be nil at
+///   runtime until first initialized.
+/// - **fields without direct `@field` annotation**: bare tables and inherited
+///   fields may be nil at runtime even though the LS resolves them as non-nil.
+/// - **dynamic bracket indices**: dictionary/array lookups return nil for
+///   missing keys / out-of-bounds indices at runtime.
+/// - **unannotated parameters**: backward inference may resolve to a non-nil
+///   type, but the parameter is intended to be optional.
+pub(crate) fn is_expr_truthiness_uncertain(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    is_lateinit_field_access(analysis, expr_id)
+    || is_field_without_direct_annotation(analysis, expr_id)
+    || is_dynamic_bracket_index(analysis, expr_id)
+    || is_unannotated_param_ref(analysis, expr_id)
+}
+
+/// Lateinit (`T!`) field access: typed non-nil but can be nil at runtime.
+fn is_lateinit_field_access(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
+    let Expr::FieldAccess { table, field, .. } = &analysis.ir.exprs[id.val()] else { return false };
+    let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
+    let table_type = table_type.into_strip_opaque();
+    any_table_field_matches(analysis, &table_type, field, |fi| fi.lateinit)
+}
+
+/// Field access where the field lacks a direct `@field` annotation on the
+/// table itself: bare tables (no `@class`) and `@class` tables where the field
+/// is only inherited or code-discovered.
+fn is_field_without_direct_annotation(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
+    let Expr::FieldAccess { table, field, .. } = &analysis.ir.exprs[id.val()] else { return false };
+    let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
+    let table_type = table_type.into_strip_opaque();
+    any_table_lacks_own_field_annotation(analysis, &table_type, field)
+}
+
+/// Dynamic bracket index into a dictionary/array: the element type is non-nil
+/// for the LS, but a missing key / out-of-bounds index returns nil at runtime.
+fn is_dynamic_bracket_index(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
+    let Expr::BracketIndex { table, literal_key, .. } = &analysis.ir.exprs[id.val()] else { return false };
+    let literal_key = literal_key.clone();
+    let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
+    let table_type = table_type.into_strip_opaque();
+    // If the literal key matches a declared field, the access is to a known field
+    // rather than a dynamic dictionary lookup — don't suppress.
+    if let Some(ref lk) = literal_key
+        && any_table_field_matches(analysis, &table_type, lk, |_| true) {
+            return false;
+    }
+    any_table_has_value_type(analysis, &table_type)
+}
+
+/// Unannotated function parameter: backward inference may resolve to a non-nil
+/// type, but the parameter may be intended as optional.
+fn is_unannotated_param_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
+    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[id.val()] else { return false };
+    let sym_idx = *sym_idx;
+    if sym_idx.is_external() { return false; }
+    for func in &analysis.ir.functions {
+        if let Some(pos) = func.args.iter().position(|&s| s == sym_idx) {
+            return func.param_annotations.get(pos)
+                .is_none_or(|ann| matches!(ann, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
+        }
+    }
+    false
+}
+
+/// Checks whether any table in a (possibly union/intersection) type has a field
+/// with the given name where the predicate returns true.
+fn any_table_field_matches(
+    analysis: &AnalysisResult, ty: &ValueType, field: &str,
+    pred: impl Fn(&crate::types::FieldInfo) -> bool + Copy,
+) -> bool {
+    match ty {
+        ValueType::Table(Some(idx)) => analysis.get_field(*idx, field).is_some_and(pred),
+        ValueType::Union(types) | ValueType::Intersection(types) => {
+            types.iter().any(|t| any_table_field_matches(analysis, t, field, pred))
+        }
+        _ => false,
+    }
+}
+
+/// Checks whether any table in a (possibly union/intersection) type either has
+/// no `@class` declaration, or is a `@class` table without a direct (non-inherited)
+/// `@field` annotation for the given field name.
+fn any_table_lacks_own_field_annotation(analysis: &AnalysisResult, ty: &ValueType, field: &str) -> bool {
+    match ty {
+        ValueType::Table(Some(idx)) => {
+            let table = analysis.table(*idx);
+            if table.class_name.is_none() { return true; }
+            let Some(fi) = table.fields.get(field) else { return true; };
+            if fi.annotation.is_none() { return true; }
+            // Check if the annotation was inherited from a parent class by
+            // comparing def_range identity. Prescan clones parent fields into
+            // children (vacant-only), so an inherited field has the same
+            // def_range as the parent's. A child that redeclares `@field` will
+            // have its own distinct def_range.
+            let child_range = fi.def_range;
+            table.parent_classes.iter().any(|&parent_idx| {
+                analysis.table(parent_idx).fields.get(field)
+                    .is_some_and(|pfi| pfi.annotation.is_some() && pfi.def_range == child_range)
+            })
+        }
+        ValueType::Union(types) | ValueType::Intersection(types) => {
+            types.iter().any(|t| any_table_lacks_own_field_annotation(analysis, t, field))
+        }
+        _ => false,
+    }
+}
+
+/// Checks whether any table in a (possibly union/intersection) type is a
+/// dictionary/array (has an element `value_type`).
+fn any_table_has_value_type(analysis: &AnalysisResult, ty: &ValueType) -> bool {
+    match ty {
+        ValueType::Table(Some(idx)) => analysis.table(*idx).value_type.is_some(),
+        ValueType::Union(types) | ValueType::Intersection(types) => {
+            types.iter().any(|t| any_table_has_value_type(analysis, t))
+        }
         _ => false,
     }
 }
