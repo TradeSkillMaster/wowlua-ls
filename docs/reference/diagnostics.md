@@ -76,12 +76,26 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `not-precedence` | `not x <cmp> y` is `(not x) <cmp> y` |
 | `redundant-or` | `or` where left side is always truthy (RHS is dead code) **(off by default)** |
 | `redundant-and` | `and` where left side is always falsy (RHS is dead code) **(off by default)** |
-| `redundant-condition` | `if`/`elseif`/`while` condition is always truthy or always falsy **(off by default)** |
+| `redundant-condition` | `if`/`elseif`/`while` condition is [provably constant](#redundant-condition) **(off by default)** |
 | `implicit-nil-return` | Bare `return` in function with optional `@return` **(off by default)** |
 | `unknown-param-type` | Parameter type can't be inferred **(off by default)** |
 | `unknown-return-type` | Return value has no resolvable type **(off by default)** |
 | `unknown-local-type` | Local assignment has unknown type **(off by default)** |
 | `unknown-field-type` | Field assignment has unknown type **(off by default)** |
+
+### `redundant-condition`
+
+Flags `if`/`elseif`/`while`/`repeat...until` conditions that are provably always true or always false. Detected patterns:
+
+- **Always-truthy/falsy type** — the condition's resolved type is guaranteed truthy (e.g. `table`, `number`) or guaranteed falsy (`nil`).
+- **Negation of a constant** — `not expr` where `expr` is itself always truthy or always falsy (e.g. `if not tbl` where `tbl` is a table).
+- **Type-incompatible equality** — `==`/`~=` between values whose types can never match at runtime (e.g. `num == "hello"`, `nonNilVar == nil`).
+- **Literal-union miss** — `x == "c"` where `x` is typed as `"a"|"b"` and `"c"` is not a member.
+- **Two-literal comparison** — both sides are concrete literals (e.g. `1 == 2`, `"a" == "a"`, `3 < 2`).
+- **Self-comparison** — `x < x` or `x > x` (always false; NaN-safe). `<=`/`>=`/`==`/`~=` self-comparisons are excluded because NaN breaks them.
+- **Redundant `type()` guard** — `type(x) == "number"` where `x` is already known to be a `number` (always true) or can never be a `number` (always false).
+
+Loop idioms (`while true`, `repeat...until false`) are not flagged. Conditions referencing variables reassigned inside loops are suppressed to avoid false positives.
 
 ## TOC file diagnostics
 

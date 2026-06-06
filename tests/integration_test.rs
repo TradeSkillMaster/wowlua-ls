@@ -1033,6 +1033,15 @@ fn redundant_condition() {
 }
 
 #[test]
+fn redundant_condition_type_guard() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/redundant-condition-type-guard/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn references() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/references.lua",

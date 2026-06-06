@@ -420,6 +420,73 @@ pub(crate) fn is_type_permissive(ty: &ValueType) -> bool {
     }
 }
 
+/// Returns true when two types can never share a runtime value, so an `==`
+/// comparison between them is always false (and `~=` always true). Conservative:
+/// returns false whenever a shared value is possible, or when either side is
+/// permissive (`any`/type-var). We do not model numeric ranges, so a generic
+/// `number` is treated as possibly-equal to any number literal.
+pub(crate) fn types_disjoint(a: &ValueType, b: &ValueType) -> bool {
+    use crate::analysis::resolve::parse_num_literal_str;
+    // Permissive types could be anything — never disjoint.
+    if is_type_permissive(a) || is_type_permissive(b) {
+        return false;
+    }
+    match (a, b) {
+        // Unwrap opaque aliases: at runtime the value is the inner base type, so
+        // an opaque `number` and a plain `number` can compare equal.
+        (ValueType::OpaqueAlias(_, inner), other) | (other, ValueType::OpaqueAlias(_, inner)) => {
+            types_disjoint(inner, other)
+        }
+        // A union is disjoint from `x` only if every member is disjoint from `x`.
+        (ValueType::Union(members), other) | (other, ValueType::Union(members)) => {
+            members.iter().all(|m| types_disjoint(m, other))
+        }
+        // Same base scalar kinds with literal payloads: disjoint iff the literals differ.
+        (ValueType::String(Some(x)), ValueType::String(Some(y))) => x != y,
+        (ValueType::Boolean(Some(x)), ValueType::Boolean(Some(y))) => x != y,
+        (ValueType::NumberLiteral(x), ValueType::NumberLiteral(y)) => {
+            match (parse_num_literal_str(x), parse_num_literal_str(y)) {
+                (Some(xv), Some(yv)) => xv != yv,
+                _ => x != y,
+            }
+        }
+        // Generic vs literal of the same kind: NOT disjoint (the generic could be
+        // that literal). We don't track numeric ranges, so number ~ number literal.
+        (ValueType::String(_), ValueType::String(_))
+        | (ValueType::Boolean(_), ValueType::Boolean(_))
+        | (ValueType::Number, ValueType::Number)
+        | (ValueType::Number, ValueType::NumberLiteral(_))
+        | (ValueType::NumberLiteral(_), ValueType::Number) => false,
+        // Tables and functions: no structural comparison — assume possibly equal.
+        (ValueType::Table(_), ValueType::Table(_))
+        | (ValueType::Function(_), ValueType::Function(_)) => false,
+        // Identical otherwise (e.g. Nil/Nil, Userdata/Userdata, Thread/Thread).
+        _ if a == b => false,
+        // Helper to classify the base "kind" of a type. Two values with different
+        // base kinds can never be `==`-equal in Lua.
+        _ => base_kind(a) != base_kind(b),
+    }
+}
+
+/// Coarse base-kind tag used by `types_disjoint` to reject cross-kind equality.
+fn base_kind(t: &ValueType) -> u8 {
+    match t {
+        ValueType::Nil => 0,
+        ValueType::Boolean(_) => 1,
+        ValueType::Number | ValueType::NumberLiteral(_) => 2,
+        ValueType::String(_) => 3,
+        ValueType::Table(_) => 4,
+        ValueType::Function(_) => 5,
+        ValueType::Userdata => 6,
+        ValueType::Thread => 7,
+        // Should not reach here for these (handled above), but give stable tags.
+        ValueType::Intersection(_) => 8,
+        ValueType::OpaqueAlias(_, _) => 9,
+        ValueType::Union(_) => 10,
+        ValueType::Any | ValueType::TypeVariable(_) => 255,
+    }
+}
+
 // ── Shared truthiness-uncertainty helpers ─────────────────────────────────────
 // These detect expressions whose static type may diverge from runtime reality,
 // causing `is_guaranteed_truthy/falsy` to give wrong answers. Used by both

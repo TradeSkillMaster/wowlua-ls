@@ -3274,7 +3274,7 @@ impl<'a> Analysis<'a> {
 
 /// Parse a number-literal type spelling (`0`, `-1`, `0xFF`, `3.14`, `1e9`) to f64.
 /// Handles an optional leading `-` and `0x`/`0X` hex; returns None if unparseable.
-pub(super) fn parse_num_literal_str(s: &str) -> Option<f64> {
+pub(crate) fn parse_num_literal_str(s: &str) -> Option<f64> {
     let (neg, body) = match s.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, s),

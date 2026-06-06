@@ -1,17 +1,63 @@
 use crate::analysis::{AnalysisResult, ancestor_scopes};
+use crate::analysis::resolve::parse_num_literal_str;
 use crate::ast::Operator;
-use crate::types::{Expr, ExprId, ScopeIndex, SymbolIndex, ValueType};
-use super::{DiagnosticPass, WowDiagnostic, is_type_permissive, is_expr_truthiness_uncertain};
+use crate::types::{Expr, ExprId, ScopeIndex, SymbolIndex, SymbolIdentifier, ValueType};
+use super::{DiagnosticPass, WowDiagnostic, is_type_permissive, is_expr_truthiness_uncertain, types_disjoint, unwrap_to_inner_expr};
 
 pub(crate) struct RedundantCondition;
+
+/// The eight strings Lua's `type()` can return.
+const LUA_TYPE_NAMES: [&str; 8] =
+    ["nil", "boolean", "number", "string", "table", "function", "userdata", "thread"];
+
+/// Outcome of statically evaluating a condition.
+enum Verdict {
+    /// The whole expression's type is guaranteed truthy/falsy (carries the type
+    /// for the message). Preserves the original wording for bare-value conditions.
+    Truthy(ValueType),
+    Falsy(ValueType),
+    /// `not` of an always-truthy/falsy expression (carries the inner type for
+    /// a more informative message like "`not` of always-truthy `table`").
+    NegatedTruthy(ValueType),
+    NegatedFalsy(ValueType),
+    /// A comparison / negation that evaluates to a constant boolean.
+    AlwaysTrue,
+    AlwaysFalse,
+}
+
+impl Verdict {
+    fn negate(self) -> Verdict {
+        match self {
+            Verdict::Truthy(t) => Verdict::NegatedTruthy(t),
+            Verdict::Falsy(t) => Verdict::NegatedFalsy(t),
+            Verdict::NegatedTruthy(_) | Verdict::AlwaysFalse => Verdict::AlwaysTrue,
+            Verdict::NegatedFalsy(_) | Verdict::AlwaysTrue => Verdict::AlwaysFalse,
+        }
+    }
+
+    fn message(&self, analysis: &AnalysisResult) -> String {
+        match self {
+            Verdict::Truthy(t) => {
+                format!("condition is always truthy (`{}`)", analysis.format_type_depth(t, 1))
+            }
+            Verdict::Falsy(t) => {
+                format!("condition is always falsy (`{}`)", analysis.format_type_depth(t, 1))
+            }
+            Verdict::NegatedTruthy(t) => {
+                format!("condition is always false (`not` of always-truthy `{}`)", analysis.format_type_depth(t, 1))
+            }
+            Verdict::NegatedFalsy(t) => {
+                format!("condition is always true (`not` of always-falsy `{}`)", analysis.format_type_depth(t, 1))
+            }
+            Verdict::AlwaysTrue => "condition is always true".to_string(),
+            Verdict::AlwaysFalse => "condition is always false".to_string(),
+        }
+    }
+}
 
 impl DiagnosticPass for RedundantCondition {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for site in &analysis.ir.condition_sites {
-            let Some(cond_type) = analysis.resolve_expr_type(site.expr_id) else { continue };
-
-            if is_type_permissive(&cond_type) { continue; }
-
             // Skip boolean literals in loop conditions (`while true do`,
             // `repeat...until false`) — these are standard infinite-loop idioms.
             // Non-loop contexts (`if true`, `if false`, `elseif true`) are still
@@ -20,18 +66,7 @@ impl DiagnosticPass for RedundantCondition {
                 continue;
             }
 
-            // Skip expressions whose truthiness can't be reliably determined
-            // from static types (lateinit fields, unannotated fields, dynamic
-            // indices, unannotated parameters).
-            if is_expr_truthiness_uncertain(analysis, site.expr_id) { continue; }
-
-            let label = if cond_type.is_guaranteed_truthy() {
-                "truthy"
-            } else if cond_type.is_guaranteed_falsy() {
-                "falsy"
-            } else {
-                continue;
-            };
+            let Some(verdict) = eval_condition_constant(analysis, site.expr_id) else { continue };
 
             // Suppress when the condition references a variable that is
             // reassigned within a loop body — either an enclosing loop (the
@@ -42,10 +77,9 @@ impl DiagnosticPass for RedundantCondition {
                 continue;
             }
 
-            let type_str = analysis.format_type_depth(&cond_type, 1);
             super::REDUNDANT_CONDITION.emit(
                 diags,
-                format!("condition is always {label} (`{type_str}`)"),
+                verdict.message(analysis),
                 site.start as usize,
                 site.end as usize,
             );
@@ -53,19 +87,288 @@ impl DiagnosticPass for RedundantCondition {
     }
 }
 
+/// Try to prove a condition expression is constant. Returns `None` when the
+/// condition is not provably always-true or always-false. Folds in the
+/// permissive / truthiness-uncertainty FP guards at the leaves.
+fn eval_condition_constant(analysis: &AnalysisResult, expr_id: ExprId) -> Option<Verdict> {
+    let ir = &analysis.ir;
+    let inner = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    match ir.expr(inner) {
+        // `not <expr>`: evaluate the operand and flip the verdict. Handles
+        // `if not t` (t always truthy → always false) and `if not (x == nil)`.
+        Expr::UnaryOp { op: Operator::Not, operand } => {
+            return eval_condition_constant(analysis, *operand).map(Verdict::negate);
+        }
+        Expr::BinaryOp { op, lhs, rhs } if op.is_comparison() => {
+            if let Some(v) = eval_comparison(analysis, *op, *lhs, *rhs) {
+                return Some(v);
+            }
+        }
+        _ => {}
+    }
+    // Fallthrough: the whole expression's type is wholly truthy/falsy.
+    eval_type_truthiness(analysis, expr_id)
+}
+
+/// Original behavior: the resolved type of the expression is guaranteed
+/// truthy or guaranteed falsy.
+fn eval_type_truthiness(analysis: &AnalysisResult, expr_id: ExprId) -> Option<Verdict> {
+    let cond_type = analysis.resolve_expr_type(expr_id)?;
+    if is_type_permissive(&cond_type) { return None; }
+    // Skip expressions whose truthiness can't be reliably determined from
+    // static types (lateinit fields, unannotated fields, dynamic indices,
+    // unannotated parameters).
+    if is_expr_truthiness_uncertain(analysis, expr_id) { return None; }
+    if cond_type.is_guaranteed_truthy() {
+        Some(Verdict::Truthy(cond_type))
+    } else if cond_type.is_guaranteed_falsy() {
+        Some(Verdict::Falsy(cond_type))
+    } else {
+        None
+    }
+}
+
+fn eval_comparison(analysis: &AnalysisResult, op: Operator, lhs: ExprId, rhs: ExprId) -> Option<Verdict> {
+    match op {
+        Operator::Equals | Operator::NotEquals => eval_equality(analysis, op, lhs, rhs),
+        Operator::LessThan | Operator::GreaterThan
+        | Operator::LessThanOrEquals | Operator::GreaterThanOrEquals => eval_ordered(analysis, op, lhs, rhs),
+        _ => None,
+    }
+}
+
+/// Evaluate `==` / `~=` between two operands.
+fn eval_equality(analysis: &AnalysisResult, op: Operator, lhs: ExprId, rhs: ExprId) -> Option<Verdict> {
+    // Redundant `type(x) == "..."` guard.
+    if let Some(v) = eval_type_guard(analysis, op, lhs, rhs) {
+        return Some(v);
+    }
+
+    // Don't trust operands whose static type may diverge from runtime reality.
+    if is_expr_truthiness_uncertain(analysis, lhs) || is_expr_truthiness_uncertain(analysis, rhs) {
+        return None;
+    }
+
+    let lt = effective_type(analysis, lhs)?;
+    let rt = effective_type(analysis, rhs)?;
+    if is_type_permissive(&lt) || is_type_permissive(&rt) { return None; }
+
+    if types_disjoint(&lt, &rt) {
+        return Some(verdict_eq(op, false));
+    }
+    if same_singleton_literal(&lt, &rt) {
+        return Some(verdict_eq(op, true));
+    }
+    None
+}
+
+/// Evaluate ordered comparisons (`<` `>` `<=` `>=`).
+fn eval_ordered(analysis: &AnalysisResult, op: Operator, lhs: ExprId, rhs: ExprId) -> Option<Verdict> {
+    let ir = &analysis.ir;
+
+    // Self-comparison: `x < x` / `x > x` are always false (NaN-safe: `NaN < NaN`
+    // and `NaN > NaN` are both false). `<=` / `>=` are intentionally excluded
+    // because `NaN <= NaN` is false, so they are not always-true under NaN.
+    // This is a purely syntactic check — no type resolution needed.
+    if matches!(op, Operator::LessThan | Operator::GreaterThan)
+        && exprs_syntactically_equal(ir, lhs, rhs) {
+        return Some(Verdict::AlwaysFalse);
+    }
+
+    // Two concrete numeric literals: evaluate directly.
+    let lt = effective_type(analysis, lhs)?;
+    let rt = effective_type(analysis, rhs)?;
+    if let (ValueType::NumberLiteral(a), ValueType::NumberLiteral(b)) = (&lt, &rt)
+        && let (Some(av), Some(bv)) = (parse_num_literal_str(a), parse_num_literal_str(b)) {
+            let result = match op {
+                Operator::LessThan => av < bv,
+                Operator::GreaterThan => av > bv,
+                Operator::LessThanOrEquals => av <= bv,
+                Operator::GreaterThanOrEquals => av >= bv,
+                _ => return None,
+            };
+            return Some(if result { Verdict::AlwaysTrue } else { Verdict::AlwaysFalse });
+        }
+    None
+}
+
+/// Detect `type(x) == "literal"` (either operand order) where `x`'s static type
+/// makes the guard constant.
+fn eval_type_guard(analysis: &AnalysisResult, op: Operator, lhs: ExprId, rhs: ExprId) -> Option<Verdict> {
+    let ir = &analysis.ir;
+    let (arg, type_name) = match (type_call_arg(analysis, lhs), string_literal_value(ir, rhs)) {
+        (Some(a), Some(n)) => (a, n),
+        _ => match (type_call_arg(analysis, rhs), string_literal_value(ir, lhs)) {
+            (Some(a), Some(n)) => (a, n),
+            _ => return None,
+        },
+    };
+    if !LUA_TYPE_NAMES.contains(&type_name.as_str()) { return None; }
+    if is_expr_truthiness_uncertain(analysis, arg) { return None; }
+    let arg_type = analysis.resolve_expr_type(arg)?;
+    if is_type_permissive(&arg_type) { return None; }
+    let kinds = possible_type_kinds(&arg_type)?;
+    if kinds.is_empty() { return None; }
+
+    let contains = kinds.iter().any(|k| *k == type_name);
+    if contains && kinds.iter().all(|k| *k == type_name) {
+        // `x` is always this type → guard is always satisfied.
+        Some(verdict_eq(op, true))
+    } else if !contains {
+        // `x` can never be this type → guard is never satisfied.
+        Some(verdict_eq(op, false))
+    } else {
+        // Mixed union: not constant.
+        None
+    }
+}
+
+/// Map a comparison operator and an equality outcome to a verdict.
+fn verdict_eq(op: Operator, equal: bool) -> Verdict {
+    let cond_true = match op {
+        Operator::Equals => equal,
+        Operator::NotEquals => !equal,
+        _ => return Verdict::AlwaysFalse, // unreachable for callers
+    };
+    if cond_true { Verdict::AlwaysTrue } else { Verdict::AlwaysFalse }
+}
+
+/// Resolve an expression's type, but recover concrete literal values for source
+/// literals (which lower to generic `String(None)` / `Number` with the spelling
+/// kept in side tables). This lets `"a" == "b"` and `x == "c"` be evaluated.
+fn effective_type(analysis: &AnalysisResult, expr_id: ExprId) -> Option<ValueType> {
+    let ir = &analysis.ir;
+    let id = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    if let Expr::Literal(vt) = ir.expr(id) {
+        match vt {
+            ValueType::String(None) => {
+                if let Some(s) = ir.string_literals.get(&id) {
+                    return Some(ValueType::String(Some(s.clone())));
+                }
+            }
+            ValueType::Number => {
+                if let Some(s) = ir.number_literals.get(&id) {
+                    return Some(ValueType::NumberLiteral(s.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    analysis.resolve_expr_type(expr_id)
+}
+
+/// Two singleton (single-value) literal types that name the same value.
+fn same_singleton_literal(a: &ValueType, b: &ValueType) -> bool {
+    match (a, b) {
+        (ValueType::Nil, ValueType::Nil) => true,
+        (ValueType::Boolean(Some(x)), ValueType::Boolean(Some(y))) => x == y,
+        (ValueType::String(Some(x)), ValueType::String(Some(y))) => x == y,
+        (ValueType::NumberLiteral(x), ValueType::NumberLiteral(y)) => {
+            match (parse_num_literal_str(x), parse_num_literal_str(y)) {
+                (Some(xv), Some(yv)) => xv == yv,
+                _ => x == y,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Collect the set of possible `type()` kinds for a type. Returns `None` if any
+/// part is permissive (`any`/type-var/intersection) and so could be anything.
+fn possible_type_kinds(t: &ValueType) -> Option<Vec<&'static str>> {
+    fn collect(t: &ValueType, out: &mut Vec<&'static str>) -> bool {
+        match t {
+            ValueType::Nil => out.push("nil"),
+            ValueType::Boolean(_) => out.push("boolean"),
+            ValueType::Number | ValueType::NumberLiteral(_) => out.push("number"),
+            ValueType::String(_) => out.push("string"),
+            ValueType::Table(_) => out.push("table"),
+            ValueType::Function(_) => out.push("function"),
+            ValueType::Userdata => out.push("userdata"),
+            ValueType::Thread => out.push("thread"),
+            ValueType::OpaqueAlias(_, inner) => return collect(inner, out),
+            ValueType::Union(members) => {
+                for m in members {
+                    if !collect(m, out) { return false; }
+                }
+            }
+            ValueType::Any | ValueType::TypeVariable(_) | ValueType::Intersection(_) => return false,
+        }
+        true
+    }
+    let mut out = Vec::new();
+    if collect(t, &mut out) { Some(out) } else { None }
+}
+
+/// If `expr_id` is a single-argument call to the global `type`, return the
+/// argument expression.
+fn type_call_arg(analysis: &AnalysisResult, expr_id: ExprId) -> Option<ExprId> {
+    let ir = &analysis.ir;
+    let id = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    let Expr::FunctionCall { func, args, .. } = ir.expr(id) else { return None };
+    if args.len() != 1 { return None; }
+    let arg = args[0];
+    let f = unwrap_to_inner_expr(&ir.exprs, *func);
+    let Expr::SymbolRef(sym_idx, _) = ir.expr(f) else { return None };
+    match &analysis.sym(*sym_idx).id {
+        SymbolIdentifier::Name(n) if n == "type" && sym_idx.is_external() => Some(arg),
+        _ => None,
+    }
+}
+
+/// If `expr_id` is a string literal, return its (delimiter-stripped) value.
+fn string_literal_value(ir: &crate::analysis::Ir, expr_id: ExprId) -> Option<String> {
+    let id = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    if matches!(ir.expr(id), Expr::Literal(ValueType::String(_))) {
+        ir.string_literals.get(&id).cloned()
+    } else {
+        None
+    }
+}
+
+/// Conservative syntactic equality for self-comparison: same symbol, or the
+/// same field-access chain.
+fn exprs_syntactically_equal(ir: &crate::analysis::Ir, a: ExprId, b: ExprId) -> bool {
+    let a = unwrap_to_inner_expr(&ir.exprs, a);
+    let b = unwrap_to_inner_expr(&ir.exprs, b);
+    match (ir.expr(a), ir.expr(b)) {
+        // Version index intentionally ignored: two references to the same
+        // variable in `x < x` share the same version at the comparison site,
+        // and even if narrowing created different versions they refer to the
+        // same runtime value.
+        (Expr::SymbolRef(sa, _), Expr::SymbolRef(sb, _)) => sa == sb,
+        (
+            Expr::FieldAccess { table: ta, field: fa, .. },
+            Expr::FieldAccess { table: tb, field: fb, .. },
+        ) => fa == fb && exprs_syntactically_equal(ir, *ta, *tb),
+        _ => false,
+    }
+}
+
 /// Collect all `SymbolRef`s (with version indices) reachable from an
-/// expression by unwrapping narrowing wrappers, `not`, and `and`/`or`
-/// operands.
+/// expression by unwrapping narrowing wrappers, `not`, `and`/`or`, comparison
+/// operands, and function-call arguments (so `type(x) == "..."` is reached).
 fn collect_symbol_refs(ir: &crate::analysis::Ir, expr_id: ExprId, out: &mut Vec<(SymbolIndex, usize)>) {
     match ir.expr(expr_id) {
         Expr::SymbolRef(sym_idx, ver_idx) => out.push((*sym_idx, *ver_idx)),
         Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner)
         | Expr::Grouped(inner) => collect_symbol_refs(ir, *inner, out),
         Expr::UnaryOp { op: Operator::Not, operand } => collect_symbol_refs(ir, *operand, out),
-        Expr::BinaryOp { op: Operator::And | Operator::Or, lhs, rhs } => {
+        Expr::BinaryOp {
+            op: Operator::And | Operator::Or
+            | Operator::Equals | Operator::NotEquals
+            | Operator::LessThan | Operator::GreaterThan
+            | Operator::LessThanOrEquals | Operator::GreaterThanOrEquals,
+            lhs, rhs,
+        } => {
             let (lhs, rhs) = (*lhs, *rhs);
             collect_symbol_refs(ir, lhs, out);
             collect_symbol_refs(ir, rhs, out);
+        }
+        Expr::FunctionCall { args, .. } => {
+            for &arg in args {
+                collect_symbol_refs(ir, arg, out);
+            }
         }
         _ => {}
     }

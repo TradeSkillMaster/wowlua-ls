@@ -425,6 +425,108 @@ local chained = mid
 if chained then end
 -- ^ diag: redundant-condition
 
+-- ── Negation: `not <always-truthy>` ─────────────────────────────────────────
+
+-- `not t` where t is always truthy → condition always false (user's case)
+local tbl = {}
+if not tbl then end
+--     ^ diag: redundant-condition
+
+-- `not n` where n is a number → always false
+---@type number
+local nn
+if not nn then end
+--     ^ diag: redundant-condition
+
+-- `not s` where s is nilable → NOT flagged
+---@type string?
+local maybeS
+if not maybeS then end
+
+-- ── Equality with nil ────────────────────────────────────────────────────────
+
+-- `x == nil` where x is non-nil → always false
+local nonNil = {}
+if nonNil == nil then end
+--    ^ diag: redundant-condition
+
+-- `x ~= nil` where x is non-nil → always true
+local nonNil2 = {}
+if nonNil2 ~= nil then end
+--    ^ diag: redundant-condition
+
+-- `x == nil` where x is nilable → NOT flagged
+---@type string?
+local maybeNil
+if maybeNil == nil then end
+
+-- ── Disjoint-type equality ───────────────────────────────────────────────────
+
+-- string vs number literal → always false
+---@type string
+local strv
+if strv == 5 then end
+--    ^ diag: redundant-condition
+
+-- number vs number literal → NOT flagged (we don't model numeric ranges)
+---@type number
+local numv
+if numv == 5 then end
+
+-- literal-union miss: `v == "c"` where v is "a"|"b" → always false
+---@type "a"|"b"
+local choice
+if choice == "c" then end
+--    ^ diag: redundant-condition
+
+-- literal-union hit: `v == "a"` where v is "a"|"b" → NOT flagged
+---@type "a"|"b"
+local choice2
+if choice2 == "a" then end
+
+-- ── Two-literal comparisons ──────────────────────────────────────────────────
+
+if 1 == 2 then end
+-- ^ diag: redundant-condition
+
+if "a" == "a" then end
+-- ^ diag: redundant-condition
+
+if 3 < 2 then end
+-- ^ diag: redundant-condition
+
+if 2 <= 2 then end
+-- ^ diag: redundant-condition
+
+-- ── Self-comparison ──────────────────────────────────────────────────────────
+
+-- `x < x` → always false (NaN-safe)
+---@type number
+local sc
+if sc < sc then end
+--    ^ diag: redundant-condition
+
+-- `x == x` → NOT flagged (NaN-check idiom)
+---@type number
+local sc2
+if sc2 == sc2 then end
+
+-- `x <= x` → NOT flagged (NaN: `NaN <= NaN` is false)
+---@type number
+local sc3
+if sc3 <= sc3 then end
+
+-- ── Loop-reassignment suppression for comparisons ────────────────────────────
+
+-- `== nil` on a variable reassigned inside the loop → NOT flagged
+local seek = nil
+for i = 1, 10 do
+    if seek == nil then
+        seek = getItem(i)
+    end
+end
+_use(seek)
+
 -- ── Suppression ──────────────────────────────────────────────────────────────
 
 ---@type number
