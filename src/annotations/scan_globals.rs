@@ -96,6 +96,33 @@ fn classify_expression_value_kind(expr: &Expression<'_>) -> FieldValueKind {
     FieldValueKind::Unknown
 }
 
+/// Emit an `ExternalGlobal` as a Method on the namespace/class, resolving
+/// visibility from the function's own annotation or the field name convention.
+/// When `addon_assigned_fields` is Some, also tracks the field for local-table-
+/// method flush (caller passes Some only when `is_addon_root && names.len() == 2`).
+fn push_method_global(
+    globals: &mut Vec<ExternalGlobal>,
+    canonical_name: String,
+    mut base: ExternalGlobal,
+    field_name: &str,
+    intermediates: Vec<String>,
+    implicit_protected_prefix: bool,
+    addon_assigned_fields: Option<&mut HashSet<String>>,
+) {
+    let visibility = if base.visibility != Visibility::Public {
+        base.visibility
+    } else {
+        default_visibility_for_name(field_name, implicit_protected_prefix)
+    };
+    base.name = canonical_name;
+    base.kind = ExternalGlobalKind::Method(intermediates, field_name.to_string(), false);
+    base.visibility = visibility;
+    globals.push(base);
+    if let Some(fields) = addon_assigned_fields {
+        fields.insert(field_name.to_string());
+    }
+}
+
 // ── Synthesized return-only overloads (workspace scan) ──────────────────────
 
 /// Coarse synthesized return-position type. Extends
@@ -381,6 +408,183 @@ fn resolve_through_tail_calls<'a>(
         }
     }
     None
+}
+
+/// When a function body returns a single identifier that names a local function
+/// with a captured signature, build the corresponding `AnnotationType::Fun(...)`
+/// so the outer function's return type is preserved cross-file. Checks both
+/// the file-level `local_function_sigs` and function definitions within the
+/// body (recursing into control-flow blocks). Returns `None` when:
+/// - no identifier returns are found
+/// - any bare return (implicit nil) exists alongside identifier returns
+/// - multiple different identifiers are returned
+/// - the identifier doesn't resolve to a known local function
+///
+/// Note: `AnnotationType::Fun` cannot represent overloads or generics, so those
+/// are lost if the inner function has them. This is acceptable since the primary
+/// use case is simple factory functions returning typed inner functions.
+fn resolve_returned_local_func_type(
+    body: &Block<'_>,
+    local_function_sigs: &HashMap<String, ExternalGlobal>,
+) -> Option<AnnotationType> {
+    let mut has_bare_return = false;
+    let mut returns = Vec::new();
+    synth_collect_returned_identifiers(body, &mut returns, &mut has_bare_return);
+    // If any bare return exists, the function can return nil on some paths,
+    // so we can't confidently say the return type is just the inner function.
+    if has_bare_return { return None; }
+    // Only resolve when ALL returns agree on the same single identifier.
+    let first = returns.first()?;
+    if !returns.iter().all(|n| n == first) { return None; }
+    // First check file-level local function signatures.
+    if let Some(sig) = local_function_sigs.get(first) {
+        return Some(external_global_to_fun_type(sig));
+    }
+    // Then check local function definitions within this body (recurses into
+    // control-flow blocks to match synth_collect_returned_identifiers scope).
+    find_local_func_def_in_block(body, first)
+}
+
+/// Convert an `ExternalGlobal` function signature to `AnnotationType::Fun(...)`.
+/// Note: discards overloads and generics since `AnnotationType::Fun` cannot
+/// represent them.
+fn external_global_to_fun_type(sig: &ExternalGlobal) -> AnnotationType {
+    let params: Vec<ParamInfo> = sig.params.clone();
+    let ret_types: Vec<AnnotationType> = sig.returns.clone();
+    let is_vararg = sig.params.iter().any(|p| p.name == "...");
+    AnnotationType::Fun(params, ret_types, is_vararg)
+}
+
+/// Build `AnnotationType::Fun(...)` from a function definition's annotations
+/// and parameter list. Note: discards overloads and generics since
+/// `AnnotationType::Fun` cannot represent them.
+fn func_def_to_fun_type(func: &crate::ast::FunctionDefinition<'_>) -> AnnotationType {
+    let annotations = extract_annotations(func.syntax());
+    let mut params = Vec::new();
+    let mut is_vararg = false;
+    if let Some(param_list) = func.params() {
+        for name in param_list.parameters() {
+            if let Some(ann) = annotations.params.iter().find(|p| p.name == name) {
+                params.push(ann.clone());
+            } else {
+                params.push(ParamInfo { name, typ: AnnotationType::Simple(String::new()), optional: false, description: None });
+            }
+        }
+        if param_list.ellipsis() {
+            is_vararg = true;
+            if let Some(ann) = annotations.params.iter().find(|p| p.name == "...") {
+                params.push(ann.clone());
+            }
+        }
+    }
+    AnnotationType::Fun(params, annotations.returns, is_vararg)
+}
+
+/// Recursively search a block (and nested control-flow blocks) for a local
+/// function definition with the given name. Mirrors the recursion pattern of
+/// `synth_collect_returned_identifiers` so both look in the same scopes.
+fn find_local_func_def_in_block(block: &Block<'_>, name: &str) -> Option<AnnotationType> {
+    for stmt in block.statements() {
+        match &stmt {
+            Statement::FunctionDefinition(func) if func.is_local() => {
+                if func.name().as_deref() == Some(name) {
+                    return Some(func_def_to_fun_type(func));
+                }
+            }
+            Statement::LocalAssign(assign) => {
+                if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
+                    let names = name_list.names();
+                    let exprs = expr_list.expressions();
+                    if names.len() == 1 && names[0] == name && exprs.len() == 1
+                        && let Expression::Function(fd) = &exprs[0] {
+                            return Some(func_def_to_fun_type(fd));
+                        }
+                }
+            }
+            Statement::If(chain) => {
+                for branch in chain.if_branches() {
+                    if let Some(inner) = branch.block()
+                        && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
+                }
+                if let Some(eb) = chain.else_branch()
+                    && let Some(inner) = eb.block()
+                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
+            }
+            Statement::Do(g) => {
+                if let Some(inner) = g.block()
+                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
+            }
+            Statement::While(w) => {
+                if let Some(inner) = w.block()
+                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
+            }
+            Statement::Repeat(r) => {
+                if let Some(inner) = r.block()
+                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
+            }
+            Statement::ForCountLoop(f) => {
+                if let Some(inner) = f.block()
+                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
+            }
+            Statement::ForInLoop(f) => {
+                if let Some(inner) = f.block()
+                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Collect all single-identifier return expressions from a block (recursing
+/// into control flow but not into nested functions). Also tracks whether any
+/// bare return (no expression list, or empty expression list) is encountered,
+/// which signals the function can return nil on some paths.
+fn synth_collect_returned_identifiers(block: &Block<'_>, out: &mut Vec<String>, has_bare_return: &mut bool) {
+    for stmt in block.statements() {
+        match &stmt {
+            Statement::Return(ret) => {
+                match ret.expression_list() {
+                    None => { *has_bare_return = true; }
+                    Some(el) => {
+                        let exprs = el.expressions();
+                        if exprs.is_empty() {
+                            *has_bare_return = true;
+                        } else if exprs.len() == 1
+                            && let Expression::Identifier(ident) = &exprs[0] {
+                                let names = ident.names();
+                                if names.len() == 1 {
+                                    out.push(names[0].clone());
+                                }
+                            }
+                    }
+                }
+            }
+            Statement::If(chain) => {
+                for branch in chain.if_branches() {
+                    if let Some(inner) = branch.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
+                }
+                if let Some(eb) = chain.else_branch()
+                    && let Some(inner) = eb.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
+            }
+            Statement::Do(g) => {
+                if let Some(inner) = g.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
+            }
+            Statement::While(w) => {
+                if let Some(inner) = w.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
+            }
+            Statement::Repeat(r) => {
+                if let Some(inner) = r.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
+            }
+            Statement::ForCountLoop(f) => {
+                if let Some(inner) = f.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
+            }
+            Statement::ForInLoop(f) => {
+                if let Some(inner) = f.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// AST-only mirror of `Analysis::synthesize_correlated_return_overloads` in
@@ -1289,14 +1493,6 @@ pub(crate) fn scan_file_globals_with_synth(
                                 let rhs_names = rhs_ident.names();
                                 if rhs_names.len() == 1
                                     && let Some(base) = local_function_sigs.get(&rhs_names[0]) {
-                                        // Prefer an explicit @private/@protected on the
-                                        // function; otherwise derive visibility from the
-                                        // namespace field name (e.g. `_`-prefix convention).
-                                        let visibility = if base.visibility != Visibility::Public {
-                                            base.visibility
-                                        } else {
-                                            default_visibility_for_name(&field_name, implicit_protected_prefix)
-                                        };
                                         // Merge assignment-level annotations (doc comment,
                                         // @flavor guard) that override the function-level
                                         // ones, so `--- @flavor retail\nns.f = impl` works.
@@ -1304,17 +1500,42 @@ pub(crate) fn scan_file_globals_with_synth(
                                         if annotations.doc.is_some() { merged.doc = annotations.doc; }
                                         if annotations.flavor_guard != 0 { merged.flavor_guard = annotations.flavor_guard; }
                                         if annotations.deprecated { merged.deprecated = true; }
-                                        globals.push(ExternalGlobal {
-                                            name: canonical_name,
-                                            kind: ExternalGlobalKind::Method(intermediates, field_name.clone(), false),
-                                            visibility,
-                                            ..merged
-                                        });
-                                        if is_addon_root && names.len() == 2 {
-                                            addon_assigned_fields.insert(field_name.clone());
-                                        }
+                                        let track = if is_addon_root && names.len() == 2 {
+                                            Some(&mut addon_assigned_fields)
+                                        } else { None };
+                                        push_method_global(
+                                            &mut globals, canonical_name, merged,
+                                            &field_name, intermediates, implicit_protected_prefix, track,
+                                        );
                                         continue;
                                     }
+                            }
+                            // When the RHS is a function literal, build its full signature
+                            // directly so params/returns survive cross-file (same as when a
+                            // local function is assigned by name above).
+                            if let Expression::Function(func_lit) = &effective {
+                                let mut base = build_func_external(
+                                    func_lit, assign.syntax(), false, correlated_return_overloads,
+                                    &file_func_returns, &file_func_tail_callee, owned_path.as_deref(),
+                                );
+                                // Post-process: when body-derived returns resolved to
+                                // [any] but the body actually returns a local function
+                                // identifier, replace with the proper fun(...) type.
+                                if base.returns.len() == 1
+                                    && matches!(&base.returns[0], AnnotationType::Simple(s) if s == "any")
+                                    && let Some(body) = func_lit.block()
+                                    && let Some(ret_func_type) = resolve_returned_local_func_type(&body, &local_function_sigs)
+                                {
+                                    base.returns = vec![ret_func_type];
+                                }
+                                let track = if is_addon_root && names.len() == 2 {
+                                    Some(&mut addon_assigned_fields)
+                                } else { None };
+                                push_method_global(
+                                    &mut globals, canonical_name, base,
+                                    &field_name, intermediates, implicit_protected_prefix, track,
+                                );
+                                continue;
                             }
                             let range = assign.syntax().text_range();
                             globals.push(ExternalGlobal {

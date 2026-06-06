@@ -22,7 +22,7 @@ local _b = w.litBool
 
 -- Pattern 4: function literal
 local _f = w.litFunc
---           ^ hover: (field) litFunc: function  def: external
+--           ^ hover: (field) function PipelineWidget.litFunc(self)\n  -> any  def: external
 
 -- Pattern 5: table constructor
 local _t = w.litTable

@@ -10,7 +10,7 @@ local _cf = retrieved.customField
 --                    ^ hover: (field) customField: number  def: external
 
 local _h = retrieved.handler
---                   ^ hover: (field) handler: function  def: external
+--                   ^ hover: (field) function Frame.handler(self)  def: external
 
 local _txt = retrieved.Text
 --                     ^ hover: (field) Text: FontString {  def: external
