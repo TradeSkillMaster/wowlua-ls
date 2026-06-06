@@ -769,6 +769,7 @@ local DottedOwnerNs = {}
 DottedOwnerNs.Widget = DottedOwnerWidget
 ---@return DottedOwnerWidget
 function DottedOwnerNs.Widget:Clone()
+-- ^ diag: return-self-class-name
     return self
 end
 ---@type DottedOwnerWidget

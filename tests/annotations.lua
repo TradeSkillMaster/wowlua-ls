@@ -375,6 +375,7 @@ local _builderClass = {}
 ---@param val string
 ---@return Builder
 function _builderClass:setName(val)
+-- ^ diag: return-self-class-name
     self.name = val
     return self
 end
@@ -382,6 +383,7 @@ end
 ---@param val number
 ---@return Builder
 function _builderClass:setCount(val)
+-- ^ diag: return-self-class-name
     return self
 end
 

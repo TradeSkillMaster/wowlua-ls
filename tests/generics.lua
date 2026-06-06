@@ -1173,4 +1173,18 @@ pairSameGeneric(5, "str")
 
 pairSameGeneric(5, 7)
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2, mathRound, funParamApply, numToStr, unannotated, retBound, numId, ignoreIfEquals, pairSameGeneric }
+-- Class-level generics should work even when the variable name
+-- differs from the class name.
+---@class GenericBucket<T>
+---@field items T[]
+local MyBucket = {}
+
+---@param item T
+function MyBucket:Add(item) end
+
+---@type GenericBucket<number>
+local nb
+nb:Add(42)
+--  ^ hover: (method) function GenericBucket:Add(item: number)
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2, mathRound, funParamApply, numToStr, unannotated, retBound, numId, ignoreIfEquals, pairSameGeneric, Holder, MyBucket, nb }

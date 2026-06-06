@@ -1191,20 +1191,53 @@ impl<'a> Analysis<'a> {
                             // Prefer the name immediately before the method (e.g. "Widget" in
                             // `function Ns.Widget:Clone()`), then walk up the chain to find a
                             // class ancestor (e.g. "SmartMap" in `function SmartMap.__private:__init()`).
-                            let owner_class = if is_method {
-                                let mut found = None;
-                                for i in (0..names.len() - 1).rev() {
-                                    let n = &names[i];
-                                    if self.ir.classes.contains_key(n) || self.ir.ext.classes.contains_key(n) {
-                                        found = Some(n.as_str());
-                                        break;
+                            let owner_class_owned: Option<String> = if is_method {
+                                // Walk the field chain to find the nearest class_name.
+                                // For `function Ns.Widget:Clone()`, resolves Ns → field Widget → class.
+                                // For `function Foo:Bar()`, resolves Foo → class.
+                                // Prefers the table's actual class_name (so a variable named `Foo`
+                                // that is `@class Bar` correctly yields `Bar`), falling back to
+                                // name matching against known classes when the table has no
+                                // class_name (e.g. `---@type ClassName` fields whose class_name
+                                // isn't linked yet during Phase 1, or intervening non-doc comments
+                                // between `@class` and the assignment breaking annotation linkage).
+                                //
+                                // Note: find_table_for_symbol relies on type_source being set,
+                                // which requires the root symbol's assignment to appear before
+                                // this function definition in source order. If it doesn't, the
+                                // lookup returns None and we fall through to name matching (same
+                                // limitation as the pre-fix name-only approach).
+                                let mut owner_class: Option<String> = None;
+                                let mut current_ti = self.ir.find_table_for_symbol(&names[0], scope_idx);
+                                for i in 0..names.len() - 1 {
+                                    // At each position, prefer the table's class_name, then
+                                    // fall back to matching the chain name. The last (nearest)
+                                    // position that yields a class wins.
+                                    let class_at_pos = current_ti
+                                        .and_then(|ti| self.table(ti).class_name.clone())
+                                        .or_else(|| {
+                                            let n = &names[i];
+                                            if self.ir.classes.contains_key(n) || self.ir.ext.classes.contains_key(n) {
+                                                Some(n.clone())
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                    if class_at_pos.is_some() {
+                                        owner_class = class_at_pos;
+                                    }
+                                    // Advance to the next field for multi-part paths.
+                                    if i < names.len() - 2 {
+                                        current_ti = current_ti
+                                            .and_then(|ti| self.ir.get_field(ti, &names[i + 1]))
+                                            .and_then(|field| self.ir.find_table_index(field.expr));
                                     }
                                 }
-                                found
+                                owner_class
                             } else {
                                 None
                             };
-                            self.apply_annotations_with_owner(func_idx, scope_idx, func.syntax(), owner_class);
+                            self.apply_annotations_with_owner(func_idx, scope_idx, func.syntax(), owner_class_owned.as_deref());
                             let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
 
                             // Mark root symbol as referenced (e.g. `Container` in `function Container:Foo()`)
