@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use crate::types::*;
 use crate::annotations::{AnnotationType, ClassDecl, AliasDecl, parse_overload};
@@ -1549,7 +1550,7 @@ impl PreResolvedGlobals {
         ws_classes: &[ClassDecl],
         ws_aliases: &[AliasDecl],
         implicit_protected_prefix: bool,
-        addon_ns_class_names: &HashSet<String>,
+        addon_ns_class_files: &HashMap<PathBuf, String>,
         callable_classes: &HashSet<String>,
     ) -> PreResolvedGlobals {
         let mut ctx = BuildOnStubsContext::new(stubs_base, implicit_protected_prefix);
@@ -1562,7 +1563,7 @@ impl PreResolvedGlobals {
         let mut pg = ctx.finish(ws_classes);
         // Two merge passes: (1) sub-table methods → class tables, (2) top-level ns fields → ns-class
         pg.merge_addon_ns_subtable_methods();
-        pg.merge_addon_ns_into_classes(addon_ns_class_names);
+        pg.merge_addon_ns_into_classes(addon_ns_class_files);
         pg
     }
 }

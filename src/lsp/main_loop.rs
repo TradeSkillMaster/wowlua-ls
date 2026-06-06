@@ -415,10 +415,9 @@ impl WorkspaceState {
         let implicit_protected = self.root.as_ref()
             .map(|r| self.configs.implicit_protected_prefix_for(r))
             .unwrap_or(false);
-        let addon_ns_class_names: HashSet<String> = self.ws_file_addon_ns_class.values().cloned().collect();
         let mut pg = PreResolvedGlobals::build_on_stubs(
             &self.stub_pre_globals, &ws_globals, &ws_classes, &ws_aliases,
-            implicit_protected, &addon_ns_class_names, &self.cached_callable_classes,
+            implicit_protected, &self.ws_file_addon_ns_class, &self.cached_callable_classes,
         );
         pg.merge_events(&ws_events);
 
@@ -432,16 +431,7 @@ impl WorkspaceState {
                     file_addon_roots.insert(file_path.clone(), root.to_path_buf());
                 }
             }
-            // Group addon namespace @class names by addon root
-            let mut per_addon_class_names: HashMap<PathBuf, HashSet<String>> = HashMap::new();
-            for (file_path, class_name) in &self.ws_file_addon_ns_class {
-                if let Some(root) = self.configs.addon_root_for(file_path) {
-                    per_addon_class_names
-                        .entry(root.to_path_buf())
-                        .or_default()
-                        .insert(class_name.clone());
-                }
-            }
+            let per_addon_class_names = self.configs.group_addon_ns_classes_by_root(&self.ws_file_addon_ns_class);
             pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names);
         }
 
@@ -834,7 +824,7 @@ fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_pre
     Some((scan, file_globals, addon_ns_class))
 }
 
-type WorkspaceScanResult = (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>, Vec<crate::annotations::EventDecl>, HashSet<String>);
+type WorkspaceScanResult = (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashMap<PathBuf, String>, Vec<crate::annotations::EventDecl>, HashSet<String>);
 
 pub fn scan_paths_with_overrides(
     paths: &[PathBuf],
@@ -856,7 +846,7 @@ pub fn scan_paths_with_overrides(
                         g.is_override = true;
                     }
                 }
-                (scan, file_globals, addon_ns_class)
+                (p.clone(), scan, file_globals, addon_ns_class)
             })
         })
         .collect();
@@ -865,17 +855,17 @@ pub fn scan_paths_with_overrides(
     let mut aliases = Vec::new();
     let mut globals = Vec::new();
     let mut events = Vec::new();
-    let mut addon_ns_class_names: HashSet<String> = HashSet::new();
+    let mut addon_ns_class_files: HashMap<PathBuf, String> = HashMap::new();
     let mut callable_classes: HashSet<String> = HashSet::new();
-    for (scan, file_globals, addon_ns_class) in results {
+    for (file_path, scan, file_globals, addon_ns_class) in results {
         classes.extend(scan.classes);
         aliases.extend(scan.aliases);
         events.extend(scan.events);
         callable_classes.extend(scan.callable_classes);
-        globals.extend(file_globals);
         if let Some(name) = addon_ns_class {
-            addon_ns_class_names.insert(name);
+            addon_ns_class_files.insert(file_path, name);
         }
+        globals.extend(file_globals);
     }
 
     // Pass 2+3: defclass + built-name scans.
@@ -1074,7 +1064,7 @@ pub fn scan_paths_with_overrides(
     }
 
     log::debug!("workspace scan: {} classes, {} aliases, {} globals, {} events", classes.len(), aliases.len(), globals.len(), events.len());
-    (classes, aliases, globals, addon_ns_class_names, events, callable_classes)
+    (classes, aliases, globals, addon_ns_class_files, events, callable_classes)
 }
 
 /// Partition XML classes into direct classes and overlay classes based on whether

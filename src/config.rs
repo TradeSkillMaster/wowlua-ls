@@ -490,6 +490,23 @@ impl ProjectConfigs {
             .collect()
     }
 
+    /// Group addon namespace `@class` names by their addon root directory.
+    pub fn group_addon_ns_classes_by_root(
+        &self,
+        addon_ns_class_files: &std::collections::HashMap<PathBuf, String>,
+    ) -> std::collections::HashMap<PathBuf, std::collections::HashSet<String>> {
+        let mut per_addon: std::collections::HashMap<PathBuf, std::collections::HashSet<String>> = std::collections::HashMap::new();
+        for (file_path, class_name) in addon_ns_class_files {
+            if let Some(root) = self.addon_root_for(file_path) {
+                per_addon
+                    .entry(root.to_path_buf())
+                    .or_default()
+                    .insert(class_name.clone());
+            }
+        }
+        per_addon
+    }
+
     /// Infer the addon folder name for a file. Returns the directory name
     /// of the addon root (from `addon_root` config or `.toc` file location).
     /// This is used to type the first file-level `...` vararg as a string literal.

@@ -4766,7 +4766,7 @@ pub fn regenerate_stubs() {
 
     // Step 6: Build PreResolvedGlobals (Pass 1 — used for FrameXML return type inference)
     log::info!("Building PreResolvedGlobals (pass 1)...");
-    let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new(), &std::collections::HashSet::new());
+    let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashMap::new(), &std::collections::HashSet::new());
     pre_globals.merge_events(&stub_events);
     phase!("PreResolvedGlobals::build (pass 1)");
 
@@ -4812,7 +4812,7 @@ pub fn regenerate_stubs() {
         crate::annotations::register_event_type_aliases(&mut aliases, &stub_events2);
 
         log::info!("Building PreResolvedGlobals (pass 2)...");
-        pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new(), &std::collections::HashSet::new());
+        pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashMap::new(), &std::collections::HashSet::new());
         pre_globals.merge_events(&stub_events2);
         phase!("PreResolvedGlobals::build (pass 2)");
     }

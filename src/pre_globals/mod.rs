@@ -2339,7 +2339,7 @@ impl PreResolvedGlobals {
         external_classes: &[ClassDecl],
         external_aliases: &[AliasDecl],
         implicit_protected_prefix: bool,
-        addon_ns_class_names: &HashSet<String>,
+        addon_ns_class_files: &HashMap<PathBuf, String>,
         callable_classes: &HashSet<String>,
     ) -> PreResolvedGlobals {
         let mut ctx = BuildContext::new();
@@ -2355,7 +2355,7 @@ impl PreResolvedGlobals {
         // into @class Foo tables, then (2) copy top-level addon ns fields into classes
         // declared on the ns variable itself (---@class MyAddon on `local _, ns = ...`).
         pg.merge_addon_ns_subtable_methods();
-        pg.merge_addon_ns_into_classes(addon_ns_class_names);
+        pg.merge_addon_ns_into_classes(addon_ns_class_files);
         pg
     }
 
@@ -2401,12 +2401,22 @@ impl PreResolvedGlobals {
         }
     }
 
-    fn merge_addon_ns_into_classes(&mut self, addon_ns_class_names: &HashSet<String>) {
+    fn merge_addon_ns_into_classes(&mut self, addon_ns_class_files: &HashMap<PathBuf, String>) {
+        let mut addon_ns_class_names: Vec<&str> = addon_ns_class_files.values().map(|s| s.as_str()).collect();
+        addon_ns_class_names.sort_unstable();
+        addon_ns_class_names.dedup();
         if addon_ns_class_names.is_empty() { return; }
         let Some(addon_idx) = self.addon_table_idx else { return; };
         let addon_local = addon_idx.ext_offset();
-        for class_name in addon_ns_class_names {
-            let Some(&class_idx) = self.classes.get(class_name) else { continue };
+        // Single-class case: no filtering needed — all addon-ns fields belong to the one class.
+        let multiple_classes = addon_ns_class_names.len() > 1;
+        // Snapshot field locations BEFORE the reverse merge loop — reverse-merged
+        // @field entries won't have location entries, which the forward merge
+        // uses to detect and skip them (preventing cross-addon leaking).
+        let combined_field_locs = self.field_locations.get(&addon_idx).cloned().unwrap_or_default();
+
+        for class_name in &addon_ns_class_names {
+            let Some(&class_idx) = self.classes.get(*class_name) else { continue };
             let class_local = class_idx.ext_offset();
             if class_local == addon_local { continue; }
             // Reverse: class @field annotations → namespace table, so bare
@@ -2421,10 +2431,46 @@ impl PreResolvedGlobals {
             // Forward: namespace fields → class table, so @type access sees
             // runtime-assigned fields. or_insert means @field annotations
             // (already on the class) take priority.
+            //
+            // When multiple addon-ns classes exist (multi-addon workspace), filter
+            // so each class only receives fields from its own addon — not from all
+            // addons in the workspace. Fields from files that declared a different
+            // @class are excluded. Fields from unannotated files are routed to the
+            // "closest" class by path proximity (longest common prefix).
             let addon_fields: Vec<(String, FieldInfo)> = self.tables[addon_local].fields.iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             for (name, fi) in addon_fields {
+                if multiple_classes {
+                    if let Some(field_loc) = combined_field_locs.get(&name) {
+                        // Check if this field's source file declared this class
+                        let field_class = addon_ns_class_files.get(&field_loc.path);
+                        if let Some(fc) = field_class {
+                            // File has a @class annotation — only merge if it matches
+                            if fc.as_str() != *class_name { continue; }
+                        } else {
+                            // File has no @class on its ns variable — route to the
+                            // closest class by longest common path prefix, so fields
+                            // from unannotated files within the same addon tree still
+                            // appear on that addon's class.
+                            let closest = addon_ns_class_files.iter()
+                                .max_by_key(|(p, _)| {
+                                    let shared = field_loc.path.components()
+                                        .zip(p.components())
+                                        .take_while(|(a, b)| a == b)
+                                        .count();
+                                    (shared, std::cmp::Reverse((*p).clone()))
+                                })
+                                .map(|(_, cn)| cn.as_str());
+                            if closest != Some(*class_name) { continue; }
+                        }
+                    } else {
+                        // No field location — field came from a reverse merge (@field
+                        // declaration → addon ns). Skip to avoid leaking fields from
+                        // one class to another; the originating class already has it.
+                        continue;
+                    }
+                }
                 self.tables[class_local].fields.entry(name).or_insert(fi);
             }
         }
@@ -2435,11 +2481,6 @@ impl PreResolvedGlobals {
     /// When `addon_root: true` is set in per-directory `.wowluarc.json`, each
     /// addon root gets its own isolated copy of the addon namespace table,
     /// containing only fields contributed by files under that root.
-    /// Look up the per-addon namespace table for a file, given its addon root.
-    pub fn addon_table_for_root(&self, addon_root: Option<&Path>) -> Option<TableIndex> {
-        addon_root.and_then(|root| self.addon_tables.get(root)).copied()
-    }
-
     ///
     /// `file_addon_roots` maps each file path to its addon root directory.
     /// `per_addon_class_names` maps addon root → set of `@class` names declared
@@ -2483,8 +2524,18 @@ impl PreResolvedGlobals {
                     } else {
                         true
                     }
+                } else if let Some(class_names) = per_addon_class_names.get(*addon_root) {
+                    // No location info — might be a reverse-merged @field from
+                    // another addon's class. Include only if this addon's own
+                    // class has it; the per-addon reverse merge below handles
+                    // adding back this addon's class @field declarations.
+                    class_names.iter().any(|cn| {
+                        self.classes.get(cn)
+                            .map(|&cidx| self.tables[cidx.ext_offset()].fields.contains_key(field_name))
+                            .unwrap_or(false)
+                    })
                 } else {
-                    // No location info — include in all addons as fallback.
+                    // No @class for this addon — include all as fallback.
                     true
                 };
                 if belongs {
@@ -2529,6 +2580,11 @@ impl PreResolvedGlobals {
                 }
             }
         }
+    }
+
+    /// Look up the per-addon namespace table for a file, given its addon root.
+    pub fn addon_table_for_root(&self, addon_root: Option<&Path>) -> Option<TableIndex> {
+        addon_root.and_then(|root| self.addon_tables.get(root)).copied()
     }
 
     pub(crate) fn resolve_annotation(
@@ -3219,7 +3275,7 @@ mod tests {
         ];
 
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(), &HashSet::new(),
+            &stubs_base, &[], &ws_classes, &[], false, &HashMap::new(), &HashSet::new(),
         );
 
         let d_idx = result.classes["D"];
@@ -3257,7 +3313,7 @@ mod tests {
 
         let ws_classes = vec![parent, child, elem_state, item_list_state];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(), &HashSet::new(),
+            &stubs_base, &[], &ws_classes, &[], false, &HashMap::new(), &HashSet::new(),
         );
 
         let item_list_idx = result.classes["ItemList"];
@@ -3307,7 +3363,7 @@ mod tests {
 
         let ws_classes = vec![base, parent, child];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(), &HashSet::new(),
+            &stubs_base, &[], &ws_classes, &[], false, &HashMap::new(), &HashSet::new(),
         );
 
         let child_idx = result.classes["Child"];

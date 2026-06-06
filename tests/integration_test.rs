@@ -80,7 +80,7 @@ fn run_annotation_tests(config: &TestConfig) {
             let stub_pre = &*STUB_GLOBALS;
             let mut pg = PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
             pg.merge_events(&se);
-            build_per_addon_tables_from_globals(&mut pg, &sg, &project_configs);
+            build_per_addon_tables_from_globals(&mut pg, &sg, &ans, &project_configs);
             Arc::new(pg)
         } else {
             STUB_GLOBALS.clone()
@@ -93,7 +93,7 @@ fn run_annotation_tests(config: &TestConfig) {
         } else {
             let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
             pg.merge_events(&se);
-            build_per_addon_tables_from_globals(&mut pg, &sg, &project_configs);
+            build_per_addon_tables_from_globals(&mut pg, &sg, &ans, &project_configs);
             Arc::new(pg)
         }
     } else {
@@ -2779,6 +2779,7 @@ fn event_hover() {
 fn build_per_addon_tables_from_globals(
     pg: &mut PreResolvedGlobals,
     globals: &[wowlua_ls::annotations::ExternalGlobal],
+    addon_ns_class_files: &std::collections::HashMap<std::path::PathBuf, String>,
     configs: &ProjectConfigs,
 ) {
     use std::collections::HashMap;
@@ -2792,9 +2793,7 @@ fn build_per_addon_tables_from_globals(
             }
         }
     }
-    // For this test helper, we don't have per-file addon_ns_class data from scan_workspace
-    // (it flattens it). Pass empty per-addon class names — the combined merge already ran.
-    let per_addon_class_names = HashMap::new();
+    let per_addon_class_names = configs.group_addon_ns_classes_by_root(addon_ns_class_files);
     pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names);
 }
 
@@ -3434,6 +3433,26 @@ fn multi_addon_namespace_isolation_b() {
     // AddonB should see its own namespace fields but NOT AddonA's
     run_annotation_tests(&TestConfig {
         lua_file: "tests/multi-addon/AddonB/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon"),
+    });
+}
+
+#[test]
+fn multi_addon_class_isolation_c() {
+    // AddonC uses @class on its namespace — should see its own fields but NOT AddonD's
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon/AddonC/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon"),
+    });
+}
+
+#[test]
+fn multi_addon_class_isolation_d() {
+    // AddonD uses @class on its namespace — should see its own fields but NOT AddonC's
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon/AddonD/user.lua",
         with_stubs: false,
         scan_dir: Some("tests/multi-addon"),
     });
