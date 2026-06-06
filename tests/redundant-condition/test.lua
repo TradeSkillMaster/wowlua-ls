@@ -167,6 +167,29 @@ local function checkLateinit(state)
 end
 _use(checkLateinit)
 
+-- ── No diagnostic: local from and/or on lateinit field ───────────────────────
+-- `X and true or false` is a common Lua idiom for boolean coercion. When X is
+-- a lateinit field the LS resolves it as always-truthy, collapsing the result
+-- to literal `true`. The local should not be flagged as redundant-condition.
+
+local holder = {
+    data = nil, ---@type string!
+}
+
+local hadData = holder.data and true or false
+if hadData then
+-- ^ hover: (local) hadData: boolean
+    _use(hadData)
+end
+
+-- Lateinit and/or result flowing into a typed context: the widened type
+-- (`string?` instead of `string`) must not cause new type-mismatch FPs.
+---@param s string
+local function acceptString(s) _use(s) end
+local val = holder.data and holder.data or "fallback"
+--      ^ hover: (local) val: string
+acceptString(val)
+
 -- ── No diagnostic: conditionally-assigned variable resolves to union ─────────
 -- After `if cond then x = val end`, the LS merges branches and resolves `x` as
 -- `string?` (neither guaranteed-truthy nor guaranteed-falsy), so no diagnostic.

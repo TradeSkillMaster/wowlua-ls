@@ -465,7 +465,7 @@ fn is_lateinit_field_access(analysis: &AnalysisResult, expr_id: ExprId) -> bool 
     let Expr::FieldAccess { table, field, .. } = &analysis.ir.exprs[id.val()] else { return false };
     let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
     let table_type = table_type.into_strip_opaque();
-    any_table_field_matches(analysis, &table_type, field, |fi| fi.lateinit)
+    analysis.ir.any_table_field_matches(&table_type, field, |fi| fi.lateinit)
 }
 
 /// Field access where the field lacks a direct `@field` annotation on the
@@ -490,7 +490,7 @@ fn is_dynamic_bracket_index(analysis: &AnalysisResult, expr_id: ExprId) -> bool 
     // If the literal key matches a declared field, the access is to a known field
     // rather than a dynamic dictionary lookup — don't suppress.
     if let Some(ref lk) = literal_key
-        && any_table_field_matches(analysis, &table_type, lk, |_| true) {
+        && analysis.ir.any_table_field_matches(&table_type, lk, |_| true) {
             return false;
     }
     any_table_has_value_type(analysis, &table_type)
@@ -510,21 +510,6 @@ fn is_unannotated_param_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool 
         }
     }
     false
-}
-
-/// Checks whether any table in a (possibly union/intersection) type has a field
-/// with the given name where the predicate returns true.
-fn any_table_field_matches(
-    analysis: &AnalysisResult, ty: &ValueType, field: &str,
-    pred: impl Fn(&crate::types::FieldInfo) -> bool + Copy,
-) -> bool {
-    match ty {
-        ValueType::Table(Some(idx)) => analysis.get_field(*idx, field).is_some_and(pred),
-        ValueType::Union(types) | ValueType::Intersection(types) => {
-            types.iter().any(|t| any_table_field_matches(analysis, t, field, pred))
-        }
-        _ => false,
-    }
 }
 
 /// Checks whether any table in a (possibly union/intersection) type either has

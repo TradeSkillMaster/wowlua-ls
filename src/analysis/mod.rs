@@ -940,6 +940,21 @@ impl Ir {
         self.get_field(table_idx, field_name).is_some()
     }
 
+    /// Checks whether any table in a (possibly union/intersection) type has a
+    /// field with the given name where the predicate returns true.
+    pub(crate) fn any_table_field_matches(
+        &self, ty: &ValueType, field: &str,
+        pred: impl Fn(&FieldInfo) -> bool + Copy,
+    ) -> bool {
+        match ty {
+            ValueType::Table(Some(idx)) => self.get_field(*idx, field).is_some_and(pred),
+            ValueType::Union(types) | ValueType::Intersection(types) => {
+                types.iter().any(|t| self.any_table_field_matches(t, field, pred))
+            }
+            _ => false,
+        }
+    }
+
     /// Check if a table or any of its ancestors has the given accessor.
     pub(crate) fn has_accessor(&self, table_idx: TableIndex, name: &str) -> bool {
         self.get_accessor(table_idx, name).is_some()

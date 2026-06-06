@@ -2521,6 +2521,21 @@ impl<'a> Analysis<'a> {
                 let rhs = *rhs;
                 let lhs_type = self.resolve_expr(lhs);
                 let rhs_type = self.resolve_expr(rhs);
+                // Lateinit fields (`T!`) are typed non-nil but can be nil at
+                // runtime before initialization.  When used as the LHS of
+                // `and`/`or` (e.g. `field and true or false`), inject nil so
+                // the result type reflects possible nil truthiness.
+                // The `is_guaranteed_truthy` guard is a no-op for `boolean!`
+                // (which already handles both branches correctly) and avoids
+                // unnecessary work when the LHS already includes nil/false.
+                let lhs_type = if matches!(op, Operator::And | Operator::Or)
+                    && lhs_type.as_ref().is_some_and(|t| t.is_guaranteed_truthy())
+                    && self.is_lateinit_field_expr(lhs)
+                {
+                    lhs_type.map(|t| ValueType::union(t, ValueType::Nil))
+                } else {
+                    lhs_type
+                };
                 return match (lhs_type, rhs_type) {
                     (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
                     // When RHS is guaranteed falsy, returning it alone ignores
@@ -3237,6 +3252,22 @@ impl<'a> Analysis<'a> {
         super::ancestor_scopes(&self.ir.scopes, scope_idx)
             .find_map(|s| self.event_vararg_types.get(&s))
             .and_then(|types| types.get(ret_index).cloned())
+    }
+
+    /// Returns true when `expr_id` is a field access on a table where the
+    /// field is declared as lateinit (`T!`).  Unwraps narrowing wrappers.
+    fn is_lateinit_field_expr(&mut self, expr_id: ExprId) -> bool {
+        let mut id = expr_id;
+        while let Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner)
+            | Expr::Grouped(inner) = &self.ir.exprs[id.val()] {
+            id = *inner;
+        }
+        let Expr::FieldAccess { table, field, .. } = &self.ir.exprs[id.val()] else { return false };
+        // Clone to release borrow on self.ir.exprs before resolve_expr
+        let (table, field) = (*table, field.clone());
+        let Some(table_type) = self.resolve_expr(table) else { return false };
+        let table_type = table_type.into_strip_opaque();
+        self.ir.any_table_field_matches(&table_type, &field, |fi| fi.lateinit)
     }
 
 }
