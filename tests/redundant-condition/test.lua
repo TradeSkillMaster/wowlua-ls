@@ -296,6 +296,57 @@ repeat
 until repNever
 --    ^ diag: redundant-condition
 
+-- ── No diagnostic: variable reassigned inside loop, checked AFTER loop ─────
+-- The variable's post-loop value depends on whether the loop body's
+-- conditional assignment ran, so the condition is not redundant.
+
+local properlySorted = true
+for i = 1, 10 do
+    if check(i) then
+        properlySorted = false
+        break
+    end
+end
+if properlySorted then
+    _use(properlySorted)
+end
+
+-- Same pattern with nil init (always-falsy variant)
+local match = nil
+for i = 1, 5 do
+    match = tryMatch(i)
+    if match then break end
+end
+if match then
+    _use(match)
+end
+
+-- While variant: variable set inside loop, tested after
+local ready = false
+while hasMore() do
+    ready = checkReady()
+end
+if ready then
+    _use(ready)
+end
+
+-- Variable NOT reassigned inside the loop — still diagnose after the loop
+local neverModified = 42
+for j = 1, 3 do
+    _use(j)
+end
+if neverModified then end
+-- ^ diag: redundant-condition
+
+-- Variable reassigned in a loop AFTER the condition — still diagnose
+local beforeLoop = true
+if beforeLoop then end
+-- ^ diag: redundant-condition
+for j = 1, 3 do
+    beforeLoop = false
+end
+_use(beforeLoop)
+
 -- ── Suppression ──────────────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: redundant-condition

@@ -25,10 +25,11 @@ impl DiagnosticPass for RedundantCondition {
                 continue;
             };
 
-            // Suppress inside loops when the condition references a variable
-            // that is reassigned within the loop body. The variable's type may
-            // differ across iterations even though Phase 1 only saw the
-            // pre-loop version when lowering the condition expression.
+            // Suppress when the condition references a variable that is
+            // reassigned within a loop body — either an enclosing loop (the
+            // variable's type may differ across iterations) or a preceding
+            // loop (after the loop the variable could retain its pre-loop
+            // value or the in-loop value).
             if is_loop_reassigned_condition(&analysis.ir, site.expr_id, site.start, site.loop_scope) {
                 continue;
             }
@@ -62,8 +63,8 @@ fn collect_symbol_refs(ir: &crate::analysis::Ir, expr_id: ExprId, out: &mut Vec<
 }
 
 /// Check whether the condition references a variable that is reassigned inside
-/// an enclosing loop body. In that case the variable's value can differ across
-/// loop iterations and the "always truthy/falsy" judgement is unsound.
+/// a loop body — either an enclosing loop (value may differ across iterations)
+/// or a preceding loop (post-loop value could be the pre-loop or in-loop one).
 fn is_loop_reassigned_condition(
     ir: &crate::analysis::Ir,
     expr_id: ExprId,
@@ -74,21 +75,41 @@ fn is_loop_reassigned_condition(
     collect_symbol_refs(ir, expr_id, &mut sym_refs);
     if sym_refs.is_empty() { return false; }
 
-    // Find the enclosing loop scope. For `while` and `repeat...until`, the
-    // condition is in the parent scope so ancestor-walking won't find the loop
-    // body — use the stored scope instead.
-    let loop_scope = loop_scope_hint.or_else(|| {
+    let local_syms: Vec<_> = sym_refs.iter().filter_map(|&idx| {
+        if idx.is_external() { return None; }
+        Some((idx, ir.sym(idx)))
+    }).collect();
+
+    // Case 1: condition is inside a loop (or in while/repeat...until position
+    // where ancestor-walking won't find the loop body — use the stored hint).
+    let enclosing_loop = loop_scope_hint.or_else(|| {
         let cond_scope = ir.scope_at_offset(offset)?;
         find_enclosing_loop(ir, cond_scope)
     });
-    let Some(loop_scope) = loop_scope else { return false };
 
-    // Check whether any referenced symbol has a version created inside the loop.
-    sym_refs.iter().any(|&sym_idx| {
-        if sym_idx.is_external() { return false; }
-        let sym = ir.sym(sym_idx);
+    if enclosing_loop.is_some_and(|loop_scope| {
+        local_syms.iter().any(|(_, sym)| {
+            sym.versions.iter().any(|ver| {
+                is_scope_inside(ir, ver.created_in_scope, loop_scope)
+            })
+        })
+    }) {
+        return true;
+    }
+
+    // Case 2: condition is after a preceding loop. A variable defined before
+    // the loop but reassigned inside it may hold either its pre-loop or
+    // in-loop value. Only suppress when the loop ends before the condition.
+    local_syms.iter().any(|(_, sym)| {
         sym.versions.iter().any(|ver| {
-            is_scope_inside(ir, ver.created_in_scope, loop_scope)
+            // Find the innermost loop enclosing this version's creation scope.
+            let Some(ver_loop) = find_enclosing_loop(ir, ver.created_in_scope) else { return false };
+            // Only suppress when the symbol was defined outside that loop.
+            if is_scope_inside(ir, sym.scope_idx, ver_loop) { return false; }
+            // Only suppress when the loop precedes the condition — a loop
+            // appearing after the condition cannot affect the condition's value.
+            let Some(&(_, loop_end, _)) = ir.block_scopes.iter().find(|&&(_, _, s)| s == ver_loop) else { return false };
+            loop_end <= offset
         })
     })
 }
