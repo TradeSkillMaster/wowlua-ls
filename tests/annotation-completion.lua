@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, unused-function, unused-local
+---@diagnostic disable: create-global, unused-function, unused-local, undefined-doc-name
 -- Annotation completion tests
 
 -- ── Tag completions ──────────────────────────────────────────────────────────

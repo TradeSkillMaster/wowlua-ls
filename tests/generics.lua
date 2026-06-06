@@ -1187,4 +1187,38 @@ local nb
 nb:Add(42)
 --  ^ hover: (method) function GenericBucket:Add(item: number)
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2, mathRound, funParamApply, numToStr, unannotated, retBound, numId, ignoreIfEquals, pairSameGeneric, Holder, MyBucket, nb }
+-- ── Owner class from field @type, not name collision ────────────────────────
+-- When a field name collides with an unrelated class, the @type annotation
+-- on the field assignment should determine the owner class for methods.
+
+---@class OwnerTarget<T>
+
+---@class OwnerDecoy<U>
+
+local nsOwn = {}
+---@type OwnerTarget<string>
+nsOwn.OwnerDecoy = {}
+
+-- The method's T should come from OwnerTarget (via @type), not OwnerDecoy.
+-- Without the fix, T would be unresolved (?) because OwnerDecoy uses U, not T.
+---@param item T
+function nsOwn.OwnerDecoy:Push(item) end
+--                              ^ hover: (param) item: T
+
+-- ── Non-doc comment between @class and assignment ───────────────────────────
+-- Annotation linkage should survive intervening non-doc comments.
+
+---@class LinkedClass<V>
+---@field value V
+-- This non-doc comment should not break @class linkage.
+local LinkedClass = {}
+
+---@param v V
+function LinkedClass:Set(v) end
+
+---@type LinkedClass<string>
+local lc
+lc:Set("hello")
+--  ^ hover: (method) function LinkedClass:Set(v: string)
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2, mathRound, funParamApply, numToStr, unannotated, retBound, numId, ignoreIfEquals, pairSameGeneric, Holder, MyBucket, nb, nsOwn, LinkedClass, lc }

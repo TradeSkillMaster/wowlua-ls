@@ -1203,42 +1203,47 @@ impl<'a> Analysis<'a> {
                                 // Walk the field chain to find the nearest class_name.
                                 // For `function Ns.Widget:Clone()`, resolves Ns → field Widget → class.
                                 // For `function Foo:Bar()`, resolves Foo → class.
-                                // Prefers the table's actual class_name (so a variable named `Foo`
-                                // that is `@class Bar` correctly yields `Bar`), falling back to
-                                // name matching against known classes when the table has no
-                                // class_name (e.g. `---@type ClassName` fields whose class_name
-                                // isn't linked yet during Phase 1, or intervening non-doc comments
-                                // between `@class` and the assignment breaking annotation linkage).
+                                // Uses the table's actual class_name (set via @class annotation
+                                // linkage) or, for fields, the @type annotation's class. Never
+                                // falls back to matching variable/field names against known classes
+                                // — the name is meaningless; only the declared type matters.
                                 //
                                 // Note: find_table_for_symbol relies on type_source being set,
                                 // which requires the root symbol's assignment to appear before
-                                // this function definition in source order. If it doesn't, the
-                                // lookup returns None and we fall through to name matching (same
-                                // limitation as the pre-fix name-only approach).
+                                // this function definition in source order.
                                 let mut owner_class: Option<String> = None;
                                 let mut current_ti = self.ir.find_table_for_symbol(&names[0], scope_idx);
+                                // When advancing through fields, if the field at position i+1
+                                // has an @type annotation pointing to a class table, record
+                                // that class name here. It is consumed via `.take()` at the
+                                // next iteration (position i+1) as a fallback when the raw
+                                // table has no class_name (e.g. `ns.Field = {} ---@type SomeClass`).
+                                let mut field_ann_class: Option<String> = None;
                                 for i in 0..names.len() - 1 {
-                                    // At each position, prefer the table's class_name, then
-                                    // fall back to matching the chain name. The last (nearest)
-                                    // position that yields a class wins.
                                     let class_at_pos = current_ti
                                         .and_then(|ti| self.table(ti).class_name.clone())
-                                        .or_else(|| {
-                                            let n = &names[i];
-                                            if self.ir.classes.contains_key(n) || self.ir.ext.classes.contains_key(n) {
-                                                Some(n.clone())
-                                            } else {
-                                                None
-                                            }
-                                        });
+                                        .or_else(|| field_ann_class.take());
                                     if class_at_pos.is_some() {
                                         owner_class = class_at_pos;
                                     }
                                     // Advance to the next field for multi-part paths.
                                     if i < names.len() - 2 {
-                                        current_ti = current_ti
-                                            .and_then(|ti| self.ir.get_field(ti, &names[i + 1]))
-                                            .and_then(|field| self.ir.find_table_index(field.expr));
+                                        if let Some(ti) = current_ti {
+                                            if let Some(field) = self.ir.get_field(ti, &names[i + 1]) {
+                                                // Check if the field's annotation points to a class table.
+                                                // Unwrap unions/intersections to handle nullable types
+                                                // like `ClassName?` (which resolve to Union([Table, Nil])).
+                                                field_ann_class = field.annotation.as_ref().and_then(|ann| {
+                                                    Self::extract_class_from_type(self, ann)
+                                                });
+                                                let field_expr = field.expr;
+                                                current_ti = self.ir.find_table_index(field_expr);
+                                            } else {
+                                                current_ti = None;
+                                            }
+                                        } else {
+                                            current_ti = None;
+                                        }
                                     }
                                 }
                                 owner_class
@@ -3196,6 +3201,19 @@ impl<'a> Analysis<'a> {
             }
         }
         None
+    }
+
+    /// Extract a class name from a `ValueType`, unwrapping unions and intersections.
+    /// Returns the `class_name` of the first `Table(Some(_))` member found.
+    /// Handles nullable class types like `ClassName?` → `Union([Table(..), Nil])`.
+    fn extract_class_from_type(&self, vt: &ValueType) -> Option<String> {
+        match vt {
+            ValueType::Table(Some(ti)) => self.table(*ti).class_name.clone(),
+            ValueType::Union(members) | ValueType::Intersection(members) => {
+                members.iter().find_map(|m| self.extract_class_from_type(m))
+            }
+            _ => None,
+        }
     }
 
     /// Extract an inline `---@type X` annotation from tokens following or within a node.

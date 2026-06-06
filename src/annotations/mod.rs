@@ -765,9 +765,19 @@ pub(crate) fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
                 doc_lines.push(content.to_string());
                 tok = token.prev_token();
                 continue;
-            } else if text.trim_start_matches('-').chars().all(|c| c == ' ' || c == '-') {
-                // Bare separator comment (e.g. `--` or `-- ---`) — skip without
-                // collecting so annotations above it are still reachable.
+            } else {
+                // Non-doc comment (e.g. `-- regular comment`, `-- TODO`, or
+                // bare separators like `--`) — skip without collecting so
+                // annotations above it are still reachable.
+                //
+                // Note: newlines_since_comment was already reset to 0 at
+                // line 729. This means non-doc comments defeat the blank-line
+                // barrier: `---@type A / -- comment / \n / ---@type B / local x`
+                // would attach both annotations to x. In practice this is rare
+                // (annotation blocks are separated by statements, not bare
+                // comments), and the alternative (leaving the counter >= 1)
+                // would break annotation linkage through comments entirely
+                // since every comment line has a preceding newline.
                 tok = token.prev_token();
                 continue;
             }

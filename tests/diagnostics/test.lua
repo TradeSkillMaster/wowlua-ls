@@ -1244,12 +1244,12 @@ local function malformed5() end
 -- @return with comma-separated types (not supported)
 ---@return string, boolean
 -- ^ diag: malformed-annotation
-local function malformed5b() end
+local function malformed5b() return "" end
 
 -- @return with comma-separated union types
 ---@return string|number, boolean
 -- ^ diag: malformed-annotation
-local function malformed5c() end
+local function malformed5c() return "" end
 
 -- @return with comma inside parameterized type (valid, no diagnostic)
 ---@return table<string, number>
