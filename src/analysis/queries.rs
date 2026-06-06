@@ -158,8 +158,12 @@ fn collect_type_name_completions<'a>(
 // ── Shared free functions (used by both Analysis and AnalysisResult) ─────────
 
 /// Union the resolved types of every `FunctionRet` symbol in `rets` whose
-/// slot index matches `slot`. Returns `None` if no matching symbol has a
-/// resolved type yet (e.g. mid-fixpoint, or no returns exist for that slot).
+/// slot index matches `slot`. Returns `None` when no matching symbols exist
+/// for that slot or none have resolved yet. When some return branches are
+/// resolved and others are not, `Any` is unioned into the result to represent
+/// the unknown contribution — this prevents a misleading partial type (e.g.
+/// `nil` when the function also has an unresolved non-nil return) while still
+/// preserving the resolved branches for callers like `infer_tail_call_returns`.
 ///
 /// Each `return` statement registers its own `FunctionRet` symbol at the
 /// scope it lives in, so a function with branched returns has multiple
@@ -168,6 +172,7 @@ fn collect_type_name_completions<'a>(
 /// to collect every contribution.
 pub(super) fn return_type_at_slot(ir: &Ir, rets: &[SymbolIndex], slot: usize) -> Option<ValueType> {
     let mut acc: Option<ValueType> = None;
+    let mut any_unresolved = false;
     for &sym_idx in rets {
         if let SymbolIdentifier::FunctionRet(_, idx) = &ir.sym(sym_idx).id {
             if *idx != slot { continue; }
@@ -178,8 +183,21 @@ pub(super) fn return_type_at_slot(ir: &Ir, rets: &[SymbolIndex], slot: usize) ->
                     Some(prev) => ir.dedupe_union_tables(ValueType::make_union(vec![prev, vt.clone()])),
                     None => vt.clone(),
                 });
+            } else {
+                any_unresolved = true;
             }
         }
+    }
+    // Mixed case: some return branches resolved but others are still
+    // unresolved. Union Any into the accumulated type to represent the
+    // unknown contribution — this avoids silently dropping unresolved
+    // branches (which would produce a misleading partial type like `nil`
+    // when the function also returns an unresolved value) while still
+    // preserving resolved contributions for downstream callers.
+    // When ALL returns are unresolved, acc stays None — preserving the
+    // "no type info" semantics that unknown-type diagnostics rely on.
+    if any_unresolved && let Some(prev) = acc {
+        acc = Some(ir.dedupe_union_tables(ValueType::make_union(vec![prev, ValueType::Any])));
     }
     acc
 }

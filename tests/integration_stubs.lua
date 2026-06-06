@@ -1096,3 +1096,30 @@ _tdp:Insert("hello")
 
 _dp:GetSize()
 --  ^ hover: (method) function DataProviderMixin:GetSize()
+
+-- Return type with unresolved tremove result should not collapse to nil.
+-- When a function has `return nil` in one branch and `return result` where
+-- result's type is unresolved in another, the return type should include
+-- `any` (not just `nil`) to represent the unknown contribution.
+local _retPriv = {}
+_retPriv.chunks = {}
+function _retPriv.getChunk(key)
+--                ^ hover: (field) function getChunk(key)\n-> any?
+    if not _retPriv.chunks[key] then
+        return nil
+    end
+    local result = tremove(_retPriv.chunks[key])
+    return result
+end
+
+-- When all return branches resolve, the union should converge to the
+-- concrete types (not stay as `any`).
+---@type string[]
+local _retItems = {}
+function _retPriv.getItem(key)
+--                ^ hover: (field) function getItem(key: number)\n-> string?
+    if not _retItems[key] then
+        return nil
+    end
+    return tremove(_retItems)
+end
