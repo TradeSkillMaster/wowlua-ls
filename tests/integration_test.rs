@@ -4806,3 +4806,102 @@ fn disable_file_no_duplicate_when_code_already_present() {
     let result = apply_text_edit(src, edit);
     assert_eq!(result, src, "should be unchanged when code already present");
 }
+
+/// Helper: detect external globals by sort_text prefix (same logic as main_loop.rs).
+fn has_external_globals(items: &[lsp_types::CompletionItem]) -> bool {
+    items.iter().any(|item| {
+        item.sort_text.as_ref()
+            .is_some_and(|s| s.starts_with('2') || s.starts_with('3'))
+    })
+}
+
+#[test]
+fn scope_completion_external_globals_sort_text() {
+    // A short prefix matching WoW API globals should produce items with
+    // sort_text "2*"/"3*" (external globals), which main_loop.rs uses to
+    // set isIncomplete=true and force re-query.
+    let source = "print(Cr)\n";
+    // Cursor right after "Cr", on the ')' — same pattern as snippet tests
+    let cursor = source.find("Cr)").unwrap() as u32 + 2;
+    assert_eq!(source.as_bytes()[cursor as usize], b')');
+
+    let tree = wowlua_ls::syntax::parser::parse(source);
+    let pre_globals = STUB_GLOBALS.clone();
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let items = result.completions_at(&tree, cursor, source, false)
+        .expect("should return completions for prefix 'Cr'");
+
+    // External globals like "CreateFrame" should appear with sort_text "2*"
+    assert!(has_external_globals(&items), "short prefix should include external globals");
+
+    let ext = items.iter().find(|c| c.label == "CreateFrame")
+        .expect("should find 'CreateFrame' in completions");
+    assert!(
+        ext.sort_text.as_ref().unwrap().starts_with('2'),
+        "external global should have sort_text starting with '2', got: {:?}",
+        ext.sort_text,
+    );
+}
+
+#[test]
+fn scope_completion_local_only_no_external_globals() {
+    // When the prefix is specific enough to match only a local variable,
+    // no external globals should be present → isIncomplete would be false
+    // and the client won't fuzzy-match stale globals.
+    let source = "local myUniqueDesigns = 1\nprint(myUniqueDesign)\n";
+    let cursor = source.find("myUniqueDesign)").unwrap() as u32 + 14;
+    assert_eq!(source.as_bytes()[cursor as usize], b')');
+
+    let tree = wowlua_ls::syntax::parser::parse(source);
+    let pre_globals = STUB_GLOBALS.clone();
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let items = result.completions_at(&tree, cursor, source, false)
+        .expect("should return completions for prefix 'myUniqueDesign'");
+
+    // Only the local should match; no external globals
+    assert!(!has_external_globals(&items), "specific local prefix should not include external globals");
+    assert_eq!(items.len(), 1, "should only match the one local variable");
+    assert_eq!(items[0].label, "myUniqueDesigns");
+    assert!(
+        items[0].sort_text.as_ref().unwrap().starts_with('0'),
+        "local variable should have sort_text starting with '0', got: {:?}",
+        items[0].sort_text,
+    );
+}
+
+#[test]
+fn scope_completion_locals_sort_before_globals() {
+    // When both locals and globals match the same prefix, locals must sort
+    // first (sort_text "0*") before globals (sort_text "2*") so the
+    // relevant local appears at the top of the completion list.
+    let source = "local CreateWidget = 1\nprint(Create)\n";
+    let cursor = source.find("Create)").unwrap() as u32 + 6;
+    assert_eq!(source.as_bytes()[cursor as usize], b')');
+
+    let tree = wowlua_ls::syntax::parser::parse(source);
+    let pre_globals = STUB_GLOBALS.clone();
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let items = result.completions_at(&tree, cursor, source, false)
+        .expect("should return completions for prefix 'Create'");
+
+    // Both the local and external globals should be present
+    let local_item = items.iter().find(|c| c.label == "CreateWidget")
+        .expect("should find local 'CreateWidget'");
+    assert!(
+        local_item.sort_text.as_ref().unwrap().starts_with('0'),
+        "local should sort first (prefix '0')",
+    );
+    assert!(has_external_globals(&items), "should include external globals like CreateFrame");
+
+    // First item after sorting should be the local
+    assert_eq!(items[0].label, "CreateWidget", "local should be first in sorted order");
+}

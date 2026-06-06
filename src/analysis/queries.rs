@@ -2601,6 +2601,8 @@ impl AnalysisResult {
                                 }
                                 _ => CompletionItemKind::VARIABLE,
                             };
+                            // Sort-text prefixes "2"/"3" identify external globals;
+                            // main_loop.rs depends on this to set isIncomplete.
                             let sort_text = if name.starts_with('_') {
                                 format!("3{}", name)
                             } else {

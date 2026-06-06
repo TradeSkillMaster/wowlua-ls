@@ -3096,14 +3096,23 @@ fn handle_request(
                     }
                 }
                 use crate::MAX_COMPLETIONS;
-                let is_incomplete = result.len() > MAX_COMPLETIONS;
-                if is_incomplete {
+                // When external globals are present, always mark as incomplete so
+                // the client re-queries with the updated prefix. Without this,
+                // the client caches the list when it drops below MAX_COMPLETIONS
+                // and applies its own fuzzy matching, producing irrelevant global
+                // suggestions (e.g. "Destiny*" when typing a local "designs").
+                let has_external_globals = result.iter().any(|item| {
+                    item.sort_text.as_ref()
+                        .is_some_and(|s| s.starts_with('2') || s.starts_with('3'))
+                });
+                let is_incomplete = has_external_globals || result.len() > MAX_COMPLETIONS;
+                if result.len() > MAX_COMPLETIONS {
                     result.truncate(MAX_COMPLETIONS);
                 }
                 log::debug!(
                     "Completion: {} items{}, first={:?}",
                     result.len(),
-                    if is_incomplete { " (truncated)" } else { "" },
+                    if result.len() > MAX_COMPLETIONS { " (truncated)" } else if is_incomplete { " (incomplete)" } else { "" },
                     result.first().map(|i| i.label.as_str()).unwrap_or("(empty)")
                 );
                 let list = lsp_types::CompletionList {
