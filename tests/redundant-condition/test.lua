@@ -132,6 +132,22 @@ local function withGeneric(x)
 end
 _use(withGeneric)
 
+-- ── No diagnostic: nil-initialized local with conditional assignment ────────
+-- When a variable is initialized to nil and conditionally assigned from an
+-- unresolved call, the branch merge should yield `any` (not `nil`), so
+-- `if x then` is NOT flagged as redundant-condition.
+
+local function conditionalAssign(cond)
+    local price = nil
+    if cond then
+        price = unknownFunc() -- intentionally undefined
+    end
+    if price then
+        return price
+    end
+end
+_use(conditionalAssign)
+
 -- ── Suppression ──────────────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: redundant-condition

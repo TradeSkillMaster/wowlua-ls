@@ -2470,21 +2470,47 @@ impl<'a> Analysis<'a> {
                 let exprs = exprs.clone();
                 let mut types: Vec<ValueType> = Vec::new();
                 let mut has_any = false;
+                let mut has_none = false;
                 for eid in exprs {
                     match self.resolve_expr(eid) {
                         // Skip Any — it typically comes from an unresolved
                         // forward-referenced call and would subsume all other
                         // branch contributions, collapsing the union to Any.
+                        // BranchMerge is volatile, so once the forward ref
+                        // resolves to a concrete type, re-evaluation produces
+                        // the correct union.
                         Some(ValueType::Any) => { has_any = true; }
                         Some(vt) => { types.push(vt); }
-                        None => {}
+                        // None means either (a) the expression hasn't resolved
+                        // yet in the fixpoint loop (forward reference that
+                        // will resolve on a later iteration) or (b) it is
+                        // permanently unresolvable (e.g. call to an undefined
+                        // function). We can't distinguish the two here, but
+                        // BranchMerge is volatile: if case (a) resolves
+                        // later, re-evaluation replaces any transient result.
+                        // Tracked separately from has_any so that permanently
+                        // unresolvable branches don't get the same treatment
+                        // as forward-ref Any.
+                        None => { has_none = true; }
                     }
                 }
                 return if types.is_empty() {
                     // All branches are Any or unresolved — return Any if at
                     // least one branch produced Any (so the merge doesn't
                     // block the fixpoint), otherwise None.
-                    if has_any { Some(ValueType::Any) } else { None }
+                    if has_any || has_none { Some(ValueType::Any) } else { None }
+                } else if has_none && types.iter().all(|t| matches!(t, ValueType::Nil)) {
+                    // All resolved branches contribute only Nil (typically
+                    // the implicit-else path from `local x = nil; if cond
+                    // then x = f() end`). The None branch represents a real
+                    // assignment whose type couldn't be determined — returning
+                    // just Nil would be a false narrowing (triggering
+                    // false-positive redundant-condition on `if x then`).
+                    // Note: this is narrow — a `local x = false` init would
+                    // contribute Boolean (not Nil) and wouldn't hit this
+                    // guard. That case doesn't cause a false positive though,
+                    // since Boolean is not always-truthy or always-falsy.
+                    Some(ValueType::Any)
                 } else {
                     Some(self.ir.dedupe_union_tables(ValueType::make_union(types)))
                 };

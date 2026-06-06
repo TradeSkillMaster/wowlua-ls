@@ -945,6 +945,7 @@ local function parseOptional(input)
     return input, extra
 end
 local _ = parseOptional
--- `extra` is nil because this file runs without stubs, so `tonumber` is unknown
--- and the `extra = tonumber(extra)` assignment doesn't refine the type from nil.
---        ^ hover: (local) function parseOptional(input)\n  -> string, nil
+-- `extra` is any because this file runs without stubs, so `tonumber` is unknown.
+-- The `extra = tonumber(extra)` branch contributes an unknown type to the merge,
+-- so the result is any (not nil) to avoid false-positive redundant-condition.
+--        ^ hover: (local) function parseOptional(input)\n  -> string, any
