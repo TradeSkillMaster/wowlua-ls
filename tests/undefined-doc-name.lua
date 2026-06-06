@@ -226,6 +226,20 @@ local _inlineGoodLocal = {} ---@type KnownClass
 ---@type {[1]: string, [2]: boolean}
 local _numericKeyTable = {}
 
+-- ── Space after --- variant (--- @param) ─────────────────────────────
+-- Regression: `--- @param` (space after `---`) used to fall through the
+-- comment-range lookup and emit the diagnostic spanning the whole function
+-- body.  The fix is in comment_is_tag() which handles both `---@` and `--- @`.
+
+--- @param x KnownClass
+--- @param y MissingSpaceParamType
+local function _spaceParamTest(x, y) _consume(x, y) end
+-- ^ diag: undefined-doc-name
+
+--- @return MissingSpaceReturnType
+local function _spaceReturnTest() end
+-- ^ diag: undefined-doc-name
+
 -- ── Suppression ──────────────────────────────────────────────────────
 
 ---@diagnostic disable: undefined-doc-name

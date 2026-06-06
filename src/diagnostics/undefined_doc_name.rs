@@ -38,7 +38,7 @@ impl DiagnosticPass for UndefinedDocName {
                     // Check @type on preceding annotations
                     if let Some(ref at) = annotations.var_type {
                         let (type_start, type_end) = comment_ranges.iter()
-                            .find(|(text, _, _)| text.starts_with("---@type"))
+                            .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@type"))
                             .map(|(_, s, e)| (*s, *e))
                             .unwrap_or_else(|| {
                                 let s = u32::from(node.text_range().start()) as usize;

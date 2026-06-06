@@ -2865,7 +2865,7 @@ impl<'a> Analysis<'a> {
                     if is_inline { break; }
                 }
                 let text = token.text();
-                if text.starts_with("---@cast") || text.starts_with("--[[@cast") {
+                if Analysis::comment_is_tag(text, "---@cast") || text.starts_with("--[[@cast") {
                     cast_lines.push(text.to_string());
                     tok = token.prev_token();
                     continue;

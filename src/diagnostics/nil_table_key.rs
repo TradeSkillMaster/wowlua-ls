@@ -137,7 +137,7 @@ impl DiagnosticPass for NilTableKey {
                 let violations = collect_nil_table_keys(&p.typ);
                 if !violations.is_empty() {
                     let (s, e) = comment_ranges.iter()
-                        .find(|(text, _, _)| text.starts_with("---@param") && Analysis::contains_word(text, &p.name))
+                        .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@param") && Analysis::contains_word(text, &p.name))
                         .map(|(_, s, e)| (*s, *e))
                         .unwrap_or((func_start, func_end));
                     emit_violations(&violations, s, e, diags);
@@ -148,7 +148,7 @@ impl DiagnosticPass for NilTableKey {
                 let violations = collect_nil_table_keys(ret);
                 if !violations.is_empty() {
                     let (s, e) = comment_ranges.iter()
-                        .filter(|(text, _, _)| text.starts_with("---@return"))
+                        .filter(|(text, _, _)| Analysis::comment_is_tag(text, "---@return"))
                         .nth(i)
                         .map(|(_, s, e)| (*s, *e))
                         .unwrap_or((func_start, func_end));
@@ -159,7 +159,7 @@ impl DiagnosticPass for NilTableKey {
             for (i, overload_str) in annotations.overloads.iter().enumerate() {
                 if let Some(sig) = crate::annotations::parse_overload(overload_str) {
                     let (s, e) = comment_ranges.iter()
-                        .filter(|(text, _, _)| text.starts_with("---@overload"))
+                        .filter(|(text, _, _)| Analysis::comment_is_tag(text, "---@overload"))
                         .nth(i)
                         .map(|(_, s, e)| (*s, *e))
                         .unwrap_or((func_start, func_end));
@@ -185,7 +185,7 @@ impl DiagnosticPass for NilTableKey {
                         if !violations.is_empty() {
                             let comment_ranges = Analysis::collect_preceding_annotation_ranges(node);
                             let (s, e) = comment_ranges.iter()
-                                .find(|(text, _, _)| text.starts_with("---@type"))
+                                .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@type"))
                                 .map(|(_, s, e)| (*s, *e))
                                 .unwrap_or_else(|| {
                                     let r = node.text_range();

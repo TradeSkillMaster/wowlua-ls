@@ -2623,7 +2623,7 @@ impl<'a> Analysis<'a> {
             let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
-            if text.starts_with(annotation_prefix) && Self::contains_word(text, name_hint) {
+            if Self::comment_is_tag(text, annotation_prefix) && Self::contains_word(text, name_hint) {
                 count += 1;
                 if count == n {
                     let r = tok.text_range();
@@ -2632,6 +2632,16 @@ impl<'a> Analysis<'a> {
             }
         }
         None
+    }
+
+    /// Check if a comment starts with a given `---@tag` prefix, also matching
+    /// the `--- @tag` (space after `---`) variant that
+    /// `collect_preceding_annotation_ranges` and `extract_annotations` both accept.
+    /// Works for both bare tags (`"---@param"`) and full annotation prefixes
+    /// (`"---@class ClassName"`). Zero-allocation.
+    pub(crate) fn comment_is_tag(text: &str, tag: &str) -> bool {
+        text.starts_with(tag)
+            || (text.starts_with("--- @") && text[5..].starts_with(&tag[4..]))
     }
 
     /// Check whether `word` appears in `text` as a whole word (not as a substring
@@ -2673,16 +2683,16 @@ impl<'a> Analysis<'a> {
             let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
-            if text.starts_with(&class_marker) {
+            if Self::comment_is_tag(text, &class_marker) {
                 in_class = true;
                 continue;
             }
-            if in_class && text.starts_with("---@class") {
+            if in_class && Self::comment_is_tag(text, "---@class") {
                 in_class = false; // different class
                 continue;
             }
             if in_class {
-                let matches = text.starts_with(&target) || target_vis.iter().any(|t| text.starts_with(t.as_str()));
+                let matches = Self::comment_is_tag(text, &target) || target_vis.iter().any(|t| Self::comment_is_tag(text, t.as_str()));
                 if matches {
                     count += 1;
                     if (second && count >= 2) || (!second && count >= 1) {

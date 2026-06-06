@@ -187,7 +187,7 @@ fn run_annotation_tests(config: &TestConfig) {
             if code_line_num == 0 { break; }
             code_line_num -= 1;
             let cl = lines[code_line_num].trim();
-            if !cl.is_empty() && (!cl.starts_with("--") || cl.starts_with("---@") || cl.starts_with("--[[@") || cl == "---") { break; }
+            if !cl.is_empty() && (!cl.starts_with("--") || cl.starts_with("---@") || cl.starts_with("--- @") || cl.starts_with("--[[@") || cl == "---") { break; }
         }
         let code_line_1based = code_line_num + 1;
 
@@ -752,7 +752,7 @@ fn associated_lines(code_line_1based: usize, source_lines: &[&str]) -> Vec<u32> 
     while ln > 1 {
         ln -= 1;
         let text = source_lines[ln - 1].trim();
-        if text.starts_with("---@") {
+        if text.starts_with("---@") || text.starts_with("--- @") {
             lines.push(ln as u32);
         } else if text.is_empty() || text.starts_with("---") {
             continue;

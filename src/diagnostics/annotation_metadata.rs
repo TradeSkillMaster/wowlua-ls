@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use crate::analysis::AnalysisResult;
+use crate::analysis::{Analysis, AnalysisResult};
 use crate::ast::*;
 use crate::syntax::SyntaxKind;
 use crate::syntax::tree::SyntaxTree;
@@ -130,7 +130,7 @@ impl DiagnosticPass for AnnotationMetadata {
             let mut seen_params: HashSet<String> = HashSet::new();
             for p in &annotations.params {
                 let (s, e) = comment_ranges.iter()
-                    .find(|(text, _, _)| text.starts_with("---@param") && text.contains(&p.name))
+                    .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@param") && text.contains(&p.name))
                     .map(|(_, s, e)| (*s, *e))
                     .unwrap_or((func_start, func_end));
                 if !seen_params.insert(p.name.clone()) {

@@ -34,7 +34,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                     for (gname, _) in annotations.generics.iter() {
                         if class_type_params.contains(gname)
                             && let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
-                                text.starts_with("---@generic") && Analysis::contains_word(text, gname.as_str())
+                                Analysis::comment_is_tag(text, "---@generic") && Analysis::contains_word(text, gname.as_str())
                             })
                         {
                             super::REDUNDANT_CLASS_GENERIC.emit(
@@ -46,7 +46,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                     }
                     if annotations.params.iter().any(|p| p.name == "self")
                         && let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
-                            text.starts_with("---@param") && text.contains("self")
+                            Analysis::comment_is_tag(text, "---@param") && text.contains("self")
                         })
                     {
                         super::REDUNDANT_CLASS_GENERIC.emit(
@@ -65,7 +65,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                     crate::annotations::match_projection(&p.typ, &generic_names)
                 {
                     let (s, e) = comment_ranges.iter()
-                        .find(|(text, _, _)| text.starts_with("---@param") && text.contains(&p.name))
+                        .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@param") && text.contains(&p.name))
                         .map(|(_, s, e)| (*s, *e))
                         .unwrap_or((func_start, func_start + 1));
                     super::MALFORMED_ANNOTATION.emit(
@@ -85,7 +85,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                 let is_tuple_form = any_tuple && all_tuple && annotations.returns.len() == 1;
                 if any_tuple && !is_tuple_form {
                     let return_ranges: Vec<(usize, usize)> = comment_ranges.iter()
-                        .filter(|(text, _, _)| text.starts_with("---@return") || text.starts_with("---|"))
+                        .filter(|(text, _, _)| Analysis::comment_is_tag(text, "---@return") || text.starts_with("---|"))
                         .map(|(_, s, e)| (*s, *e))
                         .collect();
                     let (s, e) = if let (Some(first), Some(last)) = (return_ranges.first(), return_ranges.last()) {
@@ -108,7 +108,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                     crate::annotations::match_projection(ret_annotation, &generic_names)
                 {
                     let (s, e) = comment_ranges.iter()
-                        .find(|(text, _, _)| text.starts_with("---@return"))
+                        .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@return"))
                         .map(|(_, s, e)| (*s, *e))
                         .unwrap_or((func_start, func_start + 1));
                     super::MALFORMED_ANNOTATION.emit(
@@ -134,7 +134,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                 // constraint type name must resolve.
                 for (pname, constraint) in &annotations.requires {
                     let (s, e) = comment_ranges.iter()
-                        .find(|(text, _, _)| text.starts_with("---@requires") && Analysis::contains_word(text, pname))
+                        .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@requires") && Analysis::contains_word(text, pname))
                         .map(|(_, s, e)| (*s, *e))
                         .unwrap_or((func_start, func_end));
                     if !method_class_type_params.contains(pname) {
@@ -155,7 +155,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                         && method_class_type_params.len() != args.len()
                     {
                         let (s, e) = comment_ranges.iter()
-                            .find(|(text, _, _)| text.starts_with("---@return") && text.contains("self"))
+                            .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@return") && text.contains("self"))
                             .map(|(_, s, e)| (*s, *e))
                             .unwrap_or((func_start, func_end));
                         let msg = if method_class_type_params.is_empty() {
@@ -174,14 +174,14 @@ impl DiagnosticPass for FunctionAnnotationChecks {
             // ── undefined-doc-name on @param, @return, @overload types ──
             for p in &annotations.params {
                 let (s, e) = comment_ranges.iter()
-                    .find(|(text, _, _)| text.starts_with("---@param") && Analysis::contains_word(text, &p.name))
+                    .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@param") && Analysis::contains_word(text, &p.name))
                     .map(|(_, s, e)| (*s, *e))
                     .unwrap_or((func_start, func_end));
                 analysis.ir.check_annotation_type_names(&p.typ, generics, s, e, diags);
             }
             for ret in &annotations.returns {
                 let (s, e) = comment_ranges.iter()
-                    .find(|(text, _, _)| text.starts_with("---@return"))
+                    .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@return"))
                     .map(|(_, s, e)| (*s, *e))
                     .unwrap_or((func_start, func_end));
                 analysis.ir.check_annotation_type_names(ret, generics, s, e, diags);
@@ -189,7 +189,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
             for (i, overload_str) in annotations.overloads.iter().enumerate() {
                 if let Some(sig) = crate::annotations::parse_overload(overload_str) {
                     let (s, e) = comment_ranges.iter()
-                        .filter(|(text, _, _)| text.starts_with("---@overload"))
+                        .filter(|(text, _, _)| Analysis::comment_is_tag(text, "---@overload"))
                         .nth(i)
                         .map(|(_, s, e)| (*s, *e))
                         .unwrap_or((func_start, func_end));
