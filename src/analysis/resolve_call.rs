@@ -323,43 +323,88 @@ impl<'a> Analysis<'a> {
             };
             if inline_func_idx.is_external() { continue; }
             // Get the callee's param annotation for this position
-            let Some(sig) = param_annotations.get(i + self_offset)
-                .and_then(|ann| crate::annotations::extract_fun_sig(
-                    ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
-                )) else { continue };
-            let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
-            for (j, param_info) in sig.params.iter().enumerate() {
-                let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
-                if inline_sym_idx.is_external() { continue; }
-                if self.ir.symbols[inline_sym_idx.val()].versions.first()
-                    .is_some_and(|v| v.resolved_type.is_some()) { continue; }
-                if let Some(vt) = self.resolve_annotation_with_class_generics(
-                    &param_info.typ, &class_gen_context, &class_type_param_subs,
-                ) {
-                    let vt = if param_info.optional {
-                        ValueType::union(vt, ValueType::Nil)
-                    } else {
-                        vt
-                    };
-                    self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+            let Some(ann) = param_annotations.get(i + self_offset) else { continue };
+            if let Some(sig) = crate::annotations::extract_fun_sig(
+                ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
+            ) {
+                // Annotation is directly a fun() type or alias — propagate params
+                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
+                for (j, param_info) in sig.params.iter().enumerate() {
+                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
+                    if inline_sym_idx.is_external() { continue; }
+                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
+                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                    if let Some(vt) = self.resolve_annotation_with_class_generics(
+                        &param_info.typ, &class_gen_context, &class_type_param_subs,
+                    ) {
+                        let vt = if param_info.optional {
+                            ValueType::union(vt, ValueType::Nil)
+                        } else {
+                            vt
+                        };
+                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+                    }
                 }
-            }
-            // Propagate return types from fun() signature into inline function
-            if self.ir.functions[inline_func_idx.val()].return_annotations.is_empty() {
-                if sig.returns.is_empty() {
-                    // fun() with no return type — mark as explicitly void
-                    self.ir.functions[inline_func_idx.val()].explicit_void_return = true;
-                } else {
-                    let mut return_vts = Vec::new();
-                    for ret_annotation in &sig.returns {
-                        if let Some(vt) = self.resolve_annotation_with_class_generics(
-                            ret_annotation, &class_gen_context, &class_type_param_subs,
-                        ) {
-                            return_vts.push(vt);
+                // Propagate return types from fun() signature into inline function
+                if self.ir.functions[inline_func_idx.val()].return_annotations.is_empty() {
+                    if sig.returns.is_empty() {
+                        // fun() with no return type — mark as explicitly void
+                        self.ir.functions[inline_func_idx.val()].explicit_void_return = true;
+                    } else {
+                        let mut return_vts = Vec::new();
+                        for ret_annotation in &sig.returns {
+                            if let Some(vt) = self.resolve_annotation_with_class_generics(
+                                ret_annotation, &class_gen_context, &class_type_param_subs,
+                            ) {
+                                return_vts.push(vt);
+                            }
+                        }
+                        if !return_vts.is_empty() {
+                            self.ir.functions[inline_func_idx.val()].return_annotations = return_vts;
                         }
                     }
-                    if !return_vts.is_empty() {
-                        self.ir.functions[inline_func_idx.val()].return_annotations = return_vts;
+                }
+            } else if !class_type_param_subs.is_empty() {
+                // Annotation is a type variable (e.g. `@param callback T` where T is a
+                // class type param bound to a fun() type). Resolve through class generics
+                // and propagate the resolved function's params into the inline callback.
+                let resolved = self.resolve_annotation_with_class_generics(
+                    ann, &class_gen_context, &class_type_param_subs,
+                );
+                let expected_fn_idx = match &resolved {
+                    Some(ValueType::Function(Some(idx))) => *idx,
+                    // Pick first function member from union (e.g. fun(...)? → fun(...) | nil)
+                    Some(ValueType::Union(members)) => {
+                        match members.iter().find_map(|m| match m {
+                            ValueType::Function(Some(idx)) => Some(*idx),
+                            _ => None,
+                        }) {
+                            Some(idx) => idx,
+                            None => continue,
+                        }
+                    }
+                    _ => continue,
+                };
+                let expected_args = self.func(expected_fn_idx).args.clone();
+                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
+                for (j, &expected_sym) in expected_args.iter().enumerate() {
+                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
+                    if inline_sym_idx.is_external() { continue; }
+                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
+                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                    let vt = self.sym(expected_sym).versions.first()
+                        .and_then(|v| v.resolved_type.clone());
+                    if let Some(vt) = vt {
+                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+                    }
+                }
+                // Propagate return types
+                if self.ir.functions[inline_func_idx.val()].return_annotations.is_empty() {
+                    let ret_anns = self.func(expected_fn_idx).return_annotations.clone();
+                    if ret_anns.is_empty() {
+                        self.ir.functions[inline_func_idx.val()].explicit_void_return = true;
+                    } else {
+                        self.ir.functions[inline_func_idx.val()].return_annotations = ret_anns;
                     }
                 }
             }

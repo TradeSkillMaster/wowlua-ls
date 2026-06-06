@@ -420,3 +420,43 @@ local kchained = kchain:IgnoreIfEquals(nil, "alpha"):IgnoreIfEquals(nil, "beta")
 -- A single call also resolves to self (returns the receiver type).
 local ksingle = kchain:IgnoreIfEquals(nil, "gamma")
 --    ^ hover: (local) ksingle: KChain {
+
+-- ── Generic class type param as callback param type ──────────────────────
+-- When a class type param `T: function` is used as a `@param` annotation,
+-- inline callbacks should get their params typed from the bound type.
+
+---@class EventBus<T: function>
+local EventBus = {}
+
+---@param handler T
+function EventBus:Subscribe(handler) end
+
+---@type EventBus<fun(name: string, active: boolean)>
+local myBus
+
+myBus:Subscribe(function(name, active)
+    local n = name
+--        ^ hover: (local) n: string
+    local a = active
+--        ^ hover: (local) a: boolean
+end)
+
+-- Optional params in generic callback
+---@type EventBus<fun(name: string, count?: number)>
+local optBus
+
+optBus:Subscribe(function(name, count)
+    local n = name
+--        ^ hover: (local) n: string
+    local c = count
+--        ^ hover: (local) c: number?
+end)
+
+-- Return type propagation through generic callback
+---@type EventBus<fun(x: string): boolean>
+local retBus
+
+retBus:Subscribe(function(x)
+--                        ^ hover: (param) x: string
+    return true
+end)
