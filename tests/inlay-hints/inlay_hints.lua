@@ -213,6 +213,13 @@ for k, v in pairs(sparseFlags) do
 --      ^ hint: : boolean
 end
 
+-- Underscore variables in for-in: no hint (convention for "don't care")
+---@type table<string, boolean>
+local tagMap = {}
+for _, v in pairs(tagMap) do
+--      ^ hint: : boolean
+end
+
 -- ── Parameter type hints ─────────────────────────────────────────────────────
 
 -- Annotated params: no hint (user already wrote the type)

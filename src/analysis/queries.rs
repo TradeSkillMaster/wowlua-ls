@@ -7284,6 +7284,10 @@ impl AnalysisResult {
         let Some(name_list) = for_in.name_list() else { return };
 
         for token in name_list.name_tokens() {
+            if token.text() == "_" {
+                continue;
+            }
+
             let token_start = u32::from(token.text_range().start());
             let token_end = u32::from(token.text_range().end());
 
