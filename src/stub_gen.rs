@@ -12,6 +12,12 @@ use crate::flavor::{FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA};
 /// vendor copies of these files don't suppress our generated annotations.
 const WAGO_GENERATED_FILES: &[&str] = &["GlobalStrings.lua", "GlobalVariables.lua", "GlobalColors.lua"];
 
+/// All generated filenames (wago + wiki/enum/cvar) excluded from dedup scans.
+const ALL_GENERATED_FILES: &[&str] = &[
+    "GlobalStrings.lua", "GlobalVariables.lua", "GlobalColors.lua",
+    "Enum.lua", "CVar.lua", "Wiki.lua",
+];
+
 #[derive(Debug)]
 struct ApiDocData {
     constants: HashMap<String, (String, String)>,
@@ -1397,11 +1403,23 @@ fn generate_blizzard_event_stubs(docs: &BlizzardApiDocs, known_enums: &HashSet<S
 /// Find names already defined in existing Lua stub files.
 /// Matches both flat names (`FuncName`) and dotted names (`C_Foo.BarMethod`).
 fn get_existing_names(stubs_dir: &Path, exclude_files: &[&str]) -> HashSet<String> {
+    get_existing_names_impl(stubs_dir, exclude_files, false)
+}
+
+/// Like `get_existing_names` but skips `.annotated.lua` files (full Blizzard source
+/// code in the Ketho vendor tree). These files define utility table names like
+/// `AnchorUtil` at column 0 but can't express factory closure return types, so they
+/// shouldn't prevent FrameXML utility stub generation.
+fn get_existing_names_skip_annotated(stubs_dir: &Path, exclude_files: &[&str]) -> HashSet<String> {
+    get_existing_names_impl(stubs_dir, exclude_files, true)
+}
+
+fn get_existing_names_impl(stubs_dir: &Path, exclude_files: &[&str], skip_annotated: bool) -> HashSet<String> {
     let func_re = regex_lite::Regex::new(r"(?m)^function ([\w.]+)").unwrap();
     let assign_re = regex_lite::Regex::new(r"(?m)^(\w+)\s*=").unwrap();
     let class_re = regex_lite::Regex::new(r"---@class\s+(\w+)").unwrap();
     let mut existing = HashSet::new();
-    collect_names_recursive(stubs_dir, &func_re, &assign_re, &class_re, exclude_files, &mut existing);
+    collect_names_recursive(stubs_dir, &func_re, &assign_re, &class_re, exclude_files, skip_annotated, &mut existing);
     existing
 }
 
@@ -1411,6 +1429,7 @@ fn collect_names_recursive(
     assign_re: &regex_lite::Regex,
     class_re: &regex_lite::Regex,
     exclude_files: &[&str],
+    skip_annotated: bool,
     out: &mut HashSet<String>,
 ) {
     let entries = match std::fs::read_dir(dir) {
@@ -1420,12 +1439,17 @@ fn collect_names_recursive(
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_names_recursive(&path, func_re, assign_re, class_re, exclude_files, out);
+            collect_names_recursive(&path, func_re, assign_re, class_re, exclude_files, skip_annotated, out);
         } else if path.extension().is_some_and(|e| e == "lua") {
-            if let Some(fname) = path.file_name().and_then(|n| n.to_str())
-                && exclude_files.contains(&fname) {
+            if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                if exclude_files.contains(&fname) {
                     continue;
                 }
+                // Skip .annotated.lua files (full Blizzard source, not proper stubs)
+                if skip_annotated && fname.ends_with(".annotated.lua") {
+                    continue;
+                }
+            }
             if let Ok(content) = std::fs::read_to_string(&path) {
                 for c in func_re.captures_iter(&content) {
                     out.insert(c.get(1).unwrap().as_str().to_string());
@@ -1642,6 +1666,71 @@ struct InferredReturn {
     returns: Vec<String>,
 }
 
+/// A discovered method/function on a FrameXML utility table or mixin.
+#[derive(Debug, Clone)]
+struct UtilMethod {
+    /// Method name (e.g. "CreateAnchor", "Init", "Get").
+    name: String,
+    /// Parameter names from the function signature (excluding `self` for colon methods).
+    params: Vec<String>,
+    /// Whether this is a colon method (true) or dot function (false).
+    is_method: bool,
+}
+
+/// A factory closure assignment discovered in FrameXML source.
+/// e.g. `AnchorUtil.CreateAnchor = GenerateClosure(CreateAndInitFromMixin, AnchorMixin)`
+#[derive(Debug, Clone)]
+struct FactoryClosure {
+    /// The field being assigned (e.g. "CreateAnchor").
+    field_name: String,
+    /// The mixin class name (e.g. "AnchorMixin").
+    mixin_name: String,
+}
+
+/// A discovered FrameXML utility table or mixin.
+#[derive(Debug, Default)]
+struct UtilTableInfo {
+    /// Colon methods and dot functions defined on this table.
+    methods: Vec<UtilMethod>,
+    /// Factory closure assignments (GenerateClosure patterns).
+    factory_closures: Vec<FactoryClosure>,
+    /// Whether this table has at least one colon method (=> should be emitted as @class).
+    is_mixin: bool,
+}
+
+/// Extract return types and parameter names from a resolved function.
+/// Returns `None` if inference produced nothing useful (empty, all any/nil).
+fn extract_inferred_return(
+    ar: &crate::analysis::AnalysisResult,
+    func: &crate::types::Function,
+) -> Option<InferredReturn> {
+    use crate::types::SymbolIdentifier;
+
+    let return_types: Vec<String> = if !func.return_annotations.is_empty() {
+        func.return_annotations.iter()
+            .map(|vt| ar.format_type_depth(vt, 1))
+            .collect()
+    } else {
+        ar.format_inferred_returns(func, 1)
+    };
+
+    if return_types.is_empty()
+        || return_types.iter().all(|t| t == "any" || t == "?" || t == "nil")
+    {
+        return None;
+    }
+
+    let params: Vec<String> = func.args.iter().filter_map(|&arg_idx| {
+        if arg_idx.val() >= crate::types::EXT_BASE { return None; }
+        Some(match &ar.ir.symbols[arg_idx.val()].id {
+            SymbolIdentifier::Name(n) => n.clone(),
+            _ => "_".to_string(),
+        })
+    }).collect();
+
+    Some(InferredReturn { params, returns: return_types })
+}
+
 /// Run the analysis engine on FrameXML Lua source files to infer return types
 /// for global functions that lack `@return` annotations in the vendor stubs.
 ///
@@ -1652,12 +1741,15 @@ fn infer_fxml_return_types(
     ui_source_dir: &Path,
     pre_globals: std::sync::Arc<crate::pre_globals::PreResolvedGlobals>,
     needs_return: &HashSet<String>,
+    util_table_names: &HashSet<String>,
 ) -> HashMap<String, InferredReturn> {
     use rayon::prelude::*;
     use crate::analysis::{Analysis, AnalysisConfig};
+    use crate::ast::{AstNode, FunctionDefinition};
+    use crate::syntax::SyntaxNode;
     use crate::types::{SymbolIdentifier, ValueType};
 
-    if needs_return.is_empty() {
+    if needs_return.is_empty() && util_table_names.is_empty() {
         return HashMap::new();
     }
 
@@ -1669,17 +1761,23 @@ fn infer_fxml_return_types(
     let mut lua_files = Vec::new();
     collect_lua_paths(&interface_dir, &mut lua_files);
 
-    // Regex for top-level global assignments: `GlobalName = expr`
-    // (but NOT local declarations or function definitions).
+    // Matches top-level global assignments: `GlobalName = expr` or dotted field
+    // assignments `GlobalName.Field = expr`.  Lines matching this regex are
+    // commented out before analysis, so the engine resolves these names from
+    // precomputed stubs (which have proper @class / @return annotations)
+    // instead of the source-level assignments.  Without this, source lines like
+    //   `AnchorUtil.CreateAnchor = GenerateClosure(CreateAndInitFromMixin, AnchorMixin)`
+    // shadow the stub's typed `@return AnchorMixin` definition.
     // Limitation: matches any column-0 uppercase assignment regardless of scope
     // nesting.  This is acceptable for Blizzard FrameXML which conventionally
     // indents code inside function bodies/do-end blocks, so column-0 uppercase
-    // assignments are reliably top-level mixin definitions.
-    let global_assign_re = regex_lite::Regex::new(r"^[A-Z]\w+\s*=\s").unwrap();
+    // assignments are reliably top-level definitions.
+    let global_assign_re = regex_lite::Regex::new(r"^[A-Z]\w+(?:\.\w+)*\s*=\s").unwrap();
 
     // Pre-filter regex: quickly check if a file contains any global function
-    // definition (column-0 `function Name(`).  Files without this pattern
-    // can't define any function we care about, avoiding expensive analysis.
+    // or table method definition (column-0 `function Name(` or `function Name.`
+    // or `function Name:`).  Files without this pattern can't define any
+    // function we care about, avoiding expensive analysis.
     let func_def_re = regex_lite::Regex::new(r"(?m)^function [A-Z]").unwrap();
 
     // Analyze files in parallel — each file gets its own Analysis instance
@@ -1736,36 +1834,34 @@ fn infer_fxml_return_types(
                 continue;
             }
             let func = &ar.ir.functions[func_idx.val()];
-
-            // Extract return types: prefer explicit annotations, fall back to inferred.
-            let return_types: Vec<String> = if !func.return_annotations.is_empty() {
-                func.return_annotations.iter()
-                    .map(|vt| ar.format_type_depth(vt, 1))
-                    .collect()
-            } else {
-                ar.format_inferred_returns(func, 1)
-            };
-
-            // Skip functions where inference produced nothing useful.
-            if return_types.is_empty()
-                || return_types.iter().all(|t| t == "any" || t == "?" || t == "nil")
-            {
-                continue;
+            if let Some(inferred) = extract_inferred_return(&ar, func) {
+                file_results.push((name.clone(), inferred));
             }
-
-            // Extract parameter names.
-            let params: Vec<String> = func.args.iter().filter_map(|&arg_idx| {
-                if arg_idx.val() >= crate::types::EXT_BASE {
-                    return None;
-                }
-                Some(match &ar.ir.symbols[arg_idx.val()].id {
-                    SymbolIdentifier::Name(n) => n.clone(),
-                    _ => "_".to_string(),
-                })
-            }).collect();
-
-            file_results.push((name.clone(), InferredReturn { params, returns: return_types }));
         }
+
+        // Walk all local functions to find utility table methods (dotted/coloned
+        // names like `function AnchorUtil.CreateAnchorFromPoint(...)`).
+        if !util_table_names.is_empty() {
+            for (func_idx, func) in ar.ir.functions.iter().enumerate() {
+                if func_idx >= crate::types::EXT_BASE { break; }
+                let Some(node_id) = func.def_node.node_id else { continue };
+                let syntax_node = SyntaxNode { tree: &tree, id: node_id };
+                let Some(func_def) = FunctionDefinition::cast(syntax_node) else { continue };
+                let Some(ident) = func_def.identifier() else { continue };
+                let names = ident.names();
+                if names.len() < 2 { continue; }
+                if !util_table_names.contains(&names[0]) { continue; }
+
+                if let Some(inferred) = extract_inferred_return(&ar, func) {
+                    let sep = if ident.is_call_to_self() { ":" } else { "." };
+                    let table_name = &names[0];
+                    let method_name = &names[names.len() - 1];
+                    let key = format!("{table_name}{sep}{method_name}");
+                    file_results.push((key, inferred));
+                }
+            }
+        }
+
         file_results
     }).collect();
 
@@ -1779,7 +1875,7 @@ fn infer_fxml_return_types(
 /// doesn't drop typed parameter information.
 fn generate_inferred_return_stubs(
     inferred: &HashMap<String, InferredReturn>,
-    stubs_dir: &Path,
+    stubs_dirs: &[&Path],
     pass1_globals: &[crate::annotations::ExternalGlobal],
 ) -> String {
     if inferred.is_empty() {
@@ -1788,8 +1884,14 @@ fn generate_inferred_return_stubs(
     use crate::annotations::ParamInfo;
     use crate::annotations::annotation_types::format_annotation_type;
 
-    // Find functions that already have @return annotations in vendor stubs.
-    let already_annotated = get_functions_with_return(stubs_dir);
+    // Find functions that already have @return annotations in vendor stubs
+    // and generated files (e.g. GlobalColors.lua defines CreateColor with
+    // @return colorRGBA — without scanning gen_dir those would be overridden
+    // by inferred types from the FrameXML source body).
+    let mut already_annotated = HashSet::new();
+    for dir in stubs_dirs {
+        already_annotated.extend(get_functions_with_return(dir));
+    }
 
     // Build a lookup from pass 1 globals: name → params, for forwarding
     // existing @param annotations into the generated override stubs.
@@ -1830,6 +1932,92 @@ fn generate_inferred_return_stubs(
     log::info!("  InferredReturns: {} functions with inferred return types ({} skipped, already annotated)",
         names.len(), inferred.len() - names.len());
     lines.join("\n") + "\n"
+}
+
+/// Generate stub annotations for FrameXML utility tables and mixin classes.
+///
+/// For mixin tables (those with colon methods): emits `@class` + methods.
+/// For utility tables (dot methods only): emits table + functions.
+/// For `GenerateClosure(CreateAndInitFromMixin, Mixin)` factories: emits `@return Mixin`
+/// with params copied from `Mixin:Init()` if found.
+///
+/// Tables whose name appears in `existing_names` are skipped to avoid conflicting
+/// with hand-written overrides that provide richer type annotations.
+/// Returns `(lua_content, generated_names)` where `generated_names` is the set
+/// of table names that were actually emitted (passed the dedup filter).
+fn generate_framexml_utility_stubs(
+    util_tables: &HashMap<String, UtilTableInfo>,
+    existing_names: &HashSet<String>,
+) -> (String, HashSet<String>) {
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "---@meta _").unwrap();
+    writeln!(out, "-- FrameXML utility tables and mixins (auto-generated from wow-ui-source)").unwrap();
+    writeln!(out, "-- For type-refined versions, add an override in stubs/overrides/.").unwrap();
+    writeln!(out).unwrap();
+
+    // Sort alphabetically for deterministic output.
+    let mut names: Vec<&String> = util_tables.keys()
+        .filter(|name| !existing_names.contains(name.as_str()))
+        .collect();
+    names.sort();
+
+    let mut count = 0usize;
+    let mut generated_names = HashSet::new();
+
+    for name in &names {
+        let info = &util_tables[*name];
+
+        if info.is_mixin {
+            writeln!(out, "---@class {name}").unwrap();
+        }
+        // All generated tables (mixin and non-mixin) need a global declaration
+        // so addon code referencing these names doesn't get `undefined-global`.
+        // GlobalVariables.lua excludes names with generated utility stubs.
+        if !info.methods.is_empty() || !info.factory_closures.is_empty() || info.is_mixin {
+            writeln!(out, "{name} = {{}}").unwrap();
+        }
+
+        // Emit methods sorted for determinism.
+        let mut methods = info.methods.clone();
+        methods.sort_by(|a, b| a.name.cmp(&b.name));
+        for method in &methods {
+            let params_str = method.params.join(", ");
+            let sep = if method.is_method { ":" } else { "." };
+            writeln!(out, "function {name}{sep}{}({params_str}) end", method.name).unwrap();
+        }
+
+        // Emit factory closures with @return and Init params.
+        let mut factories = info.factory_closures.clone();
+        factories.sort_by(|a, b| a.field_name.cmp(&b.field_name));
+        for factory in &factories {
+            // Skip if the factory function itself is already defined in overrides.
+            let factory_fqn = format!("{name}.{}", factory.field_name);
+            if existing_names.contains(&factory_fqn) {
+                continue;
+            }
+            let params_str = find_init_params(util_tables, &factory.mixin_name);
+            writeln!(out, "---@return {}", factory.mixin_name).unwrap();
+            writeln!(out, "function {name}.{}({params_str}) end", factory.field_name).unwrap();
+        }
+
+        writeln!(out).unwrap();
+        generated_names.insert((*name).clone());
+        count += 1;
+    }
+
+    log::info!("  FrameXMLUtilities: {} utility tables/mixins generated", count);
+    (out, generated_names)
+}
+
+/// Look up the `Init()` method's params for a mixin, to use for factory closures.
+fn find_init_params(util_tables: &HashMap<String, UtilTableInfo>, mixin_name: &str) -> String {
+    if let Some(info) = util_tables.get(mixin_name)
+        && let Some(init) = info.methods.iter().find(|m| m.name == "Init" && m.is_method)
+    {
+        return init.params.join(", ");
+    }
+    "...".to_string()
 }
 
 // ── Classic stubs generation (replaces generate_classic_stubs.py) ──────────────
@@ -4180,6 +4368,109 @@ fn scan_framexml_constants(ui_source_dir: &Path) -> HashMap<String, (String, Str
     scan_interface_lua_combined(ui_source_dir).0
 }
 
+/// Scan FrameXML Lua source files for utility table and mixin definitions.
+///
+/// Discovers three patterns from column-0 definitions:
+/// - `function Table.Method(params)` — dot methods on utility tables
+/// - `function Table:Method(params)` — colon methods on mixin classes
+/// - `Table.Field = GenerateClosure(CreateAndInitFromMixin, Mixin)` — factory closures
+///
+/// Returns a map of table name → discovered methods/factories. Tables with at least
+/// one colon method are flagged as mixins (emitted as `@class` during generation).
+/// Tables with no methods and no factory closures are pruned.
+fn scan_framexml_utility_tables(ui_source_dir: &Path) -> HashMap<String, UtilTableInfo> {
+    let dot_func_re = regex_lite::Regex::new(
+        r"(?m)^function\s+([A-Z]\w+)\.(\w+)\s*\(([^)]*)\)"
+    ).unwrap();
+    let colon_method_re = regex_lite::Regex::new(
+        r"(?m)^function\s+([A-Z]\w+):(\w+)\s*\(([^)]*)\)"
+    ).unwrap();
+    let factory_re = regex_lite::Regex::new(
+        r"(?m)^([A-Z]\w+)\.(\w+)\s*=\s*GenerateClosure\s*\(\s*CreateAndInitFromMixin\s*,\s*([A-Z]\w+)\s*\)"
+    ).unwrap();
+
+    let interface_dir = ui_source_dir.join("Interface");
+    if !interface_dir.is_dir() {
+        return HashMap::new();
+    }
+
+    let mut lua_files = Vec::new();
+    collect_lua_paths(&interface_dir, &mut lua_files);
+
+    let mut tables: HashMap<String, UtilTableInfo> = HashMap::new();
+
+    for path in &lua_files {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        for cap in dot_func_re.captures_iter(&content) {
+            let table_name = cap.get(1).unwrap().as_str();
+            let method_name = cap.get(2).unwrap().as_str();
+            let params_raw = cap.get(3).unwrap().as_str();
+            let params = parse_param_list(params_raw);
+
+            let info = tables.entry(table_name.to_string()).or_default();
+            // Avoid duplicate methods (same method defined across multiple classic/retail branches).
+            if !info.methods.iter().any(|m| m.name == method_name && !m.is_method) {
+                info.methods.push(UtilMethod {
+                    name: method_name.to_string(),
+                    params,
+                    is_method: false,
+                });
+            }
+        }
+
+        for cap in colon_method_re.captures_iter(&content) {
+            let table_name = cap.get(1).unwrap().as_str();
+            let method_name = cap.get(2).unwrap().as_str();
+            let params_raw = cap.get(3).unwrap().as_str();
+            let params = parse_param_list(params_raw);
+
+            let info = tables.entry(table_name.to_string()).or_default();
+            info.is_mixin = true;
+            if !info.methods.iter().any(|m| m.name == method_name && m.is_method) {
+                info.methods.push(UtilMethod {
+                    name: method_name.to_string(),
+                    params,
+                    is_method: true,
+                });
+            }
+        }
+
+        for cap in factory_re.captures_iter(&content) {
+            let table_name = cap.get(1).unwrap().as_str();
+            let field_name = cap.get(2).unwrap().as_str();
+            let mixin_name = cap.get(3).unwrap().as_str();
+
+            let info = tables.entry(table_name.to_string()).or_default();
+            if !info.factory_closures.iter().any(|f| f.field_name == field_name) {
+                info.factory_closures.push(FactoryClosure {
+                    field_name: field_name.to_string(),
+                    mixin_name: mixin_name.to_string(),
+                });
+            }
+        }
+    }
+
+    // Prune tables with no methods and no factory closures.
+    tables.retain(|_, info| !info.methods.is_empty() || !info.factory_closures.is_empty());
+
+    tables
+}
+
+/// Parse a comma-separated parameter list from a function signature.
+fn parse_param_list(raw: &str) -> Vec<String> {
+    if raw.trim().is_empty() {
+        return Vec::new();
+    }
+    raw.split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
 /// Infer the Lua type of a constant value from its literal representation.
 /// Returns None only for function/table definitions and nil; otherwise returns a type.
 /// The caller is expected to pass a pre-trimmed value (no trailing `;`).
@@ -4531,6 +4822,19 @@ pub fn regenerate_stubs() {
     };
     phase!("extract retail constants/enums (FrameXML walk)");
 
+    // Step 2e: Scan FrameXML utility tables (AnchorUtil, EnumUtil, ScrollUtil, etc.)
+    // and their mixin classes. These are FrameXML-defined (not in Blizzard's
+    // APIDocumentationGenerated or Ketho's stubs) but used by addon code.
+    let fxml_util_tables = if has_retail_ui {
+        log::info!("Scanning FrameXML utility tables and mixins...");
+        let tables = scan_framexml_utility_tables(&retail_ui_dir);
+        log::info!("  Discovered {} utility tables/mixins with methods", tables.len());
+        tables
+    } else {
+        HashMap::new()
+    };
+    phase!("scan FrameXML utility tables");
+
     // Step 3: Generate global stubs (from BlizzardInterfaceResources + FrameXML globals).
     // Extend the retail name universe with names discovered directly from wow-ui-source.
     // This catches globals that Blizzard defined in FrameXML but omitted from their
@@ -4558,8 +4862,28 @@ pub fn regenerate_stubs() {
             log::error!("{e}");
             std::process::exit(1);
         });
+    // Generate FrameXML utility table stubs (AnchorUtil, EnumUtil, ScrollUtil, etc.)
+    // before GlobalVariables so the actual generated names can be excluded.
+    // Use dedup that skips .annotated.lua files — those are full Blizzard source code
+    // that defines utility table names but can't express factory closure return types.
+    // Proper vendor stubs (Core/) and overrides still prevent duplicate generation.
+    let fxml_dedup = get_existing_names_skip_annotated(&combined_stubs, ALL_GENERATED_FILES);
+    let (fxml_util_lua, fxml_generated_names) = generate_framexml_utility_stubs(&fxml_util_tables, &fxml_dedup);
+
+    // Exclude FrameXML utility table names from GlobalVariables.lua — they get proper
+    // method stubs in FrameXMLUtilities.lua. Without this exclusion, GlobalVariables
+    // emits `---@type any\nName = nil` which overrides the method definitions.
+    // Uses the actual generated names (post-dedup) so the exclusion is consistent.
+    let globals_for_gvars: HashSet<String> = if fxml_generated_names.is_empty() {
+        extended_retail_names.clone()
+    } else {
+        extended_retail_names.iter()
+            .filter(|name| !fxml_generated_names.contains(name.as_str()))
+            .cloned()
+            .collect()
+    };
     let (global_strings_lua, global_vars_lua, global_colors_lua) = generate_global_stubs(
-        &extended_retail_names,
+        &globals_for_gvars,
         &global_constants,
         &combined_stubs,
         &extra_dirs,
@@ -4671,13 +4995,9 @@ pub fn regenerate_stubs() {
     // Also scan the annotation directories directly (same fix as generate_global_stubs)
     // so that names like `strmatch = str.match` from compat.lua are reliably excluded
     // even if symlink traversal in combined_stubs is unreliable.
-    // WAGO_GENERATED_FILES plus the files we generate from other sources (wiki, enums, cvars).
-    let dedup_exclude_files: Vec<&str> = WAGO_GENERATED_FILES.iter().copied()
-        .chain(["Enum.lua", "CVar.lua", "Wiki.lua"])
-        .collect();
-    let mut existing_for_dedup = get_existing_names(&combined_stubs, &dedup_exclude_files);
+    let mut existing_for_dedup = get_existing_names(&combined_stubs, ALL_GENERATED_FILES);
     for dir in &extra_dirs {
-        let extra = get_existing_names(dir, &dedup_exclude_files);
+        let extra = get_existing_names(dir, ALL_GENERATED_FILES);
         existing_for_dedup.extend(extra);
     }
 
@@ -4712,6 +5032,7 @@ pub fn regenerate_stubs() {
     std::fs::write(gen_dir.join("ClassicGlobals.lua"), &classic_lua).unwrap();
     std::fs::write(gen_dir.join("WikiGlobals.lua"), &wiki_globals_lua).unwrap();
     std::fs::write(gen_dir.join("CVars.lua"), &cvar_lua).unwrap();
+    std::fs::write(gen_dir.join("FrameXMLUtilities.lua"), &fxml_util_lua).unwrap();
     log::info!("  Existing names for dedup: {}", existing_for_dedup.len());
 
     // Build set of known enum names for Blizzard type resolution (bare name → Enum.*)
@@ -4874,17 +5195,19 @@ pub fn regenerate_stubs() {
         // in the FrameXML Lua source (not C-level APIs) that we can analyze.
         log::info!("  {} FrameXML global function definitions to analyze", fxml_func_names.len());
 
+        let util_table_names: HashSet<String> = fxml_util_tables.keys().cloned().collect();
         let inferred = infer_fxml_return_types(
             &retail_ui_dir,
             std::sync::Arc::new(pre_globals),
             &fxml_func_names,
+            &util_table_names,
         );
         log::info!("  Inferred return types for {} functions", inferred.len());
         phase!("infer_fxml_return_types");
 
         // Generate override stubs with @return annotations (and forwarded @param
         // annotations from vendor stubs) and re-scan.
-        let inferred_returns_lua = generate_inferred_return_stubs(&inferred, &combined_stubs, &globals);
+        let inferred_returns_lua = generate_inferred_return_stubs(&inferred, &[&combined_stubs, &gen_dir], &globals);
         let inferred_returns_path = gen_dir.join("InferredReturns.lua");
         std::fs::write(&inferred_returns_path, &inferred_returns_lua).unwrap();
         override_set.insert(inferred_returns_path);
@@ -6264,5 +6587,148 @@ end
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
-}
 
+    #[test]
+    fn test_scan_framexml_utility_tables_basic() {
+        let tmp = std::env::temp_dir().join("wowlua-ls-test-util-tables");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let interface_dir = tmp.join("Interface/AddOns/Blizzard_Test");
+        std::fs::create_dir_all(&interface_dir).unwrap();
+
+        std::fs::write(interface_dir.join("TestUtil.lua"), r#"
+TestMixin = {}
+
+function TestMixin:Init(name, value)
+    self.name = name
+end
+
+function TestMixin:GetName()
+    return self.name
+end
+
+TestUtil = {}
+
+function TestUtil.DoStuff(x, y)
+end
+
+TestUtil.CreateTest = GenerateClosure(CreateAndInitFromMixin, TestMixin)
+"#).unwrap();
+
+        let result = scan_framexml_utility_tables(&tmp);
+
+        // TestMixin should be a mixin (has colon methods)
+        let mixin = result.get("TestMixin").expect("should find TestMixin");
+        assert!(mixin.is_mixin, "TestMixin should be flagged as mixin");
+        assert_eq!(mixin.methods.len(), 2); // Init, GetName
+        let init = mixin.methods.iter().find(|m| m.name == "Init").unwrap();
+        assert!(init.is_method);
+        assert_eq!(init.params, vec!["name", "value"]);
+        let get_name = mixin.methods.iter().find(|m| m.name == "GetName").unwrap();
+        assert!(get_name.is_method);
+        assert!(get_name.params.is_empty());
+
+        // TestUtil should be a namespace (dot functions only + factory)
+        let util = result.get("TestUtil").expect("should find TestUtil");
+        assert!(!util.is_mixin, "TestUtil should NOT be flagged as mixin");
+        assert_eq!(util.methods.len(), 1); // DoStuff
+        assert_eq!(util.methods[0].name, "DoStuff");
+        assert_eq!(util.methods[0].params, vec!["x", "y"]);
+        assert!(!util.methods[0].is_method);
+        assert_eq!(util.factory_closures.len(), 1);
+        assert_eq!(util.factory_closures[0].field_name, "CreateTest");
+        assert_eq!(util.factory_closures[0].mixin_name, "TestMixin");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_scan_framexml_utility_tables_no_methods_pruned() {
+        let tmp = std::env::temp_dir().join("wowlua-ls-test-util-prune");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let interface_dir = tmp.join("Interface/AddOns/Blizzard_Test");
+        std::fs::create_dir_all(&interface_dir).unwrap();
+
+        // Table initialized but no methods — should be pruned
+        std::fs::write(interface_dir.join("Empty.lua"), "EmptyTable = {}\n").unwrap();
+
+        let result = scan_framexml_utility_tables(&tmp);
+        assert!(!result.contains_key("EmptyTable"), "empty tables should be pruned");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_generate_framexml_utility_stubs_output() {
+        let mut tables = HashMap::new();
+        tables.insert("TestMixin".to_string(), UtilTableInfo {
+            methods: vec![
+                UtilMethod { name: "Init".to_string(), params: vec!["x".to_string(), "y".to_string()], is_method: true },
+                UtilMethod { name: "Get".to_string(), params: vec![], is_method: true },
+            ],
+            factory_closures: vec![],
+            is_mixin: true,
+        });
+        tables.insert("TestUtil".to_string(), UtilTableInfo {
+            methods: vec![
+                UtilMethod { name: "DoStuff".to_string(), params: vec!["a".to_string()], is_method: false },
+            ],
+            factory_closures: vec![
+                FactoryClosure { field_name: "CreateTest".to_string(), mixin_name: "TestMixin".to_string() },
+            ],
+            is_mixin: false,
+        });
+
+        let existing = HashSet::new();
+        let (output, generated) = generate_framexml_utility_stubs(&tables, &existing);
+
+        // Mixin should have @class and global declaration (not local)
+        assert!(output.contains("---@class TestMixin"), "output:\n{output}");
+        assert!(output.contains("\nTestMixin = {}"), "output:\n{output}");
+        assert!(!output.contains("local TestMixin"), "output:\n{output}");
+        assert!(output.contains("function TestMixin:Get() end"), "output:\n{output}");
+        assert!(output.contains("function TestMixin:Init(x, y) end"), "output:\n{output}");
+
+        // Util should NOT have @class
+        assert!(!output.contains("---@class TestUtil"), "output:\n{output}");
+        assert!(output.contains("function TestUtil.DoStuff(a) end"), "output:\n{output}");
+
+        // Factory should have @return with Init params
+        assert!(output.contains("---@return TestMixin"), "output:\n{output}");
+        assert!(output.contains("function TestUtil.CreateTest(x, y) end"), "output:\n{output}");
+
+        // Both names should be in generated set
+        assert!(generated.contains("TestMixin"), "generated: {generated:?}");
+        assert!(generated.contains("TestUtil"), "generated: {generated:?}");
+    }
+
+    #[test]
+    fn test_generate_framexml_utility_stubs_dedup() {
+        let mut tables = HashMap::new();
+        tables.insert("OverriddenUtil".to_string(), UtilTableInfo {
+            methods: vec![
+                UtilMethod { name: "Func".to_string(), params: vec![], is_method: false },
+            ],
+            factory_closures: vec![],
+            is_mixin: false,
+        });
+        tables.insert("NewUtil".to_string(), UtilTableInfo {
+            methods: vec![
+                UtilMethod { name: "DoThing".to_string(), params: vec![], is_method: false },
+            ],
+            factory_closures: vec![],
+            is_mixin: false,
+        });
+
+        let mut existing = HashSet::new();
+        existing.insert("OverriddenUtil".to_string());
+        let (output, generated) = generate_framexml_utility_stubs(&tables, &existing);
+
+        // OverriddenUtil should be skipped
+        assert!(!output.contains("OverriddenUtil"), "output:\n{output}");
+        assert!(!generated.contains("OverriddenUtil"), "generated: {generated:?}");
+        // NewUtil should appear
+        assert!(output.contains("NewUtil"), "output:\n{output}");
+        assert!(output.contains("function NewUtil.DoThing() end"), "output:\n{output}");
+        assert!(generated.contains("NewUtil"), "generated: {generated:?}");
+    }
+}

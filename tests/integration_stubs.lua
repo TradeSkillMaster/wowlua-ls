@@ -1,4 +1,4 @@
----@diagnostic disable: shadowed-local, undefined-global, unused-function, unused-local
+---@diagnostic disable: inject-field, shadowed-local, undefined-global, unused-function, unused-local
 -- wowlua_ls integration test (with stubs)
 -- Requires: --with-stubs
 
@@ -1165,3 +1165,15 @@ ColorPickerFrame:SetColorRGB(1, 0, 0)
 -- ColorPickerFrame:GetColorRGB (ColorSelect widget method via parent-class correction)
 local _cpR, _cpG, _cpB = ColorPickerFrame:GetColorRGB()
 --                                        ^ hover: (method) function ColorPickerFrame:GetColorRGB()
+
+-- ── AnchorUtil.CreateAnchor ────────────────────────────────────────────────
+-- Regression: AnchorUtil.CreateAnchor must be callable and return AnchorMixin.
+
+local anchor = AnchorUtil.CreateAnchor("TOPLEFT", nil, "TOPLEFT", 0, 0)
+--    ^ hover: (local) anchor: AnchorMixin  def: local
+
+local anchorFromPt = AnchorUtil.CreateAnchorFromPoint(anchor, 1)
+--    ^ hover: (local) anchorFromPt: AnchorMixin  def: local
+
+local globalAnchor = CreateAnchor("CENTER", nil, "CENTER")
+--    ^ hover: (local) globalAnchor: AnchorMixin  def: local
