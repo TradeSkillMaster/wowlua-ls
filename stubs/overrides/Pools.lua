@@ -180,15 +180,16 @@ function CreateFontStringPoolCollection() end
 ---Creates a new pool of font strings.
 ---@param parent Frame?
 ---@param layer? string
+---@param subLayer? number
 ---@param template? string
 ---@param resetFunc? function
 ---@return ObjectPool<FontString>
-function CreateFontStringPool(parent, layer, template, resetFunc) end
+function CreateFontStringPool(parent, layer, subLayer, template, resetFunc) end
 
 ---Creates a new pool of textures.
 ---@param parent Frame?
 ---@param layer? string
----@param subLayer? string
+---@param subLayer? number
 ---@param template? string
 ---@param resetFunc? function
 ---@return ObjectPool<Texture>
@@ -197,7 +198,7 @@ function CreateTexturePool(parent, layer, subLayer, template, resetFunc) end
 ---Creates a new pool of mask textures.
 ---@param parent Frame?
 ---@param layer? string
----@param subLayer? string
+---@param subLayer? number
 ---@param template? string
 ---@param resetFunc? function
 ---@return ObjectPool<MaskTexture>

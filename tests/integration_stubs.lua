@@ -1123,3 +1123,21 @@ function _retPriv.getItem(key)
     end
     return tremove(_retItems)
 end
+
+-- ── TexturePool / FontStringPool subLayer param type ──────────────────────────
+-- Numeric subLayer must not produce type-mismatch (exhaustive harness verifies).
+
+---@type Frame
+local _poolParent
+
+-- CreateTexturePool: subLayer is number, not string
+local _texPool = CreateTexturePool(_poolParent, "ARTWORK", 1)
+--               ^ hover: (global) function CreateTexturePool(\nparent: Frame?,\nlayer?: string,\nsubLayer?: number,\ntemplate?: string,\nresetFunc?: function\n)\n-> ObjectPool<Texture>
+
+-- CreateMaskTexturePool: subLayer is number, not string
+local _maskPool = CreateMaskTexturePool(_poolParent, "ARTWORK", 2)
+--                ^ hover: (global) function CreateMaskTexturePool(\nparent: Frame?,\nlayer?: string,\nsubLayer?: number,\ntemplate?: string,\nresetFunc?: function\n)\n-> ObjectPool<MaskTexture>
+
+-- CreateFontStringPool: subLayer param exists and is number
+local _fsPool = CreateFontStringPool(_poolParent, "OVERLAY", 0, "MyTemplate")
+--              ^ hover: (global) function CreateFontStringPool(\nparent: Frame?,\nlayer?: string,\nsubLayer?: number,\ntemplate?: string,\nresetFunc?: function\n)\n-> ObjectPool<FontString>

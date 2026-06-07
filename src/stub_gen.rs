@@ -4583,10 +4583,18 @@ pub fn regenerate_stubs() {
     // Exclude vendor files we generate replacements for from the dedup set.
     // Generated file names (BlizzardEnums.lua, Constants.lua, etc.) are intentionally
     // absent — they only exist in the generated output directory, not in vendor/overrides.
-    let existing_for_dedup = get_existing_names(&combined_stubs, &[
+    // Also scan the annotation directories directly (same fix as generate_global_stubs)
+    // so that names like `strmatch = str.match` from compat.lua are reliably excluded
+    // even if symlink traversal in combined_stubs is unreliable.
+    let dedup_exclude_files = &[
         "GlobalStrings.lua", "GlobalVariables.lua", "GlobalColors.lua",
         "Enum.lua", "CVar.lua", "Wiki.lua",
-    ]);
+    ];
+    let mut existing_for_dedup = get_existing_names(&combined_stubs, dedup_exclude_files);
+    for dir in &extra_dirs {
+        let extra = get_existing_names(dir, &[]);
+        existing_for_dedup.extend(extra);
+    }
 
     // Step 5a: Generate wiki-documented global stubs, skipping functions already in vendor stubs.
     // Also skip bare names that match a Blizzard API namespace function (e.g. GetAddOnMetadata
