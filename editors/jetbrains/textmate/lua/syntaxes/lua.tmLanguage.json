@@ -362,7 +362,7 @@
               ]
             },
             {
-              "comment": "@param with parameterized type (delegates to emmydoc.type for balanced angle brackets)",
+              "comment": "@param with parameterized type (delegates to emmydoc.type for balanced angle brackets). Union members after > use a flat character class that doesn't handle spaces inside type params (e.g. |Map<K, V> stops at the space), but this is still better than the previous behavior of not capturing unions after > at all.",
               "begin": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+([a-zA-Z_*][a-zA-Z0-9_.\\-]*)(\\<)",
               "beginCaptures": {
                 "1": {"name": "entity.name.variable.lua"},
@@ -370,11 +370,12 @@
                 "3": {"name": "support.type.lua"},
                 "4": {"name": "keyword.operator.lua"}
               },
-              "end": "(\\>)([\\[\\]\\?\\!]*)(?:\\s+(.+))?|(?=[\\n@#])",
+              "end": "(\\>)([\\[\\]\\?\\!]*)((?:\\s*[|&]\\s*(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?|(?=[\\n@#])",
               "endCaptures": {
                 "1": {"name": "keyword.operator.lua"},
                 "2": {"name": "keyword.operator.lua"},
-                "3": {"name": "comment.block.documentation.lua"}
+                "3": {"patterns": [{"include": "#emmydoc.type"}]},
+                "4": {"name": "comment.block.documentation.lua"}
               },
               "patterns": [
                 {"include": "#emmydoc.type"}
@@ -412,7 +413,7 @@
               "captures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
-                "3": {"name": "support.type.lua"},
+                "3": {"patterns": [{"include": "#emmydoc.type"}]},
                 "4": {"name": "comment.block.documentation.lua"}
               }
             }
@@ -684,17 +685,18 @@
           ]
         },
         {
-          "comment": "Parameterized type (e.g. Map<K, V>) with description",
+          "comment": "Parameterized type (e.g. Map<K, V>) with description. Union members after > use a flat character class that doesn't handle spaces inside type params (e.g. |Map<K, V> stops at the space), but this is still better than the previous behavior of not capturing unions after > at all.",
           "begin": "\\s+([a-zA-Z_*][a-zA-Z0-9_.\\-]*)(\\<)",
           "beginCaptures": {
             "1": {"name": "support.type.lua"},
             "2": {"name": "keyword.operator.lua"}
           },
-          "end": "(\\>)([\\[\\]\\?\\!]*)(?:\\s+(.+))?|(?=[\\n#])",
+          "end": "(\\>)([\\[\\]\\?\\!]*)((?:\\s*[|&]\\s*(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?|(?=[\\n#])",
           "endCaptures": {
             "1": {"name": "keyword.operator.lua"},
             "2": {"name": "keyword.operator.lua"},
-            "3": {"name": "comment.block.documentation.lua"}
+            "3": {"patterns": [{"include": "#emmydoc.type"}]},
+            "4": {"name": "comment.block.documentation.lua"}
           },
           "patterns": [
             {"include": "#emmydoc.type"}
@@ -712,15 +714,15 @@
           "comment": "{…} table literal type with description (one level of brace nesting)",
           "match": "\\s+(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})(?:\\s+(.+))?",
           "captures": {
-            "1": {"name": "support.type.lua"},
+            "1": {"patterns": [{"include": "#emmydoc.type"}]},
             "2": {"name": "comment.block.documentation.lua"}
           }
         },
         {
-          "comment": "Simple/union type with optional description (allows spaces around | and &, and ...M variadic generic types). Uses a flat match so string literal types lose individual string highlighting — consistent with @param behavior.",
+          "comment": "Simple/union type with optional description (allows spaces around | and &, and ...M variadic generic types). Delegates to emmydoc.type for rich sub-tokenization of operators and type names.",
           "match": "\\s+((?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*(?:\\s*[|&]\\s*(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?",
           "captures": {
-            "1": {"name": "support.type.lua"},
+            "1": {"patterns": [{"include": "#emmydoc.type"}]},
             "2": {"name": "comment.block.documentation.lua"}
           }
         }
