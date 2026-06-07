@@ -3317,23 +3317,34 @@ impl<'a> Analysis<'a> {
         // only narrowing-only entries remain (params with no baseline hints).
         // When such a param was truthiness-tested (`if p then` / `p and expr`),
         // its narrowing hints become baselines and `used_as_or_lhs` is set so
-        // the inferred type includes nil (e.g. `string?`).
+        // the inferred type includes nil (e.g. `string?`), unless the hints
+        // cover boolean (where falsiness ≠ nilability).
         for (s, hints) in narrowing_hints {
             if out.contains_key(&s) { continue; }
-            let has_nil_evidence = and_lhs_params.contains(&s)
-                || or_lhs_params.contains(&s)
-                || truthiness_tested.contains(&s);
-            if !has_nil_evidence { continue; }
+            let is_and_or_truthiness = and_lhs_params.contains(&s) || truthiness_tested.contains(&s);
+            let is_or_lhs = or_lhs_params.contains(&s);
+            if !is_and_or_truthiness && !is_or_lhs { continue; }
             let filtered: Vec<ValueType> = hints.into_iter()
                 .filter(|t| !matches!(t, ValueType::Any))
                 .collect();
             if filtered.is_empty() { continue; }
+            // For boolean-typed params, truthiness tests and `and` LHS don't
+            // prove nilability — `false` is also falsy in Lua, so the guard
+            // may distinguish `true` from `false` rather than `non-nil` from
+            // `nil`. Only `param or default` (or_lhs) remains valid nil
+            // evidence for boolean params. The `true` literal is excluded
+            // since it's always truthy — a truthiness test on it does prove
+            // non-nil.
+            let hints_cover_false = filtered.iter().any(|t| {
+                matches!(t, ValueType::Boolean(None) | ValueType::Boolean(Some(false)))
+            });
+            let has_nil_evidence = is_or_lhs || (!hints_cover_false && is_and_or_truthiness);
             let caller = caller_types.remove(&s).unwrap_or_default();
             out.insert(s, BackwardInferenceHints {
                 baseline: filtered,
                 narrowing: Vec::new(),
                 caller,
-                used_as_or_lhs: true,
+                used_as_or_lhs: has_nil_evidence,
             });
         }
 

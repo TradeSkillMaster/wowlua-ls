@@ -1013,3 +1013,32 @@ local function baselinePrecedence(p)
 end
 baselinePrecedence(nil)
 --                 ^ diag: type-mismatch
+
+-- ── Boolean params: truthiness tests don't prove nilability ──
+-- In Lua, `false` is also falsy — so `if not flag then` and `flag and "A" or
+-- "B"` distinguish true/false, not non-nil/nil. When a narrowing hint is
+-- `boolean`, truthiness-based nil evidence must be suppressed. Only explicit
+-- `param or default` (or_lhs) should add nil for boolean params.
+---@param b boolean
+local function boolNeedsBool(b) end
+
+local function boolGuardNoNil(cond, flag)
+--                                  ^ hover: (param) flag: boolean
+    if not flag then
+        local _ = 1
+    end
+    if cond then
+        boolNeedsBool(flag)
+    end
+    local _ = flag and "yes" or "no"
+end
+
+-- Boolean params with `or` LHS evidence still get nil added.
+---@param b boolean
+local function boolOrNeedsBool(b) end
+
+local function boolOrLhs(flag)
+--                       ^ hover: (param) flag: boolean?
+    flag = flag or false
+    boolOrNeedsBool(flag)
+end
