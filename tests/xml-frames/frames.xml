@@ -132,6 +132,17 @@
         </Frames>
     </Frame>
 
+    <!-- Leaf region with inherits: base region type must be preserved.
+         FontString inherits a Font object, not a FontString template. -->
+    <Frame name="StyledFrame" virtual="true">
+        <Layers>
+            <Layer level="OVERLAY">
+                <FontString parentKey="Label" inherits="GameFontHighlight" />
+                <Texture parentKey="Icon" inherits="IconTexCoordTemplate" />
+            </Layer>
+        </Layers>
+    </Frame>
+
     <!-- Names that should be filtered out (invalid Lua identifiers) -->
     <Frame name="!InvalidFrame" parent="UIParent" />
     <Texture name="Wood-Tile" virtual="true" />

@@ -134,6 +134,16 @@ function MyPanelMixin:DoSomething()
     --          ^ hover: (field) CloseBtn: Button
 end
 
+-- Leaf region elements with inherits: base region type is preserved.
+-- FontString inherits a Font object, not a FontString template, so the
+-- field should still be typed as FontString (not the Font object).
+---@type StyledFrame
+local styled
+local slbl = styled.Label
+--    ^ hover: (local) slbl: FontString
+local sico = styled.Icon
+--    ^ hover: (local) sico: Texture
+
 -- Hyphenated names should not create globals (invalid Lua identifier)
 local x = InvalidFrame
 --        ^ diag: undefined-global

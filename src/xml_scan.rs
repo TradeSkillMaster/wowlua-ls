@@ -51,6 +51,7 @@ fn xml_element_to_frame_type(element: &str) -> Option<&'static str> {
         | "ColorWheelThumbTexture" | "ColorValueTexture" | "ColorValueThumbTexture"
         | "ColorAlphaTexture" | "ColorAlphaThumbTexture" => Some("Texture"),
         "MaskTexture" => Some("MaskTexture"),
+        "Line" => Some("Line"),
         "FontString" | "FontStringHeader1" | "FontStringHeader2" | "FontStringHeader3" => {
             Some("FontString")
         }
@@ -512,18 +513,27 @@ fn handle_key_value(
     }
 }
 
+/// Leaf region element types where `inherits` names a styling object (Font, Texture) rather than
+/// a sub-template. The base region type must be kept even when `inherits` is present.
+fn is_leaf_region_type(frame_type: &str) -> bool {
+    matches!(frame_type, "FontString" | "Texture" | "MaskTexture" | "Line")
+}
+
 /// Build the annotation type for a child element, incorporating inherits/mixins.
 ///
 /// When `inherits` templates are specified, the base element type (e.g. `Button`)
 /// is omitted because the template's own ClassDecl already lists it as a parent.
 /// This avoids a redundant intersection member and lets the class inheritance
-/// mechanism resolve base-type fields naturally.
+/// mechanism resolve base-type fields naturally.  For leaf region elements
+/// (FontString, Texture, etc.) the base type is always kept because `inherits`
+/// names a styling object, not a sub-template.
 ///
 /// Examples:
 /// - `<Frame parentKey="P" />` → `Frame`
 /// - `<Button parentKey="P" inherits="Tpl" />` → `Tpl`
 /// - `<Button parentKey="P" inherits="TplA, TplB" mixin="Mix" />` → `TplA & TplB & Mix`
 /// - `<Button parentKey="P" mixin="Mix" />` → `Button & Mix`
+/// - `<FontString parentKey="P" inherits="GameFont" />` → `FontString & GameFont`
 fn child_element_type(
     frame_type: &str,
     inherits: &[String],
@@ -532,10 +542,20 @@ fn child_element_type(
     if inherits.is_empty() && mixins.is_empty() {
         return AnnotationType::Simple(frame_type.to_string());
     }
-    // When inherits are specified, templates already inherit from the base
-    // element type, so we omit frame_type from the list.
-    let mut members: Vec<AnnotationType> = if inherits.is_empty() {
-        vec![AnnotationType::Simple(frame_type.to_string())]
+    // For leaf region elements (FontString, Texture, etc.), `inherits` names a
+    // styling object (e.g. a Font), not a sub-template — always keep the base
+    // region type and add inherits as extra intersection members.  For container
+    // frames, templates already inherit from the base element type, so we omit
+    // frame_type.
+    let is_leaf = is_leaf_region_type(frame_type);
+    let mut members: Vec<AnnotationType> = if inherits.is_empty() || is_leaf {
+        let mut v = vec![AnnotationType::Simple(frame_type.to_string())];
+        if is_leaf {
+            for name in inherits {
+                v.push(AnnotationType::Simple(name.clone()));
+            }
+        }
+        v
     } else {
         inherits.iter().map(|n| AnnotationType::Simple(n.clone())).collect()
     };
