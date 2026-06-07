@@ -859,6 +859,30 @@ impl<'a> Analysis<'a> {
                 // Single candidate: verify type compatibility before committing
                 let off = ovl_self_off(&only);
                 let has_mismatch = args.iter().enumerate().any(|(i, arg_id)| {
+                    // Bare string-literal param (e.g. select's "#"): reject
+                    // unless the arg is that exact literal in source. This check
+                    // is independent of type resolution (string_literals is
+                    // populated in Phase 1) and must run even when resolve_expr
+                    // returns None — preventing unresolved or Any-typed args from
+                    // falsely matching a discriminator overload.
+                    //
+                    // We intentionally handle only `String(Some(...))`, not
+                    // `Union` of literals. Union-typed params (e.g. CreateFrame's
+                    // template param resolved as a union of known class names)
+                    // can legitimately receive user-defined strings not present
+                    // in the union. The multi-overload string filter (lines
+                    // 752–778) already handles unions with a fallback when no
+                    // overload matches; replicating that rejection here without
+                    // the fallback would break valid calls.
+                    if let Some(param) = only.params.get(i + off)
+                        && let Some(ValueType::String(Some(expected))) = &param.typ
+                    {
+                        let matches_literal = self.ir.string_literals.get(arg_id)
+                            .is_some_and(|actual| actual == expected);
+                        if !matches_literal {
+                            return true;
+                        }
+                    }
                     if let Some(arg_t) = self.resolve_expr(*arg_id) {
                         if let Some(param) = only.params.get(i + off) {
                             if let Some(param_t) = &param.typ {

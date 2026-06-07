@@ -388,3 +388,12 @@ local _spBtn
 _spBtn:SetPoint("TOPLEFT", -10, 10)
 --                         ^ hint: ofsx:
 --                              ^ hint: ofsy:
+
+-- select("#") should match the "#" overload and return number,
+-- but select(nonLiteral) should NOT match the "#" overload.
+local count = select("#", "a", "b")
+--    ^ hover: (local) count: number
+---@type number
+local idx
+local picked = select(idx, "a", "b", "c")
+--    ^ hover: (local) picked: ?
