@@ -1,7 +1,7 @@
 use crate::analysis::{AnalysisResult, ancestor_scopes};
 use crate::analysis::resolve::parse_num_literal_str;
 use crate::ast::Operator;
-use crate::types::{Expr, ExprId, ScopeIndex, SymbolIndex, SymbolIdentifier, ValueType};
+use crate::types::{EnumKind, Expr, ExprId, ScopeIndex, SymbolIndex, SymbolIdentifier, ValueType};
 use super::{DiagnosticPass, WowDiagnostic, is_type_permissive, is_expr_truthiness_uncertain, types_disjoint, unwrap_to_inner_expr};
 
 pub(crate) struct RedundantCondition;
@@ -148,8 +148,8 @@ fn eval_equality(analysis: &AnalysisResult, op: Operator, lhs: ExprId, rhs: Expr
         return None;
     }
 
-    let lt = effective_type(analysis, lhs)?;
-    let rt = effective_type(analysis, rhs)?;
+    let lt = resolve_enum_runtime_type(analysis, effective_type(analysis, lhs)?);
+    let rt = resolve_enum_runtime_type(analysis, effective_type(analysis, rhs)?);
     if is_type_permissive(&lt) || is_type_permissive(&rt) { return None; }
 
     if types_disjoint(&lt, &rt) {
@@ -241,7 +241,7 @@ fn eval_type_guard(analysis: &AnalysisResult, op: Operator, lhs: ExprId, rhs: Ex
     };
     if !LUA_TYPE_NAMES.contains(&type_name.as_str()) { return None; }
     if is_expr_truthiness_uncertain(analysis, arg) { return None; }
-    let arg_type = analysis.resolve_expr_type(arg)?;
+    let arg_type = resolve_enum_runtime_type(analysis, analysis.resolve_expr_type(arg)?);
     if is_type_permissive(&arg_type) { return None; }
     let kinds = possible_type_kinds(&arg_type)?;
     if kinds.is_empty() { return None; }
@@ -291,6 +291,32 @@ fn effective_type(analysis: &AnalysisResult, expr_id: ExprId) -> Option<ValueTyp
         }
     }
     analysis.resolve_expr_type(expr_id)
+}
+
+/// If `t` is an enum table type, return its runtime base type (`Number` or
+/// `String`). Enum classes are tables in the type system but integers/strings
+/// at runtime, so equality comparisons against number/string literals should
+/// not be considered disjoint.
+fn resolve_enum_runtime_type(analysis: &AnalysisResult, t: ValueType) -> ValueType {
+    match &t {
+        ValueType::Table(Some(idx)) => {
+            match analysis.table(*idx).enum_kind {
+                EnumKind::Number => ValueType::Number,
+                EnumKind::String => ValueType::String(None),
+                EnumKind::NotEnum => t,
+            }
+        }
+        ValueType::Union(members) => {
+            let has_enum = members.iter().any(|m| matches!(m,
+                ValueType::Table(Some(idx)) if analysis.table(*idx).enum_kind != EnumKind::NotEnum));
+            if !has_enum { return t; }
+            let resolved: Vec<_> = members.iter().map(|m| {
+                resolve_enum_runtime_type(analysis, m.clone())
+            }).collect();
+            ValueType::Union(resolved)
+        }
+        _ => t,
+    }
 }
 
 /// Two singleton (single-value) literal types that name the same value.

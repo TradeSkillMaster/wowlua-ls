@@ -661,6 +661,85 @@ local function handleModeEarly(mode)
 end
 _use(handleModeEarly)
 
+-- ── No diagnostic: enum-typed field compared against enum values ─────────────
+-- Enum classes are tables in the type system but numbers/strings at runtime.
+-- Comparisons against specific enum member values are valid and should not be
+-- flagged as disjoint (regression: Table vs NumberLiteral was seen as disjoint).
+
+-- Number enum: == comparison in if/elseif chain
+---@enum ItemKind
+local ItemKind = {
+    Weapon = 0,
+    Armor = 1,
+    Consumable = 2,
+}
+
+---@class ItemData
+---@field kind ItemKind
+
+---@param data ItemData
+local function processItem(data)
+    if data.kind == ItemKind.Weapon then
+        _use("weapon")
+    elseif data.kind == ItemKind.Armor then
+        _use("armor")
+    elseif data.kind == ItemKind.Consumable then
+        _use("consumable")
+    end
+end
+_use(processItem)
+
+-- Number enum: ~= comparison
+---@param data ItemData
+local function filterItem(data)
+    if data.kind ~= ItemKind.Weapon then
+        _use("not weapon")
+    end
+end
+_use(filterItem)
+
+-- String enum: == comparison in if/elseif chain
+---@enum Color
+local Color = {
+    Red = "red",
+    Green = "green",
+    Blue = "blue",
+}
+
+---@class PaintJob
+---@field color Color
+
+---@param job PaintJob
+local function applyPaint(job)
+    if job.color == Color.Red then
+        _use("red")
+    elseif job.color == Color.Green then
+        _use("green")
+    elseif job.color == Color.Blue then
+        _use("blue")
+    end
+end
+_use(applyPaint)
+
+-- Nilable enum: ItemKind? compared against enum value
+---@param kind ItemKind?
+local function maybeProcess(kind)
+    if kind == ItemKind.Weapon then
+        _use("weapon")
+    end
+end
+_use(maybeProcess)
+
+-- type() guard on enum-typed field: `type(x) == "number"` should not be
+-- flagged when x has enum type (enum values are numbers at runtime).
+---@param data ItemData
+local function checkEnumType(data)
+    if type(data.kind) == "number" then
+        _use(data.kind)
+    end
+end
+_use(checkEnumType)
+
 -- ── Suppression ──────────────────────────────────────────────────────────────
 
 ---@type number
