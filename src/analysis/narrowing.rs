@@ -3,7 +3,7 @@ use crate::ast::*;
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
-use super::{Analysis, Ir};
+use super::{Analysis, Ir, NarrowTarget};
 use super::build_ir::OverloadCheck;
 
 enum OrTermEffect {
@@ -264,8 +264,8 @@ impl<'a> Analysis<'a> {
                     let names = ident.names_with_brackets();
                     if names.len() == 1 {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
-                            self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
-                            self.falsy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            self.narrowing.narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
+                            self.narrowing.falsy_narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
                             self.narrow_siblings(sym_idx, target_scope);
                             self.narrow_correlated_locals(sym_idx, target_scope);
                             self.narrow_or_coalesce_derived(sym_idx, target_scope, true);
@@ -279,8 +279,8 @@ impl<'a> Analysis<'a> {
                         if let Some((sym_idx, then_type, _)) =
                             self.extract_field_presence_discriminator(&names, parent_scope)
                         {
-                            self.type_narrowed_symbols.entry(target_scope).or_default()
-                                .insert(sym_idx, then_type);
+                            self.narrowing.type_narrowed.entry(target_scope).or_default()
+                                .insert(NarrowTarget::Symbol(sym_idx), then_type);
                         }
                         self.try_narrow_field_falsy(&names, target_scope);
                     }
@@ -292,7 +292,7 @@ impl<'a> Analysis<'a> {
                     let names = ident.names_with_brackets();
                     if names.len() == 1
                         && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
-                            self.truthy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            self.narrowing.truthy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.narrow_siblings(sym_idx, target_scope);
                             // Boolean type-guard alias: else-branch of `if b then`
                             self.try_apply_type_guard_alias(sym_idx, target_scope, false);
@@ -302,8 +302,8 @@ impl<'a> Analysis<'a> {
                         if let Some((sym_idx, _, else_type)) =
                             self.extract_field_presence_discriminator(&names, parent_scope)
                         {
-                            self.type_narrowed_symbols.entry(target_scope).or_default()
-                                .insert(sym_idx, else_type);
+                            self.narrowing.type_narrowed.entry(target_scope).or_default()
+                                .insert(NarrowTarget::Symbol(sym_idx), else_type);
                         }
                     }
                 }
@@ -359,7 +359,7 @@ impl<'a> Analysis<'a> {
                 {
                     if names.len() == 1 {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
-                            self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            self.narrowing.narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
                             self.narrow_siblings(sym_idx, target_scope);
                             self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                         }
@@ -395,7 +395,7 @@ impl<'a> Analysis<'a> {
                     if let Some((name, oriented_op, bound)) = oriented
                         && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name), parent_scope)
                     {
-                        self.num_compare_narrowed_symbols.entry(target_scope).or_default()
+                        self.narrowing.num_compare_narrowed_symbols.entry(target_scope).or_default()
                             .insert(sym_idx, (oriented_op, bound));
                         // Reaching the then-branch proves x is non-nil; strip nil
                         // from x's own type so `need-check-nil` and type-mismatch
@@ -408,7 +408,7 @@ impl<'a> Analysis<'a> {
                         // narrowed by the `OverloadNarrow` machinery instead; a
                         // crude `StripNil` version would clobber that resolution.
                         if !is_tuple_union && !sym_idx.is_external() {
-                            self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            self.narrowing.narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
                             self.push_strip_nil_version(sym_idx, target_scope);
                         }
                     }
@@ -431,7 +431,7 @@ impl<'a> Analysis<'a> {
                         if should_narrow {
                             if names.len() == 1 {
                                 if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
-                                    self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                    self.narrowing.narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
                                     self.narrow_siblings(sym_idx, target_scope);
                                     self.narrow_correlated_locals(sym_idx, target_scope);
                                     self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
@@ -441,15 +441,15 @@ impl<'a> Analysis<'a> {
                                 if let Some((sym_idx, then_type, _)) =
                                     self.extract_field_presence_discriminator(&names, parent_scope)
                                 {
-                                    self.type_narrowed_symbols.entry(target_scope).or_default()
-                                        .insert(sym_idx, then_type);
+                                    self.narrowing.type_narrowed.entry(target_scope).or_default()
+                                        .insert(NarrowTarget::Symbol(sym_idx), then_type);
                                 }
                                 self.try_narrow_field(&names, target_scope);
                             }
                         } else if names.len() == 1 {
                             // `x == nil` in then-branch / `x ~= nil` in else-branch → narrow x to nil
                             if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
-                                self.type_filtered_symbols.entry(target_scope).or_default()
+                                self.narrowing.type_filtered_symbols.entry(target_scope).or_default()
                                     .insert(sym_idx, ValueType::Nil);
                             }
                         } else if !ident.has_any_dynamic_bracket() {
@@ -457,8 +457,8 @@ impl<'a> Analysis<'a> {
                             if let Some((sym_idx, _, else_type)) =
                                 self.extract_field_presence_discriminator(&names, parent_scope)
                             {
-                                self.type_narrowed_symbols.entry(target_scope).or_default()
-                                    .insert(sym_idx, else_type);
+                                self.narrowing.type_narrowed.entry(target_scope).or_default()
+                                    .insert(NarrowTarget::Symbol(sym_idx), else_type);
                             }
                         }
                     }
@@ -496,9 +496,9 @@ impl<'a> Analysis<'a> {
                                     self.push_strip_type_version(sym_idx, lit_vt, target_scope, false);
                                 } else if is_filter {
                                     // x == "literal" in then-branch: narrow to exactly the literal type.
-                                    self.type_narrowed_symbols.entry(target_scope).or_default()
-                                        .insert(sym_idx, lit_vt.clone());
-                                    self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                    self.narrowing.type_narrowed.entry(target_scope).or_default()
+                                        .insert(NarrowTarget::Symbol(sym_idx), lit_vt.clone());
+                                    self.narrowing.narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
                                     self.narrow_siblings(sym_idx, target_scope);
                                     self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                                 }
@@ -510,10 +510,10 @@ impl<'a> Analysis<'a> {
                             if is_strip {
                                 self.add_type_stripped_field(target_scope, sym_idx, chain, lit_vt);
                             } else if is_filter {
-                                self.narrowed_fields.entry(target_scope).or_default()
-                                    .insert((sym_idx, chain.clone()));
-                                self.type_narrowed_fields.entry(target_scope).or_default()
-                                    .insert((sym_idx, chain), lit_vt);
+                                self.narrowing.narrowed.entry(target_scope).or_default()
+                                    .insert(NarrowTarget::Field(sym_idx, chain.clone()));
+                                self.narrowing.type_narrowed.entry(target_scope).or_default()
+                                    .insert(NarrowTarget::Field(sym_idx, chain), lit_vt);
                             }
                         }
                     }
@@ -530,15 +530,15 @@ impl<'a> Analysis<'a> {
                                     // `type(x) == "nil"` → positive means x IS nil (no narrowing needed),
                                     // inverse means x is NOT nil (strip nil)
                                     if is_inverse_type_guard {
-                                        self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                        self.narrowing.narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
                                         self.narrow_siblings(sym_idx, target_scope);
                                         self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                                     }
                                 } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     if is_positive_type_guard {
-                                        self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                        self.narrowing.narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
                                         self.narrow_siblings(sym_idx, target_scope);
-                                        self.type_filtered_symbols.entry(target_scope).or_default()
+                                        self.narrowing.type_filtered_symbols.entry(target_scope).or_default()
                                             .insert(sym_idx, vt);
                                         self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                                     } else {
@@ -548,7 +548,7 @@ impl<'a> Analysis<'a> {
                                 }
                             } else if is_positive_type_guard {
                                 // No type name literal but still a type guard (shouldn't happen, but keep existing behavior)
-                                self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                self.narrowing.narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
                                 self.narrow_siblings(sym_idx, target_scope);
                                 self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                             }
@@ -560,19 +560,19 @@ impl<'a> Analysis<'a> {
                                     if type_name == "nil" {
                                         // `type(obj.f) ~= "nil"` → strip nil
                                         if is_inverse_type_guard {
-                                            self.narrowed_fields.entry(target_scope).or_default()
-                                                .insert((sym_idx, chain));
+                                            self.narrowing.narrowed.entry(target_scope).or_default()
+                                                .insert(NarrowTarget::Field(sym_idx, chain));
                                         }
                                     } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                         if is_positive_type_guard {
-                                            self.narrowed_fields.entry(target_scope).or_default()
-                                                .insert((sym_idx, chain.clone()));
-                                            self.type_narrowed_fields.entry(target_scope).or_default()
-                                                .insert((sym_idx, chain), vt);
+                                            self.narrowing.narrowed.entry(target_scope).or_default()
+                                                .insert(NarrowTarget::Field(sym_idx, chain.clone()));
+                                            self.narrowing.type_narrowed.entry(target_scope).or_default()
+                                                .insert(NarrowTarget::Field(sym_idx, chain), vt);
                                         } else {
                                             // Inverse: strip the guarded type from the field's union
-                                            self.type_stripped_fields.entry(target_scope).or_default()
-                                                .insert((sym_idx, chain), vt);
+                                            self.narrowing.type_stripped.entry(target_scope).or_default()
+                                                .insert(NarrowTarget::Field(sym_idx, chain), vt);
                                         }
                                     }
                                 }
@@ -610,12 +610,12 @@ impl<'a> Analysis<'a> {
                     }
                 } else if let Some((sym_idx, true_type, false_type)) = self.extract_bool_discriminator(call, parent_scope) {
                     let narrowed = if is_then_branch { true_type } else { false_type };
-                    self.type_narrowed_symbols.entry(target_scope).or_default()
-                        .insert(sym_idx, narrowed);
+                    self.narrowing.type_narrowed.entry(target_scope).or_default()
+                        .insert(NarrowTarget::Symbol(sym_idx), narrowed);
                 } else if let Some((sym_idx, chain, true_type, false_type)) = self.extract_bool_discriminator_field(call, parent_scope) {
                     let narrowed = if is_then_branch { true_type } else { false_type };
-                    self.type_narrowed_fields.entry(target_scope).or_default()
-                        .insert((sym_idx, chain), narrowed);
+                    self.narrowing.type_narrowed.entry(target_scope).or_default()
+                        .insert(NarrowTarget::Field(sym_idx, chain), narrowed);
                 }
             }
             // `not expr` flips the branch sense
@@ -669,10 +669,10 @@ impl<'a> Analysis<'a> {
         };
         let has_nil = matches!(&combined, ValueType::Nil)
             || matches!(&combined, ValueType::Union(ts) if ts.contains(&ValueType::Nil));
-        self.type_narrowed_symbols.entry(target_scope).or_default()
-            .insert(target_sym, combined);
+        self.narrowing.type_narrowed.entry(target_scope).or_default()
+            .insert(NarrowTarget::Symbol(target_sym), combined);
         if !has_nil {
-            self.narrowed_symbols.entry(target_scope).or_default().insert(target_sym);
+            self.narrowing.narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(target_sym));
             self.narrow_or_coalesce_derived(target_sym, target_scope, false);
         }
         self.narrow_siblings(target_sym, target_scope);
@@ -777,7 +777,7 @@ impl<'a> Analysis<'a> {
                 let names = ident.names_with_brackets();
                 if names.len() == 1
                     && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
-                        self.truthy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                        self.narrowing.truthy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
                         self.narrow_siblings(sym_idx, scope_idx);
                         // `if isString then return end` → after exit, data is NOT string
                         self.try_apply_type_guard_alias(sym_idx, scope_idx, false);
@@ -788,8 +788,8 @@ impl<'a> Analysis<'a> {
                     if let Some((sym_idx, _, else_type)) =
                         self.extract_field_presence_discriminator(&names, scope_idx)
                     {
-                        self.type_narrowed_symbols.entry(scope_idx).or_default()
-                            .insert(sym_idx, else_type);
+                        self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                            .insert(NarrowTarget::Symbol(sym_idx), else_type);
                     }
                 }
             }
@@ -812,8 +812,8 @@ impl<'a> Analysis<'a> {
                         if let Some((sym_idx, then_type, _)) =
                             self.extract_field_presence_discriminator(&names, scope_idx)
                         {
-                            self.type_narrowed_symbols.entry(scope_idx).or_default()
-                                .insert(sym_idx, then_type);
+                            self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                                .insert(NarrowTarget::Symbol(sym_idx), then_type);
                         }
                         self.try_narrow_field_falsy(&names, scope_idx);
                     }
@@ -822,11 +822,11 @@ impl<'a> Analysis<'a> {
                         self.apply_type_narrows(sym_idx, &class_name, scope_idx);
                     } else if let Some((sym_idx, true_type, _)) = self.extract_bool_discriminator(call, scope_idx) {
                         // `if not x:IsSubRow() then return end` → x is the true-branch after
-                        self.type_narrowed_symbols.entry(scope_idx).or_default()
-                            .insert(sym_idx, true_type);
+                        self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                            .insert(NarrowTarget::Symbol(sym_idx), true_type);
                     } else if let Some((sym_idx, chain, true_type, _)) = self.extract_bool_discriminator_field(call, scope_idx) {
-                        self.type_narrowed_fields.entry(scope_idx).or_default()
-                            .insert((sym_idx, chain), true_type);
+                        self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                            .insert(NarrowTarget::Field(sym_idx, chain), true_type);
                     }
                 }
             }
@@ -870,8 +870,8 @@ impl<'a> Analysis<'a> {
                                 if let Some((sym_idx, then_type, _)) =
                                     self.extract_field_presence_discriminator(&names, scope_idx)
                                 {
-                                    self.type_narrowed_symbols.entry(scope_idx).or_default()
-                                        .insert(sym_idx, then_type);
+                                    self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                                        .insert(NarrowTarget::Symbol(sym_idx), then_type);
                                 }
                                 self.try_narrow_field(&names, scope_idx);
                             }
@@ -915,22 +915,22 @@ impl<'a> Analysis<'a> {
                                     if type_name == "nil" {
                                         // `if type(obj.f) == "nil" then return end` → obj.f is NOT nil after
                                         if strip_type_guard {
-                                            self.narrowed_fields.entry(scope_idx).or_default()
-                                                .insert((sym_idx, chain));
+                                            self.narrowing.narrowed.entry(scope_idx).or_default()
+                                                .insert(NarrowTarget::Field(sym_idx, chain));
                                         }
                                     } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                         if strip_type_guard {
                                             // `if type(obj.f) == "table" then return end`
                                             // → obj.f is NOT table after, strip that type
-                                            self.type_stripped_fields.entry(scope_idx).or_default()
-                                                .insert((sym_idx, chain), vt);
+                                            self.narrowing.type_stripped.entry(scope_idx).or_default()
+                                                .insert(NarrowTarget::Field(sym_idx, chain), vt);
                                         } else {
                                             // `if type(obj.f) ~= "table" then return end`
                                             // → obj.f IS table after
-                                            self.narrowed_fields.entry(scope_idx).or_default()
-                                                .insert((sym_idx, chain.clone()));
-                                            self.type_narrowed_fields.entry(scope_idx).or_default()
-                                                .insert((sym_idx, chain), vt);
+                                            self.narrowing.narrowed.entry(scope_idx).or_default()
+                                                .insert(NarrowTarget::Field(sym_idx, chain.clone()));
+                                            self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                                                .insert(NarrowTarget::Field(sym_idx, chain), vt);
                                         }
                                     }
                                 }
@@ -947,7 +947,7 @@ impl<'a> Analysis<'a> {
                                     self.push_strip_type_version(sym_idx, lit_vt, scope_idx, true);
                                 } else {
                                     // `if x ~= "LIT" then return end` → x IS "LIT" after
-                                    self.type_filtered_symbols.entry(scope_idx).or_default()
+                                    self.narrowing.type_filtered_symbols.entry(scope_idx).or_default()
                                         .insert(sym_idx, lit_vt.clone());
                                     self.push_type_filter_version(sym_idx, lit_vt, scope_idx, true);
                                 }
@@ -959,10 +959,10 @@ impl<'a> Analysis<'a> {
                             if is_eq {
                                 self.add_type_stripped_field(scope_idx, sym_idx, chain, lit_vt);
                             } else {
-                                self.narrowed_fields.entry(scope_idx).or_default()
-                                    .insert((sym_idx, chain.clone()));
-                                self.type_narrowed_fields.entry(scope_idx).or_default()
-                                    .insert((sym_idx, chain), lit_vt);
+                                self.narrowing.narrowed.entry(scope_idx).or_default()
+                                    .insert(NarrowTarget::Field(sym_idx, chain.clone()));
+                                self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                                    .insert(NarrowTarget::Field(sym_idx, chain), lit_vt);
                             }
                         }
                     }
@@ -1223,7 +1223,7 @@ impl<'a> Analysis<'a> {
     /// Mark a symbol as narrowed (non-nil) in the given scope, and create a new
     /// symbol version with nil stripped so type-mismatch checks see the narrowed type.
     fn narrow_symbol_strip_nil(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
-        self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+        self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx));
         self.push_strip_nil_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
         self.narrow_correlated_locals(sym_idx, scope_idx);
@@ -1232,8 +1232,8 @@ impl<'a> Analysis<'a> {
 
     /// Like narrow_symbol_strip_nil but also strips false (truthiness narrowing).
     fn narrow_symbol_strip_falsy(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
-        self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
-        self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+        self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx));
+        self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx));
         self.push_strip_falsy_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
         self.narrow_correlated_locals(sym_idx, scope_idx);
@@ -1260,8 +1260,8 @@ impl<'a> Analysis<'a> {
                     if let Some((sym_idx, then_type, _)) =
                         self.extract_field_presence_discriminator(&names, scope_idx)
                     {
-                        self.type_narrowed_symbols.entry(scope_idx).or_default()
-                            .insert(sym_idx, then_type);
+                        self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                            .insert(NarrowTarget::Symbol(sym_idx), then_type);
                     }
                     self.try_narrow_field_falsy(&names, scope_idx);
                 }
@@ -1292,7 +1292,7 @@ impl<'a> Analysis<'a> {
                             let names = ident.names_with_brackets();
                             if names.len() == 1 {
                                 if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
-                                    self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                                    self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx));
                                     self.narrow_siblings(sym_idx, scope_idx);
                                     self.narrow_correlated_locals(sym_idx, scope_idx);
                                     self.narrow_or_coalesce_derived(sym_idx, scope_idx, false);
@@ -1310,16 +1310,16 @@ impl<'a> Analysis<'a> {
                             if type_name == "nil" {
                                 // assert(type(x) ~= "nil") → x is NOT nil
                                 if is_neq {
-                                    self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                                    self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx));
                                     self.narrow_siblings(sym_idx, scope_idx);
                                     self.narrow_or_coalesce_derived(sym_idx, scope_idx, false);
                                 }
                                 // assert(type(x) == "nil") → x IS nil (no useful narrowing in assert)
                             } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                 if is_eq {
-                                    self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                                    self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx));
                                     self.narrow_siblings(sym_idx, scope_idx);
-                                    self.type_filtered_symbols.entry(scope_idx).or_default()
+                                    self.narrowing.type_filtered_symbols.entry(scope_idx).or_default()
                                         .insert(sym_idx, vt);
                                     self.narrow_or_coalesce_derived(sym_idx, scope_idx, false);
                                 } else {
@@ -1335,19 +1335,19 @@ impl<'a> Analysis<'a> {
                                 if type_name == "nil" {
                                     // assert(type(obj.f) ~= "nil") → strip nil
                                     if is_neq {
-                                        self.narrowed_fields.entry(scope_idx).or_default()
-                                            .insert((sym_idx, chain));
+                                        self.narrowing.narrowed.entry(scope_idx).or_default()
+                                            .insert(NarrowTarget::Field(sym_idx, chain));
                                     }
                                 } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     if is_eq {
-                                        self.narrowed_fields.entry(scope_idx).or_default()
-                                            .insert((sym_idx, chain.clone()));
-                                        self.type_narrowed_fields.entry(scope_idx).or_default()
-                                            .insert((sym_idx, chain), vt);
+                                        self.narrowing.narrowed.entry(scope_idx).or_default()
+                                            .insert(NarrowTarget::Field(sym_idx, chain.clone()));
+                                        self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                                            .insert(NarrowTarget::Field(sym_idx, chain), vt);
                                     } else {
                                         // assert(type(obj.field) ~= "table") — strip that type
-                                        self.type_stripped_fields.entry(scope_idx).or_default()
-                                            .insert((sym_idx, chain), vt);
+                                        self.narrowing.type_stripped.entry(scope_idx).or_default()
+                                            .insert(NarrowTarget::Field(sym_idx, chain), vt);
                                     }
                                 }
                             }
@@ -1359,11 +1359,11 @@ impl<'a> Analysis<'a> {
                     self.apply_type_narrows(sym_idx, &class_name, scope_idx);
                 } else if let Some((sym_idx, true_type, _)) = self.extract_bool_discriminator(call, scope_idx) {
                     // assert(x:IsSubRow()) — literal-bool union discrimination
-                    self.type_narrowed_symbols.entry(scope_idx).or_default()
-                        .insert(sym_idx, true_type);
+                    self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                        .insert(NarrowTarget::Symbol(sym_idx), true_type);
                 } else if let Some((sym_idx, chain, true_type, _)) = self.extract_bool_discriminator_field(call, scope_idx) {
-                    self.type_narrowed_fields.entry(scope_idx).or_default()
-                        .insert((sym_idx, chain), true_type);
+                    self.narrowing.type_narrowed.entry(scope_idx).or_default()
+                        .insert(NarrowTarget::Field(sym_idx, chain), true_type);
                 }
             }
             Expression::GroupedExpression(group) => {
@@ -1872,18 +1872,18 @@ impl<'a> Analysis<'a> {
     /// Resolve the narrowing kind (if any) for a symbol in a given scope.
     /// Checks class_narrowed_symbols first (most specific), then truthy/falsy/nil narrowing.
     pub(crate) fn narrow_kind_for(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<NarrowKind> {
-        if let Some(class_name) = self.class_narrowed_symbols.get(&scope_idx)
+        if let Some(class_name) = self.narrowing.class_narrowed_symbols.get(&scope_idx)
             .and_then(|m| m.get(&sym_idx))
         {
             return Some(NarrowKind::ClassEq(class_name.clone()));
         }
-        if self.truthy_narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx)) {
+        if self.narrowing.truthy_narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx)) {
             return Some(NarrowKind::StripTruthy);
         }
         // Falsy narrowing strips `false` in addition to nil, so it must win over
         // a plain numeric comparison.
-        if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx))
-            && self.falsy_narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx))
+        if self.narrowing.narrowed.get(&scope_idx).is_some_and(|s| s.contains(&NarrowTarget::Symbol(sym_idx)))
+            && self.narrowing.falsy_narrowed.get(&scope_idx).is_some_and(|s| s.contains(&NarrowTarget::Symbol(sym_idx)))
         {
             return Some(NarrowKind::StripFalsy);
         }
@@ -1893,12 +1893,12 @@ impl<'a> Analysis<'a> {
         // apply (e.g. a bare `if x > 0`), but keep it after truthy/falsy so a
         // compound guard like `x and x > 0` retains the stronger truthiness
         // narrowing.
-        if let Some((op, bound)) = self.num_compare_narrowed_symbols.get(&scope_idx)
+        if let Some((op, bound)) = self.narrowing.num_compare_narrowed_symbols.get(&scope_idx)
             .and_then(|m| m.get(&sym_idx))
         {
             return Some(NarrowKind::NumCompare { op: *op, bound: bound.clone() });
         }
-        if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx)) {
+        if self.narrowing.narrowed.get(&scope_idx).is_some_and(|s| s.contains(&NarrowTarget::Symbol(sym_idx))) {
             return Some(NarrowKind::StripNil);
         }
         None
@@ -2064,7 +2064,7 @@ impl<'a> Analysis<'a> {
             // imply the sibling is truthy — a boolean sibling assigned `false`
             // stays `false` — so siblings are always nil-stripped, never
             // falsy-stripped, regardless of how the guard variable was narrowed.
-            self.narrowed_symbols.entry(scope_idx).or_default().insert(sibling);
+            self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sibling));
             self.push_strip_nil_version(sibling, scope_idx);
             // A correlated sibling is itself a valid narrowing source for any
             // `x = x or sibling` coalesce derivations.
@@ -2082,13 +2082,13 @@ impl<'a> Analysis<'a> {
     /// it via `x = x or source`. See `or_coalesce_derivations` for the pattern.
     fn narrow_or_coalesce_derived(&mut self, source: SymbolIndex, scope_idx: ScopeIndex, falsy: bool) {
         for derived in self.or_coalesce_derived(source) {
-            if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&derived)) {
+            if self.narrowing.narrowed.get(&scope_idx).is_some_and(|s| s.contains(&NarrowTarget::Symbol(derived))) {
                 // Already narrowed in this scope; skip to avoid redundant versions.
                 continue;
             }
-            self.narrowed_symbols.entry(scope_idx).or_default().insert(derived);
+            self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(derived));
             if falsy {
-                self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(derived);
+                self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(derived));
                 self.push_strip_falsy_version(derived, scope_idx);
                 self.apply_guard_implications(derived, scope_idx);
             } else {
@@ -2363,9 +2363,9 @@ impl<'a> Analysis<'a> {
         if names.len() >= 2
             && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                 let chain = names[1..].to_vec();
-                self.narrowed_fields.entry(scope_idx).or_default()
-                    .insert((sym_idx, chain.clone()));
                 self.narrow_correlated_fields(sym_idx, &names[0], &chain, scope_idx, false);
+                self.narrowing.narrowed.entry(scope_idx).or_default()
+                    .insert(NarrowTarget::Field(sym_idx, chain));
             }
     }
 
@@ -2375,11 +2375,11 @@ impl<'a> Analysis<'a> {
         if names.len() >= 2
             && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                 let chain = names[1..].to_vec();
-                self.narrowed_fields.entry(scope_idx).or_default()
-                    .insert((sym_idx, chain.clone()));
-                self.falsy_narrowed_fields.entry(scope_idx).or_default()
-                    .insert((sym_idx, chain.clone()));
                 self.narrow_correlated_fields(sym_idx, &names[0], &chain, scope_idx, true);
+                self.narrowing.narrowed.entry(scope_idx).or_default()
+                    .insert(NarrowTarget::Field(sym_idx, chain.clone()));
+                self.narrowing.falsy_narrowed.entry(scope_idx).or_default()
+                    .insert(NarrowTarget::Field(sym_idx, chain));
             }
     }
 
@@ -2412,12 +2412,12 @@ impl<'a> Analysis<'a> {
                 if sibling == narrowed_field { continue; }
                 let mut sibling_chain = chain[..chain.len() - 1].to_vec();
                 sibling_chain.push(sibling.clone());
-                self.narrowed_fields.entry(scope_idx).or_default()
-                    .insert((sym_idx, sibling_chain.clone()));
                 if falsy {
-                    self.falsy_narrowed_fields.entry(scope_idx).or_default()
-                        .insert((sym_idx, sibling_chain));
+                    self.narrowing.falsy_narrowed.entry(scope_idx).or_default()
+                        .insert(NarrowTarget::Field(sym_idx, sibling_chain.clone()));
                 }
+                self.narrowing.narrowed.entry(scope_idx).or_default()
+                    .insert(NarrowTarget::Field(sym_idx, sibling_chain));
             }
         }
     }
@@ -2550,11 +2550,12 @@ impl<'a> Analysis<'a> {
 
     /// Add a type to strip for a symbol in a scope, combining with any existing strip.
     fn add_type_stripped(&mut self, scope: ScopeIndex, sym_idx: SymbolIndex, vt: ValueType) {
-        let map = self.type_stripped_symbols.entry(scope).or_default();
-        if let Some(existing) = map.remove(&sym_idx) {
-            map.insert(sym_idx, ValueType::union(existing, vt));
+        let map = self.narrowing.type_stripped.entry(scope).or_default();
+        let key = NarrowTarget::Symbol(sym_idx);
+        if let Some(existing) = map.remove(&key) {
+            map.insert(key, ValueType::union(existing, vt));
         } else {
-            map.insert(sym_idx, vt);
+            map.insert(key, vt);
         }
     }
 
@@ -2669,8 +2670,8 @@ impl<'a> Analysis<'a> {
 
     /// Add a type to strip for a field chain in a scope, combining with any existing strip.
     fn add_type_stripped_field(&mut self, scope: ScopeIndex, sym_idx: SymbolIndex, chain: Vec<String>, vt: ValueType) {
-        let map = self.type_stripped_fields.entry(scope).or_default();
-        let key = (sym_idx, chain);
+        let map = self.narrowing.type_stripped.entry(scope).or_default();
+        let key = NarrowTarget::Field(sym_idx, chain);
         if let Some(existing) = map.remove(&key) {
             map.insert(key, ValueType::union(existing, vt));
         } else {
@@ -3220,8 +3221,8 @@ impl<'a> Analysis<'a> {
         // branches can add versions that bury this one.  Instead, the version is
         // pushed lazily when the symbol is actually referenced within the scope
         // (see `get_version_for_name` in the Identifier handler).
-        self.type_narrowed_symbols.entry(scope).or_default()
-            .insert(sym_idx, narrowed);
+        self.narrowing.type_narrowed.entry(scope).or_default()
+            .insert(NarrowTarget::Symbol(sym_idx), narrowed);
         true
     }
 
@@ -3481,15 +3482,15 @@ impl<'a> Analysis<'a> {
         if type_name == "nil" {
             // type(x) == "nil" alias: filter→noop, strip→strip nil
             if !is_filter {
-                self.narrowed_symbols.entry(scope).or_default().insert(target_sym);
+                self.narrowing.narrowed.entry(scope).or_default().insert(NarrowTarget::Symbol(target_sym));
                 self.narrow_siblings(target_sym, scope);
                 self.narrow_or_coalesce_derived(target_sym, scope, false);
             }
         } else if let Some(vt) = Self::type_name_to_value_type(&type_name) {
             if is_filter {
-                self.narrowed_symbols.entry(scope).or_default().insert(target_sym);
+                self.narrowing.narrowed.entry(scope).or_default().insert(NarrowTarget::Symbol(target_sym));
                 self.narrow_siblings(target_sym, scope);
-                self.type_filtered_symbols.entry(scope).or_default()
+                self.narrowing.type_filtered_symbols.entry(scope).or_default()
                     .insert(target_sym, vt);
                 self.narrow_or_coalesce_derived(target_sym, scope, false);
             } else {

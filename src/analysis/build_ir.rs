@@ -6,6 +6,7 @@ use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
 use super::Analysis;
+use super::NarrowTarget;
 
 // ── IR Building (Phase 1) ──────────────────────────────────────────────────────
 
@@ -213,7 +214,7 @@ impl<'a> Analysis<'a> {
                                     || self.is_symbol_falsy_narrowed(*sym_idx, bs) {
                                     // Branch narrowed but not assigned: apply the narrowing.
                                     let pre_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, pre_ver));
-                                    let guard_type = self.type_filtered_symbols.get(&bs)
+                                    let guard_type = self.narrowing.type_filtered_symbols.get(&bs)
                                         .and_then(|m| m.get(sym_idx)).cloned();
                                     if let Some(gt) = guard_type {
                                         let filtered = self.ir.push_expr(Expr::TypeFilter(pre_ref, gt));
@@ -236,7 +237,7 @@ impl<'a> Analysis<'a> {
                             if merge.has_implicit_else {
                                 let mut pre_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, pre_ver));
                                 for &bs in branch_scopes {
-                                    if let Some(gt) = self.type_filtered_symbols.get(&bs)
+                                    if let Some(gt) = self.narrowing.type_filtered_symbols.get(&bs)
                                         .and_then(|m| m.get(sym_idx)).cloned() {
                                         pre_ref = self.ir.push_expr(Expr::CastRemove(pre_ref, gt));
                                     }
@@ -597,7 +598,7 @@ impl<'a> Analysis<'a> {
                                 // so that `x` inherits the non-nil type.
                                 if let Some((root_sym, chain)) = self.ir.extract_field_chain(expr_id)
                                     && self.is_field_chain_narrowed(root_sym, &chain, scope_idx) {
-                                        self.narrowed_symbols.entry(scope_idx).or_default().insert(symbol_idx);
+                                        self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(symbol_idx));
                                     }
                                 // Track multi-return siblings from function calls
                                 if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
@@ -2194,7 +2195,7 @@ impl<'a> Analysis<'a> {
                                             || self.get_type_filtering(symbol_idx, scope_idx).is_some()
                                             || self.is_symbol_narrowed(symbol_idx, scope_idx)
                                             || self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
-                                            self.narrowing_overridden.entry(scope_idx).or_default()
+                                            self.narrowing.narrowing_overridden.entry(scope_idx).or_default()
                                                 .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
                                         }
                                         // Reassignment breaks any correlated-local group for this symbol.
@@ -2278,7 +2279,7 @@ impl<'a> Analysis<'a> {
                                             || self.get_type_filtering(symbol_idx, scope_idx).is_some()
                                             || self.is_symbol_narrowed(symbol_idx, scope_idx)
                                             || self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
-                                            self.narrowing_overridden.entry(scope_idx).or_default()
+                                            self.narrowing.narrowing_overridden.entry(scope_idx).or_default()
                                                 .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
                                         }
                                         // Register / invalidate `or`-coalesce derivations.

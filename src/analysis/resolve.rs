@@ -1289,17 +1289,17 @@ impl<'a> Analysis<'a> {
             // Only narrow if the resolved type is (or contains) a class table.
             let Some((class_idx, class_name)) = self.first_class_table(&resolved) else { continue };
             // Avoid re-applying the same narrowing repeatedly across fixpoint iterations.
-            if self.class_narrowed_symbols.get(&scope_idx)
+            if self.narrowing.class_narrowed_symbols.get(&scope_idx)
                 .and_then(|m| m.get(&sym_idx))
                 .is_some_and(|n| n == &class_name)
             {
                 continue;
             }
-            self.class_narrowed_symbols.entry(scope_idx).or_default()
+            self.narrowing.class_narrowed_symbols.entry(scope_idx).or_default()
                 .insert(sym_idx, class_name.clone());
             // Symbol-level display narrowing: filter the resolved type to the class.
             let class_vt = ValueType::Table(Some(class_idx));
-            self.type_filtered_symbols.entry(scope_idx).or_default()
+            self.narrowing.type_filtered_symbols.entry(scope_idx).or_default()
                 .insert(sym_idx, class_vt.clone());
             // Push a TypeFilter version so references within this scope pick up the
             // narrowed type through `version_for_scope`.

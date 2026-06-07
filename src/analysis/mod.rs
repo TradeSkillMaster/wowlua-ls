@@ -78,14 +78,14 @@ pub(crate) fn ancestor_scopes(scopes: &[Scope], start: ScopeIndex) -> impl Itera
     })
 }
 
-fn scope_set_contains(
-    map: &HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+fn scope_set_contains<T: Eq + std::hash::Hash>(
+    map: &HashMap<ScopeIndex, HashSet<T>>,
     scopes: &[Scope],
-    sym_idx: SymbolIndex,
+    key: &T,
     scope_idx: ScopeIndex,
 ) -> bool {
     ancestor_scopes(scopes, scope_idx)
-        .any(|si| map.get(&si).is_some_and(|s| s.contains(&sym_idx)))
+        .any(|si| map.get(&si).is_some_and(|s| s.contains(key)))
 }
 
 fn scope_map_get<'a, K: Eq + std::hash::Hash>(
@@ -96,6 +96,169 @@ fn scope_map_get<'a, K: Eq + std::hash::Hash>(
 ) -> Option<&'a ValueType> {
     ancestor_scopes(scopes, scope_idx)
         .find_map(|si| map.get(&si)?.get(key))
+}
+
+// ── Narrowing tracking state ─────────────────────────────────────────────────
+
+/// The thing a narrowing fact applies to: either a bare symbol (`x`) or a field
+/// chain rooted at a symbol (`x.y.z`). `Eq`/`Hash` give exact matching for free —
+/// narrowing `a.b` never matches `a.b.c` because the `Vec<String>` differs.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum NarrowTarget {
+    Symbol(SymbolIndex),
+    Field(SymbolIndex, Vec<String>),
+}
+
+/// Type-narrowing facts produced by control-flow guards, grouped out of the
+/// `Analysis`/`AnalysisResult` god-structs.
+///
+/// Convention: each map's name describes what the guard STRIPPED to produce the
+/// narrowing, not what the value now is.
+///   narrowed       — nil stripped (e.g. `x ~= nil`)
+///   falsy_narrowed — nil AND false stripped (e.g. `if x then`); subset of `narrowed`
+///   truthy_narrowed_symbols — truthy stripped → value IS `nil | false` (e.g. `if not x` / else of `if x`)
+///   class_narrowed_symbols — equated to a class value (e.g. `x == ERROR.MAX`); value IS that class
+///
+/// `narrowed`/`falsy_narrowed`/`type_narrowed`/`type_stripped` are keyed by
+/// `NarrowTarget`, collapsing the former separate `_symbols`/`_fields` map pairs.
+/// The discrimination-only scratch maps (`truthy`/`class`/`num_compare`) and
+/// `type_filtered_symbols` stay symbol-keyed (no field variant exists today).
+///
+/// Two lookup disciplines read these maps: ancestor-chain walk (the accessor
+/// methods below, used by display + diagnostics) and exact-scope lookup
+/// (`narrow_kind_for` for sibling tuple-union elimination, and the temporary
+/// insert/restore protocol in `lower_expression.rs`).
+#[derive(Default)]
+pub(crate) struct NarrowingState {
+    pub(crate) narrowed: HashMap<ScopeIndex, HashSet<NarrowTarget>>,
+    pub(crate) falsy_narrowed: HashMap<ScopeIndex, HashSet<NarrowTarget>>,
+    pub(crate) truthy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) class_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, String>>,
+    /// Symbols numerically compared against a literal bound (e.g. `if x > 1`).
+    /// Used only for sibling tuple-union case elimination — does NOT strip nil
+    /// from `x` itself. Stores the comparison oriented so `x <op> bound`.
+    pub(crate) num_compare_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, (crate::ast::Operator, String)>>,
+    /// Replace-style type narrowing (e.g. `type(x) == "string"` → `string`).
+    /// `NarrowTarget::Field` entries cover field chains (e.g. `self._state.field`)
+    /// for literal boolean return discrimination on field-chain method calls.
+    pub(crate) type_narrowed: HashMap<ScopeIndex, HashMap<NarrowTarget, ValueType>>,
+    /// Strip-style type narrowing for the inverse type() guard
+    /// (`if type(obj.f) == "table" then` → else-branch strips table).
+    pub(crate) type_stripped: HashMap<ScopeIndex, HashMap<NarrowTarget, ValueType>>,
+    /// Like `type_narrowed` but filters the union to keep matching types
+    /// instead of replacing with a bare type. Used for type() guard then-branches
+    /// to preserve specific types like `string[]` when narrowing by "table".
+    pub(crate) type_filtered_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
+    /// Cache for lazily-materialized type-narrowing versions.
+    /// Maps (reference_scope, symbol) → version index pushed for that narrowing.
+    pub(crate) type_narrows_version_cache: HashMap<(ScopeIndex, SymbolIndex), usize>,
+    /// Symbols whose type-narrowing was overridden by a reassignment in a given scope.
+    /// Checked (with scope-chain walk) to skip stale narrowing after assignment.
+    /// Maps to the byte offset of the reassignment node.
+    pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashMap<SymbolIndex, u32>>,
+}
+
+impl NarrowingState {
+    pub(crate) fn is_symbol_narrowed(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        scope_set_contains(&self.narrowed, scopes, &NarrowTarget::Symbol(sym_idx), scope_idx)
+    }
+
+    pub(crate) fn is_symbol_falsy_narrowed(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        scope_set_contains(&self.falsy_narrowed, scopes, &NarrowTarget::Symbol(sym_idx), scope_idx)
+    }
+
+    pub(crate) fn is_symbol_truthy_narrowed(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        scope_set_contains(&self.truthy_narrowed_symbols, scopes, &sym_idx, scope_idx)
+    }
+
+    pub(crate) fn get_type_narrowing(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
+        scope_map_get(&self.type_narrowed, scopes, &NarrowTarget::Symbol(sym_idx), scope_idx)
+    }
+
+    pub(crate) fn get_type_filtering(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
+        scope_map_get(&self.type_filtered_symbols, scopes, &sym_idx, scope_idx)
+    }
+
+    pub(crate) fn get_type_stripping(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
+        scope_map_get(&self.type_stripped, scopes, &NarrowTarget::Symbol(sym_idx), scope_idx)
+    }
+
+    pub(crate) fn get_field_type_narrowing(&self, scopes: &[Scope], sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
+        scope_map_get(&self.type_narrowed, scopes, &NarrowTarget::Field(sym_idx, chain.to_vec()), scope_idx)
+    }
+
+    pub(crate) fn get_field_type_stripping(&self, scopes: &[Scope], sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
+        scope_map_get(&self.type_stripped, scopes, &NarrowTarget::Field(sym_idx, chain.to_vec()), scope_idx)
+    }
+
+    // NOTE: Field-chain lookups allocate a Vec<String> for the NarrowTarget key on
+    // each call. A borrowed lookup key (via Borrow trait or NarrowTargetRef) could
+    // avoid this if profiling shows these ancestor-scope walks as a hotspot.
+    pub(crate) fn is_field_chain_narrowed(&self, scopes: &[Scope], sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> bool {
+        // Exact match only: narrowing `a.b` must NOT cascade to `a.b.c`.
+        // The intermediate expression (`a.b`) already gets StripNil/StripFalsy
+        // at its own lowering step; applying it again to the outer access
+        // would incorrectly strip nil from the sub-field's declared type.
+        // `NarrowTarget`'s `Eq` gives this exact-match for free.
+        scope_set_contains(&self.narrowed, scopes, &NarrowTarget::Field(sym_idx, chain.to_vec()), scope_idx)
+    }
+
+    pub(crate) fn is_field_falsy_narrowed(&self, scopes: &[Scope], sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> bool {
+        scope_set_contains(&self.falsy_narrowed, scopes, &NarrowTarget::Field(sym_idx, chain.to_vec()), scope_idx)
+    }
+
+    /// Whether a scope has a fresh narrowing entry for `sym_idx` (a re-narrowing
+    /// after a reassignment override). Reads the merged `narrowed`/`falsy_narrowed`
+    /// (Symbol entries) and `type_narrowed` (Symbol entries OR any Field rooted at `sym_idx`).
+    fn has_fresh_narrowing(&self, si: ScopeIndex, sym_idx: SymbolIndex) -> bool {
+        let sym = NarrowTarget::Symbol(sym_idx);
+        self.narrowed.get(&si).is_some_and(|s| s.contains(&sym))
+            || self.falsy_narrowed.get(&si).is_some_and(|s| s.contains(&sym))
+            || self.type_narrowed.get(&si).is_some_and(|m| {
+                // O(n) scan over type_narrowed keys; acceptable since narrowing maps
+                // are typically small. A secondary index could avoid this if needed.
+                m.contains_key(&sym) || m.keys().any(|t| matches!(t, NarrowTarget::Field(s, _) if *s == sym_idx))
+            })
+    }
+
+    /// Scope-chain override check used during the mutable analysis phase.
+    pub(crate) fn is_narrowing_overridden(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        let override_scope = ancestor_scopes(scopes, scope_idx)
+            .find(|si| self.narrowing_overridden.get(si).is_some_and(|m| m.contains_key(&sym_idx)));
+        let Some(override_scope) = override_scope else { return false; };
+        if override_scope == scope_idx { return true; }
+        // Override is in a strict ancestor. Check if any scope between here and the
+        // override has a fresh narrowing entry (e.g. from a new `if x then` or
+        // `type(x) == "t"` guard).
+        for si in ancestor_scopes(scopes, scope_idx) {
+            if si == override_scope { break; }
+            if self.has_fresh_narrowing(si, sym_idx) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Position-aware override check: returns true only if the override was set at or before `at_offset`.
+    /// However, if any scope between the override and the querying scope (exclusive of
+    /// the override scope, inclusive of the querying scope) has a fresh narrowing entry
+    /// for the symbol, the override doesn't apply — the new guard re-establishes
+    /// narrowing after the reassignment.
+    pub(crate) fn is_narrowing_overridden_at(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
+        let override_scope = ancestor_scopes(scopes, scope_idx)
+            .find(|si| self.narrowing_overridden.get(si)
+                .and_then(|m| m.get(&sym_idx))
+                .is_some_and(|&off| off <= at_offset));
+        let Some(override_scope) = override_scope else { return false; };
+        if override_scope == scope_idx { return true; }
+        for si in ancestor_scopes(scopes, scope_idx) {
+            if si == override_scope { break; }
+            if self.has_fresh_narrowing(si, sym_idx) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 // ── Core IR database ─────────────────────────────────────────────────────────
@@ -1337,11 +1500,8 @@ pub struct AnalysisResult {
     pub(crate) is_meta: bool,
     pub(crate) symbol_version_at: HashMap<u32, usize>,
     pub(crate) resolved_expr_cache: Vec<Option<ValueType>>,
-    pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
-    pub(crate) falsy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
-    pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
-    pub(crate) type_filtered_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
-    pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
+    /// Type-narrowing facts from control-flow guards (see `NarrowingState`).
+    pub(crate) narrowing: NarrowingState,
     pub(crate) call_type_args: HashMap<ExprId, Vec<ValueType>>,
     pub(crate) field_type_args_cache: HashMap<(TableIndex, String), Vec<ValueType>>,
     /// Class-level type-param substitutions (e.g. `T → string`) computed at each
@@ -1357,9 +1517,6 @@ pub struct AnalysisResult {
     pub(crate) allow_slash_commands: bool,
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
     pub(crate) safety_limit_hit: Option<String>,
-    pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
-    pub(crate) type_narrowed_fields: HashMap<ScopeIndex, HashMap<(SymbolIndex, Vec<String>), ValueType>>,
-    pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashMap<SymbolIndex, u32>>,
     pub(crate) explicit_globals: HashSet<String>,
     pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
     pub(crate) project_flavors: u8,
@@ -1455,59 +1612,35 @@ impl AnalysisResult {
     }
 
     pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        scope_set_contains(&self.narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
+        self.narrowing.is_symbol_narrowed(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn is_symbol_falsy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        scope_set_contains(&self.falsy_narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
+        self.narrowing.is_symbol_falsy_narrowed(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn get_type_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        scope_map_get(&self.type_narrowed_symbols, &self.ir.scopes, &sym_idx, scope_idx)
+        self.narrowing.get_type_narrowing(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn get_type_filtering(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        scope_map_get(&self.type_filtered_symbols, &self.ir.scopes, &sym_idx, scope_idx)
+        self.narrowing.get_type_filtering(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn get_type_stripping(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        scope_map_get(&self.type_stripped_symbols, &self.ir.scopes, &sym_idx, scope_idx)
+        self.narrowing.get_type_stripping(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn get_field_type_narrowing(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
-        let key = (sym_idx, chain.to_vec());
-        scope_map_get(&self.type_narrowed_fields, &self.ir.scopes, &key, scope_idx)
+        self.narrowing.get_field_type_narrowing(&self.ir.scopes, sym_idx, chain, scope_idx)
     }
 
     pub(crate) fn is_field_chain_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
-        Self::check_field_set(&self.narrowed_fields, sym_idx, fields, scope_idx, &self.ir.scopes)
+        self.narrowing.is_field_chain_narrowed(&self.ir.scopes, sym_idx, fields, scope_idx)
     }
 
-    /// Position-aware override check: returns true only if the override was set at or before `at_offset`.
-    /// However, if any scope between the override and the querying scope (exclusive of
-    /// the override scope, inclusive of the querying scope) has a fresh narrowing entry
-    /// for the symbol, the override doesn't apply — the new guard re-establishes
-    /// narrowing after the reassignment.
     pub(crate) fn is_narrowing_overridden_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
-        let override_scope = ancestor_scopes(&self.ir.scopes, scope_idx)
-            .find(|si| self.narrowing_overridden.get(si)
-                .and_then(|m| m.get(&sym_idx))
-                .is_some_and(|&off| off <= at_offset));
-        let Some(override_scope) = override_scope else { return false; };
-        if override_scope == scope_idx { return true; }
-        // Override is in a strict ancestor. Check if any scope between here and the
-        // override has a fresh narrowing entry (e.g. from a new `if x then` or
-        // `type(x) == "t"` guard).
-        for si in ancestor_scopes(&self.ir.scopes, scope_idx) {
-            if si == override_scope { break; }
-            if self.narrowed_symbols.get(&si).is_some_and(|s| s.contains(&sym_idx))
-                || self.falsy_narrowed_symbols.get(&si).is_some_and(|s| s.contains(&sym_idx))
-                || self.type_narrowed_symbols.get(&si).is_some_and(|m| m.contains_key(&sym_idx))
-                || self.type_narrowed_fields.get(&si).is_some_and(|m| m.keys().any(|(s, _)| *s == sym_idx)) {
-                return false;
-            }
-        }
-        true
+        self.narrowing.is_narrowing_overridden_at(&self.ir.scopes, sym_idx, scope_idx, at_offset)
     }
 
     pub(crate) fn active_flavors_at(&self, scope_idx: ScopeIndex) -> u8 {
@@ -1526,23 +1659,6 @@ impl AnalysisResult {
         self.ir.get_symbol(&SymbolIdentifier::Name(field_name.to_string()), scope_idx).is_some()
     }
 
-    fn check_field_set(
-        map: &HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
-        sym_idx: SymbolIndex,
-        fields: &[String],
-        scope_idx: ScopeIndex,
-        scopes: &[Scope],
-    ) -> bool {
-        // Exact match only: narrowing `a.b` must NOT cascade to `a.b.c`.
-        // Prefix matching would cause diagnostics (e.g. need-check-nil) to
-        // be incorrectly suppressed on sub-fields that haven't been proven
-        // non-nil — only the narrowed chain itself should match.
-        ancestor_scopes(scopes, scope_idx).any(|si| {
-            let Some(narrowed) = map.get(&si) else { return false };
-            let key = (sym_idx, fields.to_vec());
-            narrowed.contains(&key)
-        })
-    }
 }
 
 /// Pending refinement of a single synthesized return-only overload slot.
@@ -1572,35 +1688,8 @@ pub struct Analysis<'a> {
     pub(crate) deferred_field_assignments: Vec<DeferredFieldAssignment>,
     // Metadata (written during build_ir, read during resolve+checks)
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
-    // ── Narrowing tracking maps ──────────────────────────────────────────────
-    // Convention: each map's name describes what the guard STRIPPED to produce the
-    // narrowing, not what the value now is. See CLAUDE.md (*Return-only overloads*).
-    //   narrowed_symbols       — nil stripped (e.g. `x ~= nil`)
-    //   falsy_narrowed_symbols — nil AND false stripped (e.g. `if x then`); subset of `narrowed_symbols`
-    //   truthy_narrowed_symbols — truthy stripped → value IS `nil | false` (e.g. `if not x` / else of `if x`)
-    //   class_narrowed_symbols — equated to a class value (e.g. `x == ERROR.MAX`); value IS that class
-    pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
-    pub(crate) falsy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
-    pub(crate) truthy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
-    pub(crate) class_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, String>>,
-    /// Symbols numerically compared against a literal bound (e.g. `if x > 1`).
-    /// Used only for sibling tuple-union case elimination — does NOT strip nil
-    /// from `x` itself. Stores the comparison oriented so `x <op> bound`.
-    pub(crate) num_compare_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, (crate::ast::Operator, String)>>,
-    pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
-    pub(crate) falsy_narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
-    pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
-    /// Like `type_narrowed_symbols` but for field chains (e.g. `self._state.field`).
-    /// Used for literal boolean return discrimination on field-chain method calls.
-    pub(crate) type_narrowed_fields: HashMap<ScopeIndex, HashMap<(SymbolIndex, Vec<String>), ValueType>>,
-    /// Like `type_stripped_symbols` but for field chains.
-    /// Used for inverse type() guard on fields: `if type(obj.f) == "table" then` → else-branch strips table.
-    pub(crate) type_stripped_fields: HashMap<ScopeIndex, HashMap<(SymbolIndex, Vec<String>), ValueType>>,
-    /// Like `type_narrowed_symbols` but filters the union to keep matching types
-    /// instead of replacing with a bare type. Used for type() guard then-branches
-    /// to preserve specific types like `string[]` when narrowing by "table".
-    pub(crate) type_filtered_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
-    pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
+    /// Type-narrowing facts from control-flow guards (see `NarrowingState`).
+    pub(crate) narrowing: NarrowingState,
     pub(crate) type_of_aliases: HashMap<SymbolIndex, SymbolIndex>,
     /// Maps `local b = type(x) == "typename"` → (target_sym, type_name, is_positive).
     /// `is_positive` is true for `==`, false for `~=`.
@@ -1611,13 +1700,6 @@ pub struct Analysis<'a> {
     /// and `symbol_version_at` entries whose scope lies within a newly-pushed narrowing
     /// version's scope subtree — so deferred narrowing propagates to pre-lowered references.
     pub(crate) sym_ref_sites: HashMap<SymbolIndex, Vec<(ExprId, u32)>>,
-    /// Cache for lazily-materialized type-narrowing versions.
-    /// Maps (reference_scope, symbol) → version index pushed for that narrowing.
-    pub(super) type_narrows_version_cache: HashMap<(ScopeIndex, SymbolIndex), usize>,
-    /// Symbols whose type-narrowing was overridden by a reassignment in a given scope.
-    /// Checked (with scope-chain walk) to skip stale narrowing after assignment.
-    /// Maps to the byte offset of the reassignment node.
-    pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashMap<SymbolIndex, u32>>,
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
     /// Dense cycle-detection bitmap for `resolve_expr`, indexed by `ExprId.val()`.
@@ -1893,24 +1975,11 @@ impl<'a> Analysis<'a> {
             conditionally_reached_exprs: HashSet::new(),
             synth_return_overload_refinements: Vec::new(),
             defclass_vars: HashMap::new(),
-            narrowed_symbols: HashMap::new(),
-            falsy_narrowed_symbols: HashMap::new(),
-            truthy_narrowed_symbols: HashMap::new(),
-            class_narrowed_symbols: HashMap::new(),
-            num_compare_narrowed_symbols: HashMap::new(),
-            narrowed_fields: HashMap::new(),
-            falsy_narrowed_fields: HashMap::new(),
-            type_narrowed_symbols: HashMap::new(),
-            type_narrowed_fields: HashMap::new(),
-            type_stripped_fields: HashMap::new(),
-            type_filtered_symbols: HashMap::new(),
-            type_stripped_symbols: HashMap::new(),
+            narrowing: NarrowingState::default(),
             type_of_aliases: HashMap::new(),
             type_guard_aliases: HashMap::new(),
             symbol_version_at: HashMap::new(),
             sym_ref_sites: HashMap::new(),
-            type_narrows_version_cache: HashMap::new(),
-            narrowing_overridden: HashMap::new(),
             current_func_id: None,
             pending_blocks: Vec::new(),
             allowed_read_globals,
@@ -2005,80 +2074,43 @@ impl<'a> Analysis<'a> {
     }
 
     pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        scope_set_contains(&self.narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
+        self.narrowing.is_symbol_narrowed(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn is_symbol_falsy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        scope_set_contains(&self.falsy_narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
+        self.narrowing.is_symbol_falsy_narrowed(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn is_symbol_truthy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        scope_set_contains(&self.truthy_narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
+        self.narrowing.is_symbol_truthy_narrowed(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn get_type_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        scope_map_get(&self.type_narrowed_symbols, &self.ir.scopes, &sym_idx, scope_idx)
+        self.narrowing.get_type_narrowing(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn get_field_type_narrowing(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
-        let key = (sym_idx, chain.to_vec());
-        scope_map_get(&self.type_narrowed_fields, &self.ir.scopes, &key, scope_idx)
+        self.narrowing.get_field_type_narrowing(&self.ir.scopes, sym_idx, chain, scope_idx)
     }
 
     pub(crate) fn get_field_type_stripping(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
-        let key = (sym_idx, chain.to_vec());
-        scope_map_get(&self.type_stripped_fields, &self.ir.scopes, &key, scope_idx)
+        self.narrowing.get_field_type_stripping(&self.ir.scopes, sym_idx, chain, scope_idx)
     }
 
     pub(crate) fn get_type_filtering(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        scope_map_get(&self.type_filtered_symbols, &self.ir.scopes, &sym_idx, scope_idx)
+        self.narrowing.get_type_filtering(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn is_narrowing_overridden(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        let override_scope = ancestor_scopes(&self.ir.scopes, scope_idx)
-            .find(|si| self.narrowing_overridden.get(si).is_some_and(|m| m.contains_key(&sym_idx)));
-        let Some(override_scope) = override_scope else { return false; };
-        if override_scope == scope_idx { return true; }
-        // Override is in a strict ancestor. Check if any scope between here and the
-        // override has a fresh narrowing entry (e.g. from a new `if x then` or
-        // `type(x) == "t"` guard).
-        for si in ancestor_scopes(&self.ir.scopes, scope_idx) {
-            if si == override_scope { break; }
-            if self.narrowed_symbols.get(&si).is_some_and(|s| s.contains(&sym_idx))
-                || self.falsy_narrowed_symbols.get(&si).is_some_and(|s| s.contains(&sym_idx))
-                || self.type_narrowed_symbols.get(&si).is_some_and(|m| m.contains_key(&sym_idx))
-                || self.type_narrowed_fields.get(&si).is_some_and(|m| m.keys().any(|(s, _)| *s == sym_idx)) {
-                return false;
-            }
-        }
-        true
+        self.narrowing.is_narrowing_overridden(&self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn is_field_chain_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
-        Self::check_field_set(&self.narrowed_fields, sym_idx, fields, scope_idx, &self.ir.scopes)
+        self.narrowing.is_field_chain_narrowed(&self.ir.scopes, sym_idx, fields, scope_idx)
     }
 
     pub(crate) fn is_field_falsy_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
-        Self::check_field_set(&self.falsy_narrowed_fields, sym_idx, fields, scope_idx, &self.ir.scopes)
-    }
-
-
-    fn check_field_set(
-        map: &HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
-        sym_idx: SymbolIndex,
-        fields: &[String],
-        scope_idx: ScopeIndex,
-        scopes: &[Scope],
-    ) -> bool {
-        // Exact match only: narrowing `a.b` must NOT cascade to `a.b.c`.
-        // The intermediate expression (`a.b`) already gets StripNil/StripFalsy
-        // at its own lowering step; applying it again to the outer access
-        // would incorrectly strip nil from the sub-field's declared type.
-        ancestor_scopes(scopes, scope_idx).any(|si| {
-            let Some(narrowed) = map.get(&si) else { return false };
-            let key = (sym_idx, fields.to_vec());
-            narrowed.contains(&key)
-        })
+        self.narrowing.is_field_falsy_narrowed(&self.ir.scopes, sym_idx, fields, scope_idx)
     }
 
     /// Look up the active flavor mask at `scope_idx` by walking ancestor
@@ -2125,11 +2157,7 @@ impl<'a> Analysis<'a> {
             is_meta: self.is_meta,
             symbol_version_at: self.symbol_version_at,
             resolved_expr_cache: self.resolved_expr_cache,
-            narrowed_symbols: self.narrowed_symbols,
-            falsy_narrowed_symbols: self.falsy_narrowed_symbols,
-            type_narrowed_symbols: self.type_narrowed_symbols,
-            type_filtered_symbols: self.type_filtered_symbols,
-            type_stripped_symbols: self.type_stripped_symbols,
+            narrowing: self.narrowing,
             call_type_args: self.call_type_args,
             field_type_args_cache: self.field_type_args_cache,
             method_decl_subs: self.method_decl_subs,
@@ -2141,9 +2169,6 @@ impl<'a> Analysis<'a> {
             allow_slash_commands: self.allow_slash_commands,
             defclass_vars: self.defclass_vars,
             safety_limit_hit: self.safety_limit_hit,
-            narrowed_fields: self.narrowed_fields,
-            type_narrowed_fields: self.type_narrowed_fields,
-            narrowing_overridden: self.narrowing_overridden,
             explicit_globals: self.explicit_globals,
             scope_flavors: self.scope_flavors,
             project_flavors: self.project_flavors,

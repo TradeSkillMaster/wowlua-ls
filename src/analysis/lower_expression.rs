@@ -6,6 +6,7 @@ use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
 use super::Analysis;
+use super::NarrowTarget;
 use super::build_ir::trimmed_node_end;
 use super::narrowing::GuardNarrow;
 
@@ -207,15 +208,15 @@ impl<'a> Analysis<'a> {
                     // We track which entries we inserted so we can remove them after.
                     let mut temp_field_narrows: Vec<(SymbolIndex, Vec<String>, GuardNarrow)> = Vec::new();
                     if let Some((sym_idx, ref chain, ref narrow_kind)) = field_guard {
-                        let key = (sym_idx, chain.clone());
-                        let inserted = self.narrowed_fields.entry(scope_idx).or_default().insert(key.clone());
+                        let key = NarrowTarget::Field(sym_idx, chain.clone());
+                        let inserted = self.narrowing.narrowed.entry(scope_idx).or_default().insert(key.clone());
                         if inserted {
                             match narrow_kind {
                                 GuardNarrow::StripFalsy => {
-                                    self.falsy_narrowed_fields.entry(scope_idx).or_default().insert(key.clone());
+                                    self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(key.clone());
                                 }
                                 GuardNarrow::FilterTo(vt) => {
-                                    self.type_narrowed_fields.entry(scope_idx).or_default()
+                                    self.narrowing.type_narrowed.entry(scope_idx).or_default()
                                         .insert(key.clone(), vt.clone());
                                 }
                                 GuardNarrow::StripNil => {}
@@ -225,15 +226,15 @@ impl<'a> Analysis<'a> {
                     }
                     for (sym_idx, chain, narrow_kind) in &extra_field_guards {
                         if field_guard.as_ref().is_none_or(|(gs, gc, _)| *gs != *sym_idx || *gc != *chain) {
-                            let key = (*sym_idx, chain.clone());
-                            let inserted = self.narrowed_fields.entry(scope_idx).or_default().insert(key.clone());
+                            let key = NarrowTarget::Field(*sym_idx, chain.clone());
+                            let inserted = self.narrowing.narrowed.entry(scope_idx).or_default().insert(key.clone());
                             if inserted {
                                 match narrow_kind {
                                     GuardNarrow::StripFalsy => {
-                                        self.falsy_narrowed_fields.entry(scope_idx).or_default().insert(key);
+                                        self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(key);
                                     }
                                     GuardNarrow::FilterTo(vt) => {
-                                        self.type_narrowed_fields.entry(scope_idx).or_default()
+                                        self.narrowing.type_narrowed.entry(scope_idx).or_default()
                                             .insert(key, vt.clone());
                                     }
                                     GuardNarrow::StripNil => {}
@@ -248,9 +249,9 @@ impl<'a> Analysis<'a> {
                     // of the cached type_narrowed version from an outer `or` condition.
                     let saved_narrowing = guard_sym.and_then(|si| {
                         let cache_key = (scope_idx, si);
-                        let cached_ver = self.type_narrows_version_cache.remove(&cache_key);
-                        let narrowed = self.type_narrowed_symbols.get_mut(&scope_idx)
-                            .and_then(|m| m.remove(&si));
+                        let cached_ver = self.narrowing.type_narrows_version_cache.remove(&cache_key);
+                        let narrowed = self.narrowing.type_narrowed.get_mut(&scope_idx)
+                            .and_then(|m| m.remove(&NarrowTarget::Symbol(si)));
                         if cached_ver.is_some() || narrowed.is_some() {
                             Some((cached_ver, narrowed))
                         } else {
@@ -278,12 +279,12 @@ impl<'a> Analysis<'a> {
                     for (sym, kind) in &sibling_narrow_guards {
                         match kind {
                             GuardNarrow::StripNil => {
-                                let n = self.narrowed_symbols.entry(scope_idx).or_default().insert(*sym);
+                                let n = self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(*sym));
                                 if n { sibling_tracking_inserted.push((*sym, true, false)); }
                             }
                             GuardNarrow::StripFalsy => {
-                                let n = self.narrowed_symbols.entry(scope_idx).or_default().insert(*sym);
-                                let f = self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(*sym);
+                                let n = self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(*sym));
+                                let f = self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(*sym));
                                 if n || f { sibling_tracking_inserted.push((*sym, n, f)); }
                             }
                             // FilterTo has no NarrowKind counterpart; skip sibling narrowing.
@@ -336,7 +337,7 @@ impl<'a> Analysis<'a> {
                             if already_narrowed {
                                 continue;
                             }
-                            if self.narrowed_symbols.entry(scope_idx).or_default().insert(sib) {
+                            if self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sib)) {
                                 correlated_tracking.push(sib);
                             }
                             self.push_strip_nil_version(sib, scope_idx);
@@ -351,7 +352,7 @@ impl<'a> Analysis<'a> {
                                     continue;
                                 }
                                 let dv = self.ir.version_for_scope(derived, scope_idx);
-                                if self.narrowed_symbols.entry(scope_idx).or_default().insert(derived) {
+                                if self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(derived)) {
                                     correlated_tracking.push(derived);
                                 }
                                 self.push_strip_nil_version(derived, scope_idx);
@@ -379,10 +380,10 @@ impl<'a> Analysis<'a> {
                     if let (Some(sym_idx), Some((cached_ver, narrowed))) = (guard_sym, saved_narrowing) {
                         let cache_key = (scope_idx, sym_idx);
                         if let Some(v) = cached_ver {
-                            self.type_narrows_version_cache.insert(cache_key, v);
+                            self.narrowing.type_narrows_version_cache.insert(cache_key, v);
                         }
                         if let Some(n) = narrowed {
-                            self.type_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx, n);
+                            self.narrowing.type_narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx), n);
                         }
                     }
                     // Mark and-guarded call/access exprs for all field guards + bare-name.
@@ -456,18 +457,18 @@ impl<'a> Analysis<'a> {
                     }
                     // Remove temporary field narrowings so code after `and` sees the un-narrowed types
                     for (sym_idx, chain, narrow_kind) in &temp_field_narrows {
-                        let key = (*sym_idx, chain.clone());
-                        if let Some(set) = self.narrowed_fields.get_mut(&scope_idx) {
+                        let key = NarrowTarget::Field(*sym_idx, chain.clone());
+                        if let Some(set) = self.narrowing.narrowed.get_mut(&scope_idx) {
                             set.remove(&key);
                         }
                         match narrow_kind {
                             GuardNarrow::StripFalsy => {
-                                if let Some(set) = self.falsy_narrowed_fields.get_mut(&scope_idx) {
+                                if let Some(set) = self.narrowing.falsy_narrowed.get_mut(&scope_idx) {
                                     set.remove(&key);
                                 }
                             }
                             GuardNarrow::FilterTo(_) => {
-                                if let Some(map) = self.type_narrowed_fields.get_mut(&scope_idx) {
+                                if let Some(map) = self.narrowing.type_narrowed.get_mut(&scope_idx) {
                                     map.remove(&key);
                                 }
                             }
@@ -477,9 +478,9 @@ impl<'a> Analysis<'a> {
                     // Remove sibling-narrowing tracking map entries (scoped to RHS)
                     for (sym, in_narrowed, in_falsy) in sibling_tracking_inserted.iter().rev() {
                         if *in_falsy
-                            && let Some(set) = self.falsy_narrowed_symbols.get_mut(&scope_idx) { set.remove(sym); }
+                            && let Some(set) = self.narrowing.falsy_narrowed.get_mut(&scope_idx) { set.remove(&NarrowTarget::Symbol(*sym)); }
                         if *in_narrowed
-                            && let Some(set) = self.narrowed_symbols.get_mut(&scope_idx) { set.remove(sym); }
+                            && let Some(set) = self.narrowing.narrowed.get_mut(&scope_idx) { set.remove(&NarrowTarget::Symbol(*sym)); }
                     }
                     // Restore sibling versions for siblings that received OverloadNarrow.
                     // The base is the pre-narrow version captured before `narrow_siblings`.
@@ -491,8 +492,8 @@ impl<'a> Analysis<'a> {
                     }
                     // Remove correlated-local narrowing tracking and restore versions.
                     for sym in correlated_tracking.iter().rev() {
-                        if let Some(set) = self.narrowed_symbols.get_mut(&scope_idx) {
-                            set.remove(sym);
+                        if let Some(set) = self.narrowing.narrowed.get_mut(&scope_idx) {
+                            set.remove(&NarrowTarget::Symbol(*sym));
                         }
                     }
                     for (sym, pre_ver) in correlated_restore.iter().rev() {
@@ -786,24 +787,24 @@ impl<'a> Analysis<'a> {
                 match (narrowed, filtered) {
                     (Some(narrowed), Some(guard)) => {
                         let cache_key = (scope_idx, symbol_idx);
-                        if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
+                        if let Some(&cached_ver) = self.narrowing.type_narrows_version_cache.get(&cache_key) {
                             (cached_ver, None)
                         } else {
                             let combined = narrowed.filter_type_with(&guard, &|idx| self.table(idx).enum_kind);
                             self.push_type_narrowed_version(symbol_idx, combined, scope_idx);
                             let ver = self.sym(symbol_idx).versions.len() - 1;
-                            self.type_narrows_version_cache.insert(cache_key, ver);
+                            self.narrowing.type_narrows_version_cache.insert(cache_key, ver);
                             (ver, None)
                         }
                     }
                     (Some(narrowed), None) => {
                         let cache_key = (scope_idx, symbol_idx);
-                        if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
+                        if let Some(&cached_ver) = self.narrowing.type_narrows_version_cache.get(&cache_key) {
                             (cached_ver, None)
                         } else {
                             self.push_type_narrowed_version(symbol_idx, narrowed, scope_idx);
                             let ver = self.sym(symbol_idx).versions.len() - 1;
-                            self.type_narrows_version_cache.insert(cache_key, ver);
+                            self.narrowing.type_narrows_version_cache.insert(cache_key, ver);
                             (ver, None)
                         }
                     }

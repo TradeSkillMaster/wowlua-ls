@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::types::*;
 use super::Analysis;
+use super::NarrowTarget;
 
 pub(super) struct CallSiteInfo {
     pub(super) is_method_call: bool,
@@ -3290,9 +3291,12 @@ impl<'a> Analysis<'a> {
         // This is correct because SymbolIndex values are unique per file (monotonically
         // allocated from a flat `ir.symbols` vec), so a truthiness guard in one
         // function cannot accidentally match a parameter from another function.
-        let truthiness_tested: HashSet<SymbolIndex> = self.falsy_narrowed_symbols.values()
+        let truthiness_tested: HashSet<SymbolIndex> = self.narrowing.falsy_narrowed.values()
             .flat_map(|set| set.iter())
-            .copied()
+            .filter_map(|t| match t {
+                NarrowTarget::Symbol(s) => Some(*s),
+                NarrowTarget::Field(..) => None,
+            })
             .filter(|s| candidates.contains(s))
             .collect();
 
