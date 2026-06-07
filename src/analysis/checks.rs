@@ -149,23 +149,14 @@ impl AnalysisResult {
         let (ValueType::Function(Some(actual_idx)), ValueType::Function(Some(expected_idx))) = (actual, expected) else {
             return true; // not both known functions — no structural check
         };
-        let actual_args = self.func(*actual_idx).args.clone();
-        let actual_is_vararg = self.func(*actual_idx).is_vararg;
-        let actual_rets = self.func(*actual_idx).return_annotations.clone();
+        let actual_func = self.func(*actual_idx);
+        let actual_args = actual_func.args.clone();
+        let actual_is_vararg = actual_func.is_vararg;
+        let actual_param_optional = actual_func.param_optional.clone();
+        let actual_rets = actual_func.return_annotations.clone();
         let expected_args = self.func(*expected_idx).args.clone();
         let expected_is_vararg = self.func(*expected_idx).is_vararg;
         let expected_rets = self.func(*expected_idx).return_annotations.clone();
-        // Arity: fewer-params is fine; more-params is not. Vararg on EXPECTED
-        // allows the actual to exceed expected.args.len() (any extras absorbed).
-        // Vararg on ACTUAL doesn't exceed the declared params count, so still OK.
-        if !expected_is_vararg && !actual_is_vararg
-            && actual_args.len() > expected_args.len() {
-                return false;
-            }
-        // Param types: for each position actual declares, compare against expected's
-        // param at the same position. If expected has no param at that position (actual
-        // over-declares AND expected is vararg), use expected's vararg_annotation
-        // resolved type if available, otherwise treat as any.
         // Skip the implicit `self` parameter only when BOTH sides have it (both are
         // colon methods). When only one side names its first param `self` (e.g. a stub
         // callback annotation vs. a user-written `function(_, elapsed)`), comparing
@@ -179,7 +170,30 @@ impl AnalysisResult {
         let skip_self = if actual_has_self && expected_has_self { 1 } else { 0 };
         let actual_params = &actual_args[skip_self..];
         let expected_params = &expected_args[skip_self..];
-        for (pos, &actual_sym) in actual_params.iter().enumerate() {
+        // Count required params on the actual side: walk backward from the end,
+        // stopping at the first non-optional param. In Lua a function can always
+        // be called with more args than it declares (extras are dropped), so
+        // trailing optional params on the callee don't constrain assignability.
+        let trailing_optional = (0..actual_params.len()).rev()
+            .take_while(|&pos| actual_param_optional.get(skip_self + pos).copied().unwrap_or(false))
+            .count();
+        let actual_required = actual_params.len() - trailing_optional;
+        // Arity: the actual's REQUIRED params must not exceed expected's param
+        // count. Trailing optional params are excluded — the function works
+        // without them, so extra args at those positions are harmless.
+        if !expected_is_vararg && !actual_is_vararg
+            && actual_required > expected_params.len() {
+                return false;
+            }
+        // Param types: compare only required params on the actual side. Optional
+        // trailing params don't need to match — the callee is designed to work
+        // without them, so the caller's arg type at that position is irrelevant.
+        // Note: this means the caller may pass a value of incompatible type at
+        // optional positions (e.g. a string where boolean? is declared). We accept
+        // this to avoid false positives in callback-heavy WoW addon patterns like
+        // `frame:SetScript("OnDragStart", frame.StartMoving)` where the handler
+        // signature has different trailing params than the callback type.
+        for (pos, &actual_sym) in actual_params.iter().take(actual_required).enumerate() {
             // Skip `_` params — they're "don't care" placeholders. When duplicate
             // `_` params exist (e.g. `function(_, _, unit)`), both share a single
             // symbol with only the first version's type set, causing false mismatches

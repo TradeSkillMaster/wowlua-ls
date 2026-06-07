@@ -109,6 +109,59 @@ takesCb(function(x, y) end)
 takesCb(function(x, y, z) end)
 --      ^ diag: type-mismatch
 
+-- ── Function-type assignability: trailing optional params ──────────────────
+-- A function with trailing optional params should be assignable to a function
+-- type that supplies more/different args at those positions, since the callee
+-- can be called without them (extra args are dropped in Lua).
+
+---@param handler fun(self: number, button: string)
+local function registerHandler(handler) _consume(handler) end
+
+-- Should NOT warn: callee takes fewer params (no trailing optional mismatch)
+---@param self number
+local function onlyOne(self) _consume(self) end
+registerHandler(onlyOne)
+
+-- Should NOT warn: callee has trailing optional param with incompatible type
+---@param self number
+---@param opt? boolean
+local function withOptional(self, opt) _consume(self, opt) end
+registerHandler(withOptional)
+
+-- Should NOT warn: callee has multiple trailing optional params
+---@param self number
+---@param x? boolean
+---@param y? table
+local function manyOptional(self, x, y) _consume(self, x, y) end
+registerHandler(manyOptional)
+
+-- SHOULD warn: callee has an incompatible REQUIRED param (not optional)
+---@param self number
+---@param n number
+local function badRequired(self, n) _consume(self, n) end
+registerHandler(badRequired)
+--              ^ diag: type-mismatch
+
+-- SHOULD warn: callee has non-trailing optional (required after optional)
+---@param self number
+---@param opt? boolean
+---@param req number
+local function optThenReq(self, opt, req) _consume(self, opt, req) end
+registerHandler(optThenReq)
+--              ^ diag: type-mismatch
+
+-- SHOULD warn: interleaved optional — required count equals expected count,
+-- but non-trailing optional has incompatible type at its position
+---@param handler fun(x: number, y: string, z: boolean)
+local function registerThree(handler) _consume(handler) end
+
+---@param x number
+---@param opt? boolean
+---@param y string
+local function interleavedOpt(x, opt, y) _consume(x, opt, y) end
+registerThree(interleavedOpt)
+--            ^ diag: type-mismatch
+
 -- Should NOT warn: union with same members in different order
 ---@param data number|string|function|nil
 local function takesUnion(data) _consume(data) end
