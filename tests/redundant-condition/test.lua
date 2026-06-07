@@ -438,6 +438,64 @@ local chained = mid
 if chained then end
 -- ^ diag: redundant-condition
 
+-- ── No diagnostic: variable reassigned inside conditional block ─────────────
+-- A variable initialised from a call, then conditionally reassigned inside
+-- an `if not var then` guard, may still be nil after the block.
+
+local function condReassignInGuard(parentElement, frame, getOwner, search)
+    local tableKey = search(parentElement, frame)
+    if not tableKey then
+        local owner = getOwner()
+        local ownerKey = owner and search(parentElement, owner) or nil
+        local relKey = ownerKey and search(owner, frame) or nil
+        if relKey then
+            tableKey = ownerKey.."."..relKey
+        end
+    end
+    if tableKey then
+        return tableKey
+    end
+end
+_use(condReassignInGuard)
+
+-- Simpler variant: nil-init, conditional assignment in one branch only
+local function condReassignSimple(cond, alt)
+    local val = nil
+    if cond then
+        if alt then
+            val = alt
+        end
+    end
+    if val then
+        return val
+    end
+end
+_use(condReassignSimple)
+
+-- Truthy-to-truthy reassignment → still diagnose (all versions agree)
+local function condReassignTruthyToTruthy(cond)
+    local x = "hello"
+    if cond then
+        x = "world"
+    end
+    if x then end
+    -- ^ diag: redundant-condition
+    _use(x)
+end
+_use(condReassignTruthyToTruthy)
+
+-- Falsy-to-falsy reassignment → still diagnose (all versions agree)
+local function condReassignFalsyToFalsy(cond)
+    local x = nil
+    if cond then
+        x = nil
+    end
+    if x then end
+    -- ^ diag: redundant-condition
+    _use(x)
+end
+_use(condReassignFalsyToFalsy)
+
 -- ── Negation: `not <always-truthy>` ─────────────────────────────────────────
 
 -- `not t` where t is always truthy → condition always false (user's case)

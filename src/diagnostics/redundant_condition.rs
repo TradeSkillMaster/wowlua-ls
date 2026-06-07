@@ -68,12 +68,11 @@ impl DiagnosticPass for RedundantCondition {
 
             let Some(verdict) = eval_condition_constant(analysis, site.expr_id) else { continue };
 
-            // Suppress when the condition references a variable that is
-            // reassigned within a loop body — either an enclosing loop (the
-            // variable's type may differ across iterations) or a preceding
-            // loop (after the loop the variable could retain its pre-loop
-            // value or the in-loop value).
-            if is_loop_reassigned_condition(&analysis.ir, site.expr_id, site.start, site.loop_scope) {
+            // Suppress when the condition references a variable whose value
+            // is uncertain due to reassignment inside a loop or conditional
+            // block — the static type may not reflect all possible runtime
+            // values.
+            if has_uncertain_reassignment(&analysis.ir, site.expr_id, site.start, site.loop_scope) {
                 continue;
             }
 
@@ -411,10 +410,14 @@ fn collect_symbol_refs(ir: &crate::analysis::Ir, expr_id: ExprId, out: &mut Vec<
     }
 }
 
-/// Check whether the condition references a variable that is reassigned inside
-/// a loop body — either an enclosing loop (value may differ across iterations)
-/// or a preceding loop (post-loop value could be the pre-loop or in-loop one).
-fn is_loop_reassigned_condition(
+/// Check whether the condition references a variable whose value is uncertain
+/// due to reassignment inside a loop body or a conditional block.  Covers:
+///
+/// - Case 1: condition is inside a loop that reassigns the variable
+/// - Case 2: condition follows a loop that reassigned the variable
+/// - Case 3: condition depends (one level) on a loop-reassigned variable
+/// - Case 4: condition follows a conditional block that reassigned the variable
+fn has_uncertain_reassignment(
     ir: &crate::analysis::Ir,
     expr_id: ExprId,
     offset: u32,
@@ -429,11 +432,12 @@ fn is_loop_reassigned_condition(
         Some((idx, ir.sym(idx)))
     }).collect();
 
+    let cond_scope = ir.scope_at_offset(offset);
+
     // Case 1: condition is inside a loop (or in while/repeat...until position
     // where ancestor-walking won't find the loop body — use the stored hint).
     let enclosing_loop = loop_scope_hint.or_else(|| {
-        let cond_scope = ir.scope_at_offset(offset)?;
-        find_enclosing_loop(ir, cond_scope)
+        find_enclosing_loop(ir, cond_scope?)
     });
 
     if enclosing_loop.is_some_and(|loop_scope| {
@@ -467,9 +471,66 @@ fn is_loop_reassigned_condition(
     // Case 3: transitive — the condition references a variable whose defining
     // expression depends on a loop-reassigned variable (one level deep).
     // Handles patterns like `local result = expr and loopVar or nil`.
-    sym_refs.iter().any(|&(sym_idx, ver_idx)| {
+    if sym_refs.iter().any(|&(sym_idx, ver_idx)| {
         sym_def_has_loop_reassigned_dep(ir, sym_idx, ver_idx, offset)
-    })
+    }) {
+        return true;
+    }
+
+    // Case 4: condition is after a preceding conditional (non-loop) block.
+    // A variable defined before the block but reassigned inside one branch
+    // may hold its pre-block or in-block value, so the condition is not
+    // redundant.  The narrowing system may propagate the in-block type to
+    // the post-block scope, masking the fact that the assignment was
+    // conditional.  Example:
+    //   local x = getValue()
+    //   if not x then
+    //       if other then x = fallback() end
+    //   end
+    //   if x then ...   -- not redundant: x could still be nil
+    //
+    // To avoid over-suppression (e.g. `local x = "a"; if c then x = "b" end;
+    // if x then`), we check whether all versions agree on truthiness — if they
+    // do, the conditional reassignment can't change the verdict.
+    if let Some(cs) = cond_scope
+        && local_syms.iter().any(|(_, sym)| {
+            let has_conditional_version = sym.versions.iter().any(|ver| {
+                // Skip versions in the same scope or an ancestor scope of the
+                // condition — those are unconditionally visible.
+                if is_scope_inside(ir, cs, ver.created_in_scope) { return false; }
+                // The symbol must be defined outside the version's scope.
+                if is_scope_inside(ir, sym.scope_idx, ver.created_in_scope) { return false; }
+                // The version's scope must have a valid block range and end
+                // before the condition.
+                let Some(&(_, scope_end, _)) = ir.block_scopes.iter()
+                    .find(|&&(start, end, s)| s == ver.created_in_scope && end > start) else { return false };
+                scope_end <= offset
+            });
+            if !has_conditional_version { return false; }
+
+            // If all versions agree on truthiness (all guaranteed-truthy or
+            // all guaranteed-falsy), the conditional reassignment cannot
+            // change the verdict — don't suppress.
+            let mut all_truthy = true;
+            let mut all_falsy = true;
+            let mut any_uncertain = false;
+            for v in &sym.versions {
+                match &v.resolved_type {
+                    Some(t) if !is_type_permissive(t) => {
+                        if !t.is_guaranteed_truthy() { all_truthy = false; }
+                        if !t.is_guaranteed_falsy() { all_falsy = false; }
+                    }
+                    _ => { any_uncertain = true; }
+                }
+            }
+            if !any_uncertain && (all_truthy || all_falsy) { return false; }
+            true
+        })
+    {
+        return true;
+    }
+
+    false
 }
 
 /// Find the nearest ancestor scope (inclusive) that is a loop body.
