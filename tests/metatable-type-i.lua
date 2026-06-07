@@ -565,3 +565,87 @@ local cw = setmetatable(CallableWidget, widgetMT)
 --    ^ hover: (local) cw: CallableWidget {\n  value: number\n}\n\n__call(a: number): number
 local cwResult = cw(5)
 --    ^ hover: (local) cwResult: number
+
+-- ============================================================================
+-- 20. setmetatable on union-typed variable (if/else branch merge)
+-- ============================================================================
+
+-- When a variable is assigned from a table or an anonymous table constructor
+-- across if/else branches, the result is a union. Calling setmetatable on that
+-- union should propagate class_name to all table members, collapsing the union.
+
+---@class CreatureProto
+---@field species string
+local CreatureProto = {}
+CreatureProto.__index = CreatureProto
+
+---@return string
+function CreatureProto:GetSpecies()
+    return self.species
+end
+
+local CREATURE_MT = { __index = CreatureProto }
+
+---@type table<number, CreatureProto>
+local creatureDB = {}
+
+---@param id number
+local function initCreature(id)
+    local c = creatureDB[id]
+    if c then
+        if getmetatable(c) then
+            return c
+        end
+    else
+        c = { species = "unknown" }
+        creatureDB[id] = c
+    end
+    setmetatable(c, CREATURE_MT)
+    -- After setmetatable, both branches have class_name "CreatureProto",
+    -- so the union collapses to just CreatureProto.
+    local sp = c:GetSpecies()
+    --    ^ hover: (local) sp: string  def: local
+    --           ^ def: local
+    return c
+end
+
+local creature = initCreature(1)
+--    ^ hover: (local) creature: CreatureProto  def: local
+
+-- ============================================================================
+-- 21. setmetatable on union containing nil (optional table lookup)
+-- ============================================================================
+
+-- When the first argument may be nil (e.g. from a table lookup without a
+-- prior truthiness guard), non-table union members are harmlessly skipped
+-- and metatable inference still applies to the table member.
+
+---@class ItemProto
+---@field label string
+local ItemProto = {}
+ItemProto.__index = ItemProto
+
+---@return string
+function ItemProto:GetLabel()
+    return self.label
+end
+
+---@type table<number, {label: string}>
+local itemDB = {}
+
+---@param id number
+local function getOrCreateItem(id)
+    local item = itemDB[id]
+    if not item then
+        item = { label = "new" }
+        itemDB[id] = item
+    end
+    setmetatable(item, { __index = ItemProto })
+    local lbl = item:GetLabel()
+    --    ^ hover: (local) lbl: string  def: local
+    --             ^ def: local
+    return item
+end
+
+local it = getOrCreateItem(1)
+--    ^ hover: (local) it: ItemProto  def: local

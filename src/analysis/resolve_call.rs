@@ -1970,21 +1970,35 @@ impl<'a> Analysis<'a> {
         let tbl_expr = args.first()?;
         let tbl_type = self.resolve_expr(*tbl_expr);
 
-        // If the first argument isn't a resolved table, return None so fixpoint retries
-        let tbl_idx = match tbl_type {
-            Some(ValueType::Table(Some(idx))) => idx,
+        // Extract table indices from the first argument — handle single tables
+        // and unions of tables (e.g. after an if/else that produces
+        // `NPCData | {npcID: number}`).
+        let tbl_indices: Vec<TableIndex> = match &tbl_type {
+            Some(ValueType::Table(Some(idx))) => vec![*idx],
+            Some(ValueType::Union(members)) => {
+                members.iter().filter_map(|m| match m {
+                    ValueType::Table(Some(idx)) => Some(*idx),
+                    _ => None,
+                }).collect()
+            }
             _ => return None,
         };
+        if tbl_indices.is_empty() { return None; }
 
-        // Can only mutate local tables (not external)
-        if tbl_idx.is_external() {
-            return Some(ValueType::Table(Some(tbl_idx)));
+        // Filter to non-external (local) tables
+        let local_indices: Vec<TableIndex> = tbl_indices.iter()
+            .copied()
+            .filter(|idx| !idx.is_external())
+            .collect();
+
+        if local_indices.is_empty() {
+            return tbl_type;
         }
 
         // No metatable arg → return the table as-is
         let mt_expr = match args.get(1) {
             Some(e) => *e,
-            None => return Some(ValueType::Table(Some(tbl_idx))),
+            None => return tbl_type,
         };
 
         let mt_type = self.resolve_expr(mt_expr);
@@ -1993,16 +2007,49 @@ impl<'a> Analysis<'a> {
             _ => {
                 // Metatable not resolved yet — return the table without changes;
                 // fixpoint will retry and may resolve it later
-                return Some(ValueType::Table(Some(tbl_idx)));
+                return tbl_type;
             }
         };
 
+        // Resolve __index once and share across all loop iterations — the
+        // metatable is the same for every table member in the union, so
+        // re-resolving would be redundant.
+        let index_resolved = self.resolve_metatable_index_expr(mt_idx);
+
+        // Apply metatable inference to each local table member
+        for &tbl_idx in &local_indices {
+            self.apply_metatable_to_table(tbl_idx, mt_idx, &index_resolved);
+        }
+
+        // When __call was resolved, its self-parameter was typed as just the
+        // first table that set it (apply_metatable_to_table guards on
+        // `resolved_type.is_none()`). Widen to a union of all local tables so
+        // the self type is accurate when the first argument is a union.
+        if local_indices.len() > 1
+            && let Some(func_idx) = self.ir.tables[local_indices[0].val()].call_func
+            && let Some(&self_sym) = self.func(func_idx).args.first()
+            && !self_sym.is_external()
+        {
+            let union_type = ValueType::make_union(
+                local_indices.iter().map(|&ti| ValueType::Table(Some(ti))).collect()
+            );
+            self.ir.symbols[self_sym.val()].versions[0].resolved_type = Some(union_type);
+        }
+
+        tbl_type
+    }
+
+    /// Apply metatable inference to a single local table: set metatable,
+    /// metatable_index, class_name, and call_func from the metatable's
+    /// __index and __call fields.
+    fn apply_metatable_to_table(
+        &mut self,
+        tbl_idx: TableIndex,
+        mt_idx: TableIndex,
+        index_resolved: &Option<ValueType>,
+    ) {
         // Store the raw metatable (for getmetatable())
         self.ir.tables[tbl_idx.val()].metatable = Some(mt_idx);
-
-        // Resolve __index on the metatable once; use the result for both
-        // metatable_index and class_name propagation fallbacks below.
-        let index_resolved = self.resolve_metatable_index_expr(mt_idx);
 
         // Case 1: __index resolved to a table directly (table ref or function with @return)
         if let Some(index_idx) = index_resolved.as_ref().and_then(|vt| self.extract_table_from_type(vt)) {
@@ -2023,7 +2070,7 @@ impl<'a> Analysis<'a> {
         // scan its return expressions for bracket/field accesses on class-typed
         // tables.
         if self.ir.tables[tbl_idx.val()].class_name.is_none()
-            && let Some(class_idx) = self.find_class_in_index_function(&index_resolved) {
+            && let Some(class_idx) = self.find_class_in_index_function(index_resolved) {
                 let name = self.table(class_idx).class_name.clone();
                 self.ir.tables[tbl_idx.val()].class_name = name;
                 if self.ir.tables[tbl_idx.val()].metatable_index.is_none() {
@@ -2045,8 +2092,6 @@ impl<'a> Analysis<'a> {
                         Some(ValueType::Table(Some(tbl_idx)));
                 }
             }
-
-        Some(ValueType::Table(Some(tbl_idx)))
     }
 
     fn resolve_getmetatable(&mut self, args: &[ExprId]) -> Option<ValueType> {
