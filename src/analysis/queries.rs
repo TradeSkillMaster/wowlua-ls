@@ -507,6 +507,48 @@ fn format_vararg_return(formatted: String, index: usize, func: &Function) -> Str
     }
 }
 
+/// Join multiple return values, parenthesizing any element that itself contains
+/// a top-level comma.  Such an element is a nested multi-return function value
+/// (e.g. `fun(): number, string`); without grouping, its returns blur into the
+/// sibling returns — `fun(): number, string, Foo` reads ambiguously.  Wrapping
+/// gives `(fun(): number, string), Foo`.  A single return (no sibling to confuse
+/// with) and elements without a top-level comma pass through unchanged.
+fn join_returns(rets: &[String]) -> String {
+    if rets.len() <= 1 {
+        return rets.join(", ");
+    }
+    rets.iter()
+        .map(|r| {
+            if has_top_level_comma(r) {
+                format!("({r})")
+            } else {
+                r.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether `s` contains a comma that is not nested inside any bracket pair
+/// (`()`, `<>`, `[]`, `{}`).  Used to detect a rendered type whose top-level
+/// shape is itself a comma-separated tuple (i.e. a multi-return function value).
+///
+/// Assumes well-formed input (balanced brackets) since `s` is always produced
+/// by the type formatter.  Depth is clamped to 0 on close-brackets so a stray
+/// unmatched closer cannot drive depth negative and mask later commas.
+fn has_top_level_comma(s: &str) -> bool {
+    let mut depth = 0i32;
+    for b in s.bytes() {
+        match b {
+            b'(' | b'<' | b'[' | b'{' => depth += 1,
+            b')' | b'>' | b']' | b'}' => { depth = (depth - 1).max(0); }
+            b',' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Check whether a return annotation at `index` was written as `& ...M`
 /// (intersection-of-varargs).  The raw annotation is `Intersection([VarArgs(_)])`
 /// — a single-element intersection wrapping a VarArgs.
@@ -5730,7 +5772,7 @@ impl AnalysisResult {
         } else if rets.len() == 1 {
             Some(format!("__call({}): {}", all_args.join(", "), rets[0]))
         } else {
-            Some(format!("__call({}): ({})", all_args.join(", "), rets.join(", ")))
+            Some(format!("__call({}): {}", all_args.join(", "), join_returns(&rets)))
         }
     }
 
@@ -6105,7 +6147,7 @@ impl AnalysisResult {
         } else if rets.len() == 1 {
             format!("fun({}): {}", all_args.join(", "), rets[0])
         } else {
-            format!("fun({}): ({})", all_args.join(", "), rets.join(", "))
+            format!("fun({}): {}", all_args.join(", "), join_returns(&rets))
         }
     }
 
@@ -6313,7 +6355,7 @@ impl AnalysisResult {
         let label = if rets.is_empty() {
             format!("fun({})", params.join(", "))
         } else {
-            format!("fun({}): {}", params.join(", "), rets.join(", "))
+            format!("fun({}): {}", params.join(", "), join_returns(&rets))
         };
 
         SignatureInfo { label, params, param_docs, doc: func.doc.clone() }
@@ -6336,7 +6378,7 @@ impl AnalysisResult {
         let label = if rets.is_empty() {
             format!("fun({})", params.join(", "))
         } else {
-            format!("fun({}): {}", params.join(", "), rets.join(", "))
+            format!("fun({}): {}", params.join(", "), join_returns(&rets))
         };
 
         let param_docs = vec![None; params.len()];
@@ -6923,7 +6965,7 @@ impl AnalysisResult {
             single_line
         };
         if !rets.is_empty() {
-            result.push_str(&format!("\n  -> {}", rets.join(", ")));
+            result.push_str(&format!("\n  -> {}", join_returns(&rets)));
         }
         // Partition overloads: return-only overloads render as a "cases:" table
         // below the primary signature (they don't vary the param list, so stacking
@@ -6964,7 +7006,7 @@ impl AnalysisResult {
                     ov_single
                 };
                 if !ov_rets.is_empty() {
-                    ov_line.push_str(&format!("\n  -> {}", ov_rets.join(", ")));
+                    ov_line.push_str(&format!("\n  -> {}", join_returns(&ov_rets)));
                 }
                 result.push_str(&ov_line);
             }
@@ -7184,7 +7226,7 @@ impl AnalysisResult {
 
         hints.push(InlayHintData {
             position: hint_pos,
-            label: format!("-> {}", rets.join(", ")),
+            label: format!("-> {}", join_returns(&rets)),
             kind: InlayHintKindTag::Type,
             padding_left: true,
             padding_right: false,
@@ -7393,7 +7435,7 @@ impl AnalysisResult {
         } else if rets.len() == 1 {
             format!("fun({}): {}", args.join(", "), rets[0])
         } else {
-            format!("fun({}): ({})", args.join(", "), rets.join(", "))
+            format!("fun({}): {}", args.join(", "), join_returns(&rets))
         }
     }
 
@@ -8189,7 +8231,7 @@ impl AnalysisResult {
         if rets.is_empty() {
             format!("function {}({})", display_name, all_args.join(", "))
         } else {
-            format!("function {}({}): {}", display_name, all_args.join(", "), rets.join(", "))
+            format!("function {}({}): {}", display_name, all_args.join(", "), join_returns(&rets))
         }
     }
 

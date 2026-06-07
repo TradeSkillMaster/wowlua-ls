@@ -161,8 +161,35 @@ fn format_function_type(func_idx: FunctionIndex, pg: &PreResolvedGlobals) -> Str
     if rets.is_empty() {
         format!("fun({})", args.join(", "))
     } else {
-        format!("fun({}):{}", args.join(", "), rets.join(", "))
+        format!("fun({}):{}", args.join(", "), join_returns(&rets))
     }
+}
+
+/// Join return values, wrapping any element that contains a top-level comma
+/// (i.e. a nested multi-return function type) in parens to disambiguate.
+fn join_returns(rets: &[String]) -> String {
+    if rets.len() <= 1 {
+        return rets.join(", ");
+    }
+    rets.iter()
+        .map(|r| {
+            if has_top_level_comma(r) { format!("({r})") } else { r.clone() }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn has_top_level_comma(s: &str) -> bool {
+    let mut depth = 0i32;
+    for b in s.bytes() {
+        match b {
+            b'(' | b'<' | b'[' | b'{' => depth += 1,
+            b')' | b'>' | b']' | b'}' => { depth = (depth - 1).max(0); }
+            b',' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Format function parameter list as strings.

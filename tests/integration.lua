@@ -943,7 +943,7 @@ local MultiRetSelfIter = {}
 ---@return self
 ---@return number
 function MultiRetSelfIter:Iterate()
---                        ^ hover: (method) function MultiRetSelfIter:Iterate()\n  -> fun(): (number, string), MultiRetSelfIter, number
+--                        ^ hover: (method) function MultiRetSelfIter:Iterate()\n  -> (fun(): number, string), MultiRetSelfIter, number
     return self._iterFn, self, 0
 end
 _consume(MultiRetSelfIter)
