@@ -3783,6 +3783,32 @@ _vaOnly(42)
 --      ^ diag: type-mismatch
 _vaOnly("ok")
 
+-- ── Exact/partial class modifier must not confuse duplicate-doc-field ───────
+-- Two distinct (exact) classes sharing a field name must NOT trigger
+-- duplicate-doc-field across them.
+
+---@class (exact) SlotMixinA
+---@field Durability number
+---@field Name string
+
+---@class (exact) SlotMixinB
+---@field Durability number
+---@field Label string
+
+---@class (partial) PartialA
+---@field shared number
+---@field onlyA string
+
+---@class (partial) PartialB
+---@field shared number
+---@field onlyB boolean
+
+-- Real duplicate within one (exact) class must still fire
+---@class (exact) DupInExact
+---@field hp number
+---@field hp string
+-- ^ diag: duplicate-doc-field
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function

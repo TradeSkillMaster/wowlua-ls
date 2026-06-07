@@ -2676,15 +2676,19 @@ impl<'a> Analysis<'a> {
             format!("---@field protected {}", field_name),
             format!("---@field public {}", field_name),
         ];
-        let class_marker = format!("---@class {}", class_name);
         let mut in_class = false;
         let mut count = 0u32;
         for event in root.descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
-            if Self::comment_is_tag(text, &class_marker) {
-                in_class = true;
+            if let Some(after) = text.strip_prefix("---@class ")
+                .or_else(|| text.strip_prefix("--- @class "))
+            {
+                let after = crate::annotations::strip_class_modifier(after);
+                let parsed_name = after.split(|c: char| c.is_whitespace() || c == '<' || c == ':')
+                    .next().unwrap_or("");
+                in_class = parsed_name == class_name;
                 continue;
             }
             if in_class && Self::comment_is_tag(text, "---@class") {

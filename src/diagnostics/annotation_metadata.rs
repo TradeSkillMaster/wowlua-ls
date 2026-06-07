@@ -32,6 +32,7 @@ impl DiagnosticPass for AnnotationMetadata {
 
         let after = text.strip_prefix("---@class ").or_else(|| text.strip_prefix("---@enum "));
         if let Some(after) = after {
+            let after = crate::annotations::strip_class_modifier(after);
             let name = after.split(|c: char| c.is_whitespace() || c == '<' || c == ':')
                 .next().unwrap_or("");
             if !name.is_empty() {

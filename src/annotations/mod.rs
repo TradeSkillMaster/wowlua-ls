@@ -109,6 +109,19 @@ pub(crate) fn collect_referenced_type_names(ann: &AnnotationType, out: &mut Hash
     }
 }
 
+/// Strip a leading class/enum modifier — `(partial)`, `(exact)`, or `(key)` —
+/// and any surrounding whitespace.  Returns the remainder unchanged when no
+/// modifier is present.
+pub(crate) fn strip_class_modifier(s: &str) -> &str {
+    let trimmed = s.trim_start();
+    for modifier in &["(partial)", "(exact)", "(key)"] {
+        if let Some(rest) = trimmed.strip_prefix(modifier) {
+            return rest.trim_start();
+        }
+    }
+    s
+}
+
 /// Collect every type name referenced by a class declaration: parents (which may
 /// be parameterized, e.g. `Foo<Bar>` or `table<K, V>`), field types, overload
 /// param/return types, generic-constraint type-arg substitutions, and
@@ -1347,14 +1360,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         }
         if let Some(rest) = content.strip_prefix("@class") {
             let rest = rest.trim();
-            // Strip class modifiers: (partial), (exact) — accepted for compatibility, no effect
-            let rest = if let Some(after) = rest.strip_prefix("(partial)") {
-                after.trim()
-            } else if let Some(after) = rest.strip_prefix("(exact)") {
-                after.trim()
-            } else {
-                rest
-            };
+            let rest = strip_class_modifier(rest);
             // Extract class name, handling spaces in type params: @class Name<S, T>
             // Only treat `<` as the class's type-param opener if it comes before `:` or whitespace
             // (otherwise it belongs to a parent, e.g. `@class Foo : table<K,V>`)
