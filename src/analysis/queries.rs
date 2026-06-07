@@ -5727,8 +5727,10 @@ impl AnalysisResult {
         };
         if rets.is_empty() {
             Some(format!("__call({})", all_args.join(", ")))
+        } else if rets.len() == 1 {
+            Some(format!("__call({}): {}", all_args.join(", "), rets[0]))
         } else {
-            Some(format!("__call({}): {}", all_args.join(", "), rets.join(", ")))
+            Some(format!("__call({}): ({})", all_args.join(", "), rets.join(", ")))
         }
     }
 
@@ -6100,8 +6102,10 @@ impl AnalysisResult {
         };
         if rets.is_empty() {
             format!("fun({})", all_args.join(", "))
+        } else if rets.len() == 1 {
+            format!("fun({}): {}", all_args.join(", "), rets[0])
         } else {
-            format!("fun({}): {}", all_args.join(", "), rets.join(", "))
+            format!("fun({}): ({})", all_args.join(", "), rets.join(", "))
         }
     }
 
@@ -7386,8 +7390,10 @@ impl AnalysisResult {
             .collect();
         if rets.is_empty() {
             format!("fun({})", args.join(", "))
+        } else if rets.len() == 1 {
+            format!("fun({}): {}", args.join(", "), rets[0])
         } else {
-            format!("fun({}): {}", args.join(", "), rets.join(", "))
+            format!("fun({}): ({})", args.join(", "), rets.join(", "))
         }
     }
 

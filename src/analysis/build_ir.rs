@@ -2705,18 +2705,74 @@ impl<'a> Analysis<'a> {
                 let mut return_labels = Vec::new();
                 let mut return_descs = Vec::new();
                 let last_idx = returns_src.len() - 1;
+                // Count non-self/non-built returns to decide whether @return self
+                // should set the returns_self flag (sole return) or resolve as the
+                // class type (multi-return).
+                let has_non_self_returns = returns_src.iter().any(|rt| {
+                    !matches!(rt, crate::annotations::AnnotationType::Simple(s) if s == "self" || s == "built" || s.starts_with("built:"))
+                    && !matches!(rt, crate::annotations::AnnotationType::Parameterized(name, _) if name == "self")
+                });
                 for (i, ret_annotation) in returns_src.iter().enumerate() {
-                    // @return self — mark the function as returning self
+                    // @return self — when it's the sole return, mark as returning self;
+                    // when mixed with other returns, resolve as the owner class type.
                     if matches!(ret_annotation, crate::annotations::AnnotationType::Simple(s) if s == "self") {
-                        self.ir.functions[func_idx.val()].returns_self = true;
+                        if !has_non_self_returns {
+                            self.ir.functions[func_idx.val()].returns_self = true;
+                            continue;
+                        }
+                        // Multi-return: resolve `self` as the class type and fall through
+                        // to the normal return-annotation path.
+                        if let Some(class_name) = owner_class_name {
+                            let class_type = crate::annotations::AnnotationType::Simple(class_name.to_string());
+                            if let Some(vt) = self.resolve_annotation_type_mut_gen(&class_type, generics) {
+                                let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
+                                let ret_sym_idx = self.ir.insert_symbol(
+                                    SymbolIdentifier::FunctionRet(func_idx, i),
+                                    func_scope,
+                                    node_ptr,
+                                );
+                                self.ir.set_type_source(ret_sym_idx, ret_expr);
+                                self.ir.functions[func_idx.val()].rets.push(ret_sym_idx);
+                                return_vts.push(vt);
+                                return_raws.push(ret_annotation.clone());
+                                return_labels.push(annotations.return_names.get(i).cloned().flatten());
+                                return_descs.push(annotations.return_descriptions.get(i).cloned().flatten());
+                            }
+                        } else {
+                            log::warn!("@return self in multi-return but no owner class available");
+                        }
                         continue;
                     }
-                    // @return self<X> — return the receiver re-parameterized with X
+                    // @return self<X> — when it's the sole return, mark as returning self
+                    // with re-parameterization; when mixed with other returns, resolve as
+                    // the owner class type and add to return annotations.
                     if let crate::annotations::AnnotationType::Parameterized(name, type_args) = ret_annotation
                         && name == "self"
                     {
-                        self.ir.functions[func_idx.val()].returns_self = true;
-                        self.ir.functions[func_idx.val()].returns_self_type_args = Some(type_args.clone());
+                        if !has_non_self_returns {
+                            self.ir.functions[func_idx.val()].returns_self = true;
+                            self.ir.functions[func_idx.val()].returns_self_type_args = Some(type_args.clone());
+                            continue;
+                        }
+                        if let Some(class_name) = owner_class_name {
+                            let class_type = crate::annotations::AnnotationType::Simple(class_name.to_string());
+                            if let Some(vt) = self.resolve_annotation_type_mut_gen(&class_type, generics) {
+                                let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
+                                let ret_sym_idx = self.ir.insert_symbol(
+                                    SymbolIdentifier::FunctionRet(func_idx, i),
+                                    func_scope,
+                                    node_ptr,
+                                );
+                                self.ir.set_type_source(ret_sym_idx, ret_expr);
+                                self.ir.functions[func_idx.val()].rets.push(ret_sym_idx);
+                                return_vts.push(vt);
+                                return_raws.push(ret_annotation.clone());
+                                return_labels.push(annotations.return_names.get(i).cloned().flatten());
+                                return_descs.push(annotations.return_descriptions.get(i).cloned().flatten());
+                            }
+                        } else {
+                            log::warn!("@return self<X> in multi-return but no owner class available");
+                        }
                         continue;
                     }
                     // @return built [: Parent] — mark the function as returning the built type

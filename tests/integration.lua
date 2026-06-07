@@ -931,3 +931,19 @@ local function boolGuardNarrow(flag, optFlag)
     end
 end
 _consume(boolGuardNarrow)
+
+-- @return self as one of multiple return values should resolve to the class type,
+-- not set the returns_self flag (which makes hover show only "-> self").
+---@class MultiRetSelfIter
+---@field _items string[]
+---@field _iterFn fun(): number, string
+local MultiRetSelfIter = {}
+
+---@return fun(): number, string
+---@return self
+---@return number
+function MultiRetSelfIter:Iterate()
+--                        ^ hover: (method) function MultiRetSelfIter:Iterate()\n  -> fun(): (number, string), MultiRetSelfIter, number
+    return self._iterFn, self, 0
+end
+_consume(MultiRetSelfIter)

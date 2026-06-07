@@ -2968,8 +2968,16 @@ impl PreResolvedGlobals {
             }
             None
         });
-        let returns_self = returns_self_type_args.is_some()
-            || returns.iter().any(|rt| matches!(rt, AnnotationType::Simple(s) if s == "self"));
+        // Only set returns_self when `self` is the sole return annotation.
+        // When `self` appears alongside other returns, it should be resolved
+        // as the class type and included in the normal return_annotations list.
+        let has_non_self_returns = returns.iter().any(|rt| {
+            !matches!(rt, AnnotationType::Simple(s) if s == "self" || s == "built" || s.starts_with("built:"))
+            && !matches!(rt, AnnotationType::Parameterized(name, _) if name == "self")
+        });
+        let returns_self = !has_non_self_returns
+            && (returns_self_type_args.is_some()
+                || returns.iter().any(|rt| matches!(rt, AnnotationType::Simple(s) if s == "self")));
         let returns_built_entry = returns.iter().find(|rt| matches!(rt, AnnotationType::Simple(s) if s == "built" || s.starts_with("built:")));
         let returns_built = returns_built_entry.is_some();
         let returns_built_parent = returns_built_entry.and_then(|rt| {
@@ -2977,9 +2985,19 @@ impl PreResolvedGlobals {
                 s.strip_prefix("built:").map(|p| p.to_string())
             } else { None }
         });
+        // When self is the sole return, filter it out (handled via returns_self flag).
+        // When mixed with other returns, keep it and resolve as the class type name.
         let non_self_returns: Vec<&AnnotationType> = returns.iter()
-            .filter(|rt| !matches!(rt, AnnotationType::Simple(s) if s == "self" || s == "built" || s.starts_with("built:")))
-            .filter(|rt| !matches!(rt, AnnotationType::Parameterized(name, _) if name == "self"))
+            .filter(|rt| !matches!(rt, AnnotationType::Simple(s) if s == "built" || s.starts_with("built:")))
+            .filter(|rt| {
+                if !has_non_self_returns {
+                    // self is the sole return, filter it out
+                    !matches!(rt, AnnotationType::Simple(s) if s == "self")
+                    && !matches!(rt, AnnotationType::Parameterized(name, _) if name == "self")
+                } else {
+                    true // keep self — it will be resolved as the class type
+                }
+            })
             .collect();
 
         // Detect tuple-union / single-tuple return form.
@@ -3002,7 +3020,25 @@ impl PreResolvedGlobals {
             let mut vts = Vec::new();
             let mut labels = Vec::new();
             for (i, rt) in returns.iter().enumerate() {
-                if matches!(rt, AnnotationType::Simple(s) if s == "self" || s == "built" || s.starts_with("built:")) {
+                if matches!(rt, AnnotationType::Simple(s) if s == "built" || s.starts_with("built:")) {
+                    continue;
+                }
+                // When self/self<X> is the sole return, skip it (handled via returns_self flag).
+                // When mixed with other returns, resolve as the class type.
+                if matches!(rt, AnnotationType::Simple(s) if s == "self")
+                    || matches!(rt, AnnotationType::Parameterized(name, _) if name == "self")
+                {
+                    if !has_non_self_returns {
+                        continue;
+                    }
+                    // Resolve self as the owner class type
+                    if let Some(class_name) = owner_class_name {
+                        let class_type = AnnotationType::Simple(class_name.to_string());
+                        if let Some(vt) = Self::resolve_annotation_gen(&class_type, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs) {
+                            vts.push(vt);
+                            labels.push(return_names.get(i).cloned().flatten());
+                        }
+                    }
                     continue;
                 }
                 let resolved = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = rt {
