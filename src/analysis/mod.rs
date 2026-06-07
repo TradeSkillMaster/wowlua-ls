@@ -2307,6 +2307,11 @@ pub(crate) fn is_table_subtype_impl(
         // Number enum <-> number: @enum types with numeric values are integers at runtime
         (ValueType::Table(Some(a)), ValueType::Number) if ir.table(*a).enum_kind == EnumKind::Number => true,
         (ValueType::Number, ValueType::Table(Some(b))) if ir.table(*b).enum_kind == EnumKind::Number => true,
+        // NumberLiteral → number enum (annotation-sourced number literals, e.g. from
+        // @type 0 or tuple-union cases).  Reverse direction (NumberEnum → NumberLiteral)
+        // is already covered by NumberEnum → Number (above) + Number → NumberLiteral
+        // (in is_assignable_to), so only this direction is needed here.
+        (ValueType::NumberLiteral(_), ValueType::Table(Some(b))) if ir.table(*b).enum_kind == EnumKind::Number => true,
         // String enum <-> string: @enum types with string values are strings at runtime.
         // The enum-to-string direction keeps String(None) (only a generic string, not a
         // specific literal, may widen to "any string enum").
@@ -2455,7 +2460,10 @@ pub(crate) fn is_table_subtype_impl(
             }
             false
         }
-        (ValueType::Table(Some(_)) | ValueType::Number, ValueType::Union(types)) => {
+        // Union decomposition: String(_) and NumberLiteral(_) need this to reach the
+        // String → StringEnum and NumberLiteral → NumberEnum rules (above) when the
+        // expected type is a union like `MyEnum?` (Union(EnumTable, Nil)).
+        (ValueType::Table(Some(_)) | ValueType::Number | ValueType::NumberLiteral(_) | ValueType::String(_), ValueType::Union(types)) => {
             types.iter().any(|t| is_table_subtype_impl(ir, resolved_expr_cache, actual, t))
         }
         (ValueType::Intersection(actuals), ValueType::Intersection(expecteds)) => {

@@ -2114,6 +2114,90 @@ _diagTakeColor(_unionColorVar)
 local _redLiteral
 _diagTakeColor(_redLiteral)
 
+-- ── Enum member access → @field / @param assignability ──────────────────────
+-- Regression: accessing an enum member (e.g. MyEnum.Member) should be
+-- assignable to a @field / @param typed as the enum, including optional.
+
+---@enum TestFieldEnum.Icons
+local TestIcons = {
+    Monk = "monk-icon",
+    Warrior = "warrior-icon",
+}
+
+---@class TestFieldEnum.Config
+---@field icon TestFieldEnum.Icons
+---@field optIcon TestFieldEnum.Icons?
+---@field label string
+
+---@type TestFieldEnum.Config
+local _feConfig = { icon = TestIcons.Monk, optIcon = TestIcons.Warrior, label = "x" }
+
+-- Assign enum member to @field typed as enum: should be OK
+_feConfig.icon = TestIcons.Warrior
+
+-- Assign enum member to optional @field typed as enum: should be OK
+_feConfig.optIcon = TestIcons.Monk
+
+-- Pass enum member to @param typed as enum: should be OK
+---@param icon TestFieldEnum.Icons
+local function _diagTakeIcon(icon) return icon end
+_diagTakeIcon(TestIcons.Monk)
+
+-- Pass enum member to @param typed as optional enum: should be OK
+---@param icon TestFieldEnum.Icons?
+local function _diagTakeOptIcon(icon) return icon end
+_diagTakeOptIcon(TestIcons.Warrior)
+
+-- Assign wrong type to string enum @field: should still error
+_feConfig.icon = true
+--               ^ diag: field-type-mismatch
+
+-- Assign wrong type to optional string enum @field: should still error
+_feConfig.optIcon = true
+--                  ^ diag: field-type-mismatch
+
+-- Pass wrong type to string enum @param: should still error
+_diagTakeIcon(true)
+--            ^ diag: type-mismatch
+
+-- Number-valued enum variant with @field/@param
+---@enum TestFieldEnum.Rank
+local TestRank = {
+    Bronze = 1,
+    Silver = 2,
+    Gold = 3,
+}
+
+---@class TestFieldEnum.Player
+---@field rank TestFieldEnum.Rank
+---@field optRank TestFieldEnum.Rank?
+
+---@type TestFieldEnum.Player
+local _fePlayer = { rank = TestRank.Bronze, optRank = TestRank.Silver }
+
+-- Number enum member to @field: should be OK
+_fePlayer.rank = TestRank.Gold
+
+-- Number enum member to optional @field: should be OK
+_fePlayer.optRank = TestRank.Bronze
+
+-- Plain number to number enum @field: should be OK
+_fePlayer.rank = 99
+
+-- Wrong type to number enum @field: should error
+_fePlayer.rank = "bad"
+--               ^ diag: field-type-mismatch
+
+-- Pass number enum member to @param typed as enum: should be OK
+---@param rank TestFieldEnum.Rank
+local function _diagTakeRank(rank) return rank end
+_diagTakeRank(TestRank.Gold)
+
+-- Pass number enum member to optional @param: should be OK
+---@param rank TestFieldEnum.Rank?
+local function _diagTakeOptRank(rank) return rank end
+_diagTakeOptRank(TestRank.Silver)
+
 -- And-chain narrowing: all operands should be narrowed to non-nil for the RHS
 ---@return number?
 local function _maybeNum() return 1 end
