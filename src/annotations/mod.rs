@@ -1017,6 +1017,16 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
             let typ = if let Some((class_name, _)) = extract_class_from_field_comments(field.syntax()) {
                 AnnotationType::Simple(class_name)
             } else if let Some(t) = infer_expression_type(&value) {
+                // A nil initializer in a constructor is a placeholder, not a
+                // type constraint.  Skip it so the field's type is inferred
+                // from actual assignments (avoiding field-type-mismatch
+                // false positives when the field is later assigned a real
+                // value).  Cross-file access to a nil-only field will report
+                // undefined-field — add an explicit @field annotation to
+                // declare the field's type for cross-file visibility.
+                if matches!(t, AnnotationType::Simple(ref s) if s == "nil") {
+                    continue;
+                }
                 // Capture literal text for enum value display in hover
                 match &value {
                     Expression::Literal(lit) => {

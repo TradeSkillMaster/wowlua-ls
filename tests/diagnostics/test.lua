@@ -3809,6 +3809,33 @@ _vaOnly("ok")
 ---@field hp string
 -- ^ diag: duplicate-doc-field
 
+-- ── Nil-initialized constructor field should not pin type to nil ─────────────
+-- A field initialized to nil in a constructor is a placeholder, not a type
+-- constraint.  Assigning a real value later must not trigger field-type-mismatch.
+
+---@class _DiagTimer
+---@field Cancel fun(self: _DiagTimer)
+
+---@return _DiagTimer
+local function _makeTimer() return {} end  ---@diagnostic disable-line: return-mismatch
+
+---@class _DiagTimerHolder
+local _diagHolder = {
+    timer = nil,
+    name = "hello",
+}
+
+_diagHolder.timer = _makeTimer()
+--          ^ hover: (field) timer: _DiagTimer?
+---@diagnostic disable-next-line: duplicate-set-field
+_diagHolder.timer = nil
+---@diagnostic disable-next-line: duplicate-set-field
+_diagHolder.timer = _makeTimer()
+
+-- Non-nil constructor fields still enforce their inferred type
+_diagHolder.name = 42
+--                 ^ diag: field-type-mismatch
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function
