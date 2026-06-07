@@ -25,7 +25,8 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
   "globals": {
     "read": ["string"],
     "write": ["string"],
-    "allow_slash_commands": true
+    "allow_slash_commands": true,
+    "allow_binding_globals": true
   },
   "inference": {
     "backward_param_types": true,
@@ -160,6 +161,13 @@ Global names that may be created/assigned without triggering `create-global`. En
 - **Default:** `true`
 
 Automatically treat globals matching `SLASH_*` as allowed write/read globals. WoW slash commands are defined by assigning `SLASH_COMMANDNAME1`, `SLASH_COMMANDNAME2`, etc. to global variables, so these are always intentional. Set to `false` to require explicit listing in `globals.write`.
+
+### `globals.allow_binding_globals`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Automatically treat globals matching `BINDING_HEADER_*` and `BINDING_NAME_*` as allowed write/read globals. WoW keybinding labels are defined by assigning `BINDING_HEADER_ADDON` and `BINDING_NAME_ACTION` to global variables, and the binding system reads them at runtime. Set to `false` to require explicit listing in `globals.write`.
 
 ### `inference.backward_param_types`
 
@@ -306,6 +314,7 @@ When `.wowluarc.json` files are nested, settings combine according to one of two
 | `globals.read` | **Isolated** — nearest config only (includes that directory's `.toc` `SavedVariables`) |
 | `globals.write` | **Isolated** — nearest config only |
 | `globals.allow_slash_commands` | **Isolated** |
+| `globals.allow_binding_globals` | **Isolated** |
 | `framexml` | **Isolated** |
 | `flavors` | **Isolated** (then intersected with any TOC-derived per-file mask) |
 | `inference.*` | **Isolated** |

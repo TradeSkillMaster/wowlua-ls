@@ -15,6 +15,11 @@ impl DiagnosticPass for CreateGlobal {
             };
             if analysis.allowed_write_globals.contains(&name) { continue; }
             if analysis.allow_slash_commands && name.starts_with("SLASH_") { continue; }
+            if analysis.allow_binding_globals
+                && (name.starts_with("BINDING_HEADER_") || name.starts_with("BINDING_NAME_"))
+            {
+                continue;
+            }
             if let Some(&sym_idx) = analysis.ir.ext.scope0_symbols.get(&SymbolIdentifier::Name(name.clone()))
                 && analysis.is_stub_symbol(sym_idx) { continue; }
             if analysis.ir.framexml_enabled

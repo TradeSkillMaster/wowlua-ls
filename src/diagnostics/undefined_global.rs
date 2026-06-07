@@ -27,6 +27,11 @@ impl DiagnosticPass for UndefinedGlobal {
             if analysis.allow_slash_commands && name.starts_with("SLASH_") {
                 continue;
             }
+            if analysis.allow_binding_globals
+                && (name.starts_with("BINDING_HEADER_") || name.starts_with("BINDING_NAME_"))
+            {
+                continue;
+            }
             let r = token.text_range();
             let offset = u32::from(r.start());
             let scope_idx = analysis.scope_at_offset(offset).unwrap_or(ScopeIndex(0));

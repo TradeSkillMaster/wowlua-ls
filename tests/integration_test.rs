@@ -111,6 +111,7 @@ fn run_annotation_tests(config: &TestConfig) {
             allowed_read_globals: project_configs.allowed_read_globals_for(&file_path),
             allowed_write_globals: project_configs.allowed_write_globals_for(&file_path),
             allow_slash_commands: project_configs.allow_slash_commands_for(&file_path),
+            allow_binding_globals: project_configs.allow_binding_globals_for(&file_path),
             project_flavors: project_configs.flavors_for(&file_path),
             backward_param_types: project_configs.backward_param_types_for(&file_path),
             correlated_return_overloads: project_configs.correlated_return_overloads_for(&file_path),
@@ -1653,6 +1654,15 @@ fn slash_commands_disabled() {
 }
 
 #[test]
+fn binding_globals_disabled() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/binding-globals-disabled/test.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/binding-globals-disabled"),
+    });
+}
+
+#[test]
 fn saved_variables() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/saved-variables/test.lua",
@@ -2826,6 +2836,7 @@ fn analyze_source_with_tree(source: &str) -> (wowlua_ls::syntax::tree::SyntaxTre
             allowed_read_globals: Default::default(),
             allowed_write_globals: Default::default(),
             allow_slash_commands: true,
+            allow_binding_globals: true,
             project_flavors: 0,
             backward_param_types: true,
             correlated_return_overloads: true,

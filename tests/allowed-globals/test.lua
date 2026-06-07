@@ -111,3 +111,21 @@ MyAddonDB = "saved"
 -- Should STILL warn: ? matches exactly one char, not two
 MyAddonXYDB = "saved"
 -- ^ diag: create-global
+
+-- Binding globals: auto-detected as allowed globals (default allow_binding_globals=true)
+
+-- Should NOT warn: BINDING_HEADER_ prefix globals are auto-allowed for writing
+BINDING_HEADER_MYADDON = "MyAddon"
+
+-- Should NOT warn: BINDING_NAME_ prefix globals are auto-allowed for writing
+BINDING_NAME_MYADDON_TOGGLE = "Toggle UI"
+
+-- Should NOT warn: reading a BINDING_HEADER_ global defined in this file
+_consume(BINDING_HEADER_MYADDON)
+
+-- Should NOT warn: reading an undefined BINDING_NAME_ global (auto-allowed)
+_consume(BINDING_NAME_NEVERASSIGNED)
+
+-- Should STILL warn: BINDING_ alone is not auto-allowed
+BINDING_FOO = "bar"
+-- ^ diag: create-global

@@ -124,6 +124,8 @@ Use `read` for globals provided by other addons or libraries not in stubs. Use `
 
 Globals matching `SLASH_*` (slash command definitions like `SLASH_MYADDON1 = "/myaddon"`) are automatically allowed by default. Set `"allow_slash_commands": false` inside `globals` to disable this.
 
+Globals matching `BINDING_HEADER_*` and `BINDING_NAME_*` (keybinding label definitions like `BINDING_HEADER_MYADDON = "MyAddon"`) are also automatically allowed. Set `"allow_binding_globals": false` inside `globals` to disable this.
+
 `SavedVariables` and `SavedVariablesPerCharacter` from `.toc` files are automatically added to both lists — you don't need to configure them manually.
 
 ### `inference`

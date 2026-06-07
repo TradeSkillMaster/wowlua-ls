@@ -122,6 +122,7 @@ pub struct ProjectConfig {
     /// is disabled (backward compat for projects without a `flavors` key).
     pub flavors: u8,
     pub allow_slash_commands: Option<bool>,
+    pub allow_binding_globals: Option<bool>,
     pub backward_param_types: Option<bool>,
     pub correlated_return_overloads: Option<bool>,
     pub implicit_protected_prefix: Option<bool>,
@@ -432,6 +433,10 @@ impl ProjectConfigs {
         self.nearest_bool(file_path, |c| c.allow_slash_commands, true)
     }
 
+    pub fn allow_binding_globals_for(&self, file_path: &Path) -> bool {
+        self.nearest_bool(file_path, |c| c.allow_binding_globals, true)
+    }
+
     pub fn hint_enable_for(&self, file_path: &Path) -> bool {
         self.deepest_bool(file_path, |c| c.hint_enable, true)
     }
@@ -621,6 +626,7 @@ struct RawGlobalsConfig {
     read: Option<Vec<String>>,
     write: Option<Vec<String>>,
     allow_slash_commands: Option<bool>,
+    allow_binding_globals: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -953,6 +959,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let mut allowed_write_globals = AllowedGlobals::default();
     allowed_write_globals.extend_from_strings(glob.write.unwrap_or_default());
     let allow_slash_commands = glob.allow_slash_commands;
+    let allow_binding_globals = glob.allow_binding_globals;
 
     let flavors = raw.flavors.map(|names| {
         let mask = crate::flavor::parse_flavor_list(&names);
@@ -1004,7 +1011,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         ignore, library_relative, library_absolute,
         disabled_diagnostics, enabled_diagnostics, severity_overrides,
         framexml: raw.framexml, allowed_read_globals, allowed_write_globals,
-        allow_slash_commands, flavors,
+        allow_slash_commands, allow_binding_globals, flavors,
         backward_param_types,
         correlated_return_overloads,
         implicit_protected_prefix,

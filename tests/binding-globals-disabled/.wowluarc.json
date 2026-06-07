@@ -1,0 +1,5 @@
+{
+    "globals": {
+        "allow_binding_globals": false
+    }
+}
