@@ -685,6 +685,7 @@ fn apply_flavor_data(globals: &mut [crate::annotations::ExternalGlobal], flavors
                     format!("{}.{}.{}", g.name, path.join("."), method_name)
                 }
             }
+            ExternalGlobalKind::Variable(_) | ExternalGlobalKind::Table => g.name.clone(),
             _ => continue,
         };
         if let Some(&mask) = flavors.get(&lookup_key) {
@@ -3546,6 +3547,10 @@ fn fetch_branch_resources(stubs_dir: &Path) -> BranchResourceData {
     }
 }
 
+// Data-pipeline function threading multiple independent data sources through the
+// classic stub generation pipeline. The parameters are naturally separate concerns
+// (diff, wiki, UI dirs, API docs, frame flavors).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn generate_classic_stubs(
     diff: &ClassicApiDiff,
     wiki_pages: &HashMap<String, String>,
@@ -3554,10 +3559,13 @@ fn generate_classic_stubs(
     retail_api_doc: Option<&ApiDocData>,
     retail_fxml_consts: &HashMap<String, (String, String)>,
     all_ui_dirs: &[PathBuf],
-) -> (String, HashMap<String, Vec<(String, i64)>>) {
+    branch_flavors: &[u8],
+) -> (String, HashMap<String, Vec<(String, i64)>>, HashMap<String, u8>) {
     let missing = &diff.missing;
     let missing_fxml = &diff.missing_fxml;
     let existing_globals = &diff.existing_globals;
+
+    let mut frame_flavor_map: HashMap<String, u8> = HashMap::new();
 
     let overrides = manual_overrides();
     let mut out = vec![
@@ -3769,11 +3777,15 @@ fn generate_classic_stubs(
         // wow-ui-source branches so a mixin defined for retail can still
         // attribute methods to a classic-only frame and vice versa.
         let mut mixin_to_frames_set: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut per_branch_frames: Vec<HashSet<String>> = Vec::new();
         for dir in all_ui_dirs {
             let (frames, frame_mixins) = extract_xml_frames_and_mixins(dir);
+            let mut branch_names = HashSet::new();
             for (name, ftype) in frames {
+                branch_names.insert(name.clone());
                 all_frames.entry(name).or_insert(ftype);
             }
+            per_branch_frames.push(branch_names);
             for (frame, mixin_list) in frame_mixins {
                 for mixin in mixin_list {
                     mixin_to_frames_set
@@ -3781,6 +3793,23 @@ fn generate_classic_stubs(
                         .or_default()
                         .insert(frame.clone());
                 }
+            }
+        }
+        // Compute per-frame flavor bitmasks from branch presence
+        if branch_flavors.len() == per_branch_frames.len() {
+            for name in all_frames.keys() {
+                let mut mask = 0u8;
+                for (i, branch_frames) in per_branch_frames.iter().enumerate() {
+                    if branch_frames.contains(name) {
+                        mask |= branch_flavors[i];
+                    }
+                }
+                if mask != 0 && mask != crate::flavor::FLAVOR_ALL {
+                    frame_flavor_map.insert(name.clone(), mask);
+                }
+            }
+            if !frame_flavor_map.is_empty() {
+                log::info!("  Frame flavor map: {} non-universal entries", frame_flavor_map.len());
             }
         }
         let mixin_to_frames: HashMap<String, Vec<String>> = mixin_to_frames_set
@@ -3873,7 +3902,7 @@ fn generate_classic_stubs(
         }
     }
 
-    (out.join("\n"), classic_all_enums)
+    (out.join("\n"), classic_all_enums, frame_flavor_map)
 }
 
 fn get_existing_names_with(dir: &Path, re: &regex_lite::Regex, exclude: &[&str]) -> HashSet<String> {
@@ -4396,10 +4425,19 @@ pub fn regenerate_stubs() {
     // Step 2: Clone wow-ui-source branches
     log::info!("Cloning wow-ui-source branches...");
     let mut classic_ui_dirs = Vec::new();
+    let mut classic_branch_flavors = Vec::new();
     for branch in CLASSIC_UI_BRANCHES {
         let dest = clones_dir.join(format!("wow-ui-source-{branch}"));
         if ensure_shallow_clone(WOW_UI_SOURCE_REPO, branch, &dest, refresh_clones) {
             log::info!("  Cloned {branch}");
+            classic_branch_flavors.push(match *branch {
+                "classic_era" => crate::flavor::FLAVOR_CLASSIC_ERA,
+                "classic" => crate::flavor::FLAVOR_CLASSIC,
+                other => {
+                    log::warn!("Unrecognized CLASSIC_UI_BRANCHES entry '{other}' — frame flavor mask will be 0");
+                    0
+                }
+            });
             classic_ui_dirs.push(dest);
         } else {
             log::warn!("could not clone branch {branch}");
@@ -4414,10 +4452,12 @@ pub fn regenerate_stubs() {
     }
     phase!("clone wow-ui-source (3 branches)");
 
-    // Build all_ui_dirs: classic branches + retail (for XML frame extraction across all versions)
+    // Build all_ui_dirs + branch_flavors: classic branches + retail (for XML frame extraction)
     let mut all_ui_dirs: Vec<PathBuf> = classic_ui_dirs.clone();
+    let mut branch_flavors: Vec<u8> = classic_branch_flavors;
     if has_retail_ui {
         all_ui_dirs.push(retail_ui_dir.clone());
+        branch_flavors.push(crate::flavor::FLAVOR_RETAIL);
     }
 
     // Step 2b: Parse Blizzard APIDocumentationGenerated directly from wow-ui-source
@@ -4436,7 +4476,7 @@ pub fn regenerate_stubs() {
     // Step 2c: Fetch BlizzardInterfaceResources lists (all 3 branches), compute classic API
     // diff, derive retail global name universe, and compute flavor bitmasks from branch presence.
     log::info!("Fetching BlizzardInterfaceResources and computing branch diffs...");
-    let branch_data = fetch_branch_resources(&combined_stubs);
+    let mut branch_data = fetch_branch_resources(&combined_stubs);
     if branch_data.retail_all_names.is_empty() {
         source_errors.push("BlizzardInterfaceResources retail names: empty (fetch failed)".to_string());
     }
@@ -4591,7 +4631,7 @@ pub fn regenerate_stubs() {
     // enum-merge step below can add classic-exclusive field names into retail enums
     // without a second traversal of the classic API doc directories.
     log::info!("Generating classic stubs...");
-    let (classic_lua, classic_enum_union) = generate_classic_stubs(
+    let (classic_lua, classic_enum_union, frame_flavor_map) = generate_classic_stubs(
         &classic_diff,
         &wiki_pages,
         &wiki_redirects,
@@ -4599,7 +4639,11 @@ pub fn regenerate_stubs() {
         retail_api_doc.as_ref(),
         &retail_fxml_consts,
         &all_ui_dirs,
+        &branch_flavors,
     );
+    // Merge frame flavor data into the main flavor map so apply_flavor_data
+    // picks up Variable-kind frame globals (CraftCreateButton, etc.).
+    branch_data.flavor_map.extend(frame_flavor_map);
     phase!("generate_classic_stubs (LE_*, XML, fields walks)");
 
     // Step 4b: Enrich widget stubs with wiki-scraped annotations

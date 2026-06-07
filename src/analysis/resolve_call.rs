@@ -2802,6 +2802,7 @@ impl<'a> Analysis<'a> {
                             original_type_source: None,
                         }],
                         flavor_guard: 0,
+                        flavors: 0,
                     });
                     new_args.push(sym_idx);
                     if let Some(pa) = param_annotations.get(idx) {
@@ -2838,6 +2839,7 @@ impl<'a> Analysis<'a> {
                                     original_type_source: None,
                                 }],
                                 flavor_guard: 0,
+                                flavors: 0,
                             });
                             new_args.push(sym_idx);
                             if let Some(pa) = f_param_annotations.get(i) {
@@ -2904,6 +2906,7 @@ impl<'a> Analysis<'a> {
                             original_type_source: None,
                         }],
                         flavor_guard: 0,
+                        flavors: 0,
                     });
                     new_rets.push(sym_idx);
                 }

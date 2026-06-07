@@ -522,12 +522,33 @@ pub(crate) fn unwrap_to_inner_expr(exprs: &[Expr], mut id: ExprId) -> ExprId {
 /// - **locals assigned from uncertain sources**: a local whose defining
 ///   expression is itself uncertain (e.g. `local x = self.lateinit_field`)
 ///   inherits that uncertainty (single-level only).
+/// - **flavor-restricted globals**: external globals only available in some
+///   flavors may not exist at runtime when the project targets multiple flavors.
 pub(crate) fn is_expr_truthiness_uncertain(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
     is_lateinit_field_access(analysis, expr_id)
     || is_field_without_direct_annotation(analysis, expr_id)
     || is_dynamic_bracket_index(analysis, expr_id)
     || is_unannotated_param_ref(analysis, expr_id)
     || is_symbol_from_uncertain_source(analysis, expr_id)
+    || is_flavor_restricted_global(analysis, expr_id)
+}
+
+/// External global with flavor restrictions: may not exist in all targeted
+/// flavors, so nil-checking it is valid even though its static type is truthy.
+/// Only suppresses when the global's flavor mask doesn't cover all of the
+/// project's targeted flavors (e.g. a retail-only global in a retail-only
+/// project is guaranteed to exist, so the check is genuinely redundant).
+fn is_flavor_restricted_global(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
+    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[id.val()] else { return false };
+    if !sym_idx.is_external() { return false; }
+    let sym_flavors = analysis.sym(*sym_idx).flavors;
+    if sym_flavors == 0 { return false; }
+    let project = analysis.project_flavors;
+    // If the project doesn't declare flavors, we can't prove the global exists.
+    if project == 0 { return true; }
+    // Suppress only when the global doesn't cover all project-targeted flavors.
+    (sym_flavors & project) != project
 }
 
 /// Lateinit (`T!`) field access: typed non-nil but can be nil at runtime.

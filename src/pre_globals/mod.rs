@@ -154,7 +154,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 26;
+pub(crate) const BLOB_VERSION: u32 = 27;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -773,6 +773,7 @@ impl BuildContext {
                 original_type_source: None,
             }],
             flavor_guard: 0,
+            flavors: 0,
         });
         self.scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);
         sym_idx
@@ -1798,7 +1799,10 @@ impl BuildContext {
                 } else if g.name == "getmetatable" {
                     self.getmetatable_func_idx = Some(func_idx);
                 }
-                self.register_global(&g.name, Some(ValueType::Function(Some(func_idx))));
+                let sym_idx = self.register_global(&g.name, Some(ValueType::Function(Some(func_idx))));
+                if g.flavors != 0 {
+                    self.symbols[sym_idx.ext_offset()].flavors = g.flavors;
+                }
                 if is_framexml_path(&g.source_path) { self.framexml_names.insert(g.name.clone()); }
             }
         }
@@ -1840,6 +1844,9 @@ impl BuildContext {
                 let sym_idx = self.register_global(&g.name, resolved_type);
                 if g.flavor_guard != 0 {
                     self.symbols[sym_idx.ext_offset()].flavor_guard = g.flavor_guard;
+                }
+                if g.flavors != 0 {
+                    self.symbols[sym_idx.ext_offset()].flavors = g.flavors;
                 }
                 if let Some(ref sv) = g.string_value {
                     self.string_values.insert(sym_idx, sv.clone());
@@ -2289,6 +2296,7 @@ impl PreResolvedGlobals {
                 original_type_source: None,
             }],
             flavor_guard: 0,
+            flavors: 0,
         };
         let mut scope0_symbols = HashMap::new();
         scope0_symbols.insert(SymbolIdentifier::Name("_G".to_string()), SymbolIndex(g_sym_idx));
@@ -2745,6 +2753,7 @@ impl PreResolvedGlobals {
                 scope_idx: func_scope,
                 versions: vec![SymbolVersion { def_node: dummy_node, type_source: None, resolved_type: resolved, type_args: Vec::new(), created_in_scope: func_scope, creation_order: 0, original_type_source: None }],
                 flavor_guard: 0,
+                flavors: 0,
             });
             scopes[func_scope_local].symbols.insert(SymbolIdentifier::Name(p.name.clone()), sym_idx);
             arg_symbols.push(sym_idx);
@@ -2909,6 +2918,7 @@ impl PreResolvedGlobals {
                     original_type_source: None,
                 }],
                 flavor_guard: 0,
+                flavors: 0,
             });
             scopes[func_scope_local].symbols.insert(
                 SymbolIdentifier::Name("self".to_string()), sym_idx,
@@ -2953,6 +2963,7 @@ impl PreResolvedGlobals {
                     original_type_source: None,
                 }],
                 flavor_guard: 0,
+                flavors: 0,
             });
             scopes[func_scope_local].symbols.insert(
                 SymbolIdentifier::Name(p.name.clone()), sym_idx,
@@ -3123,6 +3134,7 @@ impl PreResolvedGlobals {
                     original_type_source: None,
                 }],
                 flavor_guard: 0,
+                flavors: 0,
             });
             scopes[func_scope_local].symbols.insert(
                 SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,

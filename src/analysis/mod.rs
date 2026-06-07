@@ -909,6 +909,7 @@ impl Ir {
                 scope_idx,
                 versions: vec![version],
                 flavor_guard: 0,
+                flavors: 0,
             });
             let symbol_idx = SymbolIndex(self.symbols.len() - 1);
             let current_scope = self.scopes.get_mut(scope_idx.val()).unwrap();
@@ -951,6 +952,7 @@ impl Ir {
             scope_idx: global_scope,
             versions: vec![version],
             flavor_guard: 0,
+            flavors: 0,
         });
         let symbol_idx = SymbolIndex(self.symbols.len() - 1);
         self.scopes.get_mut(global_scope.val()).unwrap().symbols.insert(id, symbol_idx);

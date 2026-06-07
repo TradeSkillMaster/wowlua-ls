@@ -1,0 +1,8 @@
+{
+    "diagnostics": {
+        "enable": [
+            "redundant-condition"
+        ]
+    },
+    "flavors": ["retail", "classic"]
+}

@@ -593,6 +593,7 @@ mod tests {
                     original_type_source: None,
                 }],
                 flavor_guard: 0,
+                flavors: 0,
             };
             pg.symbols.push(sym);
             Some(SymbolIndex(EXT_BASE + pg.symbols.len() - 1))

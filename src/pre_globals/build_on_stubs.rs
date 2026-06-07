@@ -120,6 +120,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 original_type_source: None,
             }],
             flavor_guard: 0,
+            flavors: 0,
         });
         self.scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);
         sym_idx

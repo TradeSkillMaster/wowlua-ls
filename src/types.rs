@@ -662,6 +662,10 @@ pub(crate) struct Symbol {
     /// narrows the active flavor set to this mask.
     #[serde(default)]
     pub(crate) flavor_guard: u8,
+    /// When non-zero, this global is only available in the indicated flavors.
+    /// Used to suppress `redundant-condition` on nil-checks of flavor-restricted globals.
+    #[serde(default)]
+    pub(crate) flavors: u8,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

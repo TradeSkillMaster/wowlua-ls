@@ -1531,6 +1531,7 @@ impl<'a> Analysis<'a> {
                         original_type_source: None,
                     }],
                     flavor_guard: 0,
+                    flavors: 0,
                 });
                 self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::Name(p.name.clone()), sym_idx,
@@ -1567,6 +1568,7 @@ impl<'a> Analysis<'a> {
                         original_type_source: None,
                     }],
                     flavor_guard: 0,
+                    flavors: 0,
                 });
                 ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::FunctionRet(func_idx, col), sym_idx,
@@ -2010,6 +2012,7 @@ impl<'a> Analysis<'a> {
                     original_type_source: None,
                 }],
                 flavor_guard: 0,
+                flavors: 0,
             });
             self.ir.scopes[func_scope.val()].symbols.insert(
                 SymbolIdentifier::Name(p.name.clone()), sym_idx,
@@ -2057,6 +2060,7 @@ impl<'a> Analysis<'a> {
                         original_type_source: None,
                     }],
                     flavor_guard: 0,
+                    flavors: 0,
                 });
                 self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::FunctionRet(func_idx, col), sym_idx,
@@ -2091,6 +2095,7 @@ impl<'a> Analysis<'a> {
                         original_type_source: None,
                     }],
                     flavor_guard: 0,
+                    flavors: 0,
                 });
                 self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
