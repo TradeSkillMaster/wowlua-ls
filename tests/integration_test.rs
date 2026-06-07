@@ -3550,6 +3550,15 @@ fn xml_frames() {
 }
 
 #[test]
+fn createframe_named() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/createframe-named/reader.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/createframe-named"),
+    });
+}
+
+#[test]
 fn branch_local_version() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/branch-local-version.lua",

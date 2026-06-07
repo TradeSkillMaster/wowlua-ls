@@ -1160,6 +1160,84 @@ pub(crate) fn scan_file_globals_with_synth(
     }
 
     let mut globals = Vec::new();
+
+    // Detect CreateFrame/CreateFont/CreateFontFamily calls with string-literal
+    // name arguments. These calls implicitly create a named global as a side
+    // effect; registering it eliminates false `undefined-global` at read sites
+    // in other files (mirrors how xml_scan.rs registers name= frames as
+    // ExternalGlobal). Runs before the main statement loop so these entries
+    // appear first in the globals vec and win initial registration in
+    // build_on_stubs — the explicit `returns` type is needed because the
+    // deferred resolution path filters out CreateFrame's generic TypeVariable.
+    for stmt in &all_stmts {
+        let call = match stmt {
+            Statement::FunctionCall(c) => Some(*c),
+            Statement::LocalAssign(a) => {
+                a.expression_list().and_then(|el| {
+                    el.expressions().into_iter().find_map(|e| {
+                        if let Expression::FunctionCall(c) = e { Some(c) } else { None }
+                    })
+                })
+            }
+            Statement::Assign(a) => {
+                a.expression_list().and_then(|el| {
+                    el.expressions().into_iter().find_map(|e| {
+                        if let Expression::FunctionCall(c) = e { Some(c) } else { None }
+                    })
+                })
+            }
+            _ => None,
+        };
+        if let Some(ref call) = call
+            && let Some((name, frame_type)) = extract_createframe_named_global(call)
+        {
+            // These are all top-level WoW API globals (CreateFrame, CreateFont,
+            // CreateFontFamily); no addon_ns / class_vars normalization is needed
+            // since the callee is always a plain global name.
+            let callee_names = call.identifier()
+                .map(|id| id.names())
+                .unwrap_or_default();
+            let range = call.syntax().text_range();
+            globals.push(ExternalGlobal {
+                name,
+                kind: ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(
+                    callee_names,
+                    Some(frame_type.clone()),
+                )),
+                params: Vec::new(),
+                returns: vec![AnnotationType::Simple(frame_type)],
+                return_names: Vec::new(),
+                return_descriptions: Vec::new(),
+                overloads: Vec::new(),
+                doc: None,
+                deprecated: false,
+                nodiscard: false,
+                constructor: false,
+                visibility: Visibility::Public,
+                generics: Vec::new(),
+                defclass: None,
+                defclass_parent: None,
+                source_path: owned_path.clone(),
+                def_start: u32::from(range.start()),
+                def_end: u32::from(range.end()),
+                builds_field: None,
+                built_name: None,
+                built_extends: false,
+                type_narrows: None,
+                type_narrows_class: None,
+                string_value: None,
+                number_value: None,
+                is_override: false,
+                see: Vec::new(),
+                flavors: 0,
+                flavor_guard: 0,
+                implicit_nil_return: false,
+                narrows_arg: None,
+                requires: Vec::new(),
+            });
+        }
+    }
+
     // Track field names assigned on the addon table in this file (e.g. ns.LibTSMApp = ...)
     // Used to gate 3-part chains so we don't inject fields onto unrelated external classes
     let mut addon_assigned_fields: HashSet<String> = HashSet::new();
@@ -1641,6 +1719,44 @@ fn extract_first_string_arg(call: &FunctionCall<'_>) -> Option<String> {
             }
         }
     None
+}
+
+/// Extract a non-empty string literal value from an expression, stripping quotes.
+fn string_literal_value(expr: &Expression<'_>) -> Option<String> {
+    if let Expression::Literal(lit) = expr {
+        let s = lit.get_string()?.trim_matches(|c| c == '"' || c == '\'').to_string();
+        if !s.is_empty() { return Some(s); }
+    }
+    None
+}
+
+/// Check if a function call is `CreateFrame(type, "name", ...)`,
+/// `CreateFont("name")`, or `CreateFontFamily("name", ...)` with
+/// string-literal name arguments.
+/// Returns `(global_name, resolved_type)` if matched.
+fn extract_createframe_named_global(call: &FunctionCall<'_>) -> Option<(String, String)> {
+    let ident = call.identifier()?;
+    if ident.is_call_to_self() { return None; }
+    let names = ident.names();
+    if names.len() != 1 { return None; }
+    let args = call.arguments()?.expressions();
+
+    match names[0].as_str() {
+        "CreateFrame" => {
+            // CreateFrame(frameType, "name", ...)
+            if args.len() < 2 { return None; }
+            let frame_type = string_literal_value(&args[0])?;
+            let name = string_literal_value(&args[1])?;
+            Some((name, frame_type))
+        }
+        "CreateFont" | "CreateFontFamily" => {
+            // CreateFont("name") / CreateFontFamily("name", ...)
+            if args.is_empty() { return None; }
+            let name = string_literal_value(&args[0])?;
+            Some((name, "Font".to_string()))
+        }
+        _ => None,
+    }
 }
 
 /// Extract named fields from a table constructor as a `TableLiteral` annotation.
