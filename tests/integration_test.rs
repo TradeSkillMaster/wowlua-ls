@@ -75,7 +75,8 @@ fn run_annotation_tests(config: &TestConfig) {
     let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
     let pre_globals = if config.with_stubs {
         if let Some(ref dir) = abs_scan_dir {
-            let (sc, mut sa, sg, ans, se, ws_callable) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+            let scan = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+            let (sc, mut sa, sg, ans, se, ws_callable) = (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
             wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
             let stub_pre = &*STUB_GLOBALS;
             let mut pg = PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
@@ -86,7 +87,8 @@ fn run_annotation_tests(config: &TestConfig) {
             STUB_GLOBALS.clone()
         }
     } else if let Some(ref dir) = abs_scan_dir {
-        let (sc, mut sa, sg, ans, se, ws_callable) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+        let scan = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+        let (sc, mut sa, sg, ans, se, ws_callable) = (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
         wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
         if sc.is_empty() && sg.is_empty() && se.is_empty() {
             Arc::new(PreResolvedGlobals::empty())
@@ -1076,9 +1078,10 @@ fn crossfile_references() {
 
     // Build pre_globals for the scan_dir, matching run_annotation_tests.
     let mut project_configs = ProjectConfigs::default();
-    let (sc, sa, sg, ans, se, ws_callable) = lsp::scan_workspace(
+    let scan = lsp::scan_workspace(
         &[std::path::PathBuf::from("tests/crossfile")], &mut project_configs,
     );
+    let (sc, sa, sg, ans, se, ws_callable) = (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
     let mut pre_globals_val = PreResolvedGlobals::build(&sg, &sc, &sa, false, &ans, &ws_callable);
     pre_globals_val.merge_events(&se);
     let pre_globals = Arc::new(pre_globals_val);
@@ -2410,6 +2413,17 @@ fn crossfile_globals() {
 }
 
 #[test]
+fn dynamic_global_prefix() {
+    // _G["PREFIX"..k] = v pattern: workspace scanner detects the prefix
+    // and allows reads of PREFIX* globals in other files.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/dynamic-global-prefix/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/dynamic-global-prefix"),
+    });
+}
+
+#[test]
 fn crossfile_body_returns() {
     // Cross-file body-inferred return types (no @return annotations)
     run_annotation_tests(&TestConfig {
@@ -2702,7 +2716,8 @@ fn workspace_scan_is_sorted_regardless_of_fs_order() {
     }
 
     let mut configs = ProjectConfigs::default();
-    let (_classes, _aliases, globals, _ans, _events, _ws_callable) = lsp::scan_workspace(&[tmp_root.clone()], &mut configs);
+    let scan = lsp::scan_workspace(&[tmp_root.clone()], &mut configs);
+    let globals = scan.globals;
 
     let seen_paths: Vec<PathBuf> = globals
         .iter()
@@ -2727,7 +2742,8 @@ fn workspace_scan_is_sorted_regardless_of_fs_order() {
 fn shebang_file_skipped_by_workspace_scan() {
     let mut configs = ProjectConfigs::default();
     let dir = std::path::PathBuf::from("tests");
-    let (classes, _aliases, globals, _ans, _events, _ws_callable) = lsp::scan_workspace(&[dir], &mut configs);
+    let scan = lsp::scan_workspace(&[dir], &mut configs);
+    let (classes, globals) = (scan.classes, scan.globals);
     for g in &globals {
         assert!(
             g.source_path.as_ref().map_or(true, |p| !p.ends_with("shebang.lua")),
@@ -2774,22 +2790,23 @@ fn workspace_scan_is_stable_across_invocations() {
     }
 
     let mut configs = ProjectConfigs::default();
-    let (classes, aliases, globals, _ans, _events, _ws_callable) = lsp::scan_workspace(
+    let scan = lsp::scan_workspace(
         &[std::path::PathBuf::from("tests/crossfile")],
         &mut configs,
     );
+    let (classes, aliases, globals) = (scan.classes, scan.aliases, scan.globals);
     let c_fp = fingerprint_classes(&classes);
     let a_fp = fingerprint_aliases(&aliases);
     let g_fp = fingerprint_globals(&globals);
     for _ in 0..4 {
         let mut configs2 = ProjectConfigs::default();
-        let (c2, a2, g2, _ans2, _events2, _ws_callable2) = lsp::scan_workspace(
+        let scan2 = lsp::scan_workspace(
             &[std::path::PathBuf::from("tests/crossfile")],
             &mut configs2,
         );
-        assert_eq!(c_fp, fingerprint_classes(&c2), "class discovery order changed between scans");
-        assert_eq!(a_fp, fingerprint_aliases(&a2), "alias discovery order changed between scans");
-        assert_eq!(g_fp, fingerprint_globals(&g2), "global discovery order changed between scans");
+        assert_eq!(c_fp, fingerprint_classes(&scan2.classes), "class discovery order changed between scans");
+        assert_eq!(a_fp, fingerprint_aliases(&scan2.aliases), "alias discovery order changed between scans");
+        assert_eq!(g_fp, fingerprint_globals(&scan2.globals), "global discovery order changed between scans");
     }
 }
 
@@ -3224,10 +3241,11 @@ fn workspace_symbol_search() {
 
     let mut configs = ProjectConfigs::default();
     let scan_dir = std::env::current_dir().unwrap().join("tests/workspace-symbol");
-    let (classes, aliases, globals, addon_ns, events, ws_callable) = lsp::scan_workspace(
+    let scan = lsp::scan_workspace(
         &[scan_dir],
         &mut configs,
     );
+    let (classes, aliases, globals, addon_ns, events, ws_callable) = (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
     let implicit_protected = false;
     let mut pg = PreResolvedGlobals::build(&globals, &classes, &aliases, implicit_protected, &addon_ns, &ws_callable);
     pg.merge_events(&events);
@@ -3289,10 +3307,11 @@ fn workspace_symbol_with_stubs_excludes_api() {
 
     let mut configs = ProjectConfigs::default();
     let scan_dir = std::env::current_dir().unwrap().join("tests/workspace-symbol");
-    let (classes, aliases, globals, addon_ns, events, ws_callable) = lsp::scan_workspace(
+    let scan = lsp::scan_workspace(
         &[scan_dir],
         &mut configs,
     );
+    let (classes, aliases, globals, addon_ns, events, ws_callable) = (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
     let stub_pre = &*STUB_GLOBALS;
     let implicit_protected = false;
     let mut pg = PreResolvedGlobals::build_on_stubs(stub_pre, &globals, &classes, &aliases, implicit_protected, &addon_ns, &ws_callable);
@@ -3402,9 +3421,10 @@ fn call_hierarchy_crossfile_outgoing() {
     // Build pre_globals with stubs + workspace scan (mirrors real LSP path).
     let mut project_configs = ProjectConfigs::default();
     let scan_dir = std::env::current_dir().unwrap().join("tests/crossfile");
-    let (sc, sa, sg, ans, se, ws_callable) = lsp::scan_workspace(
+    let scan = lsp::scan_workspace(
         &[scan_dir], &mut project_configs,
     );
+    let (sc, sa, sg, ans, se, ws_callable) = (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
     let stub_pre = &*STUB_GLOBALS;
     let mut pre_globals_val = PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, false, &ans, &ws_callable);
     pre_globals_val.merge_events(&se);

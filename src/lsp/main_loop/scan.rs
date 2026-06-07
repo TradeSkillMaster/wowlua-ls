@@ -212,7 +212,14 @@ pub(super) fn collect_lua_paths_filtered(
     }
 }
 
-pub(super) fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<(ScanResult, Vec<ExternalGlobal>, Option<String>)> {
+pub(super) struct LuaFileScanResult {
+    pub scan: ScanResult,
+    pub file_globals: Vec<ExternalGlobal>,
+    pub addon_ns_class: Option<String>,
+    pub dynamic_global_prefixes: Vec<String>,
+}
+
+pub(super) fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<LuaFileScanResult> {
     let text = std::fs::read_to_string(path).ok()?;
     if crate::has_shebang(&text) { return None; }
     let tree = crate::syntax::parser::parse(&text);
@@ -234,7 +241,8 @@ pub(super) fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_pr
         }
     }
     let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
-    Some((scan, file_globals, addon_ns_class))
+    let dynamic_global_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
+    Some(LuaFileScanResult { scan, file_globals, addon_ns_class, dynamic_global_prefixes })
 }
 
 pub fn scan_paths_with_overrides(
@@ -251,13 +259,13 @@ pub fn scan_paths_with_overrides(
             let is_override = override_paths.contains(p);
             let synth = configs.map(|c| c.correlated_return_overloads_for(p)).unwrap_or(true);
             let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-            scan_lua_file(p, synth, ipp).map(|(scan, mut file_globals, addon_ns_class)| {
+            scan_lua_file(p, synth, ipp).map(|mut r| {
                 if is_override {
-                    for g in &mut file_globals {
+                    for g in &mut r.file_globals {
                         g.is_override = true;
                     }
                 }
-                (p.clone(), scan, file_globals, addon_ns_class)
+                (p.clone(), r)
             })
         })
         .collect();
@@ -268,15 +276,21 @@ pub fn scan_paths_with_overrides(
     let mut events = Vec::new();
     let mut addon_ns_class_files: HashMap<PathBuf, String> = HashMap::new();
     let mut callable_classes: HashSet<String> = HashSet::new();
-    for (file_path, scan, file_globals, addon_ns_class) in results {
-        classes.extend(scan.classes);
-        aliases.extend(scan.aliases);
-        events.extend(scan.events);
-        callable_classes.extend(scan.callable_classes);
-        if let Some(name) = addon_ns_class {
+    let mut dynamic_global_prefixes: Vec<String> = Vec::new();
+    for (file_path, r) in results {
+        classes.extend(r.scan.classes);
+        aliases.extend(r.scan.aliases);
+        events.extend(r.scan.events);
+        callable_classes.extend(r.scan.callable_classes);
+        if let Some(name) = r.addon_ns_class {
             addon_ns_class_files.insert(file_path, name);
         }
-        globals.extend(file_globals);
+        globals.extend(r.file_globals);
+        for pfx in r.dynamic_global_prefixes {
+            if !dynamic_global_prefixes.contains(&pfx) {
+                dynamic_global_prefixes.push(pfx);
+            }
+        }
     }
 
     // Pass 2+3: defclass + built-name scans.
@@ -474,8 +488,11 @@ pub fn scan_paths_with_overrides(
         }
     }
 
+    if !dynamic_global_prefixes.is_empty() {
+        log::debug!("workspace scan: {} dynamic global prefix patterns detected", dynamic_global_prefixes.len());
+    }
     log::debug!("workspace scan: {} classes, {} aliases, {} globals, {} events", classes.len(), aliases.len(), globals.len(), events.len());
-    (classes, aliases, globals, addon_ns_class_files, events, callable_classes)
+    WorkspaceScanResult { classes, aliases, globals, addon_ns_class_files, events, callable_classes, dynamic_global_prefixes }
 }
 
 /// Partition XML classes into direct classes and overlay classes based on whether
@@ -535,24 +552,24 @@ pub(super) fn scan_xml_paths_into(xml_paths: &[PathBuf], result: &mut WorkspaceS
     let xml_results: Vec<_> = xml_paths.par_iter()
         .filter_map(|p| crate::xml_scan::scan_xml_file(p))
         .collect();
-    let lua_class_names: HashSet<String> = result.0.iter().map(|c| c.name.clone()).collect();
+    let lua_class_names: HashSet<String> = result.classes.iter().map(|c| c.name.clone()).collect();
     let mut all_xml_classes = Vec::new();
     let mut all_overlays: Vec<ClassDecl> = Vec::new();
     for xml_result in xml_results {
         all_xml_classes.extend(xml_result.classes);
-        result.2.extend(xml_result.globals);
+        result.globals.extend(xml_result.globals);
         all_overlays.extend(xml_result.mixin_augments);
     }
     let (direct, overlay) = partition_xml_classes(all_xml_classes, &lua_class_names);
-    result.0.extend(direct);
+    result.classes.extend(direct);
     all_overlays.extend(overlay);
     // Merge overlays (XML duplicate classes + mixin augments) into the class list
     // so that mixin Lua classes gain parentKey fields from frames that use them.
     // Uses the same overlay merge logic as defclass scanning: existing fields are
     // not overwritten.
     if !all_overlays.is_empty() {
-        let classes = std::mem::take(&mut result.0);
-        result.0 = merge_defclass_into_overlays(classes, &[], all_overlays.iter().collect());
+        let classes = std::mem::take(&mut result.classes);
+        result.classes = merge_defclass_into_overlays(classes, &[], all_overlays.iter().collect());
     }
 }
 
@@ -581,6 +598,11 @@ pub fn scan_workspace_with_stubs(
     }
     let mut result = scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs), stub_globals, stub_classes);
     scan_xml_paths_into(&xml_paths, &mut result);
+    // Apply detected dynamic global prefixes to configs so that reads of
+    // PREFIX<anything> across the workspace don't false-positive.
+    if !result.dynamic_global_prefixes.is_empty() {
+        configs.set_dynamic_global_prefixes(result.dynamic_global_prefixes.clone());
+    }
     result
 }
 
@@ -608,7 +630,8 @@ pub(super) fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, impl
         }
     }
     let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
-    Some(CachedFileScan { tree, scan, file_globals, addon_ns_class })
+    let dynamic_global_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
+    Some(CachedFileScan { tree, scan, file_globals, addon_ns_class, dynamic_global_prefixes })
 }
 
 /// Pass 1: file discovery, XML scan, and Lua parse+scan. No stubs dependency.
@@ -668,6 +691,9 @@ pub(super) fn complete_directory_scan(
         }
         if !cached.scan.callable_classes.is_empty() {
             out.file_callable_classes.insert(path.clone(), cached.scan.callable_classes.clone());
+        }
+        if !cached.dynamic_global_prefixes.is_empty() {
+            out.file_dynamic_prefixes.insert(path.clone(), cached.dynamic_global_prefixes.clone());
         }
     }
 
@@ -773,6 +799,20 @@ pub(super) fn complete_directory_scan(
     out
 }
 
+/// Collect all unique dynamic prefix patterns from per-file maps.
+pub(super) fn collect_all_dynamic_prefixes(file_prefixes: &HashMap<PathBuf, Vec<String>>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for prefixes in file_prefixes.values() {
+        for pfx in prefixes {
+            if seen.insert(pfx.clone()) {
+                result.push(pfx.clone());
+            }
+        }
+    }
+    result
+}
+
 pub(super) fn scan_directory_tracked(
     dir: &Path,
     configs: &mut crate::config::ProjectConfigs,
@@ -780,5 +820,10 @@ pub(super) fn scan_directory_tracked(
     stub_globals: &[ExternalGlobal],
 ) -> DirectoryScanResult {
     let pass1 = scan_directory_pass1(dir, configs);
-    complete_directory_scan(pass1, stub_classes, stub_globals, configs)
+    let result = complete_directory_scan(pass1, stub_classes, stub_globals, configs);
+    let all_prefixes: Vec<String> = collect_all_dynamic_prefixes(&result.file_dynamic_prefixes);
+    if !all_prefixes.is_empty() {
+        configs.set_dynamic_global_prefixes(all_prefixes);
+    }
+    result
 }

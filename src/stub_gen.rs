@@ -4756,8 +4756,9 @@ pub fn regenerate_stubs() {
     let mut paths = collect_stub_scan_paths(&vendor_dirs, &gen_dir, &overrides_dir, &override_stems, &mut override_set);
 
     phase!("write generated stubs + enum/constants merge");
-    let (mut classes, mut aliases, mut globals, _addon_ns_class_names, stub_events, _callable_classes) =
-        crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
+    let scan_result = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
+    let (mut classes, mut aliases, mut globals, stub_events) =
+        (scan_result.classes, scan_result.aliases, scan_result.globals, scan_result.events);
     phase!("scan_paths_with_overrides (pass 1)");
 
     // Step 6b: Apply flavor bitmask data derived from BlizzardInterfaceResources branch diffs
@@ -4807,8 +4808,9 @@ pub fn regenerate_stubs() {
         log::info!("Re-scanning stubs with inferred returns (pass 2)...");
         paths = collect_stub_scan_paths(&vendor_dirs, &gen_dir, &overrides_dir, &override_stems, &mut override_set);
 
-        let (classes2, aliases2, globals2, _, stub_events2, _) =
-            crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
+        let scan_result2 = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
+        let (classes2, aliases2, globals2, stub_events2) =
+            (scan_result2.classes, scan_result2.aliases, scan_result2.globals, scan_result2.events);
         phase!("scan_paths_with_overrides (pass 2)");
 
         // Replace globals/classes/aliases with the enriched Pass 2 versions.

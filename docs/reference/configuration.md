@@ -169,6 +169,10 @@ Automatically treat globals matching `SLASH_*` as allowed write/read globals. Wo
 
 Automatically treat globals matching `BINDING_HEADER_*` and `BINDING_NAME_*` as allowed write/read globals. WoW keybinding labels are defined by assigning `BINDING_HEADER_ADDON` and `BINDING_NAME_ACTION` to global variables, and the binding system reads them at runtime. Set to `false` to require explicit listing in `globals.write`.
 
+::: info Automatic dynamic prefix detection
+In addition to the settings above, the language server automatically detects dynamic global creation via `_G["PREFIX" .. key] = value` (or `_G[name .. "SUFFIX"]`) patterns in your workspace. When detected, a wildcard glob (e.g. `PREFIX*`) is registered so reads of those globals don't trigger `undefined-global`. This requires no configuration. The prefix/suffix must be at least 3 characters to avoid overly broad matching.
+:::
+
 ### `inference.backward_param_types`
 
 - **Type:** `boolean`

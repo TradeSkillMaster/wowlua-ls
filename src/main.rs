@@ -109,8 +109,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let stubs = lsp::load_precomputed_stubs()
             .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
         let mut project_configs = config::ProjectConfigs::default();
+        let scan = lsp::scan_workspace_with_stubs(std::slice::from_ref(&project_root), &mut project_configs, &stubs.stub_globals, &stubs.stub_classes);
         let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_files, ws_events, ws_callable_classes) =
-            lsp::scan_workspace_with_stubs(std::slice::from_ref(&project_root), &mut project_configs, &stubs.stub_globals, &stubs.stub_classes);
+            (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
         let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
@@ -163,11 +164,13 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             Some(s) => (&s.stub_globals, &s.stub_classes),
             None => (&[], &[]),
         };
-        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_files, ws_events, ws_callable_classes) = if let Some(dir) = &scan_dir {
+        let scan = if let Some(dir) = &scan_dir {
             lsp::scan_workspace_with_stubs(std::slice::from_ref(dir), &mut project_configs, stub_globals_ref, stub_classes_ref)
         } else {
-            (Vec::new(), Vec::new(), Vec::new(), std::collections::HashMap::new(), Vec::new(), std::collections::HashSet::new())
+            lsp::WorkspaceScanResult::default()
         };
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_files, ws_events, ws_callable_classes) =
+            (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
         let file_path = if std::path::Path::new(filename).is_absolute() {
             std::path::PathBuf::from(filename)
@@ -338,7 +341,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Phase 2: Scan workspace directory (discovers configs hierarchically)
         let mut project_configs = config::ProjectConfigs::default();
         let t = std::time::Instant::now();
-        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_files, ws_events, ws_callable_classes) = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, &stub_globals, &stub_classes);
+        let scan = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, &stub_globals, &stub_classes);
+        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_files, ws_events, ws_callable_classes) =
+            (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
         let ws_scan_dur = t.elapsed();
         info!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
             ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
@@ -531,8 +536,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             None => (&[], &[]),
         };
         let mut project_configs = config::ProjectConfigs::default();
+        let scan = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, stub_globals_ref, stub_classes_ref);
         let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_files, ws_events, ws_callable_classes) =
-            lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, stub_globals_ref, stub_classes_ref);
+            (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
         let pre_globals = if let Some(stubs) = stubs {
@@ -669,7 +675,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let stubs = lsp::load_precomputed_stubs()
             .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
         let mut project_configs = config::ProjectConfigs::default();
-        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_files, ws_events, ws_callable_classes) = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, &stubs.stub_globals, &stubs.stub_classes);
+        let scan = lsp::scan_workspace_with_stubs(std::slice::from_ref(&dir), &mut project_configs, &stubs.stub_globals, &stubs.stub_classes);
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_files, ws_events, ws_callable_classes) =
+            (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
         crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
         let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {

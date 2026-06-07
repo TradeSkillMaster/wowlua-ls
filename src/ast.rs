@@ -956,6 +956,54 @@ pub(crate) fn extract_bracket_variable_key(node: SyntaxNode<'_>) -> Option<Strin
     None
 }
 
+/// Extract the string-literal part from a bracket-access key that is a
+/// concatenation expression. Returns `(literal, is_prefix)`:
+/// - `_G["PREFIX" .. k]` → `Some(("PREFIX", true))`
+/// - `_G[k .. "_SUFFIX"]` → `Some(("_SUFFIX", false))`
+///
+/// Returns `None` when the key is not a `BinaryExpression(Concatenate)` or
+/// neither operand is a string literal.
+pub(crate) fn extract_bracket_concat_string_literal(node: SyntaxNode<'_>) -> Option<(String, bool)> {
+    let mut seen_bracket = false;
+    for child in node.children_with_tokens() {
+        match child {
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::LeftSquareBracket => {
+                seen_bracket = true;
+            }
+            NodeOrToken::Node(n) if seen_bracket => {
+                if let Some(bin) = BinaryExpression::cast(n)
+                    && bin.kind() == Operator::Concatenate
+                {
+                    let terms = bin.get_terms();
+                    if terms.len() == 2 {
+                        // "PREFIX" .. expr → prefix on LHS
+                        if let Expression::Literal(lit) = &terms[0]
+                            && let Some(raw) = lit.get_string()
+                        {
+                            let s = raw.trim_matches(|c| c == '"' || c == '\'').to_string();
+                            if !s.is_empty() {
+                                return Some((s, true));
+                            }
+                        }
+                        // expr .. "SUFFIX" → suffix on RHS
+                        if let Expression::Literal(lit) = &terms[1]
+                            && let Some(raw) = lit.get_string()
+                        {
+                            let s = raw.trim_matches(|c| c == '"' || c == '\'').to_string();
+                            if !s.is_empty() {
+                                return Some((s, false));
+                            }
+                        }
+                    }
+                }
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Like `extract_bracket_string_key` but also handles numeric literal keys.
 /// Returns the string key bare (e.g. `"foo"`) or numeric keys wrapped in brackets (e.g. `"[1]"`).
 pub(crate) fn extract_bracket_literal_key(node: SyntaxNode<'_>) -> Option<String> {

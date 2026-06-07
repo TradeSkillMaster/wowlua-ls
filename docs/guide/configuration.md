@@ -126,6 +126,8 @@ Globals matching `SLASH_*` (slash command definitions like `SLASH_MYADDON1 = "/m
 
 Globals matching `BINDING_HEADER_*` and `BINDING_NAME_*` (keybinding label definitions like `BINDING_HEADER_MYADDON = "MyAddon"`) are also automatically allowed. Set `"allow_binding_globals": false` inside `globals` to disable this.
 
+Dynamic global prefixes are also detected automatically. When a file writes globals through a pattern like `_G["PREFIX" .. key] = value` (or `_G[name .. "SUFFIX"]`), the language server registers a wildcard entry (`PREFIX*` or `*SUFFIX`) so that reads of those globals in other files don't trigger `undefined-global`. This is common in localization code that exports translation strings (e.g. `_G["MYADDON_L_" .. key] = value`).
+
 `SavedVariables` and `SavedVariablesPerCharacter` from `.toc` files are automatically added to both lists — you don't need to configure them manually.
 
 ### `inference`

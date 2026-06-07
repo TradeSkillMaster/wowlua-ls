@@ -251,6 +251,21 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
     } else {
         ws.ws_file_addon_ns_class.remove(&file_path);
     }
+
+    // Re-scan dynamic global prefixes for this file and update configs if changed.
+    let new_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
+    let old_prefixes = ws.ws_file_dynamic_prefixes.get(&file_path);
+    let prefixes_changed = old_prefixes.map_or(!new_prefixes.is_empty(), |old| *old != new_prefixes);
+    if prefixes_changed {
+        if new_prefixes.is_empty() {
+            ws.ws_file_dynamic_prefixes.remove(&file_path);
+        } else {
+            ws.ws_file_dynamic_prefixes.insert(file_path.clone(), new_prefixes);
+        }
+        let all_prefixes = super::scan::collect_all_dynamic_prefixes(&ws.ws_file_dynamic_prefixes);
+        Arc::make_mut(&mut ws.configs).set_dynamic_global_prefixes(all_prefixes);
+    }
+
     let mut scan = scan_all_annotations(root);
     // Attach file path to classes/aliases so class_locations/alias_locations
     // are populated during rebuild (matches what scan_lua_file does).

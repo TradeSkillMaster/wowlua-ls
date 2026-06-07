@@ -353,6 +353,7 @@ impl WorkspaceState {
             cached_needs_built_name: false,
             cached_defclass_func_names: Vec::new(),
             cached_built_name_func_names: Vec::new(),
+            ws_file_dynamic_prefixes: HashMap::new(),
             ws_file_addon_ns_class: HashMap::new(),
             ws_file_callable_classes: HashMap::new(),
             cached_callable_classes: HashSet::new(),

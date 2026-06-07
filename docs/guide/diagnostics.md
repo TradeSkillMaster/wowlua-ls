@@ -254,7 +254,7 @@ Reference to an unresolved global name:
 print(MyUnknownGlobal) -- undefined-global
 ```
 
-Suppress with `globals.read` in `.wowluarc.json` for known external globals.
+Suppress with `globals.read` in `.wowluarc.json` for known external globals. Dynamic global patterns like `_G["PREFIX" .. key] = value` are detected automatically — reads matching the prefix won't trigger this diagnostic.
 
 ### `undefined-field` <Badge type="warning" text="Warning" />
 

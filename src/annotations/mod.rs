@@ -1801,6 +1801,7 @@ pub(crate) use annotation_scanning::{
     extract_fun_sig,
 };
 pub use scan_globals::scan_file_globals;
+pub use scan_globals::scan_dynamic_global_prefixes;
 pub(crate) use scan_globals::scan_file_globals_with_synth;
 pub use scan_defclass::scan_defclass_calls;
 pub use scan_defclass::{DefclassContext, scan_defclass_calls_with_context};

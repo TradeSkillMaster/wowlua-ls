@@ -181,6 +181,8 @@ struct WorkspaceState {
     cached_defclass_func_names: Vec<String>,
     /// Cached built-name function names for quick text checks.
     cached_built_name_func_names: Vec<String>,
+    /// Per-file dynamic global prefix patterns detected from `_G["PREFIX"..k] = v`.
+    ws_file_dynamic_prefixes: HashMap<PathBuf, Vec<String>>,
     /// Per-file class name associated with the addon namespace variable (from @class on select(2,...)).
     ws_file_addon_ns_class: HashMap<PathBuf, String>,
     /// Per-file class names where `setmetatable(ClassName, { __call = ... })` was detected.
@@ -250,13 +252,23 @@ struct BackgroundChannels {
     stub_open_counter: std::sync::atomic::AtomicU64,
 }
 
-type WorkspaceScanResult = (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashMap<PathBuf, String>, Vec<crate::annotations::EventDecl>, HashSet<String>);
+#[derive(Default)]
+pub struct WorkspaceScanResult {
+    pub classes: Vec<ClassDecl>,
+    pub aliases: Vec<AliasDecl>,
+    pub globals: Vec<ExternalGlobal>,
+    pub addon_ns_class_files: HashMap<PathBuf, String>,
+    pub events: Vec<crate::annotations::EventDecl>,
+    pub callable_classes: HashSet<String>,
+    pub dynamic_global_prefixes: Vec<String>,
+}
 
 struct CachedFileScan {
     tree: SyntaxTree,
     scan: ScanResult,
     file_globals: Vec<ExternalGlobal>,
     addon_ns_class: Option<String>,
+    dynamic_global_prefixes: Vec<String>,
 }
 
 #[derive(Default)]
@@ -272,6 +284,8 @@ struct DirectoryScanResult {
     file_self_fields: HashMap<PathBuf, Vec<crate::annotations::TypedSelfField>>,
     /// Per-file funcall self-field globals (self.field = SomeCall() in methods).
     file_self_field_globals: HashMap<PathBuf, Vec<ExternalGlobal>>,
+    /// Per-file dynamic global prefix patterns from `_G["PREFIX"..k] = v` assignments.
+    file_dynamic_prefixes: HashMap<PathBuf, Vec<String>>,
 }
 
 /// Intermediate result from Pass 1 of workspace scanning (no stubs dependency).
@@ -496,6 +510,10 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     } else {
         DirectoryScanResult::default()
     };
+    if !scan_result.file_dynamic_prefixes.is_empty() {
+        let all_prefixes = scan::collect_all_dynamic_prefixes(&scan_result.file_dynamic_prefixes);
+        configs.set_dynamic_global_prefixes(all_prefixes);
+    }
     let scan_files = scan_result.file_globals.len();
     log::debug!("Scanned workspace in {:.1?} ({} files)", scan_start.elapsed(), scan_files);
 
@@ -521,6 +539,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ws_file_events: scan_result.file_events,
         ws_file_self_fields: scan_result.file_self_fields,
         ws_file_self_field_globals: scan_result.file_self_field_globals,
+        ws_file_dynamic_prefixes: scan_result.file_dynamic_prefixes,
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
         cached_all_globals: Vec::new(),
         cached_all_classes: Vec::new(),

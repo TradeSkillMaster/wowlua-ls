@@ -856,6 +856,83 @@ fn build_func_external(
     }
 }
 
+// ── Dynamic global prefix scanning ──────────────────────────────────────────
+
+/// Minimum length for a string literal in `_G["PREFIX"..k]` to be considered
+/// a valid dynamic global prefix. Short prefixes risk masking real
+/// `undefined-global` diagnostics.
+const MIN_DYNAMIC_PREFIX_LEN: usize = 3;
+
+/// Check if a bracket-access node has `_G` as its base expression.
+fn is_g_bracket_access(node: SyntaxNode<'_>) -> bool {
+    for child in node.children_with_tokens() {
+        match &child {
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::LeftSquareBracket => break,
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name && t.text() == "_G" => {
+                return true;
+            }
+            NodeOrToken::Node(n) if n.kind() == SyntaxKind::NameRef => {
+                for c in n.children_with_tokens() {
+                    if let NodeOrToken::Token(t) = c
+                        && t.kind() == SyntaxKind::Name
+                        && t.text() == "_G"
+                    {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Scan a file for `_G["PREFIX" .. k] = value` patterns and return glob patterns
+/// like `"PREFIX*"` for each detected prefix. These patterns are added as
+/// workspace-wide allowed globals so that reads of `PREFIX<anything>` in other
+/// files don't false-positive as `undefined-global`.
+///
+/// Detection is deliberately conservative:
+///
+/// - Only `_G[<concat>]` on the LHS of an assignment is recognized.
+/// - The concatenation must have a string literal operand of at least 3 chars.
+/// - Fully dynamic writes (`_G[k] = v` with no literal part) are ignored.
+pub fn scan_dynamic_global_prefixes(root: SyntaxNode<'_>) -> Vec<String> {
+    let Some(block) = Block::cast(root) else { return Vec::new(); };
+    let mut all_stmts = Vec::new();
+    collect_statements_recursive(&block, &mut all_stmts);
+
+    let mut seen = std::collections::HashSet::new();
+    let mut prefixes = Vec::new();
+    for stmt in &all_stmts {
+        if let Statement::Assign(assign) = stmt
+            && let Some(var_list) = assign.variable_list()
+        {
+            for ident in var_list.identifiers() {
+                if ident.syntax().kind() != SyntaxKind::BracketAccess {
+                    continue;
+                }
+                if !is_g_bracket_access(ident.syntax()) {
+                    continue;
+                }
+                if let Some((literal, is_prefix)) = crate::ast::extract_bracket_concat_string_literal(ident.syntax())
+                    && literal.len() >= MIN_DYNAMIC_PREFIX_LEN
+                {
+                    let pattern = if is_prefix {
+                        format!("{}*", literal)
+                    } else {
+                        format!("*{}", literal)
+                    };
+                    if seen.insert(pattern.clone()) {
+                        prefixes.push(pattern);
+                    }
+                }
+            }
+        }
+    }
+    prefixes
+}
+
 // ── Global declaration scanning ─────────────────────────────────────────────
 
 pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Vec<ExternalGlobal> {

@@ -105,7 +105,7 @@ impl AllowedGlobals {
 }
 
 /// A single parsed `.wowluarc.json` file.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ProjectConfig {
     pub ignore: Vec<String>,
     /// Relative library patterns (scanned but diagnostics suppressed).
@@ -211,7 +211,7 @@ impl ProjectConfig {
 
 /// All `.wowluarc.json` configs discovered in the workspace, keyed by directory.
 /// Supports hierarchical lookup: subdirectory configs layer on top of parent configs.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ProjectConfigs {
     /// (directory containing .wowluarc.json, parsed config)
     entries: Vec<(PathBuf, ProjectConfig)>,
@@ -223,6 +223,12 @@ pub struct ProjectConfigs {
     /// Directories that contain at least one `.toc` file. Used to infer the
     /// addon folder name for file-level `...` vararg typing.
     toc_directories: HashSet<PathBuf>,
+    /// Workspace-wide dynamic global prefix patterns detected from
+    /// `_G["PREFIX"..k] = v` assignments in scanned files. Merged into
+    /// both `allowed_read_globals_for` and `allowed_write_globals_for` so
+    /// that reads of `PREFIX<anything>` across the workspace don't
+    /// false-positive as `undefined-global`.
+    dynamic_global_prefixes: AllowedGlobals,
 }
 
 
@@ -269,6 +275,14 @@ impl ProjectConfigs {
         }
 
         self.toc_file_flavors.extend(toc_data.file_flavors);
+    }
+
+    /// Register workspace-wide dynamic global prefix patterns detected from
+    /// `_G["PREFIX"..k] = v` assignments. These are merged into both read and
+    /// write allowed globals for all files.
+    pub fn set_dynamic_global_prefixes(&mut self, prefixes: Vec<String>) {
+        self.dynamic_global_prefixes = AllowedGlobals::default();
+        self.dynamic_global_prefixes.extend_from_strings(prefixes);
     }
 
     /// Check if a path is ignored. Isolated: only the nearest ancestor config's
@@ -383,17 +397,21 @@ impl ProjectConfigs {
     /// containing the `.toc` file — a child config in a subdirectory will NOT
     /// see the parent's TOC-derived globals unless it is in the same directory.
     pub fn allowed_read_globals_for(&self, file_path: &Path) -> AllowedGlobals {
-        self.nearest_config(file_path)
+        let mut result = self.nearest_config(file_path)
             .map(|c| c.allowed_read_globals.clone())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        result.extend(&self.dynamic_global_prefixes);
+        result
     }
 
     /// Get effective allowed write globals for a file.
     /// Isolated: only the nearest config's write globals.
     pub fn allowed_write_globals_for(&self, file_path: &Path) -> AllowedGlobals {
-        self.nearest_config(file_path)
+        let mut result = self.nearest_config(file_path)
             .map(|c| c.allowed_write_globals.clone())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        result.extend(&self.dynamic_global_prefixes);
+        result
     }
 
     /// Get effective flavor mask for a file. Isolated: the nearest config's
