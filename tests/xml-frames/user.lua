@@ -144,6 +144,39 @@ local slbl = styled.Label
 local sico = styled.Icon
 --    ^ hover: (local) sico: Texture
 
+-- Mixin self typed as Frame: when a mixin is referenced by mixin= on a <Frame>
+-- element, the mixin inherits from Frame, so Frame methods are accessible on
+-- self without false undefined-field or type-mismatch diagnostics.
+---@class FrameMix
+FrameMix = {}
+-- ^ diag: create-global
+
+---@param f Frame
+local function takeFrame(f) end
+
+function FrameMix:Setup()
+    -- Frame method accessible on self (proves Frame parent is inherited)
+    self:SetSize(100, 50)
+    --   ^ hover: (method) function FrameMix:SetSize(x: uiUnit, y: uiUnit)
+    -- self is assignable to Frame (no type-mismatch)
+    takeFrame(self)
+end
+
+-- Mixin self typed as Button: verifies the element's specific base type
+-- (Button, not just Frame) is used as the mixin's parent.
+---@class BtnMix
+BtnMix = {}
+-- ^ diag: create-global
+
+function BtnMix:Init()
+    -- Button-specific method accessible (proves Button parent, not just Frame)
+    self:Enable()
+    -- Frame methods also accessible since Button inherits Frame
+    self:SetSize(10, 10)
+    -- self is assignable to Frame (Button extends Frame)
+    takeFrame(self)
+end
+
 -- Hyphenated names should not create globals (invalid Lua identifier)
 local x = InvalidFrame
 --        ^ diag: undefined-global

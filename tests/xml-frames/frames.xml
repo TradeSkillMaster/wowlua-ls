@@ -143,6 +143,16 @@
         </Layers>
     </Frame>
 
+    <!-- Mixin self typed as Frame: a mixin referenced by mixin= on a Frame
+         element should have its self typed as inheriting Frame, so Frame
+         methods (SetSize, GetChildren, etc.) are accessible without false
+         undefined-field or type-mismatch diagnostics. -->
+    <Frame name="FrameMixVirtual" virtual="true" mixin="FrameMix" />
+
+    <!-- Mixin self typed as Button: verifies the element's specific base type
+         (Button, not just Frame) is used as the mixin's parent. -->
+    <Button name="BtnMixVirtual" virtual="true" mixin="BtnMix" />
+
     <!-- Names that should be filtered out (invalid Lua identifiers) -->
     <Frame name="!InvalidFrame" parent="UIParent" />
     <Texture name="Wood-Tile" virtual="true" />

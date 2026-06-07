@@ -746,10 +746,10 @@ fn finalize_frame(
     }
 
     // Clone fields for mixin augmentation before moving them into the ClassDecl.
-    let mixin_fields: Vec<_> = if !ctx.mixins.is_empty() {
-        ctx.fields.clone()
+    let mixin_fields = if !ctx.mixins.is_empty() {
+        Some(ctx.fields.clone())
     } else {
-        Vec::new()
+        None
     };
 
     // Create ClassDecl
@@ -784,11 +784,14 @@ fn finalize_frame(
     classes.push(class_decl);
 
     // For each mixin, emit a slim ClassDecl that augments it with the frame's
-    // parentKey fields. This allows mixin methods to access `self.InputBox`
-    // (or any other parentKey field) without an `undefined-field` diagnostic.
-    // These are stored separately and merged via the defclass overlay mechanism
-    // so they add to (not replace) the mixin's own Lua-declared fields.
-    if !mixin_fields.is_empty() {
+    // base element type as a parent and any parentKey fields. This allows mixin
+    // methods to call Frame/Button/etc. methods on `self` (e.g. `self:SetSize()`)
+    // and access parentKey fields (e.g. `self.InputBox`) without false diagnostics.
+    // The frame's base element type (e.g. "Button" for `<Button mixin="...">`) is
+    // added as a parent so the mixin inherits all methods from that type.
+    // When a mixin is referenced by multiple XML elements, each element's base
+    // type is added; the overlay merge deduplicates.
+    if let Some(mixin_fields) = mixin_fields {
         for mixin_name in &ctx.mixins {
             // Skip if this mixin name is the same as the frame itself
             if mixin_name == name {
@@ -798,7 +801,7 @@ fn finalize_frame(
                 name: mixin_name.clone(),
                 type_params: Vec::new(),
                 type_param_constraints: Vec::new(),
-                parents: Vec::new(),
+                parents: vec![ctx.frame_type.clone()],
                 fields: mixin_fields.clone(),
                 accessors: Vec::new(),
                 overloads: Vec::new(),
@@ -1255,8 +1258,9 @@ mod tests {
             && matches!(t, AnnotationType::Simple(s) if s == "EditBox")));
         assert!(aug.fields.iter().any(|(n, t, _)| n == "SearchButton"
             && matches!(t, AnnotationType::Simple(s) if s == "Button")));
-        // Augment has no parents (it doesn't extend the mixin's hierarchy)
-        assert!(aug.parents.is_empty());
+        // Augment inherits the frame's base element type so mixin methods
+        // can access Frame methods on self
+        assert_eq!(aug.parents, vec!["Frame"]);
     }
 
     #[test]
@@ -1291,6 +1295,37 @@ mod tests {
         assert!(names.contains(&"MixinB"));
         for aug in &r.mixin_augments {
             assert!(aug.fields.iter().any(|(n, _, _)| n == "Panel"));
+            assert_eq!(aug.parents, vec!["Frame"]);
         }
+    }
+
+    #[test]
+    fn mixin_augment_uses_element_base_type() {
+        let r = scan(r#"
+            <Ui>
+                <Button name="BtnFrame" virtual="true" mixin="BtnMixin" />
+            </Ui>
+        "#);
+        assert_eq!(r.mixin_augments.len(), 1);
+        let aug = &r.mixin_augments[0];
+        assert_eq!(aug.name, "BtnMixin");
+        // The augment's parent should be Button (the element's base type), not Frame
+        assert_eq!(aug.parents, vec!["Button"]);
+    }
+
+    #[test]
+    fn mixin_augment_emitted_without_parent_key_fields() {
+        // A mixin on a frame with no parentKey fields should still get an augment
+        // (for the frame type parent) so mixin methods can call Frame methods
+        let r = scan(r#"
+            <Ui>
+                <Frame name="EmptyFrame" virtual="true" mixin="EmptyMixin" />
+            </Ui>
+        "#);
+        assert_eq!(r.mixin_augments.len(), 1);
+        let aug = &r.mixin_augments[0];
+        assert_eq!(aug.name, "EmptyMixin");
+        assert!(aug.fields.is_empty());
+        assert_eq!(aug.parents, vec!["Frame"]);
     }
 }
