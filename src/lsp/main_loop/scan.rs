@@ -1,0 +1,784 @@
+use super::*;
+
+/// Soundness predicate for incremental warm reuse: a file may keep its prior
+/// diagnostics only when none of the changed declaration names (`affected`,
+/// already expanded through the reverse-dependency closure) appear textually in
+/// its source. Cross-file diagnostic effects flow through named declarations, so
+/// a file that never mentions any affected name cannot have changed diagnostics.
+///
+/// Uses word-boundary matching: the match is ignored if the character immediately
+/// before or after is alphanumeric or underscore. This avoids short names like
+/// "ID" or "UI" matching incidentally inside longer identifiers (e.g. "UUID",
+/// "GUID"), which would disable the incremental optimization for those names.
+pub(super) fn file_unaffected_by(text: &str, affected: &HashSet<String>) -> bool {
+    !affected.iter().any(|n| contains_word(text, n))
+}
+
+/// True if `needle` appears in `haystack` at a word boundary (the character
+/// before the match is NOT [A-Za-z0-9_] and the character after is NOT either).
+pub(super) fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    let n_len = n.len();
+    if n_len > h.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i + n_len <= h.len() {
+        if let Some(pos) = haystack[i..].find(needle) {
+            let abs = i + pos;
+            let before_ok = abs == 0 || !is_ident_byte(h[abs - 1]);
+            let after_ok = abs + n_len >= h.len() || !is_ident_byte(h[abs + n_len]);
+            if before_ok && after_ok {
+                return true;
+            }
+            i = abs + 1;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+#[inline]
+pub(super) fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Pure (no `&self`) workspace-diagnostic computation used by the background
+/// worker (`spawn_warm`).
+///
+/// Re-reads, re-parses and re-analyzes each `.lua` path in parallel. When
+/// `affected` is `Some` and `prior` is present, a file whose text mentions none
+/// of the affected declaration names reuses its prior diagnostics verbatim
+/// (incremental warm); otherwise it is fully re-analyzed.
+pub(super) fn compute_ws_diagnostics(
+    paths: &[PathBuf],
+    pre_globals: &Arc<PreResolvedGlobals>,
+    configs: &crate::config::ProjectConfigs,
+    plugin_codes: &[String],
+    affected: Option<&HashSet<String>>,
+    prior: Option<&[(String, Vec<lsp_types::Diagnostic>)]>,
+) -> Vec<(String, Vec<lsp_types::Diagnostic>)> {
+    use rayon::prelude::*;
+    let prior_map: Option<HashMap<&str, &Vec<lsp_types::Diagnostic>>> = match (affected, prior) {
+        (Some(_), Some(entries)) => {
+            Some(entries.iter().map(|(uri, diags)| (uri.as_str(), diags)).collect())
+        }
+        _ => None,
+    };
+    paths
+        .par_iter()
+        .filter_map(|path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            if crate::has_shebang(&text) {
+                return None;
+            }
+            let uri = abs_path_to_uri(path)?;
+            if is_ignored_uri(&uri, configs) {
+                return None;
+            }
+            let uri_s = uri.to_string();
+            // Incremental reuse: if none of the affected names appear in this
+            // file's text, its diagnostics cannot have changed — reuse them.
+            if let (Some(names), Some(prior)) = (affected, prior_map.as_ref())
+                && file_unaffected_by(&text, names)
+                && let Some(diags) = prior.get(uri_s.as_str())
+            {
+                return Some((uri_s, (*diags).clone()));
+            }
+            let tree = parse_lua(&text);
+            let mut result = analyze_lua_parsed(&uri, pre_globals, configs, &tree);
+            result.plugin_diag_codes = plugin_codes.to_vec();
+            let root = crate::syntax::SyntaxNode::new_root(&tree);
+            let suppressions = scan_diagnostic_directives(root);
+            let diag_items = build_file_diagnostics_with(&uri, &tree, &result, &text, &[], configs, &suppressions);
+            Some((uri_s, diag_items))
+        })
+        .collect()
+}
+
+/// Run a warm on a detached background thread. Sends the `WarmResult` over
+/// `warm_tx`, then a `()` wake over `wake_tx` so the main loop's `select!`
+/// notices the result is ready. Both sends are best-effort: on shutdown the
+/// receivers are dropped and the sends fail harmlessly.
+///
+/// A drop guard ensures the wake signal is always sent even if the worker
+/// panics (e.g. a Rayon task hits an unrecoverable error), so `warm_in_flight`
+/// is reliably cleared and future warms are not permanently suppressed.
+pub(super) fn spawn_warm(
+    inputs: WarmInputs,
+    warm_tx: crossbeam_channel::Sender<WarmResult>,
+    wake_tx: crossbeam_channel::Sender<()>,
+) {
+    std::thread::spawn(move || {
+        // Guard: always send a wake signal on thread exit (normal or panic)
+        // so the main loop drains warm_rx and clears `warm_in_flight`.
+        struct WakeGuard(Option<crossbeam_channel::Sender<()>>);
+        impl Drop for WakeGuard {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        let _guard = WakeGuard(Some(wake_tx));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let compute = || compute_ws_diagnostics(
+                &inputs.paths,
+                &inputs.pre_globals,
+                &inputs.configs,
+                &inputs.plugin_codes,
+                inputs.affected.as_ref(),
+                inputs.prior.as_deref(),
+            );
+            // Cap parallelism so at least one core stays free for the single-threaded
+            // LSP main loop. `compute_ws_diagnostics` fans out over every workspace
+            // file via rayon's global pool; left unbounded it saturates all cores and
+            // starves the main thread, making interactive requests (hover, code
+            // actions) appear frozen for the whole duration of the warm on large
+            // workspaces. Running it inside a dedicated pool of `cpus - 1` threads
+            // keeps the editor responsive while the warm proceeds in the background.
+            let threads = std::thread::available_parallelism()
+                .map(|n| n.get().saturating_sub(1).max(1))
+                .unwrap_or(1);
+            static WARM_POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+            let pool = WARM_POOL.get_or_init(|| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap_or_else(|e| {
+                        log::warn!("Failed to build warm thread pool ({e}), falling back to single-threaded");
+                        rayon::ThreadPoolBuilder::new().num_threads(1).build()
+                            .expect("single-threaded pool should always build")
+                    })
+            });
+            pool.install(compute)
+        }));
+        match result {
+            Ok(diagnostics) => {
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics });
+            }
+            Err(_) => {
+                log::error!("Background warm panicked; sending empty result to unblock main loop");
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: Vec::new() });
+            }
+        }
+        // _guard drops here, sending the wake signal
+    });
+}
+
+pub(super) fn collect_lua_paths_filtered(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    xml_out: &mut Vec<PathBuf>,
+    configs: &mut crate::config::ProjectConfigs,
+) {
+    // Discover config and .toc SavedVariables in this directory
+    configs.try_load(dir);
+    configs.try_load_toc(dir);
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    // Sort entries before recursing so scan order is deterministic across
+    // filesystems. `read_dir` returns entries in filesystem-dependent order,
+    // which leaks non-determinism into downstream scan/build passes that
+    // depend on class/alias/global insertion order (e.g. @defclass parent
+    // resolution, @built-name merging, duplicate-class precedence).
+    let mut sorted: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    sorted.sort_unstable();
+    for path in sorted {
+        if configs.is_ignored(&path) && !configs.is_library(&path) {
+            continue;
+        }
+        if path.is_dir() {
+            collect_lua_paths_filtered(&path, out, xml_out, configs);
+        } else if let Some(ext) = path.extension() {
+            if ext == "lua" {
+                out.push(path);
+            } else if ext == "xml" {
+                xml_out.push(path);
+            }
+        }
+    }
+}
+
+pub(super) fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<(ScanResult, Vec<ExternalGlobal>, Option<String>)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    if crate::has_shebang(&text) { return None; }
+    let tree = crate::syntax::parser::parse(&text);
+    let root = crate::syntax::SyntaxNode::new_root(&tree);
+    let mut scan = scan_all_annotations(root);
+    for class in &mut scan.classes {
+        if class.def_range.is_some() {
+            class.def_path = Some(path.to_path_buf());
+        }
+    }
+    for alias in &mut scan.aliases {
+        if alias.def_range.is_some() {
+            alias.def_path = Some(path.to_path_buf());
+        }
+    }
+    for event in &mut scan.events {
+        if event.def_range.is_some() {
+            event.def_path = Some(path.to_path_buf());
+        }
+    }
+    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
+    Some((scan, file_globals, addon_ns_class))
+}
+
+pub fn scan_paths_with_overrides(
+    paths: &[PathBuf],
+    override_paths: &std::collections::HashSet<PathBuf>,
+    configs: Option<&crate::config::ProjectConfigs>,
+    stub_globals: &[ExternalGlobal],
+    stub_classes: &[ClassDecl],
+) -> WorkspaceScanResult {
+    use rayon::prelude::*;
+
+    let results: Vec<_> = paths.par_iter()
+        .filter_map(|p| {
+            let is_override = override_paths.contains(p);
+            let synth = configs.map(|c| c.correlated_return_overloads_for(p)).unwrap_or(true);
+            let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+            scan_lua_file(p, synth, ipp).map(|(scan, mut file_globals, addon_ns_class)| {
+                if is_override {
+                    for g in &mut file_globals {
+                        g.is_override = true;
+                    }
+                }
+                (p.clone(), scan, file_globals, addon_ns_class)
+            })
+        })
+        .collect();
+
+    let mut classes = Vec::new();
+    let mut aliases = Vec::new();
+    let mut globals = Vec::new();
+    let mut events = Vec::new();
+    let mut addon_ns_class_files: HashMap<PathBuf, String> = HashMap::new();
+    let mut callable_classes: HashSet<String> = HashSet::new();
+    for (file_path, scan, file_globals, addon_ns_class) in results {
+        classes.extend(scan.classes);
+        aliases.extend(scan.aliases);
+        events.extend(scan.events);
+        callable_classes.extend(scan.callable_classes);
+        if let Some(name) = addon_ns_class {
+            addon_ns_class_files.insert(file_path, name);
+        }
+        globals.extend(file_globals);
+    }
+
+    // Pass 2+3: defclass + built-name scans.
+    // Include stub globals/classes so the context matches what the LSP uses after
+    // rebuild_caches (which includes stubs + workspace globals).
+    let needs_defclass = stub_globals.iter().any(|g| g.defclass.is_some())
+        || globals.iter().any(|g| g.defclass.is_some());
+    let needs_built_name = stub_globals.iter().any(|g| g.built_name.is_some())
+        || globals.iter().any(|g| g.built_name.is_some());
+    if needs_defclass || needs_built_name {
+        let all_globals: Vec<ExternalGlobal> = stub_globals.iter()
+            .chain(globals.iter())
+            .cloned()
+            .collect();
+
+        if needs_defclass {
+            let all_classes: Vec<ClassDecl> = stub_classes.iter()
+                .chain(classes.iter())
+                .cloned()
+                .collect();
+            let defclass_ctx = DefclassContext::new(&all_globals, &all_classes);
+            let defclass_classes: Vec<ClassDecl> = paths.par_iter()
+                .filter_map(|p| {
+                    let text = std::fs::read_to_string(p).ok()?;
+                    if crate::has_shebang(&text) { return None; }
+                    let tree = crate::syntax::parser::parse(&text);
+                    let root = crate::syntax::SyntaxNode::new_root(&tree);
+                    let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+                    let mut found = scan_defclass_calls_with_context(root, &defclass_ctx, ipp);
+                    for decl in &mut found {
+                        if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
+                            decl.def_path = Some(p.clone());
+                        }
+                    }
+                    if found.is_empty() { None } else { Some(found) }
+                })
+                .flatten()
+                .collect();
+            if !defclass_classes.is_empty() {
+                log::debug!("defclass scan: {} classes discovered", defclass_classes.len());
+                classes.extend(defclass_classes);
+            }
+        }
+
+        // When a @built-name class has the same name as a @class overlay,
+        // merge the built fields into the overlay (overlay @field types take precedence).
+        if needs_built_name {
+            let class_names: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
+            let built_ctx = BuiltNameContext::new(&all_globals);
+            let built_classes: Vec<ClassDecl> = paths.par_iter()
+                .filter_map(|p| {
+                    let text = std::fs::read_to_string(p).ok()?;
+                    if crate::has_shebang(&text) { return None; }
+                    let tree = crate::syntax::parser::parse(&text);
+                    let root = crate::syntax::SyntaxNode::new_root(&tree);
+                    let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+                    let mut found = scan_built_name_calls_with_context(root, &built_ctx, ipp);
+                    for decl in &mut found {
+                        if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
+                            decl.def_path = Some(p.clone());
+                        }
+                    }
+                    if found.is_empty() { None } else { Some(found) }
+                })
+                .flatten()
+                .collect();
+            if !built_classes.is_empty() {
+                let mut new_count = 0;
+                for built_decl in built_classes {
+                    if class_names.contains(&built_decl.name) {
+                        if let Some(existing) = classes.iter_mut().find(|c| c.name == built_decl.name) {
+                            let overlay_names: HashSet<String> = existing.fields.iter()
+                                .map(|(n, _, _)| n.clone()).collect();
+                            for field in &built_decl.fields {
+                                if !overlay_names.contains(&field.0) {
+                                    existing.fields.push(field.clone());
+                                }
+                            }
+                            // Merge field_ranges for go-to-definition
+                            for (name, range) in &built_decl.field_ranges {
+                                existing.field_ranges.entry(name.clone()).or_insert(*range);
+                            }
+                            if existing.def_path.is_none() {
+                                existing.def_path = built_decl.def_path.clone();
+                            }
+                            if let Some(ref path) = built_decl.def_path {
+                                for name in built_decl.field_ranges.keys() {
+                                    if !existing.field_paths.contains_key(name) {
+                                        existing.field_paths.insert(name.clone(), path.clone());
+                                    }
+                                }
+                            }
+                            // Merge parents from built-name scan (e.g. @return built : BaseState)
+                            for parent in &built_decl.parents {
+                                if !existing.parents.contains(parent) {
+                                    existing.parents.push(parent.clone());
+                                }
+                            }
+                        }
+                    } else {
+                        classes.push(built_decl);
+                        new_count += 1;
+                    }
+                }
+                log::debug!("built-name scan: {} classes discovered", new_count);
+            }
+        }
+    }
+
+    // Pass 4: scan method bodies for self-field assignments.
+    // - Typed: `self.x = ... ---@type T` — added to ClassDecl.fields for prescan import.
+    // - Funcall: `self.x = SomeCall()` — added to globals for build_on_stubs resolution.
+    // - Bare: `self.x = param` / `self.x = literal` — inferred from @param or literal type.
+    // All scans run in a single file-parse pass to avoid redundant I/O and parsing.
+    {
+        use rayon::prelude::*;
+        use crate::annotations::{scan_method_typed_self_fields, scan_method_funcall_self_fields, scan_method_bare_self_fields};
+        let known_classes: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
+        // Pre-collect @field names so funcall/bare scans can skip fields already declared.
+        // Typed self-fields from other files aren't included yet, so a small number of
+        // redundant funcall entries may be emitted — build_on_stubs deduplicates them.
+        let mut typed_field_names: HashSet<(String, String)> = HashSet::new();
+        for decl in &classes {
+            for (field_name, _, _) in &decl.fields {
+                typed_field_names.insert((decl.name.clone(), field_name.clone()));
+            }
+        }
+        if !known_classes.is_empty() {
+            let per_file: Vec<_> = paths.par_iter()
+                .filter_map(|p| {
+                    let text = std::fs::read_to_string(p).ok()?;
+                    if crate::has_shebang(&text) { return None; }
+                    let tree = crate::syntax::parser::parse(&text);
+                    let root = crate::syntax::SyntaxNode::new_root(&tree);
+                    let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+                    let typed = scan_method_typed_self_fields(root, &known_classes, ipp);
+                    let funcall = scan_method_funcall_self_fields(
+                        root, &known_classes, ipp, &typed_field_names, Some(p.clone()),
+                    );
+                    let bare = scan_method_bare_self_fields(root, &known_classes, ipp, &typed_field_names);
+                    if typed.is_empty() && funcall.is_empty() && bare.is_empty() { None } else { Some((p.clone(), typed, funcall, bare)) }
+                })
+                .collect();
+            let mut typed_count = 0usize;
+            let mut funcall_count = 0usize;
+            let mut bare_count = 0usize;
+            for (path, file_typed, file_funcall, file_bare) in per_file {
+                for tsf in file_typed {
+                    if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name) {
+                        let already_has = decl.fields.iter().any(|(n, _, _)| n == &tsf.field_name);
+                        if !already_has {
+                            decl.fields.push((tsf.field_name.clone(), tsf.annotation_type, tsf.visibility));
+                            decl.field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
+                            decl.field_paths.entry(tsf.field_name).or_insert_with(|| path.clone());
+                            typed_count += 1;
+                        }
+                    }
+                }
+                // Bare fields: lowest priority — skip if funcall covers the same field
+                let funcall_field_names: HashSet<(String, String)> = file_funcall.iter()
+                    .filter_map(|g| {
+                        if let crate::annotations::ExternalGlobalKind::TableField(_, fn_name, _) = &g.kind {
+                            Some((g.name.clone(), fn_name.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                for tsf in file_bare {
+                    if funcall_field_names.contains(&(tsf.class_name.clone(), tsf.field_name.clone())) {
+                        continue;
+                    }
+                    if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name) {
+                        let already_has = decl.fields.iter().any(|(n, _, _)| n == &tsf.field_name);
+                        if !already_has {
+                            decl.fields.push((tsf.field_name.clone(), tsf.annotation_type, tsf.visibility));
+                            decl.field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
+                            decl.field_paths.entry(tsf.field_name).or_insert_with(|| path.clone());
+                            bare_count += 1;
+                        }
+                    }
+                }
+                funcall_count += file_funcall.len();
+                globals.extend(file_funcall);
+            }
+            if typed_count > 0 {
+                log::debug!("self-field scan: {} typed fields discovered", typed_count);
+            }
+            if funcall_count > 0 {
+                log::debug!("self-field scan: {} funcall fields discovered", funcall_count);
+            }
+            if bare_count > 0 {
+                log::debug!("self-field scan: {} bare fields discovered", bare_count);
+            }
+        }
+    }
+
+    log::debug!("workspace scan: {} classes, {} aliases, {} globals, {} events", classes.len(), aliases.len(), globals.len(), events.len());
+    (classes, aliases, globals, addon_ns_class_files, events, callable_classes)
+}
+
+/// Partition XML classes into direct classes and overlay classes based on whether
+/// a Lua `@class` with the same name already exists. XML classes that duplicate a
+/// Lua class are returned as overlays so that Lua-defined `@field` types take
+/// precedence via the overlay merge path.
+pub(super) fn partition_xml_classes(
+    xml_classes: Vec<ClassDecl>,
+    lua_class_names: &HashSet<String>,
+) -> (Vec<ClassDecl>, Vec<ClassDecl>) {
+    let mut direct = Vec::new();
+    let mut overlays = Vec::new();
+    for class in xml_classes {
+        if lua_class_names.contains(&class.name) {
+            overlays.push(class);
+        } else {
+            direct.push(class);
+        }
+    }
+    (direct, overlays)
+}
+
+/// Partition workspace classes from a path→classes map into (direct, xml_overlay)
+/// vectors. Non-XML sources (Lua files, files with no extension) are always
+/// included directly. XML sources whose class name matches a Lua class are returned
+/// as overlays for precedence-preserving merge.
+pub(super) fn partition_xml_overlay_classes(
+    ws_file_classes: &HashMap<PathBuf, Vec<ClassDecl>>,
+) -> (Vec<ClassDecl>, Vec<ClassDecl>) {
+    let mut lua_class_names: HashSet<String> = HashSet::new();
+    let mut lua_classes: Vec<ClassDecl> = Vec::new();
+    let mut xml_classes: Vec<ClassDecl> = Vec::new();
+    for (path, classes) in ws_file_classes {
+        if path.extension().is_some_and(|e| e == "xml") {
+            xml_classes.extend(classes.iter().cloned());
+        } else {
+            // Non-XML sources (Lua, files with no extension) are always direct.
+            for class in classes {
+                lua_class_names.insert(class.name.clone());
+            }
+            lua_classes.extend(classes.iter().cloned());
+        }
+    }
+    let (direct_xml, overlay_xml) = partition_xml_classes(xml_classes, &lua_class_names);
+    lua_classes.extend(direct_xml);
+    (lua_classes, overlay_xml)
+}
+
+/// Scan XML files and merge their classes/globals into a WorkspaceScanResult.
+///
+/// XML-generated classes whose name already exists from Lua `@class` annotations
+/// are treated as overlays: their non-duplicate fields and parents are merged into
+/// the Lua class, but Lua-defined fields take precedence. This allows users to
+/// override XML-inferred field types with more specific `@field` annotations.
+pub(super) fn scan_xml_paths_into(xml_paths: &[PathBuf], result: &mut WorkspaceScanResult) {
+    use rayon::prelude::*;
+    let xml_results: Vec<_> = xml_paths.par_iter()
+        .filter_map(|p| crate::xml_scan::scan_xml_file(p))
+        .collect();
+    let lua_class_names: HashSet<String> = result.0.iter().map(|c| c.name.clone()).collect();
+    let mut all_xml_classes = Vec::new();
+    let mut all_overlays: Vec<ClassDecl> = Vec::new();
+    for xml_result in xml_results {
+        all_xml_classes.extend(xml_result.classes);
+        result.2.extend(xml_result.globals);
+        all_overlays.extend(xml_result.mixin_augments);
+    }
+    let (direct, overlay) = partition_xml_classes(all_xml_classes, &lua_class_names);
+    result.0.extend(direct);
+    all_overlays.extend(overlay);
+    // Merge overlays (XML duplicate classes + mixin augments) into the class list
+    // so that mixin Lua classes gain parentKey fields from frames that use them.
+    // Uses the same overlay merge logic as defclass scanning: existing fields are
+    // not overwritten.
+    if !all_overlays.is_empty() {
+        let classes = std::mem::take(&mut result.0);
+        result.0 = merge_defclass_into_overlays(classes, &[], all_overlays.iter().collect());
+    }
+}
+
+pub fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> WorkspaceScanResult {
+    scan_workspace_with_stubs(dirs, configs, &[], &[])
+}
+
+pub fn scan_workspace_with_stubs(
+    dirs: &[PathBuf],
+    configs: &mut crate::config::ProjectConfigs,
+    stub_globals: &[ExternalGlobal],
+    stub_classes: &[ClassDecl],
+) -> WorkspaceScanResult {
+    let mut paths = Vec::new();
+    let mut xml_paths = Vec::new();
+    for dir in dirs {
+        if dir.is_dir() {
+            collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
+        }
+    }
+    // Scan external library directories (absolute paths in `library` config)
+    for lib_dir in configs.external_library_dirs() {
+        if lib_dir.is_dir() {
+            collect_lua_paths_filtered(&lib_dir, &mut paths, &mut xml_paths, configs);
+        }
+    }
+    let mut result = scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs), stub_globals, stub_classes);
+    scan_xml_paths_into(&xml_paths, &mut result);
+    result
+}
+
+/// Scan a Lua file, returning its source text and parsed tree alongside scan results.
+/// Used by scan_directory_tracked to cache parse results for the defclass/built-name pass.
+pub(super) fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<CachedFileScan> {
+    let text = std::fs::read_to_string(path).ok()?;
+    if crate::has_shebang(&text) { return None; }
+    let tree = crate::syntax::parser::parse(&text);
+    let root = crate::syntax::SyntaxNode::new_root(&tree);
+    let mut scan = scan_all_annotations(root);
+    for class in &mut scan.classes {
+        if class.def_range.is_some() {
+            class.def_path = Some(path.to_path_buf());
+        }
+    }
+    for alias in &mut scan.aliases {
+        if alias.def_range.is_some() {
+            alias.def_path = Some(path.to_path_buf());
+        }
+    }
+    for event in &mut scan.events {
+        if event.def_range.is_some() {
+            event.def_path = Some(path.to_path_buf());
+        }
+    }
+    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
+    Some(CachedFileScan { tree, scan, file_globals, addon_ns_class })
+}
+
+/// Pass 1: file discovery, XML scan, and Lua parse+scan. No stubs dependency.
+pub(super) fn scan_directory_pass1(
+    dir: &Path,
+    configs: &mut crate::config::ProjectConfigs,
+) -> ScanPass1Result {
+    use rayon::prelude::*;
+
+    let mut paths = Vec::new();
+    let mut xml_paths = Vec::new();
+    collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
+    // Scan external library directories (absolute paths in `library` config)
+    for lib_dir in configs.external_library_dirs() {
+        if lib_dir.is_dir() {
+            collect_lua_paths_filtered(&lib_dir, &mut paths, &mut xml_paths, configs);
+        }
+    }
+
+    // XML pass: scan XML files for frame/template declarations
+    let xml_results: Vec<_> = xml_paths.par_iter()
+        .filter_map(|p| crate::xml_scan::scan_xml_file(p).map(|r| (p.clone(), r)))
+        .collect();
+
+    // Pass 1: parse + scan all files, keeping source text and trees for reuse
+    let configs_ref: &crate::config::ProjectConfigs = configs;
+    let results: Vec<_> = paths.par_iter()
+        .filter_map(|p| {
+            let synth = configs_ref.correlated_return_overloads_for(p);
+            let ipp = configs_ref.implicit_protected_prefix_for(p);
+            scan_lua_file_cached(p, synth, ipp).map(|r| (p.clone(), r))
+        })
+        .collect();
+
+    ScanPass1Result { results, xml_results }
+}
+
+/// Complete workspace scanning: process Pass 1 results and run Pass 2 (defclass/built-name).
+pub(super) fn complete_directory_scan(
+    pass1: ScanPass1Result,
+    stub_classes: &[ClassDecl],
+    stub_globals: &[ExternalGlobal],
+    configs: &crate::config::ProjectConfigs,
+) -> DirectoryScanResult {
+    use rayon::prelude::*;
+
+    let mut out = DirectoryScanResult::default();
+    for (path, cached) in &pass1.results {
+        out.file_classes.insert(path.clone(), cached.scan.classes.clone());
+        out.file_aliases.insert(path.clone(), cached.scan.aliases.clone());
+        if !cached.scan.events.is_empty() {
+            out.file_events.insert(path.clone(), cached.scan.events.clone());
+        }
+        out.file_globals.insert(path.clone(), cached.file_globals.clone());
+        if let Some(name) = &cached.addon_ns_class {
+            out.addon_ns_class.insert(path.clone(), name.clone());
+        }
+        if !cached.scan.callable_classes.is_empty() {
+            out.file_callable_classes.insert(path.clone(), cached.scan.callable_classes.clone());
+        }
+    }
+
+    // Merge XML scan results into the output
+    for (path, xml_result) in pass1.xml_results {
+        if !xml_result.classes.is_empty() {
+            out.file_classes.entry(path.clone()).or_default().extend(xml_result.classes);
+        }
+        if !xml_result.mixin_augments.is_empty() {
+            // Mixin augments are merged via the defclass overlay mechanism so
+            // they add parentKey fields to mixin classes without replacing them.
+            out.file_defclasses.entry(path.clone()).or_default().extend(xml_result.mixin_augments);
+        }
+        if !xml_result.globals.is_empty() {
+            out.file_globals.entry(path).or_default().extend(xml_result.globals);
+        }
+    }
+
+    // Pass 2: defclass + built-name scan reusing cached parse trees (no re-read/re-parse).
+    // Use the full set of globals (workspace Lua + XML + stubs) to match what
+    // rebuild_caches/maybe_rebuild_workspace uses. Previously this only included
+    // workspace Lua globals from pass1.results, missing XML globals and stubs,
+    // which could cause defclass/built-name discoveries to differ between the
+    // initial scan and later incremental rebuilds.
+    let needs_defclass = stub_globals.iter().any(|g| g.defclass.is_some())
+        || out.file_globals.values().flatten().any(|g| g.defclass.is_some());
+    let needs_built_name = stub_globals.iter().any(|g| g.built_name.is_some())
+        || out.file_globals.values().flatten().any(|g| g.built_name.is_some());
+    if needs_defclass || needs_built_name {
+        let all_globals_owned: Vec<ExternalGlobal> = stub_globals.iter()
+            .chain(out.file_globals.values().flatten())
+            .cloned()
+            .collect();
+        let all_classes: Vec<ClassDecl> = stub_classes.iter()
+            .chain(out.file_classes.values().flatten())
+            .cloned()
+            .collect();
+        // Pre-build lookup contexts once, shared across all files in par_iter
+        let defclass_ctx = DefclassContext::new(&all_globals_owned, &all_classes);
+        let built_ctx = BuiltNameContext::new(&all_globals_owned);
+        let defclass_results: Vec<_> = pass1.results.par_iter()
+            .filter_map(|(p, cached)| {
+                let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
+                let mut found = Vec::new();
+                let ipp = configs.implicit_protected_prefix_for(p);
+                if needs_defclass {
+                    found.extend(scan_defclass_calls_with_context(root, &defclass_ctx, ipp));
+                }
+                if needs_built_name {
+                    found.extend(scan_built_name_calls_with_context(root, &built_ctx, ipp));
+                }
+                Some((p.clone(), found))
+            })
+            .collect();
+        for (path, mut decls) in defclass_results {
+            for decl in &mut decls {
+                if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
+                    decl.def_path = Some(path.clone());
+                }
+            }
+            out.file_defclasses.insert(path, decls);
+        }
+    }
+
+    // Pass 3: self-field scan (typed, funcall, bare).
+    // Discovers `self.field = expr` assignments inside methods and adds them
+    // to the per-file self-field maps for merging during rebuild().
+    {
+        use crate::annotations::{scan_method_typed_self_fields, scan_method_funcall_self_fields, scan_method_bare_self_fields};
+        let known_classes: HashSet<String> = out.file_classes.values()
+            .flatten()
+            .map(|c| c.name.clone())
+            .chain(stub_classes.iter().map(|c| c.name.clone()))
+            .collect();
+        if !known_classes.is_empty() {
+            let typed_field_names = collect_typed_field_names(
+                out.file_classes.values().flatten().chain(stub_classes.iter()),
+            );
+            let per_file: Vec<_> = pass1.results.par_iter()
+                .filter_map(|(p, cached)| {
+                    let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
+                    let ipp = configs.implicit_protected_prefix_for(p);
+                    let typed = scan_method_typed_self_fields(root, &known_classes, ipp);
+                    let funcall = scan_method_funcall_self_fields(
+                        root, &known_classes, ipp, &typed_field_names, Some(p.clone()),
+                    );
+                    let bare = scan_method_bare_self_fields(root, &known_classes, ipp, &typed_field_names);
+                    if typed.is_empty() && funcall.is_empty() && bare.is_empty() { None } else { Some((p.clone(), typed, funcall, bare)) }
+                })
+                .collect();
+            for (path, file_typed, file_funcall, file_bare) in per_file {
+                let self_fields = merge_self_field_results(file_typed, &file_funcall, file_bare);
+                if !self_fields.is_empty() {
+                    out.file_self_fields.insert(path.clone(), self_fields);
+                }
+                if !file_funcall.is_empty() {
+                    out.file_self_field_globals.insert(path, file_funcall);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+pub(super) fn scan_directory_tracked(
+    dir: &Path,
+    configs: &mut crate::config::ProjectConfigs,
+    stub_classes: &[ClassDecl],
+    stub_globals: &[ExternalGlobal],
+) -> DirectoryScanResult {
+    let pass1 = scan_directory_pass1(dir, configs);
+    complete_directory_scan(pass1, stub_classes, stub_globals, configs)
+}
