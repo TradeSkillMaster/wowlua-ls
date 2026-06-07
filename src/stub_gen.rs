@@ -1868,6 +1868,207 @@ fn infer_fxml_return_types(
     per_file_results.into_iter().flatten().collect()
 }
 
+/// Discover undeclared field accesses on known stub classes by analyzing
+/// wow-ui-source Lua files via **structural matching**.
+///
+/// When a variable is untyped (`any` or unresolved) — common for callback
+/// parameters in Blizzard's source — field accesses are grouped by variable
+/// name and matched against known class field sets.  If enough of a
+/// variable's accessed fields are declared on a single class (≥ 3 or ≥ 25%,
+/// whichever is larger), the remaining undeclared fields are attributed to
+/// that class.  This catches runtime fields like `TooltipDataLine.gemIcon`
+/// that are populated by C++ (via `TooltipUtil.SurfaceArgs`) but read in Lua
+/// without type annotations.
+///
+/// Returns a map from class name → set of undeclared field names.
+fn discover_runtime_fields(
+    ui_source_dir: &Path,
+    pre_globals: std::sync::Arc<crate::pre_globals::PreResolvedGlobals>,
+) -> HashMap<String, HashSet<String>> {
+    use rayon::prelude::*;
+    use crate::analysis::{Analysis, AnalysisConfig};
+    use crate::types::{Expr, ValueType};
+
+    let interface_dir = ui_source_dir.join("Interface");
+    if !interface_dir.is_dir() {
+        return HashMap::new();
+    }
+
+    let mut lua_files = Vec::new();
+    collect_lua_paths(&interface_dir, &mut lua_files);
+
+    // Build class → declared field names map from pre_globals.
+    // Include own fields + direct parent fields (one level).  Grandparent+
+    // fields are not walked — this is fine for the small data structures we
+    // target (e.g. TooltipDataLine has no deep inheritance), and avoids the
+    // complexity of a transitive closure over the full class hierarchy.
+    let class_field_map: HashMap<String, HashSet<String>> = {
+        let mut map: HashMap<String, HashSet<String>> = HashMap::new();
+        for (class_name, &table_idx) in &pre_globals.classes {
+            let offset = table_idx.ext_offset();
+            if offset >= pre_globals.tables.len() { continue; }
+            let table = &pre_globals.tables[offset];
+            let fields: &mut HashSet<String> = map.entry(class_name.clone()).or_default();
+            for field_name in table.fields.keys() {
+                fields.insert(field_name.clone());
+            }
+            // Include parent class fields (for structural matching accuracy)
+            for &parent_idx in &table.parent_classes {
+                if !parent_idx.is_external() { continue; }
+                let po = parent_idx.ext_offset();
+                if po >= pre_globals.tables.len() { continue; }
+                for field_name in pre_globals.tables[po].fields.keys() {
+                    fields.insert(field_name.clone());
+                }
+            }
+        }
+        map
+    };
+    // Only consider classes with ≥ 3 declared fields (enough for meaningful matching)
+    let matchable_classes: Vec<(&String, &HashSet<String>)> = class_field_map.iter()
+        .filter(|(_, fields)| fields.len() >= 3)
+        .collect();
+
+    // Same source cleanup as infer_fxml_return_types: comment out top-level
+    // global assignments to prevent shadowing of precomputed stub class types.
+    let global_assign_re = regex_lite::Regex::new(r"^[A-Z]\w+\s*=\s").unwrap();
+
+    let per_file: Vec<HashMap<String, HashSet<String>>> = lua_files.par_iter().map(|path| {
+        let Ok(raw_content) = std::fs::read_to_string(path) else { return HashMap::new() };
+
+        let content: String = raw_content.lines()
+            .map(|line| {
+                if global_assign_re.is_match(line) {
+                    format!("--{line}")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let tree = crate::syntax::parser::parse(&content);
+        let mut analysis = Analysis::new_with_tree(&tree, pre_globals.clone(), AnalysisConfig::default());
+        analysis.resolve_types();
+        let ar = analysis.into_result();
+
+        let mut discovered: HashMap<String, HashSet<String>> = HashMap::new();
+
+        // ── Structural matching for any-typed variables ──
+        // Group field accesses by variable NAME (not index) so that parameters
+        // with the same name across different functions in the same file are
+        // merged.  E.g. all `lineData` params in TooltipDataRules.lua contribute
+        // their accessed fields to a single group.
+        let mut any_var_fields: HashMap<String, HashSet<String>> = HashMap::new();
+        for expr in ar.ir.exprs.iter() {
+            let Expr::FieldAccess { table, field, .. } = expr else { continue };
+            let table_type = ar.resolve_expr_type(*table);
+            // Include both Any and None (unresolved) — untyped function
+            // parameters resolve to None, not Any.
+            match &table_type {
+                None | Some(ValueType::Any) => {}
+                _ => continue,
+            }
+            // Check if the table expression is a simple variable reference
+            if let Expr::SymbolRef(sym_idx, _) = &ar.ir.exprs[table.val()] {
+                if sym_idx.is_external() { continue; }
+                let sym = &ar.ir.symbols[sym_idx.val()];
+                if let crate::types::SymbolIdentifier::Name(ref name) = sym.id {
+                    any_var_fields.entry(name.clone()).or_default().insert(field.clone());
+                }
+            }
+        }
+
+        // Match each variable name's field set against known classes
+        for accessed_fields in any_var_fields.values() {
+            if accessed_fields.len() < 3 { continue; }
+            // Find the class with the highest overlap.  Require at least 3
+            // matching declared fields, or ⌊25%⌋ of the accessed field count
+            // (whichever is larger).  For small field sets (3–11 fields) the
+            // floor is always 3; the 25% rule only kicks in at 13+ fields.
+            // This prevents false matches from variables that access dozens of
+            // unrelated fields and accidentally overlap with a large class.
+            let min_overlap = 3.max(accessed_fields.len() / 4);
+            let mut best: Option<(&str, usize)> = None; // (class_name, overlap_count)
+            for (class_name, declared_fields) in &matchable_classes {
+                // Skip large frame/mixin classes (> 50 declared fields) —
+                // they have so many fields that incidental overlaps are common.
+                // Data structures we're targeting (like TooltipDataLine) have
+                // few declared fields.
+                if declared_fields.len() > 50 { continue; }
+                let overlap = accessed_fields.iter()
+                    .filter(|f| declared_fields.contains(f.as_str()))
+                    .count();
+                if overlap >= min_overlap {
+                    let dominated = match &best {
+                        None => true,
+                        Some((_, prev)) => overlap > *prev,
+                        // Tiebreak alphabetically for determinism
+                    };
+                    let tied = matches!(&best, Some((_, prev)) if overlap == *prev);
+                    if dominated || (tied && class_name.as_str() < best.unwrap().0) {
+                        best = Some((class_name, overlap));
+                    }
+                }
+            }
+            if let Some((class_name, _overlap)) = best {
+                let declared = &class_field_map[class_name];
+                for field in accessed_fields {
+                    if !declared.contains(field) {
+                        discovered.entry(class_name.to_string())
+                            .or_default()
+                            .insert(field.clone());
+                    }
+                }
+            }
+        }
+
+        discovered
+    }).collect();
+
+    // Merge per-file results
+    let mut all: HashMap<String, HashSet<String>> = HashMap::new();
+    for file_result in per_file {
+        for (class, fields) in file_result {
+            all.entry(class).or_default().extend(fields);
+        }
+    }
+
+    all
+}
+
+/// Generate partial `@class` stubs for runtime fields discovered from
+/// wow-ui-source analysis.  Each undeclared field is emitted as `any?`
+/// (optional, untyped) since the fields are conditionally populated at
+/// runtime and their types can't be reliably inferred from usage alone.
+fn generate_inferred_field_stubs(
+    discovered: &HashMap<String, HashSet<String>>,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "---@meta _").unwrap();
+    writeln!(out, "-- Runtime fields discovered from wow-ui-source (auto-generated by analysis engine)").unwrap();
+    writeln!(out).unwrap();
+
+    let mut classes: Vec<&String> = discovered.keys().collect();
+    classes.sort();
+    for class in &classes {
+        let field_set = &discovered[*class];
+        let mut sorted_fields: Vec<&String> = field_set.iter().collect();
+        sorted_fields.sort();
+        writeln!(out, "---@class {}", class).unwrap();
+        for field in &sorted_fields {
+            writeln!(out, "---@field {} any?", field).unwrap();
+        }
+        writeln!(out).unwrap();
+    }
+
+    log::info!("  InferredFields: {} classes, {} total fields",
+        discovered.len(),
+        discovered.values().map(|f| f.len()).sum::<usize>());
+    out
+}
+
 /// Generate override stubs for FrameXML functions whose return types were
 /// inferred by the analysis engine.  Only emits stubs for functions whose
 /// existing vendor definition lacks a `@return` annotation.  Forwards any
@@ -4743,6 +4944,19 @@ pub fn regenerate_stubs() {
     }
     phase!("clone wow-ui-source (3 branches)");
 
+    // Capture wow-ui-source branch commits for provenance tracking.
+    let mut ui_source_commits: Vec<(String, String)> = Vec::new();
+    if has_retail_ui && let Some(commit) = git_head_commit(&retail_ui_dir) {
+        ui_source_commits.push(("live".to_string(), commit));
+    }
+    for dir in &classic_ui_dirs {
+        let branch = dir.file_name().unwrap().to_str().unwrap()
+            .strip_prefix("wow-ui-source-").unwrap_or("?");
+        if let Some(commit) = git_head_commit(dir) {
+            ui_source_commits.push((branch.to_string(), commit));
+        }
+    }
+
     // Build all_ui_dirs + branch_flavors: classic branches + retail (for XML frame extraction)
     let mut all_ui_dirs: Vec<PathBuf> = classic_ui_dirs.clone();
     let mut branch_flavors: Vec<u8> = classic_branch_flavors;
@@ -5196,14 +5410,27 @@ pub fn regenerate_stubs() {
         log::info!("  {} FrameXML global function definitions to analyze", fxml_func_names.len());
 
         let util_table_names: HashSet<String> = fxml_util_tables.keys().cloned().collect();
+        let pre_globals_arc = std::sync::Arc::new(pre_globals);
+
         let inferred = infer_fxml_return_types(
             &retail_ui_dir,
-            std::sync::Arc::new(pre_globals),
+            pre_globals_arc.clone(),
             &fxml_func_names,
             &util_table_names,
         );
         log::info!("  Inferred return types for {} functions", inferred.len());
         phase!("infer_fxml_return_types");
+
+        // Step 6d: Discover undeclared field accesses on stub classes by analyzing
+        // Blizzard's own wow-ui-source Lua code.  This catches runtime fields
+        // populated by C++ (e.g. TooltipUtil.SurfaceArgs) that are absent from
+        // APIDocumentationGenerated and vendor stubs.
+        log::info!("Discovering runtime fields from wow-ui-source...");
+        let discovered_fields = discover_runtime_fields(
+            &retail_ui_dir,
+            pre_globals_arc,
+        );
+        phase!("discover_runtime_fields");
 
         // Generate override stubs with @return annotations (and forwarded @param
         // annotations from vendor stubs) and re-scan.
@@ -5212,7 +5439,14 @@ pub fn regenerate_stubs() {
         std::fs::write(&inferred_returns_path, &inferred_returns_lua).unwrap();
         override_set.insert(inferred_returns_path);
 
-        // Pass 2: re-scan all stubs (including InferredReturns.lua) and rebuild.
+        let inferred_fields_lua = generate_inferred_field_stubs(&discovered_fields);
+        let inferred_fields_path = gen_dir.join("InferredFields.lua");
+        std::fs::write(&inferred_fields_path, &inferred_fields_lua).unwrap();
+        // NOT added to override_set: InferredFields uses partial `@class`
+        // declarations that must MERGE with the existing class definition.
+        // Override-set membership would cause them to replace the class instead.
+
+        // Pass 2: re-scan all stubs (including InferredReturns/InferredFields) and rebuild.
         log::info!("Re-scanning stubs with inferred returns (pass 2)...");
         paths = collect_stub_scan_paths(&vendor_dirs, &gen_dir, &overrides_dir, &override_stems, &mut override_set);
 
@@ -5372,22 +5606,26 @@ pub fn regenerate_stubs() {
     output.extend_from_slice(&compressed);
 
     // Step 9: Write provenance + blob
-    let header = format!(
+    let mut header = format!(
         concat!(
             "# wowlua-ls precomputed stubs\n",
             "# Generated: {}\n",
             "# Source: {} @ {}\n",
-            "# Symbols: {}, Functions: {}, Tables: {}\n",
-            "# Embedded source files: {}\n",
         ),
         utc_now_iso8601(),
         VSCODE_WOW_API_REPO,
         vscode_wow_api_commit,
+    );
+    for (branch, commit) in &ui_source_commits {
+        header.push_str(&format!("# Source: {} @ {} (branch: {})\n", WOW_UI_SOURCE_REPO, commit, branch));
+    }
+    header.push_str(&format!(
+        "# Symbols: {}, Functions: {}, Tables: {}\n# Embedded source files: {}\n",
         blob.pre_globals.symbols_len(),
         blob.pre_globals.functions_len(),
         blob.pre_globals.tables_len(),
         file_count,
-    );
+    ));
 
     let provenance_path = stubs_dir.join("precomputed-provenance.txt");
     std::fs::write(&provenance_path, &header).unwrap();
@@ -5480,6 +5718,17 @@ fn make_relative_path(abs: &Path, clone_dir: &Path, overrides_dir: &Path, gen_di
     } else {
         abs.display().to_string()
     }
+}
+
+/// Get the HEAD commit hash (short, 12 chars) of a git repository directory.
+fn git_head_commit(repo_dir: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .current_dir(repo_dir)
+        .output()
+        .ok()?;
+    if !output.status.success() { return None; }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Simple UTC timestamp without chrono dependency.

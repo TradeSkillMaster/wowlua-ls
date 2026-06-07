@@ -1177,3 +1177,16 @@ local anchorFromPt = AnchorUtil.CreateAnchorFromPoint(anchor, 1)
 
 local globalAnchor = CreateAnchor("CENTER", nil, "CENTER")
 --    ^ hover: (local) globalAnchor: AnchorMixin  def: local
+
+-- ── TooltipDataLine runtime fields ──────────────────────────────────────────
+-- Runtime fields discovered from wow-ui-source via structural matching:
+-- Blizzard's code reads these fields on untyped `lineData` parameters in
+-- TooltipDataRules.lua.  They are absent from APIDocumentationGenerated
+-- (populated by TooltipUtil.SurfaceArgs from the C++ args array).
+
+---@type TooltipDataLine
+local _tdl = {}
+local _tdlGemIcon = _tdl.gemIcon
+--    ^ hover: (local) _tdlGemIcon: any?
+local _tdlSocketType = _tdl.socketType
+--    ^ hover: (local) _tdlSocketType: any?
