@@ -395,7 +395,7 @@ pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameC
 
 #[cfg(test)]
 mod tests {
-    use crate::annotations::{AnnotationType, ParamInfo, Visibility};
+    use crate::annotations::{AnnotationType, ParamInfo};
     use crate::annotations::annotation_scanning::{ExternalGlobal, ExternalGlobalKind};
     use crate::syntax::SyntaxNode;
     use super::scan_built_name_calls;

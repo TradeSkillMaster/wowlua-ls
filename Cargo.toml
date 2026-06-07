@@ -27,3 +27,24 @@ mlua = { version = "0.10", features = ["lua51", "vendored", "send"] }
 [features]
 default = ["embedded-stubs"]
 embedded-stubs = []
+
+# Release profile tuned for a latency-sensitive LSP server that also ships as
+# downloadable release binaries. Numbers below are measured against a clean
+# baseline (cargo defaults: opt-level=3, lto=false, codegen-units=16).
+[profile.release]
+opt-level = 3
+# Thin LTO inlines/optimizes across crate boundaries (rayon, mlua, zstd, our
+# own modules). It captures ~95% of fat-LTO's benefit at roughly half the build
+# cost; measured fat-vs-thin here was only ~0.3 MB smaller for ~2.5x build time,
+# so thin is the better tradeoff for a binary built on every release tag.
+lto = "thin"
+# One codegen unit lets the optimizer see the whole crate at once: smaller,
+# faster code at the cost of less build parallelism. Worth it for release-only.
+codegen-units = 1
+# Strip symbols from the shipped binary — the single biggest size win here
+# (~3.8 MB), and these binaries are distributed, not debugged.
+strip = true
+# NOTE: deliberately NOT setting `panic = "abort"`. The LSP server relies on
+# std::panic::catch_unwind (src/lsp/main_loop.rs warm-diagnostics thread and
+# the profile/check subcommands in src/main.rs) to recover from analysis panics
+# without taking down the whole server; aborting would break that resilience.

@@ -3695,6 +3695,9 @@ pub(crate) fn encode_semantic_tokens(raw: &[RawSemanticToken], text: &str) -> Se
     let mut data: Vec<SemanticToken> = Vec::with_capacity(raw.len());
     let mut prev_start: u32 = 0;
     for (i, t) in raw.iter().enumerate() {
+        // `debug_assert!` (not `assert!`) because out-of-order tokens are a
+        // bug in our emitter, not in external input — a hard assert would crash
+        // the LSP server on a bug that only causes cosmetic highlighting issues.
         debug_assert!(
             i == 0 || t.start >= prev_start,
             "semantic tokens out of order: prev_start={} current_start={}",
@@ -7544,6 +7547,9 @@ mod tests {
         ]);
     }
 
+    // Guards a `debug_assert!`, which is compiled out under `cargo test
+    // --release` (debug-assertions off), so only run when assertions are present.
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "semantic tokens out of order")]
     fn encode_panics_on_unsorted_tokens() {
