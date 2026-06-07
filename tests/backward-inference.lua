@@ -276,35 +276,36 @@ local function outer(y)
     return inner(y)
 end
 
--- ── Narrowed use must NOT tighten param to non-nil ──
--- The `if p then needsString(p) end` guard makes `p` non-nil only inside
--- the branch; the param itself still accepts nil. Backward inference must
--- skip hints from narrowed uses so `narrowedCaller(nil)` is accepted.
+-- ── Narrowed use promotes to nilable when truthiness-tested ──
+-- The `if p then needsString(p) end` guard provides both a type hint
+-- (string, from the call inside the guard) and nilability evidence (the
+-- guard itself proves p can be nil). Backward inference promotes the
+-- narrowing-only hint to baseline and adds nil, inferring `string?`.
 ---@param s string
 local function needsString(s) end
 
 local function narrowedCaller(p)
---                            ^ hover: (param) p: ?
+--                            ^ hover: (param) p: string?
     if p then
         needsString(p)
     end
 end
 narrowedCaller(nil)
 
--- Arithmetic use under a nil guard must also be skipped — `p + 1` would
--- otherwise hint `number` and tighten the param.
+-- Arithmetic use under a nil guard: `p + 1` hints `number`, the guard
+-- provides nilability evidence → `number?`.
 local function narrowedArith(p)
---                           ^ hover: (param) p: ?
+--                           ^ hover: (param) p: number?
     if p then
         local _ = p + 1
     end
 end
 narrowedArith(nil)
 
--- Concatenation use under a nil guard must also be skipped — `p .. "x"`
--- would otherwise hint `string | number`.
+-- Concatenation use under a nil guard: `p .. "x"` hints `string | number`,
+-- the guard provides nilability evidence → `string | number | nil`.
 local function narrowedConcat(p)
---                            ^ hover: (param) p: ?
+--                            ^ hover: (param) p: string | number?
     if p then
         local _ = p .. "x"
     end
@@ -945,3 +946,70 @@ local function withOrTrue(param)
 --                        ^ hover: (param) param: ?
     local flag = param or true
 end
+
+-- ── `and` LHS promotes narrowing hints ──
+-- `param and typedFunc(param)` as a standalone expression: the `and` LHS
+-- provides nilability evidence, the RHS function call provides the type hint.
+---@param s string
+local function andTakesStr(s) end
+
+local function andPromotion(p)
+--                          ^ hover: (param) p: string?
+    local _ = p and andTakesStr(p)
+end
+
+-- `param and typedFunc(param) or default` pattern (common in real addons).
+---@param s string
+---@return string
+---@diagnostic disable-next-line: missing-return
+local function andOrStr(s) end
+
+local function andOrPattern(p)
+--                          ^ hover: (param) p: string?
+    local _ = p and andOrStr(p) or "default"
+end
+
+-- Conflicting narrowing hints inside a guard → param stays untyped.
+---@param s string
+local function conflictStr(s) end
+---@param n number
+local function conflictNum(n) end
+
+local function conflictNarrow(p)
+--                            ^ hover: (param) p: ?
+    if p then
+        conflictStr(p)
+        conflictNum(p)
+    end
+end
+
+-- Guard on a different variable does NOT promote — the param has no
+-- nilability evidence of its own.
+---@param s string
+local function guardDiffStr(s) end
+
+local function guardDiffVar(guard, p)
+--                                 ^ hover: (param) p: ?
+    if guard then
+        guardDiffStr(p)
+    end
+end
+guardDiffVar(nil, nil)
+
+-- ── Baseline takes precedence over promotion path ──
+-- When a param has both unconditional usage (baseline) AND truthiness evidence,
+-- the baseline path handles it — the promotion loop's `out.contains_key` guard
+-- skips it. The baseline hint is authoritative; nil is only added if the param
+-- also has `or` LHS evidence (existing behavior).
+---@param s string
+local function baselinePrecedenceStr(s) end
+
+local function baselinePrecedence(p)
+--                                ^ hover: (param) p: string
+    baselinePrecedenceStr(p)
+    if p then
+        baselinePrecedenceStr(p)
+    end
+end
+baselinePrecedence(nil)
+--                 ^ diag: type-mismatch

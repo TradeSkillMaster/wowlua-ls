@@ -3029,6 +3029,7 @@ impl<'a> Analysis<'a> {
         let mut narrowing_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
         let mut caller_types: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
         let mut or_lhs_params: HashSet<SymbolIndex> = HashSet::new();
+        let mut and_lhs_params: HashSet<SymbolIndex> = HashSet::new();
         let concat_hint = ValueType::union(ValueType::String(None), ValueType::Number);
 
         for expr_id in 0..self.ir.exprs.len() {
@@ -3067,11 +3068,15 @@ impl<'a> Analysis<'a> {
                         // parameters with a default value. Track that the param can
                         // be nil so the inferred type includes nil.
                         if let Some(s) = lhs_sym {
-                            // Note: this flag only takes effect when the param also
-                            // has baseline hints from other usage sites (the final
-                            // loop iterates `baseline_hints`). A param used *only*
-                            // in `param or expr` with no other evidence stays `?`.
                             or_lhs_params.insert(s);
+                        }
+                    } else if op == Operator::And {
+                        // `param and expr` — the `and` LHS is a truthiness test,
+                        // providing nilability evidence. This alone doesn't infer a
+                        // type; it only enables promotion when there are also
+                        // narrowing hints from typed usage inside the guarded path.
+                        if let Some(s) = lhs_sym {
+                            and_lhs_params.insert(s);
                         }
                     }
                 }
@@ -3277,6 +3282,20 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Candidate params that appear in a bare truthiness guard (`if p then`).
+        // Uses `falsy_narrowed_symbols` (not `narrowed_symbols`) to avoid
+        // numeric comparisons like `if x > 0` which also strip nil but don't
+        // indicate the param itself is nilable.
+        // Safety: we scan ALL scopes, not just the candidate's function scopes.
+        // This is correct because SymbolIndex values are unique per file (monotonically
+        // allocated from a flat `ir.symbols` vec), so a truthiness guard in one
+        // function cannot accidentally match a parameter from another function.
+        let truthiness_tested: HashSet<SymbolIndex> = self.falsy_narrowed_symbols.values()
+            .flat_map(|set| set.iter())
+            .copied()
+            .filter(|s| candidates.contains(s))
+            .collect();
+
         let mut out: HashMap<SymbolIndex, BackwardInferenceHints> = HashMap::new();
         for (s, baseline) in baseline_hints {
             let narrowing: Vec<ValueType> = narrowing_hints.remove(&s)
@@ -3288,14 +3307,45 @@ impl<'a> Analysis<'a> {
             let used_as_or_lhs = or_lhs_params.contains(&s);
             out.insert(s, BackwardInferenceHints { baseline, narrowing, caller, used_as_or_lhs });
         }
+
+        // Promote narrowing-only params that have nilability evidence.
+        // After the baseline loop above consumed entries via `narrowing_hints.remove()`,
+        // only narrowing-only entries remain (params with no baseline hints).
+        // When such a param was truthiness-tested (`if p then` / `p and expr`),
+        // its narrowing hints become baselines and `used_as_or_lhs` is set so
+        // the inferred type includes nil (e.g. `string?`).
+        for (s, hints) in narrowing_hints {
+            if out.contains_key(&s) { continue; }
+            let has_nil_evidence = and_lhs_params.contains(&s)
+                || or_lhs_params.contains(&s)
+                || truthiness_tested.contains(&s);
+            if !has_nil_evidence { continue; }
+            let filtered: Vec<ValueType> = hints.into_iter()
+                .filter(|t| !matches!(t, ValueType::Any))
+                .collect();
+            if filtered.is_empty() { continue; }
+            let caller = caller_types.remove(&s).unwrap_or_default();
+            out.insert(s, BackwardInferenceHints {
+                baseline: filtered,
+                narrowing: Vec::new(),
+                caller,
+                used_as_or_lhs: true,
+            });
+        }
+
         out
     }
 
     fn candidate_ref_in(&self, expr_id: ExprId, candidates: &std::collections::HashSet<SymbolIndex>) -> Option<SymbolIndex> {
-        match self.expr(expr_id) {
-            Expr::SymbolRef(sym, _) if candidates.contains(sym) => Some(*sym),
-            Expr::Grouped(inner) => self.candidate_ref_in(*inner, candidates),
-            _ => None,
+        let mut cur = expr_id;
+        loop {
+            match self.expr(cur) {
+                Expr::SymbolRef(sym, _) if candidates.contains(sym) => return Some(*sym),
+                Expr::Grouped(inner)
+                | Expr::StripFalsy(inner)
+                | Expr::StripNil(inner) => cur = *inner,
+                _ => return None,
+            }
         }
     }
 
