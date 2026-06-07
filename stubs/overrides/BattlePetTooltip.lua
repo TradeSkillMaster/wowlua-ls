@@ -1,0 +1,6 @@
+---@meta _
+-- BattlePetTooltip is a Frame (not GameTooltip) whose BattlePetTooltipTemplate
+-- OnLoad assigns self.AddLine = BattlePetTooltipTemplate_AddTextLine. Ketho's
+-- vendor annotation omits this runtime-injected method.
+---@class BattlePetTooltip
+---@field AddLine fun(self: BattlePetTooltip, text: string, r?: number, g?: number, b?: number, wrap?: boolean)

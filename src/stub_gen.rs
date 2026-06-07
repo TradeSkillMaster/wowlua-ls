@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 
 use crate::flavor::{FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA};
 
+/// Files we generate from wago.tools DB2 data — excluded from dedup scans so that
+/// vendor copies of these files don't suppress our generated annotations.
+const WAGO_GENERATED_FILES: &[&str] = &["GlobalStrings.lua", "GlobalVariables.lua", "GlobalColors.lua"];
+
 #[derive(Debug)]
 struct ApiDocData {
     constants: HashMap<String, (String, String)>,
@@ -1531,14 +1535,12 @@ fn generate_global_stubs(
     let globalstrings = parse_globalstrings_csv(&csvs.globalstrings_csv);
     let globalcolors = parse_globalcolors_csv(&csvs.globalcolor_csv);
 
-    let mut existing = get_existing_names(stubs_dir, &[
-        "GlobalStrings.lua", "GlobalVariables.lua", "GlobalColors.lua",
-    ]);
+    let mut existing = get_existing_names(stubs_dir, WAGO_GENERATED_FILES);
     // Also scan extra directories directly (bypasses symlink indirection issues that can cause
     // names like `strmatch = str.match` from compat.lua to be missed when combined_stubs uses
     // symlinks that aren't followed in all environments).
     for dir in extra_existing_dirs {
-        let extra = get_existing_names(dir, &[]);
+        let extra = get_existing_names(dir, WAGO_GENERATED_FILES);
         existing.extend(extra);
     }
 
@@ -3358,6 +3360,9 @@ struct ClassicApiDiff {
     missing_widget_methods: Vec<(String, String)>,
     /// All existing global names in current stubs (for namespace/constant/frame filtering).
     existing_globals: HashSet<String>,
+    /// Class names declared in override files — parent-class corrections skip these
+    /// since the override intentionally sets the parent.
+    override_classes: HashSet<String>,
 }
 
 /// Per-branch API name sets from BlizzardInterfaceResources, plus derived data.
@@ -3534,7 +3539,7 @@ fn fetch_branch_resources(stubs_dir: &Path) -> BranchResourceData {
     log::info!("  Classic-only widget methods needing stubs: {}", missing_widget_methods.len());
 
     BranchResourceData {
-        classic_diff: ClassicApiDiff { missing, missing_fxml, missing_widget_methods, existing_globals },
+        classic_diff: ClassicApiDiff { missing, missing_fxml, missing_widget_methods, existing_globals, override_classes: HashSet::new() },
         retail_all_names,
         retail_api_names: retail,
         flavor_map,
@@ -3831,6 +3836,40 @@ fn generate_classic_stubs(
             }
             log::info!("  Emitted {} frame globals ({} with inferred fields/methods)",
                 missing_frames.len(), frames_with_fields);
+        }
+
+        // ── Parent-class correction for vendor-defined frame globals ─────────
+        // Ketho's annotated XML files sometimes declare frame globals with a less
+        // specific parent class than the actual XML element type (e.g.
+        // `---@class BattlePetTooltip : Frame` when the XML defines it as a
+        // `<GameTooltip>` element). Emit supplementary `@class` declarations that
+        // correct the parent to the true widget type so the class inherits the
+        // proper widget methods (e.g. GameTooltip:AddLine, ColorSelect:SetColorRGB).
+        //
+        // Skip classes already declared in override files — overrides intentionally
+        // set the parent class and a correction here could contradict that intent.
+        let mut parent_corrections: Vec<_> = all_frames.iter()
+            .filter(|(name, ftype)| {
+                existing_globals.contains(*name)
+                    // Skip Frame and Font — they're the default base classes that
+                    // nearly all XML elements inherit from, so "correcting" to them
+                    // adds no useful methods.
+                    && *ftype != "Frame" && *ftype != "Font"
+                    && !diff.override_classes.contains(*name)
+            })
+            .map(|(name, ftype)| (name.clone(), ftype.clone()))
+            .collect();
+        parent_corrections.sort_by(|a, b| a.0.cmp(&b.0));
+
+        if !parent_corrections.is_empty() {
+            out.push("-- Parent-class corrections for vendor-defined frame globals".to_string());
+            out.push("-- (XML element type is more specific than vendor @class parent)".to_string());
+            out.push(String::new());
+            for (name, ftype) in &parent_corrections {
+                out.push(format!("---@class {name} : {ftype}"));
+                out.push(String::new());
+            }
+            log::info!("  Parent-class corrections: {} frames", parent_corrections.len());
         }
     }
 
@@ -4401,7 +4440,9 @@ pub fn regenerate_stubs() {
     if branch_data.retail_all_names.is_empty() {
         source_errors.push("BlizzardInterfaceResources retail names: empty (fetch failed)".to_string());
     }
-    let classic_diff = branch_data.classic_diff;
+    let mut classic_diff = branch_data.classic_diff;
+    let class_re = regex_lite::Regex::new(r"---@class\s+(\w+)").unwrap();
+    classic_diff.override_classes = get_existing_names_with(&overrides_dir, &class_re, &[]);
     phase!("fetch_branch_resources (HTTP)");
 
     // Step 2d: Extract retail constants and enumerations from wow-ui-source.
@@ -4586,13 +4627,13 @@ pub fn regenerate_stubs() {
     // Also scan the annotation directories directly (same fix as generate_global_stubs)
     // so that names like `strmatch = str.match` from compat.lua are reliably excluded
     // even if symlink traversal in combined_stubs is unreliable.
-    let dedup_exclude_files = &[
-        "GlobalStrings.lua", "GlobalVariables.lua", "GlobalColors.lua",
-        "Enum.lua", "CVar.lua", "Wiki.lua",
-    ];
-    let mut existing_for_dedup = get_existing_names(&combined_stubs, dedup_exclude_files);
+    // WAGO_GENERATED_FILES plus the files we generate from other sources (wiki, enums, cvars).
+    let dedup_exclude_files: Vec<&str> = WAGO_GENERATED_FILES.iter().copied()
+        .chain(["Enum.lua", "CVar.lua", "Wiki.lua"])
+        .collect();
+    let mut existing_for_dedup = get_existing_names(&combined_stubs, &dedup_exclude_files);
     for dir in &extra_dirs {
-        let extra = get_existing_names(dir, &[]);
+        let extra = get_existing_names(dir, &dedup_exclude_files);
         existing_for_dedup.extend(extra);
     }
 

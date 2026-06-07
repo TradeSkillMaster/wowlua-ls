@@ -315,6 +315,11 @@ function GameTooltip:SetInventoryItemByID(itemID) end
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_GameTooltip_SetItemByID)
 function GameTooltip:SetItemByID(itemID) end
 
+-- SetItemByGUID is not in Blizzard APIDocumentation, WidgetAPI.lua, or the wiki,
+-- but is a real C-level GameTooltip method used by addons (e.g. Auctionator).
+---@param itemGUID string
+function GameTooltip:SetItemByGUID(itemGUID) end
+
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_GameTooltip_SetItemKey)
 ---@param itemID number
 ---@param itemLevel number
@@ -449,6 +454,14 @@ function GameTooltip:SetUnit(unit, hideStatus) end
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_GameTooltip_SetUnitAura)
 ---@param auraIndex number
 function GameTooltip:SetUnitAura(unit, auraIndex, filter) end
+
+-- SetUnitAuraByAuraInstanceID is not in Blizzard APIDocumentation, WidgetAPI.lua,
+-- or the wiki, but is a real C-level GameTooltip method (parallel to the existing
+-- SetUnitBuffByAuraInstanceID / SetUnitDebuffByAuraInstanceID).
+---@param unit string
+---@param auraInstanceID number
+---@param filter? string
+function GameTooltip:SetUnitAuraByAuraInstanceID(unit, auraInstanceID, filter) end
 
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_GameTooltip_SetUnitBuff)
 function GameTooltip:SetUnitBuff(unit, buffIndex, raidFilter) end

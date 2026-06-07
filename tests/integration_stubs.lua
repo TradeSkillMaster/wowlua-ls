@@ -1141,3 +1141,27 @@ local _maskPool = CreateMaskTexturePool(_poolParent, "ARTWORK", 2)
 -- CreateFontStringPool: subLayer param exists and is number
 local _fsPool = CreateFontStringPool(_poolParent, "OVERLAY", 0, "MyTemplate")
 --              ^ hover: (global) function CreateFontStringPool(\nparent: Frame?,\nlayer?: string,\nsubLayer?: number,\ntemplate?: string,\nresetFunc?: function\n)\n-> ObjectPool<FontString>
+
+-- ── Missing WoW API method stubs ──────────────────────────────────────────────
+
+-- GameTooltip:SetItemByGUID (not in Blizzard APIDocumentation; hand-written override)
+---@type GameTooltip
+local _gtip = nil
+_gtip:SetItemByGUID("item-guid-123")
+--    ^ hover: (method) function GameTooltip:SetItemByGUID(itemGUID: string)
+
+-- GameTooltip:SetUnitAuraByAuraInstanceID (not in Blizzard APIDocumentation; hand-written override)
+_gtip:SetUnitAuraByAuraInstanceID("player", 42, "HELPFUL")
+--    ^ hover: (method) function GameTooltip:SetUnitAuraByAuraInstanceID(
+
+-- BattlePetTooltip:AddLine (Lua-injected method from BattlePetTooltipTemplate OnLoad)
+BattlePetTooltip:AddLine("hello")
+--               ^ hover: (method) function BattlePetTooltip:AddLine(
+
+-- ColorPickerFrame:SetColorRGB (ColorSelect widget method via parent-class correction)
+ColorPickerFrame:SetColorRGB(1, 0, 0)
+--               ^ hover: (method) function ColorPickerFrame:SetColorRGB(rgbR: number, rgbG: number, rgbB: number)
+
+-- ColorPickerFrame:GetColorRGB (ColorSelect widget method via parent-class correction)
+local _cpR, _cpG, _cpB = ColorPickerFrame:GetColorRGB()
+--                                        ^ hover: (method) function ColorPickerFrame:GetColorRGB()
