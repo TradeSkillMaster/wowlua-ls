@@ -519,11 +519,15 @@ pub(crate) fn unwrap_to_inner_expr(exprs: &[Expr], mut id: ExprId) -> ExprId {
 ///   missing keys / out-of-bounds indices at runtime.
 /// - **unannotated parameters**: backward inference may resolve to a non-nil
 ///   type, but the parameter is intended to be optional.
+/// - **locals assigned from uncertain sources**: a local whose defining
+///   expression is itself uncertain (e.g. `local x = self.lateinit_field`)
+///   inherits that uncertainty (single-level only).
 pub(crate) fn is_expr_truthiness_uncertain(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
     is_lateinit_field_access(analysis, expr_id)
     || is_field_without_direct_annotation(analysis, expr_id)
     || is_dynamic_bracket_index(analysis, expr_id)
     || is_unannotated_param_ref(analysis, expr_id)
+    || is_symbol_from_uncertain_source(analysis, expr_id)
 }
 
 /// Lateinit (`T!`) field access: typed non-nil but can be nil at runtime.
@@ -577,6 +581,26 @@ fn is_unannotated_param_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool 
         }
     }
     false
+}
+
+/// Local variable whose defining expression is itself truthiness-uncertain
+/// (one level of indirection). Handles `local x = self._query; if x then`
+/// where `_query` is a lateinit field.
+///
+/// Intentionally single-level: `local x = self.f; local y = x; if y then`
+/// does NOT propagate (two-level indirection is rare in practice and
+/// recursive tracing risks unbounded walks).
+fn is_symbol_from_uncertain_source(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
+    let Expr::SymbolRef(sym_idx, ver_idx) = &analysis.ir.exprs[id.val()] else { return false };
+    if sym_idx.is_external() { return false; }
+    let sym = analysis.ir.sym(*sym_idx);
+    let Some(ver) = sym.versions.get(*ver_idx) else { return false };
+    let Some(src) = ver.type_source else { return false };
+    is_lateinit_field_access(analysis, src)
+    || is_field_without_direct_annotation(analysis, src)
+    || is_dynamic_bracket_index(analysis, src)
+    || is_unannotated_param_ref(analysis, src)
 }
 
 /// Checks whether any table in a (possibly union/intersection) type either has

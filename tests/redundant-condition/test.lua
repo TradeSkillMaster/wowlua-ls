@@ -164,6 +164,19 @@ local function checkLateinit(state)
 end
 _use(checkLateinit)
 
+-- ── No diagnostic: local assigned from lateinit field ────────────────────────
+-- When a local variable is assigned from a lateinit field and then checked,
+-- the lateinit uncertainty should propagate through the assignment.
+
+---@param state LateinitState
+local function checkLateinitViaLocal(state)
+    local h = state.handler
+    if h then
+        h()
+    end
+end
+_use(checkLateinitViaLocal)
+
 -- ── No diagnostic: local from and/or on lateinit field ───────────────────────
 -- `X and true or false` is a common Lua idiom for boolean coercion. When X is
 -- a lateinit field the LS resolves it as always-truthy, collapsing the result
