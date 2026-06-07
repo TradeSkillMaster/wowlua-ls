@@ -1042,3 +1042,33 @@ local function boolOrLhs(flag)
     flag = flag or false
     boolOrNeedsBool(flag)
 end
+
+-- Boolean params where caller passes boolean? should infer boolean?
+-- even though `and` LHS doesn't prove nil for booleans (since false is falsy),
+-- the caller type boolean? is direct nil evidence.
+---@param b boolean
+local function usesBoolParam(b) end
+
+local function acceptsOptBool(flag)
+--                            ^ hover: (param) flag: boolean?
+    if flag and true then end
+    usesBoolParam(flag)
+end
+
+---@param x boolean?
+local function callerOfOptBool(x)
+    acceptsOptBool(x)
+end
+
+-- Caller passing plain boolean does NOT add nil — caller_has_nil only fires
+-- when the caller type actually contains nil.
+local function acceptsPlainBool(flag)
+--                               ^ hover: (param) flag: boolean
+    if flag and true then end
+    usesBoolParam(flag)
+end
+
+---@param y boolean
+local function callerOfPlainBool(y)
+    acceptsPlainBool(y)
+end

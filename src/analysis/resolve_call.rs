@@ -3040,14 +3040,19 @@ impl<'a> Analysis<'a> {
                 let mut combined = sym_hints.baseline.clone();
                 combined.extend(sym_hints.narrowing.iter().cloned());
                 let inferred = intersect_hints(&combined, &is_subtype).unwrap_or(baseline_intersect);
+                if !self.caller_types_mutually_compatible(&sym_hints.caller) { continue; }
                 // used_as_or_lhs: `param or default` idiom implies the param
                 // can be nil at runtime (see detection in collect_backward_inference_hints).
-                let inferred = if (baseline_has_nil || sym_hints.used_as_or_lhs) && !inferred.contains_nil() {
+                // caller_has_nil: a call site passes a nilable value (e.g. boolean?),
+                // which is direct evidence the param accepts nil — even when the
+                // boolean special-case in the promotion path suppresses nil evidence
+                // from truthiness/`and` tests (since `false` is also falsy).
+                let caller_has_nil = sym_hints.caller.iter().any(|c| c.contains_nil());
+                let inferred = if (baseline_has_nil || sym_hints.used_as_or_lhs || caller_has_nil) && !inferred.contains_nil() {
                     ValueType::union(inferred, ValueType::Nil)
                 } else {
                     inferred
                 };
-                if !self.caller_types_mutually_compatible(&sym_hints.caller) { continue; }
                 let current = self.ir.symbols[sym_idx.val()].versions.first()
                     .and_then(|v| v.resolved_type.clone());
                 if current.as_ref() == Some(&inferred) { continue; }
