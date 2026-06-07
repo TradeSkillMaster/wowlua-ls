@@ -395,6 +395,27 @@ impl<'a> Analysis<'a> {
                     if let Some((name, oriented_op, bound)) = oriented
                         && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name), parent_scope)
                     {
+                        // Hoisted and-or sentinel: if y was assigned via
+                        // `(x and expr) or LITERAL` and the sentinel literal
+                        // fails this comparison, narrow x to non-nil.
+                        // Must run before `bound` is moved into the map.
+                        if let Some(&(derived_sym, sentinel_val)) = self.and_or_num_sentinel.get(&sym_idx)
+                            && let Some(bound_val) = crate::analysis::resolve::parse_num_literal_str(&bound)
+                        {
+                            // Outer guard (line 380) filters to ordered comparisons only.
+                            let sentinel_passes = match oriented_op {
+                                Operator::GreaterThan => sentinel_val > bound_val,
+                                Operator::LessThan => sentinel_val < bound_val,
+                                Operator::GreaterThanOrEquals => sentinel_val >= bound_val,
+                                Operator::LessThanOrEquals => sentinel_val <= bound_val,
+                                _ => unreachable!("outer guard filters to ordered comparisons"),
+                            };
+                            if !sentinel_passes && !derived_sym.is_external() {
+                                self.narrowing.narrowed.entry(target_scope).or_default()
+                                    .insert(NarrowTarget::Symbol(derived_sym));
+                                self.push_strip_nil_version(derived_sym, target_scope);
+                            }
+                        }
                         self.narrowing.num_compare_narrowed_symbols.entry(target_scope).or_default()
                             .insert(sym_idx, (oriented_op, bound));
                         // Reaching the then-branch proves x is non-nil; strip nil
@@ -2178,34 +2199,10 @@ impl<'a> Analysis<'a> {
 
         // Pattern 2: x_sym is the source. Derived is the LHS of the inner `and`.
         // Matches: `y = (x and _) or nil`
-        let pattern2_derived: Option<SymbolIndex> = (|| -> Option<SymbolIndex> {
-            let expr = expression?;
-            let or_bin = match expr {
-                Expression::BinaryExpression(b) => b,
-                _ => return None,
-            };
-            if !matches!(or_bin.kind(), Operator::Or) { return None; }
-            let or_terms = or_bin.get_terms();
-            if or_terms.len() != 2 { return None; }
-            if !Self::is_nil_literal(&or_terms[1]) { return None; }
-            let and_bin = match &or_terms[0] {
-                Expression::BinaryExpression(b) => b,
-                _ => return None,
-            };
-            if !matches!(and_bin.kind(), Operator::And) { return None; }
-            let and_terms = and_bin.get_terms();
-            if and_terms.len() != 2 { return None; }
-            let lhs_ident = match &and_terms[0] {
-                Expression::Identifier(id) => id,
-                _ => return None,
-            };
-            let lhs_names = lhs_ident.names();
-            if lhs_names.len() != 1 { return None; }
-            if lhs_names[0] == x_name { return None; }
-            let derived = self.get_symbol(&SymbolIdentifier::Name(lhs_names[0].clone()), scope_idx)?;
-            if derived == x_sym { return None; }
-            Some(derived)
-        })();
+        let pattern2_derived: Option<SymbolIndex> = self
+            .extract_and_lhs_from_or(expression, x_name, x_sym, scope_idx,
+                |rhs| Self::is_nil_literal(rhs).then_some(()))
+            .map(|(derived, ())| derived);
 
         // Pattern 3: x_sym is the source. Derived is the LHS of a bare `and`.
         // Matches: `y = x and expr` — when y is narrowed, x is also narrowed
@@ -2231,6 +2228,17 @@ impl<'a> Analysis<'a> {
             Some(derived)
         })();
 
+        // Pattern 4: `y = (x and expr) or NUMBER_LITERAL` — hoisted and-or sentinel.
+        // When a NumCompare guard on y excludes the literal, x is narrowed non-nil.
+        // Unlike Pattern 2 (which requires `or nil`), this handles non-nil fallbacks
+        // like `local level = craftString and GetLevel(craftString) or -1`.
+        let pattern4_result: Option<(SymbolIndex, f64)> = self
+            .extract_and_lhs_from_or(expression, x_name, x_sym, scope_idx, |rhs| {
+                if Self::is_nil_literal(rhs) { return None; } // Pattern 2 handles nil
+                let lit_str = Self::extract_number_literal(rhs)?;
+                crate::analysis::resolve::parse_num_literal_str(&lit_str)
+            });
+
         // Invalidate entries involving x_sym (as derived or as source) before
         // registering the new relationship.
         for derived_list in self.or_coalesce_derivations.values_mut() {
@@ -2238,6 +2246,9 @@ impl<'a> Analysis<'a> {
         }
         self.or_coalesce_derivations.remove(&x_sym);
         self.or_coalesce_derivations.retain(|_, v| !v.is_empty());
+        // Invalidate sentinel entries where x_sym is the key or the derived.
+        self.and_or_num_sentinel.remove(&x_sym);
+        self.and_or_num_sentinel.retain(|_, (derived, _)| *derived != x_sym);
 
         if let Some(y_sym) = pattern1_source {
             self.or_coalesce_derivations.entry(y_sym).or_default().push(x_sym);
@@ -2247,6 +2258,9 @@ impl<'a> Analysis<'a> {
         }
         if let Some(derived) = pattern3_derived {
             self.or_coalesce_derivations.entry(x_sym).or_default().push(derived);
+        }
+        if let Some((derived, lit_val)) = pattern4_result {
+            self.and_or_num_sentinel.insert(x_sym, (derived, lit_val));
         }
     }
 
@@ -2590,6 +2604,47 @@ impl<'a> Analysis<'a> {
             Operator::GreaterThanOrEquals => Operator::LessThanOrEquals,
             other => other,
         }
+    }
+
+    /// From `(ident and expr) or rhs`, extract the `ident`'s symbol index and pass
+    /// the `or` RHS to a caller-supplied closure for pattern-specific checking.
+    /// Shared by Pattern 2 (`or nil`) and Pattern 4 (`or NUMBER`). Returns `None`
+    /// if the expression doesn't match, the `and` LHS is not a simple identifier,
+    /// the identifier is `x_name` / resolves to `x_sym`, or the closure returns `None`.
+    fn extract_and_lhs_from_or<R>(
+        &self,
+        expression: Option<&Expression<'_>>,
+        x_name: &str,
+        x_sym: SymbolIndex,
+        scope_idx: ScopeIndex,
+        check_or_rhs: impl FnOnce(&Expression<'_>) -> Option<R>,
+    ) -> Option<(SymbolIndex, R)> {
+        let expr = expression?;
+        let or_bin = match expr {
+            Expression::BinaryExpression(b) => b,
+            _ => return None,
+        };
+        if !matches!(or_bin.kind(), Operator::Or) { return None; }
+        let or_terms = or_bin.get_terms();
+        if or_terms.len() != 2 { return None; }
+        let rhs_result = check_or_rhs(&or_terms[1])?;
+        let and_bin = match &or_terms[0] {
+            Expression::BinaryExpression(b) => b,
+            _ => return None,
+        };
+        if !matches!(and_bin.kind(), Operator::And) { return None; }
+        let and_terms = and_bin.get_terms();
+        if and_terms.len() != 2 { return None; }
+        let lhs_ident = match &and_terms[0] {
+            Expression::Identifier(id) => id,
+            _ => return None,
+        };
+        let lhs_names = lhs_ident.names();
+        if lhs_names.len() != 1 { return None; }
+        if lhs_names[0] == x_name { return None; }
+        let derived = self.get_symbol(&SymbolIdentifier::Name(lhs_names[0].clone()), scope_idx)?;
+        if derived == x_sym { return None; }
+        Some((derived, rhs_result))
     }
 
     /// Extract the source text of a numeric literal from an expression.

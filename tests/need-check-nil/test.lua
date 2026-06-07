@@ -2123,6 +2123,91 @@ local function testOrCoercionStringNoNarrow(x)
 end
 _consume(testOrCoercionStringNoNarrow)
 
+-- ── Hoisted and-or sentinel: `y = (x and f(x)) or LITERAL; if y > 0` ──
+
+-- Basic: `local level = x and getVal(x) or -1; if level > 0` narrows x
+---@param x string?
+---@param getVal fun(s: string): number
+local function testHoistedAndOrSentinel(x, getVal)
+    local level = x and getVal(x) or -1
+    if level > 0 then
+        local y = x
+        --        ^ hover: (param) x: string
+    end
+end
+_consume(testHoistedAndOrSentinel)
+
+-- Multiple sentinels from same guard variable
+---@param x string?
+---@param getRank fun(s: string): number
+---@param getLevel fun(s: string): number
+local function testHoistedAndOrMultiple(x, getRank, getLevel)
+    local rank = x and getRank(x) or -1
+    local level = x and getLevel(x) or -1
+    if rank > 0 then
+        local y = x
+        --        ^ hover: (param) x: string
+    elseif level > 0 then
+        local y = x
+        --        ^ hover: (param) x: string
+    end
+end
+_consume(testHoistedAndOrMultiple)
+
+-- Sentinel where fallback passes comparison: no narrowing
+---@param x string?
+---@param getVal fun(s: string): number
+local function testHoistedAndOrNoNarrow(x, getVal)
+    local level = x and getVal(x) or 5
+    if level > 0 then
+        -- 5 > 0 is true, so x could still be nil
+        local y = x
+        --        ^ hover: (param) x: string?
+    end
+end
+_consume(testHoistedAndOrNoNarrow)
+
+-- Sentinel with <= comparison
+---@param x string?
+---@param getVal fun(s: string): number
+local function testHoistedAndOrLe(x, getVal)
+    local level = x and getVal(x) or 10
+    if level <= 5 then
+        -- 10 <= 5 is false, so x must be truthy
+        local y = x
+        --        ^ hover: (param) x: string
+    end
+end
+_consume(testHoistedAndOrLe)
+
+-- Sentinel invalidation: reassigning the sentinel variable breaks the link
+---@param x string?
+---@param getVal fun(s: string): number
+local function testHoistedAndOrReassignSentinel(x, getVal)
+    local level = x and getVal(x) or -1
+    level = 42
+    if level > 0 then
+        local y = x
+        --        ^ hover: (param) x: string?
+    end
+end
+_consume(testHoistedAndOrReassignSentinel)
+
+-- Sentinel invalidation: reassigning the source variable breaks the link
+---@param x string?
+---@param getVal fun(s: string): number
+---@param newX string?
+local function testHoistedAndOrReassignSource(x, getVal, newX)
+    local level = x and getVal(x) or -1
+    x = newX
+    if level > 0 then
+        -- x was reassigned, so sentinel is broken; x stays string?
+        local y = x
+        --        ^ hover: (param) x: string?
+    end
+end
+_consume(testHoistedAndOrReassignSource)
+
 -- ── Re-narrowing after reassignment in loop with early-exit guard ──────
 
 ---@param getLine fun(): string?

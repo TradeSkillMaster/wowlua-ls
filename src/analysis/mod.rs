@@ -1815,6 +1815,11 @@ pub struct Analysis<'a> {
     /// assignments — if `y` is known non-nil, `x` (just assigned `x or y`) is too.
     /// One-directional: narrowing `x` does NOT imply anything about `y`.
     pub(crate) or_coalesce_derivations: HashMap<SymbolIndex, Vec<SymbolIndex>>,
+    /// Hoisted and-or sentinel: `assigned = (source and expr) or NUMBER_LITERAL`.
+    /// When a NumCompare guard on the assigned variable excludes the literal value,
+    /// the source variable is narrowed non-nil.
+    /// Key: assigned_sym. Value: (source_sym, sentinel_f64).
+    pub(crate) and_or_num_sentinel: HashMap<SymbolIndex, (SymbolIndex, f64)>,
     /// ExprIds lowered inside a conditionally-reached region of a function body —
     /// specifically the RHS of short-circuit `and`/`or`, and the body of
     /// if/elseif/else/while/repeat/for blocks. Used by backward param-type
@@ -2009,6 +2014,7 @@ impl<'a> Analysis<'a> {
             correlated_locals: Vec::new(),
             guard_implications: Vec::new(),
             or_coalesce_derivations: HashMap::new(),
+            and_or_num_sentinel: HashMap::new(),
             conditionally_reached_exprs: HashSet::new(),
             synth_return_overload_refinements: Vec::new(),
             defclass_vars: HashMap::new(),
