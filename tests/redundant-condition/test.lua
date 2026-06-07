@@ -527,6 +527,69 @@ for i = 1, 10 do
 end
 _use(seek)
 
+-- ── No diagnostic: open literal-union @param (enum-style annotation) ────────
+-- `@param` literal unions are open contracts (caller can pass unlisted values),
+-- so the final comparison is not redundant and hover narrows down the chain.
+
+---@param mode "A"|"B"|"C"|"D"
+local function handleMode(mode)
+    _use(mode)
+    --   ^ hover: (param) mode: "A" | "B" | "C" | "D"
+    if mode == "A" then
+        _use(mode)
+        --   ^ hover: (param) mode: "A"
+        return 1
+    elseif mode == "B" then
+    --     ^ hover: (param) mode: "B" | "C" | "D"
+        return 2
+    elseif mode == "C" then
+    --     ^ hover: (param) mode: "C" | "D"
+        return 3
+    elseif mode == "D" then
+    --     ^ hover: (param) mode: "D"
+        return 4
+    else
+        error("invalid")
+    end
+end
+_use(handleMode)
+
+-- Number literal union param: open-contract semantics (no strip narrowing for
+-- numbers yet, but no false-positive redundant-condition either).
+---@param level 1|2|3
+local function handleLevel(level)
+    if level == 1 then return "low"
+    elseif level == 2 then return "mid"
+    elseif level == 3 then return "high"
+    else error("bad level") end
+end
+_use(handleLevel)
+
+-- Boolean literal union param: same open-contract semantics.
+---@param flag true|false
+local function handleFlag(flag)
+    if flag == true then return "on"
+    elseif flag == false then return "off"
+    else error("bad flag") end
+end
+_use(handleFlag)
+
+-- Sequential early-return guards narrow the same way as an if/elseif chain.
+-- After exhaustive guards the union is empty (all members stripped forward),
+-- producing nil — a correct open-contract consequence (no listed member remains).
+---@param mode "A"|"B"|"C"
+local function handleModeEarly(mode)
+    _use(mode)
+    --   ^ hover: (param) mode: "A" | "B" | "C"
+    if mode == "A" then return end
+    if mode == "B" then return end
+    if mode == "C" then return end
+    -- ^ hover: (param) mode: "C"
+    _use(mode)
+    --   ^ hover: (param) mode: nil
+end
+_use(handleModeEarly)
+
 -- ── Suppression ──────────────────────────────────────────────────────────────
 
 ---@type number

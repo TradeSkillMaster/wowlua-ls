@@ -313,6 +313,11 @@ pub(crate) struct Ir {
     /// Symbols annotated with `@class` (class definitions). Field assignments on these
     /// symbols define class fields, not inject foreign fields — `inject-field` skips them.
     pub(crate) class_def_symbols: HashSet<SymbolIndex>,
+    /// Symbols that are function parameters (from `Function.args`). Used by
+    /// `is_open_literal_union_symbol` to restrict open-contract semantics to
+    /// `@param` annotations (an open contract: caller can pass unlisted values),
+    /// excluding `@type` annotations on locals (a closed assertion).
+    pub(crate) param_symbols: HashSet<SymbolIndex>,
     /// Source ranges for local @alias declarations (alias name → (start, end) byte offsets).
     pub(crate) alias_def_ranges: HashMap<String, (u32, u32)>,
     /// Monotonic counter for ordering scope and version creation. Used to prevent
@@ -494,6 +499,37 @@ impl Ir {
         } else {
             &self.tables[idx.val()]
         }
+    }
+
+    /// True when `sym_idx` is a **function parameter** whose declared (version-0)
+    /// type is an "open" literal union — a union of two or more string/number/bool
+    /// literals (optionally with nil), such as `@param x "A"|"B"|"C"`.
+    ///
+    /// Only `@param` annotations are open contracts (the caller can pass a value
+    /// outside the listed literals). A `@type` annotation on a local variable is a
+    /// *closed assertion* (the user declares the value IS one of those), so after
+    /// stripping "A" from `@type "A"|"B"`, `x == "B"` genuinely IS always true.
+    pub(crate) fn is_open_literal_union_symbol(&self, sym_idx: SymbolIndex) -> bool {
+        if !self.param_symbols.contains(&sym_idx) {
+            return false;
+        }
+        let Some(ts) = self.sym(sym_idx).versions.first().and_then(|v| v.type_source) else {
+            return false;
+        };
+        let Expr::Literal(ValueType::Union(members)) = self.expr(ts) else {
+            return false;
+        };
+        let mut literal_count = 0;
+        for m in members {
+            match m {
+                ValueType::String(Some(_))
+                | ValueType::NumberLiteral(_)
+                | ValueType::Boolean(Some(_)) => literal_count += 1,
+                ValueType::Nil => {}
+                _ => return false,
+            }
+        }
+        literal_count >= 2
     }
 
     /// Deep check whether a type (or any nested table field / function
@@ -1931,6 +1967,7 @@ impl<'a> Analysis<'a> {
                 class_def_ranges: HashMap::new(),
                 class_table_by_offset: HashMap::new(),
                 class_def_symbols: HashSet::new(),
+                param_symbols: HashSet::new(),
                 alias_def_ranges: HashMap::new(),
                 next_creation_order: 0,
                 g_table_idx,

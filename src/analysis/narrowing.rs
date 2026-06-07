@@ -492,6 +492,13 @@ impl<'a> Analysis<'a> {
                         if names.len() == 1 {
                             if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                                 if is_strip {
+                                    // For an open literal-union param (`@param x "A"|"B"`),
+                                    // stripping a member is sound for hover — it narrows the
+                                    // union down the if/elseif chain — but `redundant-condition`
+                                    // must not treat the result as exhaustive. The companion
+                                    // guard is `operand_is_stripped_open_union()` in
+                                    // `redundant_condition.rs`, which checks for a CastRemove
+                                    // version on an open-union param.
                                     self.add_type_stripped(target_scope, sym_idx, lit_vt.clone());
                                     self.push_strip_type_version(sym_idx, lit_vt, target_scope, false);
                                 } else if is_filter {
@@ -943,7 +950,17 @@ impl<'a> Analysis<'a> {
                         if names.len() == 1 {
                             if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                                 if is_eq {
-                                    self.add_type_stripped(scope_idx, sym_idx, lit_vt.clone());
+                                    // For an open literal-union param, skip the body-scope
+                                    // `add_type_stripped` map: it is not position-aware, so
+                                    // stripping members would leak onto references *before*
+                                    // the guard (an empty union renders as `nil`). The pushed
+                                    // version has creation_order gating that correctly limits
+                                    // the narrowing to post-guard code — same rationale as the
+                                    // type() guard early-exit path above — so stripping a
+                                    // tested-and-returned member forward stays sound.
+                                    if !self.ir.is_open_literal_union_symbol(sym_idx) {
+                                        self.add_type_stripped(scope_idx, sym_idx, lit_vt.clone());
+                                    }
                                     self.push_strip_type_version(sym_idx, lit_vt, scope_idx, true);
                                 } else {
                                     // `if x ~= "LIT" then return end` → x IS "LIT" after

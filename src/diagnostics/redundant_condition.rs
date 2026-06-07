@@ -157,9 +157,46 @@ fn eval_equality(analysis: &AnalysisResult, op: Operator, lhs: ExprId, rhs: Expr
         return Some(verdict_eq(op, false));
     }
     if same_singleton_literal(&lt, &rt) {
+        // Negative narrowing may strip an open literal-union param
+        // (`@param x "A"|"B"|"C"`) down to a single remaining member along an
+        // if/elseif chain, making the final `x == "C"` look "always true". But
+        // the annotation is an open contract — the caller could pass an unlisted
+        // value — so this comparison is genuinely meaningful and must not be
+        // flagged. This applies *only* when the narrowed value came from stripping
+        // members of the union, not from a positive assignment/filter to a literal
+        // (e.g. `x = "A"; if x == "A"`), which is genuinely redundant.
+        if operand_is_stripped_open_union(analysis, lhs) || operand_is_stripped_open_union(analysis, rhs) {
+            return None;
+        }
         return Some(verdict_eq(op, true));
     }
     None
+}
+
+/// True when `expr_id` references an open literal-union symbol *and* the
+/// referenced version was produced by stripping members from that union
+/// (a `CastRemove` version created by negative narrowing down an if/elseif
+/// chain). A positive assignment/filter to a single literal is excluded, since
+/// comparing against that literal is genuinely always-true.
+fn operand_is_stripped_open_union(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let ir = &analysis.ir;
+    let id = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    match ir.expr(id) {
+        // A direct strip expression (`CastRemove(SymbolRef, ..)`).
+        Expr::CastRemove(inner, _) => {
+            let inner_id = unwrap_to_inner_expr(&ir.exprs, *inner);
+            matches!(ir.expr(inner_id),
+                Expr::SymbolRef(s, _) if ir.is_open_literal_union_symbol(*s))
+        }
+        // A reference to a strip-derived version.
+        Expr::SymbolRef(sym_idx, ver) => {
+            ir.is_open_literal_union_symbol(*sym_idx)
+                && analysis.sym(*sym_idx).versions.get(*ver)
+                    .and_then(|v| v.type_source)
+                    .is_some_and(|ts| matches!(ir.expr(ts), Expr::CastRemove(..)))
+        }
+        _ => false,
+    }
 }
 
 /// Evaluate ordered comparisons (`<` `>` `<=` `>=`).

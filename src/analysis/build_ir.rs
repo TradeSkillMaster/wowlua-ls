@@ -2482,6 +2482,9 @@ impl<'a> Analysis<'a> {
             // Store args as Name so they're findable by normal scope lookup
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), new_scope_idx, node));
         }
+        for &sym_idx in &function.args {
+            self.ir.param_symbols.insert(sym_idx);
+        }
         self.ir.functions.push(function);
         // Register parameter list range so scope_at_offset finds params
         let params_range = params.syntax().text_range();
