@@ -771,7 +771,8 @@ fn build_func_external(
     // exist.  This gives cross-file callers the correct return arity and
     // coarse types (comparisons → boolean, literals → their type, everything
     // else → any).
-    if annotations.returns.is_empty() && !body_derived_returns.is_empty() {
+    let is_body_derived = annotations.returns.is_empty() && !body_derived_returns.is_empty();
+    if is_body_derived {
         if let Some(callee) = &tail_callee {
             // Tail-call return: resolve through same-file functions to find
             // the terminal callee's concrete return types.
@@ -853,6 +854,7 @@ fn build_func_external(
         implicit_nil_return,
         narrows_arg: annotations.narrows_arg,
         requires: annotations.requires,
+        body_derived_returns: is_body_derived,
     }
 }
 
@@ -1311,6 +1313,7 @@ pub(crate) fn scan_file_globals_with_synth(
                 implicit_nil_return: false,
                 narrows_arg: None,
                 requires: Vec::new(),
+                body_derived_returns: false,
             });
         }
     }
@@ -1494,6 +1497,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 implicit_nil_return: false,
                                 narrows_arg: None,
                                 requires: Vec::new(),
+                                body_derived_returns: false,
                             });
                         } else if names.len() >= 2 {
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
@@ -1709,6 +1713,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 implicit_nil_return: false,
                                 narrows_arg: None,
                                 requires: Vec::new(),
+                                body_derived_returns: false,
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.

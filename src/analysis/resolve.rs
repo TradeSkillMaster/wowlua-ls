@@ -666,6 +666,14 @@ impl<'a> Analysis<'a> {
                         if self.rewrite_sym_refs_in_subtree(sibling_idx, entry.scope, new_ver) {
                             rewrote_any = true;
                         }
+                        // The post-block `BranchMerge` version was built in Phase 1
+                        // (build_ir), before this deferred narrowing existed, so its
+                        // branch contribution still points at the pre-narrow version.
+                        // Redirect that contribution so the narrowed sibling type flows
+                        // past the merge (cross-file siblings only reach here in Phase 2).
+                        if self.redirect_branch_merge_for_sibling(sibling_idx, new_ver, entry.scope) {
+                            rewrote_any = true;
+                        }
                         pending.push((sibling_idx, new_ver));
                     }
                 }
@@ -1495,6 +1503,73 @@ impl<'a> Analysis<'a> {
         rewrote
     }
 
+    /// After a deferred sibling narrowing creates an `OverloadNarrow` version in a
+    /// branch scope, redirect the post-block `BranchMerge` contribution that still
+    /// references the pre-narrow branch version (captured by `version_for_scope` in
+    /// `build_ir` before this narrowing existed) to the new narrowed version. This
+    /// lets the refined sibling type flow past the merge into post-block uses.
+    ///
+    /// Guarded so it only fires when `narrow_scope` is a *direct* branch child of
+    /// the merge's scope — i.e. the merge version's `created_in_scope` equals
+    /// `narrow_scope`'s parent. That guarantees the narrowing (an early-exit guard
+    /// at the branch's top level) covers the whole branch. Deeper or partial
+    /// narrowings inside the branch are left untouched.
+    fn redirect_branch_merge_for_sibling(
+        &mut self,
+        sibling_idx: SymbolIndex,
+        new_ver: usize,
+        narrow_scope: ScopeIndex,
+    ) -> bool {
+        // Only handle a narrowing whose scope is a direct branch child of the
+        // merge's scope, so it covers the whole branch. `narrow_parent` is then
+        // the scope the post-block `BranchMerge` version was created in.
+        let Some(narrow_parent) = self.ir.scopes.get(narrow_scope.val()).and_then(|s| s.parent)
+        else {
+            return false;
+        };
+        // Find this sibling's BranchMerge versions created in the merge scope and
+        // redirect the contribution that references the branch's own pre-narrow
+        // assignment (its version lives inside `narrow_scope`'s subtree) to the
+        // narrowed version. Other branches' contributions are left untouched.
+        //
+        // Collect contribution ExprIds and their parent merge ExprIds in one pass,
+        // then mutate. We can't mutate during the scan because we borrow
+        // `self.ir.symbols` and `self.ir.exprs` immutably for the match.
+        let mut redirects: Vec<(ExprId, ExprId)> = Vec::new(); // (contrib, merge)
+        for ver in &self.ir.symbols[sibling_idx.val()].versions {
+            if ver.created_in_scope != narrow_parent {
+                continue;
+            }
+            let Some(ts) = ver.type_source else { continue };
+            if let Expr::BranchMerge(contribs) = self.ir.expr(ts) {
+                for &c in contribs {
+                    let contrib_ver = match self.ir.expr(c) {
+                        Expr::SymbolRef(s, v) if *s == sibling_idx && *v < new_ver => *v,
+                        _ => continue,
+                    };
+                    let contrib_scope =
+                        self.ir.symbols[sibling_idx.val()].versions[contrib_ver].created_in_scope;
+                    if self.is_scope_in_subtree(contrib_scope, narrow_scope) {
+                        redirects.push((c, ts));
+                    }
+                }
+            }
+        }
+        if redirects.is_empty() {
+            return false;
+        }
+        for &(c, merge) in &redirects {
+            self.ir.exprs[c.val()] = Expr::SymbolRef(sibling_idx, new_ver);
+            if let Some(slot) = self.resolved_expr_cache.get_mut(c.val()) {
+                *slot = None;
+            }
+            if let Some(slot) = self.resolved_expr_cache.get_mut(merge.val()) {
+                *slot = None;
+            }
+        }
+        true
+    }
+
     /// Whether version `ver` of `sym_idx` was produced by narrowing the same
     /// symbol (a guard or sibling tuple-union refinement) rather than a genuine
     /// reassignment. Used by `rewrite_sym_refs_in_subtree` so a guard-narrowing
@@ -1569,9 +1644,11 @@ impl<'a> Analysis<'a> {
             _ => None,
         };
         if let Some(func_idx) = func_idx {
-            let overloads: Vec<_> = self.func(func_idx).overloads.iter()
+            // For deferred (body-derived) cross-file functions, resolve the precise
+            // correlated overloads lazily (the coarse external overloads are `any`);
+            // otherwise use the stored ones.
+            let overloads: Vec<_> = self.ir.effective_overloads(func_idx).into_iter()
                 .filter(|o| o.is_return_only)
-                .cloned()
                 .collect();
             if !overloads.is_empty() {
                 // Filter overloads compatible with all narrowed siblings.

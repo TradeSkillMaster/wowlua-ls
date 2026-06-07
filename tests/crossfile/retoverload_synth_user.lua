@@ -12,15 +12,18 @@ local function caller()
     --        ^ hover: (local) groups: any
 
     if not items then return end
-    -- After the early-exit guard, sibling narrowing propagates:
-    -- `items` is non-nil → only the `(any, any, any)` overload survives
-    -- → `groups` and `count` are narrowed to `any` too.
+    -- After the early-exit guard, sibling narrowing propagates: `items` is
+    -- non-nil → only the success-case overload survives. That overload is now
+    -- the precise one harvested cross-file from the real engine, so `count`
+    -- shows its inferred `number` (coarse was `any`) and `groups` keeps its
+    -- optional table (lifted to `any?` — anonymous tables decay to `any`
+    -- cross-file, but nil-ability is preserved).
     local _ = items
     --        ^ hover: (local) items: any
     local _ = groups
-    --        ^ hover: (local) groups: any
+    --        ^ hover: (local) groups: any?
     local _ = count
-    --        ^ hover: (local) count: any
+    --        ^ hover: (local) count: number
 end
 _G.CrossFileSynthCaller = caller
 

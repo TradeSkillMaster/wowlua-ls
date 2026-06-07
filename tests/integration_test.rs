@@ -2443,6 +2443,67 @@ fn crossfile_body_returns() {
 }
 
 #[test]
+fn crossfile_inferred_field_return() {
+    // Cross-file lazy resolution of a body-inferred, class-typed field-access
+    // return (no @return). The coarse scan yields `any`; the deferred resolver
+    // recovers the precise class type for the cross-file caller.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/inferred_field_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_inferred_chain() {
+    // Multi-hop cross-file lazy resolution: a no-@return method whose body returns
+    // another file's deferred method result. The resolver recurses across files to
+    // recover the precise class type (HopWidget?) through both hops.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/hop_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_inferred_cycle() {
+    // Mutually-recursive deferred methods across files. The in-progress file guard
+    // breaks the back-edge so resolution converges to the coarse `any` fallback
+    // instead of looping forever.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/cycle_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_correlated_cases() {
+    // Cross-file correlated return "cases": the lazy resolver harvests the precise
+    // synthesized return-only overloads so a cross-file caller's hover shows
+    // `(number, number)` / `(nil, nil)` (not coarse `(any, any)`), and sibling
+    // narrowing reads the same precise overloads.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/correlated_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_merge_narrow() {
+    // Regression: cross-file (deferred) correlated sibling narrowing must flow
+    // through the post-block BranchMerge. The narrowed `lastIndex` is `number`
+    // at the merge point, so `lastIndex - firstIndex` emits no `invalid-op`.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/merge_narrow_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_dedup_unannotated() {
     // Unannotated duplicate method defs should not create spurious overloads
     run_annotation_tests(&TestConfig {

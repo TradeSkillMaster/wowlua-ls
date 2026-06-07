@@ -29,9 +29,10 @@ local val, ok = ns.Core.TryGet("x")
 --    ^ hover: (local) val: any  def: local
 --         ^ hover: (local) ok: boolean  def: local
 
--- Different concrete types widened: (string vs number → any, boolean)
+-- Different concrete types at the same slot: the precise cross-file return is
+-- the union `string | number` (the engine keeps both branch types).
 local cls, cfound = ns.Core.Classify("x")
---    ^ hover: (local) cls: any  def: local
+--    ^ hover: (local) cls: string | number  def: local
 --          ^ hover: (local) cfound: boolean  def: local
 
 -- Parenthesized comparison

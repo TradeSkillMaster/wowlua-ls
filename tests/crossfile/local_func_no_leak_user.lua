@@ -7,4 +7,4 @@ local x = FormatTexture("test")
 
 -- But accessing through the namespace field should still work.
 local _ = private.FormatTexture("test")
---                ^ hover: (field) function FormatTexture(name: string)\n  -> any  def: external
+--                ^ hover: (field) function FormatTexture(name: string)\n  -> string  def: external

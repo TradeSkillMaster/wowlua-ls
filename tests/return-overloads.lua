@@ -62,6 +62,23 @@ local _ = a5
 local _ = b5
 --        ^ hover: (local) b5: number  def: local
 
+-- ── Declaration-site hover: guard symbol matches its sibling ────────────
+-- Regression: an early-exit guard narrows its own symbol scope-wide, but the
+-- declaration/assignment line textually precedes the guard, so hovering there
+-- must show the un-narrowed (optional) type. This must match the sibling, which
+-- is narrowed via position-aware versions and already shows the optional type
+-- at the declaration. After the guard, both narrow.
+local ag, bg = allOrNothing()
+--    ^ hover: (local) ag: string?
+--        ^ hover: (local) bg: number?
+if not ag then
+    return
+end
+local _ = ag
+--        ^ hover: (local) ag: string
+local _ = bg
+--        ^ hover: (local) bg: number
+
 -- ── Early exit with `if x == nil then return end` ───────────────────────
 
 local a6, b6 = allOrNothing()

@@ -970,6 +970,15 @@ pub(super) fn handle_notification(
                         doc.pending_edit_map = edit_map;
                         doc.pending_text = Some(text);
                         doc.dirty = true;
+                        // Keep the deferred harvest's in-memory document
+                        // override in sync so unsaved edits are picked up.
+                        if let Ok(uri) = lsp_types::Uri::from_str(&uri_str)
+                            && let Some(path) = crate::lsp::uri::uri_to_abs_path(&uri)
+                            && let Ok(mut overrides) = ws.pre_globals.document_overrides.write()
+                            && let Some(ref t) = doc.pending_text
+                        {
+                            overrides.insert(path, t.clone());
+                        }
 
                         // For push-only clients, immediately push line-shifted
                         // diagnostics so they stay visible during typing.
@@ -1089,6 +1098,13 @@ pub(super) fn handle_notification(
                     result.plugin_diag_codes = ws.plugin_codes();
                     let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                     let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
+                    // Keep the deferred harvest's in-memory document override
+                    // in sync so the harvester sees the editor's text, not disk.
+                    if let Some(path) = uri_to_abs_path(&uri)
+                        && let Ok(mut overrides) = ws.pre_globals.document_overrides.write()
+                    {
+                        overrides.insert(path, text.clone());
+                    }
                     documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                     if rebuilt {
                         if let Some(ref token) = open_token {
@@ -1168,6 +1184,12 @@ pub(super) fn handle_notification(
                 );
                 if is_stub_path(&params.text_document.uri) || is_meta_doc {
                     documents.remove(&uri_str);
+                    // Remove the in-memory document override on close.
+                    if let Some(path) = uri_to_abs_path(&params.text_document.uri)
+                        && let Ok(mut overrides) = ws.pre_globals.document_overrides.write()
+                    {
+                        overrides.remove(&path);
+                    }
                     return;
                 }
                 // Capture the document's last-known diagnostics before removing.
@@ -1215,6 +1237,12 @@ pub(super) fn handle_notification(
                     })
                 };
                 documents.remove(&uri_str);
+                // Remove the in-memory document override on close.
+                if let Some(path) = uri_to_abs_path(&params.text_document.uri)
+                    && let Ok(mut overrides) = ws.pre_globals.document_overrides.write()
+                {
+                    overrides.remove(&path);
+                }
                 // Update cached workspace diagnostics with the document's
                 // last-known diagnostics so the Problems panel stays accurate
                 // after the file is closed.

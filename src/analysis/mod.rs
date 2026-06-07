@@ -7,6 +7,7 @@ pub mod resolve_call;
 pub mod checks;
 pub mod queries;
 pub mod semantic_tokens;
+pub mod deferred;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

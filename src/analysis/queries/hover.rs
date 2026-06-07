@@ -215,12 +215,19 @@ impl AnalysisResult {
                 "local"
             };
             if let Some(resolved) = resolved {
-                // For params at declaration (ver_idx == 0 with no recorded reference),
-                // skip narrow_type_for_display so scope-level type stripping from
-                // early-exit guards doesn't override the declared annotation type.
                 let ver_idx = self.symbol_version_at.get(&token_start).copied().unwrap_or(0);
-                let is_param_decl = is_param && ver_idx == 0 && !self.symbol_version_at.contains_key(&token_start);
-                let display_type = if is_param_decl {
+                // A token with no `symbol_version_at` entry is a declaration /
+                // assignment target, not a use. Guard-based narrowing (e.g.
+                // `if not x then return end`) is recorded scope-wide but textually
+                // follows the declaration, so it must not apply at the declaration
+                // site. Skipping `narrow_type_for_display` here keeps a guarded local
+                // (or param) showing its declared, un-narrowed type at the line where
+                // it is introduced — matching sibling multi-return values, which are
+                // narrowed via position-aware versions and already show the
+                // un-narrowed type there.
+                let is_decl_site = !symbol_idx.is_external()
+                    && !self.symbol_version_at.contains_key(&token_start);
+                let display_type = if is_decl_site {
                     None
                 } else {
                     self.narrow_type_for_display(resolved, symbol_idx, offset)

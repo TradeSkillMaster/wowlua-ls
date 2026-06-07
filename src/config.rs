@@ -105,7 +105,7 @@ impl AllowedGlobals {
 }
 
 /// A single parsed `.wowluarc.json` file.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct ProjectConfig {
     pub ignore: Vec<String>,
     /// Relative library patterns (scanned but diagnostics suppressed).
@@ -211,7 +211,7 @@ impl ProjectConfig {
 
 /// All `.wowluarc.json` configs discovered in the workspace, keyed by directory.
 /// Supports hierarchical lookup: subdirectory configs layer on top of parent configs.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct ProjectConfigs {
     /// (directory containing .wowluarc.json, parsed config)
     entries: Vec<(PathBuf, ProjectConfig)>,

@@ -268,6 +268,37 @@ pub struct PreResolvedGlobals {
     /// Used by doc generation to exclude inferred constructor self-fields.
     #[serde(default)]
     pub(crate) declared_class_fields: HashMap<String, HashSet<String>>,
+    /// Workspace function indices whose `return_annotations` were inferred from the
+    /// body (no explicit `@return`) and are therefore coarse (field/bracket/method
+    /// access → `any`). The precise return type is computed lazily cross-file by
+    /// running the real whole-file engine on the defining file (see `deferred.rs`).
+    /// Runtime only — `#[serde(skip)]` so the stub blob is unaffected.
+    #[serde(skip)]
+    pub(crate) deferred_returns: HashSet<FunctionIndex>,
+    /// Reverse index: path → deferred function indices defined in that file.
+    /// Avoids O(total_deferred) scan per harvest — each file only visits its own.
+    #[serde(skip)]
+    pub(crate) deferred_returns_by_path: HashMap<PathBuf, Vec<FunctionIndex>>,
+    /// Memoized precise signature bundle (returns + correlated overloads, in
+    /// ext-index space) for deferred functions. One whole-file harvest warms
+    /// every body-derived datum at once. Filled lazily on first read; lives
+    /// behind the shared `Arc`, so a wholesale `Arc` rebuild naturally
+    /// invalidates it. `#[serde(skip)]` (interior-mutable, runtime only).
+    #[serde(skip)]
+    pub(crate) deferred_sig_cache:
+        std::sync::RwLock<HashMap<FunctionIndex, crate::analysis::deferred::DeferredSig>>,
+    /// In-memory document content for files the editor has open. When set,
+    /// the deferred harvester reads from here instead of disk, so unsaved
+    /// edits are picked up immediately. Updated by the LSP layer on
+    /// didOpen/didChange/didClose. `#[serde(skip)]` (runtime only).
+    #[serde(skip)]
+    pub(crate) document_overrides: std::sync::RwLock<HashMap<PathBuf, String>>,
+    /// Per-file project configuration, used by the deferred harvester to
+    /// construct the correct `AnalysisConfig` for the defining file (respecting
+    /// `correlated_return_overloads`, `backward_param_types`, etc.).
+    /// `None` in CLI mode (falls back to `AnalysisConfig::default()`).
+    #[serde(skip)]
+    pub(crate) project_configs: Option<std::sync::Arc<crate::config::ProjectConfigs>>,
     // Stub file contents are loaded lazily from a separate blob
     // (`precomputed-files.bin.zst`) via `stub_file_contents()` in main_loop.rs.
 }
@@ -711,6 +742,10 @@ struct BuildContext {
     constructor_method_names: HashSet<String>,
     declared_class_fields: HashMap<String, HashSet<String>>,
 
+    // Lazy cross-file return resolution: workspace functions whose returns were
+    // inferred from the body (coarse) and should be resolved precisely on demand.
+    deferred_returns: HashSet<FunctionIndex>,
+
     // Config
     implicit_protected_prefix: bool,
 }
@@ -748,6 +783,7 @@ impl BuildContext {
             framexml_names: HashSet::new(),
             constructor_method_names: HashSet::new(),
             declared_class_fields: HashMap::new(),
+            deferred_returns: HashSet::new(),
             implicit_protected_prefix: false,
         }
     }
@@ -1277,6 +1313,9 @@ impl BuildContext {
                     self.function_locations.insert(func_idx, ExternalLocation {
                         path: source_path.clone(), start: g.def_start, end: g.def_end,
                     });
+                    if g.body_derived_returns {
+                        self.deferred_returns.insert(func_idx);
+                    }
                 }
                 let expr_id = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::FunctionDef(func_idx));
@@ -1791,6 +1830,9 @@ impl BuildContext {
                     };
                     self.function_locations.insert(func_idx, loc.clone());
                     self.symbol_locations.insert(SymbolIndex(EXT_BASE + self.symbols.len()), loc);
+                    if g.body_derived_returns {
+                        self.deferred_returns.insert(func_idx);
+                    }
                 }
                 self.exprs.push(Expr::FunctionDef(func_idx));
 
@@ -2214,6 +2256,16 @@ impl BuildContext {
             }
         }
 
+        let deferred_returns_by_path = {
+            let mut by_path: HashMap<PathBuf, Vec<FunctionIndex>> = HashMap::new();
+            for &fidx in &self.deferred_returns {
+                if let Some(loc) = self.function_locations.get(&fidx) {
+                    by_path.entry(loc.path.clone()).or_default().push(fidx);
+                }
+            }
+            by_path
+        };
+
         PreResolvedGlobals {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,
             exprs: self.exprs, tables: self.tables,
@@ -2235,6 +2287,11 @@ impl BuildContext {
             event_types: HashMap::new(),
             event_locations: HashMap::new(),
             declared_class_fields: self.declared_class_fields,
+            deferred_returns_by_path,
+            deferred_returns: self.deferred_returns,
+            deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
+            document_overrides: std::sync::RwLock::new(HashMap::new()),
+            project_configs: None,
         }
     }
 }
@@ -2332,6 +2389,11 @@ impl PreResolvedGlobals {
             event_types: HashMap::new(),
             event_locations: HashMap::new(),
             declared_class_fields: HashMap::new(),
+            deferred_returns: HashSet::new(),
+            deferred_returns_by_path: HashMap::new(),
+            deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
+            document_overrides: std::sync::RwLock::new(HashMap::new()),
+            project_configs: None,
         }
     }
 

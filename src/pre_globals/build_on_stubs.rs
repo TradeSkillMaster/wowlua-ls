@@ -49,6 +49,10 @@ struct BuildOnStubsContext<'a> {
     // Doc generation
     declared_class_fields: HashMap<String, HashSet<String>>,
 
+    // Lazy cross-file return resolution: workspace functions whose returns were
+    // inferred from the body (coarse) and should be resolved precisely on demand.
+    deferred_returns: HashSet<FunctionIndex>,
+
     // Config
     implicit_protected_prefix: bool,
 }
@@ -101,6 +105,7 @@ impl<'a> BuildOnStubsContext<'a> {
             class_globals: HashSet::new(),
             sub_tables: HashMap::new(),
             declared_class_fields: HashMap::new(),
+            deferred_returns: HashSet::new(),
             implicit_protected_prefix,
         }
     }
@@ -557,6 +562,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     self.function_locations.insert(func_idx, ExternalLocation {
                         path: source_path.clone(), start: g.def_start, end: g.def_end,
                     });
+                    if g.body_derived_returns {
+                        self.deferred_returns.insert(func_idx);
+                    }
                 }
                 let expr_id = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::FunctionDef(func_idx));
@@ -1117,6 +1125,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     };
                     self.function_locations.insert(func_idx, loc.clone());
                     self.symbol_locations.insert(SymbolIndex(EXT_BASE + self.symbols.len()), loc);
+                    if g.body_derived_returns {
+                        self.deferred_returns.insert(func_idx);
+                    }
                 }
                 self.exprs.push(Expr::FunctionDef(func_idx));
 
@@ -1521,6 +1532,16 @@ impl<'a> BuildOnStubsContext<'a> {
                 }
         }
 
+        let deferred_returns_by_path = {
+            let mut by_path: HashMap<PathBuf, Vec<FunctionIndex>> = HashMap::new();
+            for &fidx in &self.deferred_returns {
+                if let Some(loc) = self.function_locations.get(&fidx) {
+                    by_path.entry(loc.path.clone()).or_default().push(fidx);
+                }
+            }
+            by_path
+        };
+
         PreResolvedGlobals {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,
             exprs: self.exprs, tables: self.tables,
@@ -1540,6 +1561,11 @@ impl<'a> BuildOnStubsContext<'a> {
             event_types: self.stubs_base.event_types.clone(),
             event_locations: self.stubs_base.event_locations.clone(),
             declared_class_fields: self.declared_class_fields,
+            deferred_returns_by_path,
+            deferred_returns: self.deferred_returns,
+            deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
+            document_overrides: std::sync::RwLock::new(HashMap::new()),
+            project_configs: None,
         }
     }
 }

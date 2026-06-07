@@ -14,11 +14,14 @@ local sum = private.Add(1, 2)
 private.Add(1, 2)
 --      ^ hover: (field) function Add(x: number, y: number)\n  -> number  def: external
 
--- Function literal with body-derived return
+-- Function literal with body-derived return: the cross-file caller sees the
+-- precise inferred return (`"Hello, " .. name` → string), not coarse `any`.
 private.MakeGreeting("world")
---      ^ hover: (field) function MakeGreeting(name)\n  -> any  def: external
+--      ^ hover: (field) function MakeGreeting(name)\n  -> string  def: external
 
--- Function literal with bare return: return type stays `any` (not fun(x: number))
--- because the function can return nil on the early-exit path
+-- Function literal returning a local function on the non-early-exit path: the
+-- cross-file return lifts to a bare `function` (the inner signature can't be
+-- referenced cross-file). The early-exit `return` contributes no slot-0 value,
+-- so the inferred type is `function`, an upgrade over coarse `any`.
 private.MaybeFunc(true)
---      ^ hover: (field) function MaybeFunc(flag)\n  -> any  def: external
+--      ^ hover: (field) function MaybeFunc(flag)\n  -> function  def: external

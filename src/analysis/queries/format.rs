@@ -1377,10 +1377,13 @@ impl AnalysisResult {
         }
         let no_subs = HashMap::new();
         let effective_subs = subs.unwrap_or(&no_subs);
+        // Deferred (body-derived) workspace functions get their precise cross-file
+        // return types resolved lazily here; everything else uses the stored ones.
+        let effective_rets = self.ir.effective_return_annotations(func_idx);
         let rets: Vec<String> = if func.returns_self {
             vec![self.self_return_text(func, effective_subs)]
-        } else if !func.return_annotations.is_empty() {
-            func.return_annotations.iter().enumerate().map(|(i, vt)| {
+        } else if !effective_rets.is_empty() {
+            effective_rets.iter().enumerate().map(|(i, vt)| {
                 let formatted = if let Some(s) = subs {
                     self.format_type_subst(vt, depth + 1, s)
                 } else {
@@ -1910,10 +1913,21 @@ impl AnalysisResult {
             };
             all_args.push(vararg_str);
         }
+        // Deferred (body-derived) workspace functions get their precise cross-file
+        // return types and overloads resolved lazily here; everything else uses the
+        // stored ones. One harvest warms both — a single `effective_deferred_sig`
+        // lookup avoids a redundant second cache read.
+        let deferred = self.ir.effective_deferred_sig(func_idx);
+        let effective_rets = deferred.as_ref()
+            .map(|d| d.returns.clone())
+            .unwrap_or_else(|| func.return_annotations.clone());
+        let eff_overloads = deferred
+            .map(|d| d.overloads)
+            .unwrap_or_else(|| func.overloads.clone());
         let rets: Vec<String> = if func.returns_self {
             vec![self.self_return_text(func, subs)]
-        } else if !func.return_annotations.is_empty() {
-            func.return_annotations.iter().enumerate().map(|(i, vt)| {
+        } else if !effective_rets.is_empty() {
+            effective_rets.iter().enumerate().map(|(i, vt)| {
                 // Prefer the raw annotation (preserves `Parameterized` class
                 // type args like `Schema<T>`) with the receiver's class type-var
                 // substitution applied, so a method on a `Stream<string>` shows
@@ -1944,8 +1958,8 @@ impl AnalysisResult {
         // below the primary signature (they don't vary the param list, so stacking
         // them as separate `function name(...)` blocks would be visual noise).
         // Regular overloads continue to stack above as before.
-        if !func.overloads.is_empty() {
-            for overload in &func.overloads {
+        if !eff_overloads.is_empty() {
+            for overload in &eff_overloads {
                 if overload.is_return_only { continue; }
                 let ov_args: Vec<String> = overload.params.iter()
                     .filter(|p| !(skip_self && p.name == "self"))
@@ -1988,7 +2002,7 @@ impl AnalysisResult {
             // `synthesize_correlated_return_overloads`) have no `@return` source
             // and no descriptions — mark them as inferred so hover doesn't imply
             // the author wrote them.
-            let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
+            let return_only: Vec<&ResolvedOverload> = eff_overloads.iter()
                 .filter(|o| o.is_return_only).collect();
             if !return_only.is_empty() {
                 let mut rows: Vec<(String, Option<String>)> = return_only.iter().map(|ovl| {

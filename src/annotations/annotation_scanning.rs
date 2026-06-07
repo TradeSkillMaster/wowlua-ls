@@ -274,6 +274,13 @@ pub struct ExternalGlobal {
     /// method. Each entry is (param_name, constraint_type_string).
     #[serde(default)]
     pub requires: Vec<(String, String)>,
+    /// True when `returns` was inferred from the function body (no explicit
+    /// `@return`). Such returns are coarse (field/bracket/method access → `any`);
+    /// the precise type is resolved lazily cross-file via the real engine. Runtime
+    /// only (workspace functions) — `#[serde(skip)]` keeps it out of the stub blob
+    /// (stub globals have no bodies), so no BLOB_VERSION bump is needed.
+    #[serde(skip)]
+    pub body_derived_returns: bool,
 }
 
 impl ExternalGlobal {
@@ -312,6 +319,7 @@ impl ExternalGlobal {
             implicit_nil_return: false,
             narrows_arg: None,
             requires: Vec::new(),
+            body_derived_returns: false,
         }
     }
 }
@@ -714,6 +722,7 @@ pub(crate) fn scan_method_funcall_self_fields(
                 implicit_nil_return: false,
                 narrows_arg: None,
                 requires: Vec::new(),
+                body_derived_returns: false,
             });
         }
     }

@@ -256,6 +256,9 @@ impl WorkspaceState {
             pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names);
         }
 
+        // Inject project configs so the deferred harvester can build the
+        // correct AnalysisConfig for each file it re-analyzes.
+        pg.project_configs = Some(Arc::clone(&self.configs));
         self.pre_globals = Arc::new(pg);
         self.ws_generation += 1;
         // Intentionally retain `cached_ws_diagnostics` (now stale: its stored

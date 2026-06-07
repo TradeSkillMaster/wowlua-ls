@@ -9,4 +9,4 @@ table.sort(items, private.SortByMapName)
 
 -- Function expression assigned via local variable should also resolve as function.
 private.FormatLabel("test")
---      ^ hover: (field) function FormatLabel(text)\n  -> any  def: external
+--      ^ hover: (field) function FormatLabel(text)\n  -> string  def: external

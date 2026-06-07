@@ -1532,6 +1532,7 @@ mod tests {
                 implicit_nil_return: false,
                 narrows_arg: None,
                 requires: Vec::new(),
+                body_derived_returns: false,
             }
         }
 
@@ -1983,6 +1984,7 @@ mod tests {
             implicit_nil_return: false,
             narrows_arg: None,
             requires: Vec::new(),
+            body_derived_returns: false,
         }
     }
 
