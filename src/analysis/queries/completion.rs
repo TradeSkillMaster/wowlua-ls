@@ -1,4 +1,8 @@
 use super::*;
+use std::sync::LazyLock;
+
+/// Cached diagnostic codes for `@diagnostic` completions.
+static KNOWN_CODES: LazyLock<Vec<&'static str>> = LazyLock::new(crate::diagnostics::known_codes);
 
 /// All Lua reserved keywords, used for keyword completions in scope context.
 const LUA_KEYWORDS: &[&str] = &[
@@ -11,6 +15,67 @@ pub(super) enum AnnotationContext {
     Function,
     Class,
     Any,
+}
+
+/// Strip an optional `private`/`protected`/`public` visibility prefix from an
+/// annotation body (e.g. the text after `@field`). Returns the remainder trimmed
+/// past the visibility keyword, or the original slice unchanged.
+fn strip_optional_visibility(s: &str) -> &str {
+    for prefix in ["private", "protected", "public"] {
+        if let Some(rest) = s.strip_prefix(prefix)
+            && rest.starts_with(char::is_whitespace)
+        {
+            return rest.trim_start();
+        }
+    }
+    s
+}
+
+/// Walk tokens in one direction from `start`, collecting `@field` names from
+/// annotation comments. Stops at a blank line or a non-comment token.
+fn collect_field_names_in_direction(start: Option<SyntaxToken>, forward: bool) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut tok = start;
+    let mut prev_was_newline = false;
+    while let Some(t) = tok {
+        let kind = t.kind();
+        if kind == SyntaxKind::Newline {
+            if prev_was_newline {
+                break;
+            }
+            prev_was_newline = true;
+            tok = if forward { t.next_token() } else { t.prev_token() };
+            continue;
+        }
+        prev_was_newline = false;
+        if kind == SyntaxKind::Whitespace {
+            tok = if forward { t.next_token() } else { t.prev_token() };
+            continue;
+        }
+        if kind == SyntaxKind::Comment {
+            if let Some(name) = extract_field_name_from_annotation(t.text()) {
+                names.push(name);
+            }
+            tok = if forward { t.next_token() } else { t.prev_token() };
+            continue;
+        }
+        break;
+    }
+    names
+}
+
+/// Extract a field name from a `---@field [visibility] name type` annotation comment.
+fn extract_field_name_from_annotation(text: &str) -> Option<String> {
+    let content = text.strip_prefix("---@field")?;
+    if !content.starts_with(' ') && !content.starts_with('\t') {
+        return None;
+    }
+    let content = strip_optional_visibility(content.trim_start());
+    let name = content
+        .split(|c: char| c.is_whitespace() || c == '?')
+        .next()
+        .unwrap_or("");
+    if name.is_empty() { None } else { Some(name.to_string()) }
 }
 
 pub(super) fn collect_type_name_completions<'a>(
@@ -1099,6 +1164,15 @@ impl AnalysisResult {
         if let Some(items) = self.try_param_name_completions(after_at, token) {
             return Some(items);
         }
+        if let Some(items) = self.try_cast_name_completions(after_at, token) {
+            return Some(items);
+        }
+        if let Some(items) = self.try_correlated_field_completions(after_at, token) {
+            return Some(items);
+        }
+        if let Some(items) = Self::try_diagnostic_code_completions(after_at) {
+            return Some(items);
+        }
         if let Some(items) = self.try_type_completions(after_at) {
             return Some(items);
         }
@@ -1133,7 +1207,7 @@ impl AnalysisResult {
             ("overload",       "Define an overload signature",            F|C,       None),
             ("defclass",       "Generic that auto-creates classes",       F,         None),
             ("generic",        "Declare generic type parameter(s)",       F,         Some("generic ${1:T}")),
-            ("cast",           "Cast a variable's type",                      S,     Some("cast ${1:name} ${2:type}")),
+            ("cast",           "Cast a variable's type",                  F|S,     Some("cast ${1:name} ${2:type}")),
             ("as",             "Inline type assertion",                       S,     None),
             ("builds-field",   "Builder method adds field to built type", F,         None),
             ("built-name",     "Set built table class name from param",   F,         None),
@@ -1341,6 +1415,163 @@ impl AnalysisResult {
 
         if items.is_empty() { None } else { Some(items) }
     }
+
+    /// Offer local variable name completions after `@cast `.
+    pub(super) fn try_cast_name_completions(
+        &self,
+        after_at: &str,
+        token: &SyntaxToken,
+    ) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
+
+        let rest = after_at.strip_prefix("cast")?;
+        if !rest.starts_with(' ') && !rest.starts_with('\t') {
+            return None;
+        }
+        let after_cast = rest.trim_start();
+
+        // If there's already a space after the name, cursor is in type position — let
+        // try_type_completions handle it.
+        if after_cast.contains(' ') || after_cast.contains('\t') {
+            return None;
+        }
+
+        let partial_name = after_cast;
+
+        // Comments may land outside block_scopes ranges because the tree builder
+        // excludes trivia from node range calculations. Walk backward to the previous
+        // non-trivia token and use its start (safely inside the block scope).
+        let scope_idx = {
+            let mut tok = token.prev_token();
+            let mut found = None;
+            while let Some(t) = tok {
+                match t.kind() {
+                    SyntaxKind::Comment | SyntaxKind::Whitespace | SyntaxKind::Newline => {
+                        tok = t.prev_token();
+                    }
+                    _ => {
+                        found = Some(t.text_range().start());
+                        break;
+                    }
+                }
+            }
+            let off = found.unwrap_or(token.text_range().start());
+            self.scope_at_offset(off)?
+        };
+
+        // Walk the scope chain but skip scope 0 (globals) — @cast targets local variables.
+        let mut seen: HashSet<&String> = HashSet::new();
+        let mut items = Vec::new();
+        let mut current_scope = Some(scope_idx);
+        while let Some(si) = current_scope {
+            if si.val() == 0 {
+                break;
+            }
+            let scope = &self.ir.scopes[si.val()];
+            for id in scope.symbols.keys() {
+                if let SymbolIdentifier::Name(name) = id
+                    && name.starts_with(partial_name) && seen.insert(name)
+                {
+                    items.push(CompletionItem {
+                        label: name.clone(),
+                        kind: Some(CompletionItemKind::VARIABLE),
+                        ..CompletionItem::default()
+                    });
+                }
+            }
+            current_scope = scope.parent;
+        }
+
+        if items.is_empty() { None } else { Some(items) }
+    }
+
+    /// Offer field name completions after `@correlated `.
+    /// Scans the annotation block for `@field` declarations and offers their names.
+    pub(super) fn try_correlated_field_completions(
+        &self,
+        after_at: &str,
+        token: &SyntaxToken,
+    ) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
+
+        let rest = after_at.strip_prefix("correlated")?;
+        if !rest.starts_with(' ') && !rest.starts_with('\t') {
+            return None;
+        }
+        let after_correlated = rest.trim_start();
+
+        // Parse already-listed fields (comma-separated) and extract the partial prefix
+        // being typed (the part after the last comma).
+        let parts: Vec<&str> = after_correlated.split(',').collect();
+        let partial = parts.last().map(|s| s.trim()).unwrap_or("");
+        let already_listed: HashSet<&str> = parts[..parts.len().saturating_sub(1)]
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let mut field_names = collect_field_names_in_direction(token.prev_token(), false);
+        field_names.extend(collect_field_names_in_direction(token.next_token(), true));
+
+        let mut seen = HashSet::new();
+        let items: Vec<CompletionItem> = field_names
+            .iter()
+            .filter(|name| {
+                name.starts_with(partial)
+                    && !already_listed.contains(name.as_str())
+                    && seen.insert((*name).clone())
+            })
+            .map(|name| CompletionItem {
+                label: name.clone(),
+                kind: Some(CompletionItemKind::FIELD),
+                ..CompletionItem::default()
+            })
+            .collect();
+
+        if items.is_empty() { None } else { Some(items) }
+    }
+
+    /// Offer diagnostic code completions after `@diagnostic enable:` or `@diagnostic disable:`.
+    fn try_diagnostic_code_completions(after_at: &str) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
+
+        let rest = after_at.strip_prefix("diagnostic")?;
+        if !rest.starts_with(' ') && !rest.starts_with('\t') {
+            return None;
+        }
+        let rest = rest.trim_start();
+
+        // Must have enable/disable/disable-next-line followed by ':'
+        // Check disable-next-line before disable to avoid partial match.
+        let rest = rest.strip_prefix("enable")
+            .or_else(|| rest.strip_prefix("disable-next-line"))
+            .or_else(|| rest.strip_prefix("disable"))?;
+        let rest = rest.strip_prefix(':')?;
+        let rest = rest.trim_start();
+
+        // Handle comma-separated codes: `@diagnostic disable: code1, co`
+        // Split to find already-listed codes and the current partial prefix.
+        let parts: Vec<&str> = rest.split(',').collect();
+        let partial = parts.last().map(|s| s.trim()).unwrap_or("");
+        let already_listed: HashSet<&str> = parts[..parts.len().saturating_sub(1)]
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let items: Vec<CompletionItem> = KNOWN_CODES
+            .iter()
+            .filter(|code| code.starts_with(partial) && !already_listed.contains(**code))
+            .map(|code| CompletionItem {
+                label: code.to_string(),
+                kind: Some(CompletionItemKind::ENUM_MEMBER),
+                ..CompletionItem::default()
+            })
+            .collect();
+
+        if items.is_empty() { None } else { Some(items) }
+    }
+
 
     pub(super) fn find_function_params_below(
         &self,
@@ -1666,16 +1897,7 @@ impl AnalysisResult {
         // @field [visibility] name TYPE...
         if let Some(rest) = after_at.strip_prefix("field") {
             if rest.starts_with(' ') || rest.starts_with('\t') {
-                let rest = rest.trim_start();
-                let rest = if let Some(r) = rest.strip_prefix("private") {
-                    if r.starts_with(char::is_whitespace) { r.trim_start() } else { rest }
-                } else if let Some(r) = rest.strip_prefix("protected") {
-                    if r.starts_with(char::is_whitespace) { r.trim_start() } else { rest }
-                } else if let Some(r) = rest.strip_prefix("public") {
-                    if r.starts_with(char::is_whitespace) { r.trim_start() } else { rest }
-                } else {
-                    rest
-                };
+                let rest = strip_optional_visibility(rest.trim_start());
                 if let Some(space_pos) = rest.find(char::is_whitespace) {
                     return Some(rest[space_pos..].trim_start());
                 }
@@ -1700,6 +1922,28 @@ impl AnalysisResult {
                 let rest = rest.trim_start();
                 if let Some(colon_pos) = rest.find(':') {
                     return Some(rest[colon_pos + 1..].trim_start());
+                }
+            }
+            return None;
+        }
+
+        // @class ClassName: PARENT_TYPE
+        if let Some(rest) = after_at.strip_prefix("class") {
+            if rest.starts_with(' ') || rest.starts_with('\t') {
+                let rest = rest.trim_start();
+                // Skip optional (partial)/(exact) prefix
+                let rest = if let Some(r) = rest.strip_prefix("(partial)") {
+                    r.trim_start()
+                } else if let Some(r) = rest.strip_prefix("(exact)") {
+                    r.trim_start()
+                } else {
+                    rest
+                };
+                if let Some(colon_pos) = rest.find(':') {
+                    let after_colon = rest[colon_pos + 1..].trim_start();
+                    // Handle multiple parents — take after last comma
+                    let after_last_comma = after_colon.rsplit(',').next().unwrap_or(after_colon).trim();
+                    return Some(after_last_comma);
                 }
             }
             return None;

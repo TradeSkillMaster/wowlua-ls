@@ -1,4 +1,4 @@
----@diagnostic disable: create-global, unused-function, unused-local, undefined-doc-name
+---@diagnostic disable: create-global, unused-function, unused-local, undefined-doc-name, unknown-diag-code, undefined-doc-class
 -- Annotation completion tests
 
 -- ── Tag completions ──────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@
 -- Function context: after @param, only function-applicable tags appear
 ---@param x number
 ---@
---  ^ comp: param, return, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, requires, see
+--  ^ comp: param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, requires, see
 function ctxFuncTest(x) end
 
 -- Class context: after @class, only class-applicable tags appear
@@ -57,12 +57,12 @@ function ctxFuncTest(x) end
 
 -- Function context inferred from function below (no prior tags)
 ---@
---  ^ comp: param, return, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, requires, see
+--  ^ comp: param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, requires, see
 function ctxInferredFunc() end
 
 -- Function context with params: "Annotate function" appears alongside tags
 ---@
---  ^ comp: Annotate function, param, return, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, requires, see
+--  ^ comp: Annotate function, param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, requires, see
 function ctxWithParams(a, b) end
 
 -- ── Param name completions ───────────────────────────────────────────────────
@@ -176,3 +176,93 @@ local genAssigned = function(x, y) return x end
 -- ^ comp: Annotate function
 function genVarargs(fmt, ...)
 end
+
+-- ── @cast variable name completions ─────────────────────────────────────────
+
+-- @cast completes local variable names in scope
+function castCompletionTest()
+    local myTarget = 1
+    local myOther = "hello"
+    ---@diagnostic disable-next-line: malformed-annotation
+    ---@cast my
+    --         ^ comp: myTarget, myOther
+end
+
+-- @cast with multiple locals, partial prefix filters correctly
+function castCompletionMulti()
+    local xFirst = 1
+    local xSecond = "hi"
+    local zOther = true
+    ---@diagnostic disable-next-line: malformed-annotation
+    ---@cast xS
+    --          ^ comp: xSecond
+end
+
+-- ── @correlated field name completions ──────────────────────────────────────
+
+-- @correlated completes field names from @field declarations
+---@class CorrelatedTest
+---@field title string?
+---@field description string?
+---@field count number?
+---@diagnostic disable-next-line: malformed-annotation
+---@correlated t
+--              ^ comp: title
+
+-- @correlated excludes already-listed fields
+---@class CorrelatedExclude
+---@field first string?
+---@field second string?
+---@field third string?
+---@diagnostic disable-next-line: malformed-annotation
+---@correlated first, s
+--                     ^ comp: second
+
+-- @correlated with fields declared after the annotation
+---@class CorrelatedForward
+---@diagnostic disable-next-line: malformed-annotation
+---@correlated n
+--              ^ comp: name, note
+---@field name string?
+---@field note string?
+---@field value number?
+
+-- ── @diagnostic code completions ────────────────────────────────────────────
+
+-- @diagnostic disable: completes diagnostic codes with prefix "type"
+---@diagnostic disable: type
+--                           ^ comp: type-mismatch
+
+-- @diagnostic enable: completes codes with prefix "un"
+---@diagnostic enable: un
+--                        ^ comp: undefined-global, undefined-field, unused-local, unreachable-code, undefined-doc-param, unknown-diag-code, unbalanced-assignments, unused-function, undefined-doc-class, undefined-doc-name, unused-vararg, unknown-param-type, unknown-return-type, unknown-local-type, unknown-field-type
+
+-- @diagnostic disable-next-line: completes codes
+---@diagnostic disable-next-line: red
+--                                    ^ comp: redefined-local, redundant-return-value, redundant-value, redundant-return, redundant-or, redundant-and, redundant-condition, redundant-parameter, redundant-class-generic
+
+-- @diagnostic disable: after comma, completes next code (excludes already-listed)
+---@diagnostic disable: unused-local, type
+--                                        ^ comp: type-mismatch
+
+-- ── @class parent type completions ──────────────────────────────────────────
+
+-- @class Foo: offers type names for the parent class
+---@class QpBase
+---@class QcChild: Qp
+--                   ^ comp: QpBase
+
+-- @class with (partial) prefix still offers parent completions
+---@diagnostic disable-next-line: malformed-annotation
+---@class (partial) QxPartial: Qp
+--                               ^ comp: QpBase
+
+-- @class without colon: no type completions (just the class name being defined)
+---@diagnostic disable-next-line: malformed-annotation
+---@class QnNewClass
+--                   ^ comp: none
+
+-- @class with multiple parents after comma
+---@diagnostic disable-next-line: malformed-annotation
+---@class QmMulti: QpBase, Qx
+--                           ^ comp: QxPartial
