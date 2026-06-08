@@ -323,6 +323,11 @@ pub(crate) struct Ir {
     /// Bracket-indexed access sites for `nil-index` diagnostic.
     /// Each entry is (key_expr_id, key_start, key_end) covering both reads and writes.
     pub(crate) bracket_index_sites: Vec<(ExprId, u32, u32)>,
+    /// Bracket-indexed table expression sites for `need-check-nil` diagnostic.
+    /// Each entry is (bracket_expr_id, table_expr_id, base_start, base_end).
+    /// `bracket_expr_id` is used for and-guard suppression lookup;
+    /// `table_expr_id` resolves the base type to check for nil.
+    pub(crate) bracket_table_sites: Vec<(ExprId, ExprId, u32, u32)>,
     /// Binary-op sites for `invalid-op` and `redundant-or`/`redundant-and` diagnostics.
     /// Covers arithmetic, concatenation, comparison, and logical ops.
     pub(crate) binary_op_sites: Vec<BinaryOpSite>,
@@ -2077,6 +2082,7 @@ impl<'a> Analysis<'a> {
                 overlay_fields: HashMap::new(),
                 bracket_key_fields: HashMap::new(),
                 bracket_index_sites: Vec::new(),
+                bracket_table_sites: Vec::new(),
                 binary_op_sites: Vec::new(),
                 condition_sites: Vec::new(),
                 unary_op_sites: Vec::new(),

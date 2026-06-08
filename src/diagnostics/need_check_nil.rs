@@ -46,6 +46,15 @@ pub(crate) fn run_access(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnosti
         let type_str = analysis.format_value_type_depth(&vt, 0);
         check(diags, &type_str, start as usize, end as usize);
     }
+    for &(bracket_expr, table_expr, start, end) in &analysis.ir.bracket_table_sites {
+        if !seen.insert((start, end)) { continue; }
+        if analysis.ir.and_guarded_nil_check_exprs.contains(&bracket_expr) { continue; }
+        let Some(vt) = analysis.resolve_expr_type(table_expr) else { continue };
+        if !is_nullable(&vt) { continue; }
+        if check_nil_suppressed(analysis, table_expr, start) { continue; }
+        let type_str = analysis.format_value_type_depth(&vt, 0);
+        check_index(diags, &type_str, start as usize, end as usize);
+    }
 }
 
 /// Re-resolves the callee type post-fixpoint. This intentionally suppresses the diagnostic
@@ -113,6 +122,10 @@ impl DiagnosticPass for NeedCheckNil {
 
 pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, type_str: &str, start: usize, end: usize) {
     super::NEED_CHECK_NIL.emit(diags, format!("field access on possibly-nil value of type '{}'", type_str), start, end);
+}
+
+pub(crate) fn check_index(diags: &mut Vec<WowDiagnostic>, type_str: &str, start: usize, end: usize) {
+    super::NEED_CHECK_NIL.emit(diags, format!("index access on possibly-nil value of type '{}'", type_str), start, end);
 }
 
 pub(crate) fn check_call(diags: &mut Vec<WowDiagnostic>, type_str: &str, start: usize, end: usize) {

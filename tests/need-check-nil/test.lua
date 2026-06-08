@@ -2463,3 +2463,43 @@ if chg >= 1 then
     _useNum(chg)
 end
 _consume(_ok)
+
+-- ── Bracket access on possibly-nil base ──────────────────────────────────
+
+---@type table<string, number>?
+local nilBase = nil
+
+-- Basic: bracket access on nil base fires need-check-nil
+local _ = nilBase["key"]
+--        ^ diag: need-check-nil
+
+-- Numeric key on nil base also fires
+local _ = nilBase[1]
+--        ^ diag: need-check-nil
+
+-- Non-nil base: no diagnostic
+---@type table<string, number>
+local nonNilBase = {}
+local _ = nonNilBase["key"]
+
+-- Truthiness guard suppresses bracket access diagnostic
+if nilBase then
+    local _ = nilBase["key"]
+end
+
+-- Early-exit narrowing suppresses
+---@type table<string, number>?
+local nilBase2 = nil
+if not nilBase2 then return end
+local _ = nilBase2["key"]
+
+-- Assert suppresses
+---@type table<string, number>?
+local nilBase3 = nil
+assert(nilBase3)
+local _ = nilBase3["key"]
+
+-- `and` short-circuit suppresses
+---@type table<string, number>?
+local nilBase4 = nil
+local _ = nilBase4 and nilBase4["key"]

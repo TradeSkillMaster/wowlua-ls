@@ -428,7 +428,7 @@ impl<'a> Analysis<'a> {
                                         }
                                     }
                                 }
-                                Expr::FieldAccess { table, .. } => {
+                                Expr::FieldAccess { table, .. } | Expr::BracketIndex { table, .. } => {
                                     let table = *table;
                                     let mut guarded = false;
                                     for &(gs, gf) in &all_field_guards {
@@ -1022,6 +1022,11 @@ impl<'a> Analysis<'a> {
                 }
             }
 
+        // base_range is captured from base_node before it is consumed by lower_expression below.
+        let base_range = base_node.as_ref().map(|bn| {
+            let r = bn.text_range();
+            (u32::from(r.start()), u32::from(r.end()))
+        });
         let base = base_node.and_then(Expression::cast)
             .map(|e| self.lower_expression(&e, scope_idx))
             .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
@@ -1050,14 +1055,19 @@ impl<'a> Analysis<'a> {
             None
         });
 
+        // Push BracketIndex now so we have its expr_id for and-guard suppression tracking.
+        let bracket_expr = self.ir.push_expr(Expr::BracketIndex { table: base, key, literal_key });
+        if let Some((start, end)) = base_range {
+            self.ir.bracket_table_sites.push((bracket_expr, base, start, end));
+        }
+
         if let Some(ref field_name) = narrowing_field_name
             && let Some((sym_idx, mut chain)) = self.ir.extract_field_chain(base) {
                 chain.push(field_name.clone());
-                let expr_id = self.ir.push_expr(Expr::BracketIndex { table: base, key, literal_key });
                 if let Some(guard_vt) = self.get_field_type_narrowing(sym_idx, &chain, scope_idx).cloned() {
-                    return self.ir.push_expr(Expr::TypeFilter(expr_id, guard_vt));
+                    return self.ir.push_expr(Expr::TypeFilter(bracket_expr, guard_vt));
                 } else if let Some(strip_vt) = self.get_field_type_stripping(sym_idx, &chain, scope_idx).cloned() {
-                    let stripped = self.ir.push_expr(Expr::CastRemove(expr_id, strip_vt));
+                    let stripped = self.ir.push_expr(Expr::CastRemove(bracket_expr, strip_vt));
                     if self.is_field_falsy_narrowed(sym_idx, &chain, scope_idx) {
                         return self.ir.push_expr(Expr::StripFalsy(stripped));
                     } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
@@ -1065,15 +1075,15 @@ impl<'a> Analysis<'a> {
                     }
                     return stripped;
                 } else if self.is_field_falsy_narrowed(sym_idx, &chain, scope_idx) {
-                    return self.ir.push_expr(Expr::StripFalsy(expr_id));
+                    return self.ir.push_expr(Expr::StripFalsy(bracket_expr));
                 } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
-                    return self.ir.push_expr(Expr::StripNil(expr_id));
+                    return self.ir.push_expr(Expr::StripNil(bracket_expr));
                 } else if let Some(rhs_id) = self.get_field_assignment_narrow_rhs(sym_idx, &chain, scope_idx) {
-                    return self.ir.push_expr(Expr::AssignNarrow { inner: expr_id, rhs: rhs_id });
+                    return self.ir.push_expr(Expr::AssignNarrow { inner: bracket_expr, rhs: rhs_id });
                 }
-                return expr_id;
+                return bracket_expr;
             }
-        self.ir.push_expr(Expr::BracketIndex { table: base, key, literal_key })
+        bracket_expr
     }
 
     /// Lower a MethodCall node when used as a callee identifier (inside lower_function_call).
