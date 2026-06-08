@@ -103,13 +103,35 @@ pub(super) fn shift_diagnostics_for_pending_edit(
 /// per-file diagnostic list. This cache stores ONLY diagnostics from the
 /// cross-file unused-function pass (`find_unused_from_pre_globals`), separate
 /// from the per-file `unused-function` items emitted by `UnusedLocal::run`.
+///
+/// When `suppressions` is provided, each cached diagnostic is filtered against
+/// the current document's `---@diagnostic disable/enable` directives. This is
+/// required for open documents because the cache is populated by the workspace
+/// warm against on-disk text; suppressions added in the editor since the
+/// workspace warm last ran would otherwise be ignored until the next warm.
 pub(super) fn append_crossfile_diagnostics(
     items: &mut Vec<lsp_types::Diagnostic>,
     uri_str: &str,
     ws: &WorkspaceState,
+    suppressions: Option<&[DiagnosticSuppression]>,
 ) {
-    if let Some(ws_diags) = ws.cached_crossfile_diagnostics.get(uri_str) {
+    let Some(ws_diags) = ws.cached_crossfile_diagnostics.get(uri_str) else { return };
+    let Some(supps) = suppressions else {
         items.extend_from_slice(ws_diags);
+        return;
+    };
+    for d in ws_diags {
+        // The cache only emits String-coded items today (`unused-function`),
+        // but pass through anything else unsuppressed so an unexpected shape
+        // surfaces in the editor rather than getting silently dropped.
+        let Some(lsp_types::NumberOrString::String(code_str)) = &d.code else {
+            items.push(d.clone());
+            continue;
+        };
+        if crate::lsp::diagnostics::is_suppressed(code_str, d.range.start.line, supps) {
+            continue;
+        }
+        items.push(d.clone());
     }
 }
 
@@ -124,10 +146,13 @@ pub(super) fn push_fresh_diagnostics(
     ws: &WorkspaceState,
 ) {
     let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) else { return };
-    // @meta files (declaration-only stubs) never produce diagnostics.
-    // Clear cached diagnostics and publish an empty list so push-only clients
-    // don't retain stale diagnostics from a previous analysis.
-    if analysis.is_meta() {
+    // @meta files (declaration-only stubs) and files under `stubs/` never
+    // produce diagnostics. Clear cached diagnostics and publish an empty list
+    // so push-only clients don't retain stale diagnostics from a previous
+    // analysis. The `is_stub_path` check mirrors the defense-in-depth guard
+    // that `build_file_diagnostics` applies — we bypass that wrapper below to
+    // share a single suppression scan with `append_crossfile_diagnostics`.
+    if analysis.is_meta() || is_stub_path(uri) {
         doc.cached_diagnostics = Some(Vec::new());
         let params = lsp_types::PublishDiagnosticsParams {
             uri: uri.clone(),
@@ -140,15 +165,23 @@ pub(super) fn push_fresh_diagnostics(
         )));
         return;
     }
+    // Scan suppressions once and reuse for both per-file and cross-file
+    // filtering — `build_file_diagnostics` would otherwise scan the same tree
+    // a second time internally. We also pass these to `append_crossfile_diagnostics`
+    // so the workspace warm's cached cross-file items honor `@diagnostic`
+    // directives the user added since the warm last ran.
+    let root = crate::syntax::SyntaxNode::new_root(tree);
+    let suppressions = scan_diagnostic_directives(root);
     // Cache per-file diagnostics only (without cross-file items). Cross-file
     // diagnostics are appended on read from `cached_crossfile_diagnostics` to
     // avoid duplication when `handle_document_diagnostic` later reads the cache.
-    let per_file = build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
+    let per_file = build_file_diagnostics_with(
+        uri, tree, analysis, &doc.text, &doc.plugin_diags, &ws.configs, &suppressions,
+    );
     doc.cached_diagnostics = Some(per_file.clone());
-    // Publish the combined per-file + cross-file set to the editor.
     let mut items = per_file;
     let uri_str = uri.to_string();
-    append_crossfile_diagnostics(&mut items, &uri_str, ws);
+    append_crossfile_diagnostics(&mut items, &uri_str, ws, Some(&suppressions));
     let params = lsp_types::PublishDiagnosticsParams {
         uri: uri.clone(),
         diagnostics: items,
@@ -195,6 +228,10 @@ pub(super) fn handle_document_diagnostic(
         doc.toc = Some(toc);
         doc.dirty = false;
     }
+    // Suppressions from the open document's current text, used below to filter
+    // cross-file diagnostics against any `@diagnostic disable/enable` directives
+    // the user may have added since the workspace warm last ran.
+    let mut open_suppressions: Option<Vec<DiagnosticSuppression>> = None;
     let mut items = if let Some(doc) = documents.get_mut(&uri_str) {
         // TOC document: run TOC-specific diagnostics.
         if let Some(toc) = &doc.toc {
@@ -209,10 +246,17 @@ pub(super) fn handle_document_diagnostic(
         // The cache stores per-file items only (no cross-file); cross-file
         // items are appended below after line-shifting.
         else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
+            // Scan suppressions once and reuse for both the (uncached) per-file
+            // build and the cross-file append below — without this, an uncached
+            // request would walk the tree twice.
+            let root = crate::syntax::SyntaxNode::new_root(tree);
+            let suppressions = scan_diagnostic_directives(root);
             let mut items = if let Some(ref cached) = doc.cached_diagnostics {
                 cached.clone()
             } else {
-                let fresh = build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
+                let fresh = build_file_diagnostics_with(
+                    uri, tree, analysis, &doc.text, &doc.plugin_diags, &ws.configs, &suppressions,
+                );
                 doc.cached_diagnostics = Some(fresh.clone());
                 fresh
             };
@@ -222,8 +266,16 @@ pub(super) fn handle_document_diagnostic(
                 // line delta so they stay roughly aligned with the new text.
                 shift_diagnostics_for_pending_edit(&mut items, min_l, max_l, delta);
             }
+            open_suppressions = Some(suppressions);
             items
         } else {
+            // Document opened but analysis hasn't landed yet (e.g. first parse
+            // pending). Parse `doc.text` on the fly so a freshly-typed
+            // `@diagnostic disable` directive still filters cross-file items
+            // during the brief interim before analysis catches up.
+            let tree = parse_lua(&doc.text);
+            let root = crate::syntax::SyntaxNode::new_root(&tree);
+            open_suppressions = Some(scan_diagnostic_directives(root));
             Vec::new()
         }
     } else if let Some(path) = uri_to_abs_path(uri) {
@@ -263,7 +315,7 @@ pub(super) fn handle_document_diagnostic(
     // items, so no duplication with per-file unused-function diagnostics.
     // Appended after line-shifting so both per-file and cross-file items
     // have consistent positions during pending edits.
-    append_crossfile_diagnostics(&mut items, &uri_str, ws);
+    append_crossfile_diagnostics(&mut items, &uri_str, ws, open_suppressions.as_deref());
 
     DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
         RelatedFullDocumentDiagnosticReport {

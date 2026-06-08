@@ -2338,14 +2338,134 @@ mod tests {
             ..Default::default()
         };
         let mut items1 = vec![per_file_diag.clone()];
-        append_crossfile_diagnostics(&mut items1, &uri, &ws);
+        append_crossfile_diagnostics(&mut items1, &uri, &ws, None);
         assert_eq!(items1.len(), 2, "first merge: 1 per-file + 1 cross-file");
 
         // Second merge on a fresh per-file set (simulating a new pull request):
         // should produce the same count, not accumulate.
         let mut items2 = vec![per_file_diag];
-        append_crossfile_diagnostics(&mut items2, &uri, &ws);
+        append_crossfile_diagnostics(&mut items2, &uri, &ws, None);
         assert_eq!(items2.len(), 2, "second merge: still 1 + 1, no accumulation");
+    }
+
+    #[test]
+    fn append_crossfile_filters_by_diagnostic_suppression() {
+        // Adding a `---@diagnostic disable: unused-function` directive in an
+        // open document must suppress cross-file unused-function items from the
+        // workspace warm cache, even though that cache was populated before the
+        // directive was added.
+        use diagnostics_handlers::append_crossfile_diagnostics;
+        use crate::annotations::{DiagnosticSuppression, SuppressionKind};
+
+        let mut ws = WorkspaceState::for_test(None);
+        let uri = "file:///test/defs.lua".to_string();
+        let cf_diag = lsp_types::Diagnostic {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 5, character: 9 },
+                end:   lsp_types::Position { line: 5, character: 20 },
+            },
+            severity: Some(lsp_types::DiagnosticSeverity::HINT),
+            code: Some(lsp_types::NumberOrString::String("unused-function".to_string())),
+            source: Some("wowlua_ls".to_string()),
+            message: "Function 'Unused' is never used".to_string(),
+            tags: Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]),
+            ..Default::default()
+        };
+        ws.cached_crossfile_diagnostics.insert(uri.clone(), vec![cf_diag]);
+
+        // No suppressions → diagnostic passes through.
+        let mut items = Vec::new();
+        append_crossfile_diagnostics(&mut items, &uri, &ws, None);
+        assert_eq!(items.len(), 1, "no suppressions → cached diagnostic appended");
+
+        // Disable-range that covers the diagnostic's line → filtered out.
+        let supps = vec![
+            DiagnosticSuppression {
+                line: 2,
+                kind: SuppressionKind::Disable,
+                codes: vec!["unused-function".to_string()],
+            },
+            DiagnosticSuppression {
+                line: 8,
+                kind: SuppressionKind::Enable,
+                codes: vec!["unused-function".to_string()],
+            },
+        ];
+        let mut items = Vec::new();
+        append_crossfile_diagnostics(&mut items, &uri, &ws, Some(&supps));
+        assert!(items.is_empty(), "disable directive should filter out cross-file diagnostic");
+
+        // Disable below the diagnostic's line → not filtered.
+        let supps = vec![
+            DiagnosticSuppression {
+                line: 8,
+                kind: SuppressionKind::Disable,
+                codes: vec!["unused-function".to_string()],
+            },
+        ];
+        let mut items = Vec::new();
+        append_crossfile_diagnostics(&mut items, &uri, &ws, Some(&supps));
+        assert_eq!(items.len(), 1, "disable below diagnostic line should not filter it");
+
+        // Disable a different code → not filtered.
+        let supps = vec![
+            DiagnosticSuppression {
+                line: 2,
+                kind: SuppressionKind::Disable,
+                codes: vec!["unused-local".to_string()],
+            },
+        ];
+        let mut items = Vec::new();
+        append_crossfile_diagnostics(&mut items, &uri, &ws, Some(&supps));
+        assert_eq!(items.len(), 1, "disabling a different code should not filter this diagnostic");
+
+        // `disable-line` on the diagnostic's line → filtered out.
+        let supps = vec![
+            DiagnosticSuppression {
+                line: 5,
+                kind: SuppressionKind::DisableLine,
+                codes: vec!["unused-function".to_string()],
+            },
+        ];
+        let mut items = Vec::new();
+        append_crossfile_diagnostics(&mut items, &uri, &ws, Some(&supps));
+        assert!(items.is_empty(), "disable-line on diagnostic line should filter it");
+
+        // `disable-line` on an unrelated line → not filtered.
+        let supps = vec![
+            DiagnosticSuppression {
+                line: 4,
+                kind: SuppressionKind::DisableLine,
+                codes: vec!["unused-function".to_string()],
+            },
+        ];
+        let mut items = Vec::new();
+        append_crossfile_diagnostics(&mut items, &uri, &ws, Some(&supps));
+        assert_eq!(items.len(), 1, "disable-line on a different line should not filter it");
+
+        // `disable-next-line` immediately above the diagnostic → filtered out.
+        let supps = vec![
+            DiagnosticSuppression {
+                line: 4,
+                kind: SuppressionKind::DisableNextLine,
+                codes: vec!["unused-function".to_string()],
+            },
+        ];
+        let mut items = Vec::new();
+        append_crossfile_diagnostics(&mut items, &uri, &ws, Some(&supps));
+        assert!(items.is_empty(), "disable-next-line above diagnostic should filter it");
+
+        // `disable-next-line` two lines above → does not target the diagnostic.
+        let supps = vec![
+            DiagnosticSuppression {
+                line: 3,
+                kind: SuppressionKind::DisableNextLine,
+                codes: vec!["unused-function".to_string()],
+            },
+        ];
+        let mut items = Vec::new();
+        append_crossfile_diagnostics(&mut items, &uri, &ws, Some(&supps));
+        assert_eq!(items.len(), 1, "disable-next-line two lines above should not filter it");
     }
 
     fn collect_lua_paths(dir: &std::path::Path, configs: &mut crate::config::ProjectConfigs) -> Vec<std::path::PathBuf> {
