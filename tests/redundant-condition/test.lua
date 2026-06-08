@@ -200,6 +200,34 @@ local val = holder.data and holder.data or "fallback"
 --      ^ hover: (local) val: string
 acceptString(val)
 
+-- ── No diagnostic: lateinit local (`local x = nil ---@type T!`) ──────────────
+-- `T!` on a local variable behaves like lateinit on a field — the static type
+-- is non-nil but the runtime value starts as nil and gets initialized lazily.
+-- `if not CLASS_LIST then CLASS_LIST = {} end` is the canonical pattern.
+
+local CLASS_LIST = nil ---@type (string[])!
+if not CLASS_LIST then
+    CLASS_LIST = {}
+    tinsert(CLASS_LIST, "all")
+end
+_use(CLASS_LIST)
+
+local LATE_NUM = nil ---@type number!
+if LATE_NUM then _use(LATE_NUM) end
+
+-- Preceding-line `---@type T!` annotation form (different build_ir path
+-- from the trailing inline form above).
+---@type table!
+local PRECEDING_LATE = nil
+if not PRECEDING_LATE then PRECEDING_LATE = {} end
+_use(PRECEDING_LATE)
+
+-- Transitive: `local y = lateinitLocal` should propagate the uncertainty so
+-- `if y then` is not flagged.
+local LATE_SRC = nil ---@type string!
+local copied = LATE_SRC
+if copied then _use(copied) end
+
 -- ── No diagnostic: conditionally-assigned variable resolves to union ─────────
 -- After `if cond then x = val end`, the LS merges branches and resolves `x` as
 -- `string?` (neither guaranteed-truthy nor guaranteed-falsy), so no diagnostic.

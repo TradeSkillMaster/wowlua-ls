@@ -360,6 +360,10 @@ pub(crate) struct Ir {
     pub(crate) and_guarded_nil_check_exprs: HashSet<ExprId>,
     pub(crate) assign_nil_check_bases: Vec<(ExprId, u32, u32)>,
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
+    /// Locals declared with `---@type T!` (lateinit). The resolved type is the
+    /// nil-stripped inner, but the runtime value can start as nil and be
+    /// initialized later, so `if not x then x = init() end` is not redundant.
+    pub(crate) lateinit_symbols: HashSet<SymbolIndex>,
     /// Scope in which each VarArgs expression was created (for event-param narrowing).
     pub(crate) varargs_scope: HashMap<ExprId, ScopeIndex>,
     /// Display alias for event type parameters. When a symbol's type is `String(None)`
@@ -2075,6 +2079,7 @@ impl<'a> Analysis<'a> {
                 and_guarded_nil_check_exprs: HashSet::new(),
                 assign_nil_check_bases: Vec::new(),
                 symbol_type_annotations: HashMap::new(),
+                lateinit_symbols: HashSet::new(),
                 varargs_scope: HashMap::new(),
                 event_type_display: HashMap::new(),
                 addon_table_override,

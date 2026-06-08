@@ -657,8 +657,7 @@ impl<'a> Analysis<'a> {
                                                 ver.type_args = type_args;
                                             }
                                         }
-                                        // D2: track annotation for assign-type-mismatch
-                                        self.ir.symbol_type_annotations.insert(symbol_idx, vt);
+                                        self.record_symbol_annotation(symbol_idx, at, vt);
                                     }
                                 }
                                 let effective_class = self.ir.resolve_class_annotation(
@@ -740,7 +739,7 @@ impl<'a> Analysis<'a> {
                                             if let Some(vt) = vt_opt {
                                                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                                 self.ir.set_type_source(symbol_idx, expr_id);
-                                                self.ir.symbol_type_annotations.insert(symbol_idx, vt);
+                                                self.record_symbol_annotation(symbol_idx, &inline_at, vt);
                                             }
                                         }
                                     }
@@ -3288,6 +3287,17 @@ impl<'a> Analysis<'a> {
     /// Delegates to the shared implementation in `annotation_scanning`.
     pub(crate) fn extract_inline_type(field_node: SyntaxNode<'_>) -> Option<AnnotationType> {
         crate::annotations::annotation_scanning::extract_inline_type_from_node(field_node)
+    }
+
+    /// Record a `---@type` annotation against a local symbol: store the resolved
+    /// type for assign-type-mismatch, and additionally mark the symbol as
+    /// lateinit when the annotation is `T!`. Centralizing the pair prevents
+    /// future call sites from forgetting the lateinit mark.
+    fn record_symbol_annotation(&mut self, symbol_idx: SymbolIndex, at: &AnnotationType, vt: ValueType) {
+        self.ir.symbol_type_annotations.insert(symbol_idx, vt);
+        if matches!(at, AnnotationType::NonNil(_)) {
+            self.ir.lateinit_symbols.insert(symbol_idx);
+        }
     }
 
     /// Extract a `---@type X` annotation from inside a table constructor's opening line.

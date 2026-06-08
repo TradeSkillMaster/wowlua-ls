@@ -530,11 +530,21 @@ pub(crate) fn unwrap_to_inner_expr(exprs: &[Expr], mut id: ExprId) -> ExprId {
 ///   flavors may not exist at runtime when the project targets multiple flavors.
 pub(crate) fn is_expr_truthiness_uncertain(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
     is_lateinit_field_access(analysis, expr_id)
+    || is_lateinit_local_ref(analysis, expr_id)
     || is_field_without_direct_annotation(analysis, expr_id)
     || is_dynamic_bracket_index(analysis, expr_id)
     || is_unannotated_param_ref(analysis, expr_id)
     || is_symbol_from_uncertain_source(analysis, expr_id)
     || is_flavor_restricted_global(analysis, expr_id)
+}
+
+/// Local declared with `---@type T!` (lateinit): typed non-nil but starts as
+/// nil at runtime, so `if not x then x = init() end` initialization patterns
+/// must not be flagged as redundant.
+fn is_lateinit_local_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
+    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[id.val()] else { return false };
+    analysis.ir.lateinit_symbols.contains(sym_idx)
 }
 
 /// External global with flavor restrictions: may not exist in all targeted
@@ -623,6 +633,7 @@ fn is_symbol_from_uncertain_source(analysis: &AnalysisResult, expr_id: ExprId) -
     let Some(ver) = sym.versions.get(*ver_idx) else { return false };
     let Some(src) = ver.type_source else { return false };
     is_lateinit_field_access(analysis, src)
+    || is_lateinit_local_ref(analysis, src)
     || is_field_without_direct_annotation(analysis, src)
     || is_dynamic_bracket_index(analysis, src)
     || is_unannotated_param_ref(analysis, src)
