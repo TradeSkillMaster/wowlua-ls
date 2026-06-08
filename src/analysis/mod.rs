@@ -157,6 +157,12 @@ pub(crate) struct NarrowingState {
     /// Checked (with scope-chain walk) to skip stale narrowing after assignment.
     /// Maps to the byte offset of the reassignment node.
     pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashMap<SymbolIndex, u32>>,
+    /// Symbols that were falsy-narrowed while still on their original version
+    /// (before any reassignment). Used by backward param-type inference to
+    /// distinguish truthiness tests on the original parameter (valid nil
+    /// evidence) from tests on a reassigned version (not nil evidence for the
+    /// parameter's type). Populated in `narrow_symbol_strip_falsy`.
+    pub(crate) falsy_narrowed_pre_reassign: HashSet<SymbolIndex>,
 }
 
 impl NarrowingState {

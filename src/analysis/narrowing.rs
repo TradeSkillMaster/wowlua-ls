@@ -266,6 +266,9 @@ impl<'a> Analysis<'a> {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                             self.narrowing.narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
                             self.narrowing.falsy_narrowed.entry(target_scope).or_default().insert(NarrowTarget::Symbol(sym_idx));
+                            if !sym_idx.is_external() && self.ir.symbols[sym_idx.val()].versions.len() <= 1 {
+                                self.narrowing.falsy_narrowed_pre_reassign.insert(sym_idx);
+                            }
                             self.narrow_siblings(sym_idx, target_scope);
                             self.narrow_correlated_locals(sym_idx, target_scope);
                             self.narrow_or_coalesce_derived(sym_idx, target_scope, true);
@@ -1272,6 +1275,9 @@ impl<'a> Analysis<'a> {
     fn narrow_symbol_strip_falsy(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx));
         self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx));
+        if !sym_idx.is_external() && self.ir.symbols[sym_idx.val()].versions.len() <= 1 {
+            self.narrowing.falsy_narrowed_pre_reassign.insert(sym_idx);
+        }
         self.push_strip_falsy_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
         self.narrow_correlated_locals(sym_idx, scope_idx);
@@ -2127,6 +2133,9 @@ impl<'a> Analysis<'a> {
             self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(derived));
             if falsy {
                 self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(derived));
+                if !derived.is_external() && self.ir.symbols[derived.val()].versions.len() <= 1 {
+                    self.narrowing.falsy_narrowed_pre_reassign.insert(derived);
+                }
                 self.push_strip_falsy_version(derived, scope_idx);
                 self.apply_guard_implications(derived, scope_idx);
             } else {

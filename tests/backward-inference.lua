@@ -1072,3 +1072,46 @@ end
 local function callerOfPlainBool(y)
     acceptsPlainBool(y)
 end
+
+-- ── Reassigned param truthiness test should not add nil ──
+-- When a parameter is reassigned to a different type (e.g. tonumber) and then
+-- truthiness-tested (assert), the test is on the reassigned version, not the
+-- original parameter. The backward inference should NOT treat this as evidence
+-- that the original parameter can be nil.
+---@param str string
+---@return string
+local function acceptsString(str) return str end
+
+local function innerValidate(value)
+--                           ^ hover: (param) value: string
+    return acceptsString(value)
+end
+
+local function outerProcess(value)
+--                          ^ hover: (param) value: string
+    if innerValidate(value) then
+        acceptsString(value)
+        if true then
+            value = tonumber(value)
+            assert(value)
+        end
+    end
+end
+
+-- Call sites provide concrete string evidence for backward inference.
+outerProcess("hello")
+innerValidate("world")
+
+-- ── Pre-reassignment truthiness test SHOULD add nil ──
+-- When a parameter is truthiness-tested BEFORE any reassignment, the test
+-- is on the original parameter and IS valid nil evidence.
+local function preReassignTruthiness(arg)
+--                                   ^ hover: (param) arg: string?
+    if arg then
+        acceptsString(arg)
+    end
+    arg = "fixed"
+end
+
+preReassignTruthiness("test")
+preReassignTruthiness(nil)

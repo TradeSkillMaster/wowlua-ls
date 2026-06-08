@@ -285,6 +285,9 @@ impl<'a> Analysis<'a> {
                             GuardNarrow::StripFalsy => {
                                 let n = self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(*sym));
                                 let f = self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(*sym));
+                                if f && !sym.is_external() && self.ir.symbols[sym.val()].versions.len() <= 1 {
+                                    self.narrowing.falsy_narrowed_pre_reassign.insert(*sym);
+                                }
                                 if n || f { sibling_tracking_inserted.push((*sym, n, f)); }
                             }
                             // FilterTo has no NarrowKind counterpart; skip sibling narrowing.

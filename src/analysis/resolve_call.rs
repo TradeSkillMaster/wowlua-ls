@@ -3390,6 +3390,13 @@ impl<'a> Analysis<'a> {
         // This is correct because SymbolIndex values are unique per file (monotonically
         // allocated from a flat `ir.symbols` vec), so a truthiness guard in one
         // function cannot accidentally match a parameter from another function.
+        // Only include symbols whose truthiness test occurred before any
+        // reassignment (recorded at narrowing time in `falsy_narrowed_pre_reassign`).
+        // When a parameter is reassigned to a different type (e.g.
+        // `value = tonumber(value)`) and then truthiness-tested (`assert(value)`),
+        // the test is on the reassigned type, not the original parameter — using
+        // it as nil evidence for the parameter would be incorrect and can cause
+        // oscillation in the inference loop.
         let truthiness_tested: HashSet<SymbolIndex> = self.narrowing.falsy_narrowed.values()
             .flat_map(|set| set.iter())
             .filter_map(|t| match t {
@@ -3397,6 +3404,7 @@ impl<'a> Analysis<'a> {
                 NarrowTarget::Field(..) => None,
             })
             .filter(|s| candidates.contains(s))
+            .filter(|s| self.narrowing.falsy_narrowed_pre_reassign.contains(s))
             .collect();
 
         let mut out: HashMap<SymbolIndex, BackwardInferenceHints> = HashMap::new();
