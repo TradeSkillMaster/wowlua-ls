@@ -163,6 +163,22 @@ goto myLabel
 --            ^^^^^^ support.type.lua
 --                   ^^^^^^^^^^^^^ comment.block.documentation.lua
 
+-- Annotation: @param with name only (user mid-typing, no type yet)
+---@param upgrade
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^^^^^ entity.name.variable.lua
+
+-- Annotation: @param with name and optional marker only (no type yet)
+---@param upgrade?
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^^^^^ entity.name.variable.lua
+--               ^ keyword.operator.lua
+
+-- Annotation: @param with vararg only (no type yet)
+---@param ...
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^ entity.name.variable.lua
+
 -- Annotation: @return
 ---@return boolean
 -- ^^^^^^^ storage.type.annotation.lua

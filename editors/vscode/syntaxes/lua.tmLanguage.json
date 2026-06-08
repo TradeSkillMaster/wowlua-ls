@@ -351,7 +351,7 @@
               "endCaptures": {
                 "1": {"name": "keyword.operator.lua"},
                 "2": {"name": "keyword.operator.lua"},
-                "3": {"patterns": [{"include": "#emmydoc.type"}]},
+                "3": {"name": "support.type.lua", "patterns": [{"include": "#emmydoc.type"}]},
                 "4": {"name": "comment.block.documentation.lua"}
               },
               "patterns": [
@@ -415,6 +415,15 @@
                 "2": {"name": "keyword.operator.lua"},
                 "3": {"patterns": [{"include": "#emmydoc.type"}]},
                 "4": {"name": "comment.block.documentation.lua"}
+              }
+            },
+            {
+              "comment": "@param with name only (no type typed yet) — keeps the name highlighted while the user is mid-typing the type. Optional `?` is only valid on the named form, not on the `...` vararg form.",
+              "match": "(?<!\\w)(?:([a-zA-Z_][a-zA-Z0-9_]*)(\\??)|(\\.\\.\\.))",
+              "captures": {
+                "1": {"name": "entity.name.variable.lua"},
+                "2": {"name": "keyword.operator.lua"},
+                "3": {"name": "entity.name.variable.lua"}
               }
             }
           ]
