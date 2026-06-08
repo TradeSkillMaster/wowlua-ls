@@ -66,9 +66,20 @@ function BetaWidget:Process()
     return 21
 end
 
--- Read as a function value in user.lua (not called). Currently produces a
--- false-positive unused-function hint because non-call field reads are not
--- tracked (no call_resolution entry). See find_unused_methods NOTE comment.
+-- Read as a function value (local assignment) in user.lua.
+-- Should NOT be flagged as unused.
 function NS.FuncAsValueMethod()
     return 15
+end
+
+-- Passed as an argument to another function in user.lua (the original TSM pattern).
+-- Should NOT be flagged as unused.
+function NS.FuncAsArgMethod()
+    return 16
+end
+
+-- Stored as a value inside a table constructor in user.lua.
+-- Should NOT be flagged as unused.
+function NS.FuncInTableMethod()
+    return 17
 end

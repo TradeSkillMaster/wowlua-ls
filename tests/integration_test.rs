@@ -5161,13 +5161,19 @@ fn test_unused_function_cross_file() {
         "BetaWidget:Process should not be flagged — called via union-typed receiver",
     );
 
-    // Known gap: function-as-value reads (e.g. `local fn = NS.FuncAsValueMethod`)
-    // produce no call_resolution entry, so the method is not found in `all_functions`
-    // and is falsely flagged as unused. If this assert starts failing it means the
-    // gap has been closed and the comment + assert can be updated to expect !contains.
+    // Function-as-value: local assignment.
     assert!(
-        unused_names.contains("NS.FuncAsValueMethod"),
-        "NS.FuncAsValueMethod should be falsely flagged (known gap: function-as-value \
-         reads are not tracked by call_resolutions)",
+        !unused_names.contains("NS.FuncAsValueMethod"),
+        "NS.FuncAsValueMethod should not be flagged — assigned to a local in user.lua",
+    );
+    // Function-as-value: passed as a callback argument (the original TSM false-positive).
+    assert!(
+        !unused_names.contains("NS.FuncAsArgMethod"),
+        "NS.FuncAsArgMethod should not be flagged — passed as an argument in user.lua",
+    );
+    // Function-as-value: stored in a table constructor field.
+    assert!(
+        !unused_names.contains("NS.FuncInTableMethod"),
+        "NS.FuncInTableMethod should not be flagged — stored in a table constructor in user.lua",
     );
 }

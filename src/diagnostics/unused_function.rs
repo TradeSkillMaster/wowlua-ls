@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::analysis::AnalysisResult;
+use crate::analysis::{AnalysisResult, Ir};
 use crate::annotations::annotation_scanning::{ExternalGlobal, ExternalGlobalKind, FieldValueKind};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::types::{FunctionIndex, SymbolIdentifier, SymbolIndex, TableIndex, EXT_BASE};
+use crate::types::{Expr, ExprId, FunctionIndex, SymbolIdentifier, SymbolIndex, TableIndex, ValueType, EXT_BASE};
 
 use super::WowDiagnostic;
 
@@ -19,6 +19,29 @@ pub struct FileReferenceData {
     /// External `FunctionIndex` values (>= `EXT_BASE`) called by this file.
     /// Used for top-level global function usage tracking.
     pub referenced_external_functions: HashSet<FunctionIndex>,
+}
+
+/// Resolve a simple `NS.Method` field access to its external `FunctionIndex`
+/// without relying on `resolved_expr_cache`. Returns `Some(func_idx)` only when
+/// `base_expr` is a `SymbolRef` whose resolved type is an external `Table` that
+/// contains a `FunctionDef` field at `field_name`. All other cases return `None`.
+///
+/// Used as a fallback for `FieldAccess` nodes that the fixpoint never evaluated
+/// (e.g. values inside a table constructor that nothing reads back).
+fn resolve_field_func(ir: &Ir, base_expr: ExprId, field_name: &str) -> Option<FunctionIndex> {
+    let (sym_idx, ver_idx) = match ir.expr(base_expr) {
+        Expr::SymbolRef(s, v) => (*s, *v),
+        _ => return None,
+    };
+    let table_idx = match ir.sym(sym_idx).versions.get(ver_idx)?.resolved_type.as_ref()? {
+        ValueType::Table(Some(idx)) => *idx,
+        _ => return None,
+    };
+    let field_expr = ir.table(table_idx).fields.get(field_name)?.expr;
+    match ir.expr(field_expr) {
+        Expr::FunctionDef(func_idx) if func_idx.is_external() => Some(*func_idx),
+        _ => None,
+    }
 }
 
 /// Extract cross-file reference data from a per-file `AnalysisResult`.
@@ -39,6 +62,35 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
     for cr in analysis.ir.call_resolutions.values() {
         if cr.func_idx.val() >= EXT_BASE {
             referenced_external_functions.insert(cr.func_idx);
+        }
+    }
+
+    // Collect external functions referenced as values (not called).
+    // When a method is passed as a callback argument (e.g. `Register(NS.Method)`) or
+    // stored in a table constructor (e.g. `{ handler = NS.Method }`), no call_resolution
+    // entry is produced. Scanning FieldAccess IR nodes catches these.
+    //
+    // Two paths:
+    // 1. Cache hit  — resolved_expr_cache already holds Function(Some(func_idx));
+    //    covers complex bases (e.g. a call return value) that were evaluated during
+    //    the fixpoint, including direct arguments and local-variable assignments.
+    // 2. Manual resolve — for FieldAccess nodes whose cache slot is empty (e.g. table
+    //    constructor field values that are never read back), walk the base SymbolRef
+    //    directly to the external table field's FunctionDef.
+    for (idx, expr) in analysis.ir.exprs.iter().enumerate() {
+        let Expr::FieldAccess { table: base_expr, field, .. } = expr else { continue };
+
+        // Path 1: cache hit.
+        if let Some(Some(ValueType::Function(Some(func_idx)))) = analysis.resolved_expr_cache.get(idx)
+            && func_idx.is_external()
+        {
+            referenced_external_functions.insert(*func_idx);
+            continue;
+        }
+
+        // Path 2: manual resolve for uncached entries.
+        if let Some(func_idx) = resolve_field_func(&analysis.ir, *base_expr, field) {
+            referenced_external_functions.insert(func_idx);
         }
     }
 
@@ -68,9 +120,9 @@ struct AggregatedRefs {
     multi_file_externals: HashSet<SymbolIndex>,
     /// External symbols referenced in exactly 1 file (path stored for comparison).
     single_file_externals: HashMap<SymbolIndex, PathBuf>,
-    /// Union of all `referenced_external_functions` across all files.
-    /// Includes calls from the defining file itself, so recursive self-calls
-    /// count as a reference and keep the function alive. Unlike
+    /// Union of all `referenced_external_functions` across all files (calls +
+    /// function-as-value reads). Includes references from the defining file
+    /// itself, so recursive self-calls keep the function alive. Unlike
     /// `is_referenced_elsewhere` (which excludes the defining file to avoid
     /// counting the LHS assignment), method lookups here have no spurious
     /// self-reference to exclude.
@@ -113,8 +165,9 @@ impl AggregatedRefs {
             .is_some_and(|p| p.as_path() != source_path)
     }
 
-    /// Returns `true` if `func_idx` appears in any file's call resolutions.
-    fn is_function_called(&self, func_idx: &FunctionIndex) -> bool {
+    /// Returns `true` if `func_idx` is referenced in any file — either called
+    /// directly or read as a value (e.g. passed as a callback argument).
+    fn is_function_referenced(&self, func_idx: &FunctionIndex) -> bool {
         self.all_functions.contains(func_idx)
     }
 }
@@ -219,16 +272,10 @@ fn find_unused_methods(
             continue;
         }
 
-        // O(1) check: is this function referenced by any file's call resolutions?
-        // Call resolutions capture all method calls where the receiver resolves to
-        // an external type, covering direct calls and self:Method() patterns.
-        //
-        // NOTE: function-as-value reads (e.g. `local fn = NS.Method` or passing
-        // a method as a callback argument without calling it) do NOT produce a
-        // call_resolution entry, so they are not detected here. Such patterns are
-        // rare in WoW addon code; the performance gain from removing the per-file
-        // token walk outweighs the occasional false-positive on this edge case.
-        if agg.is_function_called(func_idx) {
+        // O(1) check: is this function referenced by any file?
+        // Covers both direct calls (call_resolutions) and function-as-value
+        // reads (FieldAccess nodes in resolved_expr_cache).
+        if agg.is_function_referenced(func_idx) {
             continue;
         }
 
@@ -327,8 +374,6 @@ pub fn find_unused_from_pre_globals(
     file_refs: &HashMap<PathBuf, FileReferenceData>,
     is_library: &dyn Fn(&Path) -> bool,
 ) -> Vec<UnusedWorkspaceFunction> {
-    use crate::types::ValueType;
-
     let mut unused = Vec::new();
     let agg = AggregatedRefs::build(file_refs);
 

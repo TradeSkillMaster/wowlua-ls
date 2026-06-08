@@ -12,5 +12,9 @@ local function useUnionWidget(widget)
 end
 useUnionWidget(AlphaWidget)
 useUnionWidget(BetaWidget)
--- Function-as-value read: not a call, so no call_resolution is produced.
+-- Function-as-value: local variable assignment.
 local e = NS.FuncAsValueMethod
+-- Function-as-value: passed as a callback argument (the original false-positive pattern).
+UsedGlobal(NS.FuncAsArgMethod)
+-- Function-as-value: stored in a table constructor.
+local t = { handler = NS.FuncInTableMethod }
