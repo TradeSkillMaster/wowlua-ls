@@ -3223,23 +3223,30 @@ fn fetch_and_generate_cvar_stubs() -> String {
 /// Scan all .lua files under a directory for LE_[A-Z][A-Z_0-9]+ references.
 /// Returns the set of unique LE_* names found.
 fn scan_le_constants(ui_source_dir: &Path) -> HashSet<String> {
+    use rayon::prelude::*;
+
     let re = regex_lite::Regex::new(r"LE_[A-Z][A-Z_0-9]+").unwrap();
-    let mut names = HashSet::new();
     // Scan the full Interface/ tree: LE_* references appear in both AddOns/ and FrameXML/.
     let interface_dir = ui_source_dir.join("Interface");
     if !interface_dir.is_dir() {
-        return names;
+        return HashSet::new();
     }
     let mut lua_files = Vec::new();
     collect_lua_paths(&interface_dir, &mut lua_files);
-    for path in &lua_files {
+
+    // Per-file name sets unioned in parallel — set-union is order-independent.
+    lua_files.par_iter().map(|path| {
+        let mut names = HashSet::new();
         if let Ok(content) = std::fs::read_to_string(path) {
             for m in re.find_iter(&content) {
                 names.insert(m.as_str().to_string());
             }
         }
-    }
-    names
+        names
+    }).reduce(HashSet::new, |mut a, b| {
+        a.extend(b);
+        a
+    })
 }
 
 
@@ -3381,9 +3388,18 @@ fn camel_to_upper_snake(s: &str) -> String {
 /// per-directory, so a template defined in branch A won't propagate to a
 /// concrete frame in branch B (in practice Blizzard mirrors templates across
 /// branches, so this isn't observed).
+/// Per-file partial produced by the parallel XML scan: `(frames, direct_mixins,
+/// inherits_map)` for one file, merged sequentially in path order afterwards.
+type XmlFramePartial = (
+    HashMap<String, String>,
+    HashMap<String, Vec<String>>,
+    HashMap<String, Vec<String>>,
+);
+
 fn extract_xml_frames_and_mixins(
     ui_source_dir: &Path,
 ) -> (HashMap<String, String>, HashMap<String, Vec<String>>) {
+    use rayon::prelude::*;
     let regs = MixinScanRegexes::new();
 
     let mut frames: HashMap<String, String> = HashMap::new();
@@ -3401,11 +3417,44 @@ fn extract_xml_frames_and_mixins(
     let mut xml_files = Vec::new();
     collect_xml_paths(&interface_dir, &mut xml_files);
 
-    for path in &xml_files {
-        let Ok(content) = std::fs::read_to_string(path) else { continue };
-        let stripped = regs.comment.replace_all(&content, "");
-        accumulate_xml_frames_and_mixins(&stripped, &regs,
-            &mut frames, &mut direct_mixins, &mut inherits_map);
+    // Parse each file in parallel into per-file partial maps, then fold them in
+    // path order with the same merge semantics as the serial version. `par_iter`
+    // + `collect` preserves `xml_files` order, so the sequential fold applies the
+    // same first-wins `frames` / append-dedup mixin merges in the exact same order
+    // the serial loop did — byte-identical output, no churn to the committed blob.
+    let partials: Vec<XmlFramePartial> = xml_files
+        .par_iter()
+        .map(|path| {
+            let mut f = HashMap::new();
+            let mut dm = HashMap::new();
+            let mut im = HashMap::new();
+            if let Ok(content) = std::fs::read_to_string(path) {
+                let stripped = regs.comment.replace_all(&content, "");
+                accumulate_xml_frames_and_mixins(&stripped, &regs, &mut f, &mut dm, &mut im);
+            }
+            (f, dm, im)
+        })
+        .collect();
+
+    let merge_attr_lists = |dst: &mut HashMap<String, Vec<String>>,
+                            src: HashMap<String, Vec<String>>| {
+        for (name, items) in src {
+            let out = dst.entry(name).or_default();
+            let mut seen: HashSet<String> = out.iter().cloned().collect();
+            for item in items {
+                if seen.insert(item.clone()) {
+                    out.push(item);
+                }
+            }
+        }
+    };
+
+    for (f, dm, im) in partials {
+        for (name, ty) in f {
+            frames.entry(name).or_insert(ty);
+        }
+        merge_attr_lists(&mut direct_mixins, dm);
+        merge_attr_lists(&mut inherits_map, im);
     }
 
     let resolved = resolve_inherited_mixins(&direct_mixins, &inherits_map);
@@ -3591,6 +3640,7 @@ fn scan_framexml_lua_fields(
     frame_names: &HashSet<String>,
     mixin_to_frames: &HashMap<String, Vec<String>>,
 ) -> HashMap<String, Vec<(String, String)>> {
+    use rayon::prelude::*;
     // Per-frame field accumulator: frame_name → (field_name → type_str)
     let mut acc: HashMap<String, HashMap<String, String>> = HashMap::new();
 
@@ -3612,52 +3662,68 @@ fn scan_framexml_lua_fields(
         r"(?m)^\s*PanelTemplates_SetNumTabs\s*\(\s*([A-Z]\w+)\s*,"
     ).unwrap();
 
+    // Flatten all .lua files across every dir into one path list, preserving
+    // dir order then `collect_lua_paths` order within each dir — the exact same
+    // total order the nested serial loop visited. No sort: `par_iter` + `collect`
+    // preserves this order so the sequential first-wins fold below is byte-identical.
+    let mut lua_files = Vec::new();
     for dir in ui_source_dirs {
         let interface_dir = dir.join("Interface");
         if !interface_dir.is_dir() {
             continue;
         }
-
-        let mut lua_files = Vec::new();
         collect_lua_paths(&interface_dir, &mut lua_files);
+    }
 
-        for path in &lua_files {
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
+    // Scan each file into a local per-frame accumulator in parallel, then fold
+    // the locals into `acc` in path order with the same first-wins semantics.
+    let partials: Vec<HashMap<String, HashMap<String, String>>> = lua_files
+        .par_iter()
+        .map(|path| {
+            let mut local: HashMap<String, HashMap<String, String>> = HashMap::new();
+            let Ok(content) = std::fs::read_to_string(path) else { return local };
 
             for cap in field_re.captures_iter(&content) {
                 let name = cap.get(1).unwrap().as_str();
                 let field = cap.get(2).unwrap().as_str();
                 let rhs = cap.get(3).unwrap().as_str();
                 let ftype = infer_rhs_type(rhs);
-                attribute_field(&mut acc, name, field, &ftype,
+                attribute_field(&mut local, name, field, &ftype,
                     frame_names, mixin_to_frames);
             }
 
             for cap in method_re.captures_iter(&content) {
                 let name = cap.get(1).unwrap().as_str();
                 let method = cap.get(2).unwrap().as_str();
-                attribute_field(&mut acc, name, method, "function",
+                attribute_field(&mut local, name, method, "function",
                     frame_names, mixin_to_frames);
             }
 
             for cap in dot_func_re.captures_iter(&content) {
                 let name = cap.get(1).unwrap().as_str();
                 let func = cap.get(2).unwrap().as_str();
-                attribute_field(&mut acc, name, func, "function",
+                attribute_field(&mut local, name, func, "function",
                     frame_names, mixin_to_frames);
             }
 
             for cap in panel_tabs_re.captures_iter(&content) {
                 let name = cap.get(1).unwrap().as_str();
                 if !frame_names.contains(name) { continue; }
-                let fields = acc.entry(name.to_string()).or_default();
+                let fields = local.entry(name.to_string()).or_default();
                 fields.entry("numTabs".to_string())
                     .or_insert_with(|| "number".to_string());
                 fields.entry("selectedTab".to_string())
                     .or_insert_with(|| "number".to_string());
+            }
+            local
+        })
+        .collect();
+
+    for partial in partials {
+        for (name, fields) in partial {
+            let dst = acc.entry(name).or_default();
+            for (field, ftype) in fields {
+                dst.entry(field).or_insert(ftype);
             }
         }
     }
@@ -4387,7 +4453,20 @@ fn ensure_shallow_clone(repo: &str, branch: &str, dest: &Path, refresh: bool) ->
 
 /// Parse all *Documentation.lua files in Blizzard_APIDocumentationGenerated.
 /// Returns (constants: name → (type, value), enums: enum_name → [(field_name, value)]).
+/// Per-file partial produced by the parallel API-doc scan: `(constants, enums)`
+/// for one file, folded into the shared maps in path order afterwards.
+type ApiDocPartial = (
+    HashMap<String, (String, String)>,
+    HashMap<String, Vec<(String, i64)>>,
+);
+
+/// Per-file partial produced by the parallel Interface/ Lua scan:
+/// `(constants, global_funcs)` for one file, folded in path order afterwards.
+type InterfaceLuaPartial = (HashMap<String, (String, String)>, HashSet<String>);
+
 fn parse_api_doc_dir(ui_source_dir: &Path) -> ApiDocData {
+    use rayon::prelude::*;
+
     let api_doc_dir = ui_source_dir.join("Interface/AddOns/Blizzard_APIDocumentationGenerated");
     let mut constants = HashMap::new();
     let mut enums = HashMap::new();
@@ -4405,13 +4484,34 @@ fn parse_api_doc_dir(ui_source_dir: &Path) -> ApiDocData {
     let enum_field_re =
         regex_lite::Regex::new(r#"\{\s*Name\s*=\s*"(\w+)"[^}]*EnumValue\s*=\s*(-?\d+)"#).unwrap();
 
-    for entry in std::fs::read_dir(&api_doc_dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "lua")
-            && let Ok(content) = std::fs::read_to_string(&path) {
-                parse_api_doc_file(&content, &mut constants, &mut enums,
+    // Collect .lua paths sorted by filename. `read_dir` on Linux returns entries in
+    // hash-table order which is non-deterministic across filesystems; sorting ensures
+    // the last-wins fold below produces the same output on every machine.
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&api_doc_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "lua"))
+        .collect();
+    paths.sort();
+
+    // Parse each file into local maps in parallel, then fold (rayon preserves
+    // path order in collect).
+    let partials: Vec<ApiDocPartial> =
+        paths.par_iter().map(|path| {
+            let mut c = HashMap::new();
+            let mut e = HashMap::new();
+            if let Ok(content) = std::fs::read_to_string(path) {
+                parse_api_doc_file(&content, &mut c, &mut e,
                     &const_re, &upper_snake_re, &name_re, &enum_field_re);
             }
+            (c, e)
+        }).collect();
+
+    for (c, e) in partials {
+        constants.extend(c);
+        enums.extend(e);
     }
 
     ApiDocData { constants, enums }
@@ -4517,6 +4617,8 @@ fn parse_api_doc_file(
 /// Callers that previously called `scan_framexml_constants` and `scan_framexml_lua_globals`
 /// separately on the same directory should use this function instead to avoid two traversals.
 fn scan_interface_lua_combined(ui_source_dir: &Path) -> (HashMap<String, (String, String)>, HashSet<String>) {
+    use rayon::prelude::*;
+
     let assign_re = regex_lite::Regex::new(r"^([A-Z][A-Z_0-9]+)\s*=\s*(.+)$").unwrap();
     // `^function Name(` at the start of a line = standalone top-level global function.
     // No dots or colons = not a method or table field.
@@ -4532,29 +4634,40 @@ fn scan_interface_lua_combined(ui_source_dir: &Path) -> (HashMap<String, (String
 
     let mut lua_files = Vec::new();
     collect_lua_paths(&interface_dir, &mut lua_files);
+    // `par_iter` + `collect` preserves `collect_lua_paths` order, so the
+    // sequential fold below merges in the same order the serial loop did.
 
-    for path in &lua_files {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            // Collect constant assignments (ALL_CAPS = value at top-level)
-            for line in content.lines() {
-                if let Some(cap) = assign_re.captures(line) {
+    let partials: Vec<InterfaceLuaPartial> =
+        lua_files.par_iter().map(|path| {
+            let mut c = HashMap::new();
+            let mut f = HashSet::new();
+            if let Ok(content) = std::fs::read_to_string(path) {
+                // Collect constant assignments (ALL_CAPS = value at top-level)
+                for line in content.lines() {
+                    if let Some(cap) = assign_re.captures(line) {
+                        let name = cap.get(1).unwrap().as_str();
+                        let value_raw = cap.get(2).unwrap().as_str().trim().trim_end_matches(';');
+                        if let Some(typ) = infer_constant_type(value_raw) {
+                            c.insert(name.to_string(), (typ.to_string(), value_raw.to_string()));
+                        }
+                    }
+                }
+                // Collect standalone global function definitions
+                for cap in func_re.captures_iter(&content) {
                     let name = cap.get(1).unwrap().as_str();
-                    let value_raw = cap.get(2).unwrap().as_str().trim().trim_end_matches(';');
-                    if let Some(typ) = infer_constant_type(value_raw) {
-                        constants.insert(name.to_string(), (typ.to_string(), value_raw.to_string()));
+                    // Skip very short names (< 3 chars) — single/double-letter names are
+                    // almost certainly local helper functions, not addon-visible globals.
+                    if name.len() >= 3 {
+                        f.insert(name.to_string());
                     }
                 }
             }
-            // Collect standalone global function definitions
-            for cap in func_re.captures_iter(&content) {
-                let name = cap.get(1).unwrap().as_str();
-                // Skip very short names (< 3 chars) — single/double-letter names are
-                // almost certainly local helper functions, not addon-visible globals.
-                if name.len() >= 3 {
-                    global_funcs.insert(name.to_string());
-                }
-            }
-        }
+            (c, f)
+        }).collect();
+
+    for (c, f) in partials {
+        constants.extend(c);
+        global_funcs.extend(f);
     }
 
     (constants, global_funcs)
@@ -4580,6 +4693,8 @@ fn scan_framexml_constants(ui_source_dir: &Path) -> HashMap<String, (String, Str
 /// one colon method are flagged as mixins (emitted as `@class` during generation).
 /// Tables with no methods and no factory closures are pruned.
 fn scan_framexml_utility_tables(ui_source_dir: &Path) -> HashMap<String, UtilTableInfo> {
+    use rayon::prelude::*;
+
     let dot_func_re = regex_lite::Regex::new(
         r"(?m)^function\s+([A-Z]\w+)\.(\w+)\s*\(([^)]*)\)"
     ).unwrap();
@@ -4598,13 +4713,11 @@ fn scan_framexml_utility_tables(ui_source_dir: &Path) -> HashMap<String, UtilTab
     let mut lua_files = Vec::new();
     collect_lua_paths(&interface_dir, &mut lua_files);
 
-    let mut tables: HashMap<String, UtilTableInfo> = HashMap::new();
-
-    for path in &lua_files {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+    // Scan each file into a local map in parallel, then fold with the same
+    // dedup semantics (rayon preserves path order in collect).
+    let partials: Vec<HashMap<String, UtilTableInfo>> = lua_files.par_iter().map(|path| {
+        let mut tables: HashMap<String, UtilTableInfo> = HashMap::new();
+        let Ok(content) = std::fs::read_to_string(path) else { return tables };
 
         for cap in dot_func_re.captures_iter(&content) {
             let table_name = cap.get(1).unwrap().as_str();
@@ -4651,6 +4764,38 @@ fn scan_framexml_utility_tables(ui_source_dir: &Path) -> HashMap<String, UtilTab
                     field_name: field_name.to_string(),
                     mixin_name: mixin_name.to_string(),
                 });
+            }
+        }
+
+        tables
+    }).collect();
+
+    let mut tables: HashMap<String, UtilTableInfo> = HashMap::new();
+    // Persistent seen-sets per table name: track which (name, is_method) pairs and
+    // factory-closure field names have already been added across all partials.
+    // Avoids O(n²) linear scans of the accumulated Vec on each insert.
+    let mut seen_methods: HashMap<String, HashSet<(String, bool)>> = HashMap::new();
+    let mut seen_closures: HashMap<String, HashSet<String>> = HashMap::new();
+    for partial in partials {
+        for (table_name, src) in partial {
+            let info = tables.entry(table_name.clone()).or_default();
+            info.is_mixin |= src.is_mixin;
+            // Cross-file dedup: first file that defines a (name, is_method) pair
+            // wins. Prevents duplicate @field stubs when the same method appears in
+            // multiple FrameXML files. (The per-file loop does not perform this dedup
+            // — it is new behavior introduced in the fold.)
+            let methods_seen = seen_methods.entry(table_name.clone()).or_default();
+            for m in src.methods {
+                if methods_seen.insert((m.name.clone(), m.is_method)) {
+                    info.methods.push(m);
+                }
+            }
+            // Cross-file dedup: first file that defines a factory closure wins.
+            let closures_seen = seen_closures.entry(table_name).or_default();
+            for f in src.factory_closures {
+                if closures_seen.insert(f.field_name.clone()) {
+                    info.factory_closures.push(f);
+                }
             }
         }
     }
@@ -5152,10 +5297,13 @@ pub fn regenerate_stubs() {
     // Supplement wiki category names with retail API globals not in any wiki category.
     // Functions with wiki pages get full annotations; those without get bare stubs.
     let wiki_names_set: HashSet<&str> = wiki_names.iter().map(|s| s.as_str()).collect();
-    let retail_extras: Vec<String> = branch_data.retail_api_names.iter()
+    let mut retail_extras: Vec<String> = branch_data.retail_api_names.iter()
         .filter(|name| !wiki_names_set.contains(name.as_str()))
         .cloned()
         .collect();
+    // retail_api_names is a HashSet, so iteration order is nondeterministic. Sort the
+    // appended tail so WikiGlobals.lua bare-stub order is stable across runs.
+    retail_extras.sort();
     let retail_with_wiki = retail_extras.iter().filter(|n| wiki_pages.contains_key(n.as_str())).count();
     let retail_without_wiki = retail_extras.len() - retail_with_wiki;
     if !retail_extras.is_empty() {
