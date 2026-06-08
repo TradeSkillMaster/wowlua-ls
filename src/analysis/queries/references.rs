@@ -415,16 +415,13 @@ impl AnalysisResult {
                             .map(|(_, r)| *r) else { continue };
                         let ValueType::String(Some(key)) = bound_type else { continue };
                         if key != field_name { continue; }
-                        let table_type = cr.generic_subs.iter()
-                            .find(|(n, _, _)| n == ref_name)
-                            .map(|(_, vt, _)| vt);
-                        if let Some(ValueType::Table(Some(ref_table_idx))) = table_type {
-                            let accept = *ref_table_idx == table_idx
+                        if let Some(ref_table_idx) = cr.resolve_keyof_target(ref_name) {
+                            let accept = ref_table_idx == table_idx
                                 || (table_idx.is_external() && !ref_table_idx.is_external()
-                                    && self.table(*ref_table_idx).class_name.as_ref()
+                                    && self.table(ref_table_idx).class_name.as_ref()
                                         .and_then(|n| self.ir.ext.classes.get(n).copied())
                                         == Some(table_idx))
-                                || self.tables_share_field_owner(table_idx, *ref_table_idx);
+                                || self.tables_share_field_owner(table_idx, ref_table_idx);
                             if accept
                                 && let Some(&(start, end)) = arg_range.as_ref()
                             {

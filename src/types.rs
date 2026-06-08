@@ -1126,6 +1126,37 @@ pub(crate) struct CallResolution {
     /// receiver class's type params to concrete types (e.g. `{T: boolean}`).
     /// Used by the `param-constraint-mismatch` diagnostic to enforce `@requires`.
     pub(crate) receiver_param_subs: std::collections::HashMap<String, ValueType>,
+    /// For method calls (`receiver:method(...)`), the receiver's class table.
+    /// None for non-method calls or when the receiver doesn't resolve to a
+    /// `Table`. Currently consumed only by `resolve_keyof_target` (which the
+    /// completion, references, and generic_constraint_mismatch sites all go
+    /// through) — the population logic is intentionally narrow, so check with
+    /// those callers before repurposing this field.
+    pub(crate) receiver_table_idx: Option<TableIndex>,
+}
+
+impl CallResolution {
+    /// Resolve the table whose fields define the valid keys for a `keyof X`
+    /// generic constraint at this call site:
+    /// - `keyof self` returns `receiver_table_idx` (populated for method calls only)
+    /// - `keyof T` looks up T's binding in `generic_subs`, returning its
+    ///   `Table` index when bound
+    ///
+    /// Returns `None` when the target isn't bound to a class table — which the
+    /// three keyof check sites (validation, completion, references) treat as
+    /// "no constraint to enforce" (graceful no-op).
+    pub(crate) fn resolve_keyof_target(&self, ref_name: &str) -> Option<TableIndex> {
+        if ref_name == crate::annotations::KEYOF_SELF_TARGET {
+            self.receiver_table_idx
+        } else {
+            self.generic_subs.iter()
+                .find(|(n, _, _)| n == ref_name)
+                .and_then(|(_, vt, _)| match vt {
+                    ValueType::Table(Some(idx)) => Some(*idx),
+                    _ => None,
+                })
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

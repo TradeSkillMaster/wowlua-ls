@@ -199,6 +199,33 @@ function CallMethod(obj, method, ...)
 end
 ```
 
+#### `keyof self`
+
+Inside a method, `keyof self` resolves to the field names of the call's receiver. This avoids declaring a separate generic for the receiver type when the only thing you need is its key set:
+
+```lua
+---@class Widget
+local Widget = {}
+
+function Widget:Show() end
+function Widget:Hide() end
+
+---@generic K: keyof self
+---@param method K
+function Widget:Dispatch(method)
+    self[method](self)
+end
+
+---@type Widget
+local w = {}
+
+w:Dispatch("Show")   -- ok
+w:Dispatch("Hide")   -- ok
+w:Dispatch("Nope")   -- generic-constraint-mismatch: "Nope" is not a method of Widget
+```
+
+For subclasses, the receiver's full surface (own + inherited methods) satisfies the constraint, and completions, references, and rename all see the resolved set. `keyof self` only fires for method calls (`:` syntax) — a direct function call where `self` is passed explicitly won't enforce the constraint.
+
 ### Bracket-index fields
 
 Type parameters work in bracket-index field declarations:

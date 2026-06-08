@@ -171,6 +171,30 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                 }
             }
 
+            // ── @generic K: keyof self requires the function to be a class method ──
+            // `keyof self` resolves against the call's receiver table, which is
+            // only populated for method calls (`receiver:method(...)`). A function
+            // that isn't owned by a class can't have a receiver, so the constraint
+            // would silently accept any string — flag it as malformed.
+            if !analysis.function_owner_class.contains_key(&FunctionIndex(func_idx)) {
+                for (gname, constraint) in annotations.generics.iter() {
+                    let Some(raw) = constraint.as_deref() else { continue };
+                    if crate::annotations::parse_keyof_constraint(raw)
+                        != Some(crate::annotations::KEYOF_SELF_TARGET) { continue; }
+                    let (s, e) = comment_ranges.iter()
+                        .find(|(text, _, _)| {
+                            Analysis::comment_is_tag(text, "---@generic")
+                                && Analysis::contains_word(text, gname)
+                                && text.contains("keyof self")
+                        })
+                        .map(|(_, s, e)| (*s, *e))
+                        .unwrap_or((func_start, func_end));
+                    super::MALFORMED_ANNOTATION.emit(diags, format!(
+                        "`@generic {gname}: keyof self` requires the function to be a method on a class — `self` has no receiver here"
+                    ), s, e);
+                }
+            }
+
             // ── undefined-doc-name on @param, @return, @overload types ──
             for p in &annotations.params {
                 let (s, e) = comment_ranges.iter()

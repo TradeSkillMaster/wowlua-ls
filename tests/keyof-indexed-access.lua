@@ -381,3 +381,148 @@ invoke(rv, "Deactivate")
 -- Refs on the other method
 rv:Deactivate()
 -- ^ refs: 362:19, 379:13, 382:4
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- keyof self — receiver class's own fields without naming a separate generic
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+---@class Widget
+local Widget = {}
+
+function Widget:Show() end
+function Widget:Hide() end
+
+---@generic K: keyof self
+---@param method K
+function Widget:Dispatch(method)
+    self[method](self)
+end
+
+---@type Widget
+local w = {}
+
+-- Own method names satisfy `keyof self`
+w:Dispatch("Show")
+w:Dispatch("Hide")
+-- `Dispatch` itself is also a method of self
+w:Dispatch("Dispatch")
+
+-- Invalid method name fails the constraint
+w:Dispatch("Nope")
+--          ^ diag: generic-constraint-mismatch
+
+-- Completions enumerate self's methods
+w:Dispatch("")
+--          ^ comp: Dispatch, Hide, Show  diag: generic-constraint-mismatch
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- keyof self — inheritance: receiver's full surface (own + ancestor methods)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+---@class Animal
+---@field Eat fun(self: Animal)
+---@field Sleep fun(self: Animal)
+local Animal = {}
+
+---@generic K: keyof self
+---@param method K
+function Animal:Do(method)
+    self[method](self)
+end
+
+---@class Dog : Animal
+---@field Bark fun(self: Dog)
+local Dog = {}
+
+---@type Dog
+local dog = {}
+
+-- Inherited methods from Animal satisfy `keyof self` on Dog receiver
+dog:Do("Eat")
+dog:Do("Sleep")
+-- Own method on Dog also satisfies it
+dog:Do("Bark")
+
+-- Invalid method name fails
+dog:Do("Fly")
+--      ^ diag: generic-constraint-mismatch
+
+-- Completions include inherited and own methods
+dog:Do("")
+--      ^ comp: Bark, Do, Eat, Sleep  diag: generic-constraint-mismatch
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- keyof self — string literals tracked as field references for rename
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+---@class Switch
+local Switch = {}
+
+function Switch:Toggle() end
+function Switch:Reset() end
+
+---@generic K: keyof self
+---@param method K
+function Switch:Run(method)
+    self[method](self)
+end
+
+---@type Switch
+local sw = {}
+
+sw:Toggle()
+-- ^ refs: 461:17, 473:4, 475:9
+sw:Run("Toggle")
+
+sw:Reset()
+-- ^ refs: 462:17, 477:4, 479:9
+sw:Run("Reset")
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- keyof self — dot-call syntax does NOT enforce the constraint
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- `keyof self` resolves against the call's receiver, which is only populated
+-- for method calls (`:` syntax). Calling the same function with dot syntax has
+-- no receiver, so the constraint silently accepts any string. This locks that
+-- documented behavior in so a future change can't regress it in either direction.
+
+---@class DotCallTarget
+local DotCallTarget = {}
+
+function DotCallTarget:Activate() end
+
+---@generic K: keyof self
+---@param method K
+function DotCallTarget:Dispatch(method)
+    self[method](self)
+end
+
+---@type DotCallTarget
+local dct = {}
+
+-- Sanity: `:` syntax DOES enforce the constraint.
+dct:Dispatch("Nope")
+--           ^ diag: generic-constraint-mismatch
+
+-- Dot syntax does NOT enforce — no diagnostic (exhaustive checking verifies this).
+DotCallTarget.Dispatch(dct, "Nope")
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- keyof self on a non-method function is malformed
+-- ═══════════════════════════════════════════════════════════════════════════════
+--
+-- `keyof self` needs a class receiver to resolve against. On a plain function
+-- with no class owner, the constraint can never bind, so flag it at the
+-- annotation site instead of silently accepting any string at call time.
+
+---@generic K: keyof self
+---@param self table
+---@param name K
+local function looseDispatch(self, name)
+--             ^ diag: malformed-annotation
+    self[name](self)
+end
+
+-- Suppress the unused-local hint for the bad-annotation example.
+local _ = looseDispatch

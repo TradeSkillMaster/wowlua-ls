@@ -1257,17 +1257,9 @@ impl<'a> Analysis<'a> {
                 }
             }
 
-            self.ir.call_resolutions.insert(expr_id, CallResolution {
-                func_idx,
-                expected_args: resolved_call_args,
-                generic_subs: generic_subs_ir,
-                projected_f_idx: None,
-                is_expansion: false,
-                first_arg_range: arg_ranges.first().copied(),
-                receiver_param_subs: class_type_param_subs.clone(),
-            });
-
-            // Detect expression<C, R> parameters and record them for diagnostics/queries
+            // Resolve the receiver's class table for method calls. Reused for
+            // `keyof self` constraint validation (stored on CallResolution) and
+            // for `expression<C, R>` parameter detection below.
             let receiver_table_idx = if is_method_call {
                 let receiver_expr = match self.expr(func_expr_id) {
                     Expr::FieldAccess { table, .. } => Some(*table),
@@ -1278,6 +1270,19 @@ impl<'a> Analysis<'a> {
                     _ => None,
                 })
             } else { None };
+
+            self.ir.call_resolutions.insert(expr_id, CallResolution {
+                func_idx,
+                expected_args: resolved_call_args,
+                generic_subs: generic_subs_ir,
+                projected_f_idx: None,
+                is_expansion: false,
+                first_arg_range: arg_ranges.first().copied(),
+                receiver_param_subs: class_type_param_subs.clone(),
+                receiver_table_idx,
+            });
+
+            // Detect expression<C, R> parameters and record them for diagnostics/queries
             for (i, arg_expr_id) in args.iter().enumerate() {
                 if let Some(crate::annotations::AnnotationType::Parameterized(base, type_args)) =
                     param_annotations.get(i + self_offset)

@@ -193,8 +193,15 @@ pub(crate) fn value_type_to_name(vt: &ValueType, ir: &crate::analysis::Ir) -> Op
     }
 }
 
+/// Sentinel target name for `keyof self` — resolved against the call's
+/// receiver table rather than another bound generic. See
+/// `CallResolution::resolve_keyof_target`.
+pub(crate) const KEYOF_SELF_TARGET: &str = "self";
+
 /// Extract the target type name from a `keyof X` constraint string.
 /// Returns `Some("X")` if the constraint starts with `keyof `, None otherwise.
+/// When the target is `KEYOF_SELF_TARGET`, the constraint refers to the call's
+/// receiver class rather than another bound generic.
 pub(crate) fn parse_keyof_constraint(raw: &str) -> Option<&str> {
     raw.strip_prefix("keyof ").map(|s| s.trim())
 }

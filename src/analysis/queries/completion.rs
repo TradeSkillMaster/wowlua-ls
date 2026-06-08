@@ -1055,21 +1055,17 @@ impl AnalysisResult {
                     .find(|(n, _)| n == gen_name)
                     .and_then(|(_, c)| c.as_ref())
                     .and_then(|c| crate::annotations::parse_keyof_constraint(c).map(|s| s.to_string()));
-                if let Some(ref_name) = keyof_target {
-                    // Find the referenced generic's table binding from the call resolution
-                    let table_type = call_res.generic_subs.iter()
-                        .find(|(n, _, _)| n == &ref_name)
-                        .map(|(_, vt, _)| vt);
-                    if let Some(ValueType::Table(Some(table_idx))) = table_type {
-                        let fields = crate::analysis::collect_class_fields_impl(
-                            &self.ir, &self.resolved_expr_cache, *table_idx,
-                        );
-                        let mut names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
-                        names.sort_unstable();
-                        let types = names.into_iter()
-                            .map(|s| ValueType::String(Some(s.to_owned()))).collect();
-                        return Some(ValueType::Union(types));
-                    }
+                if let Some(ref_name) = keyof_target
+                    && let Some(table_idx) = call_res.resolve_keyof_target(&ref_name)
+                {
+                    let fields = crate::analysis::collect_class_fields_impl(
+                        &self.ir, &self.resolved_expr_cache, table_idx,
+                    );
+                    let mut names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                    names.sort_unstable();
+                    let types = names.into_iter()
+                        .map(|s| ValueType::String(Some(s.to_owned()))).collect();
+                    return Some(ValueType::Union(types));
                 }
             }
 

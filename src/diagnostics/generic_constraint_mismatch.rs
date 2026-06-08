@@ -20,13 +20,9 @@ impl DiagnosticPass for GenericConstraintMismatch {
                     .and_then(|(_, c)| c.as_ref());
                 if let Some(raw_c) = raw_constraint
                     && let Some(ref_name) = crate::annotations::parse_keyof_constraint(raw_c) {
-                        // Find the referenced generic's bound type
-                        let table_type = cr.generic_subs.iter()
-                            .find(|(n, _, _)| n == ref_name)
-                            .map(|(_, vt, _)| vt);
-                        if let Some(ValueType::Table(Some(table_idx))) = table_type {
+                        if let Some(table_idx) = cr.resolve_keyof_target(ref_name) {
                             let fields = crate::analysis::collect_class_fields_impl(
-                                &analysis.ir, &analysis.resolved_expr_cache, *table_idx,
+                                &analysis.ir, &analysis.resolved_expr_cache, table_idx,
                             );
                             let valid = match bound_type {
                                 ValueType::String(Some(key)) => fields.iter().any(|(n, _)| n == key),
