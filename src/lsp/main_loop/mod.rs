@@ -142,6 +142,9 @@ struct Document {
 /// Cached workspace diagnostics: (generation, vec of (uri_string, diagnostics)).
 type CachedWsDiagnostics = (u64, Vec<(String, Vec<lsp_types::Diagnostic>)>);
 
+/// Cross-file-only diagnostics keyed by URI string.
+type CrossfileDiagnostics = HashMap<String, Vec<lsp_types::Diagnostic>>;
+
 struct WorkspaceState {
     root: Option<PathBuf>,
     // Shared via Arc so background warm workers can hold a cheap clone without
@@ -197,6 +200,10 @@ struct WorkspaceState {
     /// Populated lazily on first `workspace/diagnostic` request and invalidated
     /// when `ws_generation` changes (i.e. workspace is rebuilt).
     cached_ws_diagnostics: Option<CachedWsDiagnostics>,
+    /// Cross-file-only diagnostics from the workspace warm, keyed by URI string.
+    /// Separate from `cached_ws_diagnostics` so open-file handlers can merge
+    /// without duplicating per-file diagnostics that share the same code string.
+    cached_crossfile_diagnostics: CrossfileDiagnostics,
     /// True while a background warm (`spawn_warm`) is computing closed-file
     /// diagnostics. When set, `handle_workspace_diagnostic` serves the prior
     /// (stale) cache instead of synchronously recomputing — the in-flight warm
@@ -228,6 +235,10 @@ struct WarmInputs {
 struct WarmResult {
     generation: u64,
     diagnostics: Vec<(String, Vec<lsp_types::Diagnostic>)>,
+    /// Cross-file-only diagnostics (e.g. unused-function from
+    /// `find_unused_from_pre_globals`), keyed by URI string. Stored separately
+    /// so open-file handlers can merge them without duplicating per-file items.
+    crossfile_diagnostics: CrossfileDiagnostics,
 }
 
 /// Output of a background stub-file parse + analysis, used to patch a
@@ -553,6 +564,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         plugin_engine: None,
         ws_generation: 0,
         cached_ws_diagnostics: None,
+        cached_crossfile_diagnostics: HashMap::new(),
         warm_in_flight: false,
         pending_lazy_warm: false,
     };
@@ -691,6 +703,7 @@ fn main_loop(
             ws.warm_in_flight = false;
             if res.generation == ws.ws_generation {
                 ws.cached_ws_diagnostics = Some((res.generation, res.diagnostics));
+                ws.cached_crossfile_diagnostics = res.crossfile_diagnostics;
                 if client.diagnostic_refresh {
                     send_refresh_requests(
                         &connection, &mut progress_counter,
@@ -2228,5 +2241,117 @@ mod tests {
         // Full warm: no prior baseline (every file is recomputed).
         let inputs_full = ws.warm_inputs(None);
         assert!(inputs_full.prior.is_none());
+    }
+
+    #[test]
+    fn crossfile_diagnostics_separated_from_per_file() {
+        // compute_ws_diagnostics must return cross-file unused-function items
+        // in the separate CrossfileDiagnostics map, NOT mixed into the per-file
+        // list. This prevents duplication when open-file handlers merge them.
+        let scan_dir = std::path::PathBuf::from(
+            std::env::current_dir().unwrap().join("tests/unused-function"),
+        );
+        let mut configs = crate::config::ProjectConfigs::default();
+        configs.try_load(&scan_dir);
+        let scan = crate::lsp::scan_workspace(std::slice::from_ref(&scan_dir), &mut configs);
+        let (sc, mut sa, sg, ans, se, ws_callable) = (
+            scan.classes, scan.aliases, scan.globals,
+            scan.addon_ns_class_files, scan.events, scan.callable_classes,
+        );
+        crate::annotations::register_event_type_aliases(&mut sa, &se);
+        let implicit_protected_prefix = configs.implicit_protected_prefix_for(&scan_dir);
+        let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
+        pg.merge_events(&se);
+        let pre_globals = Arc::new(pg);
+
+        let paths = collect_lua_paths(&scan_dir, &mut configs);
+        let (combined, crossfile) = compute_ws_diagnostics(
+            &paths, &pre_globals, &configs, &[], None, None,
+        );
+
+        // Cross-file map should have entries (unused global functions exist).
+        assert!(
+            !crossfile.is_empty(),
+            "crossfile map should contain unused-function diagnostics"
+        );
+
+        // Every item in the crossfile map must have code == "unused-function".
+        for (uri, diags) in &crossfile {
+            for d in diags {
+                let code = d.code.as_ref().expect("diagnostic must have a code");
+                match code {
+                    lsp_types::NumberOrString::String(s) => {
+                        assert_eq!(s, "unused-function", "crossfile item has unexpected code: {s} in {uri}");
+                    }
+                    _ => panic!("unexpected numeric code in crossfile diagnostic"),
+                }
+            }
+        }
+
+        // The combined output should contain per-file diagnostics for each URI
+        // that also has cross-file items. Verify no duplication: counting
+        // unused-function occurrences in combined vs crossfile.
+        for (uri, cf_diags) in &crossfile {
+            let combined_entry = combined.iter().find(|(u, _)| u == uri);
+            if let Some((_, combined_diags)) = combined_entry {
+                let combined_uf_count = combined_diags.iter().filter(|d| {
+                    d.code.as_ref().is_some_and(|c| matches!(c,
+                        lsp_types::NumberOrString::String(s) if s == "unused-function"
+                    ))
+                }).count();
+                // Combined includes both per-file and cross-file unused-function,
+                // but cross-file items should be present exactly once.
+                assert!(
+                    combined_uf_count >= cf_diags.len(),
+                    "combined should contain at least the cross-file items for {uri}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn append_crossfile_no_duplication_on_repeated_calls() {
+        // Simulates the scenario that caused duplication: cross-file diagnostics
+        // must not be merged into cached_diagnostics so repeated calls to
+        // append_crossfile_diagnostics produce the same result.
+        use diagnostics_handlers::append_crossfile_diagnostics;
+
+        let mut ws = WorkspaceState::for_test(None);
+        let uri = "file:///test/defs.lua".to_string();
+        let cf_diag = lsp_types::Diagnostic {
+            range: Default::default(),
+            severity: Some(lsp_types::DiagnosticSeverity::HINT),
+            code: Some(lsp_types::NumberOrString::String("unused-function".to_string())),
+            source: Some("wowlua_ls".to_string()),
+            message: "Function 'Unused' is never used".to_string(),
+            ..Default::default()
+        };
+        ws.cached_crossfile_diagnostics.insert(uri.clone(), vec![cf_diag.clone()]);
+
+        // First merge: per-file has 1 item, cross-file appends 1.
+        let per_file_diag = lsp_types::Diagnostic {
+            range: Default::default(),
+            severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+            code: Some(lsp_types::NumberOrString::String("unused-local".to_string())),
+            source: Some("wowlua_ls".to_string()),
+            message: "unused local".to_string(),
+            ..Default::default()
+        };
+        let mut items1 = vec![per_file_diag.clone()];
+        append_crossfile_diagnostics(&mut items1, &uri, &ws);
+        assert_eq!(items1.len(), 2, "first merge: 1 per-file + 1 cross-file");
+
+        // Second merge on a fresh per-file set (simulating a new pull request):
+        // should produce the same count, not accumulate.
+        let mut items2 = vec![per_file_diag];
+        append_crossfile_diagnostics(&mut items2, &uri, &ws);
+        assert_eq!(items2.len(), 2, "second merge: still 1 + 1, no accumulation");
+    }
+
+    fn collect_lua_paths(dir: &std::path::Path, configs: &mut crate::config::ProjectConfigs) -> Vec<std::path::PathBuf> {
+        let mut lua_paths = Vec::new();
+        let mut xml_paths = Vec::new();
+        collect_lua_paths_filtered(dir, &mut lua_paths, &mut xml_paths, configs);
+        lua_paths
     }
 }

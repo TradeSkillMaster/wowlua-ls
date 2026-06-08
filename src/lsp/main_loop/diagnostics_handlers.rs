@@ -99,6 +99,20 @@ pub(super) fn shift_diagnostics_for_pending_edit(
     });
 }
 
+/// Append cross-file diagnostics from `cached_crossfile_diagnostics` into a
+/// per-file diagnostic list. This cache stores ONLY diagnostics from the
+/// cross-file unused-function pass (`find_unused_from_pre_globals`), separate
+/// from the per-file `unused-function` items emitted by `UnusedLocal::run`.
+pub(super) fn append_crossfile_diagnostics(
+    items: &mut Vec<lsp_types::Diagnostic>,
+    uri_str: &str,
+    ws: &WorkspaceState,
+) {
+    if let Some(ws_diags) = ws.cached_crossfile_diagnostics.get(uri_str) {
+        items.extend_from_slice(ws_diags);
+    }
+}
+
 /// Build diagnostics, cache them on the document, and send a
 /// `textDocument/publishDiagnostics` notification. Called after Phase 4
 /// for all clients (push-only and pull-model) to ensure in-buffer
@@ -126,8 +140,15 @@ pub(super) fn push_fresh_diagnostics(
         )));
         return;
     }
-    let items = build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
-    doc.cached_diagnostics = Some(items.clone());
+    // Cache per-file diagnostics only (without cross-file items). Cross-file
+    // diagnostics are appended on read from `cached_crossfile_diagnostics` to
+    // avoid duplication when `handle_document_diagnostic` later reads the cache.
+    let per_file = build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws);
+    doc.cached_diagnostics = Some(per_file.clone());
+    // Publish the combined per-file + cross-file set to the editor.
+    let mut items = per_file;
+    let uri_str = uri.to_string();
+    append_crossfile_diagnostics(&mut items, &uri_str, ws);
     let params = lsp_types::PublishDiagnosticsParams {
         uri: uri.clone(),
         diagnostics: items,
@@ -174,7 +195,7 @@ pub(super) fn handle_document_diagnostic(
         doc.toc = Some(toc);
         doc.dirty = false;
     }
-    let items = if let Some(doc) = documents.get_mut(&uri_str) {
+    let mut items = if let Some(doc) = documents.get_mut(&uri_str) {
         // TOC document: run TOC-specific diagnostics.
         if let Some(toc) = &doc.toc {
             let toc_dir = uri_to_abs_path(uri)
@@ -183,11 +204,10 @@ pub(super) fn handle_document_diagnostic(
             let toc_diags = crate::toc::diagnostics::run_diagnostics(toc, &toc_dir);
             convert_toc_diagnostics(toc_diags, &doc.text)
         }
-        // Open document: use cached diagnostics when available to avoid
-        // rerunning all ~40 diagnostic passes on every pull request.
-        // The cache is cleared when Phase 4 re-analyzes — it replaces the
-        // entire Document via documents.insert(), resetting cached_diagnostics
-        // to None — or when the file is re-opened.
+        // Open document: use cached per-file diagnostics when available to
+        // avoid rerunning all ~40 diagnostic passes on every pull request.
+        // The cache stores per-file items only (no cross-file); cross-file
+        // items are appended below after line-shifting.
         else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
             let mut items = if let Some(ref cached) = doc.cached_diagnostics {
                 cached.clone()
@@ -237,6 +257,13 @@ pub(super) fn handle_document_diagnostic(
     } else {
         Vec::new()
     };
+
+    // Append cross-file diagnostics (e.g. unused-function from the workspace
+    // warm). These come from a separate cache that contains ONLY cross-file
+    // items, so no duplication with per-file unused-function diagnostics.
+    // Appended after line-shifting so both per-file and cross-file items
+    // have consistent positions during pending edits.
+    append_crossfile_diagnostics(&mut items, &uri_str, ws);
 
     DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
         RelatedFullDocumentDiagnosticReport {

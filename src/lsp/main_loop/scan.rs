@@ -62,7 +62,7 @@ pub(super) fn compute_ws_diagnostics(
     plugin_codes: &[String],
     affected: Option<&HashSet<String>>,
     prior: Option<&[(String, Vec<lsp_types::Diagnostic>)]>,
-) -> Vec<(String, Vec<lsp_types::Diagnostic>)> {
+) -> (Vec<(String, Vec<lsp_types::Diagnostic>)>, CrossfileDiagnostics) {
     use crate::diagnostics::unused_function::{self, FileReferenceData};
     use rayon::prelude::*;
     let prior_map: Option<HashMap<&str, &Vec<lsp_types::Diagnostic>>> = match (affected, prior) {
@@ -171,6 +171,18 @@ pub(super) fn compute_ws_diagnostics(
         HashMap::new()
     };
 
+    // Build per-URI cross-file diagnostic map for separate caching.
+    let mut crossfile_by_uri: HashMap<String, Vec<lsp_types::Diagnostic>> = HashMap::new();
+    if !cross_file_diags.is_empty() {
+        for (fpath, extra_diags) in &cross_file_diags {
+            let uri_s = match abs_path_to_uri(fpath) {
+                Some(u) => u.to_string(),
+                None => continue,
+            };
+            crossfile_by_uri.insert(uri_s, extra_diags.clone());
+        }
+    }
+
     // Merge per-file diagnostics with cross-file diagnostics using O(1) lookups.
     let mut output: Vec<(String, Vec<lsp_types::Diagnostic>)> = per_file
         .into_iter()
@@ -192,7 +204,7 @@ pub(super) fn compute_ws_diagnostics(
             }
         }
     }
-    output
+    (output, crossfile_by_uri)
 }
 
 /// Run a warm on a detached background thread. Sends the `WarmResult` over
@@ -254,12 +266,12 @@ pub(super) fn spawn_warm(
             pool.install(compute)
         }));
         match result {
-            Ok(diagnostics) => {
-                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics });
+            Ok((diagnostics, crossfile_diagnostics)) => {
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics, crossfile_diagnostics });
             }
             Err(_) => {
                 log::error!("Background warm panicked; sending empty result to unblock main loop");
-                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: Vec::new() });
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: Vec::new(), crossfile_diagnostics: CrossfileDiagnostics::new() });
             }
         }
         // _guard drops here, sending the wake signal

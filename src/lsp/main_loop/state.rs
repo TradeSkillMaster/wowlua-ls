@@ -363,6 +363,7 @@ impl WorkspaceState {
             plugin_engine: None,
             ws_generation: 0,
             cached_ws_diagnostics: None,
+            cached_crossfile_diagnostics: HashMap::new(),
             warm_in_flight: false,
             pending_lazy_warm: false,
         }
