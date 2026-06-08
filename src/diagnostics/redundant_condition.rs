@@ -76,6 +76,15 @@ impl DiagnosticPass for RedundantCondition {
                 continue;
             }
 
+            // Suppress "always true" conditions in if/elseif chains that have a
+            // defensive `else` block which always exits (error/return). This is
+            // the exhaustive type-check guard pattern where all cases are listed
+            // explicitly and an else provides a runtime safety-net for unexpected
+            // values. The condition is technically redundant but intentional.
+            if site.has_exit_else && matches!(verdict, Verdict::Truthy(_) | Verdict::AlwaysTrue | Verdict::NegatedFalsy(_)) {
+                continue;
+            }
+
             super::REDUNDANT_CONDITION.emit(
                 diags,
                 verdict.message(analysis),
@@ -189,10 +198,11 @@ fn operand_is_stripped_open_union(analysis: &AnalysisResult, expr_id: ExprId) ->
         }
         // A reference to a strip-derived version.
         Expr::SymbolRef(sym_idx, ver) => {
-            ir.is_open_literal_union_symbol(*sym_idx)
-                && analysis.sym(*sym_idx).versions.get(*ver)
-                    .and_then(|v| v.type_source)
-                    .is_some_and(|ts| matches!(ir.expr(ts), Expr::CastRemove(..)))
+            let is_open = ir.is_open_literal_union_symbol(*sym_idx);
+            let ver_src = analysis.sym(*sym_idx).versions.get(*ver)
+                .and_then(|v| v.type_source)
+                .is_some_and(|ts| matches!(ir.expr(ts), Expr::CastRemove(..)));
+            is_open && ver_src
         }
         _ => false,
     }
@@ -526,6 +536,18 @@ fn has_uncertain_reassignment(
                 if is_scope_inside(ir, cs, ver.created_in_scope) { return false; }
                 // The symbol must be defined outside the version's scope.
                 if is_scope_inside(ir, sym.scope_idx, ver.created_in_scope) { return false; }
+                // Skip type-narrowing versions (CastRemove, TypeFilter, StripNil,
+                // StripFalsy, StripTruthy, OverloadNarrow) — these are created by
+                // the narrowing system, not actual value reassignments. An elseif
+                // chain creates CastRemove versions in each branch scope, but those
+                // are not conditional reassignments.
+                if ver.type_source.is_some_and(|ts| matches!(ir.expr(ts),
+                    Expr::CastRemove(..) | Expr::TypeFilter(..)
+                    | Expr::StripNil(_) | Expr::StripFalsy(_) | Expr::StripTruthy(_)
+                    | Expr::OverloadNarrow { .. }
+                )) {
+                    return false;
+                }
                 // The version's scope must have a valid block range and end
                 // before the condition.
                 let Some(&(_, scope_end, _)) = ir.block_scopes.iter()

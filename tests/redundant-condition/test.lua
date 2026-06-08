@@ -740,6 +740,78 @@ local function checkEnumType(data)
 end
 _use(checkEnumType)
 
+-- ── No diagnostic: exit-else defensive guard pattern ────────────────────────
+-- When the last elseif in an exhaustive type-check chain is "always true"
+-- (all other union members have been eliminated by prior branches) but the
+-- chain has an `else` block that always exits (error/return), the condition
+-- is intentional and should not be flagged.
+
+-- Closed literal-union: last elseif is "always true" after narrowing, with exit-else error
+---@type "A"|"B"|"C"
+local exitElseKind
+if exitElseKind == "A" then
+    _use(1)
+elseif exitElseKind == "B" then
+    _use(2)
+elseif exitElseKind == "C" then
+    -- suppressed: "always true" (narrowed to "C") but else exits
+    _use(3)
+else
+    error("unexpected kind")
+end
+
+-- With exit-else return
+---@type "A"|"B"|"C"
+local exitElseKind2
+if exitElseKind2 == "A" then
+    _use(1)
+elseif exitElseKind2 == "B" then
+    _use(2)
+elseif exitElseKind2 == "C" then
+    -- suppressed: else returns
+    _use(3)
+else
+    return
+end
+
+-- Still flag when there is NO else block at all
+---@type "A"|"B"|"C"
+local noElseKind
+if noElseKind == "A" then
+    _use(1)
+elseif noElseKind == "B" then
+    _use(2)
+elseif noElseKind == "C" then
+    -- ^ diag: redundant-condition
+    _use(3)
+end
+
+-- Still flag when the else block does NOT always exit
+---@type "A"|"B"|"C"
+local nonExitElseKind
+if nonExitElseKind == "A" then
+    _use(1)
+elseif nonExitElseKind == "B" then
+    _use(2)
+elseif nonExitElseKind == "C" then
+    -- ^ diag: redundant-condition
+    _use(3)
+else
+    _use("fallback")  -- does not exit
+end
+
+-- Always-false conditions are still flagged even with an exit-else
+---@type string
+local sv
+if sv == "A" then
+    _use(1)
+elseif sv == 5 then
+    -- ^ diag: redundant-condition
+    _use(2)
+else
+    error("bad")
+end
+
 -- ── Suppression ──────────────────────────────────────────────────────────────
 
 ---@type number

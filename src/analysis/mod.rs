@@ -46,6 +46,11 @@ pub(crate) struct ConditionSite {
     /// Both are lowered in the parent scope, so `scope_at_offset` won't
     /// find the loop — this field bridges the gap.
     pub loop_scope: Option<ScopeIndex>,
+    /// True when this condition belongs to an `if`/`elseif` chain whose
+    /// `else` block always exits (calls `error()` or executes `return`).
+    /// Used to suppress `redundant-condition` on "always true" conditions
+    /// that are part of an exhaustive defensive type-check pattern.
+    pub has_exit_else: bool,
 }
 
 // ── Call-site self_offset ───────────────────────────────────────────────────
@@ -429,13 +434,14 @@ pub(super) fn table_indices_from_type(vt: &ValueType) -> Vec<TableIndex> {
 
 impl Ir {
     /// Record a condition expression for `redundant-condition` diagnostics.
-    pub(crate) fn record_condition_site(&mut self, expr_id: ExprId, range: crate::syntax::tree::TextRange, is_loop: bool) {
+    pub(crate) fn record_condition_site(&mut self, expr_id: ExprId, range: crate::syntax::tree::TextRange, is_loop: bool, has_exit_else: bool) {
         self.condition_sites.push(ConditionSite {
             expr_id,
             start: u32::from(range.start()),
             end: u32::from(range.end()),
             is_loop,
             loop_scope: None,
+            has_exit_else,
         });
     }
 
@@ -447,6 +453,7 @@ impl Ir {
             end: u32::from(range.end()),
             is_loop: true,
             loop_scope: Some(loop_scope),
+            has_exit_else: false,
         });
     }
 

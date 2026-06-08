@@ -37,3 +37,70 @@ if type(u) == "string" then end
 local n4
 if type(n4) == "widget" then end
 --    ^ diag: redundant-condition
+
+-- ── Exit-else defensive guard suppression ────────────────────────────────────
+
+local function _use(...) end
+
+-- Last elseif condition is "always true" after narrowing a closed union via
+-- type() guards, but is suppressed because the else block calls error().
+---@param val number|string|table
+local function checkTypeExitElse(val)
+    if type(val) == "number" then
+        _use(val)
+    elseif type(val) == "string" then
+        _use(val)
+    elseif type(val) == "table" then
+        -- suppressed: "always true" but else exits
+        _use(val)
+    else
+        error("unexpected type")
+    end
+end
+_use(checkTypeExitElse)
+
+-- Same with exit-else return
+---@param val number|string|table
+local function checkTypeExitElseReturn(val)
+    if type(val) == "number" then
+        _use(val)
+    elseif type(val) == "string" then
+        _use(val)
+    elseif type(val) == "table" then
+        -- suppressed: else returns
+        _use(val)
+    else
+        return
+    end
+end
+_use(checkTypeExitElseReturn)
+
+-- Still flag when there is no else block
+---@param val number|string|table
+local function checkTypeNoElse(val)
+    if type(val) == "number" then
+        _use(val)
+    elseif type(val) == "string" then
+        _use(val)
+    elseif type(val) == "table" then
+        --    ^ diag: redundant-condition
+        _use(val)
+    end
+end
+_use(checkTypeNoElse)
+
+-- Still flag when the else block does not exit
+---@param val number|string|table
+local function checkTypeNonExitElse(val)
+    if type(val) == "number" then
+        _use(val)
+    elseif type(val) == "string" then
+        _use(val)
+    elseif type(val) == "table" then
+        --    ^ diag: redundant-condition
+        _use(val)
+    else
+        _use("fallback")
+    end
+end
+_use(checkTypeNonExitElse)
