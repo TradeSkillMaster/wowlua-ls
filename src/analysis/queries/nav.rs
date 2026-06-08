@@ -349,8 +349,10 @@ impl AnalysisResult {
 
     /// Resolve a field access chain at the given offset.
     /// Returns (table_idx, field_name, expr_id, access_kind, all_receiver_tables).
-    /// The 5th element contains all table indices from the receiver's union type
-    /// (for union hover display); it's empty for non-union receivers.
+    /// The 5th element contains all table indices from the receiver's type. It is
+    /// empty only for access patterns with no typed receiver (dot chains, funcall
+    /// chains, `_G` redirects). Single-class colon receivers get a one-element Vec
+    /// containing just `table_idx`; union receivers get one entry per union member.
     pub(crate) fn resolve_field_chain_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(TableIndex, String, ExprId, FieldAccessKind, Vec<TableIndex>)> {
         let text_size = TextSize::from(offset);
         let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
@@ -1181,13 +1183,26 @@ impl AnalysisResult {
             {
                 continue;
             }
-            if let Some((table_idx, field_name, _, _, _)) = self.resolve_field_chain_for_token(token) {
-                if table_idx.is_external() {
-                    result.insert((table_idx, field_name));
-                } else if let Some(class_name) = &self.table(table_idx).class_name {
-                    // Promote local class table → external counterpart (same-file self:Method() calls)
-                    if let Some(&ext_idx) = self.ir.ext.classes.get(class_name) {
-                        result.insert((ext_idx, field_name));
+            if let Some((table_idx, field_name, _, _, all_receiver_tables)) = self.resolve_field_chain_for_token(token) {
+                // Build the complete set of tables that define this field. When the
+                // receiver is a union (e.g. TypeA | TypeB), find_field_in_tables returns
+                // only the first match — every union member that defines the field must
+                // be recorded so the cross-file unused-function check doesn't false-
+                // positive on the non-primary union member's method.
+                let mut tables_to_record: HashSet<TableIndex> = HashSet::from([table_idx]);
+                if all_receiver_tables.len() > 1 {
+                    for (alt_idx, _) in self.find_all_fields_in_tables(&all_receiver_tables, &field_name) {
+                        tables_to_record.insert(alt_idx);
+                    }
+                }
+                for idx in tables_to_record {
+                    if idx.is_external() {
+                        result.insert((idx, field_name.clone()));
+                    } else if let Some(class_name) = &self.table(idx).class_name {
+                        // Promote local class table → external counterpart (same-file self:Method() calls)
+                        if let Some(&ext_idx) = self.ir.ext.classes.get(class_name) {
+                            result.insert((ext_idx, field_name.clone()));
+                        }
                     }
                 }
             }

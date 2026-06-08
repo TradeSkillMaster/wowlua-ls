@@ -5148,4 +5148,15 @@ fn test_unused_function_cross_file() {
         !unused_names.contains("NS._IgnoredMethod"),
         "NS._IgnoredMethod should not be flagged (underscore prefix)",
     );
+
+    // Union-receiver regression: calling widget:Process() on AlphaWidget|BetaWidget
+    // must count as a reference to BOTH classes' Process methods, not just the first.
+    assert!(
+        !unused_names.contains("AlphaWidget:Process"),
+        "AlphaWidget:Process should not be flagged — called via union-typed receiver",
+    );
+    assert!(
+        !unused_names.contains("BetaWidget:Process"),
+        "BetaWidget:Process should not be flagged — called via union-typed receiver",
+    );
 }

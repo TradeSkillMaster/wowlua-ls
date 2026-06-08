@@ -49,3 +49,19 @@ end
 function NS._IgnoredMethod()
     return 14
 end
+
+-- Two classes with a shared method name, called via a union-typed receiver.
+-- Neither should be flagged as unused (regression for union-receiver false positive).
+---@class AlphaWidget
+AlphaWidget = {}
+
+function AlphaWidget:Process()
+    return 20
+end
+
+---@class BetaWidget
+BetaWidget = {}
+
+function BetaWidget:Process()
+    return 21
+end
