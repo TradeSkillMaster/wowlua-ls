@@ -147,6 +147,7 @@ Diagnostic modules under `src/diagnostics/` (40 modules implementing `Diagnostic
 - `redundant_logical.rs` — redundant `or`/`and` where LHS truthiness/falsiness makes RHS unreachable (`redundant-or`, `redundant-and`, HINT)
 - `redundant_condition.rs` — `if`/`elseif`/`while`/`repeat...until` condition whose type is always truthy or always falsy (`redundant-condition`, HINT, default-disabled)
 - `unused_vararg.rs` — functions declaring `...` but never referencing it (`unused-vararg`, HINT, default-disabled)
+- `unused_function.rs` — cross-file unused function/method detection (`unused-function`, HINT): tracks references via call_resolutions + field-access token walk with inheritance; skips library files, `_`-prefixed names, and interface methods (2+ tables sharing the same method name)
 
 **Unknown-type diagnostics (strict typing, all default-disabled):**
 - `unknown_param_type.rs` / `unknown_return_type.rs` / `unknown_local_type.rs` / `unknown_field_type.rs` — sites whose type couldn't be inferred (`unknown-param-type`, `unknown-return-type`, `unknown-local-type`, `unknown-field-type`, HINT). See [ARCHITECTURE.md — Unknown-type diagnostics](.claude/ARCHITECTURE.md#unknown-type-diagnostics-strict-typing).
@@ -307,6 +308,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/binding-globals-disabled/` — Verifies `globals.allow_binding_globals: false` makes `BINDING_HEADER_*`/`BINDING_NAME_*` globals trigger `create-global` and `undefined-global`
 - `tests/dynamic-global-prefix/` — Dynamic global prefix/suffix detection: `_G["PREFIX"..k]` and `_G[name.."SUFFIX"]` patterns auto-register wildcard allowed globals so reads don't false-positive as `undefined-global`
 - `tests/saved-variables/` — `.toc` file `SavedVariables`/`SavedVariablesPerCharacter` auto-discovered as allowed globals; multiple `.toc` files in one directory
+- `tests/unused-function/` — Cross-file `unused-function` diagnostic for global functions and table methods; uses `scan_dir` with `defs.lua` (definitions) and `user.lua` (references)
 - `tests/unused-vararg/` — `unused-vararg` diagnostic for functions declaring `...` but never referencing it; uses `.wowluarc.json` to enable the default-disabled code
 - `tests/unknown-types/` — Strict-typing `unknown-param-type` / `unknown-return-type` / `unknown-local-type` / `unknown-field-type` diagnostics; uses `.wowluarc.json` to enable the four default-disabled codes
 - `tests/flavor-filter/` — Flavor filtering via `.wowluarc.json` (`flavors`), `@flavor-narrows` annotation, `WOW_PROJECT_ID` narrowing, TOC-based per-file flavor detection, and the `wrong-flavor-api` diagnostic. One subdirectory per scenario (classic-only, multi-flavor, wow-project-guard, annotation-guard, boolean-guard, boolean-guard-crossfile, invalid-annotation, no-config, suppression, toc-suffix, toc-per-line, toc-intersect, toc-header-restrict).

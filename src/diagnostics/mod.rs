@@ -46,6 +46,7 @@ mod unknown_local_type;
 mod unknown_param_type;
 mod unknown_return_type;
 mod unused_local;
+pub mod unused_function;
 mod unused_vararg;
 pub(crate) mod expression_type;
 mod wrong_flavor_api;

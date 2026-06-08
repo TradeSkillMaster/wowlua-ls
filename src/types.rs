@@ -156,11 +156,17 @@ pub struct CodeLensConfig {
     pub overrides: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ExternalLocation {
     pub path: PathBuf,
     pub start: u32,
     pub end: u32,
+    /// Byte range of just the name token (for precise diagnostic underlines).
+    /// Falls back to `start..end` when not available.
+    #[serde(default)]
+    pub name_start: u32,
+    #[serde(default)]
+    pub name_end: u32,
 }
 
 pub enum DefinitionResult {

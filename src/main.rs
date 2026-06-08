@@ -719,6 +719,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             }
         };
         let mut stats = CheckStats::default();
+        let mut file_refs: std::collections::HashMap<std::path::PathBuf, wowlua_ls::diagnostics::unused_function::FileReferenceData> = std::collections::HashMap::new();
         for path in &lua_files {
             let text = match std::fs::read_to_string(path) {
                 Ok(t) => t,
@@ -818,12 +819,64 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         emit_diag(&d.code, d.severity, d.start, &d.message);
                     }
                 }
+
+                // Collect cross-file reference data for workspace-level unused function check
+                wowlua_ls::diagnostics::unused_function::collect_file_reference_data(&ar, &tree)
             }));
-            if result.is_err() {
-                error!("PANIC analyzing: {}", name.display());
-                stats.errors += 1;
+            match result {
+                Ok(ref_data) => { file_refs.insert(path.clone(), ref_data); }
+                Err(_) => {
+                    error!("PANIC analyzing: {}", name.display());
+                    stats.errors += 1;
+                }
             }
         }
+        // Cross-file unused function check
+        {
+            let unused = wowlua_ls::diagnostics::unused_function::find_unused_workspace_functions(
+                &ws_globals,
+                &pre_globals,
+                &file_refs,
+                &|p| project_configs.is_library(p),
+            );
+            let diag_map = wowlua_ls::diagnostics::unused_function::emit_unused_workspace_diagnostics(&unused);
+            for (fpath, diags) in &diag_map {
+                let file_disabled = project_configs.disabled_diagnostics_for(fpath);
+                if file_disabled.contains("unused-function") { continue; }
+                let file_severity = project_configs.severity_overrides_for(fpath);
+                let text = match std::fs::read_to_string(fpath) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                let numbers = line_numbers::LinePositions::from(text.as_str());
+                let tree = syntax::parser::parse(&text);
+                let root_node = syntax::SyntaxNode::new_root(&tree);
+                let suppressions = annotations::scan_diagnostic_directives(root_node);
+                let name = fpath.strip_prefix(&dir).unwrap_or(fpath);
+                for d in diags {
+                    let effective_severity = file_severity.get(d.code).copied().unwrap_or(d.severity);
+                    let start = numbers.from_offset(d.start);
+                    let start_line = start.0.0;
+                    if lsp::diagnostics::is_suppressed(d.code, start_line, &suppressions) { continue; }
+                    let is_hint = effective_severity == lsp_types::DiagnosticSeverity::HINT;
+                    if is_hint {
+                        stats.hints += 1;
+                        if !include_hints { continue; }
+                    }
+                    let severity_str = if effective_severity == lsp_types::DiagnosticSeverity::ERROR {
+                        stats.errors += 1;
+                        "error"
+                    } else if is_hint {
+                        "hint"
+                    } else {
+                        stats.warnings += 1;
+                        "warning"
+                    };
+                    println!("{}:{}:{}: {}[{}] {}", name.display(), start_line + 1, start.1 + 1, severity_str, d.code, d.message);
+                }
+            }
+        }
+
         let elapsed = started.elapsed();
 
         // Print summary

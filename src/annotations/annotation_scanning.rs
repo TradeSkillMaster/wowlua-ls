@@ -281,6 +281,12 @@ pub struct ExternalGlobal {
     /// (stub globals have no bodies), so no BLOB_VERSION bump is needed.
     #[serde(skip)]
     pub body_derived_returns: bool,
+    /// Byte range of the function/variable *name* token (for precise diagnostic
+    /// positioning). Falls back to `def_start`/`def_end` when unavailable.
+    #[serde(default)]
+    pub name_start: u32,
+    #[serde(default)]
+    pub name_end: u32,
 }
 
 impl ExternalGlobal {
@@ -320,6 +326,8 @@ impl ExternalGlobal {
             narrows_arg: None,
             requires: Vec::new(),
             body_derived_returns: false,
+            name_start: 0,
+            name_end: 0,
         }
     }
 }
@@ -723,6 +731,8 @@ pub(crate) fn scan_method_funcall_self_fields(
                 narrows_arg: None,
                 requires: Vec::new(),
                 body_derived_returns: false,
+                name_start: range.0,
+                name_end: range.1,
             });
         }
     }

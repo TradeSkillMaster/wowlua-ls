@@ -5024,3 +5024,122 @@ fn scope_completion_locals_sort_before_globals() {
     // First item after sorting should be the local
     assert_eq!(items[0].label, "CreateWidget", "local should be first in sorted order");
 }
+
+#[test]
+fn test_unused_function_cross_file() {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use wowlua_ls::diagnostics::unused_function::{
+        collect_file_reference_data, find_unused_workspace_functions,
+    };
+
+    let scan_dir = std::env::current_dir().unwrap().join("tests/unused-function");
+    let mut project_configs = ProjectConfigs::default();
+    project_configs.try_load(&scan_dir);
+
+    let scan = lsp::scan_workspace(std::slice::from_ref(&scan_dir), &mut project_configs);
+    let (sc, mut sa, sg, ans, se, ws_callable) = (
+        scan.classes, scan.aliases, scan.globals,
+        scan.addon_ns_class_files, scan.events, scan.callable_classes,
+    );
+    wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
+    let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&scan_dir);
+    let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
+    pg.merge_events(&se);
+    build_per_addon_tables_from_globals(&mut pg, &sg, &ans, &project_configs);
+    let pre_globals = Arc::new(pg);
+
+    // Analyze each file, collect reference data.
+    let mut file_refs: HashMap<PathBuf, wowlua_ls::diagnostics::unused_function::FileReferenceData> = HashMap::new();
+    for entry in std::fs::read_dir(&scan_dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("lua") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let tree = wowlua_ls::syntax::parser::parse(&text);
+        let addon_table_override = pre_globals.addon_table_for_root(project_configs.addon_root_for(&path));
+        let mut analysis = Analysis::new_with_tree(
+            &tree,
+            pre_globals.clone(),
+            AnalysisConfig {
+                allowed_read_globals: project_configs.allowed_read_globals_for(&path),
+                allowed_write_globals: project_configs.allowed_write_globals_for(&path),
+                addon_table_override,
+                addon_folder_name: project_configs.addon_name_for(&path),
+                ..Default::default()
+            },
+        );
+        analysis.resolve_types();
+        let result = analysis.into_result();
+        let ref_data = collect_file_reference_data(&result, &tree);
+        file_refs.insert(path, ref_data);
+    }
+
+    let unused = find_unused_workspace_functions(
+        &sg,
+        &pre_globals,
+        &file_refs,
+        &|p| project_configs.is_library(p),
+    );
+    let unused_names: HashSet<&str> = unused.iter().map(|u| u.name.as_str()).collect();
+
+    // UnusedGlobal and UnusedAssignFunc should be flagged.
+    assert!(
+        unused_names.contains("UnusedGlobal"),
+        "UnusedGlobal should be flagged as unused, got: {:?}", unused_names,
+    );
+    assert!(
+        unused_names.contains("UnusedAssignFunc"),
+        "UnusedAssignFunc should be flagged as unused, got: {:?}", unused_names,
+    );
+
+    // UsedGlobal and UsedAssignFunc should NOT be flagged (referenced from user.lua).
+    assert!(
+        !unused_names.contains("UsedGlobal"),
+        "UsedGlobal should not be flagged",
+    );
+    assert!(
+        !unused_names.contains("UsedAssignFunc"),
+        "UsedAssignFunc should not be flagged",
+    );
+
+    // _IgnoredGlobal should NOT be flagged (underscore prefix).
+    assert!(
+        !unused_names.contains("_IgnoredGlobal"),
+        "_IgnoredGlobal should not be flagged (underscore prefix)",
+    );
+
+    // RecursiveGlobal should NOT be flagged (locally referenced via self-recursion).
+    assert!(
+        !unused_names.contains("RecursiveGlobal"),
+        "RecursiveGlobal should not be flagged (self-recursive)",
+    );
+
+    // Method functions: unused methods should be flagged.
+    assert!(
+        unused_names.contains("NS.UnusedMethod"),
+        "NS.UnusedMethod should be flagged as unused, got: {:?}", unused_names,
+    );
+    assert!(
+        unused_names.contains("NS:UnusedColonMethod"),
+        "NS:UnusedColonMethod should be flagged as unused, got: {:?}", unused_names,
+    );
+
+    // Used methods should NOT be flagged.
+    assert!(
+        !unused_names.contains("NS.UsedMethod"),
+        "NS.UsedMethod should not be flagged",
+    );
+    assert!(
+        !unused_names.contains("NS:UsedColonMethod"),
+        "NS:UsedColonMethod should not be flagged",
+    );
+
+    // Underscore-prefixed methods should NOT be flagged.
+    assert!(
+        !unused_names.contains("NS._IgnoredMethod"),
+        "NS._IgnoredMethod should not be flagged (underscore prefix)",
+    );
+}

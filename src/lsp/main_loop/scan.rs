@@ -63,6 +63,7 @@ pub(super) fn compute_ws_diagnostics(
     affected: Option<&HashSet<String>>,
     prior: Option<&[(String, Vec<lsp_types::Diagnostic>)]>,
 ) -> Vec<(String, Vec<lsp_types::Diagnostic>)> {
+    use crate::diagnostics::unused_function::{self, FileReferenceData};
     use rayon::prelude::*;
     let prior_map: Option<HashMap<&str, &Vec<lsp_types::Diagnostic>>> = match (affected, prior) {
         (Some(_), Some(entries)) => {
@@ -70,7 +71,13 @@ pub(super) fn compute_ws_diagnostics(
         }
         _ => None,
     };
-    paths
+    let is_incremental = affected.is_some();
+
+    // Phase 1: per-file analysis (parallel). Collect diagnostics + reference data.
+    // Also cache file text (path → text) for files that have cross-file diagnostics,
+    // so Phase 2 can reuse it without re-reading from disk.
+    type PerFileEntry = (String, Vec<lsp_types::Diagnostic>, Option<(PathBuf, FileReferenceData, String)>);
+    let per_file: Vec<PerFileEntry> = paths
         .par_iter()
         .filter_map(|path| {
             let text = std::fs::read_to_string(path).ok()?;
@@ -88,17 +95,104 @@ pub(super) fn compute_ws_diagnostics(
                 && file_unaffected_by(&text, names)
                 && let Some(diags) = prior.get(uri_s.as_str())
             {
-                return Some((uri_s, (*diags).clone()));
+                return Some((uri_s, (*diags).clone(), None));
             }
             let tree = parse_lua(&text);
             let mut result = analyze_lua_parsed(&uri, pre_globals, configs, &tree);
             result.plugin_diag_codes = plugin_codes.to_vec();
+            let ref_data = unused_function::collect_file_reference_data(&result, &tree);
             let root = crate::syntax::SyntaxNode::new_root(&tree);
             let suppressions = scan_diagnostic_directives(root);
             let diag_items = build_file_diagnostics_with(&uri, &tree, &result, &text, &[], configs, &suppressions);
-            Some((uri_s, diag_items))
+            Some((uri_s, diag_items, Some((path.clone(), ref_data, text))))
         })
-        .collect()
+        .collect();
+
+    // Phase 2: cross-file unused function check.
+    // Only runs on FULL rebuilds — during incremental rebuilds, skipped files
+    // have no ref_data, so the reference set is incomplete and would produce
+    // false positive "unused" diagnostics.
+    let cross_file_diags: HashMap<PathBuf, Vec<lsp_types::Diagnostic>> = if !is_incremental {
+        let file_refs: HashMap<PathBuf, FileReferenceData> = per_file
+            .iter()
+            .filter_map(|(_, _, ref_opt)| ref_opt.as_ref())
+            .map(|(p, r, _)| (p.clone(), r.clone()))
+            .collect();
+        if !file_refs.is_empty() {
+            let unused = unused_function::find_unused_from_pre_globals(pre_globals, &file_refs, &|p| configs.is_library(p));
+            let raw_diags = unused_function::emit_unused_workspace_diagnostics(&unused);
+            // Build a text cache from Phase 1 to avoid re-reading files.
+            let text_cache: HashMap<&Path, &str> = per_file
+                .iter()
+                .filter_map(|(_, _, ref_opt)| ref_opt.as_ref())
+                .map(|(p, _, text)| (p.as_path(), text.as_str()))
+                .collect();
+            // Convert WowDiagnostic to LSP Diagnostic for each file.
+            let utf8 = use_utf8();
+            let mut result = HashMap::new();
+            for (fpath, wow_diags) in raw_diags {
+                let file_disabled = configs.disabled_diagnostics_for(&fpath);
+                if file_disabled.contains("unused-function") { continue; }
+                let text = match text_cache.get(fpath.as_path()) {
+                    Some(t) => *t,
+                    None => continue,
+                };
+                let tree = parse_lua(text);
+                let root = crate::syntax::SyntaxNode::new_root(&tree);
+                let suppressions = scan_diagnostic_directives(root);
+                let file_severity = configs.severity_overrides_for(&fpath);
+                let numbers = crate::lsp::SafeLinePositions::new(text);
+                let mut lsp_diags = Vec::new();
+                for d in &wow_diags {
+                    let effective_severity = file_severity.get(d.code).copied().unwrap_or(d.severity);
+                    let start_line = numbers.line_col(d.start).0 .0;
+                    if crate::lsp::diagnostics::is_suppressed(d.code, start_line, &suppressions) { continue; }
+                    lsp_diags.push(lsp_types::Diagnostic {
+                        range: numbers.lsp_range(d.start, d.end, utf8),
+                        severity: Some(effective_severity),
+                        code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+                        code_description: None,
+                        source: Some(String::from("wowlua_ls")),
+                        message: d.message.clone(),
+                        tags: Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]),
+                        related_information: None,
+                        data: None,
+                    });
+                }
+                if !lsp_diags.is_empty() {
+                    result.insert(fpath, lsp_diags);
+                }
+            }
+            result
+        } else {
+            HashMap::new()
+        }
+    } else {
+        HashMap::new()
+    };
+
+    // Merge per-file diagnostics with cross-file diagnostics using O(1) lookups.
+    let mut output: Vec<(String, Vec<lsp_types::Diagnostic>)> = per_file
+        .into_iter()
+        .map(|(uri, diags, _)| (uri, diags))
+        .collect();
+    if !cross_file_diags.is_empty() {
+        let uri_index: HashMap<String, usize> = output.iter().enumerate()
+            .map(|(i, (uri, _))| (uri.clone(), i))
+            .collect();
+        for (fpath, extra_diags) in cross_file_diags {
+            let uri_s = match abs_path_to_uri(&fpath) {
+                Some(u) => u.to_string(),
+                None => continue,
+            };
+            if let Some(&idx) = uri_index.get(&uri_s) {
+                output[idx].1.extend(extra_diags);
+            } else {
+                output.push((uri_s, extra_diags));
+            }
+        }
+    }
+    output
 }
 
 /// Run a warm on a detached background thread. Sends the `WarmResult` over

@@ -1533,6 +1533,8 @@ mod tests {
                 narrows_arg: None,
                 requires: Vec::new(),
                 body_derived_returns: false,
+                name_start: 0,
+                name_end: 0,
             }
         }
 
@@ -1985,6 +1987,8 @@ mod tests {
             narrows_arg: None,
             requires: Vec::new(),
             body_derived_returns: false,
+            name_start: 0,
+            name_end: 0,
         }
     }
 

@@ -1157,4 +1157,41 @@ impl AnalysisResult {
             v.def_node.start <= token_start && token_start < v.def_node.end
         })
     }
+
+    /// Collect all external `(TableIndex, field_name)` pairs referenced in this file.
+    /// Walks all Name tokens and resolves field chains — catching both calls and
+    /// non-call field reads (function-as-value pattern). Local class tables are
+    /// promoted to their external counterpart via `class_name` (same logic as
+    /// `find_references` cross-file matching).
+    ///
+    /// Excludes function definition name tokens (`function NS.Method()` defines the
+    /// field, it doesn't reference it).
+    pub(crate) fn collect_referenced_external_fields(&self, tree: &SyntaxTree) -> HashSet<(TableIndex, String)> {
+        let mut result = HashSet::new();
+        for token in SyntaxNode::new_root(tree).descendants_with_tokens().filter_map(|it| it.into_token()) {
+            if token.kind() != SyntaxKind::Name {
+                continue;
+            }
+            // Skip function definition names: in `function NS.Method()`, the Name
+            // token "Method" is at a definition site, not a use site.
+            if let Some(parent) = token.parent()
+                && (parent.kind().is_identifier() || parent.kind() == SyntaxKind::FunctionCall || parent.kind() == SyntaxKind::MethodCall)
+                && let Some(gp) = parent.parent()
+                && gp.kind() == SyntaxKind::FunctionDefinition
+            {
+                continue;
+            }
+            if let Some((table_idx, field_name, _, _, _)) = self.resolve_field_chain_for_token(token) {
+                if table_idx.is_external() {
+                    result.insert((table_idx, field_name));
+                } else if let Some(class_name) = &self.table(table_idx).class_name {
+                    // Promote local class table → external counterpart (same-file self:Method() calls)
+                    if let Some(&ext_idx) = self.ir.ext.classes.get(class_name) {
+                        result.insert((ext_idx, field_name));
+                    }
+                }
+            }
+        }
+        result
+    }
 }

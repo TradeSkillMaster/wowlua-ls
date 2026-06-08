@@ -796,6 +796,16 @@ fn build_func_external(
     let range = func.syntax().text_range();
     let def_start = u32::from(range.start());
     let def_end = u32::from(range.end());
+    // Find the first Name token for precise diagnostic positioning.
+    let (name_start, name_end) = func.syntax().children_with_tokens()
+        .find_map(|c| match c {
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
+                let r = t.text_range();
+                Some((u32::from(r.start()), u32::from(r.end())))
+            }
+            _ => None,
+        })
+        .unwrap_or((def_start, def_end));
     // Merge @param annotations with actual parameter names.
     let params = if let Some(param_list) = func.params() {
         let actual_params: Vec<String> = param_list.parameters().into_iter()
@@ -855,6 +865,8 @@ fn build_func_external(
         narrows_arg: annotations.narrows_arg,
         requires: annotations.requires,
         body_derived_returns: is_body_derived,
+        name_start,
+        name_end,
     }
 }
 
@@ -1314,6 +1326,8 @@ pub(crate) fn scan_file_globals_with_synth(
                 narrows_arg: None,
                 requires: Vec::new(),
                 body_derived_returns: false,
+                name_start: u32::from(range.start()),
+                name_end: u32::from(range.end()),
             });
         }
     }
@@ -1482,6 +1496,15 @@ pub(crate) fn scan_file_globals_with_synth(
                             } else {
                                 annotations.var_type.into_iter().collect()
                             };
+                            let (ns, ne) = idents[0].syntax().children_with_tokens()
+                                .find_map(|c| match c {
+                                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
+                                        let r = t.text_range();
+                                        Some((u32::from(r.start()), u32::from(r.end())))
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or((u32::from(range.start()), u32::from(range.end())));
                             globals.push(ExternalGlobal {
                                 name: names[0].clone(), kind,
                                 params: Vec::new(), returns, return_names: Vec::new(), return_descriptions: Vec::new(), overloads: Vec::new(),
@@ -1498,6 +1521,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 narrows_arg: None,
                                 requires: Vec::new(),
                                 body_derived_returns: false,
+                                name_start: ns, name_end: ne,
                             });
                         } else if names.len() >= 2 {
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
@@ -1714,6 +1738,8 @@ pub(crate) fn scan_file_globals_with_synth(
                                 narrows_arg: None,
                                 requires: Vec::new(),
                                 body_derived_returns: false,
+                                name_start: u32::from(range.start()),
+                                name_end: u32::from(range.end()),
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.

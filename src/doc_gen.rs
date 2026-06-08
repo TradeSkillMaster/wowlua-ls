@@ -689,6 +689,7 @@ mod tests {
             path: root.join("test.lua"),
             start: 0,
             end: 100,
+            ..Default::default()
         });
     }
 

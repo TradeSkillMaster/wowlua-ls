@@ -209,6 +209,15 @@ pub struct PreResolvedGlobals {
     pub(crate) framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) symbol_locations: HashMap<SymbolIndex, ExternalLocation>,
     pub(crate) function_locations: HashMap<FunctionIndex, ExternalLocation>,
+    /// Display names for workspace method functions (e.g. "Auctioning.DoFoo").
+    /// Used by the unused-function diagnostic to produce readable messages.
+    #[serde(skip)]
+    pub(crate) function_names: HashMap<FunctionIndex, String>,
+    /// Reverse map: FunctionIndex → (owning TableIndex, field_name).
+    /// Used by the unused-function diagnostic to translate call_resolutions into
+    /// field-identity references (aligned with "find references" / code lens logic).
+    #[serde(skip)]
+    pub(crate) function_to_field: HashMap<FunctionIndex, (TableIndex, String)>,
     /// String literal values for global symbols (SymbolIndex → string value)
     pub(crate) string_values: HashMap<SymbolIndex, String>,
     /// Number literal values for global symbols (SymbolIndex → number text)
@@ -316,7 +325,7 @@ fn record_field_location(
                 .insert(field_name.to_string(), ExternalLocation {
                     path: path.clone(),
                     start: g.def_start,
-                    end: g.def_end,
+                    end: g.def_end, ..Default::default()
                 });
         }
 }
@@ -720,6 +729,8 @@ struct BuildContext {
     // Location maps
     symbol_locations: HashMap<SymbolIndex, ExternalLocation>,
     function_locations: HashMap<FunctionIndex, ExternalLocation>,
+    function_names: HashMap<FunctionIndex, String>,
+    function_to_field: HashMap<FunctionIndex, (TableIndex, String)>,
     class_locations: HashMap<String, ExternalLocation>,
     alias_locations: HashMap<String, ExternalLocation>,
     field_locations: HashMap<TableIndex, HashMap<String, ExternalLocation>>,
@@ -766,6 +777,8 @@ impl BuildContext {
             scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
             function_locations: HashMap::new(),
+            function_names: HashMap::new(),
+            function_to_field: HashMap::new(),
             class_locations: HashMap::new(),
             alias_locations: HashMap::new(),
             field_locations: HashMap::new(),
@@ -923,7 +936,7 @@ impl BuildContext {
                     self.class_locations.insert(class.name.clone(), ExternalLocation {
                         path: path.clone(),
                         start,
-                        end,
+                        end, ..Default::default()
                     });
                 }
         }
@@ -951,7 +964,7 @@ impl BuildContext {
                     self.alias_locations.insert(alias.name.clone(), ExternalLocation {
                         path: path.clone(),
                         start,
-                        end,
+                        end, ..Default::default()
                     });
                 }
         }
@@ -970,7 +983,7 @@ impl BuildContext {
                         .insert(field_name.clone(), ExternalLocation {
                             path: path.clone(),
                             start,
-                            end,
+                            end, ..Default::default()
                         });
                 }
             }
@@ -1133,7 +1146,7 @@ impl BuildContext {
                     self.class_globals.insert(g.name.clone());
                     if let Some(path) = &g.source_path {
                         self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
-                            path: path.clone(), start: g.def_start, end: g.def_end,
+                            path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                         });
                     }
                 } else if let Some(crate::annotations::AnnotationType::Simple(cn)) = g.returns.first()
@@ -1146,7 +1159,7 @@ impl BuildContext {
                     self.class_globals.insert(g.name.clone());
                     if let Some(path) = &g.source_path {
                         self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
-                            path: path.clone(), start: g.def_start, end: g.def_end,
+                            path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                         });
                     }
                 } else if !self.non_class_tables.contains_key(&g.name) {
@@ -1155,7 +1168,7 @@ impl BuildContext {
                     self.non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
-                            path: path.clone(), start: g.def_start, end: g.def_end,
+                            path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                         });
                     }
                 }
@@ -1169,7 +1182,7 @@ impl BuildContext {
                 self.class_globals.insert(g.name.clone());
                 if let Some(path) = &g.source_path {
                     self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
+                        path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                     });
                 }
             }
@@ -1223,7 +1236,7 @@ impl BuildContext {
                 self.class_globals.insert(g.name.clone());
                 if let Some(path) = &g.source_path {
                     self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
+                        path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                     });
                 }
             }
@@ -1312,10 +1325,26 @@ impl BuildContext {
                 if let Some(source_path) = &g.source_path {
                     self.function_locations.insert(func_idx, ExternalLocation {
                         path: source_path.clone(), start: g.def_start, end: g.def_end,
+                        name_start: g.name_start, name_end: g.name_end,
                     });
                     if g.body_derived_returns {
                         self.deferred_returns.insert(func_idx);
                     }
+                    // Record display name for unused-function diagnostics.
+                    let display_name = if is_addon_ns {
+                        let mut parts = path.clone();
+                        parts.push(method_name.clone());
+                        parts.join(".")
+                    } else {
+                        let sep = if *is_colon { ":" } else { "." };
+                        if path.is_empty() {
+                            format!("{}{sep}{method_name}", g.name)
+                        } else {
+                            format!("{}.{}{sep}{method_name}", g.name, path.join("."))
+                        }
+                    };
+                    self.function_names.insert(func_idx, display_name);
+                    self.function_to_field.insert(func_idx, (target_idx, method_name.clone()));
                 }
                 let expr_id = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::FunctionDef(func_idx));
@@ -1827,6 +1856,7 @@ impl BuildContext {
                 if let Some(path) = &g.source_path {
                     let loc = ExternalLocation {
                         path: path.clone(), start: g.def_start, end: g.def_end,
+                        name_start: g.name_start, name_end: g.name_end,
                     };
                     self.function_locations.insert(func_idx, loc.clone());
                     self.symbol_locations.insert(SymbolIndex(EXT_BASE + self.symbols.len()), loc);
@@ -1900,6 +1930,7 @@ impl BuildContext {
                 if let Some(path) = &g.source_path {
                     self.symbol_locations.insert(sym_idx, ExternalLocation {
                         path: path.clone(), start: g.def_start, end: g.def_end,
+                        name_start: g.name_start, name_end: g.name_end,
                     });
                 }
             }
@@ -1965,7 +1996,7 @@ impl BuildContext {
                                 if is_framexml_path(&g.source_path) { self.framexml_names.insert(g.name.clone()); }
                                 if let Some(path) = &g.source_path {
                                     self.symbol_locations.insert(eidx, ExternalLocation {
-                                        path: path.clone(), start: g.def_start, end: g.def_end,
+                                        path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                                     });
                                 }
                             } else {
@@ -1973,7 +2004,7 @@ impl BuildContext {
                                 if is_framexml_path(&g.source_path) { self.framexml_names.insert(g.name.clone()); }
                                 if let Some(path) = &g.source_path {
                                     self.symbol_locations.insert(sym_idx, ExternalLocation {
-                                        path: path.clone(), start: g.def_start, end: g.def_end,
+                                        path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                                     });
                                 }
                             }
@@ -2273,6 +2304,7 @@ impl BuildContext {
             parameterized_aliases: self.parameterized_aliases, tuple_form_aliases: self.tuple_form_aliases,
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
+            function_names: self.function_names, function_to_field: self.function_to_field,
             string_values: self.string_values, number_values: self.number_values,
             number_literals: self.number_literals, string_literals: self.string_literals,
             addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),
@@ -2316,7 +2348,7 @@ impl PreResolvedGlobals {
                     self.event_locations
                         .entry(ev.event_type.clone())
                         .or_default()
-                        .insert(ev.event_name.clone(), ExternalLocation { path: path.clone(), start, end });
+                        .insert(ev.event_name.clone(), ExternalLocation { path: path.clone(), start, end, ..Default::default() });
                 }
         }
         for type_name in self.event_types.keys() {
@@ -2373,6 +2405,8 @@ impl PreResolvedGlobals {
             framexml_scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
             function_locations: HashMap::new(),
+            function_names: HashMap::new(),
+            function_to_field: HashMap::new(),
             string_values: HashMap::new(),
             number_values: HashMap::new(),
             number_literals: HashMap::new(),

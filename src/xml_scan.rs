@@ -865,6 +865,8 @@ fn finalize_frame(
             narrows_arg: None,
             requires: Vec::new(),
             body_derived_returns: false,
+            name_start: ctx.def_start,
+            name_end: ctx.def_end,
         });
     }
 
@@ -904,6 +906,8 @@ fn finalize_frame(
             narrows_arg: None,
             requires: Vec::new(),
             body_derived_returns: false,
+            name_start: ctx.def_start,
+            name_end: ctx.def_end,
         });
     }
 }

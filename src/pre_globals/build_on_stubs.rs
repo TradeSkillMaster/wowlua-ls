@@ -30,6 +30,8 @@ struct BuildOnStubsContext<'a> {
     // Location maps
     symbol_locations: HashMap<SymbolIndex, ExternalLocation>,
     function_locations: HashMap<FunctionIndex, ExternalLocation>,
+    function_names: HashMap<FunctionIndex, String>,
+    function_to_field: HashMap<FunctionIndex, (TableIndex, String)>,
     field_locations: HashMap<TableIndex, HashMap<String, ExternalLocation>>,
     alias_locations: HashMap<String, ExternalLocation>,
 
@@ -93,6 +95,8 @@ impl<'a> BuildOnStubsContext<'a> {
             framexml_scope0_symbols,
             symbol_locations,
             function_locations,
+            function_names: HashMap::new(),
+            function_to_field: HashMap::new(),
             field_locations,
             alias_locations,
             string_values: stubs_base.string_values.clone(),
@@ -196,7 +200,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     self.alias_locations.insert(alias.name.clone(), ExternalLocation {
                         path: path.clone(),
                         start,
-                        end,
+                        end, ..Default::default()
                     });
                 }
         }
@@ -217,7 +221,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         .insert(field_name.clone(), ExternalLocation {
                             path: path.clone(),
                             start,
-                            end,
+                            end, ..Default::default()
                         });
                 }
             }
@@ -410,7 +414,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     self.class_globals.insert(g.name.clone());
                     if let Some(path) = &g.source_path {
                         self.table_source_locations.insert(g.name.clone(), ExternalLocation {
-                            path: path.clone(), start: g.def_start, end: g.def_end,
+                            path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                         });
                     }
                 } else if !self.non_class_tables.contains_key(&g.name) {
@@ -424,7 +428,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     self.non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         self.table_source_locations.insert(g.name.clone(), ExternalLocation {
-                            path: path.clone(), start: g.def_start, end: g.def_end,
+                            path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                         });
                     }
                 }
@@ -437,7 +441,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 self.class_globals.insert(g.name.clone());
                 if let Some(path) = &g.source_path {
                     self.table_source_locations.insert(g.name.clone(), ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
+                        path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                     });
                 }
             }
@@ -561,10 +565,26 @@ impl<'a> BuildOnStubsContext<'a> {
                 if let Some(source_path) = &g.source_path {
                     self.function_locations.insert(func_idx, ExternalLocation {
                         path: source_path.clone(), start: g.def_start, end: g.def_end,
+                        name_start: g.name_start, name_end: g.name_end,
                     });
                     if g.body_derived_returns {
                         self.deferred_returns.insert(func_idx);
                     }
+                    // Record display name for unused-function diagnostics.
+                    let display_name = if is_addon_ns {
+                        let mut parts = path.clone();
+                        parts.push(method_name.clone());
+                        parts.join(".")
+                    } else {
+                        let sep = if *is_colon { ":" } else { "." };
+                        if path.is_empty() {
+                            format!("{}{sep}{method_name}", g.name)
+                        } else {
+                            format!("{}.{}{sep}{method_name}", g.name, path.join("."))
+                        }
+                    };
+                    self.function_names.insert(func_idx, display_name);
+                    self.function_to_field.insert(func_idx, (target_idx, method_name.clone()));
                 }
                 let expr_id = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::FunctionDef(func_idx));
@@ -1121,7 +1141,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 );
                 if let Some(path) = &g.source_path {
                     let loc = ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
+                        path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                     };
                     self.function_locations.insert(func_idx, loc.clone());
                     self.symbol_locations.insert(SymbolIndex(EXT_BASE + self.symbols.len()), loc);
@@ -1167,7 +1187,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 }
                 if let Some(path) = &g.source_path {
                     self.symbol_locations.insert(sym_idx, ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
+                        path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                     });
                 }
             }
@@ -1501,7 +1521,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             let sym_idx = self.register_global(&g.name, Some(resolved_type));
                             if let Some(path) = &g.source_path {
                                 self.symbol_locations.insert(sym_idx, ExternalLocation {
-                                    path: path.clone(), start: g.def_start, end: g.def_end,
+                                    path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                                 });
                             }
                         }
@@ -1527,7 +1547,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     class_locations.insert(class.name.clone(), ExternalLocation {
                         path: path.clone(),
                         start,
-                        end,
+                        end, ..Default::default()
                     });
                 }
         }
@@ -1549,6 +1569,7 @@ impl<'a> BuildOnStubsContext<'a> {
             parameterized_aliases: self.parameterized_aliases, tuple_form_aliases: self.tuple_form_aliases,
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols: self.framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
+            function_names: self.function_names, function_to_field: self.function_to_field,
             string_values: self.string_values, number_values: self.number_values,
             number_literals: self.number_literals, string_literals: self.string_literals,
             addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),

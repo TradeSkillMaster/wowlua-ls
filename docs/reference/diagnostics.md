@@ -97,6 +97,26 @@ Flags `if`/`elseif`/`while`/`repeat...until` conditions that are provably always
 
 Loop idioms (`while true`, `repeat...until false`) are not flagged. Conditions referencing variables reassigned inside loops are suppressed to avoid false positives.
 
+### `unused-function`
+
+Flags function definitions that are never referenced anywhere in the workspace. Covers both top-level global functions and methods defined on tables (e.g. `function NS.Method()`).
+
+**What counts as "used":**
+
+- Called directly via `call_resolutions` (handles deep type inference, self-calls, etc.)
+- Referenced as a value (e.g. passed as a callback, stored in a variable) — detected via field-access token resolution with inheritance
+
+**What is skipped (not flagged):**
+
+- Functions whose name starts with `_` (convention for intentionally unused)
+- Functions defined in library files (directories marked with `library` in `.wowluarc.json`)
+- Interface methods — if 2+ distinct tables define the same method name, the method is assumed to be a framework callback pattern (duck-typing dispatch)
+- Inherited methods — if a parent class's field is referenced, child overrides are also considered used
+
+**Cross-file behavior:**
+
+This diagnostic requires a multi-file workspace scan. It compares definitions from all files against references from all files. In single-file mode (e.g. `evaluate`), only per-file unused functions are detected.
+
 ## TOC file diagnostics
 
 These diagnostics apply to `.toc` files only. See the [TOC Files guide](/guide/toc-files) for details.
