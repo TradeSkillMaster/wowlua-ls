@@ -38,12 +38,12 @@ end
 local a2x, b2x = allOrNothing()
 if a2x then
     local _ = b2x
-    --        ^ hover: (local) b2x: number
+    --        ^ hover: (local) b2x: number  def: local
 end
 local _ = a2x
---        ^ hover: (local) a2x: string?
+--        ^ hover: (local) a2x: string?  def: local
 local _ = b2x
---        ^ hover: (local) b2x: number?
+--        ^ hover: (local) b2x: number?  def: local
 
 -- ── Nil comparison narrows siblings ─────────────────────────────────────
 
@@ -122,6 +122,66 @@ if a8 then
     if true then
         local _ = b8
         --        ^ hover: (local) b8: number
+    end
+end
+
+-- ── BranchMerge: branch reassignment survives nested sibling narrowing ──
+-- Regression: BranchMerge computes a branch's merge contribution via
+-- `version_for_scope(sym, branch_scope)`, picking the "latest visible"
+-- version of an assigned symbol in that branch (so post-assignment
+-- narrowing in the branch's own scope can refine the merge type).
+-- A nested sub-branch's OverloadNarrow used to leak into that lookup,
+-- which would have made the merge contribution depend on the nested
+-- guard. The fix ensures BranchMerge sees the in-branch reassignment
+-- itself even when a nested sub-branch narrows the same sibling.
+local function bmTest(cond)
+    local bm_a, bm_b = allOrNothing()
+    if cond then
+        bm_a, bm_b = allOrNothing()  -- real reassignment in this branch
+        if bm_a then
+            -- nested sibling-narrowing on bm_b here pushes an OverloadNarrow
+            -- in a descendant scope. BranchMerge for the outer if must not
+            -- mistake that for bm_b's branch contribution.
+            local _ = bm_b
+            --        ^ hover: (local) bm_b: number  def: local
+        end
+    end
+    -- After the outer if (with implicit else), bm_b's merge =
+    -- branch contribution (number?) ∪ implicit-else (pre-if, number?).
+    -- A leak would have narrowed the branch contribution to `number` and
+    -- the implicit-else strip would still produce `number?` overall — so
+    -- this assertion alone wouldn't catch the leak. The catch is below:
+    -- bm_a in the implicit-else path must still be the pre-if optional.
+    local _ = bm_a
+    --        ^ hover: (local) bm_a: string?  def: local
+    local _ = bm_b
+    --        ^ hover: (local) bm_b: number?  def: local
+    return bm_a, bm_b
+end
+_consume(bmTest)
+
+-- ── find_function_for_symbol: nested narrowing chain still discovers callee ──
+-- Regression: `narrow_siblings` traces back from a sibling's type_source via
+-- `find_function_for_symbol` to locate the return-only overloads. When the
+-- narrowing fires from a deeply nested scope, the sibling-lookup must still
+-- reach the original FunctionCall through any intervening narrowing-only
+-- versions. If it can't, the inner narrowing silently no-ops and `ar` stays
+-- optional below.
+local ar, br = allOrNothing()
+if ar then
+    if br then
+        local _ = br
+        --        ^ hover: (local) br: number  def: local
+        if true then
+            -- Deepest scope: narrowing `br ~= nil` here triggers a fresh
+            -- sibling lookup. find_function_for_symbol(ar, deepest) must
+            -- still resolve `ar`'s function via the destructure version in
+            -- the outermost scope.
+            if br ~= nil then
+                local _ = ar
+                --        ^ hover: (local) ar: string  def: local
+            end
+        end
     end
 end
 

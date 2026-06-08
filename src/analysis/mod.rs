@@ -1297,7 +1297,7 @@ impl Ir {
                 // query from the parent scope (textually after the branch) must
                 // not see them. Real assignments inside a branch are handled by
                 // BranchMerge, which pushes a merged version in the parent scope.
-                if !self.is_ancestor_scope(ver.created_in_scope, scope_idx)
+                if self.is_descendant_scope(ver.created_in_scope, scope_idx)
                     && self.is_narrowing_only_version(sym_idx, i)
                 {
                     continue;
@@ -1314,6 +1314,14 @@ impl Ir {
     /// that wraps a SymbolRef to the same symbol). These versions refine the
     /// type for a control-flow region rather than reassigning the symbol.
     /// Mirrors the predicate used by the BranchMerge pass in build_ir.
+    ///
+    /// `sym_idx` is only consulted in the StripNil/StripFalsy arms — those
+    /// variants can also wrap non-narrowing payloads (FieldAccess, FunctionCall,
+    /// etc. produced by a real assignment whose RHS was narrowed by control
+    /// flow), so we check the inner SymbolRef points back to the same symbol.
+    /// OverloadNarrow / TypeFilter / CastRemove are only produced by the
+    /// narrowing machinery and always refer back to their own symbol, so they
+    /// are always narrowing-only regardless of `sym_idx`.
     pub(crate) fn is_narrowing_only_version(&self, sym_idx: SymbolIndex, ver_idx: usize) -> bool {
         let sym = &self.symbols[sym_idx.val()];
         let Some(ts) = sym.versions[ver_idx].type_source else { return false; };
@@ -1333,6 +1341,13 @@ impl Ir {
 
     fn is_ancestor_scope(&self, ancestor: ScopeIndex, descendant: ScopeIndex) -> bool {
         ancestor_scopes(&self.scopes, descendant).skip(1).any(|s| s == ancestor)
+    }
+
+    /// True iff `candidate` is a strict descendant of `outer` — symmetrical to
+    /// `is_ancestor_scope`. The two are inverses: `is_descendant_scope(a, b)`
+    /// is equivalent to `is_ancestor_scope(b, a)`.
+    fn is_descendant_scope(&self, candidate: ScopeIndex, outer: ScopeIndex) -> bool {
+        ancestor_scopes(&self.scopes, candidate).skip(1).any(|s| s == outer)
     }
 
     /// Find the latest version of a symbol that was created in `scope_idx` or an ancestor scope.

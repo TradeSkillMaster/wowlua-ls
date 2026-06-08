@@ -817,12 +817,14 @@ impl<'a> Analysis<'a> {
                     }
                     (None, Some(guard)) => {
                         // Don't push a version — wrap the expression in TypeFilter
-                        // inline instead. Pushing a version in a branch scope causes
-                        // it to leak into the parent scope via version_for_scope's
-                        // descendant visibility, shadowing early-exit CastRemove
-                        // versions that should take precedence after the branch.
-                        // Hover display is handled by narrow_type_for_display which
-                        // consults type_filtered_symbols independently.
+                        // inline instead. Hover display is handled by
+                        // narrow_type_for_display which consults
+                        // type_filtered_symbols independently, so an inline wrap
+                        // suffices and keeps the version list shorter.
+                        // (Historically this also avoided a parent-scope leak via
+                        // version_for_scope's descendant visibility; the leak is
+                        // now blocked centrally by is_narrowing_only_version, so
+                        // the inline wrap here is belt-and-braces on that front.)
                         let ver = self.ir.version_for_scope(symbol_idx, scope_idx);
                         (ver, Some(guard))
                     }
