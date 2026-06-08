@@ -308,6 +308,7 @@ impl AnalysisResult {
             Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
                 self.get_check_time_type_args(*inner)
             }
+            Expr::AssignNarrow { inner, .. } => self.get_check_time_type_args(*inner),
             Expr::SymbolRef(sym_idx, ver) => {
                 let sym = self.sym(*sym_idx);
                 if let Some(version) = sym.versions.get(*ver) {

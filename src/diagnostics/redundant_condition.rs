@@ -425,6 +425,7 @@ fn collect_symbol_refs(ir: &crate::analysis::Ir, expr_id: ExprId, out: &mut Vec<
         Expr::SymbolRef(sym_idx, ver_idx) => out.push((*sym_idx, *ver_idx)),
         Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner)
         | Expr::Grouped(inner) => collect_symbol_refs(ir, *inner, out),
+        Expr::AssignNarrow { inner, .. } => collect_symbol_refs(ir, *inner, out),
         Expr::UnaryOp { op: Operator::Not, operand } => collect_symbol_refs(ir, *operand, out),
         Expr::BinaryOp {
             op: Operator::And | Operator::Or
@@ -544,6 +545,7 @@ fn has_uncertain_reassignment(
                 if ver.type_source.is_some_and(|ts| matches!(ir.expr(ts),
                     Expr::CastRemove(..) | Expr::TypeFilter(..)
                     | Expr::StripNil(_) | Expr::StripFalsy(_) | Expr::StripTruthy(_)
+                    | Expr::AssignNarrow { .. }
                     | Expr::OverloadNarrow { .. }
                 )) {
                     return false;

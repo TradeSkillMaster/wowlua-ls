@@ -1173,6 +1173,10 @@ pub(crate) enum Expr {
     StripNil(ExprId), // wraps an expression, strips nil from the resolved type
     StripFalsy(ExprId), // wraps an expression, strips nil and false from the resolved type
     StripTruthy(ExprId), // wraps an expression, keeps only falsy values (nil / false) — falsy-region narrowing
+    /// Post-assignment field narrowing: strips nil from `inner` only if the
+    /// assigned `rhs` resolves to a non-nil type. Emitted when a field access
+    /// follows a recent assignment to the same field chain in the same scope.
+    AssignNarrow { inner: ExprId, rhs: ExprId },
     /// Overload-based narrowing for multi-return siblings.
     /// Filters return-only overloads by narrowed siblings and computes the union
     /// of types at `ret_index` across compatible overloads.

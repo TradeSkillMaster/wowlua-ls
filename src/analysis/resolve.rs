@@ -337,6 +337,7 @@ impl<'a> Analysis<'a> {
                                 | Expr::OverloadNarrow { .. }
                                 | Expr::StripNil(_)
                                 | Expr::StripFalsy(_)
+                                | Expr::AssignNarrow { .. }
                                 | Expr::BinaryOp { .. }
                                 | Expr::BranchMerge(_)) {
                                 pending.push((SymbolIndex(si), vi));
@@ -1582,6 +1583,7 @@ impl<'a> Analysis<'a> {
         };
         match self.ir.expr(ts) {
             Expr::StripNil(_) | Expr::StripFalsy(_) | Expr::OverloadNarrow { .. }
+            | Expr::AssignNarrow { .. }
             | Expr::TypeFilter(..) | Expr::CastRemove(..) => true,
             Expr::SymbolRef(s, _) => *s == sym_idx,
             // A FunctionCall version that is part of a multi-return sibling group
@@ -2510,6 +2512,27 @@ impl<'a> Analysis<'a> {
                     other => other,
                 };
             }
+            Expr::AssignNarrow { inner, rhs } => {
+                let inner = *inner;
+                let rhs = *rhs;
+                // Conditional nil-strip: only strip when the assigned RHS resolves
+                // to a non-nil type. If RHS resolves to None or includes nil, leave
+                // the inner type unchanged (the field could legitimately be nil).
+                let inner_ty = self.resolve_expr(inner);
+                let rhs_ty = self.resolve_expr(rhs);
+                let strip = match rhs_ty {
+                    Some(ref t) => !t.contains_nil(),
+                    None => false,
+                };
+                return if strip {
+                    match inner_ty.map(|vt| vt.strip_nil()) {
+                        Some(ValueType::Union(ref members)) if members.is_empty() => None,
+                        other => other,
+                    }
+                } else {
+                    inner_ty
+                };
+            }
             Expr::StripFalsy(inner) => {
                 let inner = *inner;
                 return match self.resolve_expr(inner).map(|vt| vt.strip_falsy()) {
@@ -3339,9 +3362,13 @@ impl<'a> Analysis<'a> {
     /// field is declared as lateinit (`T!`).  Unwraps narrowing wrappers.
     fn is_lateinit_field_expr(&mut self, expr_id: ExprId) -> bool {
         let mut id = expr_id;
-        while let Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner)
-            | Expr::Grouped(inner) = &self.ir.exprs[id.val()] {
-            id = *inner;
+        loop {
+            match &self.ir.exprs[id.val()] {
+                Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner)
+                | Expr::Grouped(inner) => id = *inner,
+                Expr::AssignNarrow { inner, .. } => id = *inner,
+                _ => break,
+            }
         }
         let Expr::FieldAccess { table, field, .. } = &self.ir.exprs[id.val()] else { return false };
         // Clone to release borrow on self.ir.exprs before resolve_expr

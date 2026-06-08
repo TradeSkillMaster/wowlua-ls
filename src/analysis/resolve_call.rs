@@ -2196,12 +2196,13 @@ impl<'a> Analysis<'a> {
                 Some(e) => e.clone(),
                 None => continue,
             };
-            // Unwrap narrowing wrappers (StripNil/StripFalsy/Grouped) that may
-            // have been applied by condition-based narrowing.
+            // Unwrap narrowing wrappers (StripNil/StripFalsy/Grouped/AssignNarrow)
+            // that may have been applied by condition-based or assignment narrowing.
             let unwrapped = match &expr {
                 Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
                     self.ir.exprs.get(inner.val()).cloned()
                 }
+                Expr::AssignNarrow { inner, .. } => self.ir.exprs.get(inner.val()).cloned(),
                 _ => None,
             };
             let check_expr = unwrapped.as_ref().unwrap_or(&expr);
@@ -2616,6 +2617,7 @@ impl<'a> Analysis<'a> {
             Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
                 self.get_expr_type_args(inner)
             }
+            Expr::AssignNarrow { inner, .. } => self.get_expr_type_args(inner),
             Expr::SymbolRef(sym_idx, ver) => {
                 let sym = self.sym(sym_idx);
                 if let Some(version) = sym.versions.get(ver) {
@@ -3466,6 +3468,7 @@ impl<'a> Analysis<'a> {
                 Expr::Grouped(inner)
                 | Expr::StripFalsy(inner)
                 | Expr::StripNil(inner) => cur = *inner,
+                Expr::AssignNarrow { inner, .. } => cur = *inner,
                 _ => return None,
             }
         }
@@ -3862,6 +3865,7 @@ impl<'a> Analysis<'a> {
             Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
                 self.resolve_string_literal_through_expr(inner)
             }
+            Expr::AssignNarrow { inner, .. } => self.resolve_string_literal_through_expr(inner),
             _ => None,
         }
     }

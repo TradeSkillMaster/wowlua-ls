@@ -18,8 +18,12 @@ impl DiagnosticPass for WrongFlavorApi {
                 continue;
             }
             let mut callee_inner = *callee;
-            while let Expr::StripNil(inner) | Expr::StripFalsy(inner) = analysis.ir.expr(callee_inner) {
-                callee_inner = *inner;
+            loop {
+                match analysis.ir.expr(callee_inner) {
+                    Expr::StripNil(inner) | Expr::StripFalsy(inner) => callee_inner = *inner,
+                    Expr::AssignNarrow { inner, .. } => callee_inner = *inner,
+                    _ => break,
+                }
             }
             if let Expr::SymbolRef(sym_idx, _) = analysis.ir.expr(callee_inner) {
                 if !sym_idx.is_external() {

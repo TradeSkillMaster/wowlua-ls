@@ -413,8 +413,12 @@ impl<'a> Analysis<'a> {
                                     }
                                     if !self.ir.and_guarded_call_exprs.contains(&callee) {
                                         let mut inner = callee;
-                                        while let Expr::StripNil(i) | Expr::StripFalsy(i) = self.ir.expr(inner) {
-                                            inner = *i;
+                                        loop {
+                                            match self.ir.expr(inner) {
+                                                Expr::StripNil(i) | Expr::StripFalsy(i) => inner = *i,
+                                                Expr::AssignNarrow { inner: i, .. } => inner = *i,
+                                                _ => break,
+                                            }
                                         }
                                         if let Expr::SymbolRef(sym_idx, _) = self.ir.expr(inner)
                                             && (guard_sym == Some(*sym_idx)
@@ -942,6 +946,8 @@ impl<'a> Analysis<'a> {
                     return self.ir.push_expr(Expr::StripFalsy(expr_id));
                 } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                     return self.ir.push_expr(Expr::StripNil(expr_id));
+                } else if let Some(rhs_id) = self.get_field_assignment_narrow_rhs(sym_idx, &chain, scope_idx) {
+                    return self.ir.push_expr(Expr::AssignNarrow { inner: expr_id, rhs: rhs_id });
                 }
             }
             expr_id
@@ -1060,6 +1066,8 @@ impl<'a> Analysis<'a> {
                     return self.ir.push_expr(Expr::StripFalsy(expr_id));
                 } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                     return self.ir.push_expr(Expr::StripNil(expr_id));
+                } else if let Some(rhs_id) = self.get_field_assignment_narrow_rhs(sym_idx, &chain, scope_idx) {
+                    return self.ir.push_expr(Expr::AssignNarrow { inner: expr_id, rhs: rhs_id });
                 }
                 return expr_id;
             }

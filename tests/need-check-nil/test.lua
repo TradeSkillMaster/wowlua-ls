@@ -268,6 +268,22 @@ local function testNilNoNarrow(state)
 end
 _consume(testNilNoNarrow)
 
+-- ── Nilable-return assignment does NOT narrow ───────────────────────────
+-- A field assigned from a function whose return type includes nil must not
+-- be treated as non-nil afterwards — the runtime value could still be nil,
+-- so subsequent accesses still need a nil check.
+
+---@return NilCheckFrame?
+local function nilableFactory() return nil end
+
+---@param state NilCheckState
+local function testNilableAssignNoNarrow(state)
+    state.btn = nilableFactory()
+    state.btn:Show()
+    -- ^ diag: need-check-nil
+end
+_consume(testNilableAssignNoNarrow)
+
 -- ── Ensure-initialized narrows field ──────────────────────────────────
 -- `if not field then field = val end` guarantees non-nil after
 

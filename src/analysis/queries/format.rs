@@ -312,6 +312,24 @@ pub(super) fn resolve_expr_type_impl(
                 other => other,
             }
         }
+        Expr::AssignNarrow { inner, rhs } => {
+            let inner = *inner;
+            let rhs = *rhs;
+            let inner_ty = resolve_expr_type_impl(ir, resolved_expr_cache, inner, visited, depth + 1);
+            let rhs_ty = resolve_expr_type_impl(ir, resolved_expr_cache, rhs, visited, depth + 1);
+            let strip = match rhs_ty {
+                Some(ref t) => !t.contains_nil(),
+                None => false,
+            };
+            if strip {
+                match inner_ty.map(|vt| vt.strip_nil()) {
+                    Some(ValueType::Union(ref members)) if members.is_empty() => None,
+                    other => other,
+                }
+            } else {
+                inner_ty
+            }
+        }
         Expr::StripFalsy(inner) => {
             let inner = *inner;
             match resolve_expr_type_impl(ir, resolved_expr_cache, inner, visited, depth + 1).map(|vt| vt.strip_falsy()) {
@@ -649,6 +667,7 @@ impl AnalysisResult {
             Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
                 self.get_type_args_for_expr(inner)
             }
+            Expr::AssignNarrow { inner, .. } => self.get_type_args_for_expr(inner),
             Expr::SymbolRef(sym_idx, ver) => {
                 let sym = self.sym(sym_idx);
                 if let Some(version) = sym.versions.get(ver) {

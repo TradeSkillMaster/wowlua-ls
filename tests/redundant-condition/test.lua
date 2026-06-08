@@ -818,3 +818,42 @@ end
 local suppressed
 ---@diagnostic disable-next-line: redundant-condition
 if suppressed then end
+
+-- ── Field assigned from nilable function is NOT always-truthy ───────────────
+-- Regression: assigning a nilable function-return to a field used to narrow
+-- the field to non-nil, so a subsequent `if not field` was flagged as
+-- always-false. The narrowing must be conditional on RHS nilability.
+
+---@class RcFrame
+---@field id number
+
+---@class RcState
+---@field future RcFrame?
+
+---@return RcFrame?
+local function maybeFrame() return nil end
+
+---@param state RcState
+local function testNilableFieldAssign(state)
+    state.future = maybeFrame()
+    if not state.future then
+        _use("nil")
+    end
+end
+_use(testNilableFieldAssign)
+
+-- A non-nil function-return assigned to a field DOES narrow, so the
+-- subsequent `if not field` IS always-false (current narrowing behavior).
+
+---@return RcFrame
+local function alwaysFrame() return { id = 1 } end
+
+---@param state RcState
+local function testNonNilFieldAssign(state)
+    state.future = alwaysFrame()
+    if not state.future then
+        -- ^ diag: redundant-condition
+        _use("nil")
+    end
+end
+_use(testNonNilFieldAssign)

@@ -1833,6 +1833,7 @@ impl<'a> Analysis<'a> {
                 // it, so see through them too — otherwise a directly-guarded
                 // sibling can never get a correlated OverloadNarrow.
                 Expr::StripNil(inner) | Expr::StripFalsy(inner) => { expr = self.ir.expr(*inner); }
+                Expr::AssignNarrow { inner, .. } => { expr = self.ir.expr(*inner); }
                 // Cast/type-filter versions come from a value-equality or type()
                 // guard on the sibling itself (e.g. `if name ~= "X" then`, which
                 // pushes a CastRemove). These refine the same multi-return value
@@ -2407,6 +2408,31 @@ impl<'a> Analysis<'a> {
                 self.narrowing.narrowed.entry(scope_idx).or_default()
                     .insert(NarrowTarget::Field(sym_idx, chain));
             }
+    }
+
+    /// Record an assignment-based field narrowing: the field `names` was just
+    /// assigned the value of `rhs_expr_id` in `scope_idx`. The narrowing is
+    /// conditional — at resolution time, the field's type is stripped of nil only
+    /// when the RHS resolves to a non-nil type (avoids false positives when a
+    /// nilable function return is stored into a field).
+    ///
+    /// Also clears any prior guard-based narrowing in the same scope, since the
+    /// assignment supersedes earlier narrowing (the new value's nilability is
+    /// what subsequent reads should reflect).
+    pub(super) fn record_field_assignment_narrow_rhs(&mut self, names: &[String], scope_idx: ScopeIndex, rhs_expr_id: crate::types::ExprId) {
+        if names.len() < 2 { return; }
+        let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) else { return };
+        let chain = names[1..].to_vec();
+        let key = NarrowTarget::Field(sym_idx, chain);
+        // Assignment supersedes any prior guard-based narrowing in this scope.
+        if let Some(set) = self.narrowing.narrowed.get_mut(&scope_idx) {
+            set.remove(&key);
+        }
+        if let Some(set) = self.narrowing.falsy_narrowed.get_mut(&scope_idx) {
+            set.remove(&key);
+        }
+        self.narrowing.field_assignment_narrowed.entry(scope_idx).or_default()
+            .insert(key, rhs_expr_id);
     }
 
     /// Like `try_narrow_field` but also marks the field chain as falsy-narrowed
@@ -3067,6 +3093,7 @@ impl<'a> Analysis<'a> {
                     });
                 }
                 Expr::StripFalsy(inner) | Expr::StripNil(inner) => { current = *inner; }
+                Expr::AssignNarrow { inner, .. } => { current = *inner; }
                 Expr::SymbolRef(sym_idx, ver) => {
                     let ver_data = self.sym(*sym_idx).versions.get(*ver)?;
                     current = ver_data.type_source?;
@@ -3098,6 +3125,9 @@ impl<'a> Analysis<'a> {
                 }).collect()
             }
             Expr::StripFalsy(inner) | Expr::StripNil(inner) | Expr::CastRemove(inner, _) => {
+                self.resolve_expr_to_tables_inner(*inner, depth + 1)
+            }
+            Expr::AssignNarrow { inner, .. } => {
                 self.resolve_expr_to_tables_inner(*inner, depth + 1)
             }
             Expr::TypeFilter(inner, _) => {

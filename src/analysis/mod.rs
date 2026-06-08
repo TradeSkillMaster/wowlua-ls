@@ -162,6 +162,13 @@ pub(crate) struct NarrowingState {
     /// Checked (with scope-chain walk) to skip stale narrowing after assignment.
     /// Maps to the byte offset of the reassignment node.
     pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashMap<SymbolIndex, u32>>,
+    /// Post-assignment field narrowing: for each field chain assigned in a scope,
+    /// records the RHS expression of the most recent assignment. At lowering time,
+    /// subsequent field-access reads emit `Expr::AssignNarrow { inner, rhs }`,
+    /// which conditionally strips nil only when the RHS resolves to a non-nil type.
+    /// Tracked separately from `narrowed` (which represents guard-based, definitive
+    /// narrowing) because the RHS may itself be nilable.
+    pub(crate) field_assignment_narrowed: HashMap<ScopeIndex, HashMap<NarrowTarget, crate::types::ExprId>>,
     /// Symbols that were falsy-narrowed while still on their original version
     /// (before any reassignment). Used by backward param-type inference to
     /// distinguish truthiness tests on the original parameter (valid nil
@@ -217,6 +224,14 @@ impl NarrowingState {
 
     pub(crate) fn is_field_falsy_narrowed(&self, scopes: &[Scope], sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> bool {
         scope_set_contains(&self.falsy_narrowed, scopes, &NarrowTarget::Field(sym_idx, chain.to_vec()), scope_idx)
+    }
+
+    /// Returns the RHS expr of the most recent assignment to this field chain
+    /// (innermost scope wins). Used by lowering to emit `Expr::AssignNarrow`.
+    pub(crate) fn get_field_assignment_narrow_rhs(&self, scopes: &[Scope], sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<crate::types::ExprId> {
+        let key = NarrowTarget::Field(sym_idx, chain.to_vec());
+        ancestor_scopes(scopes, scope_idx)
+            .find_map(|si| self.field_assignment_narrowed.get(&si)?.get(&key).copied())
     }
 
     /// Whether a scope has a fresh narrowing entry for `sym_idx` (a re-narrowing
@@ -1059,6 +1074,7 @@ impl Ir {
             Expr::Grouped(inner)
             | Expr::StripNil(inner)
             | Expr::StripFalsy(inner) => self.find_table_index(*inner),
+            Expr::AssignNarrow { inner, .. } => self.find_table_index(*inner),
             _ => None,
         }
     }
@@ -1069,6 +1085,7 @@ impl Ir {
             Expr::FieldAccess { table, .. } => self.find_root_symbol(*table),
             Expr::Grouped(inner) => self.find_root_symbol(*inner),
             Expr::StripNil(inner) | Expr::StripFalsy(inner) => self.find_root_symbol(*inner),
+            Expr::AssignNarrow { inner, .. } => self.find_root_symbol(*inner),
             Expr::BranchMerge(exprs) => exprs.first().and_then(|e| self.find_root_symbol(*e)),
             _ => None,
         }
@@ -1106,6 +1123,9 @@ impl Ir {
                 Expr::Grouped(inner) |
                 Expr::StripNil(inner) |
                 Expr::StripFalsy(inner) => {
+                    current = *inner;
+                }
+                Expr::AssignNarrow { inner, .. } => {
                     current = *inner;
                 }
                 _ => return None,
@@ -1267,11 +1287,44 @@ impl Ir {
                 {
                     continue;
                 }
+                // Skip narrowing-only versions whose scope is a strict descendant.
+                // These represent conditional refinements created inside a branch
+                // (e.g. sibling OverloadNarrow from `if a then` narrowing `b`); a
+                // query from the parent scope (textually after the branch) must
+                // not see them. Real assignments inside a branch are handled by
+                // BranchMerge, which pushes a merged version in the parent scope.
+                if !self.is_ancestor_scope(ver.created_in_scope, scope_idx)
+                    && self.is_narrowing_only_version(sym_idx, i)
+                {
+                    continue;
+                }
                 return i;
             }
         }
         // Fallback: always return version 0 (original definition)
         0
+    }
+
+    /// True when version `ver_idx` of `sym_idx` is a synthetic narrowing-only
+    /// version (OverloadNarrow, TypeFilter, CastRemove, or a StripNil/StripFalsy
+    /// that wraps a SymbolRef to the same symbol). These versions refine the
+    /// type for a control-flow region rather than reassigning the symbol.
+    /// Mirrors the predicate used by the BranchMerge pass in build_ir.
+    pub(crate) fn is_narrowing_only_version(&self, sym_idx: SymbolIndex, ver_idx: usize) -> bool {
+        let sym = &self.symbols[sym_idx.val()];
+        let Some(ts) = sym.versions[ver_idx].type_source else { return false; };
+        match self.expr(ts) {
+            Expr::OverloadNarrow { .. }
+            | Expr::TypeFilter(..)
+            | Expr::CastRemove(..) => true,
+            Expr::StripNil(inner) | Expr::StripFalsy(inner) => {
+                matches!(self.expr(*inner), Expr::SymbolRef(s, _) if *s == sym_idx)
+            }
+            Expr::AssignNarrow { inner, .. } => {
+                matches!(self.expr(*inner), Expr::SymbolRef(s, _) if *s == sym_idx)
+            }
+            _ => false,
+        }
     }
 
     fn is_ancestor_scope(&self, ancestor: ScopeIndex, descendant: ScopeIndex) -> bool {
@@ -2195,6 +2248,10 @@ impl<'a> Analysis<'a> {
 
     pub(crate) fn is_field_falsy_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
         self.narrowing.is_field_falsy_narrowed(&self.ir.scopes, sym_idx, fields, scope_idx)
+    }
+
+    pub(crate) fn get_field_assignment_narrow_rhs(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> Option<crate::types::ExprId> {
+        self.narrowing.get_field_assignment_narrow_rhs(&self.ir.scopes, sym_idx, fields, scope_idx)
     }
 
     /// Look up the active flavor mask at `scope_idx` by walking ancestor

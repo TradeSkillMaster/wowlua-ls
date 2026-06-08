@@ -29,6 +29,22 @@ if a2 then
     --        ^ hover: (local) b2: number  def: local
 end
 
+-- ── Sibling narrowing does NOT leak past a non-exiting branch ───────────
+-- Regression: `if a then ... end` (no early exit) narrows the sibling `b`
+-- inside the then-branch via an OverloadNarrow version pushed in the inner
+-- scope. References AFTER the if-block must see the un-narrowed (optional)
+-- type — the narrowing was conditional on `a` being truthy at that point,
+-- which is no longer guaranteed once the branch ends.
+local a2x, b2x = allOrNothing()
+if a2x then
+    local _ = b2x
+    --        ^ hover: (local) b2x: number
+end
+local _ = a2x
+--        ^ hover: (local) a2x: string?
+local _ = b2x
+--        ^ hover: (local) b2x: number?
+
 -- ── Nil comparison narrows siblings ─────────────────────────────────────
 
 local a3, b3 = allOrNothing()

@@ -503,6 +503,9 @@ pub(crate) fn unwrap_to_inner_expr(exprs: &[Expr], mut id: ExprId) -> ExprId {
             Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner) | Expr::Grouped(inner) => {
                 id = *inner;
             }
+            Expr::AssignNarrow { inner, .. } => {
+                id = *inner;
+            }
             _ => return id,
         }
     }

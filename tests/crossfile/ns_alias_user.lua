@@ -27,4 +27,4 @@ local rid = host.result.id
 local NoSuchLib = nil
 host.bad = NoSuchLib
 local b = host.bad
---    ^ hover: (local) b: ?  def: local
+--    ^ hover: (local) b: nil  def: local

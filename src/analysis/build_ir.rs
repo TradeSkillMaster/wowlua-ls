@@ -151,27 +151,10 @@ impl<'a> Analysis<'a> {
                                     // TypeFilter, CastRemove). Counting these as "branch
                                     // assignments" would produce spurious correlated-local groups
                                     // for variables that are merely narrowed (not assigned) inside
-                                    // the branch. Note: SymbolRef IS intentionally kept — real
-                                    // assignments like `a = aIn` produce a SymbolRef type_source.
-                                    //
-                                    // For StripNil/StripFalsy, only skip when wrapping a
-                                    // SymbolRef to the SAME symbol — that's a pure narrowing
-                                    // version (push_strip_nil_version/push_strip_falsy_version).
-                                    // When the inner expr is something else (FieldAccess,
-                                    // FunctionCall, etc.), it's a real assignment whose RHS
-                                    // was narrowed by the scope's control flow, and must be
-                                    // counted as a branch assignment for the merge.
-                                    if ver.type_source.is_some_and(|ts| {
-                                        match self.ir.expr(ts) {
-                                            Expr::OverloadNarrow { .. }
-                                            | Expr::TypeFilter(..)
-                                            | Expr::CastRemove(..) => true,
-                                            Expr::StripNil(inner) | Expr::StripFalsy(inner) => {
-                                                matches!(self.ir.expr(*inner), Expr::SymbolRef(s, _) if *s == sym_idx)
-                                            }
-                                            _ => false,
-                                        }
-                                    }) {
+                                    // the branch. Real assignments (SymbolRef, FieldAccess,
+                                    // FunctionCall, etc.) are NOT narrowing-only and must be
+                                    // counted as branch assignments for the merge.
+                                    if self.ir.is_narrowing_only_version(sym_idx, ver_idx) {
                                         continue;
                                     }
                                     sym_branch_vers.entry(sym_idx)
@@ -1712,11 +1695,16 @@ impl<'a> Analysis<'a> {
                                         continue;
                                     }
 
+                                    // RHS expression id for assignment-based field narrowing
+                                    // (recorded after the branches below). Each branch sets this
+                                    // when it produces a value-bearing IR expression.
+                                    let mut narrow_rhs_expr_id: Option<crate::types::ExprId> = None;
                                     if let Some(Expression::Function(func)) = expression {
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                                         let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
                                         let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
+                                        narrow_rhs_expr_id = Some(func_def_expr);
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
                                             if names.len() > 2 {
                                                 // Deep chain (e.g. self._plot.method = function ...):
@@ -1815,6 +1803,7 @@ impl<'a> Analysis<'a> {
                                         }
                                     } else if let Some(expr) = expression {
                                         let mut expr_id = self.lower_expression(expr, scope_idx);
+                                        narrow_rhs_expr_id = Some(expr_id);
                                         // Cache for multi-return if this is the last RHS and
                                         // there are more LHS identifiers (e.g. self._h, self._s = func())
                                         if index == expressions.len() - 1 && identifiers.len() > expressions.len()
@@ -2147,10 +2136,14 @@ impl<'a> Analysis<'a> {
                                         }
                                     }
                                     // Narrow the field after assignment so subsequent
-                                    // accesses don't warn about nil (skip literal nil).
+                                    // accesses don't warn about nil (skip literal nil). The
+                                    // narrowing is conditional on the RHS resolving to non-nil
+                                    // — `Expr::AssignNarrow` strips nil only when the recorded
+                                    // RHS resolves to a non-nil type. Without the RHS expr id
+                                    // (rare branches with no produced IR), no narrowing.
                                     let is_nil_literal = matches!(expression, Some(Expression::Literal(lit)) if lit.is_nil());
-                                    if !is_nil_literal {
-                                        self.try_narrow_field(&names, scope_idx);
+                                    if !is_nil_literal && let Some(rhs_id) = narrow_rhs_expr_id {
+                                        self.record_field_assignment_narrow_rhs(&names, scope_idx, rhs_id);
                                     }
                                 } else if ident.is_indexed_expression() && !g_redirected {
                                     // Bracket-indexed assignment on a single-name variable

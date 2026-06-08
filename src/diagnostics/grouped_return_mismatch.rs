@@ -73,6 +73,12 @@ impl DiagnosticPass for GroupedReturnMismatch {
                                         _ => return None,
                                     }
                                 }
+                                Expr::AssignNarrow { inner, .. } => {
+                                    match analysis.expr(*inner) {
+                                        Expr::SymbolRef(s, v) => (*s, *v),
+                                        _ => return None,
+                                    }
+                                }
                                 _ => return None,
                             };
                             let sym = analysis.sym(sym_idx);
@@ -316,6 +322,9 @@ fn collect_call_ranges_from_expr(
             }
         }
         Expr::StripNil(inner) | Expr::StripFalsy(inner) => {
+            collect_call_ranges_from_expr(*inner, analysis, ranges, depth + 1);
+        }
+        Expr::AssignNarrow { inner, .. } => {
             collect_call_ranges_from_expr(*inner, analysis, ranges, depth + 1);
         }
         Expr::BranchMerge(exprs) => {

@@ -35,6 +35,7 @@ fn rhs_reads_field(analysis: &AnalysisResult, expr_id: ExprId, root_name: &str, 
             rhs_reads_field(analysis, *inner, root_name, field_name, depth + 1)
         }
         Expr::OverloadNarrow { inner, .. } => rhs_reads_field(analysis, *inner, root_name, field_name, depth + 1),
+        Expr::AssignNarrow { inner, .. } => rhs_reads_field(analysis, *inner, root_name, field_name, depth + 1),
         Expr::BranchMerge(exprs) => exprs.iter().any(|e| rhs_reads_field(analysis, *e, root_name, field_name, depth + 1)),
         _ => false,
     }
