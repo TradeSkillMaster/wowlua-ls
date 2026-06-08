@@ -9,7 +9,7 @@ local HopService = {}
 
 local w = HopService:Fetch("x")
 --    ^ hover: (local) w: HopWidget?  def: local
--- `Fetch` returns the call expression `self.repo:GetItem(key)` directly, so it
--- forwards GetItem's returns as a vararg passthrough (`...HopWidget?`); the first
--- slot still resolves precisely to `HopWidget?` for the caller's `w`.
---                   ^ hover: (method) function HopService:Fetch(key)\n-> ...HopWidget?  def: external
+-- `Fetch` returns the call expression `self.repo:GetItem(key)` directly. The
+-- lazy resolver recurses through both hops and recovers GetItem's precise
+-- single return `HopWidget?` for the caller's `w` and the method signature.
+--                   ^ hover: (method) function HopService:Fetch(key)\n-> HopWidget?  def: external

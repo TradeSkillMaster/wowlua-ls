@@ -70,6 +70,19 @@ impl AnalysisResult {
                 .find_map(|v| v.resolved_type.as_ref())?;
             match ver {
                 ValueType::Function(Some(idx)) => *idx,
+                ValueType::FunctionSig(shape) => {
+                    // Cross-file inline signature — no arena entry; build the
+                    // signature directly from the shape and return early.
+                    let shape = shape.clone();
+                    let sig = self.build_signature_info_from_shape(&shape, false);
+                    let param_count = sig.params.len();
+                    let is_vararg = shape.is_vararg;
+                    let has_args = arg_list.children().next().is_some();
+                    let arg_count = if has_args { (total_commas + 1) as usize } else { 0 };
+                    let active_signature = if arg_count == 0 { Some(0) }
+                        else { Some(Self::best_matching_signature(&[(param_count, is_vararg)], arg_count) as u32) };
+                    return Some(SignatureHelpResult { signatures: vec![sig], active_signature, active_parameter });
+                }
                 _ => return None,
             }
         } else {
@@ -89,6 +102,19 @@ impl AnalysisResult {
             let ft = self.resolve_expr_type(field_expr)?;
             match ft {
                 ValueType::Function(Some(idx)) => idx,
+                ValueType::FunctionSig(shape) => {
+                    // Cross-file inline signature stored in a field/method — build
+                    // the signature directly from the shape and return early.
+                    let is_colon = ident.is_call_to_self();
+                    let sig = self.build_signature_info_from_shape(&shape, is_colon);
+                    let param_count = sig.params.len();
+                    let is_vararg = shape.is_vararg;
+                    let has_args = arg_list.children().next().is_some();
+                    let arg_count = if has_args { (total_commas + 1) as usize } else { 0 };
+                    let active_signature = if arg_count == 0 { Some(0) }
+                        else { Some(Self::best_matching_signature(&[(param_count, is_vararg)], arg_count) as u32) };
+                    return Some(SignatureHelpResult { signatures: vec![sig], active_signature, active_parameter });
+                }
                 _ => return None,
             }
         };
@@ -231,6 +257,37 @@ impl AnalysisResult {
             format!("fun({}): {}", params.join(", "), join_returns(&rets))
         };
 
+        let param_docs = vec![None; params.len()];
+        SignatureInfo { label, params, param_docs, doc: None }
+    }
+
+    /// Build a [`SignatureInfo`] from an inline [`crate::types::FunctionShape`]
+    /// (carried by `ValueType::FunctionSig`). Used when the callee resolves to a
+    /// cross-file returned function whose signature is stored inline rather than
+    /// in the per-file function arena.
+    pub(super) fn build_signature_info_from_shape(
+        &self,
+        shape: &crate::types::FunctionShape,
+        skip_self: bool,
+    ) -> SignatureInfo {
+        let mut params: Vec<String> = shape.params.iter()
+            .filter(|p| !(skip_self && p.name == "self"))
+            .map(|p| {
+                let suffix = if p.optional { "?" } else { "" };
+                format!("{}{}: {}", p.name, suffix, self.format_type_depth(&p.ty, 1))
+            })
+            .collect();
+        if shape.is_vararg {
+            params.push("...".to_string());
+        }
+        let rets: Vec<String> = shape.returns.iter()
+            .map(|r| self.format_value_type_depth(r, 1))
+            .collect();
+        let label = if rets.is_empty() {
+            format!("fun({})", params.join(", "))
+        } else {
+            format!("fun({}): {}", params.join(", "), join_returns(&rets))
+        };
         let param_docs = vec![None; params.len()];
         SignatureInfo { label, params, param_docs, doc: None }
     }

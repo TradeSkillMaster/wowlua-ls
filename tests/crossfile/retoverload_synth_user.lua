@@ -4,12 +4,13 @@
 
 local function caller()
     local items, groups, count = CrossFileSynthDecode("x")
-    -- Pre-narrow types: synthesized-overload union collapses to `any` because
-    -- `any` already encompasses `nil`.
+    -- Pre-narrow types: the first destructure slot reads the collapsed base
+    -- return (`any`, since `any` already encompasses `nil`), while sibling slots
+    -- read the per-slot overload union, which lifts the optional table to `any?`.
     local _ = items
     --        ^ hover: (local) items: any
     local _ = groups
-    --        ^ hover: (local) groups: any
+    --        ^ hover: (local) groups: any?
 
     if not items then return end
     -- After the early-exit guard, sibling narrowing propagates: `items` is

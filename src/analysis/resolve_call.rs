@@ -131,6 +131,11 @@ impl<'a> Analysis<'a> {
         let mut union_alt_func_indices: Vec<FunctionIndex> = Vec::new();
         let func_idx = match func_type {
             ValueType::Function(Some(idx)) => idx,
+            ValueType::FunctionSig(ref shape) => {
+                // Inline cross-file function signature — no arena entry, so bypass
+                // the full machinery and return the return type directly from the shape.
+                return shape.returns.get(*ret_index).cloned();
+            }
             ValueType::Table(Some(table_idx)) => {
                 if let Some(fi) = self.table(table_idx).call_func {
                     call_func_table_idx = Some(table_idx);
@@ -149,7 +154,19 @@ impl<'a> Analysis<'a> {
                     ValueType::Function(Some(idx)) => Some(*idx),
                     _ => None,
                 }).collect();
-                if all_funcs.is_empty() { return None; }
+                if all_funcs.is_empty() {
+                    // No Function(Some(idx)) members — check for inline FunctionSig members
+                    // (e.g. `fun(a: string)?` is `FunctionSig | nil` after narrowing strips nil).
+                    let sig_rets: Vec<ValueType> = types.iter().filter_map(|t| match t {
+                        ValueType::FunctionSig(shape) => shape.returns.get(*ret_index).cloned(),
+                        _ => None,
+                    }).collect();
+                    return match sig_rets.len() {
+                        0 => None,
+                        1 => Some(sig_rets.into_iter().next().unwrap()),
+                        _ => Some(ValueType::Union(sig_rets)),
+                    };
+                }
                 if all_funcs.len() > 1 {
                     union_alt_func_indices = all_funcs[1..].to_vec();
                 }
@@ -1733,29 +1750,15 @@ impl<'a> Analysis<'a> {
         // in `func.rets` (from build_ir walking the body), but the annotation
         // is authoritative — mixing body-inferred types in would widen the
         // declared return type.
-        // For deferred (body-derived) workspace functions, resolve the precise
-        // cross-file return types lazily; otherwise borrow the stored ones. The
-        // common path stays a cheap borrow (no clone).
-        // For deferred (body-derived) workspace functions, resolve precise
-        // return types and overloads via a single cache lookup, avoiding
-        // redundant accesses when both are needed.
-        let deferred = if func_idx.is_external() && self.ir.ext.deferred_returns.contains(&func_idx) {
-            self.ir.effective_deferred_sig(func_idx)
-        } else {
-            None
-        };
-        let func_return_annotations: std::borrow::Cow<[ValueType]> = match &deferred {
-            Some(sig) => std::borrow::Cow::Owned(sig.returns.clone()),
-            None => std::borrow::Cow::Borrowed(&self.func(func_idx).return_annotations),
-        };
+        // For deferred (body-derived) workspace functions, warm the per-file
+        // overlay with the precise harvested signature so the plain `func()`
+        // reads below see the cross-file inferred returns and correlated
+        // overloads. A no-op for non-deferred functions and already-warm slots.
+        self.ir.ensure_overlay(func_idx);
+        let func_return_annotations = &self.func(func_idx).return_annotations;
         let has_return_annotations = !func_return_annotations.is_empty();
-        // Use effective overloads (deferred or stored) consistently for the
-        // synthesized_return_only check and the return-only type collection.
-        let effective_overloads = deferred
-            .map(|sig| std::borrow::Cow::Owned(sig.overloads))
-            .unwrap_or_else(|| std::borrow::Cow::Borrowed(&self.func(func_idx).overloads));
         let synthesized_return_only = !has_return_annotations
-            && effective_overloads.iter().any(|o| o.is_return_only);
+            && self.func(func_idx).overloads.iter().any(|o| o.is_return_only);
         let ret_type = if has_return_annotations {
             let has_vararg_return = self.func(func_idx).has_vararg_return;
             func_return_annotations.get(ret_index).cloned()
@@ -1773,7 +1776,7 @@ impl<'a> Analysis<'a> {
             // tuple-union never produces — but keeping the lookup
             // symmetric with `resolve_overload_narrow` avoids a
             // footgun if that invariant ever changes.)
-            let return_only_types: Vec<ValueType> = effective_overloads.iter()
+            let return_only_types: Vec<ValueType> = self.func(func_idx).overloads.iter()
                 .filter(|o| o.is_return_only)
                 .map(|o| o.return_type_at(ret_index))
                 .collect();

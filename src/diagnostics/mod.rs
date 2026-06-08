@@ -477,7 +477,7 @@ fn base_kind(t: &ValueType) -> u8 {
         ValueType::Number | ValueType::NumberLiteral(_) => 2,
         ValueType::String(_) => 3,
         ValueType::Table(_) => 4,
-        ValueType::Function(_) => 5,
+        ValueType::Function(_) | ValueType::FunctionSig(_) => 5,
         ValueType::Userdata => 6,
         ValueType::Thread => 7,
         // Should not reach here for these (handled above), but give stable tags.

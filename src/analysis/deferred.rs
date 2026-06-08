@@ -1,22 +1,26 @@
 //! Lazy, memoized cross-file resolution of body-derived return types.
 //!
 //! When a workspace function has no explicit `@return`, the coarse scan path
-//! (`build_func_external`) bakes a low-fidelity return type into the external
-//! `Function.return_annotations` (field/bracket/method access → `any`). The
-//! per-file engine, however, infers the precise type at the definition site.
+//! (`build_func_external`) only records that the function *exists* and is
+//! deferred — it no longer infers any return type. The real per-file engine is
+//! the single source of truth for body-derived returns; this module runs it
+//! lazily so cross-file callers see exactly the definition-site type.
 //!
-//! This module closes the gap **on demand**: the first time a cross-file caller
-//! reads such a function's return type, we re-run the real whole-file engine on
-//! the defining file, harvest the precise return types for *every* deferred
-//! function in that file at once, lift them into external-index space, and
-//! memoize the result behind the shared `Arc<PreResolvedGlobals>`. A wholesale
-//! `Arc` rebuild (on edits) naturally drops the memo.
+//! The first time a cross-file caller reads such a function's return type, we
+//! re-run the real whole-file engine on the defining file, harvest the precise
+//! return types for *every* deferred function in that file at once, lift them
+//! into external-index space, and memoize the result behind the shared
+//! `Arc<PreResolvedGlobals>`. A wholesale `Arc` rebuild (on edits) naturally
+//! drops the memo.
 //!
-//! Any coarse slot the scanner left as `any` is upgraded to the engine's
-//! precise inferred type — class instances, primitives, and unions alike — so
-//! cross-file callers see the same type as the definition site. Slots the
-//! coarse path resolved concretely stay authoritative (they capture things the
-//! cross-file lift cannot, e.g. a returned local function's full signature).
+//! The harvested per-slot summary mirrors the definition-site display
+//! (`inferred_return_types`): return-only overloads union per slot, and
+//! `implicit_nil_return` paths make slots optional. A returned *local* function
+//! value is lifted losslessly into an inline `ValueType::FunctionSig` carrying
+//! its signature, so cross-file callers see the precise `fun(...)` rather than a
+//! bare `function`. Everything else nameable (class instances, primitives,
+//! unions) is preserved; anonymous tables still decay to `any` (their arena
+//! index is meaningless cross-file).
 //!
 //! Resolution is re-entrant: when the nested analysis reads a deferred return
 //! defined in *another* file it recurses, so multi-hop chains resolve precisely.
@@ -28,7 +32,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::analysis::queries::return_type_at_slot;
 use crate::analysis::{Analysis, AnalysisConfig, Ir};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::types::{FunctionIndex, ResolvedOverload, ValueType};
@@ -54,38 +57,89 @@ thread_local! {
 }
 
 impl Ir {
-    /// Resolve the precise deferred signature bundle (returns + overloads) for
-    /// `func_idx` in one cache lookup. Returns `None` when the function isn't
-    /// deferred or can't be resolved (callers fall back to stored values).
-    /// Callers that need both returns AND overloads should use this to avoid a
-    /// redundant second cache lookup.
-    pub(crate) fn effective_deferred_sig(&self, func_idx: FunctionIndex) -> Option<DeferredSig> {
-        resolve_deferred_sig(&self.ext, func_idx)
-    }
-
-    /// Effective return types for `func_idx`: the lazily-resolved precise types
-    /// when the function is a deferred (body-derived) workspace function,
-    /// otherwise the function's stored `return_annotations`. Returns an owned
-    /// `Vec` so callers don't fight the borrow checker against `&self`.
-    pub(crate) fn effective_return_annotations(&self, func_idx: FunctionIndex) -> Vec<ValueType> {
-        if func_idx.is_external()
-            && let Some(sig) = resolve_deferred_sig(&self.ext, func_idx)
-        {
-            return sig.returns;
+    /// Ensure the per-file `overlay` holds a precise `Function` for `func_idx`
+    /// when it is a deferred (body-derived) external function. Idempotent: an
+    /// overlay hit, a non-external index, or a non-deferred/unresolvable function
+    /// is a no-op.
+    ///
+    /// The overlay value is the coarse external `Function` (which already carries
+    /// the correct ext-space `args`/`scope`/`def_node` and annotation-derived
+    /// params) with its `return_annotations` and `overloads` replaced by the
+    /// precise types harvested from the defining file. After this call, `func()`
+    /// transparently returns the precise function for `func_idx`, so resolution,
+    /// diagnostics, hover, and signature help all see the same body-derived type
+    /// the definition site infers — no `effective_*` plumbing required.
+    pub(crate) fn ensure_overlay(&mut self, func_idx: FunctionIndex) {
+        if !func_idx.is_external() || self.overlay.contains_key(&func_idx) {
+            return;
         }
-        self.func(func_idx).return_annotations.clone()
+        let Some(sig) = resolve_deferred_sig(&self.ext, func_idx) else {
+            return;
+        };
+        let mut precise = self.ext.functions[func_idx.ext_offset()].clone();
+        precise.return_annotations = sig.returns;
+        precise.overloads = sig.overloads;
+        self.overlay.insert(func_idx, precise);
     }
+}
 
-    /// Effective overloads for `func_idx`: the lazily-resolved precise correlated
-    /// "case" overloads when the function is deferred, otherwise the stored ones.
-    /// One harvest warms both returns *and* overloads (see `resolve_deferred_sig`).
-    pub(crate) fn effective_overloads(&self, func_idx: FunctionIndex) -> Vec<ResolvedOverload> {
-        if func_idx.is_external()
-            && let Some(sig) = resolve_deferred_sig(&self.ext, func_idx)
-        {
-            return sig.overloads;
+impl Analysis<'_> {
+    /// After the fixpoint, ensure the per-file overlay holds precise `Function`s
+    /// for every deferred external function this file references — through call
+    /// resolutions, symbol-version resolved types, and cached expression types.
+    /// Resolve-time consumers already warm the overlay for inference precision;
+    /// this finalization additionally covers display-only references (a function
+    /// value bound to a local, hovered but never called) so query-time hover and
+    /// out-of-scope diagnostic passes read the precise type without harvesting at
+    /// query time (queries run `&self` and cannot mutate the overlay).
+    pub(crate) fn populate_deferred_overlay(&mut self) {
+        // Collect candidate external function indices first, so we don't hold a
+        // borrow of `self.ir` across the mutating `ensure_overlay` calls.
+        let mut candidates: HashSet<FunctionIndex> = HashSet::new();
+        for res in self.ir.call_resolutions.values() {
+            if res.func_idx.is_external() {
+                candidates.insert(res.func_idx);
+            }
         }
-        self.func(func_idx).overloads.clone()
+        for sym in &self.ir.symbols {
+            for ver in &sym.versions {
+                if let Some(t) = &ver.resolved_type {
+                    collect_external_func_indices(t, &mut candidates);
+                }
+            }
+        }
+        for t in self.resolved_expr_cache.iter().flatten() {
+            collect_external_func_indices(t, &mut candidates);
+        }
+        for f in candidates {
+            self.ir.ensure_overlay(f);
+        }
+    }
+}
+
+/// Collect every external `Function(Some(idx))` index reachable in `ty` (top
+/// level and inside unions/intersections) into `out`.
+fn collect_external_func_indices(ty: &ValueType, out: &mut HashSet<FunctionIndex>) {
+    match ty {
+        ValueType::Function(Some(idx)) if idx.is_external() => {
+            out.insert(*idx);
+        }
+        ValueType::Union(members) | ValueType::Intersection(members) => {
+            for m in members {
+                collect_external_func_indices(m, out);
+            }
+        }
+        ValueType::FunctionSig(shape) => {
+            // Recurse into inline function signature so any external Function(Some(idx))
+            // nested inside param or return types are pre-warmed.
+            for p in &shape.params {
+                collect_external_func_indices(&p.ty, out);
+            }
+            for r in &shape.returns {
+                collect_external_func_indices(r, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -187,32 +241,27 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     if let Some(func_indices) = deferred_in_file {
         for &fidx in func_indices {
             let Some(loc) = ext.function_locations.get(&fidx) else { continue };
-            let coarse = &ext.functions[fidx.ext_offset()].return_annotations;
             let sig = match by_start.get(&loc.start) {
                 Some(&local_idx) => {
                     let local = &ir.functions[local_idx];
-                    let rets = &local.rets;
-                    let returns = (0..coarse.len())
-                        .map(|slot| {
-                            let coarse_slot = coarse.get(slot).cloned().unwrap_or(ValueType::Any);
-                            // Only upgrade slots the coarse path left uninformative
-                            // (`any`). Where the coarse path produced a concrete type
-                            // it stays authoritative: it captures things the lift
-                            // cannot represent cross-file (e.g. a returned local
-                            // function's full `fun(..)` signature) and deliberate
-                            // widening (e.g. `boolean` over a `true`/`false` literal).
-                            if !matches!(coarse_slot, ValueType::Any) {
-                                return coarse_slot;
-                            }
-                            // Upgrade to the precise inferred type unless it carries
-                            // no more information than `any` itself (bare `any`, or a
-                            // union containing `any` such as `any | nil`).
-                            match return_type_at_slot(ir, rets, slot)
-                                .map(|t| lift_local_type_to_ext(&t, ir, ext))
-                            {
-                                Some(lifted) if !contains_any(&lifted) => lifted,
-                                _ => coarse_slot,
-                            }
+                    // Derive both arity and per-slot types from the engine's
+                    // inferred returns, using the *same* summary the definition
+                    // site displays (`inferred_return_types`): when the engine
+                    // synthesized correlated return-only overloads, the per-slot
+                    // type is the union across those overloads (so a cross-file
+                    // caller's base return slot equals the def-site summary, e.g.
+                    // `(number,number)|(nil,nil)` → `number?`); otherwise it is the
+                    // deduped `func.rets` with any implicit-nil unioning applied.
+                    // As of Stage 4 the coarse scan no longer carries body-derived
+                    // return types — this harvest is the single source of truth.
+                    // Each slot is lifted into ext space; a slot that lifts to bare
+                    // `any` (anonymous table decay) stays `Any`.
+                    let returns = result
+                        .inferred_return_types(local)
+                        .into_iter()
+                        .map(|t| {
+                            let lifted = lift_local_type_to_ext(&t, ir, ext);
+                            if contains_any(&lifted) { ValueType::Any } else { lifted }
                         })
                         .collect();
                     // Lift the engine-synthesized overloads (precise correlated
@@ -226,9 +275,9 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                     DeferredSig { returns, overloads }
                 }
                 // No matching function in the re-analyzed file (shouldn't happen, but
-                // be safe): keep the coarse types so we don't re-analyze repeatedly.
+                // be safe): keep the coarse values so we don't re-analyze repeatedly.
                 None => DeferredSig {
-                    returns: coarse.clone(),
+                    returns: ext.functions[fidx.ext_offset()].return_annotations.clone(),
                     overloads: ext.functions[fidx.ext_offset()].overloads.clone(),
                 },
             };
@@ -280,13 +329,24 @@ fn contains_any(ty: &ValueType) -> bool {
     }
 }
 
+/// Depth bound for the lift's structural recursion. A returned local function
+/// whose signature references (transitively) another function value can't loop
+/// forever; past this depth we decay to bare `function` to stay terminating.
+const LIFT_MAX_DEPTH: usize = 6;
+
 /// Convert a `ValueType` produced by per-file analysis into external-index space
 /// so it can be stored on `PreResolvedGlobals` and read by other files.
+fn lift_local_type_to_ext(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals) -> ValueType {
+    lift_local_type_to_ext_depth(ty, ir, ext, 0)
+}
+
+/// Depth-guarded core of [`lift_local_type_to_ext`].
 ///
 /// Named (class) tables map by `class_name` through `ext.classes`; tables that
-/// already live in ext space pass through; anonymous/unrepresentable types
-/// decay to `Any` (Stage 2 can widen this).
-fn lift_local_type_to_ext(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals) -> ValueType {
+/// already live in ext space pass through; a returned *local* function value is
+/// lifted losslessly into an inline `FunctionSig` carrying its signature; other
+/// anonymous/unrepresentable types decay to `Any`.
+fn lift_local_type_to_ext_depth(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals, depth: usize) -> ValueType {
     match ty {
         ValueType::Table(Some(idx)) => {
             if idx.is_external() {
@@ -302,20 +362,102 @@ fn lift_local_type_to_ext(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals) -> 
             }
         }
         ValueType::Union(members) => ValueType::make_union(
-            members.iter().map(|m| lift_local_type_to_ext(m, ir, ext)).collect(),
+            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth)).collect(),
         ),
         ValueType::Intersection(members) => ValueType::Intersection(
-            members.iter().map(|m| lift_local_type_to_ext(m, ir, ext)).collect(),
+            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth)).collect(),
         ),
         ValueType::OpaqueAlias(name, inner) => {
-            ValueType::OpaqueAlias(name.clone(), Box::new(lift_local_type_to_ext(inner, ir, ext)))
+            ValueType::OpaqueAlias(name.clone(), Box::new(lift_local_type_to_ext_depth(inner, ir, ext, depth)))
         }
-        // A local function value can't be referenced cross-file; keep callability
-        // but drop the index.
-        ValueType::Function(Some(_)) => ValueType::Function(None),
+        // An external function value already lives in ext space; keep it.
+        ValueType::Function(Some(idx)) if idx.is_external() => ty.clone(),
+        // A returned *local* function value can't be referenced cross-file by
+        // index, so carry its signature inline (lossless presentation). Past the
+        // depth bound, decay to bare `function` to keep recursion terminating.
+        ValueType::Function(Some(idx)) => {
+            if depth >= LIFT_MAX_DEPTH {
+                return ValueType::Function(None);
+            }
+            ValueType::FunctionSig(Box::new(lift_local_func_to_shape(idx.val(), ir, ext, depth)))
+        }
         // Unbound type variables have no meaning in the caller's context.
         ValueType::TypeVariable(_) => ValueType::Any,
-        // Primitives, Any, Nil, Table(None), Function(None), etc.
+        // Primitives, Any, Nil, Table(None), Function(None), FunctionSig, etc.
         other => other.clone(),
     }
+}
+
+/// Build an inline [`crate::types::FunctionShape`] from a local function index,
+/// lifting each parameter and return type into ext space. Used by the lift so a
+/// deferred function that returns a local function carries the precise callable
+/// signature cross-file instead of decaying to bare `function`.
+fn lift_local_func_to_shape(
+    local_idx: usize,
+    ir: &Ir,
+    ext: &PreResolvedGlobals,
+    depth: usize,
+) -> crate::types::FunctionShape {
+    use crate::types::{ShapeParam, SymbolIdentifier};
+    let func = &ir.functions[local_idx];
+    let params = func
+        .args
+        .iter()
+        .enumerate()
+        .map(|(i, &arg)| {
+            let name = match &ir.sym(arg).id {
+                SymbolIdentifier::Name(n) => n.clone(),
+                _ => "?".to_string(),
+            };
+            let ann_has_nil = func
+                .param_annotations
+                .get(i)
+                .is_some_and(crate::annotations::annotation_type_is_nullable);
+            let optional = func.param_optional.get(i).copied().unwrap_or(false) && !ann_has_nil;
+            let raw = ir
+                .sym(arg)
+                .versions
+                .first()
+                .and_then(|v| v.resolved_type.clone())
+                .unwrap_or(ValueType::Any);
+            // The `?` suffix conveys optionality, so strip nil from the display type.
+            let raw = if optional { raw.strip_nil() } else { raw };
+            let ty = lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1);
+            ShapeParam { name, ty, optional }
+        })
+        .collect();
+    let returns = if !func.return_annotations.is_empty() {
+        func.return_annotations
+            .iter()
+            .map(|t| lift_local_type_to_ext_depth(t, ir, ext, depth + 1))
+            .collect()
+    } else {
+        inferred_returns_from_ir(ir, func)
+            .iter()
+            .map(|t| lift_local_type_to_ext_depth(t, ir, ext, depth + 1))
+            .collect()
+    };
+    crate::types::FunctionShape { params, returns, is_vararg: func.is_vararg }
+}
+
+/// Body-derived per-slot return types for `func`, computed from `ir` alone
+/// (mirrors `AnalysisResult::inferred_return_types` minus the return-only
+/// overload summary, which a function used purely as a returned value does not
+/// carry). An implicit-nil path makes each slot optional.
+fn inferred_returns_from_ir(ir: &Ir, func: &crate::types::Function) -> Vec<ValueType> {
+    let inferred = crate::analysis::queries::dedup_return_types(ir, &func.rets);
+    let implicit_nil = func.implicit_nil_return;
+    inferred
+        .into_iter()
+        .map(|rt| match rt {
+            Some(rt) => {
+                if implicit_nil && !rt.contains_nil() && !matches!(rt, ValueType::Any) {
+                    ValueType::make_union(vec![rt, ValueType::Nil])
+                } else {
+                    rt
+                }
+            }
+            None => ValueType::Any,
+        })
+        .collect()
 }

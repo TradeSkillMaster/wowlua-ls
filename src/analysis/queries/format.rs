@@ -49,7 +49,7 @@ pub(crate) fn return_type_at_slot(ir: &Ir, rets: &[SymbolIndex], slot: usize) ->
 /// Multiple `return` statements in different scopes create separate symbols for
 /// the same position in `func.rets`. This function groups them by index and
 /// returns one type per position (the union of all matching symbols' types).
-pub(super) fn dedup_return_types(ir: &Ir, rets: &[SymbolIndex]) -> Vec<Option<ValueType>> {
+pub(crate) fn dedup_return_types(ir: &Ir, rets: &[SymbolIndex]) -> Vec<Option<ValueType>> {
     let mut by_index: BTreeMap<usize, Option<ValueType>> = BTreeMap::new();
     for &sym_idx in rets {
         if let SymbolIdentifier::FunctionRet(_, index) = &ir.sym(sym_idx).id {
@@ -1071,6 +1071,7 @@ impl AnalysisResult {
                 }
             }
             ValueType::Function(None) => "function".to_string(),
+            ValueType::FunctionSig(shape) => self.format_function_shape(shape, depth),
             ValueType::Table(Some(table_idx)) => {
                 let table = self.table(*table_idx);
                 let overlay = self.ir.overlay_fields.get(table_idx);
@@ -1179,7 +1180,7 @@ impl AnalysisResult {
             {
                 let other = types.iter().find(|t| !matches!(t, ValueType::Nil)).unwrap();
                 let formatted = self.format_value_type_depth(other, depth + 1);
-                if matches!(other, ValueType::Function(Some(_))) {
+                if matches!(other, ValueType::Function(Some(_)) | ValueType::FunctionSig(_)) {
                     format!("({})?", formatted)
                 } else {
                     format!("{}?", formatted)
@@ -1322,6 +1323,31 @@ impl AnalysisResult {
         }
     }
 
+    /// Format an inline [`crate::types::FunctionShape`] (carried by
+    /// `ValueType::FunctionSig`) as `fun(params): returns`. Mirrors the tail of
+    /// `format_function_value` but reads the self-contained shape instead of an
+    /// arena `Function`.
+    pub(super) fn format_function_shape(&self, shape: &crate::types::FunctionShape, depth: usize) -> String {
+        let mut all_args: Vec<String> = shape.params.iter().map(|p| {
+            let suffix = if p.optional { "?" } else { "" };
+            let type_str = self.format_value_type_depth(&p.ty, depth + 1);
+            format!("{}{}: {}", p.name, suffix, type_str)
+        }).collect();
+        if shape.is_vararg {
+            all_args.push("...".to_string());
+        }
+        let rets: Vec<String> = shape.returns.iter()
+            .map(|vt| self.format_value_type_depth(vt, depth + 1))
+            .collect();
+        if rets.is_empty() {
+            format!("fun({})", all_args.join(", "))
+        } else if rets.len() == 1 {
+            format!("fun({}): {}", all_args.join(", "), rets[0])
+        } else {
+            format!("fun({}): {}", all_args.join(", "), join_returns(&rets))
+        }
+    }
+
     /// Format a `fun(...)` value, optionally substituting class type variables
     /// via `subs`. Shared implementation used by both `format_value_type_depth`
     /// (no subs) and `format_type_subst` (with subs).
@@ -1377,13 +1403,12 @@ impl AnalysisResult {
         }
         let no_subs = HashMap::new();
         let effective_subs = subs.unwrap_or(&no_subs);
-        // Deferred (body-derived) workspace functions get their precise cross-file
-        // return types resolved lazily here; everything else uses the stored ones.
-        let effective_rets = self.ir.effective_return_annotations(func_idx);
+        // `func` already reflects any precise cross-file return types via the
+        // per-file overlay (`func()` consults it for deferred external functions).
         let rets: Vec<String> = if func.returns_self {
             vec![self.self_return_text(func, effective_subs)]
-        } else if !effective_rets.is_empty() {
-            effective_rets.iter().enumerate().map(|(i, vt)| {
+        } else if !func.return_annotations.is_empty() {
+            func.return_annotations.iter().enumerate().map(|(i, vt)| {
                 let formatted = if let Some(s) = subs {
                     self.format_type_subst(vt, depth + 1, s)
                 } else {
@@ -1787,20 +1812,10 @@ impl AnalysisResult {
         let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
             .filter(|o| o.is_return_only).collect();
         if !return_only.is_empty() {
-            let max_arity = return_only.iter().map(|o| o.returns.len()).max().unwrap_or(0);
-            let mut result = Vec::new();
-            for pos in 0..max_arity {
-                let mut types: Vec<ValueType> = Vec::new();
-                for o in &return_only {
-                    let vt = o.return_type_at(pos);
-                    if !types.contains(&vt) {
-                        types.push(vt);
-                    }
-                }
-                let merged = ValueType::make_union(types);
-                result.push(self.format_type_depth(&merged, depth));
-            }
-            return result;
+            return Self::return_only_overload_summary(&return_only)
+                .iter()
+                .map(|t| self.format_type_depth(t, depth))
+                .collect();
         }
         let inferred = dedup_return_types(&self.ir, &func.rets);
         let implicit_nil = func.implicit_nil_return;
@@ -1819,6 +1834,52 @@ impl AnalysisResult {
             // Unresolved position: leave as `?` — we don't know the type,
             // and artificially narrowing to `nil` would be misleading.
             None => "?".to_string(),
+        }).collect()
+    }
+
+    /// Per-position summary `ValueType`s across the given return-only overloads:
+    /// the union of each overload's slot type. Mirrors the overload branch of
+    /// `format_inferred_returns`, but returns types rather than formatted strings
+    /// so the cross-file deferred harvest can store the same per-slot summary the
+    /// definition site displays (e.g. correlated `(number,number)|(nil,nil)` →
+    /// `number?, number?`).
+    pub(crate) fn return_only_overload_summary(return_only: &[&ResolvedOverload]) -> Vec<ValueType> {
+        let max_arity = return_only.iter().map(|o| o.returns.len()).max().unwrap_or(0);
+        (0..max_arity)
+            .map(|pos| {
+                let mut types: Vec<ValueType> = Vec::new();
+                for o in return_only {
+                    let vt = o.return_type_at(pos);
+                    if !types.contains(&vt) {
+                        types.push(vt);
+                    }
+                }
+                ValueType::make_union(types)
+            })
+            .collect()
+    }
+
+    /// Per-slot inferred return `ValueType`s for a function with no `@return`,
+    /// matching `format_inferred_returns` but yielding types (unresolved slots →
+    /// `Any`). Used by the cross-file deferred harvest so a cross-file caller's
+    /// base return slots equal the definition-site summary.
+    pub(crate) fn inferred_return_types(&self, func: &Function) -> Vec<ValueType> {
+        let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
+            .filter(|o| o.is_return_only).collect();
+        if !return_only.is_empty() {
+            return Self::return_only_overload_summary(&return_only);
+        }
+        let inferred = dedup_return_types(&self.ir, &func.rets);
+        let implicit_nil = func.implicit_nil_return;
+        inferred.into_iter().map(|rt| match rt {
+            Some(rt) => {
+                if implicit_nil && !rt.contains_nil() && !matches!(rt, ValueType::Any) {
+                    ValueType::make_union(vec![rt, ValueType::Nil])
+                } else {
+                    rt
+                }
+            }
+            None => ValueType::Any,
         }).collect()
     }
 
@@ -1913,21 +1974,13 @@ impl AnalysisResult {
             };
             all_args.push(vararg_str);
         }
-        // Deferred (body-derived) workspace functions get their precise cross-file
-        // return types and overloads resolved lazily here; everything else uses the
-        // stored ones. One harvest warms both — a single `effective_deferred_sig`
-        // lookup avoids a redundant second cache read.
-        let deferred = self.ir.effective_deferred_sig(func_idx);
-        let effective_rets = deferred.as_ref()
-            .map(|d| d.returns.clone())
-            .unwrap_or_else(|| func.return_annotations.clone());
-        let eff_overloads = deferred
-            .map(|d| d.overloads)
-            .unwrap_or_else(|| func.overloads.clone());
+        // `func` already reflects any precise cross-file return types and
+        // correlated overloads via the per-file overlay (`func()` consults it for
+        // deferred external functions), so plain `func.*` reads are precise.
         let rets: Vec<String> = if func.returns_self {
             vec![self.self_return_text(func, subs)]
-        } else if !effective_rets.is_empty() {
-            effective_rets.iter().enumerate().map(|(i, vt)| {
+        } else if !func.return_annotations.is_empty() {
+            func.return_annotations.iter().enumerate().map(|(i, vt)| {
                 // Prefer the raw annotation (preserves `Parameterized` class
                 // type args like `Schema<T>`) with the receiver's class type-var
                 // substitution applied, so a method on a `Stream<string>` shows
@@ -1958,8 +2011,8 @@ impl AnalysisResult {
         // below the primary signature (they don't vary the param list, so stacking
         // them as separate `function name(...)` blocks would be visual noise).
         // Regular overloads continue to stack above as before.
-        if !eff_overloads.is_empty() {
-            for overload in &eff_overloads {
+        if !func.overloads.is_empty() {
+            for overload in &func.overloads {
                 if overload.is_return_only { continue; }
                 let ov_args: Vec<String> = overload.params.iter()
                     .filter(|p| !(skip_self && p.name == "self"))
@@ -2002,7 +2055,7 @@ impl AnalysisResult {
             // `synthesize_correlated_return_overloads`) have no `@return` source
             // and no descriptions — mark them as inferred so hover doesn't imply
             // the author wrote them.
-            let return_only: Vec<&ResolvedOverload> = eff_overloads.iter()
+            let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
                 .filter(|o| o.is_return_only).collect();
             if !return_only.is_empty() {
                 let mut rows: Vec<(String, Option<String>)> = return_only.iter().map(|ovl| {

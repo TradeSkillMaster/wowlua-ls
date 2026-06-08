@@ -23,6 +23,17 @@ private.MakeGreeting = function(name)
     return "Hello, " .. name
 end
 
+-- Function returning a function that itself has a typed return — used to test
+-- that calling a FunctionSig resolves to the correct return type cross-file.
+private.GetGreeter = function()
+    ---@param name string
+    ---@return string
+    local function Greeter(name)
+        return "Hello, " .. name
+    end
+    return Greeter
+end
+
 -- Function literal with bare return on some paths (should NOT resolve
 -- the return type as the inner function since it can also return nil)
 private.MaybeFunc = function(flag)

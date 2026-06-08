@@ -105,7 +105,7 @@ fn format_value_type(vt: &ValueType, pg: &PreResolvedGlobals) -> String {
         ValueType::TypeVariable(name) => name.clone(),
         ValueType::OpaqueAlias(name, _) => name.clone(),
         ValueType::Function(Some(func_idx)) => format_function_type(*func_idx, pg),
-        ValueType::Function(None) => "function".to_string(),
+        ValueType::Function(None) | ValueType::FunctionSig(_) => "function".to_string(),
         ValueType::Table(Some(table_idx)) => {
             let table = ext_table(pg, *table_idx);
             if let Some(ref name) = table.class_name {

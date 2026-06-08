@@ -8,7 +8,7 @@ local CorrSource = {}
 
 local lo, hi = CorrSource:Range(5)
 --    ^ hover: (local) lo: number?
---                        ^ hover: (method) function CorrSource:Range(key)\n  -> number, number\n  cases:\n    (number, number)\n    (nil, nil)  def: external
+--                        ^ hover: (method) function CorrSource:Range(key)\n  -> number?, number?\n  cases:\n    (number, number)\n    (nil, nil)  def: external
 if lo then
     local got = lo
     --          ^ hover: (local) lo: number

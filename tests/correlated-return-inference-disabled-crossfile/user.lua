@@ -9,11 +9,12 @@ local function caller()
     -- The cross-file external function has no `@return` annotations and (with
     -- the flag off) no synthesized overloads, so there is no correlated sibling
     -- narrowing after the guard. `groups` (an anonymous `{}` table or nil) lifts
-    -- to `any`; the precise body-derived `count` (the literal `0`) resolves to
-    -- `number`. Neither is affected by the absent overloads.
+    -- to `any`; the body-derived `count` (the literal `0`) is optional because
+    -- the bare early-`return` paths make every slot implicitly nil, so it
+    -- resolves to `number?`. Neither is affected by the absent overloads.
     local _ = groups
     --        ^ hover: (local) groups: any
     local _ = count
-    --        ^ hover: (local) count: number
+    --        ^ hover: (local) count: number?
 end
 _G.CrossDisabledCaller = caller

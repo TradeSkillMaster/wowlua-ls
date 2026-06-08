@@ -345,7 +345,7 @@ fn possible_type_kinds(t: &ValueType) -> Option<Vec<&'static str>> {
             ValueType::Number | ValueType::NumberLiteral(_) => out.push("number"),
             ValueType::String(_) => out.push("string"),
             ValueType::Table(_) => out.push("table"),
-            ValueType::Function(_) => out.push("function"),
+            ValueType::Function(_) | ValueType::FunctionSig(_) => out.push("function"),
             ValueType::Userdata => out.push("userdata"),
             ValueType::Thread => out.push("thread"),
             ValueType::OpaqueAlias(_, inner) => return collect(inner, out),

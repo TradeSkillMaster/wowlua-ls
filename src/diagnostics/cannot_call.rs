@@ -6,7 +6,7 @@ pub(crate) struct CannotCall;
 
 fn is_callable(ty: &ValueType, analysis: &AnalysisResult) -> bool {
     match ty {
-        ValueType::Function(_) => true,
+        ValueType::Function(_) | ValueType::FunctionSig(_) => true,
         ValueType::Any | ValueType::TypeVariable(_) => true,
         ValueType::Table(Some(table_idx)) => {
             is_table_callable(*table_idx, analysis)

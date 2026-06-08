@@ -183,12 +183,14 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             Some(s) => {
                 let mut pg = PreResolvedGlobals::build_on_stubs(&s.pre_globals, &ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix, &addon_ns_class_files, &ws_callable_classes);
                 pg.merge_events(&ws_events);
+                pg.set_project_configs(Arc::new(project_configs.clone()));
                 Arc::new(pg)
             }
             None if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() => Arc::new(PreResolvedGlobals::empty()),
             None => {
                 let mut pg = PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix, &addon_ns_class_files, &ws_callable_classes);
                 pg.merge_events(&ws_events);
+                pg.set_project_configs(Arc::new(project_configs.clone()));
                 Arc::new(pg)
             }
         };
@@ -547,6 +549,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             } else {
                 let mut pg = PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_files, &ws_callable_classes);
                 pg.merge_events(&ws_events);
+                pg.set_project_configs(Arc::new(project_configs.clone()));
                 Arc::new(pg)
             }
         } else if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
@@ -554,6 +557,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         } else {
             let mut pg = PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_files, &ws_callable_classes);
             pg.merge_events(&ws_events);
+            pg.set_project_configs(Arc::new(project_configs.clone()));
             Arc::new(pg)
         };
 
@@ -685,6 +689,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         } else {
             let mut pg = PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_files, &ws_callable_classes);
             pg.merge_events(&ws_events);
+            pg.set_project_configs(Arc::new(project_configs.clone()));
             Arc::new(pg)
         };
 

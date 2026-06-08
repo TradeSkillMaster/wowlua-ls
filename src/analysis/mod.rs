@@ -364,6 +364,14 @@ pub(crate) struct Ir {
     /// (e.g. `local NPCs = private.Data.NPCs; NPCs[1] = { ... }`). Deferred to
     /// Phase 2 where resolved_type is available. (root_name, scope_idx, val_expr)
     pub(crate) pending_bracket_assigns: Vec<(String, ScopeIndex, ExprId)>,
+    /// Per-file overlay of precise `Function`s for deferred (body-derived)
+    /// external functions this file references. Populated lazily by the
+    /// cross-file harvester (`ensure_overlay`): the value is the coarse external
+    /// `Function` with its `return_annotations`/`overloads` replaced by the
+    /// precise lifted types from the defining file's full analysis. `func()`
+    /// consults this map first for external indices, so resolution, diagnostics,
+    /// and hover all see the precise type without any `effective_*` plumbing.
+    pub(crate) overlay: HashMap<FunctionIndex, Function>,
 }
 
 /// Metadata for a string literal argument annotated as `expression<C, R>`.
@@ -480,6 +488,9 @@ impl Ir {
 
     pub(crate) fn func(&self, idx: FunctionIndex) -> &Function {
         if idx.is_external() {
+            if let Some(f) = self.overlay.get(&idx) {
+                return f;
+            }
             &self.ext.functions[idx.ext_offset()]
         } else {
             &self.functions[idx.val()]
@@ -768,6 +779,13 @@ impl Ir {
             ValueType::String(Some(s)) => format!("\"{s}\""),
             ValueType::String(None) => "string".into(),
             ValueType::Function(_) => "function".into(),
+            ValueType::FunctionSig(shape) => {
+                let params: Vec<String> = shape.params.iter()
+                    .map(|p| self.type_sig_str(Some(&p.ty), depth + 1)).collect();
+                let rets: Vec<String> = shape.returns.iter()
+                    .map(|r| self.type_sig_str(Some(r), depth + 1)).collect();
+                format!("fun({}):{}", params.join(","), rets.join(","))
+            }
             ValueType::Userdata => "userdata".into(),
             ValueType::Thread => "thread".into(),
             ValueType::TypeVariable(name) => format!("${name}"),
@@ -1999,6 +2017,7 @@ impl<'a> Analysis<'a> {
                 synthesized_overload_funcs: HashSet::new(),
                 tc_expected_class: HashMap::new(),
                 pending_bracket_assigns: Vec::new(),
+                overlay: HashMap::new(),
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),

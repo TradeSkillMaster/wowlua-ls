@@ -2329,6 +2329,13 @@ impl BuildContext {
 }
 
 impl PreResolvedGlobals {
+    /// Attach per-file project configuration so the deferred harvester can
+    /// construct the correct `AnalysisConfig` for each defining file. Set by
+    /// the LSP server and CLI entry points; `None` falls back to defaults.
+    pub fn set_project_configs(&mut self, configs: std::sync::Arc<crate::config::ProjectConfigs>) {
+        self.project_configs = Some(configs);
+    }
+
     pub fn symbols_len(&self) -> usize { self.symbols.len() }
     pub fn functions_len(&self) -> usize { self.functions.len() }
     pub fn tables_len(&self) -> usize { self.tables.len() }

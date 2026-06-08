@@ -123,552 +123,59 @@ fn push_method_global(
     }
 }
 
-// ── Synthesized return-only overloads (workspace scan) ──────────────────────
+// ── Body-return bareness (workspace scan) ───────────────────────────────────
 
-/// Coarse synthesized return-position type. Extends
-/// `Analysis::synthesized_return_type` in `build_ir.rs`: literals normalize to
-/// their generic type (no literal unions), nil stays nil, comparison/`not`
-/// expressions produce `boolean`, grouped expressions unwrap, and everything
-/// else becomes `any`. The extra cases (comparisons, `not`) go beyond the IR
-/// mirror because the workspace scanner operates on AST without full type
-/// resolution, so recognizing these common patterns gives cross-file callers
-/// better return type info.
-fn synth_coarse_return_type(expr: &Expression<'_>) -> AnnotationType {
-    match expr {
-        Expression::Literal(lit) => {
-            if lit.is_nil() { return AnnotationType::Simple("nil".to_string()); }
-            if lit.get_string().is_some() { return AnnotationType::Simple("string".to_string()); }
-            if lit.get_number().is_some() { return AnnotationType::Simple("number".to_string()); }
-            if lit.get_bool().is_some() { return AnnotationType::Simple("boolean".to_string()); }
-        }
-        // Comparison operators always produce boolean.
-        Expression::BinaryExpression(bin) if bin.kind().is_comparison() => {
-            return AnnotationType::Simple("boolean".to_string());
-        }
-        // `not x` always produces boolean.
-        Expression::UnaryExpression(un) if matches!(un.kind(), Operator::Not) => {
-            return AnnotationType::Simple("boolean".to_string());
-        }
-        // `-N` (negated number literal) is number.
-        Expression::UnaryExpression(un) if matches!(un.kind(), Operator::Subtract) => {
-            if super::annotation_scanning::extract_number_from_expr(expr).is_some() {
-                return AnnotationType::Simple("number".to_string());
-            }
-        }
-        // Parenthesized expression: unwrap.
-        Expression::GroupedExpression(g) => {
-            if let Some(inner) = g.get_expression() {
-                return synth_coarse_return_type(&inner);
-            }
-        }
-        _ => {}
-    }
-    AnnotationType::Simple("any".to_string())
-}
-
-/// AST-only mirror of `Analysis::block_always_exits` in `checks.rs`. Used by
-/// workspace-scan synthesis to decide whether the body falls through (implying
-/// an implicit all-nil return case).
-fn synth_block_always_exits(block: &Block<'_>) -> bool {
-    let mut ends_with_break = false;
-    for child in block.syntax().children_with_tokens() {
-        match &child {
-            NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::BreakKeyword => {
-                ends_with_break = true;
-            }
-            NodeOrToken::Token(tok) if matches!(
-                tok.kind(),
-                SyntaxKind::Whitespace | SyntaxKind::Newline | SyntaxKind::Comment
-            ) => {}
-            _ => {
-                ends_with_break = false;
-            }
-        }
-    }
-    if ends_with_break {
-        return true;
-    }
-    let statements = block.statements();
-    let Some(last) = statements.last() else { return false };
-    match last {
-        Statement::Return(_) => true,
-        Statement::FunctionCall(call) => {
-            if let Some(ident) = call.identifier() {
-                let names = ident.names();
-                names.len() == 1 && names[0] == "error"
-            } else {
-                false
-            }
-        }
-        // `while true do ... end` / `repeat ... until false` with no escaping
-        // break never falls through. Mirrors `is_infinite_loop_stmt` in
-        // checks.rs — without this, a workspace-scanned function ending in an
-        // infinite loop would spuriously gain an implicit-nil tuple that the
-        // per-file IR synthesizer wouldn't.
-        Statement::While(_) | Statement::Repeat(_) => synth_is_infinite_loop_stmt(last),
-        Statement::If(if_chain) => {
-            let branches = if_chain.if_branches();
-            let else_branch = if_chain.else_branch();
-            if else_branch.is_none() {
-                return false;
-            }
-            for branch in &branches {
-                if let Some(block) = branch.block() {
-                    if !synth_block_always_exits(&block) {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            if let Some(eb) = &else_branch {
-                if let Some(block) = eb.block() {
-                    synth_block_always_exits(&block)
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }
-        _ => false,
-    }
-}
-
-/// AST-only mirror of `Analysis::is_infinite_loop_stmt` in `checks.rs`.
-fn synth_is_infinite_loop_stmt(stmt: &Statement<'_>) -> bool {
-    match stmt {
-        Statement::While(wl) => {
-            let Some(cond) = wl.condition() else { return false };
-            if !synth_expression_is_literal_bool(&cond, true) { return false; }
-            let Some(block) = wl.block() else { return false };
-            !synth_node_has_escaping_break(block.syntax())
-        }
-        Statement::Repeat(rl) => {
-            let Some(cond) = rl.condition() else { return false };
-            if !synth_expression_is_literal_bool(&cond, false) { return false; }
-            let Some(block) = rl.block() else { return false };
-            !synth_node_has_escaping_break(block.syntax())
-        }
-        _ => false,
-    }
-}
-
-fn synth_expression_is_literal_bool(expr: &Expression<'_>, value: bool) -> bool {
-    match expr {
-        Expression::Literal(lit) => lit.get_bool() == Some(value),
-        Expression::GroupedExpression(g) => g
-            .get_expression()
-            .as_ref()
-            .is_some_and(|inner| synth_expression_is_literal_bool(inner, value)),
-        _ => false,
-    }
-}
-
-/// Look for a `break` whose target is `node`'s containing loop. Stops at
-/// nested loops and function bodies (their breaks belong to the inner loop /
-/// don't escape this loop).
-fn synth_node_has_escaping_break(node: SyntaxNode<'_>) -> bool {
-    for child in node.children_with_tokens() {
-        match child {
-            NodeOrToken::Token(tok) => {
-                if tok.kind() == SyntaxKind::BreakKeyword {
-                    return true;
-                }
-            }
-            NodeOrToken::Node(sub) => match sub.kind() {
-                SyntaxKind::WhileLoop
-                | SyntaxKind::RepeatUntilLoop
-                | SyntaxKind::ForCountLoop
-                | SyntaxKind::ForInLoop
-                | SyntaxKind::FunctionDefinition => {}
-                _ => {
-                    if synth_node_has_escaping_break(sub) {
-                        return true;
-                    }
-                }
-            },
-        }
-    }
-    false
-}
-
-/// Walk a function body and collect per-return entries `(Vec<return_expr_types>, is_bare)`.
-/// Descends into control-flow blocks (if/else/do/while/for/repeat) but NOT into
-/// nested function definitions. Mirrors the per-return collection that
-/// `synthesize_correlated_return_overloads` performs against `func.rets`.
-fn synth_collect_returns(block: &Block<'_>, out: &mut Vec<(Vec<AnnotationType>, bool)>) {
+/// Walk a function body and record one `is_bare` flag per return statement
+/// (`true` when the return has no expressions / empty expression list). Descends
+/// into control-flow blocks (if/else/do/while/for/repeat) but NOT into nested
+/// function definitions (their returns belong to a different function). This is
+/// the *only* body-return information the workspace scanner records — the precise
+/// return types and correlated overloads are inferred lazily by the per-file
+/// harvest (`resolve_deferred_sig`).
+fn collect_return_bareness(block: &Block<'_>, out: &mut Vec<bool>) {
     for stmt in block.statements() {
         match &stmt {
             Statement::Return(ret) => {
-                let exprs: Vec<AnnotationType> = ret.expression_list()
-                    .map(|el| el.expressions().iter().map(synth_coarse_return_type).collect())
-                    .unwrap_or_default();
-                let is_bare = exprs.is_empty();
-                out.push((exprs, is_bare));
+                let is_bare = ret.expression_list()
+                    .map(|el| el.expressions().is_empty())
+                    .unwrap_or(true);
+                out.push(is_bare);
             }
             Statement::If(chain) => {
                 for branch in chain.if_branches() {
-                    if let Some(inner) = branch.block() { synth_collect_returns(&inner, out); }
+                    if let Some(inner) = branch.block() { collect_return_bareness(&inner, out); }
                 }
                 if let Some(eb) = chain.else_branch()
-                    && let Some(inner) = eb.block() { synth_collect_returns(&inner, out); }
+                    && let Some(inner) = eb.block() { collect_return_bareness(&inner, out); }
             }
             Statement::Do(g) => {
-                if let Some(inner) = g.block() { synth_collect_returns(&inner, out); }
+                if let Some(inner) = g.block() { collect_return_bareness(&inner, out); }
             }
             Statement::While(w) => {
-                if let Some(inner) = w.block() { synth_collect_returns(&inner, out); }
+                if let Some(inner) = w.block() { collect_return_bareness(&inner, out); }
             }
             Statement::Repeat(r) => {
-                if let Some(inner) = r.block() { synth_collect_returns(&inner, out); }
+                if let Some(inner) = r.block() { collect_return_bareness(&inner, out); }
             }
             Statement::ForCountLoop(f) => {
-                if let Some(inner) = f.block() { synth_collect_returns(&inner, out); }
+                if let Some(inner) = f.block() { collect_return_bareness(&inner, out); }
             }
             Statement::ForInLoop(f) => {
-                if let Some(inner) = f.block() { synth_collect_returns(&inner, out); }
-            }
-            // Do not descend into nested functions or non-control statements —
-            // their returns belong to a different function.
-            _ => {}
-        }
-    }
-}
-
-/// If any return statement in the block ends with a function call as its last
-/// (or only) expression, return that callee's dotted name (e.g. `"private.Foo"`).
-/// This detects the pattern `return g()` or `return x, g()` where the trailing
-/// call makes the return arity unknowable at the AST level.  The caller gates
-/// invocation on the body-derived return ending with `any`, so `return x, g()`
-/// is only reached when `x` itself resolved to `any`.
-/// Returns `None` when no such return is found.
-fn tail_call_callee_name(block: &Block<'_>) -> Option<String> {
-    for stmt in block.statements() {
-        match &stmt {
-            Statement::Return(ret) => {
-                if let Some(el) = ret.expression_list()
-                    && let Some(Expression::FunctionCall(call)) = el.expressions().last()
-                    && let Some(ident) = call.identifier()
-                {
-                    let names = ident.names();
-                    if !names.is_empty() {
-                        return Some(names.join("."));
-                    }
-                }
-            }
-            Statement::If(chain) => {
-                for branch in chain.if_branches() {
-                    if let Some(inner) = branch.block()
-                        && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
-                }
-                if let Some(eb) = chain.else_branch()
-                    && let Some(inner) = eb.block()
-                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
-            }
-            Statement::Do(g) => {
-                if let Some(inner) = g.block()
-                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
-            }
-            Statement::While(w) => {
-                if let Some(inner) = w.block()
-                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
-            }
-            Statement::Repeat(r) => {
-                if let Some(inner) = r.block()
-                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
-            }
-            Statement::ForCountLoop(f) => {
-                if let Some(inner) = f.block()
-                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
-            }
-            Statement::ForInLoop(f) => {
-                if let Some(inner) = f.block()
-                    && let Some(n) = tail_call_callee_name(&inner) { return Some(n); }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Follow a tail-call chain within the same file to find the terminal callee's
-/// body-derived returns.  Returns `None` when the chain leads outside the file
-/// or exceeds the depth limit.
-fn resolve_through_tail_calls<'a>(
-    callee: &str,
-    returns_map: &'a HashMap<String, Vec<AnnotationType>>,
-    tail_callees: &HashMap<String, String>,
-) -> Option<&'a Vec<AnnotationType>> {
-    let mut name = callee;
-    for _ in 0..10 {
-        match tail_callees.get(name) {
-            Some(next) => name = next,
-            None => return returns_map.get(name),
-        }
-    }
-    None
-}
-
-/// When a function body returns a single identifier that names a local function
-/// with a captured signature, build the corresponding `AnnotationType::Fun(...)`
-/// so the outer function's return type is preserved cross-file. Checks both
-/// the file-level `local_function_sigs` and function definitions within the
-/// body (recursing into control-flow blocks). Returns `None` when:
-/// - no identifier returns are found
-/// - any bare return (implicit nil) exists alongside identifier returns
-/// - multiple different identifiers are returned
-/// - the identifier doesn't resolve to a known local function
-///
-/// Note: `AnnotationType::Fun` cannot represent overloads or generics, so those
-/// are lost if the inner function has them. This is acceptable since the primary
-/// use case is simple factory functions returning typed inner functions.
-fn resolve_returned_local_func_type(
-    body: &Block<'_>,
-    local_function_sigs: &HashMap<String, ExternalGlobal>,
-) -> Option<AnnotationType> {
-    let mut has_bare_return = false;
-    let mut returns = Vec::new();
-    synth_collect_returned_identifiers(body, &mut returns, &mut has_bare_return);
-    // If any bare return exists, the function can return nil on some paths,
-    // so we can't confidently say the return type is just the inner function.
-    if has_bare_return { return None; }
-    // Only resolve when ALL returns agree on the same single identifier.
-    let first = returns.first()?;
-    if !returns.iter().all(|n| n == first) { return None; }
-    // First check file-level local function signatures.
-    if let Some(sig) = local_function_sigs.get(first) {
-        return Some(external_global_to_fun_type(sig));
-    }
-    // Then check local function definitions within this body (recurses into
-    // control-flow blocks to match synth_collect_returned_identifiers scope).
-    find_local_func_def_in_block(body, first)
-}
-
-/// Convert an `ExternalGlobal` function signature to `AnnotationType::Fun(...)`.
-/// Note: discards overloads and generics since `AnnotationType::Fun` cannot
-/// represent them.
-fn external_global_to_fun_type(sig: &ExternalGlobal) -> AnnotationType {
-    let params: Vec<ParamInfo> = sig.params.clone();
-    let ret_types: Vec<AnnotationType> = sig.returns.clone();
-    let is_vararg = sig.params.iter().any(|p| p.name == "...");
-    AnnotationType::Fun(params, ret_types, is_vararg)
-}
-
-/// Build `AnnotationType::Fun(...)` from a function definition's annotations
-/// and parameter list. Note: discards overloads and generics since
-/// `AnnotationType::Fun` cannot represent them.
-fn func_def_to_fun_type(func: &crate::ast::FunctionDefinition<'_>) -> AnnotationType {
-    let annotations = extract_annotations(func.syntax());
-    let mut params = Vec::new();
-    let mut is_vararg = false;
-    if let Some(param_list) = func.params() {
-        for name in param_list.parameters() {
-            if let Some(ann) = annotations.params.iter().find(|p| p.name == name) {
-                params.push(ann.clone());
-            } else {
-                params.push(ParamInfo { name, typ: AnnotationType::Simple(String::new()), optional: false, description: None });
-            }
-        }
-        if param_list.ellipsis() {
-            is_vararg = true;
-            if let Some(ann) = annotations.params.iter().find(|p| p.name == "...") {
-                params.push(ann.clone());
-            }
-        }
-    }
-    AnnotationType::Fun(params, annotations.returns, is_vararg)
-}
-
-/// Recursively search a block (and nested control-flow blocks) for a local
-/// function definition with the given name. Mirrors the recursion pattern of
-/// `synth_collect_returned_identifiers` so both look in the same scopes.
-fn find_local_func_def_in_block(block: &Block<'_>, name: &str) -> Option<AnnotationType> {
-    for stmt in block.statements() {
-        match &stmt {
-            Statement::FunctionDefinition(func) if func.is_local() => {
-                if func.name().as_deref() == Some(name) {
-                    return Some(func_def_to_fun_type(func));
-                }
-            }
-            Statement::LocalAssign(assign) => {
-                if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
-                    let names = name_list.names();
-                    let exprs = expr_list.expressions();
-                    if names.len() == 1 && names[0] == name && exprs.len() == 1
-                        && let Expression::Function(fd) = &exprs[0] {
-                            return Some(func_def_to_fun_type(fd));
-                        }
-                }
-            }
-            Statement::If(chain) => {
-                for branch in chain.if_branches() {
-                    if let Some(inner) = branch.block()
-                        && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
-                }
-                if let Some(eb) = chain.else_branch()
-                    && let Some(inner) = eb.block()
-                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
-            }
-            Statement::Do(g) => {
-                if let Some(inner) = g.block()
-                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
-            }
-            Statement::While(w) => {
-                if let Some(inner) = w.block()
-                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
-            }
-            Statement::Repeat(r) => {
-                if let Some(inner) = r.block()
-                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
-            }
-            Statement::ForCountLoop(f) => {
-                if let Some(inner) = f.block()
-                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
-            }
-            Statement::ForInLoop(f) => {
-                if let Some(inner) = f.block()
-                    && let Some(t) = find_local_func_def_in_block(&inner, name) { return Some(t); }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Collect all single-identifier return expressions from a block (recursing
-/// into control flow but not into nested functions). Also tracks whether any
-/// bare return (no expression list, or empty expression list) is encountered,
-/// which signals the function can return nil on some paths.
-fn synth_collect_returned_identifiers(block: &Block<'_>, out: &mut Vec<String>, has_bare_return: &mut bool) {
-    for stmt in block.statements() {
-        match &stmt {
-            Statement::Return(ret) => {
-                match ret.expression_list() {
-                    None => { *has_bare_return = true; }
-                    Some(el) => {
-                        let exprs = el.expressions();
-                        if exprs.is_empty() {
-                            *has_bare_return = true;
-                        } else if exprs.len() == 1
-                            && let Expression::Identifier(ident) = &exprs[0] {
-                                let names = ident.names();
-                                if names.len() == 1 {
-                                    out.push(names[0].clone());
-                                }
-                            }
-                    }
-                }
-            }
-            Statement::If(chain) => {
-                for branch in chain.if_branches() {
-                    if let Some(inner) = branch.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
-                }
-                if let Some(eb) = chain.else_branch()
-                    && let Some(inner) = eb.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
-            }
-            Statement::Do(g) => {
-                if let Some(inner) = g.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
-            }
-            Statement::While(w) => {
-                if let Some(inner) = w.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
-            }
-            Statement::Repeat(r) => {
-                if let Some(inner) = r.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
-            }
-            Statement::ForCountLoop(f) => {
-                if let Some(inner) = f.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
-            }
-            Statement::ForInLoop(f) => {
-                if let Some(inner) = f.block() { synth_collect_returned_identifiers(&inner, out, has_bare_return); }
+                if let Some(inner) = f.block() { collect_return_bareness(&inner, out); }
             }
             _ => {}
         }
     }
 }
 
-/// AST-only mirror of `Analysis::synthesize_correlated_return_overloads` in
-/// `build_ir.rs`. Walks the given function body and returns synthesized
-/// return-only overloads when the body matches the all-set-or-all-nil pattern.
-///
-/// This runs during workspace scanning (before IR construction) so that
-/// cross-file method calls — which resolve through `PreResolvedGlobals` to an
-/// external `Function` — pick up the synthesized overloads alongside the
-/// per-file IR-level synthesis. Without this, a call like `self:_Helper()` in
-/// a `DefineClassType`-registered class resolves to the external function,
-/// which has no overloads and therefore no sibling narrowing.
-///
-/// Precondition: caller has already verified `annotations.returns.is_empty()`
-/// (no `@return` annotations) and that no existing overloads have
-/// `is_return_only` set.
-/// Synthesize correlated return-only overloads from pre-collected body returns.
-/// The caller collects returns via [`synth_collect_returns`] once and can reuse
-/// the collection for other purposes (e.g. `implicit_nil_return` detection)
-/// without walking the body twice.
-fn synthesize_return_only_overloads_from(
-    returns: Vec<(Vec<AnnotationType>, bool)>,
-    body: &Block<'_>,
-) -> Vec<OverloadSig> {
-    // Split explicit multi-value returns from bare / empty returns.
-    let implicit_nil = returns.iter().any(|(_, is_bare)| *is_bare)
-        || !synth_block_always_exits(body);
-
-    // `is_bare` <=> `exprs.is_empty()` (set together in `synth_collect_returns`),
-    // so dropping bare returns alone fully partitions the list.
-    let explicit: Vec<Vec<AnnotationType>> = returns.into_iter()
-        .filter(|(_, is_bare)| !*is_bare)
-        .map(|(exprs, _)| exprs)
-        .collect();
-
-    // Match build_ir: need ≥2 signatures total (counting implicit_nil as one).
-    if explicit.len() + if implicit_nil { 1 } else { 0 } < 2 { return Vec::new(); }
-
-    // Compute max arity across all explicit returns (must be ≥ 2).
-    // Shorter returns are padded with nil — consistent with Lua trailing-nil
-    // semantics, and matching the relaxation in build_ir's synthesis path.
-    let max_arity = explicit.iter().map(|t| t.len()).max().unwrap_or(0);
-    if max_arity < 2 { return Vec::new(); }
-
-    let mut tuples: Vec<Vec<AnnotationType>> = explicit.into_iter().map(|mut tuple| {
-        // When the last element is `any` (an unresolved expression — typically a
-        // function call), pad with `any` rather than `nil`. In Lua, a tail-call
-        // `return someFunc()` passes through all of the callee's return values,
-        // so positions beyond the explicit count are unknown, not definitely nil.
-        let pad = if tuple.last().is_some_and(|t| matches!(t, AnnotationType::Simple(s) if s == "any")) {
-            AnnotationType::Simple("any".to_string())
-        } else {
-            AnnotationType::Simple("nil".to_string())
-        };
-        while tuple.len() < max_arity {
-            tuple.push(pad.clone());
-        }
-        tuple
-    }).collect();
-    if implicit_nil {
-        tuples.push(vec![AnnotationType::Simple("nil".to_string()); max_arity]);
-    }
-
-    // Dedupe by tuple; require ≥ 2 distinct signatures.
-    let mut emitted: Vec<Vec<AnnotationType>> = Vec::new();
-    for returns in tuples {
-        if emitted.iter().any(|e| e == &returns) { continue; }
-        emitted.push(returns);
-    }
-    if emitted.len() < 2 { return Vec::new(); }
-
-    emitted.into_iter().map(|returns| OverloadSig {
-        params: Vec::new(),
-        returns,
-        is_vararg: false,
-        is_return_only: true,
-    }).collect()
-}
-
-/// Build a complete [`ExternalGlobal`] capturing a function definition's full
-/// signature: params (merged with `@param` annotations), `@return`/body-derived
-/// returns (including tail-call resolution and `...VarArgs` fallback), overloads
-/// (including synthesized correlated return-only overloads), `@deprecated`/
-/// `@nodiscard`/visibility/generics/etc., and the function's byte range.
+/// Build a complete [`ExternalGlobal`] capturing a function definition's
+/// signature: params (merged with `@param` annotations), explicit `@return`
+/// types and `@overload`s, `@deprecated`/`@nodiscard`/visibility/generics/etc.,
+/// and the function's byte range. When the function has no `@return`, the body
+/// is classified by return-statement bareness only (driving `is_body_derived`
+/// for deferred membership and `implicit_nil_return`); its precise body-derived
+/// return types and correlated overloads are resolved lazily by the per-file
+/// harvest, not here.
 ///
 /// The returned global has placeholder `name` (empty) and `kind`
 /// ([`ExternalGlobalKind::Function`]); callers override them via struct-update
@@ -679,120 +186,39 @@ fn build_func_external(
     func: &crate::ast::FunctionDefinition<'_>,
     anno_node: SyntaxNode<'_>,
     is_colon: bool,
-    correlated_return_overloads: bool,
-    file_func_returns: &HashMap<String, Vec<AnnotationType>>,
-    file_func_tail_callee: &HashMap<String, String>,
     owned_path: Option<&std::path::Path>,
 ) -> ExternalGlobal {
     // Annotations may live on an enclosing statement rather than the function
     // node itself (e.g. `---@param ...\nlocal f = function() end`), so the
     // caller specifies which node to scan for `---@` comments.
     let mut annotations = extract_annotations(anno_node);
-    let mut overloads: Vec<OverloadSig> = annotations.overloads.iter()
+    let overloads: Vec<OverloadSig> = annotations.overloads.iter()
         .filter_map(|s| parse_overload(s)).collect();
-    // Collect body returns once (when no @return annotations) for
-    // both overload synthesis and implicit_nil_return detection.
-    let body_returns = if annotations.returns.is_empty() {
+    // When the function has no `@return` annotation, classify its body returns
+    // by *bareness only*.  We deliberately do NOT infer coarse return types or
+    // synthesize return-only overloads here: the lazy, memoized per-file harvest
+    // (`resolve_deferred_sig`) is the single source of truth for body-derived
+    // return types and overloads.  This pass only records enough to drive the
+    // deferred membership set and `implicit_nil_return`:
+    //   - `is_body_derived` (any value-returning statement) → deferred function
+    //   - `implicit_nil_return` (no return statements, or all bare returns)
+    let body_return_bareness = if annotations.returns.is_empty() {
         func.block().map(|body| {
-            let mut returns = Vec::new();
-            synth_collect_returns(&body, &mut returns);
-            returns
+            let mut out = Vec::new();
+            collect_return_bareness(&body, &mut out);
+            out
         })
     } else {
         None
     };
-    // Implicit nil return: every return in the body is bare (no
-    // expressions), or the body has no return statements at all.
-    let implicit_nil_return = body_returns.as_ref()
-        .is_some_and(|returns| returns.iter().all(|(_, is_bare)| *is_bare));
-    // Derive primary return types from body when no @return
-    // annotations exist.  Picks the max-arity explicit return to
-    // determine the number of return slots and their coarse types.
-    // When multiple returns share max arity, widen each position:
-    // positions where all paths agree keep that type, positions
-    // where paths disagree (e.g. nil vs any) widen to `any`.
-    let body_derived_returns: Vec<AnnotationType> = body_returns.as_ref()
-        .and_then(|returns| {
-            let non_bare: Vec<_> = returns.iter()
-                .filter(|(_, is_bare)| !*is_bare)
-                .collect();
-            let max_arity = non_bare.iter()
-                .map(|(exprs, _)| exprs.len())
-                .max()?;
-            let max_returns: Vec<&Vec<AnnotationType>> = non_bare.iter()
-                .filter(|(exprs, _)| exprs.len() == max_arity)
-                .map(|(exprs, _)| exprs)
-                .collect();
-            if max_returns.len() == 1 {
-                return Some(max_returns[0].clone());
-            }
-            // Multiple returns with same max arity: widen types
-            // at each position so cross-file callers see the
-            // combined return type.
-            let mut result = Vec::with_capacity(max_arity);
-            for i in 0..max_arity {
-                let first = &max_returns[0][i];
-                if max_returns[1..].iter().all(|r| r[i] == *first) {
-                    result.push(first.clone());
-                } else {
-                    result.push(AnnotationType::Simple("any".to_string()));
-                }
-            }
-            Some(result)
-        })
-        .unwrap_or_default();
-    // When the body-derived return ends with `any` (typically from
-    // a tail-call function call), the actual return arity is unknown
-    // at scan time.  Try to resolve the callee within the same file
-    // to get concrete return types; otherwise fall back to VarArgs.
-    //
-    // NOTE: The widening above can also produce a trailing `any` when
-    // paths disagree at the last position, but that is harmless —
-    // `tail_call_callee_name` gates on the AST actually ending with a
-    // tail call, so a widened `any` won't trigger the VarArgs fallback
-    // spuriously.
-    let tail_callee = if body_derived_returns.last()
-        .is_some_and(|t| matches!(t, AnnotationType::Simple(s) if s == "any"))
-    {
-        func.block().and_then(|body| tail_call_callee_name(&body))
-    } else {
-        None
-    };
-    // Synthesize correlated return-only overloads from the pre-collected
-    // returns.  Matches the per-file IR synthesis so cross-file call sites
-    // also see the synthesized overloads.
-    if correlated_return_overloads
-        && !overloads.iter().any(|o| o.is_return_only)
-        && let Some(body) = func.block()
-        && let Some(returns) = body_returns {
-            overloads.extend(synthesize_return_only_overloads_from(returns, &body));
-        }
-    // Populate returns from body-derived types when no @return annotations
-    // exist.  This gives cross-file callers the correct return arity and
-    // coarse types (comparisons → boolean, literals → their type, everything
-    // else → any).
-    let is_body_derived = annotations.returns.is_empty() && !body_derived_returns.is_empty();
-    if is_body_derived {
-        if let Some(callee) = &tail_callee {
-            // Tail-call return: resolve through same-file functions to find
-            // the terminal callee's concrete return types.
-            if let Some(resolved) = resolve_through_tail_calls(
-                callee, file_func_returns, file_func_tail_callee,
-            ) {
-                annotations.returns = resolved.clone();
-            } else {
-                // Callee not in this file; keep VarArgs(any) to signal
-                // open-ended arity.
-                let last = body_derived_returns.last().unwrap().clone();
-                let mut returns = body_derived_returns;
-                let len = returns.len();
-                returns[len - 1] = AnnotationType::VarArgs(Box::new(last));
-                annotations.returns = returns;
-            }
-        } else {
-            annotations.returns = body_derived_returns;
-        }
-    }
+    // Implicit nil return: every return in the body is bare (no expressions),
+    // or the body has no return statements at all (`all` over an empty iter).
+    let implicit_nil_return = body_return_bareness.as_ref()
+        .is_some_and(|b| b.iter().all(|&is_bare| is_bare));
+    // Body-derived (deferred): at least one return statement yields a value.
+    // Its precise return types/overloads are resolved lazily, not here.
+    let is_body_derived = body_return_bareness.as_ref()
+        .is_some_and(|b| b.iter().any(|&is_bare| !is_bare));
     let range = func.syntax().text_range();
     let def_start = u32::from(range.start());
     let def_end = u32::from(range.end());
@@ -953,10 +379,13 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
     scan_file_globals_with_synth(root, source_path, true, false).0
 }
 
-/// Variant of [`scan_file_globals`] that lets the caller disable workspace-level
-/// synthesis of correlated return-only overloads for a specific file. The LSP /
-/// CLI paths consult `inference.correlated_return_overloads` per-file; stub
-/// generation leaves it on.
+/// Variant of [`scan_file_globals`] retaining the per-file
+/// `correlated_return_overloads` flag in its signature for caller compatibility.
+/// The flag no longer affects workspace scanning: correlated return-only
+/// overloads (and all body-derived return types) are now synthesized lazily by
+/// the per-file harvest (`resolve_deferred_sig`), which reads
+/// `inference.correlated_return_overloads` directly from the file's config. The
+/// parameter is therefore unused here.
 /// Returns `(globals, addon_ns_class_name)`.
 /// `addon_ns_class_name` is `Some(class_name)` when the addon namespace variable
 /// (the second value from `...`) also has a `@class` annotation, establishing a
@@ -964,7 +393,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
 pub(crate) fn scan_file_globals_with_synth(
     root: SyntaxNode<'_>,
     source_path: Option<&Path>,
-    correlated_return_overloads: bool,
+    _correlated_return_overloads: bool,
     implicit_protected_prefix: bool,
 ) -> (Vec<ExternalGlobal>, Option<String>) {
     let owned_path = source_path.map(|p| p.to_path_buf());
@@ -1172,64 +601,19 @@ pub(crate) fn scan_file_globals_with_synth(
             }
     }
 
-    // Pre-pass: collect body-derived returns for ALL functions in this file
-    // (including private/local ones), keyed by dotted name.  Also track which
-    // functions are tail-call wrappers and their callee names.  This enables
-    // tail-call resolution within the same file so cross-file callers see the
-    // concrete return types of the terminal callee rather than just `any`.
-    let mut file_func_returns: HashMap<String, Vec<AnnotationType>> = HashMap::new();
-    let mut file_func_tail_callee: HashMap<String, String> = HashMap::new();
-    for stmt in &all_stmts {
-        if let Statement::FunctionDefinition(func) = stmt {
-            let func_names = if let Some(ident) = func.identifier() {
-                ident.names()
-            } else if let Some(name) = func.name() {
-                vec![name]
-            } else {
-                continue;
-            };
-            if func_names.is_empty() { continue; }
-            let key = func_names.join(".");
-            let ann = extract_annotations(func.syntax());
-            if !ann.returns.is_empty() {
-                file_func_returns.insert(key, ann.returns);
-                continue;
-            }
-            if let Some(body) = func.block() {
-                let mut returns = Vec::new();
-                synth_collect_returns(&body, &mut returns);
-                let body_derived: Vec<AnnotationType> = returns.iter()
-                    .filter(|(_, is_bare)| !*is_bare)
-                    .max_by_key(|(exprs, _)| exprs.len())
-                    .map(|(exprs, _)| exprs.clone())
-                    .unwrap_or_default();
-                if !body_derived.is_empty() {
-                    if body_derived.last()
-                        .is_some_and(|t| matches!(t, AnnotationType::Simple(s) if s == "any"))
-                        && let Some(callee) = tail_call_callee_name(&body)
-                    {
-                        file_func_tail_callee.insert(key.clone(), callee);
-                    }
-                    file_func_returns.insert(key, body_derived);
-                }
-            }
-        }
-    }
-
     // Capture full signatures of local functions (both `local function f()` and
     // `local f = function()`) keyed by name. Assigning a local function to a
     // namespace/class field (`ns.f = f`) then re-uses the captured signature so
     // the params/returns survive cross-file, instead of degrading to a bare
-    // `function` type. Must run after `file_func_returns`/`file_func_tail_callee`
-    // are populated so body-derived returns resolve through tail calls.
+    // `function` type. Body-derived return types are NOT captured here — they
+    // are resolved lazily by the per-file harvest at call time.
     let mut local_function_sigs: HashMap<String, ExternalGlobal> = HashMap::new();
     for stmt in &all_stmts {
         match stmt {
             Statement::FunctionDefinition(func) if func.is_local() => {
                 if let Some(name) = func.name() {
                     local_function_sigs.insert(name, build_func_external(
-                        func, func.syntax(), false, correlated_return_overloads,
-                        &file_func_returns, &file_func_tail_callee, owned_path.as_deref(),
+                        func, func.syntax(), false, owned_path.as_deref(),
                     ));
                 }
             }
@@ -1240,8 +624,7 @@ pub(crate) fn scan_file_globals_with_synth(
                     if names.len() == 1 && exprs.len() == 1
                         && let Expression::Function(fd) = &exprs[0] {
                             local_function_sigs.insert(names[0].clone(), build_func_external(
-                                fd, assign.syntax(), false, correlated_return_overloads,
-                                &file_func_returns, &file_func_tail_callee, owned_path.as_deref(),
+                                fd, assign.syntax(), false, owned_path.as_deref(),
                             ));
                         }
                 }
@@ -1360,8 +743,7 @@ pub(crate) fn scan_file_globals_with_synth(
                 let is_colon = is_colon_opt.unwrap_or(false);
                 {
                     let base = build_func_external(
-                        func, func.syntax(), is_colon, correlated_return_overloads,
-                        &file_func_returns, &file_func_tail_callee, owned_path.as_deref(),
+                        func, func.syntax(), is_colon, owned_path.as_deref(),
                     );
                     // Local functions are file-scoped, not cross-file globals
                     // (multi-name branch needs no check — Lua syntax forbids `local function a.b()`)
@@ -1697,20 +1079,9 @@ pub(crate) fn scan_file_globals_with_synth(
                             // directly so params/returns survive cross-file (same as when a
                             // local function is assigned by name above).
                             if let Expression::Function(func_lit) = &effective {
-                                let mut base = build_func_external(
-                                    func_lit, assign.syntax(), false, correlated_return_overloads,
-                                    &file_func_returns, &file_func_tail_callee, owned_path.as_deref(),
+                                let base = build_func_external(
+                                    func_lit, assign.syntax(), false, owned_path.as_deref(),
                                 );
-                                // Post-process: when body-derived returns resolved to
-                                // [any] but the body actually returns a local function
-                                // identifier, replace with the proper fun(...) type.
-                                if base.returns.len() == 1
-                                    && matches!(&base.returns[0], AnnotationType::Simple(s) if s == "any")
-                                    && let Some(body) = func_lit.block()
-                                    && let Some(ret_func_type) = resolve_returned_local_func_type(&body, &local_function_sigs)
-                                {
-                                    base.returns = vec![ret_func_type];
-                                }
                                 let track = if is_addon_root && names.len() == 2 {
                                     Some(&mut addon_assigned_fields)
                                 } else { None };

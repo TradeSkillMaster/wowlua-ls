@@ -31,6 +31,7 @@ pub use references::ReferenceTarget;
 pub use highlights::HighlightKind;
 pub use call_hierarchy::{CallSiteResult, OutgoingCallResult};
 pub(crate) use format::return_type_at_slot;
+pub(crate) use format::dedup_return_types;
 pub(crate) use format::{format_vararg_return, format_vararg_param};
 use format::join_returns;
 

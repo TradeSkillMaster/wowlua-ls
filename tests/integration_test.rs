@@ -82,6 +82,9 @@ fn run_annotation_tests(config: &TestConfig) {
             let mut pg = PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
             pg.merge_events(&se);
             build_per_addon_tables_from_globals(&mut pg, &sg, &ans, &project_configs);
+            // Attach project configs so the cross-file deferred harvester honors
+            // per-file inference flags (mirrors the LSP server's WorkspaceState).
+            pg.set_project_configs(Arc::new(project_configs.clone()));
             Arc::new(pg)
         } else {
             STUB_GLOBALS.clone()
@@ -96,6 +99,9 @@ fn run_annotation_tests(config: &TestConfig) {
             let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
             pg.merge_events(&se);
             build_per_addon_tables_from_globals(&mut pg, &sg, &ans, &project_configs);
+            // Attach project configs so the cross-file deferred harvester honors
+            // per-file inference flags (mirrors the LSP server's WorkspaceState).
+            pg.set_project_configs(Arc::new(project_configs.clone()));
             Arc::new(pg)
         }
     } else {

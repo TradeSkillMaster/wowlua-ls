@@ -18,11 +18,12 @@ local has = ns.Core.HasItem("x")
 local empty = ns.Core.IsEmpty()
 --    ^ hover: (local) empty: boolean  def: local
 
--- Literal returns: (string, number, boolean)
+-- Literal returns: (string, number, true) — the engine preserves the boolean
+-- literal `true` (matching the def-site), not the coarse `boolean`.
 local d1, d2, d3 = ns.Core.GetDefaults()
 --    ^ hover: (local) d1: string  def: local
 --        ^ hover: (local) d2: number  def: local
---            ^ hover: (local) d3: boolean  def: local
+--            ^ hover: (local) d3: true  def: local
 
 -- Multi-path returns via correlated overloads
 local val, ok = ns.Core.TryGet("x")

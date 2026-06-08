@@ -249,9 +249,35 @@ pub(crate) enum ValueType {
     /// The String preserves the source spelling (`0`, `-1`, `0xFF`) so the type
     /// keeps `Eq`/`Hash` (f64 does not) and matches the `number_literals`
     /// convention used elsewhere. Decays to plain `Number` under arithmetic.
-    /// Kept last so adding it doesn't shift serde variant indices in the
-    /// precomputed-stub blob.
+    /// Kept before the runtime-only variants below so adding it didn't shift
+    /// serde variant indices in the precomputed-stub blob.
     NumberLiteral(String),
+    /// Inline function signature produced by the cross-file harvest lift when a
+    /// deferred function returns a *local* function value. The local arena index
+    /// is meaningless cross-file, so the callable's signature (params + return
+    /// types) is carried inline for lossless presentation and assignability.
+    /// Runtime-only — never serialized into the precomputed-stub blob, so it is
+    /// appended after `NumberLiteral` to keep the blob's variant indices stable.
+    FunctionSig(Box<FunctionShape>),
+}
+
+/// Inline function signature carried by [`ValueType::FunctionSig`]. Minimal by
+/// design: only the cross-file-meaningful surface (parameter names/types and
+/// return types), not the ~80 fields of [`Function`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FunctionShape {
+    pub(crate) params: Vec<ShapeParam>,
+    pub(crate) returns: Vec<ValueType>,
+    pub(crate) is_vararg: bool,
+}
+
+/// One parameter of a [`FunctionShape`]. `ty` is the display type with nil
+/// already stripped when `optional` is set (the `?` suffix conveys optionality).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ShapeParam {
+    pub(crate) name: String,
+    pub(crate) ty: ValueType,
+    pub(crate) optional: bool,
 }
 
 impl ValueType {
@@ -292,6 +318,7 @@ impl ValueType {
             ValueType::NumberLiteral(_) => true,
             ValueType::String(_) => true,
             ValueType::Function(_) => false,
+            ValueType::FunctionSig(_) => false,
             ValueType::Table(_) => false,
             ValueType::Union(types) => types.iter().all(|t| t.can_concat_to_string()),
             ValueType::Intersection(_) => false,
@@ -312,6 +339,7 @@ impl ValueType {
                 | ValueType::NumberLiteral(_)
                 | ValueType::String(_)
                 | ValueType::Function(_)
+                | ValueType::FunctionSig(_)
                 | ValueType::Table(_)
                 | ValueType::Intersection(_)
                 | ValueType::TypeVariable(_)
@@ -357,6 +385,11 @@ impl ValueType {
             (ValueType::Table(None), ValueType::Table(_)) => true,
             // Any specific function assignable to any other (no structural comparison)
             (ValueType::Function(Some(_)), ValueType::Function(Some(_))) => true,
+            // Inline function signatures are assignable to/from any function type
+            // (no structural comparison — they behave like a specific function).
+            (ValueType::FunctionSig(_), ValueType::Function(_))
+            | (ValueType::Function(_), ValueType::FunctionSig(_))
+            | (ValueType::FunctionSig(_), ValueType::FunctionSig(_)) => true,
             // Intersection-to-intersection: each expected member satisfied by some actual member
             (ValueType::Intersection(actuals), ValueType::Intersection(expecteds)) =>
                 expecteds.iter().all(|e| actuals.iter().any(|a| a.is_assignable_to(e))),

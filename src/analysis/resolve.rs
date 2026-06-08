@@ -355,6 +355,7 @@ impl<'a> Analysis<'a> {
         self.resolve_deferred_field_assignments();
         self.resolve_deep_field_injections();
         self.finalize_enum_kinds();
+        self.populate_deferred_overlay();
     }
 
     /// After the fixpoint loop, determine each local `@enum` table's value kind
@@ -1644,11 +1645,14 @@ impl<'a> Analysis<'a> {
             _ => None,
         };
         if let Some(func_idx) = func_idx {
-            // For deferred (body-derived) cross-file functions, resolve the precise
-            // correlated overloads lazily (the coarse external overloads are `any`);
-            // otherwise use the stored ones.
-            let overloads: Vec<_> = self.ir.effective_overloads(func_idx).into_iter()
+            // For deferred (body-derived) cross-file functions, warm the per-file
+            // overlay so the plain `func()` read below sees the precise correlated
+            // overloads (the coarse external overloads are `any`). A no-op for
+            // non-deferred functions and already-warm slots.
+            self.ir.ensure_overlay(func_idx);
+            let overloads: Vec<_> = self.func(func_idx).overloads.iter()
                 .filter(|o| o.is_return_only)
+                .cloned()
                 .collect();
             if !overloads.is_empty() {
                 // Filter overloads compatible with all narrowed siblings.
