@@ -65,3 +65,10 @@ BetaWidget = {}
 function BetaWidget:Process()
     return 21
 end
+
+-- Read as a function value in user.lua (not called). Currently produces a
+-- false-positive unused-function hint because non-call field reads are not
+-- tracked (no call_resolution entry). See find_unused_methods NOTE comment.
+function NS.FuncAsValueMethod()
+    return 15
+end

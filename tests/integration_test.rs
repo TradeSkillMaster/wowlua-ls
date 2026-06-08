@@ -5079,7 +5079,7 @@ fn test_unused_function_cross_file() {
         );
         analysis.resolve_types();
         let result = analysis.into_result();
-        let ref_data = collect_file_reference_data(&result, &tree);
+        let ref_data = collect_file_reference_data(&result);
         file_refs.insert(path, ref_data);
     }
 
@@ -5151,6 +5151,7 @@ fn test_unused_function_cross_file() {
 
     // Union-receiver regression: calling widget:Process() on AlphaWidget|BetaWidget
     // must count as a reference to BOTH classes' Process methods, not just the first.
+    // The interface detection (2+ tables defining the same method name) covers this.
     assert!(
         !unused_names.contains("AlphaWidget:Process"),
         "AlphaWidget:Process should not be flagged — called via union-typed receiver",
@@ -5158,5 +5159,15 @@ fn test_unused_function_cross_file() {
     assert!(
         !unused_names.contains("BetaWidget:Process"),
         "BetaWidget:Process should not be flagged — called via union-typed receiver",
+    );
+
+    // Known gap: function-as-value reads (e.g. `local fn = NS.FuncAsValueMethod`)
+    // produce no call_resolution entry, so the method is not found in `all_functions`
+    // and is falsely flagged as unused. If this assert starts failing it means the
+    // gap has been closed and the comment + assert can be updated to expect !contains.
+    assert!(
+        unused_names.contains("NS.FuncAsValueMethod"),
+        "NS.FuncAsValueMethod should be falsely flagged (known gap: function-as-value \
+         reads are not tracked by call_resolutions)",
     );
 }

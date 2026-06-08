@@ -100,7 +100,7 @@ pub(super) fn compute_ws_diagnostics(
             let tree = parse_lua(&text);
             let mut result = analyze_lua_parsed(&uri, pre_globals, configs, &tree);
             result.plugin_diag_codes = plugin_codes.to_vec();
-            let ref_data = unused_function::collect_file_reference_data(&result, &tree);
+            let ref_data = unused_function::collect_file_reference_data(&result);
             let root = crate::syntax::SyntaxNode::new_root(&tree);
             let suppressions = scan_diagnostic_directives(root);
             let diag_items = build_file_diagnostics_with(&uri, &tree, &result, &text, &[], configs, &suppressions);

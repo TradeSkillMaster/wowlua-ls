@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use crate::analysis::AnalysisResult;
 use crate::annotations::annotation_scanning::{ExternalGlobal, ExternalGlobalKind, FieldValueKind};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::syntax::tree::SyntaxTree;
 use crate::types::{FunctionIndex, SymbolIdentifier, SymbolIndex, TableIndex, EXT_BASE};
 
 use super::WowDiagnostic;
@@ -20,19 +19,12 @@ pub struct FileReferenceData {
     /// External `FunctionIndex` values (>= `EXT_BASE`) called by this file.
     /// Used for top-level global function usage tracking.
     pub referenced_external_functions: HashSet<FunctionIndex>,
-    /// Field references from call_resolutions, translated to (TableIndex, field_name)
-    /// identity. Aligned with the "find references" / code lens model — a method
-    /// call `obj:Method()` is tracked as a reference to (obj's table, "Method").
-    pub referenced_fields: HashSet<(TableIndex, String)>,
 }
 
 /// Extract cross-file reference data from a per-file `AnalysisResult`.
-/// Uses the same field-chain resolution as "find references" / code lens to
-/// track both calls and non-call field reads (function-as-value pattern).
-pub fn collect_file_reference_data(
-    analysis: &AnalysisResult,
-    tree: &SyntaxTree,
-) -> FileReferenceData {
+/// Uses `call_resolutions` (already computed during analysis) to track
+/// external function references. No additional tree walk is performed.
+pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceData {
     let mut referenced_externals = HashSet::new();
     let mut scope0_referenced_names = HashSet::new();
     let mut referenced_external_functions = HashSet::new();
@@ -50,12 +42,7 @@ pub fn collect_file_reference_data(
         }
     }
 
-    // Collect all external field references by walking tokens — same approach as
-    // "find references" and code lens "N usages". This catches both calls AND
-    // non-call field reads (function-as-value, e.g. passing a method as argument).
-    let referenced_fields = analysis.collect_referenced_external_fields(tree);
-
-    // Identify scope-0 symbols that are locally referenced.
+    // Identify scope-0 symbols that are locally referenced within this file.
     let scope0 = &analysis.ir.scopes[0];
     for (id, &sym_idx) in &scope0.symbols {
         if analysis.referenced_symbols.contains(&sym_idx)
@@ -69,7 +56,66 @@ pub fn collect_file_reference_data(
         referenced_externals,
         scope0_referenced_names,
         referenced_external_functions,
-        referenced_fields,
+    }
+}
+
+/// Pre-aggregated cross-file reference data for O(1) lookups in the
+/// unused-function candidate loops. Built once from all per-file
+/// `FileReferenceData` entries before iterating function candidates.
+struct AggregatedRefs {
+    /// External symbols referenced in 2+ distinct files.
+    /// Any symbol here is definitely referenced "elsewhere".
+    multi_file_externals: HashSet<SymbolIndex>,
+    /// External symbols referenced in exactly 1 file (path stored for comparison).
+    single_file_externals: HashMap<SymbolIndex, PathBuf>,
+    /// Union of all `referenced_external_functions` across all files.
+    /// Includes calls from the defining file itself, so recursive self-calls
+    /// count as a reference and keep the function alive. Unlike
+    /// `is_referenced_elsewhere` (which excludes the defining file to avoid
+    /// counting the LHS assignment), method lookups here have no spurious
+    /// self-reference to exclude.
+    all_functions: HashSet<FunctionIndex>,
+}
+
+impl AggregatedRefs {
+    fn build(file_refs: &HashMap<PathBuf, FileReferenceData>) -> Self {
+        let mut multi_file_externals = HashSet::new();
+        let mut single_file_externals: HashMap<SymbolIndex, PathBuf> = HashMap::new();
+        let mut all_functions = HashSet::new();
+
+        for (path, ref_data) in file_refs {
+            for &sym in &ref_data.referenced_externals {
+                if !multi_file_externals.contains(&sym) {
+                    if let Some(existing) = single_file_externals.get(&sym) {
+                        if existing != path {
+                            // Second distinct referencing file → promote to multi.
+                            multi_file_externals.insert(sym);
+                            single_file_externals.remove(&sym);
+                        }
+                    } else {
+                        single_file_externals.insert(sym, path.clone());
+                    }
+                }
+            }
+            all_functions.extend(ref_data.referenced_external_functions.iter().copied());
+        }
+
+        Self { multi_file_externals, single_file_externals, all_functions }
+    }
+
+    /// Returns `true` if `sym` is referenced in any file other than `source_path`.
+    fn is_referenced_elsewhere(&self, sym: SymbolIndex, source_path: &Path) -> bool {
+        if self.multi_file_externals.contains(&sym) {
+            return true;
+        }
+        self.single_file_externals
+            .get(&sym)
+            .is_some_and(|p| p.as_path() != source_path)
+    }
+
+    /// Returns `true` if `func_idx` appears in any file's call resolutions.
+    fn is_function_called(&self, func_idx: &FunctionIndex) -> bool {
+        self.all_functions.contains(func_idx)
     }
 }
 
@@ -87,6 +133,7 @@ fn is_used_or_excluded(
     name: &str,
     source_path: &Path,
     ext_sym: SymbolIndex,
+    agg: &AggregatedRefs,
     file_refs: &HashMap<PathBuf, FileReferenceData>,
     is_library: &dyn Fn(&Path) -> bool,
 ) -> bool {
@@ -108,17 +155,13 @@ fn is_used_or_excluded(
         return true;
     }
 
-    // Check if any file OTHER than the defining file references this
-    // external symbol. The defining file's assignment LHS (`Foo = function()`)
-    // creates a spurious external reference that must be excluded.
-    let referenced_elsewhere = file_refs.iter().any(|(path, ref_data)| {
-        path.as_path() != source_path && ref_data.referenced_externals.contains(&ext_sym)
-    });
-    if referenced_elsewhere {
+    // O(1) check: is this symbol referenced in any file other than the defining file?
+    if agg.is_referenced_elsewhere(ext_sym, source_path) {
         return true;
     }
 
-    // Check if the defining file uses this symbol beyond the definition.
+    // Only the defining-file's scope0_referenced_names check still needs
+    // file_refs; all cross-file lookups are handled via agg above.
     // `scope0_referenced_names` tracks local scope-0 symbols that appear in
     // `referenced_symbols`. The LOCAL scope-0 symbol is created by
     // `insert_or_version_symbol` during the assignment, so any subsequent
@@ -134,56 +177,11 @@ fn is_used_or_excluded(
     false
 }
 
-/// Check if a method is referenced via field identity — either directly on its
-/// owning table, or on any ancestor table (polymorphic dispatch through parent type).
-/// This mirrors the inheritance-aware logic in `tables_share_field_owner` used by
-/// "find references" and code lens "N usages".
-///
-/// `parent_classes` in `PreResolvedGlobals` is a **transitive closure** — it stores
-/// all ancestors flattened. So we only need a single-level iteration, not recursion.
-fn is_field_referenced(
-    table_idx: TableIndex,
-    field_name: &str,
-    file_refs: &HashMap<PathBuf, FileReferenceData>,
-    pre_globals: &PreResolvedGlobals,
-) -> bool {
-    // Pre-allocate the lookup key once to avoid repeated allocations.
-    let mut key = (table_idx, field_name.to_string());
-
-    // Direct reference on this table.
-    if file_refs.values().any(|r| r.referenced_fields.contains(&key)) {
-        return true;
-    }
-
-    // Flat ancestor check: parent_classes is a transitive closure, so a single
-    // iteration covers all ancestors without recursion.
-    let table = &pre_globals.tables[table_idx.ext_offset()];
-    for &parent_idx in &table.parent_classes {
-        key.0 = parent_idx;
-        if file_refs.values().any(|r| r.referenced_fields.contains(&key)) {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Extract the name range from an `ExternalLocation`, returning `None` if both
-/// `name_start` and `name_end` are zero AND `start` is also zero (ambiguous sentinel).
-/// When `name_end > 0`, the name range is valid regardless of `name_start`.
-fn name_range_or_fallback(name_start: u32, name_end: u32, start: u32, end: u32) -> (u32, u32) {
-    if name_end != 0 {
-        (name_start, name_end)
-    } else {
-        (start, end)
-    }
-}
-
 /// Shared Pass 2 logic: check method functions for usage across the workspace.
 /// Returns unused method functions as `UnusedWorkspaceFunction` entries.
 fn find_unused_methods(
     pre_globals: &PreResolvedGlobals,
-    file_refs: &HashMap<PathBuf, FileReferenceData>,
+    agg: &AggregatedRefs,
     is_library: &dyn Fn(&Path) -> bool,
 ) -> Vec<UnusedWorkspaceFunction> {
     let mut unused = Vec::new();
@@ -221,23 +219,20 @@ fn find_unused_methods(
             continue;
         }
 
-        // Layer 1: Direct FunctionIndex check (call_resolutions — handles deep type inference).
-        let is_called = file_refs.values().any(|ref_data| {
-            ref_data.referenced_external_functions.contains(func_idx)
-        });
-        if is_called {
+        // O(1) check: is this function referenced by any file's call resolutions?
+        // Call resolutions capture all method calls where the receiver resolves to
+        // an external type, covering direct calls and self:Method() patterns.
+        //
+        // NOTE: function-as-value reads (e.g. `local fn = NS.Method` or passing
+        // a method as a callback argument without calling it) do NOT produce a
+        // call_resolution entry, so they are not detected here. Such patterns are
+        // rare in WoW addon code; the performance gain from removing the per-file
+        // token walk outweighs the occasional false-positive on this edge case.
+        if agg.is_function_called(func_idx) {
             continue;
         }
 
-        // Layer 2: Field-reference check with inheritance (token walk — catches
-        // function-as-value reads + self:Method() via class_name promotion).
-        if let Some((table_idx, field_name)) = pre_globals.function_to_field.get(func_idx)
-            && is_field_referenced(*table_idx, field_name, file_refs, pre_globals)
-        {
-            continue;
-        }
-
-        // Layer 3: Interface detection — if 2+ distinct tables define the same method
+        // Interface detection — if 2+ distinct tables define the same method
         // name, it's likely a framework callback called via dynamic/string dispatch.
         if method_name_tables
             .get(method_name)
@@ -258,6 +253,17 @@ fn find_unused_methods(
     unused
 }
 
+/// Extract the name range from an `ExternalLocation`, returning `None` if both
+/// `name_start` and `name_end` are zero AND `start` is also zero (ambiguous sentinel).
+/// When `name_end > 0`, the name range is valid regardless of `name_start`.
+fn name_range_or_fallback(name_start: u32, name_end: u32, start: u32, end: u32) -> (u32, u32) {
+    if name_end != 0 {
+        (name_start, name_end)
+    } else {
+        (start, end)
+    }
+}
+
 /// Find workspace-global functions that are never referenced from any file.
 ///
 /// `ws_globals` is the flat list of workspace-scanned globals. `pre_globals`
@@ -270,6 +276,7 @@ pub fn find_unused_workspace_functions(
     is_library: &dyn Fn(&Path) -> bool,
 ) -> Vec<UnusedWorkspaceFunction> {
     let mut unused = Vec::new();
+    let agg = AggregatedRefs::build(file_refs);
 
     // Pass 1: top-level global functions.
     for g in ws_globals {
@@ -292,7 +299,7 @@ pub fn find_unused_workspace_functions(
             continue;
         }
 
-        if is_used_or_excluded(&g.name, source_path, ext_sym, file_refs, is_library) {
+        if is_used_or_excluded(&g.name, source_path, ext_sym, &agg, file_refs, is_library) {
             continue;
         }
 
@@ -305,7 +312,7 @@ pub fn find_unused_workspace_functions(
     }
 
     // Pass 2: method functions (shared helper).
-    unused.extend(find_unused_methods(pre_globals, file_refs, is_library));
+    unused.extend(find_unused_methods(pre_globals, &agg, is_library));
 
     unused
 }
@@ -323,6 +330,7 @@ pub fn find_unused_from_pre_globals(
     use crate::types::ValueType;
 
     let mut unused = Vec::new();
+    let agg = AggregatedRefs::build(file_refs);
 
     // Pass 1: top-level global functions (scope-0 symbols).
     for (id, &ext_sym) in &pre_globals.scope0_symbols {
@@ -353,7 +361,7 @@ pub fn find_unused_from_pre_globals(
             None => continue,
         };
 
-        if is_used_or_excluded(name, &loc.path, ext_sym, file_refs, is_library) {
+        if is_used_or_excluded(name, &loc.path, ext_sym, &agg, file_refs, is_library) {
             continue;
         }
 
@@ -367,7 +375,7 @@ pub fn find_unused_from_pre_globals(
     }
 
     // Pass 2: method functions (shared helper).
-    unused.extend(find_unused_methods(pre_globals, file_refs, is_library));
+    unused.extend(find_unused_methods(pre_globals, &agg, is_library));
 
     unused
 }

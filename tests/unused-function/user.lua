@@ -12,3 +12,5 @@ local function useUnionWidget(widget)
 end
 useUnionWidget(AlphaWidget)
 useUnionWidget(BetaWidget)
+-- Function-as-value read: not a call, so no call_resolution is produced.
+local e = NS.FuncAsValueMethod

@@ -826,7 +826,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 }
 
                 // Collect cross-file reference data for workspace-level unused function check
-                wowlua_ls::diagnostics::unused_function::collect_file_reference_data(&ar, &tree)
+                wowlua_ls::diagnostics::unused_function::collect_file_reference_data(&ar)
             }));
             match result {
                 Ok(ref_data) => { file_refs.insert(path.clone(), ref_data); }
