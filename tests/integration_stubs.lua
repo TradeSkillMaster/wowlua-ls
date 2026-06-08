@@ -810,9 +810,9 @@ local _font1 = GameFontNormal
 local _font2 = GameFontHighlightSmall
 --    ^ hover: (local) _font2: Font {
 
--- Color constants created by CreateColor() → return type (ColorMixin)
+-- Color constants created by CreateColor() → return type (colorRGBA)
 local _color1 = HIGHLIGHT_FONT_COLOR
---    ^ hover: (local) _color1: ColorMixin {
+--    ^ hover: (local) _color1: colorRGBA {
 
 -- DEFAULT_CHAT_FRAME = ChatFrame1 → type of referenced global
 local _dcf = DEFAULT_CHAT_FRAME
