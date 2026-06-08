@@ -396,6 +396,53 @@ impl AnalysisResult {
                     }
                 }
 
+                // Also find string literals passed to keyof-constrained generic
+                // parameters (e.g. `CallMethod(obj, "fieldName")` with
+                // `@generic Obj, K: keyof Obj`).
+                for cr in self.ir.call_resolutions.values() {
+                    if cr.generic_subs.is_empty() { continue; }
+                    let func = self.func(cr.func_idx);
+                    // Pre-build map from generic name → keyof target name.
+                    let keyof_targets: Vec<(&str, &str)> = func.generic_constraints_raw.iter()
+                        .filter_map(|(n, c)| c.as_deref()
+                            .and_then(crate::annotations::parse_keyof_constraint)
+                            .map(|ref_name| (n.as_str(), ref_name)))
+                        .collect();
+                    if keyof_targets.is_empty() { continue; }
+                    for (gen_name, bound_type, arg_range) in &cr.generic_subs {
+                        let Some(ref_name) = keyof_targets.iter()
+                            .find(|(n, _)| *n == gen_name.as_str())
+                            .map(|(_, r)| *r) else { continue };
+                        let ValueType::String(Some(key)) = bound_type else { continue };
+                        if key != field_name { continue; }
+                        let table_type = cr.generic_subs.iter()
+                            .find(|(n, _, _)| n == ref_name)
+                            .map(|(_, vt, _)| vt);
+                        if let Some(ValueType::Table(Some(ref_table_idx))) = table_type {
+                            let accept = *ref_table_idx == table_idx
+                                || (table_idx.is_external() && !ref_table_idx.is_external()
+                                    && self.table(*ref_table_idx).class_name.as_ref()
+                                        .and_then(|n| self.ir.ext.classes.get(n).copied())
+                                        == Some(table_idx))
+                                || self.tables_share_field_owner(table_idx, *ref_table_idx);
+                            if accept
+                                && let Some(&(start, end)) = arg_range.as_ref()
+                            {
+                                // Trim string delimiters so the range covers only the
+                                // content (e.g. `Activate` not `"Activate"`).  This is
+                                // critical for rename, which replaces the range text.
+                                let content_len = key.len() as u32;
+                                let total_len = end - start;
+                                let delim = (total_len.saturating_sub(content_len)) / 2;
+                                results.push(TextRange::new(
+                                    TextSize::from(start + delim),
+                                    TextSize::from(end - delim),
+                                ));
+                            }
+                        }
+                    }
+                }
+
                 // Filter out declaration if not requested.
                 if !include_declaration {
                     let mut decl_ranges: Vec<TextRange> = Vec::new();

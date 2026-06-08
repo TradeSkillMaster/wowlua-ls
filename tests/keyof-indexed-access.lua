@@ -348,3 +348,36 @@ callMethod(cm, "Nope")
 -- Completions offer colon-defined method names
 callMethod(cm, "")
 --              ^ comp: Draw, Reset  diag: generic-constraint-mismatch
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- keyof string literals tracked as field references
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+---@class Receiver
+local Receiver = {}
+
+function Receiver:Activate()
+end
+
+function Receiver:Deactivate()
+end
+
+---@generic T, K: keyof T
+---@param obj T
+---@param method K
+local function invoke(obj, method)
+    obj[method](obj)
+end
+
+---@type Receiver
+local rv = {}
+
+-- Direct method call: refs should include both syntactic and keyof string refs
+rv:Activate()
+-- ^ refs: 359:19, 376:4, 378:13
+invoke(rv, "Activate")
+invoke(rv, "Deactivate")
+
+-- Refs on the other method
+rv:Deactivate()
+-- ^ refs: 362:19, 379:13, 382:4
