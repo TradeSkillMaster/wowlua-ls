@@ -1284,6 +1284,15 @@ fn crossfile_addon_table() {
 }
 
 #[test]
+fn redundant_logical_crossfile_method_override() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/redundant-logical-crossfile/method_override_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/redundant-logical-crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_addon_table_select() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/file_c.lua",

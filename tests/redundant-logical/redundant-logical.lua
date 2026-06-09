@@ -587,3 +587,67 @@ local cfgHolder
 local s = cfgHolder.settings or {}
 --                            ^ diag: redundant-or
 _use(s)
+
+-- ── No diagnostic: method overridden by subclass ────────────────────────────
+
+-- A base-class method that returns a literal boolean may be overridden by
+-- subclasses that return the opposite literal. When the receiver is typed as
+-- the base class, the call resolves to the base's literal return, but at
+-- runtime the actual subclass implementation may run — so the result's
+-- truthiness is uncertain.
+---@class _PolymorphicBase
+local _PolymorphicBase = {}
+function _PolymorphicBase:IsSpecial()
+    return false
+end
+
+---@class _PolymorphicSub : _PolymorphicBase
+local _PolymorphicSub = {}
+function _PolymorphicSub:IsSpecial()
+    return true
+end
+
+---@param obj _PolymorphicBase
+local function _classifyObj(obj)
+    local kind = obj:IsSpecial() and "special" or "normal"
+    _use(kind)
+end
+_use(_classifyObj)
+
+-- Same shape for `or` with a base returning literal `true`.
+---@class _AlwaysTrueBase
+local _AlwaysTrueBase = {}
+function _AlwaysTrueBase:IsEnabled()
+    return true
+end
+
+---@class _AlwaysTrueSub : _AlwaysTrueBase
+local _AlwaysTrueSub = {}
+function _AlwaysTrueSub:IsEnabled()
+    return false
+end
+
+---@param obj _AlwaysTrueBase
+local function _checkEnabled(obj)
+    local v = obj:IsEnabled() or "fallback"
+    _use(v)
+end
+_use(_checkEnabled)
+
+-- But if no subclass overrides the method, the diagnostic should still fire.
+---@class _NoOverrideBase
+local _NoOverrideBase = {}
+function _NoOverrideBase:Check()
+    return false
+end
+
+---@class _NoOverrideChild : _NoOverrideBase
+-- _NoOverrideChild does NOT override Check.
+
+---@param obj _NoOverrideBase
+local function _checkNoOverride(obj)
+    local v = obj:Check() and "yes"
+    --                    ^ diag: redundant-and
+    _use(v)
+end
+_use(_checkNoOverride)

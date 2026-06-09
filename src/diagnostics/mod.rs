@@ -56,7 +56,7 @@ use lsp_types::DiagnosticSeverity;
 use crate::analysis::{AnalysisResult, StructuralMismatchDetail};
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::SyntaxTree;
-use crate::types::{Expr, ExprId, InjectFieldCheck, ValueType};
+use crate::types::{Expr, ExprId, InjectFieldCheck, TableIndex, ValueType};
 
 // ── Diagnostic catalog ─────────────────────────────────────────────────────────
 
@@ -562,6 +562,100 @@ pub(crate) fn is_expr_truthiness_uncertain(analysis: &AnalysisResult, expr_id: E
     || is_unannotated_param_ref(analysis, expr_id)
     || is_symbol_from_uncertain_source(analysis, expr_id)
     || is_flavor_restricted_global(analysis, expr_id)
+    || is_overridable_method_call(analysis, expr_id)
+}
+
+/// Field-access call whose receiver class has a subclass that defines its own
+/// version of the same field. The call's resolved return type comes from the
+/// base implementation, but at runtime the actual subclass method may produce
+/// a different value, so the static truthiness can't be trusted.
+///
+/// Catches the polymorphic-default pattern:
+///   function Base:M() return false end   -- base default
+///   function Sub:M() return true end     -- subclass override
+///   ---@param t Base
+///   local function f(t) if t:M() and ... end end
+/// Without this check, `t:M()` resolves to literal `false` and triggers
+/// `redundant-and`, but a `Sub` at runtime would make the LHS truthy. Applies
+/// uniformly to colon (`obj:M()`) and dot (`obj.M(obj)`) call syntax: both
+/// reach the same field via `FieldAccess`, and either can dispatch into a
+/// subclass implementation. Walks transitive subclasses via the precomputed
+/// `direct_subclasses()` index — typically a handful of classes — instead of
+/// scanning every class in the workspace.
+fn is_overridable_method_call(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let inner = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
+    let Expr::FunctionCall { func, .. } = &analysis.ir.exprs[inner.val()] else { return false };
+    let func = *func;
+    let func_inner = unwrap_to_inner_expr(&analysis.ir.exprs, func);
+    let Expr::FieldAccess { table, field, .. } = &analysis.ir.exprs[func_inner.val()] else { return false };
+    let receiver_expr = *table;
+    let method_name = field.clone();
+
+    let Some(receiver_ty) = analysis.resolve_expr_type(receiver_expr) else { return false };
+    let mut receiver_classes: Vec<TableIndex> = Vec::new();
+    collect_class_indices(&receiver_ty, &mut receiver_classes);
+    if receiver_classes.is_empty() { return false; }
+    receiver_classes.sort();
+    receiver_classes.dedup();
+
+    receiver_classes.iter().any(|&idx| subclass_overrides_method(analysis, idx, &method_name))
+}
+
+/// Collect every `Table(Some(idx))` reachable through union/intersection
+/// members and opaque-alias unwrapping. Owns the opaque-alias unwrap so
+/// callers don't need to pre-strip.
+fn collect_class_indices(t: &ValueType, out: &mut Vec<TableIndex>) {
+    match t {
+        ValueType::Table(Some(idx)) => out.push(*idx),
+        ValueType::Union(members) | ValueType::Intersection(members) => {
+            for m in members { collect_class_indices(m, out); }
+        }
+        ValueType::OpaqueAlias(_, inner) => collect_class_indices(inner, out),
+        _ => {}
+    }
+}
+
+/// True when some transitive subclass of `base_idx` defines its own `method_name`.
+/// Walks the precomputed `direct_subclasses()` index, so the cost is
+/// proportional to the size of the subclass tree, not the workspace.
+fn subclass_overrides_method(analysis: &AnalysisResult, base_idx: TableIndex, method_name: &str) -> bool {
+    let subclasses = analysis.direct_subclasses();
+    let mut visited: std::collections::HashSet<TableIndex> = std::collections::HashSet::new();
+    let mut stack: Vec<TableIndex> = subclasses.get(&base_idx).cloned().unwrap_or_default();
+    while let Some(idx) = stack.pop() {
+        if !visited.insert(idx) { continue; }
+        if class_has_own_method(analysis, idx, method_name) { return true; }
+        if let Some(children) = subclasses.get(&idx) {
+            stack.extend_from_slice(children);
+        }
+    }
+    false
+}
+
+fn class_has_own_method(analysis: &AnalysisResult, table_idx: TableIndex, method_name: &str) -> bool {
+    let table = analysis.table(table_idx);
+    let Some(field) = table.fields.get(method_name) else { return false };
+    if let Some(ann) = &field.annotation
+        && annotation_admits_function(ann)
+    {
+        return true;
+    }
+    matches!(analysis.ir.expr(field.expr), Expr::FunctionDef(_))
+}
+
+/// True when the annotation type could be a function: handles plain
+/// `Function`/`FunctionSig`, opaque-alias-wrapped versions of either, and
+/// unions/intersections that include a function member (e.g.
+/// `---@field M fun(): boolean | nil` — a callable field that may be absent).
+fn annotation_admits_function(ty: &ValueType) -> bool {
+    match ty {
+        ValueType::Function(_) | ValueType::FunctionSig(_) => true,
+        ValueType::OpaqueAlias(_, inner) => annotation_admits_function(inner),
+        ValueType::Union(members) | ValueType::Intersection(members) => {
+            members.iter().any(annotation_admits_function)
+        }
+        _ => false,
+    }
 }
 
 /// Local declared with `---@type T!` (lateinit): typed non-nil but starts as

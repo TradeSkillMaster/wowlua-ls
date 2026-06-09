@@ -10,7 +10,7 @@ pub mod semantic_tokens;
 pub mod deferred;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::ast::Block;
 use crate::syntax::SyntaxNode;
@@ -1672,6 +1672,10 @@ pub struct AnalysisResult {
     pub(crate) vararg_user_annotated_fns: HashSet<FunctionIndex>,
     /// Diagnostic codes declared by loaded plugins (suppresses `unknown-diag-code`).
     pub plugin_diag_codes: Vec<String>,
+    /// Lazy reverse-inheritance index: parent class table → direct subclasses
+    /// (both local and external). Built on first access by `direct_subclasses()`
+    /// and reused across diagnostic passes within the same `run_all` invocation.
+    pub(crate) direct_subclasses_cache: OnceLock<HashMap<TableIndex, Vec<TableIndex>>>,
 }
 
 /// Summary statistics from a single file's analysis, for the `check` command.
@@ -1720,6 +1724,33 @@ impl AnalysisResult {
 
     pub fn is_meta(&self) -> bool {
         self.is_meta
+    }
+
+    /// Reverse-inheritance map: each class table index keys the list of its
+    /// direct subclass tables (local + external). Computed lazily on first
+    /// access and cached for the lifetime of the `AnalysisResult`. Used by the
+    /// overridable-method check in `diagnostics::is_expr_truthiness_uncertain`
+    /// to walk only the transitive subclasses of a given base instead of
+    /// scanning every class in the workspace.
+    ///
+    /// A class can appear in both `ir.classes` (when the current file re-imports
+    /// it as a local namespace alias) and `ir.ext.classes` (the workspace pool),
+    /// so we dedupe the per-parent lists to keep BFS iteration linear.
+    pub(crate) fn direct_subclasses(&self) -> &HashMap<TableIndex, Vec<TableIndex>> {
+        self.direct_subclasses_cache.get_or_init(|| {
+            let mut seen: HashMap<TableIndex, HashSet<TableIndex>> = HashMap::new();
+            let mut map: HashMap<TableIndex, Vec<TableIndex>> = HashMap::new();
+            let local = self.ir.classes.values().copied();
+            let external = self.ir.ext.classes.values().copied();
+            for table_idx in local.chain(external) {
+                for &parent_idx in &self.table(table_idx).parent_classes {
+                    if seen.entry(parent_idx).or_default().insert(table_idx) {
+                        map.entry(parent_idx).or_default().push(table_idx);
+                    }
+                }
+            }
+            map
+        })
     }
 
     #[inline] pub(crate) fn resolve_constructor_func(&self, table_idx: TableIndex) -> Option<FunctionIndex> { self.ir.resolve_constructor_func(table_idx) }
@@ -2343,6 +2374,7 @@ impl<'a> Analysis<'a> {
             event_vararg_types: self.event_vararg_types,
             vararg_user_annotated_fns: self.vararg_user_annotated_fns,
             plugin_diag_codes: Vec::new(),
+            direct_subclasses_cache: OnceLock::new(),
         }
     }
 }
