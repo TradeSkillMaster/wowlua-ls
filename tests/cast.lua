@@ -293,3 +293,27 @@ end
 function castNs.validate(item)
     return true
 end
+
+-- ── Method hover on if-condition with @cast in then-branch (regression) ─────
+-- The receiver's later cast version (and the merged version after the if) must
+-- not leak into the receiver's type at the if-condition position. Otherwise
+-- hover/completion at the method-name resolves the receiver to a union and
+-- shows duplicate signatures from every parent class in the union members'
+-- inheritance chains.
+
+---@class CastIsaBase
+---@field IsKind fun(self): boolean
+
+---@class CastIsaTask: CastIsaBase
+
+---@class CastIsaSub: CastIsaTask
+
+---@type CastIsaTask
+local castIsaTask
+
+if castIsaTask:IsKind() then
+--             ^ comp: IsKind
+--                ^ hover: (method) function CastIsaTask:IsKind()\n-> boolean
+    ---@cast castIsaTask CastIsaSub
+    print(castIsaTask)
+end

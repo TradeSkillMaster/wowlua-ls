@@ -1026,12 +1026,25 @@ impl AnalysisResult {
         let root_name = root_names[0].text().to_string();
         let scope_idx = self.scope_at_offset(scope_offset)?;
         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+        // Select the version active at the root token's position. Without this,
+        // a symbol with later narrowed/cast/merge versions (e.g. `task` cast to
+        // a subclass inside a subsequent if-branch) would pick `versions.last()`
+        // and resolve the receiver as a union, causing hover/completion to show
+        // duplicate signatures from each union member's parent chain.
+        //
+        // Narrowing keeps `scope_idx` (from the deeper-in-chain `scope_offset`)
+        // because narrowing is scope-keyed, not position-keyed, and for a dot/
+        // colon chain in a single statement the root token and the deeper
+        // tokens always sit in the same scope. Falls back to
+        // `symbol_resolved_type_at`, which uses `symbol_version_at` to pick
+        // the version active at the root token; that map is populated by
+        // `lower_expression` for every Name and Parameter token use, so
+        // receiver root tokens (NameRef in a DotAccess/MethodCall) always
+        // have an entry.
+        let root_token_start: u32 = root_names[0].text_range().start().into();
         let mut current_type = self.get_type_narrowing(symbol_idx, scope_idx)
             .cloned()
-            .or_else(|| {
-                let ver = self.sym(symbol_idx).versions.last()?;
-                ver.resolved_type.clone()
-            })?;
+            .or_else(|| self.symbol_resolved_type_at(symbol_idx, root_token_start).cloned())?;
 
         // Walk from root outward through each intermediate node's Name tokens.
         for ancestor in chain.iter().rev().skip(1) {
