@@ -279,28 +279,11 @@ fn verdict_eq(op: Operator, equal: bool) -> Verdict {
     if cond_true { Verdict::AlwaysTrue } else { Verdict::AlwaysFalse }
 }
 
-/// Resolve an expression's type, but recover concrete literal values for source
-/// literals (which lower to generic `String(None)` / `Number` with the spelling
-/// kept in side tables). This lets `"a" == "b"` and `x == "c"` be evaluated.
+/// Local shim: forwards to [`super::effective_type`] (the shared literal-recovery
+/// helper). Kept as a local name so the existing call sites in this file
+/// continue to read naturally.
 fn effective_type(analysis: &AnalysisResult, expr_id: ExprId) -> Option<ValueType> {
-    let ir = &analysis.ir;
-    let id = unwrap_to_inner_expr(&ir.exprs, expr_id);
-    if let Expr::Literal(vt) = ir.expr(id) {
-        match vt {
-            ValueType::String(None) => {
-                if let Some(s) = ir.string_literals.get(&id) {
-                    return Some(ValueType::String(Some(s.clone())));
-                }
-            }
-            ValueType::Number => {
-                if let Some(s) = ir.number_literals.get(&id) {
-                    return Some(ValueType::NumberLiteral(s.clone()));
-                }
-            }
-            _ => {}
-        }
-    }
-    analysis.resolve_expr_type(expr_id)
+    super::effective_type(analysis, expr_id)
 }
 
 /// If `t` is an enum table type, return its runtime base type (`Number` or
@@ -418,8 +401,23 @@ fn exprs_syntactically_equal(ir: &crate::analysis::Ir, a: ExprId, b: ExprId) -> 
 }
 
 /// Collect all `SymbolRef`s (with version indices) reachable from an
-/// expression by unwrapping narrowing wrappers, `not`, `and`/`or`, comparison
-/// operands, and function-call arguments (so `type(x) == "..."` is reached).
+/// expression by unwrapping narrowing wrappers, `not`, `and`/`or`, and
+/// comparison operands.
+///
+/// Function-call arguments are intentionally NOT descended into: for the
+/// common case the call's return type is fixed by its annotation and does
+/// not depend on argument *values*, so reassignment uncertainty of those
+/// argument symbols can't shift the call result's truthiness.
+///
+/// Known limitation: this also skips generic functions whose return type is
+/// bound to a parameter (e.g. `---@generic T` / `---@param x T` /
+/// `---@return T`). For such a call the return type *does* track the
+/// argument's type, and a loop-reassigned argument can in principle shift
+/// the verdict — we accept the resulting false-positive risk because it's
+/// rarer than the false-negative pattern (call-with-loop-arg) this prevents,
+/// and users can suppress individual sites with `---@diagnostic`. The
+/// `type(x)` built-in is similarly skipped, but `eval_type_guard` resolves
+/// `x` directly so its merged type is what the verdict uses anyway.
 fn collect_symbol_refs(ir: &crate::analysis::Ir, expr_id: ExprId, out: &mut Vec<(SymbolIndex, usize)>) {
     match ir.expr(expr_id) {
         Expr::SymbolRef(sym_idx, ver_idx) => out.push((*sym_idx, *ver_idx)),
@@ -437,11 +435,6 @@ fn collect_symbol_refs(ir: &crate::analysis::Ir, expr_id: ExprId, out: &mut Vec<
             let (lhs, rhs) = (*lhs, *rhs);
             collect_symbol_refs(ir, lhs, out);
             collect_symbol_refs(ir, rhs, out);
-        }
-        Expr::FunctionCall { args, .. } => {
-            for &arg in args {
-                collect_symbol_refs(ir, arg, out);
-            }
         }
         _ => {}
     }

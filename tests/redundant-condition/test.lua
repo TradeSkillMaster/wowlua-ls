@@ -840,6 +840,29 @@ else
     error("bad")
 end
 
+-- ── Loop variable passed as call argument ───────────────────────────────────
+-- The loop counter `i` is reassigned each iteration, but it's only used as an
+-- argument to a function call whose return type is fixed by annotation. The
+-- truthiness of the call's return doesn't depend on `i`'s value, so the
+-- diagnostic should still fire.
+---@class CallArgInfo
+---@field data string
+
+---@param idx number
+---@return CallArgInfo
+local function fetchInfo(idx) return {data = tostring(idx)} end
+
+local function checkLoopArg()
+    for i = 1, 10 do
+        if not fetchInfo(i) then
+        --     ^ diag: redundant-condition
+            return false
+        end
+    end
+    return true
+end
+_use(checkLoopArg)
+
 -- ── Suppression ──────────────────────────────────────────────────────────────
 
 ---@type number

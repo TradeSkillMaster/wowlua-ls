@@ -75,7 +75,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `trailing-space` | Line ends with whitespace |
 | `not-precedence` | `not x <cmp> y` is `(not x) <cmp> y` |
 | `redundant-or` | `or` where left side is always truthy (RHS is dead code) **(off by default)** |
-| `redundant-and` | `and` where left side is always falsy (RHS is dead code) **(off by default)** |
+| `redundant-and` | `and` where left side is always falsy (RHS is dead code) or always truthy (operator is a no-op) **(off by default)** |
 | `redundant-condition` | `if`/`elseif`/`while` condition is [provably constant](#redundant-condition) **(off by default)** |
 | `implicit-nil-return` | Bare `return` in function with optional `@return` **(off by default)** |
 | `unknown-param-type` | Parameter type can't be inferred **(off by default)** |

@@ -421,6 +421,32 @@ pub(crate) fn is_type_permissive(ty: &ValueType) -> bool {
     }
 }
 
+/// Resolve an expression's type, but recover concrete literal values for source
+/// literals (which lower to generic `String(None)` / `Number` with the spelling
+/// kept in side tables). This lets diagnostic messages show `\`2\`` instead of
+/// bare `number` and lets equality folding compare `"a" == "b"`.
+pub(crate) fn effective_type(analysis: &crate::analysis::AnalysisResult, expr_id: crate::types::ExprId) -> Option<ValueType> {
+    use crate::types::Expr;
+    let ir = &analysis.ir;
+    let id = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    if let Expr::Literal(vt) = ir.expr(id) {
+        match vt {
+            ValueType::String(None) => {
+                if let Some(s) = ir.string_literals.get(&id) {
+                    return Some(ValueType::String(Some(s.clone())));
+                }
+            }
+            ValueType::Number => {
+                if let Some(s) = ir.number_literals.get(&id) {
+                    return Some(ValueType::NumberLiteral(s.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    analysis.resolve_expr_type(expr_id)
+}
+
 /// Returns true when two types can never share a runtime value, so an `==`
 /// comparison between them is always false (and `~=` always true). Conservative:
 /// returns false whenever a shared value is possible, or when either side is

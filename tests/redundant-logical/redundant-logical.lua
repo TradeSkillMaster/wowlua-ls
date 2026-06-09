@@ -63,10 +63,24 @@ _use(maybeBool or "default")
 local uninit
 _use(uninit or "fallback")
 
--- ── No diagnostic: LHS can be truthy (and) ──────────────────────────────────
+-- ── redundant-and: LHS always truthy ─────────────────────────────────────────
 
--- Truthy LHS with and — common idiom, not flagged
+-- A truthy LHS in `and` makes the operator a no-op — `x and y` always equals `y`.
+-- Same principle as `if x then` firing `redundant-condition` for always-truthy x.
 _use(2 and "yes")
+--     ^ diag: redundant-and
+
+-- Class-typed local: annotated non-nil → flagged.
+---@class TruthyClass
+---@field f boolean
+---@return TruthyClass
+local function makeTC() return {f = true} end
+local function checkClassAnd()
+    local tc = makeTC()
+    return tc and tc.f
+    --        ^ diag: redundant-and
+end
+_use(checkClassAnd)
 
 -- boolean LHS with and — could be true
 _use(maybeBool and "yes")
@@ -468,11 +482,12 @@ local function _orNilTail(tree, node)
 end
 _use(_orNilTail)
 
--- ── No diagnostic: Lua ternary idiom `x and y or z` ─────────────────────────
+-- ── Lua ternary idiom `x and y or z` with always-truthy `x` ─────────────────
 
--- The `x and y or z` pattern is Lua's standard ternary idiom. Even if the LS
--- resolves `x` as always truthy, the `or z` is the intended else-branch and
--- should not be flagged.
+-- The `x and y or z` pattern is Lua's standard ternary idiom. The `or z`
+-- branch is suppressed (its truthy-LHS would normally fire `redundant-or`)
+-- because the developer's intent is "if x, use y, else use z". But when `x`
+-- is statically always-truthy, the `and` guard itself is a no-op — flag it.
 ---@class SlicePart
 ---@field id number
 
@@ -487,12 +502,14 @@ local parts
 ---@type string
 local relFrame
 local mapped = relFrame and parts[relFrame] or nil
+--                       ^ diag: redundant-and
 _use(mapped)
 
 -- Same pattern with a non-nil fallback instead of nil.
 ---@type string
 local key
 local val = key and parts[key] or "default"
+--              ^ diag: redundant-and
 _use(val)
 
 -- ── Still diagnostic: literal nil in and ────────────────────────────────────

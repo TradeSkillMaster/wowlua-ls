@@ -1,7 +1,7 @@
 use crate::analysis::AnalysisResult;
 use crate::ast::Operator;
 use crate::types::{Expr, ExprId};
-use super::{DiagnosticPass, WowDiagnostic, is_type_permissive, is_expr_truthiness_uncertain, unwrap_to_inner_expr};
+use super::{DiagnosticPass, WowDiagnostic, effective_type, is_type_permissive, is_expr_truthiness_uncertain, unwrap_to_inner_expr};
 
 pub(crate) struct RedundantLogical;
 
@@ -80,8 +80,12 @@ impl DiagnosticPass for RedundantLogical {
             // Skip symbols whose initial definition (version 0) was nil/falsy:
             // loop-body branch merges can make a later version appear always
             // truthy, but the variable may still be nil on the first iteration.
-            // The `x = x or default` pattern inside a loop is not redundant.
-            if matches!(op, Operator::Or) && lhs_initial_version_is_nilable(analysis, lhs) { continue; }
+            // The `x = x or default` pattern inside a loop is not redundant —
+            // and by the same logic a later `x and x.field` read in the same
+            // loop body (referencing the v1+ "truthy" version) is a legitimate
+            // guard against the first-iteration nil, so apply this to both
+            // truthy-LHS branches.
+            if lhs_type.is_guaranteed_truthy() && lhs_initial_version_is_nilable(analysis, lhs) { continue; }
 
             // Skip nil/false-initialized variables that have been reassigned:
             // the variable may hold a non-nil value after a loop iteration or
@@ -105,6 +109,20 @@ impl DiagnosticPass for RedundantLogical {
                     super::REDUNDANT_AND.emit(
                         diags,
                         format!("`and` is redundant \u{2014} left side is always falsy (`{type_str}`)"),
+                        site.op_start as usize,
+                        site.op_end as usize,
+                    );
+                }
+                Operator::And if lhs_type.is_guaranteed_truthy() => {
+                    // Prefer the literal-spelling type (`2`, `"hi"`) over the
+                    // generic kind (`number`, `string`) when the LHS is a source
+                    // literal — matches what `redundant-condition` displays for
+                    // the analogous `if 2 then` case.
+                    let display_type = effective_type(analysis, lhs).unwrap_or(lhs_type);
+                    let type_str = analysis.format_type_depth(&display_type, 1);
+                    super::REDUNDANT_AND.emit(
+                        diags,
+                        format!("`and` is redundant \u{2014} left side is always truthy (`{type_str}`)"),
                         site.op_start as usize,
                         site.op_end as usize,
                     );
