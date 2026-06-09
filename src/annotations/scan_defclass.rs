@@ -388,6 +388,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                             declared_field_names: HashSet::new(),
                             field_literals: HashMap::new(),
                             field_descriptions: HashMap::new(),
+                            bare_inferred_field_names: HashSet::new(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name, implicit_protected_prefix)));
                     } else {
@@ -427,6 +428,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                 declared_field_names: HashSet::new(),
                 field_literals: HashMap::new(),
                 field_descriptions: HashMap::new(),
+                bare_inferred_field_names: HashSet::new(),
             });
         }
     }
@@ -569,6 +571,9 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                         let vis = default_visibility_for_name(&entry.name, implicit_protected_prefix);
                         if let Some(range) = entry.byte_range {
                             results[result_idx].field_ranges.entry(entry.name.clone()).or_insert(range);
+                        }
+                        if entry.inferred {
+                            results[result_idx].bare_inferred_field_names.insert(entry.name.clone());
                         }
                         results[result_idx].fields.push((
                             entry.name,
@@ -854,13 +859,14 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>,
                             let field_name = &names[1];
                             if seen.insert(field_name.clone()) {
                                 // Try @type annotation (preceding line, then inline), then infer from expression
-                                let ann_type = extract_type_annotation_for_assign(assign.syntax())
-                                    .or_else(|| extract_inline_type_annotation(assign.syntax()))
-                                    .unwrap_or_else(|| {
-                                        exprs.get(i)
-                                            .map(|e| infer_type_from_expression(e, global_returns, field_types, field_built_names, class_field_types))
-                                            .unwrap_or_else(|| AnnotationType::Simple("any".to_string()))
-                                    });
+                                let explicit = extract_type_annotation_for_assign(assign.syntax())
+                                    .or_else(|| extract_inline_type_annotation(assign.syntax()));
+                                let inferred = explicit.is_none();
+                                let ann_type = explicit.unwrap_or_else(|| {
+                                    exprs.get(i)
+                                        .map(|e| infer_type_from_expression(e, global_returns, field_types, field_built_names, class_field_types))
+                                        .unwrap_or_else(|| AnnotationType::Simple("any".to_string()))
+                                });
                                 // Track non-any types so later fields can reference them
                                 if !matches!(&ann_type, AnnotationType::Simple(s) if s == "any") {
                                     field_types.insert(field_name.clone(), ann_type.clone());
@@ -874,7 +880,7 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>,
                                     });
                                 fields.push(SelfFieldEntry {
                                     name: field_name.clone(), annotation_type: ann_type,
-                                    byte_range: field_range,
+                                    byte_range: field_range, inferred,
                                 });
                             }
                         }

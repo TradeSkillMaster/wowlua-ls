@@ -387,6 +387,7 @@ pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameC
                     declared_field_names: HashSet::new(),
                     field_literals: HashMap::new(),
                     field_descriptions: HashMap::new(),
+                    bare_inferred_field_names: HashSet::new(),
                 });
             }
     }

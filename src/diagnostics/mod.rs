@@ -770,6 +770,8 @@ fn any_table_lacks_own_field_annotation(analysis: &AnalysisResult, ty: &ValueTyp
             if table.class_name.is_none() { return true; }
             let Some(fi) = table.fields.get(field) else { return true; };
             if fi.annotation.is_none() { return true; }
+            // Bare self-field assignments may not have run yet at runtime.
+            if fi.from_scan { return true; }
             // Check if the annotation was inherited from a parent class by
             // comparing def_range identity. Prescan clones parent fields into
             // children (vacant-only), so an inherited field has the same

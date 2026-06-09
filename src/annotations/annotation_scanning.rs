@@ -593,7 +593,7 @@ pub(crate) fn scan_method_typed_self_fields(
             let vis = default_visibility_for_name(&field_name, implicit_protected_prefix);
             results.push(TypedSelfField {
                 class_name: class_name.clone(), field_name, annotation_type: ann_type,
-                visibility: vis, byte_range: range,
+                visibility: vis, byte_range: range, inferred: false,
             });
         }
     }
@@ -885,7 +885,7 @@ pub(crate) fn scan_method_bare_self_fields(
             let vis = default_visibility_for_name(&field_name, implicit_protected_prefix);
             results.push(TypedSelfField {
                 class_name: class_name.clone(), field_name, annotation_type: ann_type,
-                visibility: vis, byte_range: range,
+                visibility: vis, byte_range: range, inferred: true,
             });
         }
     }

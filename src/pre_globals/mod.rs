@@ -1041,6 +1041,7 @@ impl BuildContext {
                     self.resolve_field_annotation(annotation_type, &gen_context, dummy_node)
                 };
                 let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
+                let bare_inferred = class.bare_inferred_field_names.contains(field_name);
                 if let Some(vt) = vt {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
@@ -1063,7 +1064,7 @@ impl BuildContext {
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
                         description: class.field_descriptions.get(field_name).cloned(),
-                        from_scan: false,
+                        from_scan: bare_inferred,
                     });
                 } else if annotation_type_references_type_params(annotation_type, &self.tables[local_idx].class_type_params) {
                     // Field type references a class type param (e.g., @field __super S?)
@@ -1081,7 +1082,7 @@ impl BuildContext {
                         extra_exprs: Vec::new(),
                         flavor_guard: 0,
                         description: class.field_descriptions.get(field_name).cloned(),
-                        from_scan: false,
+                        from_scan: bare_inferred,
                     });
                 }
             }
@@ -3407,6 +3408,7 @@ mod tests {
             declared_field_names: std::collections::HashSet::new(),
             field_literals: std::collections::HashMap::new(),
             field_descriptions: std::collections::HashMap::new(),
+            bare_inferred_field_names: std::collections::HashSet::new(),
         }
     }
 

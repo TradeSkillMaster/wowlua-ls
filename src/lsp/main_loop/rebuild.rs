@@ -33,6 +33,7 @@ pub(super) fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool 
 /// ignoring positional fields (def_range, def_path, field_ranges, field_paths)
 /// and display-only fields (see, declared_field_names, field_literals).
 // IMPORTANT: Update this function when adding semantic fields to ClassDecl.
+// bare_inferred_field_names: always empty in per-file classes; tracked via self_fields_match.
 pub(super) fn class_semantic_eq(x: &ClassDecl, y: &ClassDecl) -> bool {
     x.name == y.name
         && x.type_params == y.type_params
@@ -210,6 +211,7 @@ pub(super) fn self_fields_match(a: &[TypedSelfField], b: &[TypedSelfField]) -> b
             && x.field_name == y.field_name
             && x.annotation_type == y.annotation_type
             && x.visibility == y.visibility
+            && x.inferred == y.inferred
     })
 }
 

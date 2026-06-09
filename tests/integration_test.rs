@@ -1060,6 +1060,15 @@ fn redundant_condition_flavor() {
 }
 
 #[test]
+fn redundant_condition_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/redundant-condition-crossfile/test.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/redundant-condition-crossfile"),
+    });
+}
+
+#[test]
 fn references() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/references.lua",

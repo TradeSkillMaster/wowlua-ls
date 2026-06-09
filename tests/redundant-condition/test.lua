@@ -908,3 +908,8 @@ local function testNonNilFieldAssign(state)
     end
 end
 _use(testNonNilFieldAssign)
+
+-- ── No diagnostic: lazy-init bare self-field (cross-file) ────────────────────
+-- Regression test for this pattern lives in
+-- tests/redundant-condition-crossfile/ which exercises the workspace-scan
+-- → bare_inferred_field_names → from_scan suppression path.

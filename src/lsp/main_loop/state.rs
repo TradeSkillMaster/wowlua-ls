@@ -226,6 +226,9 @@ impl WorkspaceState {
                             ws_classes[idx].fields.push((tsf.field_name.clone(), tsf.annotation_type.clone(), tsf.visibility));
                             ws_classes[idx].field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
                             ws_classes[idx].field_paths.entry(tsf.field_name.clone()).or_insert_with(|| source_path.clone());
+                            if tsf.inferred {
+                                ws_classes[idx].bare_inferred_field_names.insert(tsf.field_name.clone());
+                            }
                         }
                     }
                 }

@@ -304,6 +304,8 @@ pub(crate) struct SelfFieldEntry {
     pub(crate) name: String,
     pub(crate) annotation_type: AnnotationType,
     pub(crate) byte_range: Option<(u32, u32)>,
+    /// True when type was inferred (no `---@type`) — may be nil before assignment runs.
+    pub(crate) inferred: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -313,6 +315,8 @@ pub(crate) struct TypedSelfField {
     pub(crate) annotation_type: AnnotationType,
     pub(crate) visibility: Visibility,
     pub(crate) byte_range: (u32, u32),
+    /// Bare assignment with no `---@type` — may be nil before the assignment runs.
+    pub(crate) inferred: bool,
 }
 
 /// Expand a `Simple(name)` annotation that refers to a tuple-form alias into
@@ -504,6 +508,10 @@ pub struct ClassDecl {
     /// Not serialized into the precomputed stubs blob — populated at scan time.
     #[serde(skip)]
     pub field_descriptions: HashMap<String, String>,
+    /// Fields from bare self-field assignments — treated as truthiness-uncertain
+    /// since the assignment may not have run yet.
+    #[serde(skip)]
+    pub bare_inferred_field_names: HashSet<String>,
 }
 
 impl ClassDecl {
@@ -535,6 +543,7 @@ impl ClassDecl {
             declared_field_names: HashSet::new(),
             field_literals: HashMap::new(),
             field_descriptions: HashMap::new(),
+            bare_inferred_field_names: HashSet::new(),
         }
     }
 
@@ -1225,7 +1234,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new(), field_descriptions: block.field_descriptions });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::new() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {

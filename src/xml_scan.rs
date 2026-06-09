@@ -780,6 +780,7 @@ fn finalize_frame(
         declared_field_names: HashSet::new(),
         field_literals: HashMap::new(),
         field_descriptions: HashMap::new(),
+        bare_inferred_field_names: HashSet::new(),
     };
     classes.push(class_decl);
 
@@ -824,6 +825,7 @@ fn finalize_frame(
                 declared_field_names: HashSet::new(),
                 field_literals: HashMap::new(),
                 field_descriptions: HashMap::new(),
+                bare_inferred_field_names: HashSet::new(),
             };
             mixin_augments.push(augment);
         }

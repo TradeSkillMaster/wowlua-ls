@@ -1,0 +1,7 @@
+{
+    "diagnostics": {
+        "enable": [
+            "redundant-condition"
+        ]
+    }
+}
