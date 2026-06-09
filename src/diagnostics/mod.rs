@@ -564,6 +564,18 @@ pub(crate) fn is_expr_truthiness_uncertain(analysis: &AnalysisResult, expr_id: E
     || is_symbol_from_uncertain_source(analysis, expr_id)
     || is_flavor_restricted_global(analysis, expr_id)
     || is_overridable_method_call(analysis, expr_id)
+    || is_and_chain_with_uncertain_term(analysis, expr_id)
+}
+
+/// `and`-chain propagation: `a and b and c` parses as `((a and b) and c)`.
+/// The result type of a truthy `and` chain equals the type of the last term,
+/// but the chain can short-circuit to nil/false at runtime if ANY term is
+/// uncertain. Walk the left-associative spine and check each term.
+fn is_and_chain_with_uncertain_term(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
+    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
+    let Expr::BinaryOp { op: crate::ast::Operator::And, lhs, rhs, .. } = &analysis.ir.exprs[id.val()] else { return false };
+    is_expr_truthiness_uncertain(analysis, *rhs)
+    || is_expr_truthiness_uncertain(analysis, *lhs)
 }
 
 /// Field-access call whose receiver class has a subclass that defines its own

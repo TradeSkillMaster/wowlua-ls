@@ -172,6 +172,39 @@ local function deepChainCheck()
 end
 _use(deepChainCheck)
 
+-- Long and-chain with many lateinit fields (assert guard pattern):
+-- All fields are `T!` but could be nil at runtime, so no `and` is redundant.
+---@class LateInitRow2
+---@field _link string!
+---@field _qty number!
+---@field _cost number!
+---@field _bid number!
+---@field _time number!
+---@field _owner string!
+---@field _id number!
+---@type LateInitRow2
+local row2
+
+local function longChainAssert()
+    assert(row2._link and row2._qty and row2._cost and row2._bid and row2._time and row2._owner and row2._id)
+end
+_use(longChainAssert)
+
+-- Mixed certain/uncertain: only the leftmost term is lateinit, the rest are
+-- annotated non-nil @field types. The chain can still short-circuit if the
+-- leftmost lateinit field is nil at runtime.
+---@class MixedRow
+---@field data string!
+---@field label string
+---@field count number
+---@type MixedRow
+local mr
+
+local function mixedChainCheck()
+    return mr.data and mr.label and mr.count > 0
+end
+_use(mixedChainCheck)
+
 -- And-chain where the RHS (not LHS) is the suppressible operand:
 -- `cond and tbl[k] or default`.
 ---@type table<string, string>
