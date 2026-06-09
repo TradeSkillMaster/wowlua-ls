@@ -392,10 +392,11 @@ impl<'a> Analysis<'a> {
                 // suppress inject-field checks if imported. Applies to all classes.
                 //
                 // Filter 2 (conditional on @field contract): When the local class has
-                // explicit @field annotations, skips ALL workspace-scan discoveries
-                // (strings, numbers, etc.) via the `from_scan` flag, preserving
-                // inject-field diagnostics for undeclared fields. Authored fields
-                // (annotations, function definitions) are always imported.
+                // explicit @field annotations, skips fields marked `from_scan` —
+                // bare-inferred self-field assignments and typed/bare self-field
+                // merging discoveries — preserving inject-field diagnostics for
+                // undeclared fields. Authored fields (annotations, function
+                // definitions) are always imported.
                 for (fname, fi) in ext_fields {
                     if fi.annotation.is_none()
                         && fi.annotation_type_raw.is_none()
