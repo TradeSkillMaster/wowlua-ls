@@ -46,10 +46,22 @@ impl AnalysisResult {
     /// `>= EXT_BASE`. Local-to-file identities (`idx < EXT_BASE`) are only meaningful
     /// to `self` and shouldn't be used for cross-file search.
     pub fn reference_target_at(&self, tree: &SyntaxTree, offset: u32) -> Option<ReferenceTarget> {
+        // Try field-chain resolution first so that a same-named global doesn't shadow
+        // a field/method position token. e.g. cursor on `Add` in `function Foo:Add()`
+        // or `f:Add()` must resolve to the method on Foo's table, not to a same-named
+        // external global (`_G.Add`). Mirrors the field-first ordering in `definition_at`
+        // and the `is_field_position` guard in `hover_at`/`definition_at`.
+        if let Some((table_idx, field_name, _, _, _)) = self.resolve_field_chain_at(tree, offset) {
+            return Some(ReferenceTarget::Field { table_idx, field_name });
+        }
+        // For a field-position token that didn't resolve (e.g. unknown receiver), still
+        // refuse to fall back to symbol lookup — that would re-introduce the bug where
+        // `f:Add()` matches an unrelated `_G.Add`.
+        if Self::is_field_position(tree, offset) && !self.is_g_dot_field(tree, offset) {
+            return None;
+        }
         if let Some((symbol_idx, name, _)) = self.find_symbol_at(tree, offset) {
             Some(ReferenceTarget::Symbol { idx: symbol_idx, name })
-        } else if let Some((table_idx, field_name, _, _, _)) = self.resolve_field_chain_at(tree, offset) {
-            Some(ReferenceTarget::Field { table_idx, field_name })
         } else if let Some((sym_idx, name, _)) = self.find_param_in_annotation_at(tree, offset) {
             Some(ReferenceTarget::Symbol { idx: sym_idx, name })
         } else {
@@ -237,19 +249,26 @@ impl AnalysisResult {
                     if token.kind() != SyntaxKind::Name || token.text() != name.as_str() {
                         continue;
                     }
-                    // Skip tokens that are part of a field chain (not the root position)
+                    // Skip tokens that are field/method names (preceded by `.` or `:`
+                    // in the parent identifier-like node). This covers both DotAccess
+                    // (`Foo:Add` in `function Foo:Add()` → parent has Name `Foo`,
+                    // Colon, Name `Add`) and MethodCall (`f:Add()` → parent has
+                    // NameRef node for `f`, Colon, Name `Add`), where the position-
+                    // based check on direct Name siblings would miss the latter.
                     if let Some(parent) = token.parent()
-                        && parent.kind().is_identifier() {
-                            let names: Vec<_> = parent.children_with_tokens()
-                                .filter_map(|it| it.into_token())
-                                .filter(|t| t.kind() == SyntaxKind::Name)
-                                .collect();
-                            if names.len() >= 2
-                                && let Some(pos) = names.iter().position(|n| n.text_range() == token.text_range())
-                                    && pos > 0 {
-                                        continue; // This is a field, not a symbol reference
-                                    }
+                        && parent.kind().is_identifier()
+                    {
+                        let token_start = token.text_range().start();
+                        let preceded_by_dot_or_colon = parent.children_with_tokens()
+                            .take_while(|sib| sib.as_token()
+                                .is_none_or(|t| t.text_range().start() < token_start))
+                            .any(|sib| sib.as_token()
+                                .is_some_and(|t| t.kind() == SyntaxKind::Dot
+                                    || t.kind() == SyntaxKind::Colon));
+                        if preceded_by_dot_or_colon {
+                            continue;
                         }
+                    }
                     let text_size = token.text_range().start();
                     if let Some(scope_idx) = self.scope_at_offset(text_size)
                         && let Some(resolved) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {

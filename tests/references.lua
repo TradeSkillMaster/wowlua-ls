@@ -164,3 +164,21 @@ if item then
     item:GetName()
     --   ^ refs: 156:22, 164:10
 end
+
+-- Regression: a method name that collides with an external global (e.g. `Add` is a
+-- WoW global) must not pull every `:Add()` call into the same reference set. Cursor
+-- on the method name in `function RefAdder:Add()` must only find references on
+-- RefAdder, never on RefOtherAdder.
+---@class RefAdder
+local RefAdder = {}
+function RefAdder:Add()
+    --            ^ refs: 174:19, 182:10
+end
+---@class RefOtherAdder
+local RefOtherAdder = {}
+function RefOtherAdder:Add()
+end
+local refAdder = RefAdder
+refAdder:Add()
+local refOther = RefOtherAdder
+refOther:Add()
