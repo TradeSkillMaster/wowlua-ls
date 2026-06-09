@@ -404,6 +404,7 @@ pub(crate) const DEFAULT_DISABLED_CODES: &[&str] = &[
     REDUNDANT_OR.code,
     REDUNDANT_AND.code,
     REDUNDANT_CONDITION.code,
+    UNUSED_FUNCTION.code,
 ];
 
 /// Returns true for types where we cannot determine truthiness/falsiness.

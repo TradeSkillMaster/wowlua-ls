@@ -217,16 +217,7 @@ Fine-grained control over which diagnostics fire and at what severity:
 
 These diagnostics are off unless you explicitly enable them:
 
-| Code | Why it's off by default |
-|---|---|
-| `need-check-nil` | Noisy on unannotated codebases |
-| `implicit-nil-return` | Stylistic — bare `return` in optional-return functions |
-| `unused-vararg` | Many Lua functions accept `...` by convention |
-| `incomplete-signature-doc` | Only useful for teams enforcing documentation standards |
-| `unknown-param-type` | Requires thorough annotation coverage |
-| `unknown-return-type` | Requires thorough annotation coverage |
-| `unknown-local-type` | Requires thorough annotation coverage |
-| `unknown-field-type` | Requires thorough annotation coverage |
+`need-check-nil`, `nil-index`, `implicit-nil-return`, `invalid-op`, `unused-vararg`, `unused-function`, `incomplete-signature-doc`, `redundant-or`, `redundant-and`, `redundant-condition`, `unknown-param-type`, `unknown-return-type`, `unknown-local-type`, `unknown-field-type`
 
 ### `addon_root`
 

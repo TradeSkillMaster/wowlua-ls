@@ -371,9 +371,9 @@ Unknown code in `@diagnostic` directives.
 
 Unreferenced local variable.
 
-### `unused-function` <Badge type="tip" text="Hint" />
+### `unused-function` <Badge type="tip" text="Hint" /> <Badge type="warning" text="off by default" />
 
-Unused function definition.
+Unused function definition. Enable with `"diagnostics": { "enable": ["unused-function"] }` in `.wowluarc.json`.
 
 ### `redefined-local` <Badge type="tip" text="Hint" />
 

@@ -61,7 +61,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 |---|---|
 | `return-self-class-name` | Method uses `@return ClassName` instead of `@return self` |
 | `unused-local` | Unreferenced local variables |
-| `unused-function` | Unused function definitions |
+| `unused-function` | Unused function definitions **(off by default)** |
 | `unused-vararg` | Function declares `...` but never uses it **(off by default)** |
 | `redefined-local` | Same-scope local variable redefinition |
 | `shadowed-local` | Local variable shadows an outer-scope variable |

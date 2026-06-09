@@ -1,2 +1,5 @@
 {
+    "diagnostics": {
+        "enable": ["unused-function"]
+    }
 }
