@@ -410,6 +410,45 @@ local function loopAlreadyInit()
 end
 _use(loopAlreadyInit)
 
+-- ── No diagnostic: truthy-initialized accumulator with `and` in loop ────────
+
+-- A variable initialized to `true` and reassigned via `x = x and f()` inside
+-- a loop: after the first iteration `x` may hold a non-truthy value (the
+-- result of `f()`), so the `and` is not redundant.
+local function _loopAndAccum(items)
+    local isDone = true
+    for _, v in ipairs(items) do
+        isDone = isDone and v > 0
+    end
+    return isDone
+end
+_use(_loopAndAccum)
+
+-- Same pattern in a while loop.
+local function _whileAndAccum(iter)
+    local allValid = true
+    local item = iter()
+    while item do
+        allValid = allValid and item > 0
+        item = iter()
+    end
+    return allValid
+end
+_use(_whileAndAccum)
+
+-- ── Still diagnostic: truthy init with later non-self reassignment ──────────
+
+-- A truthy-initialized variable used in `and` before a later reassignment that
+-- does NOT reference itself. The `and` is genuinely redundant at that point.
+local function _linearNonSelf(val)
+    local flag = true
+    local result = flag and val
+    --                  ^ diag: redundant-and
+    flag = val > 0
+    return result, flag
+end
+_use(_linearNonSelf)
+
 -- ── Suppression ─────────────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: redundant-or

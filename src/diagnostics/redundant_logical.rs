@@ -52,6 +52,24 @@ fn lhs_symbol_has_reassignment(analysis: &AnalysisResult, lhs: ExprId) -> bool {
     sym.versions.iter().skip(1).any(|v| v.def_node.start != v0_start)
 }
 
+/// Returns true when the LHS symbol has a self-referential `and` reassignment:
+/// some version's `type_source` is `sym and expr` (the same symbol on the LHS
+/// of an `and`). This is the `x = x and f()` accumulator pattern — in a loop,
+/// after the first iteration `x` holds `f()`'s result which may be falsy.
+fn lhs_symbol_has_self_and_reassignment(analysis: &AnalysisResult, lhs: ExprId) -> bool {
+    let lhs = unwrap_to_inner_expr(&analysis.ir.exprs, lhs);
+    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[lhs.val()] else { return false };
+    let sym_idx = *sym_idx;
+    if sym_idx.is_external() { return false; }
+    let sym = analysis.sym(sym_idx);
+    sym.versions.iter().any(|v| {
+        let Some(src) = v.type_source else { return false };
+        let Expr::BinaryOp { op: Operator::And, lhs: and_lhs, .. } = &analysis.ir.exprs[src.val()] else { return false };
+        let inner = unwrap_to_inner_expr(&analysis.ir.exprs, *and_lhs);
+        matches!(&analysis.ir.exprs[inner.val()], Expr::SymbolRef(s, _) if *s == sym_idx)
+    })
+}
+
 impl DiagnosticPass for RedundantLogical {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for site in &analysis.ir.binary_op_sites {
@@ -93,6 +111,13 @@ impl DiagnosticPass for RedundantLogical {
             // version at this expression site.
             if matches!(op, Operator::And) && lhs_type.is_guaranteed_falsy()
                 && lhs_symbol_has_reassignment(analysis, lhs) { continue; }
+
+            // Skip truthy-initialized symbols with a self-referential `and`
+            // reassignment (`x = x and f()`): the single-pass analysis sees
+            // version 0 (`true`) but on subsequent loop iterations `x` holds
+            // `f()`'s result which may be falsy.
+            if matches!(op, Operator::And) && lhs_type.is_guaranteed_truthy()
+                && lhs_symbol_has_self_and_reassignment(analysis, lhs) { continue; }
 
             match op {
                 Operator::Or if lhs_type.is_guaranteed_truthy() => {
