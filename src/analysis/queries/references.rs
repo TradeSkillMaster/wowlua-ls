@@ -250,24 +250,13 @@ impl AnalysisResult {
                         continue;
                     }
                     // Skip tokens that are field/method names (preceded by `.` or `:`
-                    // in the parent identifier-like node). This covers both DotAccess
-                    // (`Foo:Add` in `function Foo:Add()` → parent has Name `Foo`,
-                    // Colon, Name `Add`) and MethodCall (`f:Add()` → parent has
-                    // NameRef node for `f`, Colon, Name `Add`), where the position-
-                    // based check on direct Name siblings would miss the latter.
-                    if let Some(parent) = token.parent()
-                        && parent.kind().is_identifier()
-                    {
-                        let token_start = token.text_range().start();
-                        let preceded_by_dot_or_colon = parent.children_with_tokens()
-                            .take_while(|sib| sib.as_token()
-                                .is_none_or(|t| t.text_range().start() < token_start))
-                            .any(|sib| sib.as_token()
-                                .is_some_and(|t| t.kind() == SyntaxKind::Dot
-                                    || t.kind() == SyntaxKind::Colon));
-                        if preceded_by_dot_or_colon {
-                            continue;
-                        }
+                    // in the parent identifier-like node). Covers both DotAccess
+                    // (`Foo:Add` in `function Foo:Add()`) and MethodCall (`f:Add()`),
+                    // where the position-based check on direct Name siblings would
+                    // miss the latter. Shared with `is_field_position` so any future
+                    // extension (new syntax kinds, etc.) stays in lockstep.
+                    if Self::is_field_position(tree, u32::from(token.text_range().start())) {
+                        continue;
                     }
                     let text_size = token.text_range().start();
                     if let Some(scope_idx) = self.scope_at_offset(text_size)

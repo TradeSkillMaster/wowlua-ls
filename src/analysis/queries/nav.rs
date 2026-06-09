@@ -10,6 +10,13 @@ impl AnalysisResult {
         };
         if token.kind() != SyntaxKind::Name { return false; }
         if let Some(parent) = token.parent() {
+            // The take_while keeps non-token children (child nodes) in the iterator
+            // unconditionally: the only identifier-like parents that contain Names are
+            // shapes like NameRef / DotAccess / MethodCall, whose child nodes are
+            // receivers/argument lists that always come BEFORE the field-name Name we
+            // care about. Stopping iteration on them would miss a leading `:`/`.` that
+            // sits between the child node and the Name. Passing them through is safe
+            // because the `.any` only matches Dot/Colon tokens.
             return parent.children_with_tokens()
                 .take_while(|sib| sib.as_token().is_none_or(|t| t.text_range().start() < token.text_range().start()))
                 .any(|sib| sib.as_token().is_some_and(|t| t.kind() == SyntaxKind::Dot || t.kind() == SyntaxKind::Colon));

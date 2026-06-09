@@ -254,6 +254,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/nil-index.lua` — Nil table key diagnostics (`nil-index`): read/write nil keys, narrowing suppression, literal keys, key type inference nil-stripping
 - `tests/access-modifiers/` — Private/protected field access diagnostics; `.wowluarc.json` enables `inference.implicit_protected_prefix`
 - `tests/references.lua` — Find references and rename
+- `tests/references-globals.lua` — Find-references regressions for collisions with real WoW globals: a method name that doubles as a `_G.X` global must resolve to the method (not pull in unrelated `:X()` calls), and `_G.X` / `local g = _G; g.X` must fall through to symbol lookup so find-references still works on explicit global accesses (--with-stubs)
 - `tests/undefined-global.lua` — Undefined global diagnostics (--with-stubs)
 - `tests/undefined-field.lua` — Undefined field on @class tables diagnostics
 - `tests/undefined-doc-class.lua` — Undefined class names in `@class Foo: Parent` inheritance position, invalid class parents (primitive types, string literals, union types)

@@ -1069,6 +1069,15 @@ fn references() {
 }
 
 #[test]
+fn references_globals() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/references-globals.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn linked_editing_ranges() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/linked-editing.lua",
