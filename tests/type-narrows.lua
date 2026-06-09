@@ -337,3 +337,86 @@ local function test_class_name_fallback(x)
         --    ^ hover: (local) b: string  def: local
     end
 end
+
+-- ── Class-table identifier as classname arg ────────────────────────────────
+-- `@type-narrows N M` accepts arg M as a bare identifier naming a known class
+-- (the class table itself), not just a string literal. Mirrors patterns like
+-- `task:__isa(AltTask)` where the second arg is the class table.
+
+---@generic T, C
+---@param self T
+---@param class C
+---@type-narrows 1 2
+---@return boolean
+---@diagnostic disable-next-line: missing-return
+local function isInstanceOf(self, class) end
+
+---@param x Animal
+local function test_class_table_arg(x)
+    if isInstanceOf(x, Dog) then
+        local b = x.breed
+        --          ^ hover: (field) breed: string  def: local
+    end
+    local n = x.name
+    --          ^ hover: (field) name: string  def: local
+end
+
+---@param x Animal
+local function test_class_table_arg_early_exit(x)
+    if not isInstanceOf(x, Dog) then return end
+    local b = x.breed
+    --          ^ hover: (field) breed: string  def: local
+end
+
+-- For-in loop variable narrows on class-table arg guard.
+
+---@return fun(): number, Animal
+---@diagnostic disable-next-line: missing-return
+local function animals() end
+
+local function test_forin_class_table_arg()
+    for _, a in animals() do
+        if isInstanceOf(a, Dog) then
+            local b = a.breed
+            --          ^ hover: (field) breed: string  def: local
+        end
+    end
+end
+
+-- Method-style narrowing with a class-table arg. Per the docs, method-style
+-- type guards use `@type-narrows 0 N` where 0 means the receiver. Combined
+-- with the class-table identifier support, `x:isInstanceOf(Dog)` narrows x.
+
+---@class AnimalKind
+local AnimalKind = {}
+
+---@generic C
+---@param self self
+---@param class C
+---@type-narrows 0 1
+---@return boolean
+---@diagnostic disable-next-line: missing-return
+function AnimalKind.isInstanceOf(self, class) end
+
+---@param k AnimalKind
+local function test_method_style_class_arg(k)
+    if k:isInstanceOf(Dog) then
+        local x = k
+        --    ^ hover: (local) x: Dog
+    end
+end
+
+-- For-in loop variable + method-style class-table guard.
+
+---@return fun(): number, AnimalKind
+---@diagnostic disable-next-line: missing-return
+local function kinds() end
+
+local function test_forin_method_style_class_arg()
+    for _, k in kinds() do
+        if k:isInstanceOf(Dog) then
+            local x = k
+            --    ^ hover: (local) x: Dog
+        end
+    end
+end

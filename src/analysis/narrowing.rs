@@ -231,19 +231,10 @@ impl<'a> Analysis<'a> {
     }
 
     /// Walk an expression ID to find a FunctionDef at the end (follows SymbolRef /
-    /// Literal(Function(_)) / FunctionDef / Grouped chains). Used during build_ir
-    /// before types are fully resolved.
+    /// Literal(Function(_)) / FunctionDef / Grouped / FieldAccess chains).
+    /// Delegates to `find_callable_function` which handles all these cases.
     fn find_function_def(&self, expr_id: ExprId) -> Option<FunctionIndex> {
-        match self.ir.expr(expr_id) {
-            Expr::FunctionDef(idx) => Some(*idx),
-            Expr::Literal(ValueType::Function(Some(idx))) => Some(*idx),
-            Expr::Grouped(inner) => self.find_function_def(*inner),
-            Expr::SymbolRef(sym_idx, ver_idx) => {
-                let ts = self.sym(*sym_idx).versions.get(*ver_idx)?.type_source?;
-                self.find_function_def(ts)
-            }
-            _ => None,
-        }
+        self.find_callable_function(expr_id, 10)
     }
 
     pub(super) fn analyze_nil_guard(&mut self, cond: &Expression<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
@@ -3081,8 +3072,16 @@ impl<'a> Analysis<'a> {
     /// external/local symbol → table → field chains.
     /// Resolve through StripFalsy/StripNil/SymbolRef indirection to find a table index.
     fn resolve_expr_to_table(&self, expr_id: ExprId) -> Option<TableIndex> {
+        self.resolve_expr_to_table_depth(expr_id, 20)
+    }
+
+    /// Shared depth limit across `resolve_expr_to_table` / `forin_var_table` /
+    /// `find_callable_function` to bound the mutual recursion.
+    fn resolve_expr_to_table_depth(&self, expr_id: ExprId, mut depth: usize) -> Option<TableIndex> {
         let mut current = expr_id;
-        for _ in 0..10 { // limit depth to avoid infinite loops
+        loop {
+            if depth == 0 { return None; }
+            depth -= 1;
             match self.expr(current) {
                 Expr::TableConstructor(ti) => return Some(*ti),
                 Expr::Literal(ValueType::Table(Some(ti))) => return Some(*ti),
@@ -3098,10 +3097,72 @@ impl<'a> Analysis<'a> {
                     let ver_data = self.sym(*sym_idx).versions.get(*ver)?;
                     current = ver_data.type_source?;
                 }
+                Expr::ForInVar { iterator_call, var_index, .. } => {
+                    return self.forin_var_table(*iterator_call, *var_index, depth);
+                }
                 _ => return None,
             }
         }
-        None
+    }
+
+    /// Phase-1 resolution of a for-in variable's type to a TableIndex by
+    /// inspecting the iterator call's function and its first return (the
+    /// iterator function), then reading that function's `var_index`th return
+    /// annotation. Used so `for _, task in Iter() do; if task:Method(...)` can
+    /// walk `task` to a class table for method-call resolution during narrowing.
+    fn forin_var_table(&self, iterator_call: ExprId, var_index: usize, depth: usize) -> Option<TableIndex> {
+        if depth == 0 { return None; }
+        let Expr::FunctionCall { func, .. } = self.expr(iterator_call) else { return None; };
+        let func_idx = self.find_callable_function(*func, depth - 1)?;
+        let iter_ret = self.func(func_idx).return_annotations.first()?;
+        let inner_func_idx = match iter_ret {
+            ValueType::Function(Some(idx)) => *idx,
+            ValueType::FunctionSig(shape) => {
+                // FunctionSig carries returns inline — read var_index directly.
+                return match shape.returns.get(var_index) {
+                    Some(ValueType::Table(Some(idx))) => Some(*idx),
+                    _ => None,
+                };
+            }
+            _ => return None,
+        };
+        let var_ret = self.func(inner_func_idx).return_annotations.get(var_index)?;
+        match var_ret {
+            ValueType::Table(Some(idx)) => Some(*idx),
+            _ => None,
+        }
+    }
+
+    /// Walk a callee expression to a FunctionIndex (follows SymbolRef /
+    /// FunctionDef / Literal(Function) / Grouped / FieldAccess chains).
+    fn find_callable_function(&self, expr_id: ExprId, mut depth: usize) -> Option<FunctionIndex> {
+        let mut current = expr_id;
+        loop {
+            if depth == 0 { return None; }
+            depth -= 1;
+            match self.expr(current) {
+                Expr::FunctionDef(idx) => return Some(*idx),
+                Expr::Literal(ValueType::Function(Some(idx))) => return Some(*idx),
+                Expr::Grouped(inner) => { current = *inner; }
+                Expr::SymbolRef(sym_idx, ver_idx) => {
+                    let sym = self.sym(*sym_idx);
+                    let ver = sym.versions.get(*ver_idx)?;
+                    if let Some(ts) = ver.type_source {
+                        current = ts;
+                    } else if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
+                        return Some(*idx);
+                    } else {
+                        return None;
+                    }
+                }
+                Expr::FieldAccess { table, field, .. } => {
+                    let table_idx = self.resolve_expr_to_table_depth(*table, depth)?;
+                    let fi = self.ir.get_field(table_idx, field)?;
+                    current = fi.expr;
+                }
+                _ => return None,
+            }
+        }
     }
 
     /// Like `resolve_expr_to_table`, but returns ALL table indices from a union type.
@@ -3283,14 +3344,27 @@ impl<'a> Analysis<'a> {
         let args = call.arguments()?.expressions();
         let ident = call.identifier()?;
 
-        // Extract class name from string literal at classname_idx (1-based)
+        // Extract class name at classname_idx (1-based). Accepts either a string
+        // literal (`x:IsType("Foo")`) or a bare identifier naming a known class
+        // (`x:__isa(Foo)`, where `Foo` is the class table itself).
         if classname_idx == 0 { return None; } // classname can't be self
-        let class_lit = args.get(classname_idx - 1)?;
-        let class_name = if let Expression::Literal(lit) = class_lit {
-            let s = lit.get_string()?;
-            s.trim_matches(|c| c == '"' || c == '\'').to_string()
-        } else {
-            return None;
+        let class_arg = args.get(classname_idx - 1)?;
+        let class_name = match class_arg {
+            Expression::Literal(lit) => {
+                let s = lit.get_string()?;
+                s.trim_matches(|c| c == '"' || c == '\'').to_string()
+            }
+            Expression::Identifier(class_ident) => {
+                let class_names = class_ident.names();
+                if class_names.len() != 1 { return None; }
+                let name = class_names[0].clone();
+                if !self.ir.classes.contains_key(&name)
+                    && !self.ir.ext.classes.contains_key(&name) {
+                    return None;
+                }
+                name
+            }
+            _ => return None,
         };
 
         // Extract target symbol

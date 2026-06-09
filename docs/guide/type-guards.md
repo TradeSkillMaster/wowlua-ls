@@ -42,6 +42,11 @@ if element:IsType("ScrollFrame") then
 end
 ```
 
+The `classname` argument can be either a string literal (e.g. `"ScrollFrame"`) or
+a single-name identifier that matches a known `@class` (e.g. `ScrollFrame` — the
+class table itself). Dotted names like `MyLib.Dog` are not supported. This matches
+idiomatic class-library patterns like `obj:isA(Class)`.
+
 ## Method-style form
 
 `@type-narrows ClassName` — narrows `self` to a fixed class. Useful for boolean predicate methods:
