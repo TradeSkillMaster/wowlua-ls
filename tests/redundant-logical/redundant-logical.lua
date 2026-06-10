@@ -436,6 +436,39 @@ local function _whileAndAccum(iter)
 end
 _use(_whileAndAccum)
 
+-- ── No diagnostic: truthy-initialized flag set to false in loop ─────────────
+
+-- A flag variable initialized to `true` and set to `false` inside a loop body
+-- when an error condition is found. The `and` guard is not redundant because a
+-- prior iteration may have already set the flag to `false`.
+
+-- Single-branch: loop-body type merging handles this case.
+local function _singleBranchLoopFlag(nodes)
+    local ok = true
+    for _, node in ipairs(nodes) do
+        if ok and node.kind == "bad" then
+            ok = false
+        end
+    end
+    return ok
+end
+_use(_singleBranchLoopFlag)
+
+-- Multi-branch: the `ok = false` in the first branch is textually before the
+-- second `ok and` guard, caught by the earlier-falsy-reassignment check.
+local function _multiBranchLoopFlag(nodes)
+    local isValid = true
+    for _, node in ipairs(nodes) do
+        if isValid and node.kind == "A" then
+            isValid = false
+        elseif isValid and node.kind == "B" then
+            isValid = false
+        end
+    end
+    return isValid
+end
+_use(_multiBranchLoopFlag)
+
 -- ── Still diagnostic: truthy init with later non-self reassignment ──────────
 
 -- A truthy-initialized variable used in `and` before a later reassignment that

@@ -1,9 +1,17 @@
 use crate::analysis::AnalysisResult;
 use crate::ast::Operator;
-use crate::types::{Expr, ExprId};
+use crate::types::{Expr, ExprId, Symbol, SymbolIndex};
 use super::{DiagnosticPass, WowDiagnostic, effective_type, is_type_permissive, is_expr_truthiness_uncertain, unwrap_to_inner_expr};
 
 pub(crate) struct RedundantLogical;
+
+fn lhs_symbol_info(analysis: &AnalysisResult, lhs: ExprId) -> Option<(SymbolIndex, usize, &Symbol)> {
+    let lhs = unwrap_to_inner_expr(&analysis.ir.exprs, lhs);
+    let Expr::SymbolRef(sym_idx, ver_idx) = &analysis.ir.exprs[lhs.val()] else { return None };
+    let sym_idx = *sym_idx;
+    if sym_idx.is_external() { return None; }
+    Some((sym_idx, *ver_idx, analysis.sym(sym_idx)))
+}
 
 /// Returns true when the LHS is a symbol reference whose initial definition
 /// (version 0) resolved to a type that is not guaranteed truthy. This catches
@@ -13,12 +21,8 @@ pub(crate) struct RedundantLogical;
 /// initial definition is truthy but some intermediate reassignment is nilable,
 /// that's a different pattern that doesn't need this suppression.
 fn lhs_initial_version_is_nilable(analysis: &AnalysisResult, lhs: ExprId) -> bool {
-    let lhs = unwrap_to_inner_expr(&analysis.ir.exprs, lhs);
-    let Expr::SymbolRef(sym_idx, ver_idx) = &analysis.ir.exprs[lhs.val()] else { return false };
-    let sym_idx = *sym_idx;
-    let ver_idx = *ver_idx;
-    if sym_idx.is_external() || ver_idx == 0 { return false; }
-    let sym = &analysis.ir.symbols[sym_idx.val()];
+    let Some((_, ver_idx, sym)) = lhs_symbol_info(analysis, lhs) else { return false };
+    if ver_idx == 0 { return false; }
     match &sym.versions[0].resolved_type {
         Some(t) if !t.is_guaranteed_truthy() => true,
         None => true,
@@ -42,14 +46,30 @@ fn lhs_is_and_expression(exprs: &[Expr], lhs: ExprId) -> bool {
 ///   `local x = nil; if cond then x = val end; x and ...`
 /// where the LS sees the initial nil version but at runtime x could be truthy.
 fn lhs_symbol_has_reassignment(analysis: &AnalysisResult, lhs: ExprId) -> bool {
-    let lhs = unwrap_to_inner_expr(&analysis.ir.exprs, lhs);
-    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[lhs.val()] else { return false };
-    let sym_idx = *sym_idx;
-    if sym_idx.is_external() { return false; }
-    let sym = analysis.sym(sym_idx);
+    let Some((_, _, sym)) = lhs_symbol_info(analysis, lhs) else { return false };
     let Some(v0) = sym.versions.first() else { return false };
     let v0_start = v0.def_node.start;
     sym.versions.iter().skip(1).any(|v| v.def_node.start != v0_start)
+}
+
+/// Returns true when the LHS symbol was initialized to a truthy value but has
+/// a reassignment to a guaranteed-falsy value (`false` / `nil`) at a textually
+/// earlier position than `before`. This catches the multi-branch loop-flag
+/// pattern where a prior branch's falsy assignment is textually before a later
+/// branch's `and` guard:
+///   `local ok = true; for ... do if ok and c1 then ok = false elseif ok and c2 then ... end end`
+/// The second `ok and c2` resolves to the initial `true` version (the first
+/// branch didn't execute on this path), but a prior loop iteration may have
+/// set `ok = false` through the first branch.
+fn lhs_symbol_has_earlier_falsy_reassignment(analysis: &AnalysisResult, lhs: ExprId, before: u32) -> bool {
+    let Some((_, _, sym)) = lhs_symbol_info(analysis, lhs) else { return false };
+    let Some(v0) = sym.versions.first() else { return false };
+    let v0_start = v0.def_node.start;
+    sym.versions.iter().skip(1).any(|v| {
+        v.def_node.start != v0_start
+        && v.def_node.start < before
+        && matches!(&v.resolved_type, Some(t) if t.is_guaranteed_falsy())
+    })
 }
 
 /// Returns true when the LHS symbol has a self-referential `and` reassignment:
@@ -57,11 +77,7 @@ fn lhs_symbol_has_reassignment(analysis: &AnalysisResult, lhs: ExprId) -> bool {
 /// of an `and`). This is the `x = x and f()` accumulator pattern — in a loop,
 /// after the first iteration `x` holds `f()`'s result which may be falsy.
 fn lhs_symbol_has_self_and_reassignment(analysis: &AnalysisResult, lhs: ExprId) -> bool {
-    let lhs = unwrap_to_inner_expr(&analysis.ir.exprs, lhs);
-    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[lhs.val()] else { return false };
-    let sym_idx = *sym_idx;
-    if sym_idx.is_external() { return false; }
-    let sym = analysis.sym(sym_idx);
+    let Some((sym_idx, _, sym)) = lhs_symbol_info(analysis, lhs) else { return false };
     sym.versions.iter().any(|v| {
         let Some(src) = v.type_source else { return false };
         let Expr::BinaryOp { op: Operator::And, lhs: and_lhs, .. } = &analysis.ir.exprs[src.val()] else { return false };
@@ -118,6 +134,12 @@ impl DiagnosticPass for RedundantLogical {
             // `f()`'s result which may be falsy.
             if matches!(op, Operator::And) && lhs_type.is_guaranteed_truthy()
                 && lhs_symbol_has_self_and_reassignment(analysis, lhs) { continue; }
+
+            // Skip truthy-initialized symbols that have been reassigned to a
+            // falsy value at a textually earlier position (loop-flag pattern):
+            //   `local ok = true; for ... do if ok and c then ok = false end end`
+            if matches!(op, Operator::And) && lhs_type.is_guaranteed_truthy()
+                && lhs_symbol_has_earlier_falsy_reassignment(analysis, lhs, site.op_start) { continue; }
 
             match op {
                 Operator::Or if lhs_type.is_guaranteed_truthy() => {
