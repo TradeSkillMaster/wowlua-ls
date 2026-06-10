@@ -2414,6 +2414,9 @@ impl<'a> Analysis<'a> {
                 },
             }
 
+            // Apply @cast annotations from comments immediately following this statement
+            self.scan_trailing_cast_annotations(statements[stmt_index].syntax(), scope_idx);
+
             // Mark exprs created by this statement as conditionally-reached if
             // the enclosing frame is a conditionally-executed block. This only
             // captures exprs lowered synchronously during this iteration —
@@ -3032,7 +3035,73 @@ impl<'a> Analysis<'a> {
             break;
         }
         cast_lines.reverse();
-        for line in &cast_lines {
+        self.apply_cast_lines(&cast_lines, scope_idx);
+    }
+
+    /// Scan for `---@cast` annotations in comments immediately *following* a
+    /// statement (before any blank line or code).  This handles the common
+    /// pattern of casting a variable right after the assignment that defines it:
+    ///
+    /// ```lua
+    /// local a, b, c, d = getValues()
+    /// ---@cast d number?
+    /// ```
+    ///
+    /// The preceding-statement backward scan cannot find these when a blank
+    /// line separates the cast from the next statement.
+    fn scan_trailing_cast_annotations(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) {
+        let Some(last_token) = node.last_token() else { return };
+        let mut newlines_at_end = 0u32;
+        let mut tok = Some(last_token);
+        while let Some(ref token) = tok {
+            match token.kind() {
+                SyntaxKind::Newline => {
+                    newlines_at_end += 1;
+                    tok = token.prev_token();
+                }
+                SyntaxKind::Whitespace => {
+                    tok = token.prev_token();
+                }
+                _ => break,
+            }
+        }
+        if newlines_at_end < 2 { return; }
+        let mut cast_lines = Vec::new();
+        let mut newlines_since_cast = 0u32;
+        while let Some(token) = tok {
+            let kind = token.kind();
+            if kind == SyntaxKind::Whitespace {
+                tok = token.prev_token();
+                continue;
+            }
+            if kind == SyntaxKind::Newline {
+                newlines_since_cast += 1;
+                if newlines_since_cast >= 2 { break; }
+                tok = token.prev_token();
+                continue;
+            }
+            // Unlike the backward scan (which skips non-@cast comments and
+            // continues), we break on any non-@cast comment. The backward
+            // scan walks through leading trivia where plain `---` doc
+            // comments are expected; trailing trivia after a statement
+            // rarely contains interleaved plain comments with @cast lines.
+            if kind == SyntaxKind::Comment {
+                let text = token.text();
+                if Analysis::comment_is_tag(text, "---@cast") || text.starts_with("--[[@cast") {
+                    cast_lines.push(text.to_string());
+                    newlines_since_cast = 0;
+                    tok = token.prev_token();
+                    continue;
+                }
+            }
+            break;
+        }
+        cast_lines.reverse();
+        self.apply_cast_lines(&cast_lines, scope_idx);
+    }
+
+    fn apply_cast_lines(&mut self, cast_lines: &[String], scope_idx: ScopeIndex) {
+        for line in cast_lines {
             // Parse both ---@cast and --[[@cast forms
             let content = if let Some(rest) = line.strip_prefix("---@cast") {
                 rest.trim()

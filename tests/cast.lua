@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global, unused-function, unused-local
+---@diagnostic disable: undefined-global, unused-function, unused-local, redundant-return-value, unbalanced-assignments
 -- Tests for @cast and @as annotations
 
 -- ── @cast Replace ──────────────────────────────────────────────────────────────
@@ -330,9 +330,41 @@ if castPlainVal then
 --        ^ hover: (local) castPlainVal: string
 end
 
--- ── @cast blocked by blank line ───────────────────────────────────────────────
--- A blank line between the @cast and the target statement should prevent the
--- cast from reaching through (matching extract_annotations blank-line guard).
+-- ── @cast with trailing blank line (applied) ─────────────────────────────────
+-- A @cast immediately after a statement, followed by a blank line, should still
+-- apply (the cast is trailing trivia of the defining statement).
+
+---@return number
+---@return number
+---@return number
+---@return number
+local function castTrailingReturns()
+    return 1, 2, 3, 4
+end
+local castTrA, castTrB, castTrC, castTrD = castTrailingReturns()
+---@cast castTrD number?
+
+if castTrD then
+    print(castTrD)
+--        ^ hover: (local) castTrD: number
+end
+
+-- ── @cast multiple trailing casts with blank line ────────────────────────────
+-- Multiple @cast lines after the same statement, followed by a blank line,
+-- should all apply in source order.
+
+local castMuA, castMuB, castMuC = castTrailingReturns()
+---@cast castMuA +nil
+---@cast castMuC string
+
+print(castMuA)
+--    ^ hover: (local) castMuA: number?
+print(castMuC)
+--    ^ hover: (local) castMuC: string
+
+-- ── @cast blocked by blank line + comment ────────────────────────────────────
+-- A @cast followed by a blank line AND a plain comment does not apply — the
+-- comment after the blank line signals a section boundary.
 
 local castBlankVal = "hello"
 ---@cast castBlankVal string?
