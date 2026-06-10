@@ -2954,12 +2954,20 @@ impl<'a> Analysis<'a> {
         let Some(first_token) = node.first_token() else { return };
         let mut cast_lines = Vec::new();
         let mut tok = first_token.prev_token();
+        let mut newlines_since_comment = 0u32;
         while let Some(token) = tok {
             let kind = token.kind();
-            if kind == SyntaxKind::Whitespace || kind == SyntaxKind::Newline {
+            if kind == SyntaxKind::Whitespace {
                 tok = token.prev_token();
                 continue;
             }
+            if kind == SyntaxKind::Newline {
+                newlines_since_comment += 1;
+                if newlines_since_comment >= 2 { break; }
+                tok = token.prev_token();
+                continue;
+            }
+            newlines_since_comment = 0;
             if kind == SyntaxKind::Comment {
                 // Skip inline trailing comments (on same line as previous code)
                 {
@@ -2980,13 +2988,9 @@ impl<'a> Analysis<'a> {
                 let text = token.text();
                 if Analysis::comment_is_tag(text, "---@cast") || text.starts_with("--[[@cast") {
                     cast_lines.push(text.to_string());
-                    tok = token.prev_token();
-                    continue;
-                } else if text.starts_with("---@") || text.starts_with("--- @") || text.starts_with("---") || text.starts_with("---|") {
-                    // Other annotation or doc comment — keep scanning backward
-                    tok = token.prev_token();
-                    continue;
                 }
+                tok = token.prev_token();
+                continue;
             }
             break;
         }

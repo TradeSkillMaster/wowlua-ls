@@ -317,3 +317,26 @@ if castIsaTask:IsKind() then
     ---@cast castIsaTask CastIsaSub
     print(castIsaTask)
 end
+
+-- ── @cast with intervening plain comment ──────────────────────────────────────
+-- A regular `--` comment between the @cast and the target statement should not
+-- block the cast from being applied.
+
+local castPlainVal = "hello"
+---@cast castPlainVal string?
+-- This is a regular comment
+if castPlainVal then
+    print(castPlainVal)
+--        ^ hover: (local) castPlainVal: string
+end
+
+-- ── @cast blocked by blank line ───────────────────────────────────────────────
+-- A blank line between the @cast and the target statement should prevent the
+-- cast from reaching through (matching extract_annotations blank-line guard).
+
+local castBlankVal = "hello"
+---@cast castBlankVal string?
+
+-- unrelated section header
+print(castBlankVal)
+--    ^ hover: (local) castBlankVal: string = "hello"
