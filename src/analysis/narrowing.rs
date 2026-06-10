@@ -3279,7 +3279,35 @@ impl<'a> Analysis<'a> {
             return Some(result);
         }
         // Fallback: check addon namespace sub-tables
-        self.resolve_func_via_addon_namespace(&names)
+        if let Some(result) = self.resolve_func_via_addon_namespace(&names) {
+            return Some(result);
+        }
+        // Fallback: search all classes for a unique method with @type-narrows.
+        // Handles cross-file patterns where the receiver's type can't be resolved
+        // at Phase 1 (e.g. `task:__isa(X)` when `task` comes from a for-in over
+        // an imported module's iterator). Only single-receiver method calls —
+        // deeper chains like `a.b:method()` are too ambiguous for a global search.
+        // Bails out if multiple classes define the method with @type-narrows to
+        // avoid non-deterministic resolution and false narrowing on unrelated receivers.
+        if names.len() == 2 {
+            let method = &names[1];
+            let mut found: Option<FunctionIndex> = None;
+            for &table_idx in self.ir.classes.values().chain(self.ir.ext.classes.values()) {
+                if let Some(fi) = self.ir.table(table_idx).fields.get(method.as_str())
+                    && let Expr::FunctionDef(func_idx) | Expr::Literal(ValueType::Function(Some(func_idx))) = self.expr(fi.expr) {
+                    let func = self.func(*func_idx);
+                    if func.type_narrows.is_some() || func.type_narrows_class.is_some() {
+                        if let Some(prev) = found
+                            && prev != *func_idx {
+                            return None;
+                        }
+                        found = Some(*func_idx);
+                    }
+                }
+            }
+            return found;
+        }
+        None
     }
 
     fn resolve_func_via_addon_namespace(&self, names: &[String]) -> Option<FunctionIndex> {

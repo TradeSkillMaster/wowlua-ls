@@ -2537,6 +2537,15 @@ fn crossfile_merge_narrow() {
 }
 
 #[test]
+fn crossfile_type_narrows() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/type_narrows_crossfile_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_dedup_unannotated() {
     // Unannotated duplicate method defs should not create spurious overloads
     run_annotation_tests(&TestConfig {
