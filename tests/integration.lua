@@ -947,3 +947,32 @@ function MultiRetSelfIter:Iterate()
     return self._iterFn, self, 0
 end
 _consume(MultiRetSelfIter)
+
+-- ── While-loop body merge: nil-init vars assigned inside loops ──────
+-- Variables initialized to nil and conditionally assigned inside a while
+-- loop should have their post-loop type merged as pre-loop | in-body.
+---@param low number
+---@param high number
+local function _whileLoopMerge(matchLowest, low, high)
+    local firstLow, firstHigh = nil, nil
+    while low <= high do
+        local mid = math.floor((low + high) / 2)
+        if mid > 5 then
+            firstLow = firstLow or low
+            firstHigh = firstHigh or high
+            if matchLowest then
+                high = mid - 1
+            else
+                low = mid + 1
+            end
+        elseif mid < 3 then
+            low = mid + 1
+        else
+            high = mid - 1
+        end
+    end
+    return matchLowest and low or high, firstLow, firstHigh
+end
+local _wlmA, _wlmB, _wlmC = _whileLoopMerge(true, 1, 10)
+--           ^ hover: (local) _wlmB: number?
+--                    ^ hover: (local) _wlmC: number?

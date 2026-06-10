@@ -369,22 +369,25 @@ impl<'a> Analysis<'a> {
                         self.synthesize_correlated_return_overloads(fid);
                     }
                 // Apply pending while-loop exit narrowings when a while body scope pops.
-                // First, reset body-reassigned symbols to their pre-loop types by
-                // creating forwarding versions. The loop body may not execute (condition
-                // false on entry), so body-scope versions must not leak to the parent.
+                // First, merge body-reassigned symbols with their pre-loop types —
+                // the loop body may not execute (condition false on entry), so the
+                // post-loop type is a union of pre-loop and in-body.
                 // Then apply exit narrowings (StripNil/StripFalsy) on top.
                 let mut wi = 0;
                 while wi < pending_while_narrowings.len() {
                     if pending_while_narrowings[wi].body_scope == popped_scope {
                         let narrowing = pending_while_narrowings.swap_remove(wi);
-                        // Step 1: Create forwarding versions for symbols reassigned
-                        // in the body, resetting them to their pre-loop types.
+                        // Step 1: Create merge versions for symbols reassigned in the
+                        // body. The loop body may not execute, so the post-loop type
+                        // is a union of the pre-loop type and the in-body type.
                         // Skip the scan when all body-reassigned symbols are already
                         // covered by exit narrowings (the common single-variable case).
                         let has_uncovered_body_ver = self.ir.symbols.iter().enumerate().any(|(i, sym)| {
                             sym.scope_idx != popped_scope
                                 && !narrowing.symbols.iter().any(|(s, _)| s.val() == i)
-                                && sym.versions.iter().any(|ver| ver.created_in_scope == popped_scope)
+                                && sym.versions.iter().enumerate().any(|(vi, ver)|
+                                    ver.created_in_scope == popped_scope
+                                    && !self.ir.is_narrowing_only_version(SymbolIndex(i), vi))
                         });
                         if has_uncovered_body_ver {
                             for sym_idx_raw in 0..self.ir.symbols.len() {
@@ -393,16 +396,20 @@ impl<'a> Analysis<'a> {
                                 }
                                 let sym_idx = SymbolIndex(sym_idx_raw);
                                 if narrowing.symbols.iter().any(|(s, _)| *s == sym_idx) { continue; }
-                                let has_body_ver = self.ir.symbols[sym_idx_raw].versions.iter()
-                                    .any(|ver| ver.created_in_scope == popped_scope);
-                                if has_body_ver {
+                                let body_ver = self.ir.symbols[sym_idx_raw].versions.iter().enumerate().rev()
+                                    .find(|(vi, ver)| ver.created_in_scope == popped_scope
+                                        && !self.ir.is_narrowing_only_version(sym_idx, *vi))
+                                    .map(|(i, _)| i);
+                                if let Some(body_ver) = body_ver {
                                     let pre_loop_ver = self.ir.version_for_scope_ancestors_only(sym_idx, narrowing.parent_scope);
-                                    let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, pre_loop_ver));
+                                    let pre_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, pre_loop_ver));
+                                    let body_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, body_ver));
+                                    let merge_expr = self.ir.push_expr(Expr::BranchMerge(vec![pre_ref, body_ref]));
                                     let node = self.ir.symbols[sym_idx_raw].versions[pre_loop_ver].def_node;
                                     let order = self.ir.next_order();
                                     self.ir.symbols[sym_idx_raw].versions.push(SymbolVersion {
                                         def_node: node,
-                                        type_source: Some(prev_ref),
+                                        type_source: Some(merge_expr),
                                         resolved_type: None,
                                         type_args: Vec::new(),
                                         created_in_scope: narrowing.parent_scope,
