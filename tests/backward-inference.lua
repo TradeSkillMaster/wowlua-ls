@@ -1115,3 +1115,19 @@ end
 
 preReassignTruthiness("test")
 preReassignTruthiness(nil)
+
+-- ── Unannotated trailing params don't block arity match ──
+-- A callee with a mix of annotated and unannotated params should still
+-- provide backward-inference hints when the caller omits trailing
+-- unannotated args (Lua passes nil for them). Only annotated non-optional
+-- params count as required for the arity check.
+---@param item string
+---@param n number
+---@param settings string
+local function validateItem(item, n, settings, verbose) end
+
+local function processItem(name, num)
+--                               ^ hover: (param) num: number
+    validateItem(name, num, "default")
+end
+processItem("x", 5)

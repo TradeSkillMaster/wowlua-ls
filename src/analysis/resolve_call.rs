@@ -3442,13 +3442,8 @@ impl<'a> Analysis<'a> {
                 .filter(|t| !matches!(t, ValueType::Any))
                 .collect();
             if filtered.is_empty() { continue; }
-            // For boolean-typed params, truthiness tests and `and` LHS don't
-            // prove nilability — `false` is also falsy in Lua, so the guard
-            // may distinguish `true` from `false` rather than `non-nil` from
-            // `nil`. Only `param or default` (or_lhs) remains valid nil
-            // evidence for boolean params. The `true` literal is excluded
-            // since it's always truthy — a truthiness test on it does prove
-            // non-nil.
+            // boolean falsy ≠ nil: `false` is falsy in Lua, so `if param then`
+            // doesn't prove nilability for boolean params — only `or` LHS does.
             let hints_cover_false = filtered.iter().any(|t| {
                 matches!(t, ValueType::Boolean(None) | ValueType::Boolean(Some(false)))
             });
@@ -3503,8 +3498,11 @@ impl<'a> Analysis<'a> {
         is_method_call: bool,
         n_args: usize,
     ) -> Vec<BackwardInferenceSignature> {
+        use crate::annotations::AnnotationType;
+
         let called = self.ir.func(func_idx);
         let param_optional = called.param_optional.clone();
+        let param_annotations = called.param_annotations.clone();
         let param_args = called.args.clone();
         let called_args_len = called.args.len();
         let is_vararg_primary = called.is_vararg;
@@ -3514,7 +3512,15 @@ impl<'a> Analysis<'a> {
         let mut out: Vec<BackwardInferenceSignature> = Vec::new();
 
         let primary_non_self_opts: &[bool] = param_optional.get(primary_self_offset..).unwrap_or(&[]);
-        let primary_required = primary_non_self_opts.iter().filter(|&&o| !o).count();
+        let primary_non_self_anns = param_annotations.get(primary_self_offset..);
+        let is_annotated = |i: usize| -> bool {
+            primary_non_self_anns
+                .and_then(|a| a.get(i))
+                .is_some_and(|ann| !matches!(ann, AnnotationType::Simple(s) if s.is_empty()))
+        };
+        let primary_required = primary_non_self_opts.iter().enumerate()
+            .filter(|&(i, &opt)| !opt && is_annotated(i))
+            .count();
         let primary_total = called_args_len.saturating_sub(primary_self_offset);
         let primary_arity_ok = n_args >= primary_required
             && (is_vararg_primary || n_args <= primary_total);
