@@ -101,3 +101,17 @@ tbl.result = true
 
 tbl.result = "wrong"
 -- ^ diag: field-type-mismatch
+
+-- ============================================================================
+-- No missing-fields for lateinit fields in constructors
+-- ============================================================================
+
+---@type PooledQuery
+local pq = { _name = "test" } ---@diagnostic disable-line: unused-local
+
+-- ── assign-type-mismatch path: table literal as function arg ────────────
+
+---@param q PooledQuery
+local function useQuery(q) _consume(q) end
+
+useQuery({ _name = "test" })

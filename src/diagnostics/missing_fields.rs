@@ -6,6 +6,7 @@ pub(crate) struct MissingFields;
 
 /// Whether a class field must be present in a constructor (non-nullable, non-function).
 fn is_required_field(fi: &FieldInfo) -> bool {
+    if fi.lateinit { return false; }
     let Some(ann) = &fi.annotation else { return false };
     let is_nullable = match ann {
         ValueType::Nil => true,

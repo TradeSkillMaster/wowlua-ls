@@ -25,7 +25,7 @@ impl DiagnosticPass for GenericConstraintMismatch {
                                 &analysis.ir, &analysis.resolved_expr_cache, table_idx,
                             );
                             let valid = match bound_type {
-                                ValueType::String(Some(key)) => fields.iter().any(|(n, _)| n == key),
+                                ValueType::String(Some(key)) => fields.iter().any(|(n, _, _)| n == key),
                                 _ => true, // Non-literal: can't validate statically
                             };
                             if !valid {

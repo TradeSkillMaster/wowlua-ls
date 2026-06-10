@@ -2527,12 +2527,12 @@ pub(crate) fn is_table_subtype_impl(
                 && let Some(keys) = extract_string_literal_keys(key_type)
             {
                 let expected_fields = collect_class_fields_impl(ir, resolved_expr_cache, *b);
-                let all_match = expected_fields.iter().all(|(field_name, field_type)| {
+                let all_match = expected_fields.iter().all(|(field_name, field_type, lateinit)| {
                     if keys.contains(field_name.as_str()) {
                         val_type.is_assignable_to(field_type)
                             || is_table_subtype_impl(ir, resolved_expr_cache, val_type, field_type)
                     } else {
-                        matches!(field_type,
+                        *lateinit || matches!(field_type,
                             ValueType::Union(types) if types.contains(&ValueType::Nil))
                     }
                 });
@@ -2703,7 +2703,7 @@ fn check_fields_impl(
     let expected_fields = collect_class_fields_impl(ir, resolved_expr_cache, expected_idx);
     let at = ir.table(actual_idx);
     let mut details = Vec::new();
-    for (field_name, expected_type) in &expected_fields {
+    for (field_name, expected_type, lateinit) in &expected_fields {
         let is_optional = matches!(expected_type, ValueType::Union(types) if types.contains(&ValueType::Nil));
         if let Some(actual_field) = at.fields.get(field_name.as_str()) {
             let actual_type = actual_field.annotation.clone().or_else(|| {
@@ -2726,7 +2726,7 @@ fn check_fields_impl(
                     actual: actual_type,
                 });
             }
-        } else if !is_optional {
+        } else if !is_optional && !lateinit {
             details.push(StructuralMismatchDetail::Missing { field: field_name.clone() });
         }
     }
@@ -2742,7 +2742,7 @@ pub(crate) fn collect_class_fields_impl(
     ir: &Ir,
     resolved_expr_cache: &[Option<ValueType>],
     table_idx: TableIndex,
-) -> Vec<(String, ValueType)> {
+) -> Vec<(String, ValueType, bool)> {
     let mut result = Vec::new();
     let mut visited = HashSet::new();
     collect_class_fields_inner_impl(ir, resolved_expr_cache, table_idx, &mut result, &mut visited);
@@ -2753,7 +2753,7 @@ fn collect_class_fields_inner_impl(
     ir: &Ir,
     resolved_expr_cache: &[Option<ValueType>],
     table_idx: TableIndex,
-    result: &mut Vec<(String, ValueType)>,
+    result: &mut Vec<(String, ValueType, bool)>,
     visited: &mut HashSet<TableIndex>,
 ) {
     if !visited.insert(table_idx) { return; }
@@ -2776,8 +2776,8 @@ fn collect_class_fields_inner_impl(
             }
         });
         if let Some(ft) = field_type {
-            result.retain(|(n, _)| n != name);
-            result.push((name.clone(), ft));
+            result.retain(|(n, _, _)| n != name);
+            result.push((name.clone(), ft, field.lateinit));
         }
     }
 }

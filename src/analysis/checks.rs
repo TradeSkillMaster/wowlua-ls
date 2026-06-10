@@ -107,7 +107,7 @@ impl AnalysisResult {
         if at.fields.is_empty() { return; }
 
         let expected_fields = self.collect_class_fields(expected_idx);
-        let expected_names: HashSet<&str> = expected_fields.iter().map(|(n, _)| n.as_str()).collect();
+        let expected_names: HashSet<&str> = expected_fields.iter().map(|(n, _, _)| n.as_str()).collect();
 
         let excess: Vec<String> = self.table(actual_idx).fields.keys()
             .filter(|name| !expected_names.contains(name.as_str()))
@@ -124,7 +124,7 @@ impl AnalysisResult {
     }
 
     /// Collect all fields for a @class table, including inherited fields from parents.
-    fn collect_class_fields(&self, table_idx: TableIndex) -> Vec<(String, ValueType)> {
+    fn collect_class_fields(&self, table_idx: TableIndex) -> Vec<(String, ValueType, bool)> {
         super::collect_class_fields_impl(&self.ir, &self.resolved_expr_cache, table_idx)
     }
 
