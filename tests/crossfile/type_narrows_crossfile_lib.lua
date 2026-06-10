@@ -32,7 +32,7 @@ ns.TNFeline = TNFeline
 function TNCreature:IsFeline() end
 
 ---@param task TNBase
-function ns.RemoveTask(task) end
+function ns.DiscardTask(task) end
 
 ---@return fun(): number, TNBase
 ---@diagnostic disable-next-line: missing-return
