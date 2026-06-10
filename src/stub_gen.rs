@@ -4950,6 +4950,13 @@ fn collect_classic_only_constants(
 
 /// Run the full stubs regeneration pipeline.
 pub fn regenerate_stubs() {
+    // FrameXML analysis can recurse deeply; 16 MB avoids stack overflow on
+    // default 2 MB threads.
+    rayon::ThreadPoolBuilder::new()
+        .stack_size(16 * 1024 * 1024)
+        .build_global()
+        .unwrap_or_else(|e| log::warn!("rayon global pool already initialized: {e}"));
+
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let stubs_dir = manifest_dir.join("stubs");
     let overrides_dir = stubs_dir.join("overrides");

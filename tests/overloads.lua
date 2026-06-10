@@ -12,13 +12,13 @@ local b = math.random(10)      -- 1 arg  -> overload fun(m: integer):integer
 --    ^ hover: (local) b: number  def: local
 
 -- tonumber has overloads:
---   fun(e: string, base: integer):integer
+--   fun(e: any, base: integer):integer?
 --   primary: fun(e: any): number?
 
 local d = tonumber("42")       -- 1 arg  -> primary: number?
 --    ^ hover: (local) d: number?  def: local
-local e = tonumber("FF", 16)   -- 2 args -> overload: integer
---    ^ hover: (local) e: number  def: local
+local e = tonumber("FF", 16)   -- 2 args -> overload: integer?
+--    ^ hover: (local) e: number?  def: local
 
 -- table.insert has overloads:
 --   fun(list: table, value: any)
