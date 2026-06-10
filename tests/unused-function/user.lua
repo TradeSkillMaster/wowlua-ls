@@ -18,3 +18,25 @@ local e = NS.FuncAsValueMethod
 UsedGlobal(NS.FuncAsArgMethod)
 -- Function-as-value: stored in a table constructor.
 local t = { handler = NS.FuncInTableMethod }
+-- Method called on a function return value (factory pattern).
+local w = CreateWorker()
+w:Run()
+-- Method called on a narrowed return value from a local function.
+-- Covers the pattern: factory returns nil|Class, caller guards then calls.
+local store = {
+    cache = {}, ---@type table<string, Processor>
+}
+local function GetProcessor(key)
+    local obj = store.cache[key]
+    if not obj then
+        return nil
+    end
+    local valid = obj:IsValid()
+    if not valid then
+        return nil
+    end
+    return obj
+end
+local p = GetProcessor("x")
+if not p then return end
+p:Execute()

@@ -7,6 +7,16 @@ use super::build_ir::OverloadCheck;
 
 // ── Type Resolution (Phase 2) ──────────────────────────────────────────────────
 
+/// Apply a strip operation (nil/falsy/truthy) to a base type, collapsing empty
+/// unions to `None`. Shared between the `resolve_expr` fast path (for
+/// `Strip*(SymbolRef)`) and `resolve_expr_inner` (for arbitrary inner exprs).
+fn apply_strip(base: Option<ValueType>, strip_fn: fn(&ValueType) -> ValueType) -> Option<ValueType> {
+    match base.map(|vt| strip_fn(&vt)) {
+        Some(ValueType::Union(ref m)) if m.is_empty() => None,
+        other => other,
+    }
+}
+
 /// Check if a function's return annotation at `ret_idx` was declared with `!`
 /// (non-nil assertion, e.g. `V!`). Used by for-in resolution to strip nil from
 /// iteration variables when the iterator stub explicitly marks returns as non-nil.
@@ -111,6 +121,12 @@ impl<'a> Analysis<'a> {
             let prev_call_len = pending_calls.len();
             let prev_field_len = pending_field_exprs.len();
 
+            // Calls whose callee resolved to `Any` on the previous outer
+            // iteration. Re-injected into `pending_calls` once per outer
+            // iteration so they get another chance as symbol types sharpen,
+            // without being re-evaluated on every inner-loop pass.
+            let mut deferred_any_calls: Vec<ExprId> = Vec::new();
+
             // Inner loop: repeat the three retain passes until no more progress
             // is made within this outer iteration. This collapses dependency chains
             // (where symbol A depends on symbol B later in the list) from O(N) outer
@@ -171,18 +187,25 @@ impl<'a> Analysis<'a> {
                     // A call is "processed" once its function identity resolves,
                     // even if the call returns None (e.g. void-returning functions).
                     // Check function resolvability to avoid re-running side effects.
-                    let func_resolvable = match self.expr(expr_id) {
+                    let func_type = match self.expr(expr_id) {
                         Expr::FunctionCall { func, .. } => {
                             let func = *func;
-                            self.resolve_expr(func).is_some()
+                            self.resolve_expr(func)
                         }
-                        _ => false,
+                        _ => None,
                     };
-                    if func_resolvable {
-                        self.resolve_expr(expr_id);
-                        false
-                    } else {
-                        true
+                    match &func_type {
+                        Some(ValueType::Any) => {
+                            // Callee is `Any` — defer to the next outer iteration
+                            // rather than retrying on every inner-loop pass.
+                            deferred_any_calls.push(expr_id);
+                            false
+                        }
+                        Some(_) => {
+                            self.resolve_expr(expr_id);
+                            false
+                        }
+                        None => true,
                     }
                 });
 
@@ -219,6 +242,13 @@ impl<'a> Analysis<'a> {
                 if new_total == inner_total {
                     break;
                 }
+            }
+
+            // Re-inject deferred `Any`-callee calls for the next outer iteration.
+            // By this point symbol types may have improved, so the callee may
+            // resolve to a concrete function type on the next pass.
+            if !deferred_any_calls.is_empty() {
+                pending_calls.append(&mut deferred_any_calls);
             }
 
             if pending.len() == prev_sym_len && pending_calls.len() == prev_call_len && pending_field_exprs.len() == prev_field_len {
@@ -2441,10 +2471,27 @@ impl<'a> Analysis<'a> {
         // skip cache check, cycle detection, and depth tracking entirely.
         // SymbolRef is never cached (reads directly from version), and
         // Literal/FunctionDef/TableConstructor always return immediately.
+        // StripNil/StripFalsy/StripTruthy wrapping a SymbolRef are also handled
+        // here to avoid caching stale results when the symbol's type evolves
+        // during the fixpoint (the cache would lock in an early `Any` before the
+        // symbol's type converges to a concrete class).
         if let Some(expr) = self.ir.exprs.get(expr_id.val()) {
             match expr {
                 Expr::SymbolRef(sym_idx, ver_idx) => {
                     return self.sym(*sym_idx).versions[*ver_idx].resolved_type.clone();
+                }
+                Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner)
+                    if matches!(self.ir.exprs.get(inner.val()), Some(Expr::SymbolRef(..))) =>
+                {
+                    let Expr::SymbolRef(sym_idx, ver_idx) = self.ir.exprs[inner.val()] else { unreachable!() };
+                    let base = self.sym(sym_idx).versions[ver_idx].resolved_type.clone();
+                    let strip_fn: fn(&ValueType) -> ValueType = match expr {
+                        Expr::StripNil(_) => ValueType::strip_nil,
+                        Expr::StripFalsy(_) => ValueType::strip_falsy,
+                        Expr::StripTruthy(_) => ValueType::strip_truthy,
+                        _ => unreachable!(),
+                    };
+                    return apply_strip(base, strip_fn);
                 }
                 Expr::Literal(vt) => return Some(vt.clone()),
                 Expr::FunctionDef(func_idx) => return Some(ValueType::Function(Some(*func_idx))),
@@ -2489,7 +2536,11 @@ impl<'a> Analysis<'a> {
         // Cache successful resolutions (None = not yet resolvable, retry next iteration).
         // SymbolRef/Literal/FunctionDef/TableConstructor are handled by the leaf fast path
         // above and never reach here. Only cache local expressions (< EXT_BASE).
+        // Skip caching `Any` — it may improve as symbol types converge during
+        // the fixpoint (e.g. a FieldAccess on a not-yet-resolved narrowing wrapper
+        // produces `Any` initially but should refine to a concrete type later).
         if let Some(ref res) = result
+            && !matches!(res, ValueType::Any)
             && let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
             *slot = Some(res.clone());
         }
@@ -2507,10 +2558,7 @@ impl<'a> Analysis<'a> {
             Expr::TableConstructor(table_idx) => return Some(ValueType::Table(Some(*table_idx))),
             Expr::StripNil(inner) => {
                 let inner = *inner;
-                return match self.resolve_expr(inner).map(|vt| vt.strip_nil()) {
-                    Some(ValueType::Union(ref members)) if members.is_empty() => None,
-                    other => other,
-                };
+                return apply_strip(self.resolve_expr(inner), ValueType::strip_nil);
             }
             Expr::AssignNarrow { inner, rhs } => {
                 let inner = *inner;
@@ -2525,27 +2573,18 @@ impl<'a> Analysis<'a> {
                     None => false,
                 };
                 return if strip {
-                    match inner_ty.map(|vt| vt.strip_nil()) {
-                        Some(ValueType::Union(ref members)) if members.is_empty() => None,
-                        other => other,
-                    }
+                    apply_strip(inner_ty, ValueType::strip_nil)
                 } else {
                     inner_ty
                 };
             }
             Expr::StripFalsy(inner) => {
                 let inner = *inner;
-                return match self.resolve_expr(inner).map(|vt| vt.strip_falsy()) {
-                    Some(ValueType::Union(ref members)) if members.is_empty() => None,
-                    other => other,
-                };
+                return apply_strip(self.resolve_expr(inner), ValueType::strip_falsy);
             }
             Expr::StripTruthy(inner) => {
                 let inner = *inner;
-                return match self.resolve_expr(inner).map(|vt| vt.strip_truthy()) {
-                    Some(ValueType::Union(ref members)) if members.is_empty() => None,
-                    other => other,
-                };
+                return apply_strip(self.resolve_expr(inner), ValueType::strip_truthy);
             }
             Expr::OverloadNarrow { inner, func_expr, ret_index, narrowed } => {
                 let inner = *inner;

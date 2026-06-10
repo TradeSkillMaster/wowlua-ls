@@ -83,3 +83,38 @@ end
 function NS.FuncInTableMethod()
     return 17
 end
+
+-- Class with methods, used via a local variable returned from a function.
+-- This mirrors the pattern where a factory returns a class instance and
+-- the caller invokes methods on the returned value.
+---@class Worker
+Worker = {}
+
+function Worker:Run()
+    return 30
+end
+
+function Worker:UnusedWorkerMethod()
+    return 31
+end
+
+---@return Worker
+function CreateWorker()
+    return Worker
+end
+
+-- Method called on a narrowed return value from a local function.
+---@class Processor
+local Processor = {}
+
+function Processor:IsValid()
+    return true
+end
+
+function Processor:Execute()
+    return 40
+end
+
+function Processor:UnusedProcessorMethod()
+    return 41
+end

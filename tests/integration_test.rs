@@ -5203,4 +5203,30 @@ fn test_unused_function_cross_file() {
         !unused_names.contains("NS.FuncInTableMethod"),
         "NS.FuncInTableMethod should not be flagged — stored in a table constructor in user.lua",
     );
+
+    // Method called on a function return value (factory pattern).
+    assert!(
+        !unused_names.contains("Worker:Run"),
+        "Worker:Run should not be flagged — called via w:Run() on a factory return value in user.lua, got: {:?}", unused_names,
+    );
+    // Worker:UnusedWorkerMethod IS unused (no references).
+    assert!(
+        unused_names.contains("Worker:UnusedWorkerMethod"),
+        "Worker:UnusedWorkerMethod should be flagged as unused, got: {:?}", unused_names,
+    );
+
+    // Method called on class instance from table<K,V> field via local function.
+    assert!(
+        !unused_names.contains("Processor:Execute"),
+        "Processor:Execute should not be flagged — called via p:Execute() on a local function return in user.lua, got: {:?}", unused_names,
+    );
+    // IsValid is called inside GetProcessor (a local function in user.lua).
+    assert!(
+        !unused_names.contains("Processor:IsValid"),
+        "Processor:IsValid should not be flagged — called inside GetProcessor in user.lua, got: {:?}", unused_names,
+    );
+    assert!(
+        unused_names.contains("Processor:UnusedProcessorMethod"),
+        "Processor:UnusedProcessorMethod should be flagged as unused, got: {:?}", unused_names,
+    );
 }
