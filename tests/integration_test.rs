@@ -2445,6 +2445,16 @@ fn crossfile_pool_generic() {
 }
 
 #[test]
+fn crossfile_fun_param_mismatch() {
+    // Cross-file fun() param type structural check (Function(None) → FunctionSig enrichment)
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/fun_param_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_globals() {
     // Cross-file global variable and function type inference
     run_annotation_tests(&TestConfig {

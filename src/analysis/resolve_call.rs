@@ -1158,6 +1158,45 @@ impl<'a> Analysis<'a> {
             } else {
                 None
             };
+            // When a @param annotation is fun(...), resolve_annotation_type returns
+            // Function(None) which loses all structural info. Recover it as a
+            // FunctionSig so type-mismatch can structurally compare param/return types.
+            // Generic type variables in the fun() annotation are resolved to TypeVariable
+            // here; the substitute_generics_deep pass below substitutes them with bound
+            // types. If a generic is bound from THIS argument (self-exclusion at line
+            // generic_arg_indices), the FunctionSig keeps unsubstituted type variables
+            // and is filtered out by type_contains_type_variable_deep — producing a
+            // conservative false negative rather than a false positive.
+            let expected_type = match expected_type {
+                Some(ValueType::Function(None)) => {
+                    let ann_idx = i + self_offset;
+                    if let Some(ann) = param_annotations.get(ann_idx) {
+                        if let Some(sig) = crate::annotations::extract_fun_sig(
+                            ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
+                        ) {
+                            let generics = &self.func(func_idx).generic_constraints_raw;
+                            let shape_params: Vec<ShapeParam> = sig.params.iter().map(|p| {
+                                let ty = self.resolve_annotation_type_gen(&p.typ, generics)
+                                    .unwrap_or(ValueType::Any);
+                                ShapeParam { name: p.name.clone(), ty, optional: p.optional }
+                            }).collect();
+                            let shape_returns: Vec<ValueType> = sig.returns.iter()
+                                .filter_map(|r| self.resolve_annotation_type_gen(r, generics))
+                                .collect();
+                            Some(ValueType::FunctionSig(Box::new(FunctionShape {
+                                params: shape_params,
+                                returns: shape_returns,
+                                is_vararg: sig.is_vararg,
+                            })))
+                        } else {
+                            Some(ValueType::Function(None))
+                        }
+                    } else {
+                        Some(ValueType::Function(None))
+                    }
+                }
+                other => other,
+            };
             // Apply generic substitutions and filter out unresolved type variables.
             // Exclude generics bound from THIS argument — checking an argument
             // against a type derived from itself is circular and produces false
@@ -3052,6 +3091,21 @@ impl<'a> Analysis<'a> {
             }
             ValueType::OpaqueAlias(name, inner) => {
                 ValueType::OpaqueAlias(name.clone(), Box::new(self.substitute_generics_deep(inner, subs)))
+            }
+            ValueType::FunctionSig(shape) => {
+                let new_params = shape.params.iter().map(|p| ShapeParam {
+                    name: p.name.clone(),
+                    ty: self.substitute_generics_deep(&p.ty, subs),
+                    optional: p.optional,
+                }).collect();
+                let new_returns = shape.returns.iter()
+                    .map(|r| self.substitute_generics_deep(r, subs))
+                    .collect();
+                ValueType::FunctionSig(Box::new(FunctionShape {
+                    params: new_params,
+                    returns: new_returns,
+                    is_vararg: shape.is_vararg,
+                }))
             }
             other => other.clone(),
         }

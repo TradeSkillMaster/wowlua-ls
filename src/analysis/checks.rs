@@ -6,6 +6,7 @@ use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize};
 use crate::types::*;
 use super::AnalysisResult;
+use super::queries::return_type_at_slot;
 
 // ── Deferred Diagnostic Checks ──────────────────────────────────────────────────
 
@@ -138,25 +139,44 @@ impl AnalysisResult {
     /// - Each positional param type on the actual side must be `is_assignable_to` the
     ///   expected side's param type at the same position.
     /// - Actual's first return type must be `is_assignable_to` expected's first return.
-    ///   Callers that declare no `@return` are treated as "any" (can satisfy any expected
-    ///   return annotation).
+    ///   Unannotated functions use their body-inferred return type; only when inference
+    ///   produces nothing does the return default to Any.
     /// - `any` on either side satisfies anything (baked into `is_assignable_to`).
     /// - Vararg on either side disables arity enforcement (but param/return types still
     ///   compared at their declared positions).
     /// - One side is a generic `Function(None)` → always compatible (the loose fallback
     ///   for unannotated `function`-typed params).
     pub(crate) fn is_function_compatible(&self, actual: &ValueType, expected: &ValueType) -> bool {
-        let (ValueType::Function(Some(actual_idx)), ValueType::Function(Some(expected_idx))) = (actual, expected) else {
-            return true; // not both known functions — no structural check
+        // Extract actual-side info from Function(Some(idx))
+        let actual_idx = match actual {
+            ValueType::Function(Some(idx)) => *idx,
+            _ => return true,
         };
-        let actual_func = self.func(*actual_idx);
+        // Extract expected-side param/return info from Function(Some), FunctionSig, or bail
+        enum ExpectedInfo<'a> {
+            Func(FunctionIndex),
+            Sig(&'a FunctionShape),
+        }
+        let expected_info = match expected {
+            ValueType::Function(Some(idx)) => ExpectedInfo::Func(*idx),
+            ValueType::FunctionSig(shape) => ExpectedInfo::Sig(shape),
+            _ => return true,
+        };
+        let actual_func = self.func(actual_idx);
         let actual_args = actual_func.args.clone();
         let actual_is_vararg = actual_func.is_vararg;
         let actual_param_optional = actual_func.param_optional.clone();
+        let actual_ret_syms = actual_func.rets.clone();
         let actual_rets = actual_func.return_annotations.clone();
-        let expected_args = self.func(*expected_idx).args.clone();
-        let expected_is_vararg = self.func(*expected_idx).is_vararg;
-        let expected_rets = self.func(*expected_idx).return_annotations.clone();
+        let (expected_param_count, expected_is_vararg, expected_rets) = match &expected_info {
+            ExpectedInfo::Func(idx) => {
+                let f = self.func(*idx);
+                (f.args.len(), f.is_vararg, f.return_annotations.clone())
+            }
+            ExpectedInfo::Sig(shape) => {
+                (shape.params.len(), shape.is_vararg, shape.returns.clone())
+            }
+        };
         // Skip the implicit `self` parameter only when BOTH sides have it (both are
         // colon methods). When only one side names its first param `self` (e.g. a stub
         // callback annotation vs. a user-written `function(_, elapsed)`), comparing
@@ -164,12 +184,17 @@ impl AnalysisResult {
         let actual_has_self = actual_args.first()
             .map(|&idx| matches!(&self.sym(idx).id, SymbolIdentifier::Name(n) if n == "self"))
             .unwrap_or(false);
-        let expected_has_self = expected_args.first()
-            .map(|&idx| matches!(&self.sym(idx).id, SymbolIdentifier::Name(n) if n == "self"))
-            .unwrap_or(false);
+        let expected_has_self = match &expected_info {
+            ExpectedInfo::Func(idx) => self.func(*idx).args.first()
+                .map(|&sym| matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self"))
+                .unwrap_or(false),
+            ExpectedInfo::Sig(shape) => shape.params.first()
+                .map(|p| p.name == "self")
+                .unwrap_or(false),
+        };
         let skip_self = if actual_has_self && expected_has_self { 1 } else { 0 };
         let actual_params = &actual_args[skip_self..];
-        let expected_params = &expected_args[skip_self..];
+        let expected_param_count = expected_param_count.saturating_sub(skip_self);
         // Count required params on the actual side: walk backward from the end,
         // stopping at the first non-optional param. In Lua a function can always
         // be called with more args than it declares (extras are dropped), so
@@ -182,35 +207,32 @@ impl AnalysisResult {
         // count. Trailing optional params are excluded — the function works
         // without them, so extra args at those positions are harmless.
         if !expected_is_vararg && !actual_is_vararg
-            && actual_required > expected_params.len() {
+            && actual_required > expected_param_count {
                 return false;
             }
         // Param types: compare only required params on the actual side. Optional
         // trailing params don't need to match — the callee is designed to work
         // without them, so the caller's arg type at that position is irrelevant.
-        // Note: this means the caller may pass a value of incompatible type at
-        // optional positions (e.g. a string where boolean? is declared). We accept
-        // this to avoid false positives in callback-heavy WoW addon patterns like
-        // `frame:SetScript("OnDragStart", frame.StartMoving)` where the handler
-        // signature has different trailing params than the callback type.
         for (pos, &actual_sym) in actual_params.iter().take(actual_required).enumerate() {
-            // Skip `_` params — they're "don't care" placeholders. When duplicate
-            // `_` params exist (e.g. `function(_, _, unit)`), both share a single
-            // symbol with only the first version's type set, causing false mismatches
-            // at later positions. Skipping them is correct: the user explicitly
-            // opted out of using the value, so its type is irrelevant.
+            // Duplicate `_` params share one symbol; skip to avoid false mismatches at later positions.
             if matches!(&self.sym(actual_sym).id, SymbolIdentifier::Name(n) if n == "_") {
                 continue;
             }
             let actual_ty = self.sym(actual_sym).versions.first()
                 .and_then(|v| v.resolved_type.clone())
                 .unwrap_or(ValueType::Any);
-            let expected_ty = if let Some(&expected_sym) = expected_params.get(pos) {
-                self.sym(expected_sym).versions.first()
-                    .and_then(|v| v.resolved_type.clone())
-                    .unwrap_or(ValueType::Any)
-            } else {
-                ValueType::Any
+            let expected_ty = match &expected_info {
+                ExpectedInfo::Func(idx) => {
+                    self.func(*idx).args.get(pos + skip_self)
+                        .and_then(|&sym| self.sym(sym).versions.first()
+                            .and_then(|v| v.resolved_type.clone()))
+                        .unwrap_or(ValueType::Any)
+                }
+                ExpectedInfo::Sig(shape) => {
+                    shape.params.get(pos + skip_self)
+                        .map(|p| p.ty.clone())
+                        .unwrap_or(ValueType::Any)
+                }
             };
             if !actual_ty.is_assignable_to(&expected_ty)
                 && !self.is_type_subclass_of(&actual_ty, &expected_ty)
@@ -221,10 +243,12 @@ impl AnalysisResult {
                 return false;
             }
         }
-        // Return type: compare first declared return slot. Missing returns on either
-        // side → treat as Any (unannotated functions don't constrain return types).
+        // Return type: compare first declared return slot. When the actual function
+        // has no @return annotation, fall back to the inferred return type from the
+        // function body. Missing returns on either side → treat as Any.
         // Covariant returns: child class satisfies parent class expectation.
         let actual_ret = actual_rets.first().cloned()
+            .or_else(|| return_type_at_slot(&self.ir, &actual_ret_syms, 0))
             .unwrap_or(ValueType::Any);
         let expected_ret = expected_rets.first().cloned()
             .unwrap_or(ValueType::Any);

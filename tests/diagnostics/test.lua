@@ -162,6 +162,25 @@ local function interleavedOpt(x, opt, y) _consume(x, opt, y) end
 registerThree(interleavedOpt)
 --            ^ diag: type-mismatch
 
+-- ── Function-type assignability: inferred return types ───────────────────────
+-- When the actual function has no @return annotation, the structural check
+-- should use its body-inferred return type (not treat it as Any).
+
+---@param cb fun(x: string): string
+local function takesStrCb(cb) _consume(cb) end
+
+---@return string?
+local function maybeStr(x) return x end
+local function wrapMaybeStr(x) return maybeStr(x) end
+takesStrCb(wrapMaybeStr)
+--         ^ diag: type-mismatch
+
+-- Should NOT warn: inferred return type matches expected
+---@return string
+local function alwaysStr() return "ok" end
+local function wrapAlwaysStr(x) return alwaysStr() end
+takesStrCb(wrapAlwaysStr)
+
 -- Should NOT warn: union with same members in different order
 ---@param data number|string|function|nil
 local function takesUnion(data) _consume(data) end

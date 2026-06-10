@@ -612,6 +612,10 @@ impl Ir {
                     self.type_contains_type_variable_deep_inner(ret, visited)
                 })
             }
+            ValueType::FunctionSig(shape) => {
+                shape.params.iter().any(|p| self.type_contains_type_variable_deep_inner(&p.ty, visited))
+                || shape.returns.iter().any(|r| self.type_contains_type_variable_deep_inner(r, visited))
+            }
             ValueType::OpaqueAlias(_, inner) => self.type_contains_type_variable_deep_inner(inner, visited),
             _ => false,
         }
