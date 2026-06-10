@@ -3070,7 +3070,8 @@ impl<'a> Analysis<'a> {
                         }
                         vt
                     }
-                    ValueType::Union(types) => {
+                    ValueType::Union(types) | ValueType::Intersection(types) => {
+                        let is_intersection = matches!(table_type, ValueType::Intersection(_));
                         // If any member is plain `table`, bracket access is `any`.
                         if types.iter().any(|t| matches!(t, ValueType::Table(None))) {
                             return Some(ValueType::Any);
@@ -3090,9 +3091,9 @@ impl<'a> Analysis<'a> {
                                             continue;
                                         }
                                     }
-                                // Skip this union member if its key_type is incompatible
-                                // with the actual key (e.g. indexing table<K,V>|T[] with K
-                                // should only yield V, not the array element type)
+                                // Skip this member if its key_type is incompatible
+                                // with the actual key (e.g. indexing V[]&table<K,V>
+                                // or table<K,V>|T[] with K — only yield V)
                                 if let Some(ref kt) = key_type_resolved
                                     && let Some(ref table_kt) = self.table(*idx).key_type
                                     && !kt.is_assignable_to(table_kt)
@@ -3106,7 +3107,9 @@ impl<'a> Analysis<'a> {
                             }
                         }
                         if value_types.is_empty() { None }
-                        else { Some(ValueType::make_union(value_types)) }
+                        else if is_intersection && value_types.len() > 1 {
+                            Some(ValueType::Intersection(value_types))
+                        } else { Some(ValueType::make_union(value_types)) }
                     }
                     // Plain `table` (no type params) is the most generic dictionary —
                     // bracket access yields any.

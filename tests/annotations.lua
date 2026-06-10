@@ -500,6 +500,8 @@ local _tcFbs = tcObj.byName
 ---@param m IndexedMap<string, number>
 local function useIndexedMap(m)
 --                           ^ hover: (param) m: number[] & table<string, number>  def: local
+    local _bracketVal = m["key"]
+    --    ^ hover: (local) _bracketVal: number
 end
 
 -- {[K]: V} with additional named fields
