@@ -46,6 +46,8 @@ pub(crate) fn run_access(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnosti
         let type_str = analysis.format_value_type_depth(&vt, 0);
         check(diags, &type_str, start as usize, end as usize);
     }
+    // Assignment-side entries also land here; their bracket_expr is synthesized and
+    // will never appear in and_guarded_nil_check_exprs (assignments aren't expressions).
     for &(bracket_expr, table_expr, start, end) in &analysis.ir.bracket_table_sites {
         if !seen.insert((start, end)) { continue; }
         if analysis.ir.and_guarded_nil_check_exprs.contains(&bracket_expr) { continue; }

@@ -2503,3 +2503,71 @@ local _ = nilBase3["key"]
 ---@type table<string, number>?
 local nilBase4 = nil
 local _ = nilBase4 and nilBase4["key"]
+
+-- ── Bracket-indexed assignment on possibly-nil base ─────────────────────
+
+---@class BracketAssignCtx
+---@field selected table<string, true?>?
+---@field unselected table<string, true?>?
+
+-- Assignment to bracket-indexed nullable base fires need-check-nil
+---@param ctx BracketAssignCtx
+---@param key string
+local function testBracketAssignNilBase(ctx, key)
+    ctx.selected[key] = true
+    --  ^ diag: need-check-nil
+end
+_consume(testBracketAssignNilBase)
+
+-- Truthiness guard suppresses bracket assignment diagnostic
+---@param ctx BracketAssignCtx
+---@param key string
+local function testBracketAssignGuarded(ctx, key)
+    if ctx.selected then
+        ctx.selected[key] = true
+    end
+end
+_consume(testBracketAssignGuarded)
+
+-- Non-nil base: no diagnostic on bracket assignment
+---@type table<string, number>
+local nonNilAssign = {}
+nonNilAssign["key"] = 42
+
+-- Single-name nullable base: `tbl[key] = val` where tbl is nullable
+---@type table<string, number>?
+local nilAssignTbl = nil
+nilAssignTbl["key"] = 42
+-- ^ diag: need-check-nil
+
+-- Single-name nullable base guarded
+---@type table<string, number>?
+local nilAssignTbl2 = nil
+if nilAssignTbl2 then
+    nilAssignTbl2["key"] = 42
+end
+
+-- Deep chain: 3+ segments where the bracket base is nullable
+---@class BracketAssignDeepInner
+---@field data table<string, number>?
+
+---@class BracketAssignDeepOuter
+---@field inner BracketAssignDeepInner
+
+---@param obj BracketAssignDeepOuter
+---@param key string
+local function testBracketAssignDeepChain(obj, key)
+    obj.inner.data[key] = 42
+    --        ^ diag: need-check-nil
+end
+_consume(testBracketAssignDeepChain)
+
+-- Deep chain guarded
+---@param obj BracketAssignDeepOuter
+---@param key string
+local function testBracketAssignDeepChainGuarded(obj, key)
+    if obj.inner.data then
+        obj.inner.data[key] = 42
+    end
+end
+_consume(testBracketAssignDeepChainGuarded)

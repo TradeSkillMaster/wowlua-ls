@@ -1690,12 +1690,31 @@ impl<'a> Analysis<'a> {
                                         // can see that e.g. `state.names[k] = v` reads `state.names`.
                                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
                                             let mut base = self.ir.push_expr(Expr::SymbolRef(sym_idx, 0));
+                                            let mut pre_bracket_base = base;
                                             for field_name in names.iter().skip(1) {
+                                                pre_bracket_base = base;
                                                 base = self.ir.push_expr(Expr::FieldAccess {
                                                     table: base,
                                                     field: field_name.clone(),
                                                     field_range: None,
                                                 });
+                                            }
+                                            // Record bracket table site for need-check-nil on the
+                                            // chain base (e.g. `self._data` in `self._data[k] = v`).
+                                            // When the bracket has a string literal key (e.g.
+                                            // `tbl["key"]`), names() includes it so the last
+                                            // FieldAccess is the key lookup, not the table — use the
+                                            // penultimate base. For non-string keys (variable index),
+                                            // names() excludes the key and `base` IS the table.
+                                            if ident.is_indexed_expression()
+                                                && let Some(base_node) = ident.syntax().children().next()
+                                            {
+                                                let has_string_key = crate::ast::extract_bracket_string_key(ident.syntax()).is_some();
+                                                let table_base = if has_string_key { pre_bracket_base } else { base };
+                                                let r = base_node.text_range();
+                                                let dummy_key = self.ir.push_expr(Expr::Unknown);
+                                                let bracket_expr = self.ir.push_expr(Expr::BracketIndex { table: table_base, key: dummy_key, literal_key: None });
+                                                self.ir.bracket_table_sites.push((bracket_expr, table_base, u32::from(r.start()), u32::from(r.end())));
                                             }
                                         }
                                         continue;
@@ -2163,6 +2182,17 @@ impl<'a> Analysis<'a> {
                                             && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
                                                 cached_multi_ret_call = Some(expr_id);
                                             }
+                                        // Record bracket table site for need-check-nil on
+                                        // single-name bases (e.g. `tbl[k] = v` where tbl is nullable).
+                                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx)
+                                            && let Some(base_node) = ident.syntax().children().next()
+                                        {
+                                            let r = base_node.text_range();
+                                            let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.ir.version_for_scope(sym_idx, scope_idx)));
+                                            let dummy_key = self.ir.push_expr(Expr::Unknown);
+                                            let bracket_expr = self.ir.push_expr(Expr::BracketIndex { table: sym_ref, key: dummy_key, literal_key: None });
+                                            self.ir.bracket_table_sites.push((bracket_expr, sym_ref, u32::from(r.start()), u32::from(r.end())));
+                                        }
                                         // Track bracket assignment for table value_type inference.
                                         // Extract the key expression from the BracketAccess node
                                         // and register (key, value) in bracket_key_fields so
