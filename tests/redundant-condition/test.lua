@@ -909,6 +909,24 @@ local function testNonNilFieldAssign(state)
 end
 _use(testNonNilFieldAssign)
 
+-- ── No diagnostic: type() guard on conditionally-reassigned variable ─────────
+-- `type(x) == "string"` must not be flagged when `x` was initialised as nil
+-- and conditionally reassigned to an unknown-type value inside a preceding
+-- block. The conditional reassignment makes the static nil type unreliable.
+
+local function typeGuardConditionallyReassignedVariable(cond, getData)
+    local status, value = nil, nil
+    if cond then
+        status, value = getData()
+    end
+    if status == false then
+        if type(value) == "string" then
+            _use(value)
+        end
+    end
+end
+_use(typeGuardConditionallyReassignedVariable)
+
 -- ── No diagnostic: lazy-init bare self-field (cross-file) ────────────────────
 -- Regression test for this pattern lives in
 -- tests/redundant-condition-crossfile/ which exercises the workspace-scan

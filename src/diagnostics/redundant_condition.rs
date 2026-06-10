@@ -250,6 +250,8 @@ fn eval_type_guard(analysis: &AnalysisResult, op: Operator, lhs: ExprId, rhs: Ex
         },
     };
     if !LUA_TYPE_NAMES.contains(&type_name.as_str()) { return None; }
+    // Conditional-reassignment uncertainty is handled upstream by
+    // `has_uncertain_reassignment` (which now descends into `type()` args).
     if is_expr_truthiness_uncertain(analysis, arg) { return None; }
     let arg_type = resolve_enum_runtime_type(analysis, analysis.resolve_expr_type(arg)?);
     if is_type_permissive(&arg_type) { return None; }
@@ -355,6 +357,18 @@ fn possible_type_kinds(t: &ValueType) -> Option<Vec<&'static str>> {
     if collect(t, &mut out) { Some(out) } else { None }
 }
 
+/// True when `func` + `args` form a single-argument call to the global `type`
+/// builtin.  Used by `collect_symbol_refs` (IR-only context) to decide whether
+/// to descend into the argument.
+fn is_builtin_type_call(ir: &crate::analysis::Ir, func: ExprId, args: &[ExprId]) -> bool {
+    if args.len() != 1 { return false; }
+    let f = unwrap_to_inner_expr(&ir.exprs, func);
+    matches!(ir.expr(f),
+        Expr::SymbolRef(sym_idx, _)
+            if sym_idx.is_external()
+            && matches!(&ir.sym(*sym_idx).id, SymbolIdentifier::Name(n) if n == "type"))
+}
+
 /// If `expr_id` is a single-argument call to the global `type`, return the
 /// argument expression.
 fn type_call_arg(analysis: &AnalysisResult, expr_id: ExprId) -> Option<ExprId> {
@@ -415,9 +429,11 @@ fn exprs_syntactically_equal(ir: &crate::analysis::Ir, a: ExprId, b: ExprId) -> 
 /// argument's type, and a loop-reassigned argument can in principle shift
 /// the verdict — we accept the resulting false-positive risk because it's
 /// rarer than the false-negative pattern (call-with-loop-arg) this prevents,
-/// and users can suppress individual sites with `---@diagnostic`. The
-/// `type(x)` built-in is similarly skipped, but `eval_type_guard` resolves
-/// `x` directly so its merged type is what the verdict uses anyway.
+/// and users can suppress individual sites with `---@diagnostic`.
+///
+/// Exception: `type(x)` arguments ARE descended into because `eval_type_guard`
+/// resolves the argument's type directly — reassignment of `x` shifts the
+/// verdict even though the `type()` return annotation is fixed.
 fn collect_symbol_refs(ir: &crate::analysis::Ir, expr_id: ExprId, out: &mut Vec<(SymbolIndex, usize)>) {
     match ir.expr(expr_id) {
         Expr::SymbolRef(sym_idx, ver_idx) => out.push((*sym_idx, *ver_idx)),
@@ -435,6 +451,11 @@ fn collect_symbol_refs(ir: &crate::analysis::Ir, expr_id: ExprId, out: &mut Vec<
             let (lhs, rhs) = (*lhs, *rhs);
             collect_symbol_refs(ir, lhs, out);
             collect_symbol_refs(ir, rhs, out);
+        }
+        Expr::FunctionCall { func, args, .. } => {
+            if is_builtin_type_call(ir, *func, args) {
+                collect_symbol_refs(ir, args[0], out);
+            }
         }
         _ => {}
     }
