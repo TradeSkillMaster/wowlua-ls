@@ -763,12 +763,15 @@ if ce8 == getCode() then
     --        ^ hover: (local) ce9: string?
 end
 
--- Negative: RHS resolves to a non-class type → class-eq is a no-op at resolve.
+-- RHS resolves to a non-class but statically non-nil type → class-eq narrowing
+-- is a no-op, but nil is stripped from ce11 (`ce11 == someStr` with a non-nil
+-- string RHS proves ce11 is non-nil in the branch). ce12 (a sibling, not the
+-- compared symbol) is unaffected.
 local someStr = "hello"
 local ce10, ce11, ce12 = cls()
 if ce11 == someStr then
     local _ = ce11
-    --        ^ hover: (local) ce11: number | nil | ErrCode
+    --        ^ hover: (local) ce11: number | ErrCode
     local _ = ce12
     --        ^ hover: (local) ce12: string?
 end

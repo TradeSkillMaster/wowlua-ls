@@ -2571,3 +2571,86 @@ local function testBracketAssignDeepChainGuarded(obj, key)
     end
 end
 _consume(testBracketAssignDeepChainGuarded)
+
+-- ── Equality with a statically non-nil value strips nil ─────────────────────
+-- `x == y` (then-branch) / `x ~= y` (else-branch) where `y` resolves to a
+-- non-nil type proves `x` is non-nil in that branch. Regression for an
+-- optimizer pattern where a nilable local guarded by `local_ == nonNilVar`
+-- was reassigned into an unannotated recursive param; the missing narrowing
+-- let backward inference infer the param `number?`, cascading need-check-nil
+-- onto every `node` use throughout the function.
+
+---@param n number
+local function _takeNumber(n) return n end
+
+-- Positive: then-branch of `x == y` (y non-nil) narrows x to non-nil
+---@param a number?
+---@param b number
+local function eqNonNilThen(a, b)
+    if a == b then
+        local _ = a
+        --        ^ hover: (param) a: number
+        _takeNumber(a)
+    end
+end
+_consume(eqNonNilThen)
+
+-- Positive: else-branch of `x ~= y` (y non-nil) narrows x to non-nil
+---@param a number?
+---@param b number
+local function neqNonNilElse(a, b)
+    if a ~= b then
+        _consume("differ")
+    else
+        local _ = a
+        --        ^ hover: (param) a: number
+        _takeNumber(a)
+    end
+end
+_consume(neqNonNilElse)
+
+-- Negative: `x == y` where y is ALSO nilable does NOT narrow x
+---@param a number?
+---@param b number?
+local function eqNilableNoNarrow(a, b)
+    if a == b then
+        _takeNumber(a)
+        --          ^ diag: need-check-nil
+    end
+end
+_consume(eqNilableNoNarrow)
+
+-- Negative: outside the guard, the type is unchanged
+---@param a number?
+---@param b number
+local function eqNonNilOutside(a, b)
+    if a == b then
+        _consume(a)
+    end
+    local _ = a
+    --        ^ hover: (param) a: number?
+end
+_consume(eqNonNilOutside)
+
+-- Negative: `x == y` where y is `any` does NOT narrow x (any includes nil)
+---@param a number?
+---@param b any
+local function eqAnyNoNarrow(a, b)
+    if a == b then
+        _takeNumber(a)
+        --          ^ diag: need-check-nil
+    end
+end
+_consume(eqAnyNoNarrow)
+
+-- Early-exit `~= then return` does not yet narrow via deferred class-eq
+-- (the deferred path only handles explicit then/else scopes, not post-block
+-- continuation). This documents the current limitation.
+---@param a number?
+---@param b number
+local function neqNonNilEarlyExit(a, b)
+    if a ~= b then return end
+    _takeNumber(a)
+    --          ^ diag: need-check-nil
+end
+_consume(neqNonNilEarlyExit)

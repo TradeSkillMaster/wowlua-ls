@@ -1313,6 +1313,8 @@ impl<'a> Analysis<'a> {
     /// display via `type_filtered_symbols` and for sibling narrowing via
     /// `class_narrowed_symbols`), and push `OverloadNarrow` versions for any multi-return
     /// siblings of `x` so that return-only overloads can be filtered by the class match.
+    /// When `EXPR` resolves to a non-class but statically non-nil type, strip nil from
+    /// `x` instead (a positive `x == EXPR` proves `x` is non-nil in the branch).
     fn resolve_deferred_class_eq_narrowings(&mut self, pending: &mut Vec<(SymbolIndex, usize)>) {
         if self.deferred_class_eq_narrowings.is_empty() {
             return;
@@ -1326,8 +1328,29 @@ impl<'a> Analysis<'a> {
                 remaining.push((sym_idx, expr_id, scope_idx));
                 continue;
             };
-            // Only narrow if the resolved type is (or contains) a class table.
-            let Some((class_idx, class_name)) = self.first_class_table(&resolved) else { continue };
+            // If the resolved type is (or contains) a class table, narrow `x` to
+            // that class (below). Otherwise, if `EXPR` is statically non-nil, the
+            // positive equality `x == EXPR` reaching this branch proves `x` is
+            // non-nil here — strip nil from `x`. `Any`/type-variable RHS aren't
+            // known non-nil, so they don't qualify. The `narrowed`-set check keeps
+            // this idempotent across fixpoint iterations.
+            let Some((class_idx, class_name)) = self.first_class_table(&resolved) else {
+                let already = self.narrowing.narrowed.get(&scope_idx)
+                    .is_some_and(|s| s.contains(&super::NarrowTarget::Symbol(sym_idx)));
+                if !already
+                    && !resolved.contains_nil()
+                    && !matches!(resolved, ValueType::Any)
+                    && !resolved.contains_type_variable()
+                {
+                    self.narrowing.narrowed.entry(scope_idx).or_default()
+                        .insert(super::NarrowTarget::Symbol(sym_idx));
+                    if let Some(new_ver) = self.ir.push_strip_nil_version(sym_idx, scope_idx) {
+                        self.rewrite_sym_refs_in_subtree(sym_idx, scope_idx, new_ver);
+                        pending.push((sym_idx, new_ver));
+                    }
+                }
+                continue;
+            };
             // Avoid re-applying the same narrowing repeatedly across fixpoint iterations.
             if self.narrowing.class_narrowed_symbols.get(&scope_idx)
                 .and_then(|m| m.get(&sym_idx))
