@@ -182,25 +182,34 @@ fn detect_block_opener(line: &str) -> Option<BlockClose> {
 }
 
 /// Returns true if the opened block is already closed by a matching `end`/`until`
-/// somewhere in `lines` starting at `after_idx`.
-fn is_block_already_closed(lines: &[&str], after_idx: usize) -> bool {
+/// somewhere in `lines` starting at `after_idx`. Uses the opener's indentation
+/// (`opener_indent_len` in bytes) to skip closers and openers that belong to
+/// outer blocks: only lines indented at least as much as the opener are counted.
+fn is_block_already_closed(lines: &[&str], after_idx: usize, opener_indent_len: usize) -> bool {
     let mut depth: i32 = 1;
     for line in lines.iter().skip(after_idx) {
-        let stripped = strip_line_comment(line.trim_start()).trim_end();
+        let trimmed = line.trim_start();
+        let indent_len = line.len() - trimmed.len();
+        let stripped = strip_line_comment(trimmed).trim_end();
         if stripped.is_empty() {
             continue;
         }
         // Closers: `end` or `until` at the start of a (trimmed) line.
-        let is_closer = starts_with_end(stripped) || starts_with_until(stripped);
-        if is_closer {
-            depth -= 1;
-            if depth <= 0 {
-                return true;
+        if starts_with_end(stripped) || starts_with_until(stripped) {
+            if indent_len >= opener_indent_len {
+                depth -= 1;
+                if depth <= 0 {
+                    return true;
+                }
             }
+            continue;
         }
-        // Openers (same rules as detect_block_opener, minus the elseif/else skip
-        // because those are same-depth continuations and don't affect the count)
-        if !stripped.starts_with("elseif ") && !stripped.starts_with("elseif\t") && stripped != "else" {
+        // Openers at the same or deeper indent level.
+        if indent_len >= opener_indent_len
+            && !stripped.starts_with("elseif ")
+            && !stripped.starts_with("elseif\t")
+            && stripped != "else"
+        {
             if ends_with_end(stripped) {
                 // one-liner block — net zero, don't adjust depth
             } else if ends_with_keyword(stripped, "then")
@@ -235,41 +244,58 @@ pub(crate) fn on_type_formatting(
 
     let close = detect_block_opener(prev_line)?;
 
-    let cursor_line_idx = position.line as usize;
-    if is_block_already_closed(&lines, cursor_line_idx) {
-        return None;
-    }
-
-    // Indentation of the opener line determines the `end` indentation.
+    // Indentation of the opener line determines both the `end` indentation
+    // and which closers below can match this block (vs. outer blocks).
     let opener_indent: String = prev_line
         .chars()
         .take_while(|c| *c == ' ' || *c == '\t')
         .collect();
+
+    let cursor_line_idx = position.line as usize;
+    if is_block_already_closed(&lines, cursor_line_idx, opener_indent.len()) {
+        return None;
+    }
 
     let close_kw = match close {
         BlockClose::End => "end",
         BlockClose::Until => "until",
     };
 
-    // Insert `\n<indent><close>` at the end of the cursor's current line.
-    let cursor_line = lines.get(cursor_line_idx).unwrap_or(&"");
-    let end_col = if utf8 {
-        cursor_line.len() as u32
+    // Insert the closing keyword on the line AFTER the cursor so VS Code
+    // doesn't push the cursor past the inserted text.
+    let next_line_idx = cursor_line_idx + 1;
+    if next_line_idx < lines.len() {
+        let insert_pos = lsp_types::Position {
+            line: next_line_idx as u32,
+            character: 0,
+        };
+        Some(vec![lsp_types::TextEdit {
+            range: lsp_types::Range {
+                start: insert_pos,
+                end: insert_pos,
+            },
+            new_text: format!("{}{}\n", opener_indent, close_kw),
+        }])
     } else {
-        cursor_line.encode_utf16().count() as u32
-    };
-    let cursor_line_end = lsp_types::Position {
-        line: position.line,
-        character: end_col,
-    };
-
-    Some(vec![lsp_types::TextEdit {
-        range: lsp_types::Range {
-            start: cursor_line_end,
-            end: cursor_line_end,
-        },
-        new_text: format!("\n{}{}", opener_indent, close_kw),
-    }])
+        // Cursor is on the last line — fall back to appending after it.
+        let cursor_line = lines.get(cursor_line_idx).unwrap_or(&"");
+        let end_col = if utf8 {
+            cursor_line.len() as u32
+        } else {
+            cursor_line.encode_utf16().count() as u32
+        };
+        let cursor_line_end = lsp_types::Position {
+            line: position.line,
+            character: end_col,
+        };
+        Some(vec![lsp_types::TextEdit {
+            range: lsp_types::Range {
+                start: cursor_line_end,
+                end: cursor_line_end,
+            },
+            new_text: format!("\n{}{}", opener_indent, close_kw),
+        }])
+    }
 }
 
 #[cfg(test)]
@@ -485,7 +511,7 @@ mod tests {
     #[test]
     fn closed_simple() {
         let lines = vec!["if x then", "    y()", "end"];
-        assert!(is_block_already_closed(&lines, 1));
+        assert!(is_block_already_closed(&lines, 1, 0));
     }
 
     #[test]
@@ -497,7 +523,7 @@ mod tests {
             "    end",
             "end",
         ];
-        assert!(is_block_already_closed(&lines, 1));
+        assert!(is_block_already_closed(&lines, 1, 0));
     }
 
     #[test]
@@ -509,9 +535,7 @@ mod tests {
             "    end)",
             "end",
         ];
-        // From line 1 (just after `if x then`), depth=1.
-        // function() → depth 2, end) → depth 1, end → depth 0 → closed.
-        assert!(is_block_already_closed(&lines, 1));
+        assert!(is_block_already_closed(&lines, 1, 0));
     }
 
     #[test]
@@ -525,13 +549,38 @@ mod tests {
             "    }",
             "end",
         ];
-        assert!(is_block_already_closed(&lines, 1));
+        assert!(is_block_already_closed(&lines, 1, 0));
     }
 
     #[test]
     fn not_closed() {
         let lines = vec!["if x then", "    y()"];
-        assert!(!is_block_already_closed(&lines, 1));
+        assert!(!is_block_already_closed(&lines, 1, 0));
+    }
+
+    #[test]
+    fn not_closed_outer_end_not_stolen() {
+        // The `end` at indent 0 belongs to `function`, not `if` (indent 4).
+        let lines = vec![
+            "function foo()",
+            "    if x then",
+            "",
+            "    return self",
+            "end",
+        ];
+        assert!(!is_block_already_closed(&lines, 2, 4));
+    }
+
+    #[test]
+    fn inner_closed_outer_unclosed() {
+        // `function` is unclosed, but `if` has its own `end` at matching indent.
+        let lines = vec![
+            "function foo()",
+            "    if x then",
+            "",
+            "    end",
+        ];
+        assert!(is_block_already_closed(&lines, 2, 4));
     }
 
     // ── on_type_formatting (integration) ────────────────────────────────
@@ -632,5 +681,47 @@ mod tests {
         assert_eq!(result_utf8[0].range.start.character, 8);
         // UTF-16 code unit count of "    🎮" = 4 + 2 = 6
         assert_eq!(result_utf16[0].range.start.character, 6);
+    }
+
+    #[test]
+    fn inserts_end_nested_in_function() {
+        // The outer `end` closes `function`, not the new `if` block.
+        // Edit should insert before the next line so the cursor stays put.
+        let text = "function foo()\n    if isSold then\n\n    return self\nend\n";
+        let pos = Position { line: 2, character: 0 };
+        let result = on_type_formatting(text, pos, true);
+        assert!(result.is_some());
+        let edit = &result.unwrap()[0];
+        assert_eq!(edit.new_text, "    end\n");
+        assert_eq!(edit.range.start, Position { line: 3, character: 0 });
+    }
+
+    #[test]
+    fn inserts_end_mid_file_cursor_stays() {
+        // When there are lines after the cursor, the edit should target the
+        // next line so VS Code doesn't push the cursor past `end`.
+        let text = "if x then\n\nfoo()\n";
+        let pos = Position { line: 1, character: 0 };
+        let result = on_type_formatting(text, pos, true).unwrap();
+        assert_eq!(result[0].new_text, "end\n");
+        assert_eq!(result[0].range.start, Position { line: 2, character: 0 });
+    }
+
+    #[test]
+    fn no_double_insert_nested_already_closed() {
+        // The `if` already has its own `end` — don't insert another.
+        let text = "function foo()\n    if isSold then\n\n    end\nend\n";
+        let pos = Position { line: 2, character: 0 };
+        let result = on_type_formatting(text, pos, true);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn no_insert_inner_closed_outer_unclosed() {
+        // `function` has no `end`, but `if` does — don't insert a spurious `end`.
+        let text = "function foo()\n    if x then\n\n    end\n";
+        let pos = Position { line: 2, character: 0 };
+        let result = on_type_formatting(text, pos, true);
+        assert!(result.is_none());
     }
 }

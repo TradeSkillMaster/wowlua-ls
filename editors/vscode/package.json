@@ -81,6 +81,7 @@
     ],
     "configurationDefaults": {
       "[lua]": {
+        "editor.formatOnType": true,
         "editor.stickyScroll.defaultModel": "foldingProviderModel",
         "editor.wordBasedSuggestions": "off"
       }
