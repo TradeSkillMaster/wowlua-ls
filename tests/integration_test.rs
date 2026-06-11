@@ -961,6 +961,15 @@ fn nil_table_key() {
 }
 
 #[test]
+fn fun_param_bivariance() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/diagnostics/fun_param_bivariance.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn generics() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/generics.lua",

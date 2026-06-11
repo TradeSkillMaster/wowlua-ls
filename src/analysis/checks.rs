@@ -234,7 +234,9 @@ impl AnalysisResult {
                         .unwrap_or(ValueType::Any)
                 }
             };
+            // Bivariant: accept both directions (matches TypeScript's approach)
             if !actual_ty.is_assignable_to(&expected_ty)
+                && !expected_ty.is_assignable_to(&actual_ty)
                 && !self.is_type_subclass_of(&actual_ty, &expected_ty)
                 && !self.is_type_subclass_of(&expected_ty, &actual_ty)
                 && !self.is_table_subtype(&actual_ty, &expected_ty)
