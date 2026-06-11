@@ -62,6 +62,7 @@ pub(super) fn compute_ws_diagnostics(
     plugin_codes: &[String],
     affected: Option<&HashSet<String>>,
     prior: Option<&[(String, Vec<lsp_types::Diagnostic>)]>,
+    should_cancel: &(dyn Fn() -> bool + Sync),
 ) -> (Vec<(String, Vec<lsp_types::Diagnostic>)>, CrossfileDiagnostics) {
     use crate::diagnostics::unused_function::{self, FileReferenceData};
     use rayon::prelude::*;
@@ -80,6 +81,17 @@ pub(super) fn compute_ws_diagnostics(
     let per_file: Vec<PerFileEntry> = paths
         .par_iter()
         .filter_map(|path| {
+            // Abort early if a newer rebuild has superseded this warm: the result
+            // would be discarded anyway, and continuing would needlessly saturate
+            // the CPU and starve the main loop. Checked per-file so an in-flight
+            // warm drains within roughly one file's analysis time per thread.
+            // A single pathologically large file could still burn CPU past this
+            // check, but threading cancellation into analyze_lua_parsed would
+            // complicate the entire analysis pipeline for a rare edge case —
+            // the settle delay handles the common burst scenario.
+            if should_cancel() {
+                return None;
+            }
             let text = std::fs::read_to_string(path).ok()?;
             if crate::has_shebang(&text) {
                 return None;
@@ -111,8 +123,9 @@ pub(super) fn compute_ws_diagnostics(
     // Phase 2: cross-file unused function check.
     // Only runs on FULL rebuilds — during incremental rebuilds, skipped files
     // have no ref_data, so the reference set is incomplete and would produce
-    // false positive "unused" diagnostics.
-    let cross_file_diags: HashMap<PathBuf, Vec<lsp_types::Diagnostic>> = if !is_incremental {
+    // false positive "unused" diagnostics. Skipped entirely if the warm was
+    // superseded mid-flight (Phase 1 returned partial data).
+    let cross_file_diags: HashMap<PathBuf, Vec<lsp_types::Diagnostic>> = if !is_incremental && !should_cancel() {
         let file_refs: HashMap<PathBuf, FileReferenceData> = per_file
             .iter()
             .filter_map(|(_, _, ref_opt)| ref_opt.as_ref())
@@ -233,6 +246,40 @@ pub(super) fn spawn_warm(
         }
         let _guard = WakeGuard(Some(wake_tx));
 
+        // Cancellation: the warm targets `inputs.generation`; if `live_generation`
+        // has since advanced (a newer rebuild), abort early rather than burning
+        // CPU on a result the main loop will discard.
+        let target_gen = inputs.generation;
+        let live_gen = Arc::clone(&inputs.live_generation);
+        let should_cancel = move || {
+            live_gen.load(Ordering::Relaxed) != target_gen
+        };
+
+        // Settle delay: a warm spawned mid-edit-burst would saturate `cpus-1`
+        // cores and starve the main loop's *synchronous* Phase 4 work (the
+        // ~250ms `build_on_stubs` rebuild balloons to ~800ms under contention).
+        // Each self-field/defclass edit forces a fresh rebuild + Full warm, so
+        // during active typing these stack up. Sleeping first — without touching
+        // the CPU — lets the next edit's rebuild advance `live_generation` and
+        // cancel this warm before it does any work. Only once editing pauses for
+        // `WARM_SETTLE_MS` does a warm survive the delay and run to completion.
+        // Closed-file (`workspace/diagnostic`) freshness is delayed by at most
+        // this interval; the open file is served live from Phase 4 regardless.
+        // Skipped for the initial startup warm where there's no edit burst to
+        // debounce — diagnostics should appear as soon as possible.
+        if !inputs.is_initial {
+            const WARM_SETTLE_MS: u64 = 1000;
+            std::thread::sleep(std::time::Duration::from_millis(WARM_SETTLE_MS));
+            if should_cancel() {
+                let _ = warm_tx.send(WarmResult {
+                    generation: target_gen,
+                    diagnostics: Vec::new(),
+                    crossfile_diagnostics: CrossfileDiagnostics::new(),
+                });
+                return;
+            }
+        }
+
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let compute = || compute_ws_diagnostics(
                 &inputs.paths,
@@ -241,6 +288,7 @@ pub(super) fn spawn_warm(
                 &inputs.plugin_codes,
                 inputs.affected.as_ref(),
                 inputs.prior.as_deref(),
+                &should_cancel,
             );
             // Cap parallelism so at least one core stays free for the single-threaded
             // LSP main loop. `compute_ws_diagnostics` fans out over every workspace

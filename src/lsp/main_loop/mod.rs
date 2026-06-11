@@ -3,6 +3,7 @@ pub(super) use std::collections::{BTreeMap, HashMap, HashSet};
 pub(super) use std::error::Error;
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::str::FromStr;
+pub(super) use std::sync::atomic::{AtomicU64, Ordering};
 pub(super) use std::sync::{Arc, OnceLock};
 pub(super) use std::time::{Duration, Instant};
 pub(super) use lsp_types::{
@@ -214,6 +215,13 @@ struct WorkspaceState {
     /// don't want to block the main loop with a synchronous warm. The main
     /// loop checks this flag and spawns a background warm instead.
     pending_lazy_warm: bool,
+    /// Shared mirror of `ws_generation` readable by in-flight background warm
+    /// threads. Bumped (with `ws_generation`) on every rebuild so a warm whose
+    /// target generation no longer matches can abort early instead of running a
+    /// full ~24s re-analysis to completion only to have its result discarded.
+    /// This keeps rapid edits (each forcing a rebuild) from stacking up
+    /// CPU-saturating warms that starve the single-threaded main loop.
+    live_generation: Arc<AtomicU64>,
 }
 
 /// All inputs a workspace-diagnostic warm needs, snapshotted as owned / `Arc`
@@ -228,6 +236,13 @@ struct WarmInputs {
     plugin_codes: Vec<String>,
     affected: Option<HashSet<String>>,
     prior: Option<Vec<(String, Vec<lsp_types::Diagnostic>)>>,
+    /// Shared live generation (see `WorkspaceState::live_generation`). The warm
+    /// aborts early once this no longer equals `generation` — a newer rebuild
+    /// has superseded it, so its result would be discarded anyway.
+    live_generation: Arc<AtomicU64>,
+    /// True for the first warm spawned at startup. Skips the settle delay since
+    /// there's no edit burst to debounce.
+    is_initial: bool,
 }
 
 /// Output of a background warm: the computed closed-file diagnostics tagged with
@@ -260,7 +275,7 @@ struct BackgroundChannels {
     wake_tx: crossbeam_channel::Sender<()>,
     /// Monotonic counter for stamping each stub didOpen so stale results from
     /// a close+reopen cycle can be rejected by the drain loop.
-    stub_open_counter: std::sync::atomic::AtomicU64,
+    stub_open_counter: AtomicU64,
 }
 
 #[derive(Default)]
@@ -567,6 +582,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         cached_crossfile_diagnostics: HashMap::new(),
         warm_in_flight: false,
         pending_lazy_warm: false,
+        live_generation: Arc::new(AtomicU64::new(0)),
     };
     let plugin_paths = ws.configs.all_plugins();
     if !plugin_paths.is_empty() {
@@ -677,7 +693,7 @@ fn main_loop(
     let bg = BackgroundChannels {
         stub_tx,
         wake_tx: wake_tx.clone(),
-        stub_open_counter: std::sync::atomic::AtomicU64::new(0),
+        stub_open_counter: AtomicU64::new(0),
     };
 
     // Kick off the initial workspace-diagnostic warm on a background thread so
@@ -688,7 +704,8 @@ fn main_loop(
     // drain installs the result and sends a diagnostic refresh so the editor
     // re-pulls the now-complete workspace diagnostics.
     if client.diagnostic_refresh && !ws.ws_file_globals.is_empty() {
-        let inputs = ws.warm_inputs(None);
+        let mut inputs = ws.warm_inputs(None);
+        inputs.is_initial = true;
         ws.warm_in_flight = true;
         spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
     }
@@ -2243,11 +2260,7 @@ mod tests {
         assert!(inputs_full.prior.is_none());
     }
 
-    #[test]
-    fn crossfile_diagnostics_separated_from_per_file() {
-        // compute_ws_diagnostics must return cross-file unused-function items
-        // in the separate CrossfileDiagnostics map, NOT mixed into the per-file
-        // list. This prevents duplication when open-file handlers merge them.
+    fn setup_unused_function_fixture() -> (Vec<PathBuf>, Arc<PreResolvedGlobals>, Arc<crate::config::ProjectConfigs>) {
         let scan_dir = std::path::PathBuf::from(
             std::env::current_dir().unwrap().join("tests/unused-function"),
         );
@@ -2262,11 +2275,19 @@ mod tests {
         let implicit_protected_prefix = configs.implicit_protected_prefix_for(&scan_dir);
         let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
         pg.merge_events(&se);
-        let pre_globals = Arc::new(pg);
+        let configs = Arc::new(configs);
+        let paths = collect_lua_paths(&scan_dir, &mut crate::config::ProjectConfigs::default());
+        (paths, Arc::new(pg), configs)
+    }
 
-        let paths = collect_lua_paths(&scan_dir, &mut configs);
+    #[test]
+    fn crossfile_diagnostics_separated_from_per_file() {
+        // compute_ws_diagnostics must return cross-file unused-function items
+        // in the separate CrossfileDiagnostics map, NOT mixed into the per-file
+        // list. This prevents duplication when open-file handlers merge them.
+        let (paths, pre_globals, configs) = setup_unused_function_fixture();
         let (combined, crossfile) = compute_ws_diagnostics(
-            &paths, &pre_globals, &configs, &[], None, None,
+            &paths, &pre_globals, &configs, &[], None, None, &|| false,
         );
 
         // Cross-file map should have entries (unused global functions exist).
@@ -2307,6 +2328,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn compute_ws_diagnostics_aborts_when_cancelled() {
+        // A warm superseded by a newer rebuild must abort without doing per-file
+        // work — this is what keeps rapid edits from stacking up CPU-saturating
+        // warms that starve the main loop. With `should_cancel` always true, the
+        // Phase 1 fan-out skips every file, so both outputs are empty.
+        let (paths, pre_globals, configs) = setup_unused_function_fixture();
+        assert!(!paths.is_empty(), "fixture should have .lua files to skip");
+
+        // Sanity: without cancellation this workspace produces diagnostics.
+        let (live, _) = compute_ws_diagnostics(
+            &paths, &pre_globals, &configs, &[], None, None, &|| false,
+        );
+        assert!(!live.is_empty(), "uncancelled warm should produce diagnostics");
+
+        // Cancelled: no per-file work, no cross-file work, empty result.
+        let (combined, crossfile) = compute_ws_diagnostics(
+            &paths, &pre_globals, &configs, &[], None, None, &|| true,
+        );
+        assert!(combined.is_empty(), "cancelled warm must produce no per-file diagnostics");
+        assert!(crossfile.is_empty(), "cancelled warm must skip the cross-file phase");
+    }
+
+    #[test]
+    fn rebuild_advances_live_generation_for_warm_cancellation() {
+        // The background warm reads `live_generation` to detect supersession.
+        // `rebuild()` must publish the bumped generation there (mirroring
+        // `ws_generation`), otherwise an in-flight warm never sees that it has
+        // been superseded and runs to completion under CPU contention.
+        let mut ws = WorkspaceState::for_test(None);
+        let before = ws.live_generation.load(Ordering::Relaxed);
+        assert_eq!(before, ws.ws_generation, "live_generation starts mirrored");
+        ws.rebuild();
+        assert_eq!(
+            ws.live_generation.load(Ordering::Relaxed),
+            ws.ws_generation,
+            "rebuild must publish the new generation to live_generation"
+        );
+        assert!(
+            ws.live_generation.load(Ordering::Relaxed) > before,
+            "rebuild must advance the shared live generation"
+        );
+        // The snapshot a warm captures matches the generation it targets.
+        let inputs = ws.warm_inputs(None);
+        assert_eq!(inputs.generation, ws.ws_generation);
+        assert_eq!(inputs.live_generation.load(Ordering::Relaxed), ws.ws_generation);
     }
 
     #[test]

@@ -264,6 +264,10 @@ impl WorkspaceState {
         pg.set_project_configs(Arc::clone(&self.configs));
         self.pre_globals = Arc::new(pg);
         self.ws_generation += 1;
+        // Publish the new generation so any in-flight background warm (computed
+        // against the prior generation) sees the mismatch and aborts early
+        // instead of running to completion and being discarded.
+        self.live_generation.store(self.ws_generation, Ordering::Relaxed);
         // Intentionally retain `cached_ws_diagnostics` (now stale: its stored
         // generation no longer matches `ws_generation`). The generation mismatch
         // already prevents it from being served as fresh, but keeping the entries
@@ -301,6 +305,8 @@ impl WorkspaceState {
             plugin_codes: self.plugin_codes(),
             affected,
             prior: prior_entries,
+            live_generation: Arc::clone(&self.live_generation),
+            is_initial: false,
         }
     }
 
@@ -369,6 +375,7 @@ impl WorkspaceState {
             cached_crossfile_diagnostics: HashMap::new(),
             warm_in_flight: false,
             pending_lazy_warm: false,
+            live_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 }

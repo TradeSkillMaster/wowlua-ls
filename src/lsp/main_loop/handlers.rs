@@ -1045,7 +1045,7 @@ pub(super) fn handle_notification(
                     // the loop and patched into the document.
                     if is_stub_path(&uri) || text_has_meta(&text) {
                         let uri_key = uri.to_string();
-                        let seq = bg.stub_open_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        let seq = bg.stub_open_counter.fetch_add(1, Ordering::Relaxed) + 1;
                         documents.insert(uri_key.clone(), Document { text: text.clone(), pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: seq });
                         let pre_globals = Arc::clone(&ws.pre_globals);
                         let configs = Arc::clone(&ws.configs);
