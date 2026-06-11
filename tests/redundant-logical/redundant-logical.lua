@@ -756,3 +756,77 @@ local function _checkNoOverride(obj)
     _use(v)
 end
 _use(_checkNoOverride)
+
+-- ── No diagnostic: loop-carried variable reassigned inside loop body ────────
+
+-- While loop with a flag set to false inside the body (Scheduler pattern).
+-- The loop condition re-evaluates after the body mutates the flag.
+local function _whileLoopFlag(queue)
+    local ranThread = true
+    while ranThread and #queue > 0 do
+        ranThread = false
+        for i = #queue, 1, -1 do
+            if queue[i] > 0 then
+                ranThread = true
+            end
+        end
+    end
+end
+_use(_whileLoopFlag)
+
+-- While loop where the variable is reassigned to a nilable return value
+-- (FrameStack pattern: testFrame = testFrame:GetParent() returns Frame?).
+---@class _LoopFrame
+---@field GetParent fun(self: _LoopFrame): _LoopFrame?
+---@param parent _LoopFrame
+local function _whileNilableReassign(parent)
+    local testFrame = parent
+    local found = false
+    while testFrame and not found do
+        found = true
+        testFrame = testFrame:GetParent()
+    end
+    return found
+end
+_use(_whileNilableReassign)
+
+-- For loop with an accumulator using `x = x and expr or fallback`
+-- (AuctioningBagScrollTable pattern).
+local function _forLoopAccumAndOr(items)
+    local allGood = true
+    for _, v in ipairs(items) do
+        local ok = v > 0
+        allGood = allGood and ok or false
+    end
+    return allGood
+end
+_use(_forLoopAccumAndOr)
+
+-- Repeat...until with a loop-carried variable in the `until` condition.
+-- The `until` condition is lowered in the parent scope, so this exercises
+-- the `condition_sites` / `loop_scope` fallback path.
+local function _repeatUntilLoopCarried(items)
+    local done = false
+    repeat
+        for _, v in ipairs(items) do
+            if v < 0 then done = true end
+        end
+    until done or #items == 0
+    return done
+end
+_use(_repeatUntilLoopCarried)
+
+-- ── Still diagnostic: loop-carried variable that stays truthy ───────────────
+
+-- A variable initialized to a truthy value and reassigned to another truthy
+-- value inside the loop — the `and` IS genuinely redundant.
+local function _loopAlwaysTruthy(items)
+    local label = "start"
+    for _, v in ipairs(items) do
+        label = "item_" .. v
+        _use(label and true)
+        --         ^ diag: redundant-and
+    end
+    return label
+end
+_use(_loopAlwaysTruthy)

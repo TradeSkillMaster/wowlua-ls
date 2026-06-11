@@ -1359,6 +1359,12 @@ impl Ir {
         ancestor_scopes(&self.scopes, candidate).skip(1).any(|s| s == outer)
     }
 
+    /// True iff `scope` equals `container` or is a descendant of it.
+    /// Reflexive variant of `is_descendant_scope`.
+    pub(crate) fn is_scope_eq_or_descendant(&self, scope: ScopeIndex, container: ScopeIndex) -> bool {
+        scope == container || self.is_descendant_scope(scope, container)
+    }
+
     /// Find the latest version of a symbol that was created in `scope_idx` or an ancestor scope.
     /// Unlike `version_for_scope`, this does NOT consider versions from descendant (child) scopes.
     /// Used by BranchMerge to find the pre-branch version without picking up child scope assignments.

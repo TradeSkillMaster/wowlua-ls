@@ -1,6 +1,6 @@
-use crate::analysis::AnalysisResult;
+use crate::analysis::{AnalysisResult, ancestor_scopes};
 use crate::ast::Operator;
-use crate::types::{Expr, ExprId, Symbol, SymbolIndex};
+use crate::types::{Expr, ExprId, ScopeIndex, Symbol, SymbolIndex};
 use super::{DiagnosticPass, WowDiagnostic, effective_type, is_type_permissive, is_expr_truthiness_uncertain, unwrap_to_inner_expr};
 
 pub(crate) struct RedundantLogical;
@@ -86,6 +86,73 @@ fn lhs_symbol_has_self_and_reassignment(analysis: &AnalysisResult, lhs: ExprId) 
     })
 }
 
+/// Returns true when the LHS symbol is defined outside a loop but has a
+/// genuine (non-narrowing-only) reassignment created inside that loop body.
+/// The binary-op site must also be inside the loop body or in the loop's
+/// condition (while/repeat conditions are lowered in the parent scope but
+/// logically belong to the loop). This catches loop-carried variables like
+/// `local ranThread = true; while ranThread and ... do ranThread = false ...`
+/// where the back-edge makes the truthiness uncertain.
+fn lhs_symbol_has_loop_body_reassignment(analysis: &AnalysisResult, lhs: ExprId, op_start: u32) -> bool {
+    let Some((sym_idx, _, sym)) = lhs_symbol_info(analysis, lhs) else { return false };
+    let ir = &analysis.ir;
+
+    let site_scope = match ir.scope_at_offset(op_start) {
+        Some(s) => s,
+        None => return false,
+    };
+
+    // Walk ancestor scopes of the binary-op site to find enclosing loops.
+    // Also check condition_sites: `while` and `repeat` conditions are lowered
+    // in the parent scope, so `scope_at_offset` won't find the loop body.
+    let enclosing_loops: Vec<ScopeIndex> = {
+        let mut loops: Vec<ScopeIndex> = ancestor_scopes(&ir.scopes, site_scope)
+            .filter(|&s| ir.scopes[s.val()].is_loop)
+            .collect();
+        for cs in &ir.condition_sites {
+            if let Some(ls) = cs.loop_scope
+                && op_start >= cs.start && op_start < cs.end
+                && !loops.contains(&ls)
+            {
+                loops.push(ls);
+            }
+        }
+        loops
+    };
+
+    for loop_scope in enclosing_loops {
+        if ir.is_scope_eq_or_descendant( sym.scope_idx, loop_scope) {
+            continue;
+        }
+        let has_body_reassignment = sym.versions.iter().enumerate().any(|(vi, ver)| {
+            ir.is_scope_eq_or_descendant( ver.created_in_scope, loop_scope)
+                && !ir.is_narrowing_only_version(sym_idx, vi)
+        });
+        if !has_body_reassignment {
+            continue;
+        }
+        // If all versions agree on truthiness, the loop reassignment can't
+        // change the verdict (e.g. `local tbl = {}; for ... do tbl = tbl or {} end`
+        // — tbl is always a table regardless of iteration).
+        let mut all_truthy = true;
+        let mut all_falsy = true;
+        for v in &sym.versions {
+            match &v.resolved_type {
+                Some(t) => {
+                    if !t.is_guaranteed_truthy() { all_truthy = false; }
+                    if !t.is_guaranteed_falsy() { all_falsy = false; }
+                }
+                None => { all_truthy = false; all_falsy = false; }
+            }
+        }
+        if all_truthy || all_falsy {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
 impl DiagnosticPass for RedundantLogical {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for site in &analysis.ir.binary_op_sites {
@@ -140,6 +207,13 @@ impl DiagnosticPass for RedundantLogical {
             //   `local ok = true; for ... do if ok and c then ok = false end end`
             if matches!(op, Operator::And) && lhs_type.is_guaranteed_truthy()
                 && lhs_symbol_has_earlier_falsy_reassignment(analysis, lhs, site.op_start) { continue; }
+
+            // Skip when the LHS symbol is defined outside a loop but genuinely
+            // reassigned inside it. The loop back-edge means the variable's type
+            // at the condition (or a body re-read) could differ from the pre-loop
+            // value — the static type from the first iteration doesn't hold for
+            // subsequent iterations.
+            if lhs_symbol_has_loop_body_reassignment(analysis, lhs, site.op_start) { continue; }
 
             match op {
                 Operator::Or if lhs_type.is_guaranteed_truthy() => {

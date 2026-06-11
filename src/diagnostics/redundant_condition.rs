@@ -494,7 +494,7 @@ fn has_uncertain_reassignment(
     if enclosing_loop.is_some_and(|loop_scope| {
         local_syms.iter().any(|(_, sym)| {
             sym.versions.iter().any(|ver| {
-                is_scope_inside(ir, ver.created_in_scope, loop_scope)
+                ir.is_scope_eq_or_descendant( ver.created_in_scope, loop_scope)
             })
         })
     }) {
@@ -509,7 +509,7 @@ fn has_uncertain_reassignment(
             // Find the innermost loop enclosing this version's creation scope.
             let Some(ver_loop) = find_enclosing_loop(ir, ver.created_in_scope) else { return false };
             // Only suppress when the symbol was defined outside that loop.
-            if is_scope_inside(ir, sym.scope_idx, ver_loop) { return false; }
+            if ir.is_scope_eq_or_descendant( sym.scope_idx, ver_loop) { return false; }
             // Only suppress when the loop precedes the condition — a loop
             // appearing after the condition cannot affect the condition's value.
             let Some(&(_, loop_end, _)) = ir.block_scopes.iter().find(|&&(_, _, s)| s == ver_loop) else { return false };
@@ -548,9 +548,9 @@ fn has_uncertain_reassignment(
             let has_conditional_version = sym.versions.iter().any(|ver| {
                 // Skip versions in the same scope or an ancestor scope of the
                 // condition — those are unconditionally visible.
-                if is_scope_inside(ir, cs, ver.created_in_scope) { return false; }
+                if ir.is_scope_eq_or_descendant( cs, ver.created_in_scope) { return false; }
                 // The symbol must be defined outside the version's scope.
-                if is_scope_inside(ir, sym.scope_idx, ver.created_in_scope) { return false; }
+                if ir.is_scope_eq_or_descendant( sym.scope_idx, ver.created_in_scope) { return false; }
                 // Skip type-narrowing versions (CastRemove, TypeFilter, StripNil,
                 // StripFalsy, StripTruthy, OverloadNarrow) — these are created by
                 // the narrowing system, not actual value reassignments. An elseif
@@ -602,10 +602,6 @@ fn find_enclosing_loop(ir: &crate::analysis::Ir, scope: ScopeIndex) -> Option<Sc
     ancestor_scopes(&ir.scopes, scope).find(|&s| ir.scopes[s.val()].is_loop)
 }
 
-/// Returns true if `scope` is `container` or a descendant of `container`.
-fn is_scope_inside(ir: &crate::analysis::Ir, scope: ScopeIndex, container: ScopeIndex) -> bool {
-    ancestor_scopes(&ir.scopes, scope).any(|s| s == container)
-}
 
 /// One level of transitive expansion: check if the visible version's defining
 /// expression references symbols that have preceding loop versions.  This
@@ -631,7 +627,7 @@ fn sym_def_has_loop_reassigned_dep(
         let dep_sym = ir.sym(dep_sym_idx);
         dep_sym.versions.iter().any(|dep_ver| {
             let Some(ver_loop) = find_enclosing_loop(ir, dep_ver.created_in_scope) else { return false };
-            if is_scope_inside(ir, dep_sym.scope_idx, ver_loop) { return false; }
+            if ir.is_scope_eq_or_descendant( dep_sym.scope_idx, ver_loop) { return false; }
             let Some(&(_, loop_end, _)) = ir.block_scopes.iter().find(|&&(_, _, s)| s == ver_loop) else { return false };
             loop_end <= offset
         })

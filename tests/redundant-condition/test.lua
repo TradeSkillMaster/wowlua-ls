@@ -967,6 +967,48 @@ local function useProcess(tree)
 end
 _use(priv, useProcess)
 
+-- ── No diagnostic: loop-carried variable reassigned inside loop body ────────
+-- These document pre-existing correct behavior of `has_uncertain_reassignment`
+-- in the redundant-condition pass (not the redundant-and fix), serving as
+-- regression tests for that path.
+
+-- While loop condition referencing a variable set to false in the body.
+local function _whileLoopCondFlag(queue)
+    local active = true
+    while active do
+        active = false
+        for i = 1, #queue do
+            if queue[i] > 0 then
+                active = true
+            end
+        end
+    end
+end
+_use(_whileLoopCondFlag)
+
+-- While loop condition with `not x` where x is reassigned to a truthy value.
+local function _whileNotLoopCond(items)
+    local done = false
+    while not done do
+        done = true
+        for _, v in ipairs(items) do
+            if v < 0 then done = false end
+        end
+    end
+end
+_use(_whileNotLoopCond)
+
+-- Still diagnostic: variable never reassigned in the loop body — the
+-- condition IS genuinely always truthy.
+local function _whileConstTruthy()
+    local running = true
+    ---@diagnostic disable-next-line: empty-block
+    while running do
+    --    ^ diag: redundant-condition
+    end
+end
+_use(_whileConstTruthy)
+
 -- ── No diagnostic: lazy-init bare self-field (cross-file) ────────────────────
 -- Regression test for this pattern lives in
 -- tests/redundant-condition-crossfile/ which exercises the workspace-scan
