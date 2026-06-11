@@ -927,6 +927,46 @@ local function typeGuardConditionallyReassignedVariable(cond, getData)
 end
 _use(typeGuardConditionallyReassignedVariable)
 
+-- ── No diagnostic: recursive / mutually-recursive function return ───────────
+-- A function that returns boolean (true/false) via both direct returns and
+-- recursive or mutually-recursive tail calls should not trigger
+-- redundant-condition when its result is used in `if not func() then`.
+
+local priv = {}
+
+function priv.processNode(tree, node)
+    if not tree then return true end
+    for child in children(node) do
+        if not priv.processNode(tree, child) then
+            return false
+        end
+    end
+    return priv.processHelper(tree, node)
+end
+
+function priv.processHelper(tree, node)
+    if not node then return false end
+    return priv.processNode(tree, node)
+end
+
+-- Non-tail-position recursive call (result stored in local before return)
+function priv.processIndirect(tree, node)
+    if not tree then return true end
+    local result = priv.processIndirect(tree, node)
+    return result
+end
+
+local function useProcess(tree)
+    if not priv.processNode(tree, root()) then
+        return false
+    end
+    if not priv.processIndirect(tree, root()) then
+        return false
+    end
+    return true
+end
+_use(priv, useProcess)
+
 -- ── No diagnostic: lazy-init bare self-field (cross-file) ────────────────────
 -- Regression test for this pattern lives in
 -- tests/redundant-condition-crossfile/ which exercises the workspace-scan

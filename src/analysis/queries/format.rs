@@ -45,6 +45,50 @@ pub(crate) fn return_type_at_slot(ir: &Ir, rets: &[SymbolIndex], slot: usize) ->
     acc
 }
 
+/// Query-time variant of `return_type_at_slot` used by `resolve_expr_type_impl`.
+/// Unions all resolved FunctionRets at the given slot but does NOT add `Any`
+/// for unresolved entries. When there is at least one concrete (non-call,
+/// non-Any) return at this slot, `Any`-typed FunctionCall returns are
+/// skipped — they are artifacts of circular fixpoint resolution in
+/// recursive/mutually-recursive functions. When ALL returns are calls, none
+/// are skipped (the `Any` is legitimate, e.g. a wrapper function).
+///
+/// Not used by `dedup_return_types` (hover/signature formatting) because
+/// filtering `Any`-typed call returns there can incorrectly drop legitimate
+/// `Any` from non-circular calls (e.g. `return tremove(tbl)`).
+fn query_return_type_at_slot(ir: &Ir, rets: &[SymbolIndex], slot: usize) -> Option<ValueType> {
+    let slot_rets: Vec<_> = rets.iter().filter_map(|&sym_idx| {
+        let SymbolIdentifier::FunctionRet(_, idx) = &ir.sym(sym_idx).id else { return None };
+        if *idx != slot { return None; }
+        let ver = ir.sym(sym_idx).versions.first()?;
+        let is_call = ver.type_source
+            .is_some_and(|ts| matches!(ir.expr(ts), Expr::FunctionCall { .. }));
+        Some((sym_idx, is_call))
+    }).collect();
+
+    let has_concrete_non_call = slot_rets.iter().any(|&(sym_idx, is_call)| {
+        !is_call && ir.sym(sym_idx).versions.first()
+            .and_then(|v| v.resolved_type.as_ref())
+            .is_some_and(|vt| !matches!(vt, ValueType::Any))
+    });
+
+    let mut acc: Option<ValueType> = None;
+    for &(sym_idx, is_call) in &slot_rets {
+        if let Some(vt) = ir.sym(sym_idx).versions.first()
+            .and_then(|v| v.resolved_type.as_ref())
+        {
+            if has_concrete_non_call && is_call && matches!(vt, ValueType::Any) {
+                continue;
+            }
+            acc = Some(match acc.take() {
+                Some(prev) => ir.dedupe_union_tables(ValueType::make_union(vec![prev, vt.clone()])),
+                None => vt.clone(),
+            });
+        }
+    }
+    acc
+}
+
 /// Deduplicate `func.rets` by return position and union the resolved types.
 /// Multiple `return` statements in different scopes create separate symbols for
 /// the same position in `func.rets`. This function groups them by index and
@@ -256,9 +300,7 @@ pub(super) fn resolve_expr_type_impl(
                         }
                         return Some(ValueType::Table(None));
                     }
-            let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
-            let ret_sym_idx = ir.get_symbol(&ret_id, func_info.scope)?;
-            ir.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
+            query_return_type_at_slot(ir, &func_info.rets, ret_index)
         }
         Expr::BracketIndex { table, .. } => {
             let table = *table;
