@@ -1047,6 +1047,62 @@ do
     --    ^ hover: (local) _chk3: IfBlockMergeObj?
 end
 
+-- ── Loop-body reassignment reaches post-loop uses in sibling blocks ─────────
+-- Regression: a local reassigned inside a for-loop body must have its merged
+-- loop-body type reach post-loop uses nested inside a SIBLING control-flow
+-- block, not only direct post-loop uses. The merge version is created in the
+-- loop scope and forwarded to the parent scope, so sibling subtrees (which
+-- can't otherwise see the loop scope) resolve it instead of the stale pre-loop
+-- nil. Previously these resolved to bare nil.
+---@param flag boolean
+---@param numbers number[]
+local function loopMergeSiblingUse(flag, numbers)
+    -- Numeric for + simple if: the nil union survives into a sibling block.
+    local mergedObj = nil
+    for i = 1, 10 do
+        if i > 5 then
+            mergedObj = createObj()
+        end
+    end
+    if flag then
+        local _chk4 = mergedObj
+        --    ^ hover: (local) _chk4: IfBlockMergeObj?
+    end
+
+    -- for-in + nil-guard if/elseif chain (the multi-slot fill pattern): the
+    -- first-guarded slot is non-nil after the loop (the guard strips nil),
+    -- while a later-guarded slot stays optional.
+    local first, second = nil, nil
+    for _, v in ipairs(numbers) do
+        if not first then
+            first = v
+        elseif not second then
+            second = v
+        end
+    end
+    if flag then
+        local _chk5 = first
+        --    ^ hover: (local) _chk5: number
+        local _chk6 = second
+        --    ^ hover: (local) _chk6: number?
+    end
+
+    -- Nested for-loop: variable reassigned in an inner for-loop should be
+    -- visible in a sibling block after the OUTER for-loop.
+    local nested = nil
+    for i = 1, 3 do
+        for j = 1, 3 do
+            if not nested then
+                nested = createObj()
+            end
+        end
+    end
+    if flag then
+        local _chk7 = nested
+        --    ^ hover: (local) _chk7: IfBlockMergeObj
+    end
+end
+
 -- ── @correlated: type-mismatch suppression via sibling narrowing ─────────────
 
 ---@param str string

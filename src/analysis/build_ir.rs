@@ -439,36 +439,32 @@ impl<'a> Analysis<'a> {
                 // ancestors nor descendants.
                 if block_node.parent().is_some_and(|p| p.kind() == SyntaxKind::DoBlock)
                     && let Some(parent_scope) = self.ir.scopes[popped_scope.val()].parent {
-                        for sym_idx_raw in 0..self.ir.symbols.len() {
-                            // Skip symbols defined in the do-block — they're local
-                            // to it and unreachable from the parent scope.
-                            if self.ir.symbols[sym_idx_raw].scope_idx == popped_scope {
-                                continue;
-                            }
-                            let sym_idx = SymbolIndex(sym_idx_raw);
-                            // Find the latest version created in this do-block scope
-                            let mut do_ver = None;
-                            for (ver_idx, ver) in self.ir.symbols[sym_idx_raw].versions.iter().enumerate() {
-                                if ver.created_in_scope == popped_scope {
-                                    do_ver = Some(ver_idx);
-                                }
-                            }
-                            if let Some(ver_idx) = do_ver {
-                                // Create a forwarding version in the parent scope
-                                let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, ver_idx));
-                                let node = self.ir.symbols[sym_idx_raw].versions[ver_idx].def_node;
-                                let order = self.ir.next_order();
-                                self.ir.symbols[sym_idx_raw].versions.push(SymbolVersion {
-                                    def_node: node,
-                                    type_source: Some(sym_ref),
-                                    resolved_type: None,
-                                    type_args: Vec::new(),
-                                    created_in_scope: parent_scope,
-                                    creation_order: order,
-                                    original_type_source: None,
-                                });
-                            }
-                        }
+                        self.forward_versions_to_parent(popped_scope, parent_scope);
+                    }
+                // Forward loop-body reassignments to the parent scope on pop
+                // (numeric `for` and `for-in`). A symbol reassigned inside the
+                // loop — e.g. via an if-branch assignment — gets its merged
+                // version created in the loop scope. version_for_scope can reach
+                // that from the parent via descendant visibility, but NOT from a
+                // sibling control-flow block after the loop (a different subtree),
+                // so such uses would fall back to the stale pre-loop version.
+                // Forwarding the latest non-narrowing loop-scope version into the
+                // parent scope makes the post-loop type visible to sibling uses as
+                // well. We forward the in-body type as-is (not a fresh union with
+                // the pre-loop value): this matches what a direct post-loop use
+                // already resolves to, so a `if not x then x = v end` guard that
+                // strips nil keeps its narrowed type rather than re-acquiring nil.
+                // Known limitation: a for-loop body can execute zero times (e.g.
+                // `for i = 1, 0 do` or empty iterator), so the forwarded type is
+                // technically unsound for the empty-loop case — pre-loop nil would
+                // appear as non-nil. The while-loop handler (pending_while_narrowings)
+                // gets this right by creating a BranchMerge union with the pre-loop
+                // type, but we chose consistency with direct post-loop descendant
+                // visibility over correctness here.
+                if block_node.parent().is_some_and(|p|
+                    matches!(p.kind(), SyntaxKind::ForCountLoop | SyntaxKind::ForInLoop))
+                    && let Some(parent_scope) = self.ir.scopes[popped_scope.val()].parent {
+                        self.forward_versions_to_parent(popped_scope, parent_scope);
                     }
                 continue;
             }
@@ -2449,6 +2445,42 @@ impl<'a> Analysis<'a> {
         }
     }
 
+
+    /// Forward symbol versions from `popped_scope` to `parent_scope`.
+    /// For each symbol that (a) is not local to `popped_scope` and (b) has a
+    /// non-narrowing version created there, create a `SymbolRef` forwarding
+    /// version in `parent_scope` so sibling scope subtrees can see it.
+    fn forward_versions_to_parent(&mut self, popped_scope: ScopeIndex, parent_scope: ScopeIndex) {
+        for sym_idx_raw in 0..self.ir.symbols.len() {
+            if sym_idx_raw >= EXT_BASE { break; }
+            if self.ir.symbols[sym_idx_raw].scope_idx == popped_scope {
+                continue;
+            }
+            let sym_idx = SymbolIndex(sym_idx_raw);
+            let mut found_ver = None;
+            for (ver_idx, ver) in self.ir.symbols[sym_idx_raw].versions.iter().enumerate() {
+                if ver.created_in_scope == popped_scope
+                    && !self.ir.is_narrowing_only_version(sym_idx, ver_idx)
+                {
+                    found_ver = Some(ver_idx);
+                }
+            }
+            if let Some(ver_idx) = found_ver {
+                let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, ver_idx));
+                let node = self.ir.symbols[sym_idx_raw].versions[ver_idx].def_node;
+                let order = self.ir.next_order();
+                self.ir.symbols[sym_idx_raw].versions.push(SymbolVersion {
+                    def_node: node,
+                    type_source: Some(sym_ref),
+                    resolved_type: None,
+                    type_args: Vec::new(),
+                    created_in_scope: parent_scope,
+                    creation_order: order,
+                    original_type_source: None,
+                });
+            }
+        }
+    }
 
     /// Check if `candidate` is `root` or a descendant of `root`.
     /// (Static variant of `resolve.rs::is_scope_in_subtree` — needed here to
