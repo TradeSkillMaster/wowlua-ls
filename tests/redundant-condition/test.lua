@@ -1009,6 +1009,47 @@ local function _whileConstTruthy()
 end
 _use(_whileConstTruthy)
 
+-- ── Diagnostic: condition tests an unannotated void-function call ────────────
+-- A function with only bare `return` statements / fall-through returns nil on
+-- every path, so a condition that tests its result is genuinely always-falsy
+-- (the body is dead code — almost always a missing `return <value>`). This is a
+-- TRUE positive and MUST be flagged, exactly like the `return false` case below.
+
+local function _voidReturner(arg)
+    if not arg then return end
+    _use(arg)
+end
+
+-- Direct: `if voidCall() then` — the call is always nil → always falsy.
+local function _condVoidDirect()
+    if _voidReturner(1) then end
+    --  ^ diag: redundant-condition
+end
+_use(_condVoidDirect)
+
+-- Short-circuit: `if x and voidCall(x) then` — `x and nil` is nil for every x,
+-- so the whole condition is always falsy.
+---@param value table?
+local function _condVoidAnd(value)
+    if value and _voidReturner(value) then
+    --  ^ diag: redundant-condition
+        return
+    end
+    _use(value)
+end
+_use(_condVoidAnd)
+
+-- A function with an explicit value-returning path (even `return false`) is
+-- likewise always-falsy and flagged — the inferred type is reliable.
+local function _returnsFalseCond()
+    return false
+end
+local function _condReturnsFalse()
+    if _returnsFalseCond() then end
+    --  ^ diag: redundant-condition
+end
+_use(_condReturnsFalse)
+
 -- ── No diagnostic: lazy-init bare self-field (cross-file) ────────────────────
 -- Regression test for this pattern lives in
 -- tests/redundant-condition-crossfile/ which exercises the workspace-scan

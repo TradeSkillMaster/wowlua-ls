@@ -830,3 +830,32 @@ local function _loopAlwaysTruthy(items)
     return label
 end
 _use(_loopAlwaysTruthy)
+
+-- ── Diagnostic: unannotated void-function call as a logical operand ──────────
+-- A function with only bare `return`s / fall-through returns nil on every path.
+-- Its (always-nil) result as the LHS of `and` makes the RHS unreachable, so the
+-- `and` IS redundant — a TRUE positive (the body is almost always a missing
+-- `return <value>`).
+local function _voidResult(arg)
+    if not arg then return end
+    _use(arg)
+end
+
+local function _useVoidOperand(value)
+    local a = _voidResult(value) and "yes"
+    --                           ^ diag: redundant-and
+    _use(a)
+end
+_use(_useVoidOperand)
+
+-- An explicit `return false` body is likewise always-falsy, so the `and` is
+-- redundant. Mirrors the method-call case above for a plain (non-method) call.
+local function _returnsFalsePlain()
+    return false
+end
+local function _useFalseOperand()
+    local v = _returnsFalsePlain() and "yes"
+    --                            ^ diag: redundant-and
+    _use(v)
+end
+_use(_useFalseOperand)
