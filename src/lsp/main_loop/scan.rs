@@ -63,7 +63,7 @@ pub(super) fn compute_ws_diagnostics(
     affected: Option<&HashSet<String>>,
     prior: Option<&[(String, Vec<lsp_types::Diagnostic>)]>,
     should_cancel: &(dyn Fn() -> bool + Sync),
-) -> (Vec<(String, Vec<lsp_types::Diagnostic>)>, CrossfileDiagnostics) {
+) -> (Vec<(String, Vec<lsp_types::Diagnostic>)>, Option<CrossfileDiagnostics>) {
     use crate::diagnostics::unused_function::{self, FileReferenceData};
     use rayon::prelude::*;
     let prior_map: Option<HashMap<&str, &Vec<lsp_types::Diagnostic>>> = match (affected, prior) {
@@ -125,7 +125,15 @@ pub(super) fn compute_ws_diagnostics(
     // have no ref_data, so the reference set is incomplete and would produce
     // false positive "unused" diagnostics. Skipped entirely if the warm was
     // superseded mid-flight (Phase 1 returned partial data).
-    let cross_file_diags: HashMap<PathBuf, Vec<lsp_types::Diagnostic>> = if !is_incremental && !should_cancel() {
+    //
+    // `crossfile_computed` records whether this phase actually ran. When it
+    // didn't (incremental or cancelled), the function returns `None` for the
+    // cross-file map so the caller PRESERVES its existing cache rather than
+    // clobbering it with an empty map — otherwise the first incremental warm
+    // after a full warm would erase every `unused-function` diagnostic until
+    // the next full warm.
+    let crossfile_computed = !is_incremental && !should_cancel();
+    let cross_file_diags: HashMap<PathBuf, Vec<lsp_types::Diagnostic>> = if crossfile_computed {
         let file_refs: HashMap<PathBuf, FileReferenceData> = per_file
             .iter()
             .filter_map(|(_, _, ref_opt)| ref_opt.as_ref())
@@ -184,18 +192,6 @@ pub(super) fn compute_ws_diagnostics(
         HashMap::new()
     };
 
-    // Build per-URI cross-file diagnostic map for separate caching.
-    let mut crossfile_by_uri: HashMap<String, Vec<lsp_types::Diagnostic>> = HashMap::new();
-    if !cross_file_diags.is_empty() {
-        for (fpath, extra_diags) in &cross_file_diags {
-            let uri_s = match abs_path_to_uri(fpath) {
-                Some(u) => u.to_string(),
-                None => continue,
-            };
-            crossfile_by_uri.insert(uri_s, extra_diags.clone());
-        }
-    }
-
     // Merge per-file diagnostics with cross-file diagnostics using O(1) lookups.
     let mut output: Vec<(String, Vec<lsp_types::Diagnostic>)> = per_file
         .into_iter()
@@ -205,19 +201,36 @@ pub(super) fn compute_ws_diagnostics(
         let uri_index: HashMap<String, usize> = output.iter().enumerate()
             .map(|(i, (uri, _))| (uri.clone(), i))
             .collect();
+        for (fpath, extra_diags) in &cross_file_diags {
+            let uri_s = match abs_path_to_uri(fpath) {
+                Some(u) => u.to_string(),
+                None => continue,
+            };
+            if let Some(&idx) = uri_index.get(&uri_s) {
+                output[idx].1.extend(extra_diags.clone());
+            } else {
+                output.push((uri_s, extra_diags.clone()));
+            }
+        }
+    }
+
+    // Build per-URI cross-file cache only when the phase actually ran (full,
+    // non-cancelled warm). Incremental/cancelled warms skip this entirely and
+    // return `None` so the caller preserves its existing cache.
+    let crossfile_result = if crossfile_computed {
+        let mut by_uri = HashMap::new();
         for (fpath, extra_diags) in cross_file_diags {
             let uri_s = match abs_path_to_uri(&fpath) {
                 Some(u) => u.to_string(),
                 None => continue,
             };
-            if let Some(&idx) = uri_index.get(&uri_s) {
-                output[idx].1.extend(extra_diags);
-            } else {
-                output.push((uri_s, extra_diags));
-            }
+            by_uri.insert(uri_s, extra_diags);
         }
-    }
-    (output, crossfile_by_uri)
+        Some(by_uri)
+    } else {
+        None
+    };
+    (output, crossfile_result)
 }
 
 /// Run a warm on a detached background thread. Sends the `WarmResult` over
@@ -274,7 +287,7 @@ pub(super) fn spawn_warm(
                 let _ = warm_tx.send(WarmResult {
                     generation: target_gen,
                     diagnostics: Vec::new(),
-                    crossfile_diagnostics: CrossfileDiagnostics::new(),
+                    crossfile_diagnostics: None,
                 });
                 return;
             }
@@ -315,11 +328,14 @@ pub(super) fn spawn_warm(
         }));
         match result {
             Ok((diagnostics, crossfile_diagnostics)) => {
+                // Forwards None/Some from compute — see WarmResult doc.
                 let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics, crossfile_diagnostics });
             }
             Err(_) => {
+                // Preserve the existing cross-file cache on panic (`None`) rather
+                // than wiping it with an empty map.
                 log::error!("Background warm panicked; sending empty result to unblock main loop");
-                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: Vec::new(), crossfile_diagnostics: CrossfileDiagnostics::new() });
+                let _ = warm_tx.send(WarmResult { generation: inputs.generation, diagnostics: Vec::new(), crossfile_diagnostics: None });
             }
         }
         // _guard drops here, sending the wake signal

@@ -253,7 +253,12 @@ struct WarmResult {
     /// Cross-file-only diagnostics (e.g. unused-function from
     /// `find_unused_from_pre_globals`), keyed by URI string. Stored separately
     /// so open-file handlers can merge them without duplicating per-file items.
-    crossfile_diagnostics: CrossfileDiagnostics,
+    ///
+    /// `None` means this warm did NOT recompute the cross-file pass (incremental,
+    /// cancelled, or panicked) — the main loop preserves its existing cache.
+    /// `Some(map)` means a full warm computed the complete set and the cache
+    /// should be replaced (an empty map then correctly clears all such diagnostics).
+    crossfile_diagnostics: Option<CrossfileDiagnostics>,
 }
 
 /// Output of a background stub-file parse + analysis, used to patch a
@@ -720,7 +725,13 @@ fn main_loop(
             ws.warm_in_flight = false;
             if res.generation == ws.ws_generation {
                 ws.cached_ws_diagnostics = Some((res.generation, res.diagnostics));
-                ws.cached_crossfile_diagnostics = res.crossfile_diagnostics;
+                // Only a full warm recomputes the cross-file pass; an incremental
+                // warm returns `None` and we keep the prior cache so cross-file
+                // `unused-function` diagnostics survive edits (they'd otherwise be
+                // wiped on the first incremental warm after a full one).
+                if let Some(crossfile) = res.crossfile_diagnostics {
+                    ws.cached_crossfile_diagnostics = crossfile;
+                }
                 if client.diagnostic_refresh {
                     send_refresh_requests(
                         &connection, &mut progress_counter,
@@ -2290,6 +2301,10 @@ mod tests {
             &paths, &pre_globals, &configs, &[], None, None, &|| false,
         );
 
+        // A full warm (affected = None) computes the cross-file pass, so the
+        // result is `Some`. Incremental warms would return `None` instead.
+        let crossfile = crossfile.expect("full warm must compute the cross-file map");
+
         // Cross-file map should have entries (unused global functions exist).
         assert!(
             !crossfile.is_empty(),
@@ -2331,6 +2346,44 @@ mod tests {
     }
 
     #[test]
+    fn incremental_warm_preserves_crossfile_cache() {
+        // Regression: an incremental warm (affected = Some) must NOT recompute
+        // the cross-file pass — its reference set is incomplete (skipped files
+        // reuse prior diagnostics and contribute no ref_data, so running it
+        // would false-positive). It returns `None` so the main loop keeps the
+        // cache from the last full warm. Without this, the first edit after a
+        // full warm would wipe every cross-file `unused-function` diagnostic
+        // (the symptom: `check` reports an unused method but VSCode does not).
+        let (paths, pre_globals, configs) = setup_unused_function_fixture();
+
+        // Full warm: computes a non-empty cross-file map. Its per-file output
+        // becomes the `prior` for the incremental warm below so that the
+        // incremental reuse path is actually exercised (files matching a prior
+        // URI skip re-analysis).
+        let (full_output, full_crossfile) = compute_ws_diagnostics(
+            &paths, &pre_globals, &configs, &[], None, None, &|| false,
+        );
+        assert!(
+            full_crossfile.is_some_and(|m| !m.is_empty()),
+            "full warm must compute a non-empty cross-file map"
+        );
+
+        // Incremental warm: an affected set plus the full warm's output as the
+        // prior baseline. Files whose text doesn't mention "SomeName" reuse
+        // their prior diagnostics, exercising the true incremental path. The
+        // cross-file result must be `None` (preserve), never an empty map
+        // (which the caller would install, wiping the cache).
+        let affected: HashSet<String> = ["SomeName".to_string()].into_iter().collect();
+        let (_, inc_crossfile) = compute_ws_diagnostics(
+            &paths, &pre_globals, &configs, &[], Some(&affected), Some(&full_output), &|| false,
+        );
+        assert!(
+            inc_crossfile.is_none(),
+            "incremental warm must return None for cross-file (preserve cache), got {inc_crossfile:?}"
+        );
+    }
+
+    #[test]
     fn compute_ws_diagnostics_aborts_when_cancelled() {
         // A warm superseded by a newer rebuild must abort without doing per-file
         // work — this is what keeps rapid edits from stacking up CPU-saturating
@@ -2345,12 +2398,13 @@ mod tests {
         );
         assert!(!live.is_empty(), "uncancelled warm should produce diagnostics");
 
-        // Cancelled: no per-file work, no cross-file work, empty result.
+        // Cancelled: no per-file work, no cross-file work. The cross-file result
+        // is `None` (phase skipped) so the caller preserves its existing cache.
         let (combined, crossfile) = compute_ws_diagnostics(
             &paths, &pre_globals, &configs, &[], None, None, &|| true,
         );
         assert!(combined.is_empty(), "cancelled warm must produce no per-file diagnostics");
-        assert!(crossfile.is_empty(), "cancelled warm must skip the cross-file phase");
+        assert!(crossfile.is_none(), "cancelled warm must skip the cross-file phase (None, not empty)");
     }
 
     #[test]
