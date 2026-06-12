@@ -525,8 +525,11 @@ impl<'a> Analysis<'a> {
                             // `local x = x + 1` resolves the old `x`, not the new one
                             let type_source = if let Some(expr) = expression {
                                 if let Some(n) = crate::annotations::is_select_varargs(expr) {
-                                    // select(2, ...) → treat as addon namespace table
-                                    if n == 2 {
+                                    // select(2, ...) → treat as addon namespace table, but
+                                    // only at file scope where `...` is WoW's
+                                    // (addonName, addonTable) vararg. Inside a function,
+                                    // `...` is the function's own varargs, so lower normally.
+                                    if n == 2 && func_id.is_none() {
                                         let table_idx = self.ir.tables.len();
                                         let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                                             self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()

@@ -534,6 +534,17 @@ local ns = select(2, ...)
 local _, ns2 = ...
 --       ^ hover: (local) ns2: table
 
+-- ── select(2, ...) inside a function is the function's own varargs, NOT the ──
+-- file-level (addonName, addonTable) namespace. The addon-table special case is
+-- file-scope only. (Regression: nsInFunc was wrongly typed `table`.)
+---@param ... any
+local function _nsVarargScope(...)
+    local nsInFunc = select(2, ...)
+    --    ^ hover: (local) nsInFunc: ?
+    return nsInFunc
+end
+_nsVarargScope()
+
 -- Colon-method definition on CreateFrame result (was false positive: undefined-field)
 do
     local evtFrame = CreateFrame('Frame')

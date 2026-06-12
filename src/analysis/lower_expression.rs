@@ -890,7 +890,11 @@ impl<'a> Analysis<'a> {
         let base_expr_id = if let Some(base_node) = node.children().next() {
             match Expression::cast(base_node) {
                 Some(ref expr @ Expression::FunctionCall(_)) => {
-                    if let Some(2) = crate::annotations::is_select_varargs(expr) {
+                    // `select(2, ...).field` resolves to the addon namespace table
+                    // only at file scope, where `...` is WoW's (addonName, addonTable)
+                    // vararg. Inside a function, `...` is the function's own varargs.
+                    if let Some(2) = crate::annotations::is_select_varargs(expr)
+                        && self.current_func_id.is_none() {
                         let table_idx = TableIndex(self.ir.tables.len());
                         let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                             self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
@@ -1221,7 +1225,11 @@ impl<'a> Analysis<'a> {
         // namespace special case, otherwise lower normally (not a chain, safe
         // to recurse).
         let call_expr = Expression::FunctionCall(base_call);
-        let mut current = if let Some(2) = crate::annotations::is_select_varargs(&call_expr) {
+        // `select(2, ...).field...` resolves to the addon namespace table only at
+        // file scope, where `...` is WoW's (addonName, addonTable) vararg. Inside a
+        // function, `...` is the function's own varargs, so lower the call normally.
+        let mut current = if let Some(2) = crate::annotations::is_select_varargs(&call_expr)
+            && self.current_func_id.is_none() {
             let table_idx = TableIndex(self.ir.tables.len());
             let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                 self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()

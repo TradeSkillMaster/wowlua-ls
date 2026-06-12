@@ -746,11 +746,16 @@ impl AnalysisResult {
     /// Resolve a FunctionCall syntax node to the table its return type represents.
     /// Handles colon method calls, dot-calls, and chained combinations.
     pub(super) fn resolve_funcall_node_to_table(&self, node: &SyntaxNode, scope_offset: TextSize) -> Option<TableIndex> {
-        // Special-case: select(2, ...) → addon namespace table
+        // Special-case: select(2, ...) → addon namespace table, but only at
+        // file scope where `...` is WoW's (addonName, addonTable) vararg.
         if let Some(expr) = Expression::cast(*node)
             && let Some(2) = crate::annotations::is_select_varargs(&expr)
         {
-            return self.ir.addon_table_idx();
+            let inside_function = node.ancestors()
+                .any(|a| a.kind() == SyntaxKind::FunctionDefinition);
+            if !inside_function {
+                return self.ir.addon_table_idx();
+            }
         }
 
         // Parser2 MethodCall: receiver:method(args) where receiver, Colon, Name, ArgList are direct children

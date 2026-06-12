@@ -1013,3 +1013,20 @@ _use(_whileConstTruthy)
 -- Regression test for this pattern lives in
 -- tests/redundant-condition-crossfile/ which exercises the workspace-scan
 -- → bare_inferred_field_names → from_scan suppression path.
+
+-- ── No diagnostic: select(2, ...) inside a function is the function's own ─────
+-- varargs, not the file-level (addonName, addonTable) namespace. The
+-- `select(2, ...)` → addon-namespace-table special case is file-scope only;
+-- inside a function the result is `any`, so type() comparisons on it are not
+-- statically decidable. (Regression: arg2 was wrongly typed `table`, making
+-- `type(arg2) == "number"` look always-false.)
+---@param ... any
+local function _selectVarargInFunc(...)
+    local arg2 = select(2, ...)
+    -- No `diag:` here: the exhaustive harness fails if redundant-condition fires.
+    if type(arg2) == "number" then
+        return arg2
+    end
+    return nil
+end
+_use(_selectVarargInFunc)
