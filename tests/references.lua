@@ -164,3 +164,28 @@ if item then
     item:GetName()
     --   ^ refs: 156:22, 164:10
 end
+
+-- Accessor passthrough: a method defined on an UNKNOWN intermediate (an
+-- access-modifier accessor such as `__private`/`__protected` whose declaring
+-- base class isn't part of the scanned workspace, so the LS can't see the
+-- `@accessor` annotation) still types `self` as the base class. Without this,
+-- `self` degrades to `?` and the `self:Method()` call sites below don't resolve,
+-- which makes find-references report 0 usages for the method.
+---@class RefAccessor
+local RefAccessor = {}
+
+function RefAccessor:Activate()
+--                   ^ refs: 177:22, 183:10, 189:17
+    return self
+end
+
+function RefAccessor.__private:Helper()
+    self:Activate()
+--  ^ hover: (param) self: RefAccessor
+    --   ^ refs: 177:22, 183:10, 189:17
+end
+
+function RefAccessor.__protected:Reload()
+    return self:Activate()
+--         ^ hover: (param) self: RefAccessor
+end

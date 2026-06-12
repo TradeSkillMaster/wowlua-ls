@@ -1272,10 +1272,20 @@ impl<'a> Analysis<'a> {
                                     // `function Widget.__private:Init()` gives self = Widget.
                                     let mut current_table = self.ir.find_table_for_symbol(root_name, scope_idx);
                                     for intermediate in &names[1..names.len()-1] {
-                                        if let Some(ti) = current_table
-                                            && self.ir.get_accessor(ti, intermediate.as_str()).is_some()
-                                        {
-                                            continue;
+                                        if let Some(ti) = current_table {
+                                            // Transparent `@accessor` (e.g. `Widget.__private`):
+                                            // `self` stays the base class.
+                                            if self.ir.get_accessor(ti, intermediate.as_str()).is_some() {
+                                                continue;
+                                            }
+                                            // Unknown intermediate with no field/accessor: treat as
+                                            // transparent passthrough so `self` stays the base class.
+                                            // Covers access-modifier intermediates (`__private`/
+                                            // `__protected`) whose @accessor declaration isn't in the
+                                            // scanned workspace.
+                                            if self.ir.get_field(ti, intermediate).is_none() {
+                                                continue;
+                                            }
                                         }
                                         self_expr = self.ir.push_expr(Expr::FieldAccess {
                                             table: self_expr,
@@ -1313,6 +1323,8 @@ impl<'a> Analysis<'a> {
                                             break;
                                         }
                                     } else {
+                                        // Unknown intermediate: don't register method on root
+                                        // table — it lives on the intermediate, not the root.
                                         resolved = false;
                                         break;
                                     }
