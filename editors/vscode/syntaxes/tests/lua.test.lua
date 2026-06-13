@@ -102,6 +102,24 @@ function Bar:method(a)
 --                  ^ variable.parameter.function.lua
 end
 
+-- Method defined through a transparent accessor (e.g. @accessor __protected).
+-- A dot-preceded segment before ':' must NOT get entity.name.class — it should
+-- color as entity.name.function.lua like the other dotted segments.
+function Widget.__protected:Init(opts)
+--       ^^^^^^ entity.name.function.lua
+--              ^^^^^^^^^^^ entity.name.function.lua
+--                          ^^^^ entity.name.function.lua
+--                               ^^^^ variable.parameter.function.lua
+end
+
+-- Dotted method chain before a colon: every receiver segment is consistent.
+function Foo.Bar.Baz:Qux()
+--       ^^^ entity.name.function.lua
+--           ^^^ entity.name.function.lua
+--               ^^^ entity.name.function.lua
+--                   ^^^ entity.name.function.lua
+end
+
 -- Goto / labels
 goto myLabel
 -- <-- keyword.control.goto.lua
