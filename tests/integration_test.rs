@@ -1236,6 +1236,27 @@ fn crossfile_references() {
     // promotes a local @class table to its EXT_BASE+ counterpart.
     assert!(refs.contains(&("defs".into(), 8, 26)),
         "cross-file name search should hit defs self.name access: {:?}", refs);
+
+    // Union-receiver regression: find-references on `RefUnionB:Shared` (the SECOND
+    // member of the `RefUnionA|RefUnionB` union at the `u:Shared()` call site). The
+    // field-chain resolver returns only the first union member (RefUnionA), so
+    // without union-member matching the call site would be missed. Click the def
+    // site in defs (line 30, col 20 — the `S` of `Shared`) and promote to cross-file.
+    let union_def_offset = types::position_to_offset(&defs_text, 29, 19);
+    let target = defs_result.reference_target_at(&defs_tree, union_def_offset)
+        .expect("expected a reference target at RefUnionB:Shared definition");
+    let search_target = if target.is_cross_file() {
+        target.clone()
+    } else {
+        defs_result.promote_to_cross_file(&target)
+            .unwrap_or_else(|| panic!("failed to promote RefUnionB:Shared to cross-file"))
+    };
+    let refs = find_refs(&search_target);
+    assert!(refs.contains(&("user".into(), 18, 7)),
+        "find-references on RefUnionB:Shared must reach the union-receiver call u:Shared(): {:?}", refs);
+    // The def site itself is still reported.
+    assert!(refs.contains(&("defs".into(), 30, 20)),
+        "find-references on RefUnionB:Shared must include its definition: {:?}", refs);
 }
 
 #[test]
@@ -5105,7 +5126,14 @@ fn test_unused_function_cross_file() {
     );
     wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
     let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&scan_dir);
-    let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
+    // Build on stubs so WoW API classes (e.g. GameTooltip) resolve — needed for
+    // the stub|workspace union-receiver regression (CustomTip:AddDoubleLine).
+    // This makes this test slower than `PreResolvedGlobals::build`, but the
+    // non-stub path is still exercised by the other unused-function assertions
+    // that don't involve stub types.
+    let mut pg = PreResolvedGlobals::build_on_stubs(
+        &STUB_GLOBALS, &sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable,
+    );
     pg.merge_events(&se);
     build_per_addon_tables_from_globals(&mut pg, &sg, &ans, &project_configs);
     let pre_globals = Arc::new(pg);
@@ -5214,6 +5242,21 @@ fn test_unused_function_cross_file() {
     assert!(
         !unused_names.contains("BetaWidget:Process"),
         "BetaWidget:Process should not be flagged — called via union-typed receiver",
+    );
+
+    // Stub|workspace union-receiver regression: calling tip:AddDoubleLine() on
+    // GameTooltip|CustomTip must count as a reference to CustomTip's method, even
+    // though the GameTooltip stub method wins the call resolution. Interface
+    // detection cannot save this case (it ignores stub methods), so this exercises
+    // the union-member reference tracking directly.
+    assert!(
+        !unused_names.contains("CustomTip:AddDoubleLine"),
+        "CustomTip:AddDoubleLine should not be flagged — called via GameTooltip|CustomTip receiver, got: {:?}", unused_names,
+    );
+    // The genuinely-unused sibling method on the same class IS still flagged.
+    assert!(
+        unused_names.contains("CustomTip:UnusedTipMethod"),
+        "CustomTip:UnusedTipMethod should be flagged as unused, got: {:?}", unused_names,
     );
 
     // Function-as-value: local assignment.

@@ -50,8 +50,9 @@ function NS._IgnoredMethod()
     return 14
 end
 
--- Two classes with a shared method name, called via a union-typed receiver.
--- Neither should be flagged as unused (regression for union-receiver false positive).
+-- Two workspace classes with a shared method name, called via a union-typed
+-- receiver. Neither should be flagged as unused. This case is covered by
+-- interface detection (2+ workspace tables defining the same method name).
 ---@class AlphaWidget
 AlphaWidget = {}
 
@@ -64,6 +65,24 @@ BetaWidget = {}
 
 function BetaWidget:Process()
     return 21
+end
+
+-- Workspace class sharing a method name (AddDoubleLine) with a STUB class
+-- (GameTooltip), called via a union-typed receiver `GameTooltip|CustomTip`.
+-- Interface detection does NOT count stub methods, so without union-receiver
+-- reference tracking the stub method wins the call resolution and
+-- CustomTip:AddDoubleLine looks unreferenced — a false-positive unused-function.
+---@class CustomTip
+CustomTip = {}
+
+function CustomTip:AddDoubleLine(left, right)
+    return left, right
+end
+
+-- Genuinely unused method on the same class — proves the class's methods CAN
+-- still be flagged, so the AddDoubleLine non-flag is meaningful.
+function CustomTip:UnusedTipMethod()
+    return 22
 end
 
 -- Read as a function value (local assignment) in user.lua.

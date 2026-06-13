@@ -21,6 +21,21 @@ pub struct FileReferenceData {
     pub referenced_external_functions: HashSet<FunctionIndex>,
 }
 
+/// Visit every `FunctionIndex` carried by a resolved type: a bare
+/// `Function(Some(idx))`, or the function members inside arbitrarily nested
+/// `Union`/`Intersection` wrappers (e.g. `Union([Intersection([Function, ...]), Function])`).
+fn visit_function_members(vt: &ValueType, visitor: &mut impl FnMut(FunctionIndex)) {
+    match vt {
+        ValueType::Function(Some(idx)) => visitor(*idx),
+        ValueType::Union(types) | ValueType::Intersection(types) => {
+            for t in types {
+                visit_function_members(t, visitor);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Resolve a simple `NS.Method` field access to its external `FunctionIndex`
 /// without relying on `resolved_expr_cache`. Returns `Some(func_idx)` only when
 /// `base_expr` is a `SymbolRef` whose resolved type is an external `Table` that
@@ -80,12 +95,21 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
     for (idx, expr) in analysis.ir.exprs.iter().enumerate() {
         let Expr::FieldAccess { table: base_expr, field, .. } = expr else { continue };
 
-        // Path 1: cache hit.
-        if let Some(Some(ValueType::Function(Some(func_idx)))) = analysis.resolved_expr_cache.get(idx)
-            && func_idx.is_external()
-        {
-            referenced_external_functions.insert(*func_idx);
-            continue;
+        // Path 1: cache hit. The field-access type is a single function or a
+        // union of functions (method access on a union receiver `A | B`); record
+        // every external member so a method reached only through a union-typed
+        // receiver isn't reported as unused.
+        if let Some(Some(cached)) = analysis.resolved_expr_cache.get(idx) {
+            let mut recorded = false;
+            visit_function_members(cached, &mut |func_idx| {
+                if func_idx.is_external() {
+                    referenced_external_functions.insert(func_idx);
+                    recorded = true;
+                }
+            });
+            if recorded {
+                continue;
+            }
         }
 
         // Path 2: manual resolve for uncached entries.

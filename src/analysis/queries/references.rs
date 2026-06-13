@@ -379,25 +379,41 @@ impl AnalysisResult {
                     if token.kind() != SyntaxKind::Name || token.text() != field_name.as_str() {
                         continue;
                     }
-                    if let Some((resolved_table, _, _, _, _)) = self.resolve_field_chain_for_token(token) {
-                        let accept = if resolved_table == table_idx {
-                            true
-                        } else if table_idx.is_external() && !resolved_table.is_external() {
-                            // Cross-file field search: the file that declares `@class X` keeps a
-                            // local table for it with `class_name = "X"`; fields defined on that
-                            // local (e.g. `function X:Method() end`) should be matched for an
-                            // external `X` target too.
-                            let ext_for_local = self.table(resolved_table).class_name.as_ref()
-                                .and_then(|n| self.ir.ext.classes.get(n).copied());
-                            ext_for_local == Some(table_idx)
-                        } else if self.tables_share_field_owner(table_idx, resolved_table) {
-                            // Inherited field: the target may be a child class while the resolved
-                            // table is the parent that owns the field (or vice versa). Check if
-                            // one is an ancestor of the other via parent_classes chains.
-                            true
+                    if let Some((resolved_table, _, _, _, receiver_tables)) = self.resolve_field_chain_for_token(token) {
+                        // For a union receiver (`A | B`, both defining the method), the
+                        // chain resolver returns only the first member as `resolved_table`;
+                        // the 5th element holds every receiver member. Check the field owner
+                        // in each so a call on a union-typed receiver counts as a reference
+                        // to the target member's method, not just the first — e.g. the call
+                        // wins on a stub member yet the target is a workspace member.
+                        let owner_tables: Vec<TableIndex> = if receiver_tables.len() > 1 {
+                            let mut tables: Vec<TableIndex> = self.find_all_fields_in_tables(&receiver_tables, field_name)
+                                .into_iter().map(|(t, _)| t).collect();
+                            if tables.is_empty() {
+                                tables.push(resolved_table);
+                            }
+                            tables
                         } else {
-                            false
+                            vec![resolved_table]
                         };
+                        let accept = owner_tables.iter().any(|&cand| {
+                            if cand == table_idx {
+                                true
+                            } else if table_idx.is_external() && !cand.is_external() {
+                                // Cross-file field search: the file that declares `@class X`
+                                // keeps a local table for it with `class_name = "X"`; fields
+                                // defined on that local (e.g. `function X:Method() end`)
+                                // should be matched for an external `X` target too.
+                                self.table(cand).class_name.as_ref()
+                                    .and_then(|n| self.ir.ext.classes.get(n).copied())
+                                    == Some(table_idx)
+                            } else {
+                                // Inherited field: the target may be a child class while the
+                                // resolved table is the parent that owns the field (or vice
+                                // versa). Check ancestry via parent_classes chains.
+                                self.tables_share_field_owner(table_idx, cand)
+                            }
+                        });
                         if accept {
                             results.push(token.text_range());
                         }

@@ -10,3 +10,10 @@ if obj then
     print(obj:Greet())
     print(obj.name)
 end
+
+-- Union-typed receiver: u:Shared() must count as a reference to BOTH
+-- RefUnionA:Shared and RefUnionB:Shared, not just the first union member.
+---@param u RefUnionA|RefUnionB
+local function useUnion(u)
+    u:Shared()
+end

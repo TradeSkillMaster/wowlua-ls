@@ -12,6 +12,13 @@ local function useUnionWidget(widget)
 end
 useUnionWidget(AlphaWidget)
 useUnionWidget(BetaWidget)
+-- Stub|workspace union receiver: GameTooltip (stub) listed first wins the call
+-- resolution, so CustomTip:AddDoubleLine is only reachable via the union member.
+---@param tip GameTooltip|CustomTip
+local function useTip(tip)
+    tip:AddDoubleLine("a", "b")
+end
+useTip(CustomTip)
 -- Function-as-value: local variable assignment.
 local e = NS.FuncAsValueMethod
 -- Function-as-value: passed as a callback argument (the original false-positive pattern).
