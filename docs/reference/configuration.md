@@ -114,6 +114,8 @@ Unlike `ignore` (which skips files entirely), `library` files are fully scanned 
 
 Absolute paths are automatically added as extra scan directories, so external libraries don't need to be inside your workspace.
 
+Marking a directory as a library suppresses diagnostics for the **whole subtree**, including any nested `.wowluarc.json` files inside it. A vendored library that ships its own `.wowluarc.json` (for example one pulled in via a symlink) cannot re-enable diagnostics for itself — the parent's `library` declaration wins. See [Hierarchy behavior](#hierarchy-behavior) for how this differs from other settings.
+
 ### `framexml`
 
 - **Type:** `boolean`
@@ -305,10 +307,11 @@ Override severity for specific diagnostic codes.
 
 ## Hierarchy behavior
 
-When `.wowluarc.json` files are nested, settings combine according to one of two policies:
+When `.wowluarc.json` files are nested, settings combine according to one of these policies:
 
 - **Isolated** — the single **nearest** ancestor config fully determines the setting. Keys it does not set fall back to their **default**, *not* to a parent config's value. This applies to everything that affects diagnostics, so that running a check from a subdirectory produces the same results as running it from the project root (configs above the scan root are never consulted).
 - **Inherited** — the deepest config that sets the key wins, falling back to ancestor configs and then the default. This applies to editor-experience settings that do not affect diagnostics.
+- **Inherited downward** — the `library` setting alone uses this: once any ancestor config marks a subtree as a library, every file beneath it has diagnostics suppressed, and a nested config inside that subtree cannot opt back in. (Whether a subtree *is* a library still affects only diagnostics, so this is the one diagnostics setting that is not isolated — its entire purpose is to silence a whole vendored subtree, including any config files that subtree carries.)
 
 | Setting | Policy |
 |---|---|
@@ -323,7 +326,7 @@ When `.wowluarc.json` files are nested, settings combine according to one of two
 | `flavors` | **Isolated** (then intersected with any TOC-derived per-file mask) |
 | `inference.*` | **Isolated** |
 | `ignore` | **Isolated** — nearest config's patterns, relative to its directory |
-| `library` | **Isolated** for relative patterns; absolute library directories are scanned workspace-wide |
+| `library` | **Inherited downward** — any ancestor config that marks a subtree as a library suppresses diagnostics for that whole subtree, and a nested config inside it cannot un-mark itself; absolute library directories are scanned workspace-wide |
 | `plugins` | **Isolated** — only the nearest config's plugins run against a file |
 | `hint.*` | Inherited |
 | `codeLens.*` | Inherited |
@@ -332,4 +335,6 @@ When `.wowluarc.json` files are nested, settings combine according to one of two
 
 ::: warning Isolated settings do not inherit
 If a nested directory has its own `.wowluarc.json`, it only inherits the **inherited** settings above. Any **isolated** setting it does not restate reverts to its default — it does *not* pick up the parent's value. For example, a subdirectory config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` settings unless it repeats them. This also applies to auto-discovered TOC `SavedVariables` globals — they are merged into the config entry for the directory containing the `.toc` file, so a child config in a subdirectory will not see them.
+
+The one exception is [`library`](#library), which is inherited downward.
 :::

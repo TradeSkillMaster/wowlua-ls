@@ -304,19 +304,21 @@ impl ProjectConfigs {
     }
 
     /// Check if a path is a library path (scanned but diagnostics suppressed).
-    /// Absolute library patterns are matched workspace-wide (external scan dirs);
-    /// relative patterns are isolated to the nearest ancestor config.
+    /// Unlike other diagnostics-affecting settings, `library` is inherited
+    /// downward: relative patterns from *any* ancestor config apply, not just
+    /// the nearest. See CLAUDE.md nested-config policy for rationale.
     pub fn is_library(&self, absolute_path: &Path) -> bool {
-        // Absolute library patterns from any config (external scan targets).
-        for (_, config) in &self.entries {
+        for (config_dir, config) in &self.entries {
+            // Absolute library patterns from any config (external scan targets).
             if config.matches_absolute_library(absolute_path) {
                 return true;
             }
-        }
-        // Relative patterns: only the nearest ancestor config applies.
-        if let Some((config_dir, config)) = self.nearest_entry(absolute_path)
-            && let Ok(relative) = absolute_path.strip_prefix(config_dir) {
-            return config.is_library(relative);
+            // Relative patterns from any ancestor config (the file is under that
+            // config's directory and matches its relative library patterns).
+            if let Ok(relative) = absolute_path.strip_prefix(config_dir)
+                && config.is_library(relative) {
+                return true;
+            }
         }
         false
     }
@@ -1181,6 +1183,33 @@ mod tests {
         assert!(configs.is_library(Path::new("/shared/libs/sub/bar.lua")));
         assert!(!configs.is_library(Path::new("/other/path.lua")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_configs_is_library_nested_config_subtree() {
+        // A vendored library inside the declared library subtree carries its
+        // own .wowluarc.json. The parent's library marking must still win.
+        let mut configs = ProjectConfigs::default();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+        let root = std::env::temp_dir().join(format!(
+            "wowlua_ls_test_nested_lib_{}",
+            std::process::id()
+        ));
+        let _cleanup = Cleanup(root.clone());
+        let nested = root.join("Libraries/VendoredLib");
+        let _ = std::fs::create_dir_all(&nested);
+        std::fs::write(root.join(".wowluarc.json"), r#"{
+            "library": ["Libraries"]
+        }"#).unwrap();
+        std::fs::write(nested.join(".wowluarc.json"), r#"{
+            "diagnostics": { "enable": ["need-check-nil"] }
+        }"#).unwrap();
+        configs.try_load(&root);
+        configs.try_load(&nested);
+        assert!(configs.is_library(&nested.join("Core/Cell.lua")));
+        assert!(configs.is_library(&root.join("Libraries/Other.lua")));
+        assert!(!configs.is_library(&root.join("Core/Init.lua")));
     }
 
     #[test]
