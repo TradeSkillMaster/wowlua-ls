@@ -11,14 +11,16 @@ impl DiagnosticPass for UndefinedField {
             let Some((start, end)) = field_range else { continue };
             let Some(table_type) = analysis.resolve_expr_type(*table) else { continue };
             if matches!(table_type, ValueType::Any) { continue; }
-            let table_indices: Vec<TableIndex> = match &table_type {
-                ValueType::Table(Some(idx)) => vec![*idx],
-                ValueType::Union(types) => types.iter().filter_map(|t| match t {
-                    ValueType::Table(Some(idx)) => Some(*idx),
-                    _ => None,
-                }).collect(),
+            // For unions, recurse into intersection/opaque-alias members so
+            // mixin patterns like `(Frame & Template) | AceEvent-3.0` check
+            // all tables. Top-level intersections are skipped — they're concrete
+            // instances that commonly receive untracked runtime fields.
+            let mut table_indices: Vec<TableIndex> = Vec::new();
+            match &table_type {
+                ValueType::Table(Some(idx)) => table_indices.push(*idx),
+                ValueType::Union(_) => super::collect_class_indices(&table_type, &mut table_indices),
                 _ => continue,
-            };
+            }
             if table_indices.is_empty() { continue; }
             if table_indices.iter().any(|&idx| analysis.ir.has_field(idx, field)) { continue; }
             // Inherited field?

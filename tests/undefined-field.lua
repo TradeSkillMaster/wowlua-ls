@@ -235,3 +235,48 @@ dm3:OnLoad()
 -- Nonexistent field on dotted-chain class should still warn
 _consume(dm3.fake)
 --           ^ diag: undefined-field
+
+-- Regression: union whose member is an intersection (mixin pattern, e.g. an
+-- Ace3 `Embed` return typed `(Frame & Template) | AceEvent-3.0`). The
+-- undefined-field check must descend into the intersection union-member so the
+-- target's own fields aren't masked by the mixed-in library class. Previously
+-- the intersection member was dropped, leaving only the mixin class, which
+-- spuriously flagged every field on the target.
+---@class MixinTargetA
+---@field targetA number
+
+---@class MixinTemplateB
+---@field templateB string
+
+---@class MixinLibC
+---@field libMethod fun()
+
+-- & binds tighter than |, so this is (MixinTargetA & MixinTemplateB) | MixinLibC
+---@type MixinTargetA & MixinTemplateB | MixinLibC
+local embedded = nil
+
+_consume(embedded.targetA)
+_consume(embedded.templateB)
+_consume(embedded.libMethod)
+_consume(embedded.missing)
+--                ^ diag: undefined-field
+
+-- Same thing with explicit parens to guard against parser precedence regressions
+---@type (MixinTargetA & MixinTemplateB) | MixinLibC
+local embedded2 = nil
+
+_consume(embedded2.targetA)
+_consume(embedded2.templateB)
+_consume(embedded2.libMethod)
+_consume(embedded2.missing)
+--                 ^ diag: undefined-field
+
+-- Opaque alias inside a union: the underlying table's fields should be reachable
+---@alias (opaque) OpaqueWidget MixinTargetA
+---@type OpaqueWidget | MixinLibC
+local opaqueUnion = nil
+
+_consume(opaqueUnion.targetA)
+_consume(opaqueUnion.libMethod)
+_consume(opaqueUnion.missing)
+--                   ^ diag: undefined-field

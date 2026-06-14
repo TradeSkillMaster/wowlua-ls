@@ -617,7 +617,7 @@ fn is_overridable_method_call(analysis: &AnalysisResult, expr_id: ExprId) -> boo
 /// Collect every `Table(Some(idx))` reachable through union/intersection
 /// members and opaque-alias unwrapping. Owns the opaque-alias unwrap so
 /// callers don't need to pre-strip.
-fn collect_class_indices(t: &ValueType, out: &mut Vec<TableIndex>) {
+pub(crate) fn collect_class_indices(t: &ValueType, out: &mut Vec<TableIndex>) {
     match t {
         ValueType::Table(Some(idx)) => out.push(*idx),
         ValueType::Union(members) | ValueType::Intersection(members) => {
