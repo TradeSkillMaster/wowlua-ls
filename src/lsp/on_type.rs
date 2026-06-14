@@ -7,30 +7,85 @@
 
 use lsp_types::Position;
 
+/// Advance `i` past a string literal starting at `bytes[i]`.
+///
+/// Handles short strings (single/double-quoted, with backslash escapes) and
+/// long bracket strings (`[[…]]`, `[=[…]=]`, etc.).  On entry `bytes[i]` must
+/// be `"`, `'`, or `[` (for bracket strings the caller already confirmed the
+/// long-bracket opening).  On return `i` points past the closing delimiter.
+fn skip_string_literal(bytes: &[u8], len: usize, i: &mut usize) {
+    let b = bytes[*i];
+    if b == b'"' || b == b'\'' {
+        *i += 1;
+        while *i < len {
+            if bytes[*i] == b'\\' {
+                *i += 2;
+                continue;
+            }
+            if bytes[*i] == b {
+                *i += 1;
+                return;
+            }
+            *i += 1;
+        }
+        return;
+    }
+    // Long bracket string: `[=*[` … `]=*]` where the `=` counts match.
+    debug_assert_eq!(b, b'[');
+    let start = *i;
+    *i += 1; // skip opening `[`
+    let mut eq_count = 0usize;
+    while *i < len && bytes[*i] == b'=' {
+        eq_count += 1;
+        *i += 1;
+    }
+    if *i >= len || bytes[*i] != b'[' {
+        // Not actually a long bracket string — reset to just past the initial `[`.
+        *i = start + 1;
+        return;
+    }
+    *i += 1; // skip second `[`
+    // Scan for the matching `]=*]`.
+    while *i < len {
+        if bytes[*i] == b']' {
+            *i += 1;
+            let mut matched = 0usize;
+            while *i < len && bytes[*i] == b'=' && matched < eq_count {
+                matched += 1;
+                *i += 1;
+            }
+            if matched == eq_count && *i < len && bytes[*i] == b']' {
+                *i += 1;
+                return;
+            }
+        } else {
+            *i += 1;
+        }
+    }
+}
+
+/// Returns true if `bytes[i]` starts a long bracket string (`[[` or `[=[` etc.).
+fn is_long_bracket_open(bytes: &[u8], i: usize, len: usize) -> bool {
+    if bytes[i] != b'[' {
+        return false;
+    }
+    let mut j = i + 1;
+    while j < len && bytes[j] == b'=' {
+        j += 1;
+    }
+    j < len && bytes[j] == b'['
+}
+
 /// Strip a trailing Lua line comment (`--`) from a line, respecting string
-/// literals. Scans character-by-character to skip `--` that appears inside
-/// single- or double-quoted strings.
+/// literals (short and long bracket strings).
 fn strip_line_comment(line: &str) -> &str {
     let bytes = line.as_bytes();
     let len = bytes.len();
     let mut i = 0;
     while i < len {
         let b = bytes[i];
-        if b == b'"' || b == b'\'' {
-            // Skip to closing quote.
-            let quote = b;
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' {
-                    i += 2; // skip escaped char
-                    continue;
-                }
-                if bytes[i] == quote {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
+        if b == b'"' || b == b'\'' || (b == b'[' && is_long_bracket_open(bytes, i, len)) {
+            skip_string_literal(bytes, len, &mut i);
             continue;
         }
         if b == b'-' && i + 1 < len && bytes[i + 1] == b'-' {
@@ -106,21 +161,8 @@ fn has_function_keyword(s: &str) -> bool {
     let mut i = 0;
     while i < len {
         let b = bytes[i];
-        // Skip string literals.
-        if b == b'"' || b == b'\'' {
-            let quote = b;
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if bytes[i] == quote {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
+        if b == b'"' || b == b'\'' || (b == b'[' && is_long_bracket_open(bytes, i, len)) {
+            skip_string_literal(bytes, len, &mut i);
             continue;
         }
         if i + kw.len() <= len && bytes[i..i + kw.len()] == *kw {
@@ -136,6 +178,40 @@ fn has_function_keyword(s: &str) -> bool {
         i += 1;
     }
     false
+}
+
+/// Net bracket balance of a line — opens (`(`, `{`) minus closes (`)`, `}`)
+/// — skipping brackets inside string literals (short and long bracket strings)
+/// and the trailing line comment. `[`/`]` are only counted when they don't form
+/// a long bracket string delimiter. A positive result means the line leaves
+/// brackets open, e.g. a function literal passed as a call argument
+/// (`foo(function()`), so any block-closing `end` must be inserted *before* the
+/// matching closer below.
+fn bracket_balance(line: &str) -> i32 {
+    let effective = strip_line_comment(line);
+    let bytes = effective.as_bytes();
+    let len = bytes.len();
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        if b == b'"' || b == b'\'' || (b == b'[' && is_long_bracket_open(bytes, i, len)) {
+            skip_string_literal(bytes, len, &mut i);
+            continue;
+        }
+        match b {
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    depth
+}
+
+/// Returns true if `s` begins with a closing bracket (`)`, `}`, or `]`).
+fn starts_with_closer(s: &str) -> bool {
+    matches!(s.as_bytes().first(), Some(b')' | b'}' | b']'))
 }
 
 /// The keyword that closes the block opened by a line.
@@ -256,10 +332,46 @@ pub(crate) fn on_type_formatting(
         return None;
     }
 
-    let close_kw = match close {
-        BlockClose::End => "end",
-        BlockClose::Until => "until",
+    let (close_kw, is_end) = match close {
+        BlockClose::End => ("end", true),
+        BlockClose::Until => ("until", false),
     };
+
+    // Function literal passed as a call argument / table value: the opener line
+    // leaves a bracket open (`foo:Map(function(query)`), so the editor's
+    // auto-closed `)` is pushed down onto the cursor line — right *after* the
+    // cursor. Appending `end` after that closer would produce `)` then `end`
+    // (invalid Lua). Instead split the cursor line so `end` merges in front of
+    // the closer: the cursor keeps a blank (indented) body line and `end)`
+    // lands below it.
+    if is_end && bracket_balance(prev_line) > 0 {
+        let cursor_line = lines.get(cursor_line_idx).copied().unwrap_or("");
+        let leading_ws_len = cursor_line.len() - cursor_line.trim_start().len();
+        let rest = cursor_line[leading_ws_len..].trim_end();
+        if starts_with_closer(rest) {
+            // Replace from closer_col (not 0): the leading whitespace stays as
+            // the cursor line's body indentation for the new function body.
+            let closer_col = leading_ws_len as u32;
+            let line_end_col = if utf8 {
+                cursor_line.len() as u32
+            } else {
+                cursor_line.encode_utf16().count() as u32
+            };
+            return Some(vec![lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: position.line,
+                        character: closer_col,
+                    },
+                    end: lsp_types::Position {
+                        line: position.line,
+                        character: line_end_col,
+                    },
+                },
+                new_text: format!("\n{}{}{}", opener_indent, close_kw, rest),
+            }]);
+        }
+    }
 
     // Insert the closing keyword on the line AFTER the cursor so VS Code
     // doesn't push the cursor past the inserted text.
@@ -343,6 +455,22 @@ mod tests {
         assert_eq!(
             strip_line_comment(r#"local s = "say \"hi\" -- ok" -- real"#),
             r#"local s = "say \"hi\" -- ok" "#
+        );
+    }
+
+    #[test]
+    fn strip_comment_long_bracket_string() {
+        assert_eq!(
+            strip_line_comment("local s = [[hello -- world]]"),
+            "local s = [[hello -- world]]"
+        );
+        assert_eq!(
+            strip_line_comment("local s = [=[hello -- world]=]"),
+            "local s = [=[hello -- world]=]"
+        );
+        assert_eq!(
+            strip_line_comment("local s = [[str]] -- real"),
+            "local s = [[str]] "
         );
     }
 
@@ -442,6 +570,12 @@ mod tests {
     #[test]
     fn has_function_kw_after_string() {
         assert!(has_function_keyword(r#"x("str", function()"#));
+    }
+
+    #[test]
+    fn has_function_kw_in_long_bracket_string() {
+        assert!(!has_function_keyword("local x = [[function]]"));
+        assert!(!has_function_keyword("local x = [=[function]=]"));
     }
 
     // ── detect_block_opener ─────────────────────────────────────────────
@@ -721,6 +855,111 @@ mod tests {
         // `function` has no `end`, but `if` does — don't insert a spurious `end`.
         let text = "function foo()\n    if x then\n\n    end\n";
         let pos = Position { line: 2, character: 0 };
+        let result = on_type_formatting(text, pos, true);
+        assert!(result.is_none());
+    }
+
+    // ── bracket_balance / starts_with_closer ────────────────────────────
+
+    #[test]
+    fn bracket_balance_function_arg() {
+        // `foo:Map(function(query)` leaves the call paren open.
+        assert_eq!(bracket_balance("foo:Map(function(query)"), 1);
+    }
+
+    #[test]
+    fn bracket_balance_plain_function_def() {
+        assert_eq!(bracket_balance("function foo()"), 0);
+        assert_eq!(bracket_balance("local function foo(a, b)"), 0);
+    }
+
+    #[test]
+    fn bracket_balance_skips_strings_and_comments() {
+        assert_eq!(bracket_balance(r#"foo(") (")"#), 0);
+        assert_eq!(bracket_balance("foo(function() -- )))"), 1);
+    }
+
+    #[test]
+    fn bracket_balance_skips_long_bracket_strings() {
+        assert_eq!(bracket_balance("foo([[some ) text]])"), 0);
+        assert_eq!(bracket_balance("foo([=[some ) text]=])"), 0);
+        // Level-1 long bracket: `]=]` inside `[=[...]=]` is literal text.
+        assert_eq!(bracket_balance("foo([=[]] ]=])"), 0);
+    }
+
+    #[test]
+    fn starts_with_closer_basic() {
+        assert!(starts_with_closer(")"));
+        assert!(starts_with_closer("})"));
+        assert!(starts_with_closer("]"));
+        assert!(!starts_with_closer("end"));
+        assert!(!starts_with_closer(""));
+    }
+
+    // ── function-literal-as-argument (closer on cursor line) ────────────
+
+    #[test]
+    fn inserts_end_before_closer_for_function_arg() {
+        // The reported bug: after Enter the auto-closed `)` lands on the cursor
+        // line; `end` must be merged in front of it (`end)`), not appended after.
+        let text = "foo:Map(function(query)\n)\n";
+        let pos = Position { line: 1, character: 0 };
+        let result = on_type_formatting(text, pos, true).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].new_text, "\nend)");
+        assert_eq!(result[0].range.start, Position { line: 1, character: 0 });
+        assert_eq!(result[0].range.end, Position { line: 1, character: 1 });
+    }
+
+    #[test]
+    fn inserts_end_before_indented_closer() {
+        // `end` aligns with the opener indent; the cursor keeps the deeper body
+        // indent on the now-blank line.
+        let text = "    obj:Map(function(query)\n        )\n";
+        let pos = Position { line: 1, character: 8 };
+        let result = on_type_formatting(text, pos, true).unwrap();
+        assert_eq!(result[0].new_text, "\n    end)");
+        assert_eq!(result[0].range.start, Position { line: 1, character: 8 });
+        assert_eq!(result[0].range.end, Position { line: 1, character: 9 });
+    }
+
+    #[test]
+    fn inserts_end_before_closer_with_trailing_code() {
+        // A non-last cursor line whose content is the closer is still handled.
+        let text = "x = foo(function()\n)\nbar()\n";
+        let pos = Position { line: 1, character: 0 };
+        let result = on_type_formatting(text, pos, true).unwrap();
+        assert_eq!(result[0].new_text, "\nend)");
+        assert_eq!(result[0].range.start, Position { line: 1, character: 0 });
+        assert_eq!(result[0].range.end, Position { line: 1, character: 1 });
+    }
+
+    #[test]
+    fn inserts_end_before_nested_closers() {
+        // Two open call parens → `end` goes before both closers.
+        let text = "a:Bar(b:Map(function()\n))\n";
+        let pos = Position { line: 1, character: 0 };
+        let result = on_type_formatting(text, pos, true).unwrap();
+        assert_eq!(result[0].new_text, "\nend))");
+        assert_eq!(result[0].range.end, Position { line: 1, character: 2 });
+    }
+
+    #[test]
+    fn function_arg_blank_cursor_line_unaffected() {
+        // When the closer is on a line *below* a blank cursor line, the existing
+        // path already inserts `end` before it — no special handling needed.
+        let text = "foo:Map(function(query)\n\n)\n";
+        let pos = Position { line: 1, character: 0 };
+        let result = on_type_formatting(text, pos, true).unwrap();
+        assert_eq!(result[0].new_text, "end\n");
+        assert_eq!(result[0].range.start, Position { line: 2, character: 0 });
+    }
+
+    #[test]
+    fn function_arg_already_closed_no_insert() {
+        // If `end)` already exists below, don't insert a second `end`.
+        let text = "foo:Map(function(query)\n\nend)\n";
+        let pos = Position { line: 1, character: 0 };
         let result = on_type_formatting(text, pos, true);
         assert!(result.is_none());
     }
