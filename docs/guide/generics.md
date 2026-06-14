@@ -62,6 +62,23 @@ local dog = CreateObject("Dog") -- T resolves to the Dog class
 
 This is how WoW's `CreateFrame` works — the first argument is a string like `"Frame"` or `"Button"`, and the return type matches.
 
+Because the string literal names a type, typing inside the quotes offers **class-name completions**. When the generic is constrained, only classes that satisfy the constraint are suggested:
+
+```lua
+---@class Element
+---@class Button : Element
+---@class Slider : Element
+
+---@generic T: Element
+---@param elementType `T`
+---@return T
+function New(elementType) end
+
+New("")  -- suggests Button, Element, Slider — but never an unrelated class
+```
+
+An unconstrained `` `T` `` (a bare `@generic T`) offers every known class, so adding a constraint (`@generic T: Base`) is the way to keep the suggestions focused on the relevant subtree.
+
 ## Parameterized classes
 
 Classes can declare type parameters that their methods and fields reference:

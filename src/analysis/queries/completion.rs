@@ -1074,7 +1074,69 @@ impl AnalysisResult {
                 }
             }
 
+        // Backtick generic `T`: offer class names scoped to T's constraint.
+        if let Some(ann) = func.param_annotations.get(param_index)
+            && let Some(gen_name) = Self::backtick_generic_name(ann)
+            && let Some((_, constraint)) = func.generic_constraints_raw.iter()
+                .find(|(n, _)| n == gen_name)
+        {
+            let names = self.class_names_for_generic_constraint(constraint.as_deref());
+            if !names.is_empty() {
+                let types = names.into_iter()
+                    .map(|s| ValueType::String(Some(s))).collect();
+                return Some(ValueType::Union(types));
+            }
+        }
+
         None
+    }
+
+    /// Extract the generic type-parameter name from a backtick annotation
+    /// (`@param p `T``), searching inside unions and non-nil wrappers.
+    pub(super) fn backtick_generic_name(ann: &crate::annotations::AnnotationType) -> Option<&str> {
+        use crate::annotations::AnnotationType;
+        match ann {
+            AnnotationType::Backtick(inner) => match inner.as_ref() {
+                AnnotationType::Simple(name) => Some(name.as_str()),
+                _ => None,
+            },
+            AnnotationType::Union(members) => members.iter().find_map(Self::backtick_generic_name),
+            AnnotationType::NonNil(inner) => Self::backtick_generic_name(inner),
+            _ => None,
+        }
+    }
+
+    /// Collect the names of all classes whose type satisfies `constraint` — i.e.
+    /// classes equal to or inheriting from the constraint class. When `constraint`
+    /// is `None` (an unconstrained generic), every known class name is returned.
+    /// Used to drive string-literal completions for backtick-name generic params.
+    ///
+    /// Returns an empty `Vec` when a constraint is given but does not resolve to a
+    /// class (e.g. a primitive or an undefined name), so the caller falls through.
+    fn class_names_for_generic_constraint(&self, constraint: Option<&str>) -> Vec<String> {
+        let bound = match constraint {
+            Some(c) => match self.resolve_class_constraint(c) {
+                Some(ValueType::Table(Some(idx))) => Some(idx),
+                // Constraint specified but not a class — can't scope, bail.
+                _ => return Vec::new(),
+            },
+            None => None,
+        };
+
+        let mut seen = HashSet::new();
+        let mut names = Vec::new();
+        for (name, &idx) in self.ir.classes.iter().chain(self.ir.ext.classes.iter()) {
+            if let Some(bound_idx) = bound
+                && !self.is_subclass_of(idx, bound_idx)
+            {
+                continue;
+            }
+            if seen.insert(name) {
+                names.push(name.clone());
+            }
+        }
+        names.sort_unstable();
+        names
     }
 
     pub(super) fn resolve_type_of_expression_node(

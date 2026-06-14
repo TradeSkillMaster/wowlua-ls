@@ -2148,6 +2148,15 @@ fn constructor_completion() {
 }
 
 #[test]
+fn backtick_generic_completion() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/backtick-generic-completion.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn type_narrows() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/type-narrows.lua",
