@@ -4692,7 +4692,14 @@ fn scan_framexml_constants(ui_source_dir: &Path) -> HashMap<String, (String, Str
 /// Returns a map of table name → discovered methods/factories. Tables with at least
 /// one colon method are flagged as mixins (emitted as `@class` during generation).
 /// Tables with no methods and no factory closures are pruned.
-fn scan_framexml_utility_tables(ui_source_dir: &Path) -> HashMap<String, UtilTableInfo> {
+///
+/// **Caller is responsible for ordering `ui_source_dirs` by priority** (retail first,
+/// then classic flavors). The cross-file fold below is first-writer-wins, so listing
+/// retail first keeps retail method signatures authoritative while classic branches
+/// contribute only mixins/methods absent from retail (e.g. classic-only UI like
+/// `AuctionPostMixin`). Ketho's stubs are retail-only, so scanning the classic clones
+/// here is the sole source of classic mixin/template method coverage.
+fn scan_framexml_utility_tables(ui_source_dirs: &[&Path]) -> HashMap<String, UtilTableInfo> {
     use rayon::prelude::*;
 
     let dot_func_re = regex_lite::Regex::new(
@@ -4705,13 +4712,18 @@ fn scan_framexml_utility_tables(ui_source_dir: &Path) -> HashMap<String, UtilTab
         r"(?m)^([A-Z]\w+)\.(\w+)\s*=\s*GenerateClosure\s*\(\s*CreateAndInitFromMixin\s*,\s*([A-Z]\w+)\s*\)"
     ).unwrap();
 
-    let interface_dir = ui_source_dir.join("Interface");
-    if !interface_dir.is_dir() {
+    // Collect Lua files across every branch in priority order. Retail dirs listed
+    // first win the first-writer-wins fold for any method defined in multiple branches.
+    let mut lua_files = Vec::new();
+    for dir in ui_source_dirs {
+        let interface_dir = dir.join("Interface");
+        if interface_dir.is_dir() {
+            collect_lua_paths(&interface_dir, &mut lua_files);
+        }
+    }
+    if lua_files.is_empty() {
         return HashMap::new();
     }
-
-    let mut lua_files = Vec::new();
-    collect_lua_paths(&interface_dir, &mut lua_files);
 
     // Scan each file into a local map in parallel, then fold with the same
     // dedup semantics (rayon preserves path order in collect).
@@ -4779,6 +4791,9 @@ fn scan_framexml_utility_tables(ui_source_dir: &Path) -> HashMap<String, UtilTab
     for partial in partials {
         for (table_name, src) in partial {
             let info = tables.entry(table_name.clone()).or_default();
+            // OR-merge: a table with colon methods in ANY branch becomes a mixin.
+            // In theory a retail dot-only namespace could be promoted if classic adds a
+            // colon method, but in practice no such table exists across the three branches.
             info.is_mixin |= src.is_mixin;
             // Cross-file dedup: first file that defines a (name, is_method) pair
             // wins. Prevents duplicate @field stubs when the same method appears in
@@ -5191,13 +5206,23 @@ pub fn regenerate_stubs() {
     // Step 2e: Scan FrameXML utility tables (AnchorUtil, EnumUtil, ScrollUtil, etc.)
     // and their mixin classes. These are FrameXML-defined (not in Blizzard's
     // APIDocumentationGenerated or Ketho's stubs) but used by addon code.
-    let fxml_util_tables = if has_retail_ui {
-        log::info!("Scanning FrameXML utility tables and mixins...");
-        let tables = scan_framexml_utility_tables(&retail_ui_dir);
-        log::info!("  Discovered {} utility tables/mixins with methods", tables.len());
-        tables
-    } else {
-        HashMap::new()
+    let fxml_util_tables = {
+        // Scan retail first (authoritative method signatures win the first-writer-wins
+        // fold), then the classic flavor clones so classic-only mixins/utility tables
+        // — absent from Ketho's retail-only stubs — are also discovered.
+        let mut util_dirs: Vec<&Path> = Vec::new();
+        if has_retail_ui {
+            util_dirs.push(retail_ui_dir.as_path());
+        }
+        util_dirs.extend(classic_ui_dirs.iter().map(|p| p.as_path()));
+        if util_dirs.is_empty() {
+            HashMap::new()
+        } else {
+            log::info!("Scanning FrameXML utility tables and mixins across {} branch(es)...", util_dirs.len());
+            let tables = scan_framexml_utility_tables(&util_dirs);
+            log::info!("  Discovered {} utility tables/mixins with methods", tables.len());
+            tables
+        }
     };
     phase!("scan FrameXML utility tables");
 
@@ -7018,7 +7043,7 @@ end
 TestUtil.CreateTest = GenerateClosure(CreateAndInitFromMixin, TestMixin)
 "#).unwrap();
 
-        let result = scan_framexml_utility_tables(&tmp);
+        let result = scan_framexml_utility_tables(&[tmp.as_path()]);
 
         // TestMixin should be a mixin (has colon methods)
         let mixin = result.get("TestMixin").expect("should find TestMixin");
@@ -7046,6 +7071,46 @@ TestUtil.CreateTest = GenerateClosure(CreateAndInitFromMixin, TestMixin)
     }
 
     #[test]
+    fn test_scan_framexml_utility_tables_multi_branch() {
+        // Regression: classic-only mixins (absent from Ketho's retail-only stubs and
+        // from the retail wow-ui-source clone) must be discovered from the classic
+        // branch clones, while methods shared across branches keep the retail signature.
+        let tmp = std::env::temp_dir().join("wowlua-ls-test-util-multibranch");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let retail_dir = tmp.join("retail");
+        let classic_dir = tmp.join("classic");
+        let retail_iface = retail_dir.join("Interface/AddOns/Blizzard_Shared");
+        let classic_iface = classic_dir.join("Interface/AddOns/Blizzard_Shared");
+        std::fs::create_dir_all(&retail_iface).unwrap();
+        std::fs::create_dir_all(&classic_iface).unwrap();
+
+        // Shared mixin defined in both branches with DIFFERENT signatures for Foo.
+        std::fs::write(retail_iface.join("Shared.lua"),
+            "SharedMixin = {}\nfunction SharedMixin:Foo(retailArg)\nend\n").unwrap();
+        // Classic branch redefines Foo (different param) and adds a classic-only mixin.
+        std::fs::write(classic_iface.join("Shared.lua"),
+            "SharedMixin = {}\nfunction SharedMixin:Foo(classicArg)\nend\n\
+             AuctionPostMixin = {}\nfunction AuctionPostMixin:StartPost(itemID)\nend\n").unwrap();
+
+        // Retail listed first → wins the first-writer-wins fold.
+        let result = scan_framexml_utility_tables(&[retail_dir.as_path(), classic_dir.as_path()]);
+
+        // Shared method keeps the retail signature.
+        let shared = result.get("SharedMixin").expect("should find SharedMixin");
+        let foo = shared.methods.iter().find(|m| m.name == "Foo").unwrap();
+        assert_eq!(foo.params, vec!["retailArg"], "retail signature must win");
+
+        // Classic-only mixin is discovered from the second branch.
+        let classic_only = result.get("AuctionPostMixin")
+            .expect("classic-only mixin must be discovered from the classic branch");
+        assert!(classic_only.is_mixin);
+        let start = classic_only.methods.iter().find(|m| m.name == "StartPost").unwrap();
+        assert_eq!(start.params, vec!["itemID"]);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn test_scan_framexml_utility_tables_no_methods_pruned() {
         let tmp = std::env::temp_dir().join("wowlua-ls-test-util-prune");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -7055,7 +7120,7 @@ TestUtil.CreateTest = GenerateClosure(CreateAndInitFromMixin, TestMixin)
         // Table initialized but no methods — should be pruned
         std::fs::write(interface_dir.join("Empty.lua"), "EmptyTable = {}\n").unwrap();
 
-        let result = scan_framexml_utility_tables(&tmp);
+        let result = scan_framexml_utility_tables(&[tmp.as_path()]);
         assert!(!result.contains_key("EmptyTable"), "empty tables should be pruned");
 
         let _ = std::fs::remove_dir_all(&tmp);
