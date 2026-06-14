@@ -856,6 +856,28 @@ local function CodeG
 -- Case 4: dot-access partial field — phantom `fieldN` filtered
 CodeGen.fieldN
 --            ^ comp: fieldName, fieldNameExtra
+-- Case 5: recursion — the enclosing function's own name resolves inside its
+-- body. Its def_node spans the whole function, but the cursor is in the body
+-- (not the header), so it must NOT be filtered as a phantom being typed.
+local function recurseFn(n)
+    return recurseF
+    --             ^ comp: recurseFn
+end
+-- Case 6: a for-loop variable resolves inside the loop body. Its def_node spans
+-- the whole loop, but the cursor is in the body, not the header.
+local forVarTbl = {}
+for _, loopVarItem in ipairs(forVarTbl) do
+    local useIt = loopVarI
+    --                    ^ comp: loopVarItem
+end
+-- Case 7: an identifier typed as the last statement before `end` still resolves
+-- the enclosing block's locals. Block ranges are end-exclusive, so a cursor at
+-- the block boundary must not fall through to an outer scope and lose the locals.
+local function endBlockFn()
+    local blockLocalVar = 1
+    local useB = blockLocalV
+    --                     ^ comp: blockLocalVar
+end
 
 -- Bracket access on a table whose fields are all the same type should return that type as nilable.
 -- Dynamic key on all-string fields → string?

@@ -388,13 +388,11 @@ impl AnalysisResult {
             items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
             Some(items)
         } else {
-            // Scope completion: enumerate all visible symbols
-            let text_size = TextSize::from(offset);
+            // Block ranges are end-exclusive, so use offset-1 to stay inside the enclosing block.
+            let scope_lookup = TextSize::from(offset.saturating_sub(1));
 
             // Suppress completions when the cursor is on a keyword token (e.g. "then", "end", "do").
-            // Without this, typing `if expr then` offers symbols matching "t*" and Enter replaces "then".
-            let check_pos = TextSize::from(offset.saturating_sub(1));
-            if let Some(tok) = SyntaxNode::new_root(tree).token_at_offset(check_pos).left_biased()
+            if let Some(tok) = SyntaxNode::new_root(tree).token_at_offset(scope_lookup).left_biased()
                 && tok.kind().is_keyword()
             {
                 return None;
@@ -407,7 +405,7 @@ impl AnalysisResult {
                 return Some(items);
             }
 
-            let scope_idx = self.scope_at_offset(text_size)?;
+            let scope_idx = self.scope_at_offset(scope_lookup)?;
 
             // Extract the typed prefix (partial identifier before the cursor)
             // so we can filter symbols server-side. This keeps the response
@@ -454,6 +452,15 @@ impl AnalysisResult {
                 return None;
             }
 
+            // Cursor's enclosing block start — if it's past a def_node's start,
+            // the cursor is in the body (keep the symbol), not the header (skip it).
+            let cursor_block_start = SyntaxNode::new_root(tree)
+                .token_at_offset(scope_lookup)
+                .left_biased()
+                .and_then(|t| t.parent())
+                .and_then(|n| n.ancestors().find(|a| a.kind() == SyntaxKind::Block))
+                .map(|b| u32::from(b.text_range().start()));
+
             let mut seen = HashSet::new();
             let mut items = Vec::new();
             let mut current_scope = Some(scope_idx);
@@ -465,13 +472,11 @@ impl AnalysisResult {
                             if has_prefix && !name.to_ascii_lowercase().starts_with(&prefix_lower) {
                                 continue;
                             }
-                            // Skip symbols defined at the cursor — these are
-                            // phantom symbols the parser created from the name
-                            // currently being typed (e.g. `function CodeG`).
                             let sym = self.sym(sym_idx);
                             if sym.versions.iter().any(|v| {
                                 let d = &v.def_node;
                                 offset >= d.start && offset < d.end
+                                    && cursor_block_start.is_none_or(|bs| bs <= d.start)
                             }) {
                                 continue;
                             }
