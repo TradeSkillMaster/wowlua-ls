@@ -260,6 +260,34 @@ local sv = SelfTest:chain():value()
 --    ^ hover: (local) sv: number  def: local
 --                          ^ def: local
 
+-- ── Backtick generic forwards a constrained type variable ─────────────────
+-- A `T` param constrained `T: SomeClass`, forwarded into another `T` factory,
+-- resolves the factory result to the constraint — so methods on the chained
+-- result still resolve. (Regression: previously hover/def died on the chain
+-- because the inner backtick saw a bare, unbound type variable.)
+
+---@generic T: SelfTest
+---@param kind `T`
+---@return SelfTest
+local function makeStyled(kind)
+    return getByName(kind):chain()
+--                         ^ hover: (method) function SelfTest:chain()\n  -> self
+end
+
+local styled = makeStyled("SelfTest")
+--    ^ hover: (local) styled: SelfTest {  def: local
+
+-- Unconstrained @generic T forwarded as backtick — falls back to any, not a crash
+---@generic T
+---@param kind `T`
+---@return any
+local function makeUnstyled(kind)
+    return getByName(kind)
+end
+
+local u = makeUnstyled("nope")
+--    ^ hover: (local) u: any  def: local
+
 -- ── Recursive generic substitution: fun() return types ────────────────
 
 ---@generic T

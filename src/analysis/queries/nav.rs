@@ -298,6 +298,28 @@ impl AnalysisResult {
         }
     }
 
+    /// Resolve a bare-variable expression node typed as a constrained type variable
+    /// (`@generic T: C` + `@param x \`T\``) to its class constraint `C`.
+    /// Counterpart of `backtick_type_var_constraint` in resolve_call.rs (which
+    /// operates on ExprIds rather than SyntaxNodes).
+    pub(super) fn resolve_type_var_constraint_at_expr(&self, expr_node: &SyntaxNode) -> Option<ValueType> {
+        let names: Vec<_> = expr_node.descendants_with_tokens()
+            .filter_map(|c| c.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Name)
+            .collect();
+        if names.len() != 1 {
+            return None;
+        }
+        let start = names[0].text_range().start();
+        let scope_idx = self.scope_at_offset(start)?;
+        let sym = self.get_symbol(&SymbolIdentifier::Name(names[0].text().to_string()), scope_idx)?;
+        let tv_name = match self.symbol_resolved_type_at(sym, u32::from(start)) {
+            Some(ValueType::TypeVariable(n)) => n.clone(),
+            _ => return None,
+        };
+        self.ir.type_var_class_constraint_for_param(sym, &tv_name)
+    }
+
     /// Find a field by name across multiple tables and their parent classes.
     /// Returns the owning table index and the field's expr id.
     pub(super) fn find_field_in_tables(&self, table_indices: &[TableIndex], field_name: &str) -> Option<(TableIndex, ExprId)> {
@@ -718,20 +740,26 @@ impl AnalysisResult {
             .filter(|c| Expression::cast(*c).is_some())
             .collect();
         let target_expr = arg_exprs.get(target_idx)?;
-        // Find the string token in this expression
-        let string_token = target_expr.descendants_with_tokens()
+        // Direct string-literal argument → resolve it as a class name.
+        if let Some(string_token) = target_expr.descendants_with_tokens()
             .find_map(|child| {
                 if let NodeOrToken::Token(t) = child
                     && t.kind() == SyntaxKind::String { return Some(t); }
                 None
-            })?;
-        let class_name = string_token.text().trim_matches(|c| c == '"' || c == '\'').to_string();
-        // Skip primitive type names — they don't resolve to class tables
-        if crate::annotations::resolve_primitive_type_name(&class_name).is_some() {
-            return None;
+            })
+        {
+            let class_name = string_token.text().trim_matches(|c| c == '"' || c == '\'').to_string();
+            // Skip primitive type names — they don't resolve to class tables
+            if crate::annotations::resolve_primitive_type_name(&class_name).is_some() {
+                return None;
+            }
+            return self.ir.classes.get(&class_name).copied()
+                .or_else(|| self.ir.ext.classes.get(&class_name).copied());
         }
-        self.ir.classes.get(&class_name).copied()
-            .or_else(|| self.ir.ext.classes.get(&class_name).copied())
+        if let Some(constraint) = self.resolve_type_var_constraint_at_expr(target_expr) {
+            return Self::extract_table_idx(&constraint);
+        }
+        None
     }
 
     /// Check if a table has @constructor (own or inherited from parent classes).

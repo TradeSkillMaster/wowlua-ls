@@ -534,6 +534,27 @@ impl Ir {
         }
     }
 
+    /// The class constraint of a type variable `name` (e.g. `T` in
+    /// `@generic T: C`), read from the generics of the local function that
+    /// `param_sym` is a parameter of. Returns the constraint only when it
+    /// resolves to a concrete class — so a `` `T` ``-bound argument (whose value
+    /// is "a class name that is a subtype of C") can fall back to `C` as its best
+    /// static type. Used by both backtick-generic resolution paths.
+    pub(crate) fn type_var_class_constraint_for_param(
+        &self,
+        param_sym: SymbolIndex,
+        name: &str,
+    ) -> Option<ValueType> {
+        if !self.param_symbols.contains(&param_sym) {
+            return None;
+        }
+        let func = self.functions.iter().find(|f| f.args.contains(&param_sym))?;
+        let constraint = func.generics.iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, c)| c.clone())?;
+        matches!(constraint, ValueType::Table(Some(_))).then_some(constraint)
+    }
+
     pub(crate) fn expr(&self, idx: ExprId) -> &Expr {
         if idx.is_external() {
             &self.ext.exprs[idx.ext_offset()]

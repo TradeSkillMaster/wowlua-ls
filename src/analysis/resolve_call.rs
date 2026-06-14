@@ -3944,6 +3944,13 @@ impl<'a> Analysis<'a> {
             self.resolve_backtick_class_name(class_name)
         } else if let Some(class_name) = self.resolve_string_literal_through_expr(arg_expr_id) {
             self.resolve_backtick_class_name(&class_name)
+        } else if let Some(constraint) = self.backtick_type_var_constraint(arg_expr_id, arg_type) {
+            // The argument is a class name bound to a constrained type variable
+            // `T: C` (`@param x \`T\`` + `@generic T: C` on the enclosing function),
+            // e.g. forwarding a `\`T\`` param into another `\`T\`` factory. Its value
+            // is "some subclass of C", so the best static type for the constructed
+            // object is `C`.
+            constraint
         } else {
             // For string args that can't be resolved to a class, use Any (the backtick
             // says "type name" — if unknown, Any is better than string). For non-string
@@ -3955,6 +3962,15 @@ impl<'a> Analysis<'a> {
             };
             self.resolve_string_type_as_class(arg_type).unwrap_or(fallback)
         }
+    }
+
+    /// When a backtick argument is a reference to a parameter whose type is a
+    /// type variable constrained to a class (`@param x \`T\`` + `@generic T: C`),
+    /// return that class constraint `C`. See `Ir::type_var_class_constraint_for_param`.
+    fn backtick_type_var_constraint(&self, arg_expr_id: &ExprId, arg_type: &ValueType) -> Option<ValueType> {
+        let ValueType::TypeVariable(name) = arg_type else { return None; };
+        let Expr::SymbolRef(sym_idx, _) = self.expr(*arg_expr_id) else { return None; };
+        self.ir.type_var_class_constraint_for_param(*sym_idx, name)
     }
 
     fn resolve_string_type_as_class(&self, vt: &ValueType) -> Option<ValueType> {
