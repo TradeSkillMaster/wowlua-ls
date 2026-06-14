@@ -878,6 +878,13 @@ local function endBlockFn()
     local useB = blockLocalV
     --                     ^ comp: blockLocalVar
 end
+-- Case 8: completion in a multi-value return before end (same end-exclusive boundary as Case 7, in return position).
+local function returnBlockFn()
+    local retNumProcessed = 1
+    local retNumStacks = 2
+    return retNumProcessed, retNumStack
+    --                                ^ comp: retNumStacks
+end
 
 -- Bracket access on a table whose fields are all the same type should return that type as nilable.
 -- Dynamic key on all-string fields → string?
