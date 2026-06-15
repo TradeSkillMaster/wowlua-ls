@@ -65,13 +65,14 @@ Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments 
 
 ### 6. Local overrides
 
-Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). Currently 26 files:
+Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). Currently 27 files:
 
 | File | Purpose |
 |------|---------|
 | `AceAddon-3.0.lua` | AceAddon library stubs |
 | `AceGUI-3.0.lua` | AceGUI library stubs |
-| `CreateFrame.lua` | Intersection types: `CreateFrame(..., template) → T & Tp` |
+| `CreateFrame.lua` | Intersection types (`CreateFrame(..., template) → T & Tp`) and `@creates-global` for the named-frame side effect |
+| `CreateFont.lua` | `@creates-global` for `CreateFont`/`CreateFontFamily` named-font side effect |
 | `GetCursorInfo.lua` | Cursor info return type overloads |
 | `HookScript.lua` | Event handler hook typing |
 | `IsObjectType.lua` | `@type-narrows` for `IsObjectType()` → frame subclass narrowing |

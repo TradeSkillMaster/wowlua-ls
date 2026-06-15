@@ -700,6 +700,8 @@ pub(crate) struct AnnotationBlock {
     pub(crate) accessors: Vec<(String, Visibility)>,
     pub(crate) builds_field: Option<(usize, AnnotationType)>,
     pub(crate) built_name: Option<usize>,
+    /// `@creates-global N [M|TypeName]` — see [`crate::annotations::CreatesGlobalSpec`].
+    pub(crate) creates_global: Option<crate::annotations::CreatesGlobalSpec>,
     pub(crate) built_extends: bool,
     pub(crate) type_narrows: Option<(usize, usize)>,
     pub(crate) type_narrows_class: Option<String>,
@@ -1617,6 +1619,16 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             {
                 block.narrows_arg = Some(idx);
             }
+        } else if let Some(rest) = content.strip_prefix("@creates-global") {
+            // `@creates-global N` — N (1-based) is the param whose string literal
+            // names a created global. The global's type is harvested from the
+            // creating call's resolved return type, so no type is specified here.
+            let rest = rest.trim();
+            if let Some(Ok(name_param)) = rest.split_whitespace().next().map(|s| s.parse::<usize>())
+                && name_param >= 1
+            {
+                block.creates_global = Some(crate::annotations::CreatesGlobalSpec { name_param });
+            }
         } else if let Some(rest) = content.strip_prefix("@type") {
             let rest = rest.trim();
             if !rest.is_empty() { block.var_type = Some(parse_type(rest)); }
@@ -1799,7 +1811,7 @@ pub use annotation_types::OverloadSig;
 pub(crate) use annotation_types::parse_overload;
 
 pub use annotation_scanning::{
-    FieldValueKind, ExternalGlobalKind, ExternalGlobal,
+    FieldValueKind, ExternalGlobalKind, ExternalGlobal, CreatesGlobalSpec,
     SuppressionKind, DiagnosticSuppression, scan_diagnostic_directives,
 };
 pub(crate) use annotation_scanning::{
@@ -1819,6 +1831,8 @@ pub(crate) use annotation_scanning::{
 pub use scan_globals::scan_file_globals;
 pub use scan_globals::scan_dynamic_global_prefixes;
 pub(crate) use scan_globals::scan_file_globals_with_synth;
+pub use scan_globals::{CreatesGlobalMap, build_creates_global_map};
+pub(crate) use scan_globals::scan_created_globals;
 pub use scan_defclass::scan_defclass_calls;
 pub use scan_defclass::{DefclassContext, scan_defclass_calls_with_context};
 pub use scan_built_name::scan_built_name_calls;

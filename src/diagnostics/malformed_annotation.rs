@@ -95,7 +95,7 @@ const KNOWN_TAGS: &[&str] = &[
     "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
     "generic", "private", "protected", "accessor", "diagnostic",
     "builds-field", "built-name", "built-extends", "type-narrows", "narrows-arg",
-    "correlated", "flavor-narrows", "event", "requires",
+    "creates-global", "correlated", "flavor-narrows", "event", "requires",
     "see", "vararg", "as", "cast", "operator", "module", "source",
     "version", "package", "async", "nodoc", "public",
 ];
@@ -263,6 +263,19 @@ impl DiagnosticPass for MalformedAnnotation {
                         }
                     } else {
                         Some("@narrows-arg requires a numeric parameter index (e.g. @narrows-arg 1)".to_string())
+                    }
+                }
+                "creates-global" => {
+                    // `@creates-global N` — N (1-based) names the param whose string
+                    // literal becomes the created global. The type is inferred from
+                    // the call, so there is no second token to validate.
+                    match rest.split_whitespace().next() {
+                        None => Some("@creates-global requires a parameter index (e.g. @creates-global 2)".to_string()),
+                        Some(tok) => match tok.parse::<usize>() {
+                            Ok(0) => Some("@creates-global parameter index must be >= 1 (1-based)".to_string()),
+                            Ok(_) => None,
+                            Err(_) => Some("@creates-global requires a numeric parameter index (e.g. @creates-global 2)".to_string()),
+                        },
                     }
                 }
                 "correlated" => {

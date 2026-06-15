@@ -35,6 +35,26 @@ impl<'a> Analysis<'a> {
         self.resolved_expr_cache.resize(self.ir.exprs.len(), None);
         self.resolving_exprs.resize(self.ir.exprs.len(), false);
 
+        // Warm the per-file symbol overlay for any `@creates-global` side-effect
+        // globals this file references, so their harvested call-return type is
+        // available throughout the fixpoint — including for locals aliased from
+        // them (`local f = MyCreatedFrame`). Gated on a non-empty registry so
+        // workspaces without created globals pay nothing.
+        if !self.ir.ext.deferred_call_globals.is_empty() {
+            let mut created: HashSet<SymbolIndex> = HashSet::new();
+            for expr in &self.ir.exprs {
+                if let Expr::SymbolRef(s, _) = expr
+                    && s.is_external()
+                    && self.ir.ext.deferred_call_globals.contains_key(s)
+                {
+                    created.insert(*s);
+                }
+            }
+            for s in created {
+                self.ir.ensure_symbol_overlay(s);
+            }
+        }
+
         // Pre-resolve annotated return symbols so they're available before
         // the main resolution loop tries to resolve callers
         for func_idx_raw in 0..self.ir.functions.len() {

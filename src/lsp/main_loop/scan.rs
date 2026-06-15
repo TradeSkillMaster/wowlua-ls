@@ -389,7 +389,7 @@ pub(super) struct LuaFileScanResult {
     pub dynamic_global_prefixes: Vec<String>,
 }
 
-pub(super) fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<LuaFileScanResult> {
+pub(super) fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool, creates_global_specs: &crate::annotations::CreatesGlobalMap) -> Option<LuaFileScanResult> {
     let text = std::fs::read_to_string(path).ok()?;
     if crate::has_shebang(&text) { return None; }
     let tree = crate::syntax::parser::parse(&text);
@@ -410,7 +410,7 @@ pub(super) fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_pr
             event.def_path = Some(path.to_path_buf());
         }
     }
-    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
+    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix, creates_global_specs);
     let dynamic_global_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
     Some(LuaFileScanResult { scan, file_globals, addon_ns_class, dynamic_global_prefixes })
 }
@@ -421,6 +421,7 @@ pub fn scan_paths_with_overrides(
     configs: Option<&crate::config::ProjectConfigs>,
     stub_globals: &[ExternalGlobal],
     stub_classes: &[ClassDecl],
+    creates_global_specs: &crate::annotations::CreatesGlobalMap,
 ) -> WorkspaceScanResult {
     use rayon::prelude::*;
 
@@ -429,7 +430,7 @@ pub fn scan_paths_with_overrides(
             let is_override = override_paths.contains(p);
             let synth = configs.map(|c| c.correlated_return_overloads_for(p)).unwrap_or(true);
             let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-            scan_lua_file(p, synth, ipp).map(|mut r| {
+            scan_lua_file(p, synth, ipp, creates_global_specs).map(|mut r| {
                 if is_override {
                     for g in &mut r.file_globals {
                         g.is_override = true;
@@ -747,7 +748,7 @@ pub(super) fn scan_xml_paths_into(xml_paths: &[PathBuf], result: &mut WorkspaceS
 }
 
 pub fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> WorkspaceScanResult {
-    scan_workspace_with_stubs(dirs, configs, &[], &[])
+    scan_workspace_with_stubs(dirs, configs, &[], &[], &crate::annotations::CreatesGlobalMap::new())
 }
 
 pub fn scan_workspace_with_stubs(
@@ -755,6 +756,7 @@ pub fn scan_workspace_with_stubs(
     configs: &mut crate::config::ProjectConfigs,
     stub_globals: &[ExternalGlobal],
     stub_classes: &[ClassDecl],
+    creates_global_specs: &crate::annotations::CreatesGlobalMap,
 ) -> WorkspaceScanResult {
     let mut paths = Vec::new();
     let mut xml_paths = Vec::new();
@@ -769,7 +771,7 @@ pub fn scan_workspace_with_stubs(
             collect_lua_paths_filtered(&lib_dir, &mut paths, &mut xml_paths, configs);
         }
     }
-    let mut result = scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs), stub_globals, stub_classes);
+    let mut result = scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs), stub_globals, stub_classes, creates_global_specs);
     scan_xml_paths_into(&xml_paths, &mut result);
     // Apply detected dynamic global prefixes to configs so that reads of
     // PREFIX<anything> across the workspace don't false-positive.
@@ -802,7 +804,10 @@ pub(super) fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, impl
             event.def_path = Some(path.to_path_buf());
         }
     }
-    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
+    // Pass 1 runs without stubs (overlapped with stub loading), so the
+    // `@creates-global` spec map is empty here; those named globals are detected
+    // later in `complete_directory_scan` (pass 2) where stubs are available.
+    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix, &crate::annotations::CreatesGlobalMap::new());
     let dynamic_global_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
     Some(CachedFileScan { tree, scan, file_globals, addon_ns_class, dynamic_global_prefixes })
 }
@@ -847,6 +852,7 @@ pub(super) fn complete_directory_scan(
     pass1: ScanPass1Result,
     stub_classes: &[ClassDecl],
     stub_globals: &[ExternalGlobal],
+    creates_global_specs: &crate::annotations::CreatesGlobalMap,
     configs: &crate::config::ProjectConfigs,
 ) -> DirectoryScanResult {
     use rayon::prelude::*;
@@ -931,6 +937,27 @@ pub(super) fn complete_directory_scan(
         }
     }
 
+    // Named-global detection (e.g. `CreateFrame(type, "Name")` → `_G.Name`),
+    // annotation-driven via `@creates-global`. Done here (pass 2) rather than in
+    // pass 1 because pass 1 runs without stubs (overlapped with stub loading), so
+    // the spec map isn't available yet. Reuses cached parse trees. Detected
+    // globals are PREPENDED to each file's globals so they win initial
+    // registration over a same-named assignment with a less-precise RHS type.
+    if !creates_global_specs.is_empty() {
+        let created: Vec<_> = pass1.results.par_iter()
+            .filter_map(|(p, cached)| {
+                let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
+                let found = crate::annotations::scan_created_globals(root, creates_global_specs, Some(p));
+                if found.is_empty() { None } else { Some((p.clone(), found)) }
+            })
+            .collect();
+        for (path, mut found) in created {
+            let entry = out.file_globals.entry(path).or_default();
+            found.append(entry);
+            *entry = found;
+        }
+    }
+
     // Pass 3: self-field scan (typed, funcall, bare).
     // Discovers `self.field = expr` assignments inside methods and adds them
     // to the per-file self-field maps for merging during rebuild().
@@ -991,9 +1018,10 @@ pub(super) fn scan_directory_tracked(
     configs: &mut crate::config::ProjectConfigs,
     stub_classes: &[ClassDecl],
     stub_globals: &[ExternalGlobal],
+    creates_global_specs: &crate::annotations::CreatesGlobalMap,
 ) -> DirectoryScanResult {
     let pass1 = scan_directory_pass1(dir, configs);
-    let result = complete_directory_scan(pass1, stub_classes, stub_globals, configs);
+    let result = complete_directory_scan(pass1, stub_classes, stub_globals, creates_global_specs, configs);
     let all_prefixes: Vec<String> = collect_all_dynamic_prefixes(&result.file_dynamic_prefixes);
     if !all_prefixes.is_empty() {
         configs.set_dynamic_global_prefixes(all_prefixes);

@@ -154,7 +154,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 27;
+pub(crate) const BLOB_VERSION: u32 = 28;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -205,6 +205,13 @@ pub struct PreResolvedGlobals {
     /// union-of-tuples (new-style multi-return aliases).
     #[serde(default)]
     pub(crate) tuple_form_aliases: HashMap<String, AnnotationType>,
+    /// `@creates-global` specs by function name (the 1-based `name_param`). Lets
+    /// workspace scanning detect functions whose calls implicitly create named
+    /// globals (e.g. `CreateFrame`) without hard-coding any function names.
+    /// Computed at runtime from stub globals via `build_creates_global_map()`; read
+    /// via [`PreResolvedGlobals::creates_global_specs`].
+    #[serde(skip)]
+    pub(crate) creates_global_specs: crate::annotations::CreatesGlobalMap,
     pub(crate) scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) symbol_locations: HashMap<SymbolIndex, ExternalLocation>,
@@ -296,6 +303,23 @@ pub struct PreResolvedGlobals {
     #[serde(skip)]
     pub(crate) deferred_sig_cache:
         std::sync::RwLock<HashMap<FunctionIndex, crate::analysis::deferred::DeferredSig>>,
+    /// `@creates-global` side-effect globals whose type is harvested lazily from
+    /// the creating call's resolved return type (keyed by the global's scope0
+    /// symbol). Populated at build time from `deferred_call_type` globals; the
+    /// type is filled on first read via the deferred-call-global harvest in
+    /// `analysis/deferred.rs`. Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub(crate) deferred_call_globals:
+        HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
+    /// Reverse index: path → created-global symbols defined in that file, so one
+    /// whole-file harvest warms every created global in the file at once.
+    #[serde(skip)]
+    pub(crate) deferred_call_globals_by_path: HashMap<PathBuf, Vec<SymbolIndex>>,
+    /// Memoized harvested type (in ext-index space) per created-global symbol.
+    /// `None` means "harvested but unresolvable" (don't re-harvest). Lives behind
+    /// the shared `Arc`, so a wholesale rebuild invalidates it. `#[serde(skip)]`.
+    #[serde(skip)]
+    pub(crate) deferred_call_global_cache: std::sync::RwLock<HashMap<SymbolIndex, Option<ValueType>>>,
     /// In-memory document content for files the editor has open. When set,
     /// the deferred harvester reads from here instead of disk, so unsaved
     /// edits are picked up immediately. Updated by the LSP layer on
@@ -756,6 +780,9 @@ struct BuildContext {
     // Lazy cross-file return resolution: workspace functions whose returns were
     // inferred from the body (coarse) and should be resolved precisely on demand.
     deferred_returns: HashSet<FunctionIndex>,
+    // `@creates-global` side-effect globals: scope0 symbol → creating-call location.
+    // Their type is harvested lazily from the call's resolved return type.
+    deferred_call_globals: HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
 
     // Config
     implicit_protected_prefix: bool,
@@ -797,6 +824,7 @@ impl BuildContext {
             constructor_method_names: HashSet::new(),
             declared_class_fields: HashMap::new(),
             deferred_returns: HashSet::new(),
+            deferred_call_globals: HashMap::new(),
             implicit_protected_prefix: false,
         }
     }
@@ -1915,6 +1943,13 @@ impl BuildContext {
                     }
                 };
                 let sym_idx = self.register_global(&g.name, resolved_type);
+                if g.deferred_call_type
+                    && let Some(path) = &g.source_path
+                {
+                    self.deferred_call_globals.insert(sym_idx, crate::analysis::deferred::DeferredCallGlobal {
+                        path: path.clone(), call_offset: g.def_start,
+                    });
+                }
                 if g.flavor_guard != 0 {
                     self.symbols[sym_idx.ext_offset()].flavor_guard = g.flavor_guard;
                 }
@@ -2031,6 +2066,10 @@ impl BuildContext {
             };
             let sym_id = SymbolIdentifier::Name(g.name.clone());
             let Some(&sym_idx) = self.scope0_symbols.get(&sym_id) else { continue };
+            // Created globals (`@creates-global`) get their type from the harvest of
+            // the creating call's resolved return — not the coarse primary `@return`
+            // that `resolve_funcall_chain` reads. Leave them untyped here.
+            if self.deferred_call_globals.contains_key(&sym_idx) { continue; }
             // Skip globals that already have a resolved type from the initial pass,
             // unless they are class_globals (e.g. `GameFontNormal = CreateFont(...)`)
             // where the function return type should override the class table type.
@@ -2298,11 +2337,20 @@ impl BuildContext {
             by_path
         };
 
+        let deferred_call_globals_by_path = {
+            let mut by_path: HashMap<PathBuf, Vec<SymbolIndex>> = HashMap::new();
+            for (sym_idx, dcg) in &self.deferred_call_globals {
+                by_path.entry(dcg.path.clone()).or_default().push(*sym_idx);
+            }
+            by_path
+        };
+
         PreResolvedGlobals {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,
             exprs: self.exprs, tables: self.tables,
             classes: self.classes, aliases: self.aliases, alias_fun_types: self.alias_fun_types,
             parameterized_aliases: self.parameterized_aliases, tuple_form_aliases: self.tuple_form_aliases,
+            creates_global_specs: HashMap::new(),
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
             function_names: self.function_names, function_to_field: self.function_to_field,
@@ -2323,6 +2371,9 @@ impl BuildContext {
             deferred_returns_by_path,
             deferred_returns: self.deferred_returns,
             deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_call_globals: self.deferred_call_globals,
+            deferred_call_globals_by_path,
+            deferred_call_global_cache: std::sync::RwLock::new(HashMap::new()),
             document_overrides: std::sync::RwLock::new(HashMap::new()),
             project_configs: None,
         }
@@ -2409,6 +2460,7 @@ impl PreResolvedGlobals {
             alias_fun_types: HashMap::new(),
             parameterized_aliases: HashMap::new(),
             tuple_form_aliases: HashMap::new(),
+            creates_global_specs: HashMap::new(),
             scope0_symbols,
             framexml_scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
@@ -2434,6 +2486,9 @@ impl PreResolvedGlobals {
             deferred_returns: HashSet::new(),
             deferred_returns_by_path: HashMap::new(),
             deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_call_globals: HashMap::new(),
+            deferred_call_globals_by_path: HashMap::new(),
+            deferred_call_global_cache: std::sync::RwLock::new(HashMap::new()),
             document_overrides: std::sync::RwLock::new(HashMap::new()),
             project_configs: None,
         }
@@ -2444,6 +2499,14 @@ impl PreResolvedGlobals {
     /// have location data for outgoing call resolution.
     pub fn has_function_location(&self, idx: FunctionIndex) -> bool {
         self.function_locations.contains_key(&idx)
+    }
+
+    /// `@creates-global` specs by function name. Workspace scanning uses these to
+    /// detect functions whose calls implicitly create named globals (e.g.
+    /// `CreateFrame`). Exposed so callers holding only the stub `PreResolvedGlobals`
+    /// (e.g. the test harness) can obtain the spec map for the scan.
+    pub fn creates_global_specs(&self) -> &crate::annotations::CreatesGlobalMap {
+        &self.creates_global_specs
     }
 
     pub fn build(
@@ -2463,6 +2526,7 @@ impl PreResolvedGlobals {
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(globals);
         let mut pg = ctx.finish();
+        pg.creates_global_specs = crate::annotations::build_creates_global_map(globals);
         // Two merge passes: (1) copy methods from addon ns sub-tables (ns.Foo fields)
         // into @class Foo tables, then (2) copy top-level addon ns fields into classes
         // declared on the ns variable itself (---@class MyAddon on `local _, ns = ...`).

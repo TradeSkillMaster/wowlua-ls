@@ -21,3 +21,22 @@ CreateFontFamily("MyAddonFontFamily", {})
 -- Dynamic names are NOT detected (out of scope)
 local name = "DynamicFrame"
 CreateFrame("Frame", name, UIParent)
+
+-- CreateFrame inside a function body (not just top-level statements) is detected.
+local function InitNestedWidgets()
+    CreateFrame("Frame", "MyAddonNestedFrame", UIParent)
+end
+
+-- CreateFrame nested as a call argument is detected.
+local function wrap(x) return x end
+wrap(CreateFrame("Button", "MyAddonWrappedButton"))
+
+-- A virtual template (class) and a frame created from it. The created global's
+-- type is harvested from the call's resolved return — CreateFrame's template
+-- overload yields `Frame & MyAddonRowTemplate`, so the mixin survives cross-file.
+---@class MyAddonRowTemplate
+local MyAddonRowTemplate = {}
+---@param self MyAddonRowTemplate
+function MyAddonRowTemplate:SetRowData() end
+
+CreateFrame("Frame", "MyAddonTemplatedFrame", UIParent, "MyAddonRowTemplate")

@@ -54,6 +54,8 @@ struct BuildOnStubsContext<'a> {
     // Lazy cross-file return resolution: workspace functions whose returns were
     // inferred from the body (coarse) and should be resolved precisely on demand.
     deferred_returns: HashSet<FunctionIndex>,
+    // `@creates-global` side-effect globals: scope0 symbol → creating-call location.
+    deferred_call_globals: HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
 
     // Config
     implicit_protected_prefix: bool,
@@ -110,6 +112,7 @@ impl<'a> BuildOnStubsContext<'a> {
             sub_tables: HashMap::new(),
             declared_class_fields: HashMap::new(),
             deferred_returns: HashSet::new(),
+            deferred_call_globals: HashMap::new(),
             implicit_protected_prefix,
         }
     }
@@ -1177,6 +1180,13 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                 };
                 let sym_idx = self.register_global(&g.name, resolved_type);
+                if g.deferred_call_type
+                    && let Some(path) = &g.source_path
+                {
+                    self.deferred_call_globals.insert(sym_idx, crate::analysis::deferred::DeferredCallGlobal {
+                        path: path.clone(), call_offset: g.def_start,
+                    });
+                }
                 if g.flavor_guard != 0 {
                     self.symbols[sym_idx.ext_offset()].flavor_guard = g.flavor_guard;
                 }
@@ -1563,11 +1573,20 @@ impl<'a> BuildOnStubsContext<'a> {
             by_path
         };
 
+        let deferred_call_globals_by_path = {
+            let mut by_path: HashMap<PathBuf, Vec<SymbolIndex>> = HashMap::new();
+            for (sym_idx, dcg) in &self.deferred_call_globals {
+                by_path.entry(dcg.path.clone()).or_default().push(*sym_idx);
+            }
+            by_path
+        };
+
         PreResolvedGlobals {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,
             exprs: self.exprs, tables: self.tables,
             classes: self.classes, aliases: self.aliases, alias_fun_types: self.alias_fun_types,
             parameterized_aliases: self.parameterized_aliases, tuple_form_aliases: self.tuple_form_aliases,
+            creates_global_specs: self.stubs_base.creates_global_specs.clone(),
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols: self.framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
             function_names: self.function_names, function_to_field: self.function_to_field,
@@ -1586,6 +1605,9 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_returns_by_path,
             deferred_returns: self.deferred_returns,
             deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_call_globals: self.deferred_call_globals,
+            deferred_call_globals_by_path,
+            deferred_call_global_cache: std::sync::RwLock::new(HashMap::new()),
             document_overrides: std::sync::RwLock::new(HashMap::new()),
             project_configs: None,
         }

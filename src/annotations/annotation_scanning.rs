@@ -213,6 +213,20 @@ pub enum ExternalGlobalKind {
     FieldRef(String, String),
 }
 
+/// Parsed `@creates-global N` annotation. Marks a function whose calls
+/// implicitly create a named global as a side effect (e.g. WoW's
+/// `CreateFrame(type, "Name")`). `name_param` (1-based) is the parameter whose
+/// string-literal value names the created global. The global's *type* is not
+/// specified here — it is harvested from the call's actual resolved return type
+/// (see the deferred-call-global harvest in `analysis/deferred.rs`), so a
+/// `CreateFrame` call carrying a template mixin yields `Frame & Template`, not a
+/// coarse base type.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CreatesGlobalSpec {
+    /// Parameter whose string-literal value names the created global.
+    pub name_param: usize,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExternalGlobal {
     pub name: String,
@@ -270,6 +284,11 @@ pub struct ExternalGlobal {
     /// `@narrows-arg N` — calling this function narrows the Nth argument's type.
     #[serde(default)]
     pub narrows_arg: Option<usize>,
+    /// `@creates-global` — calling this function with a string-literal at the
+    /// `name_param` argument implicitly creates a named global (e.g. WoW's
+    /// `CreateFrame(type, "Name")` creates `_G.Name`). See [`CreatesGlobalSpec`].
+    #[serde(default)]
+    pub creates_global: Option<CreatesGlobalSpec>,
     /// `@requires T: Constraint` — receiver class type-param constraints for a
     /// method. Each entry is (param_name, constraint_type_string).
     #[serde(default)]
@@ -281,6 +300,14 @@ pub struct ExternalGlobal {
     /// (stub globals have no bodies), so no BLOB_VERSION bump is needed.
     #[serde(skip)]
     pub body_derived_returns: bool,
+    /// True for globals produced by `@creates-global` detection (e.g. the
+    /// `_G.MyFrame` created by `CreateFrame("Frame", "MyFrame", ...)`). Such a
+    /// global has no explicit `returns`; its type is harvested lazily from the
+    /// creating call's resolved return type at `def_start` in `source_path` (the
+    /// deferred-call-global harvest in `analysis/deferred.rs`). Runtime only
+    /// (workspace-detected, never stubs) — `#[serde(skip)]`, no BLOB_VERSION bump.
+    #[serde(skip)]
+    pub deferred_call_type: bool,
     /// Byte range of the function/variable *name* token (for precise diagnostic
     /// positioning). Falls back to `def_start`/`def_end` when unavailable.
     #[serde(default)]
@@ -324,8 +351,10 @@ impl ExternalGlobal {
             flavor_guard: 0,
             implicit_nil_return: false,
             narrows_arg: None,
+            creates_global: None,
             requires: Vec::new(),
             body_derived_returns: false,
+            deferred_call_type: false,
             name_start: 0,
             name_end: 0,
         }
@@ -729,8 +758,10 @@ pub(crate) fn scan_method_funcall_self_fields(
                 is_override: false, see: Vec::new(), flavors: 0, flavor_guard: 0,
                 implicit_nil_return: false,
                 narrows_arg: None,
+                creates_global: None,
                 requires: Vec::new(),
                 body_derived_returns: false,
+                deferred_call_type: false,
                 name_start: range.0,
                 name_end: range.1,
             });

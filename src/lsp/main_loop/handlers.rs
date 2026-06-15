@@ -1292,7 +1292,7 @@ pub(super) fn reload_config(
         file_self_fields,
         file_self_field_globals,
         file_dynamic_prefixes,
-    } = scan_directory_tracked(root, &mut new_configs, &ws.stub_classes, &ws.stub_globals);
+    } = scan_directory_tracked(root, &mut new_configs, &ws.stub_classes, &ws.stub_globals, ws.stub_pre_globals.creates_global_specs());
     ws.configs = Arc::new(new_configs);
     ws.ws_file_globals = file_globals;
     ws.ws_file_classes = file_classes;
@@ -1383,7 +1383,7 @@ pub(super) fn try_batch_analyze(
         let ipp = file_path.as_ref()
             .map(|fp| ws.configs.implicit_protected_prefix_for(fp))
             .unwrap_or(false);
-        let (new_globals, _addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, None, synth, ipp);
+        let (new_globals, _addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, None, synth, ipp, ws.stub_pre_globals.creates_global_specs());
         let scan = scan_all_annotations(root);
         let would_rebuild = file_path.as_ref().is_some_and(|fp| {
             let globals_changed = ws.ws_file_globals.get(fp)

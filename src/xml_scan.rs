@@ -865,8 +865,10 @@ fn finalize_frame(
             flavor_guard: 0,
             implicit_nil_return: false,
             narrows_arg: None,
+            creates_global: None,
             requires: Vec::new(),
             body_derived_returns: false,
+            deferred_call_type: false,
             name_start: ctx.def_start,
             name_end: ctx.def_end,
         });
@@ -906,8 +908,10 @@ fn finalize_frame(
             flavor_guard: 0,
             implicit_nil_return: false,
             narrows_arg: None,
+            creates_global: None,
             requires: Vec::new(),
             body_derived_returns: false,
+            deferred_call_type: false,
             name_start: ctx.def_start,
             name_end: ctx.def_end,
         });

@@ -58,6 +58,8 @@ pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> 
     stubs.pre_globals.stub_symbols_end = stubs.pre_globals.symbols.len();
     stubs.pre_globals.stub_functions_end = stubs.pre_globals.functions.len();
     stubs.pre_globals.fixup_enum_tables();
+    stubs.pre_globals.creates_global_specs =
+        crate::annotations::build_creates_global_map(&stubs.stub_globals);
     // FrameXML files use the addon namespace pattern internally; clear any
     // stale addon table from the blob so it doesn't leak into user addons.
     stubs.pre_globals.addon_table_idx = None;

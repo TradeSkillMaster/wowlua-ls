@@ -4,8 +4,8 @@
 -- CreateFrame is available in all flavors — OK.
 local _f = CreateFrame("Frame")
 
--- AbbreviateLargeNumbers is retail-only. Missing classic → warn.
-AbbreviateLargeNumbers(500)
+-- PlayerGetTimerunningSeasonID is retail-only. Missing classic → warn.
+PlayerGetTimerunningSeasonID()
 -- ^ diag: wrong-flavor-api
 
 -- AbandonQuest is available in classic + classic_era only (not retail).

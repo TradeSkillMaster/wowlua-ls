@@ -536,8 +536,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         stubs_handle.join().expect("stubs loading thread panicked (note: stubs errors call process::exit, so this indicates an unexpected panic)");
 
     // Complete workspace scan: process results + Pass 2 (defclass/built-name, needs stubs)
+    let creates_global_specs = crate::annotations::build_creates_global_map(&stub_globals);
     let scan_result = if let Some(pass1) = scan_pass1 {
-        complete_directory_scan(pass1, &stub_classes, &stub_globals, &configs)
+        complete_directory_scan(pass1, &stub_classes, &stub_globals, &creates_global_specs, &configs)
     } else {
         DirectoryScanResult::default()
     };
@@ -1572,8 +1573,10 @@ mod tests {
                 flavor_guard: 0,
                 implicit_nil_return: false,
                 narrows_arg: None,
+                creates_global: None,
                 requires: Vec::new(),
                 body_derived_returns: false,
+                deferred_call_type: false,
                 name_start: 0,
                 name_end: 0,
             }
@@ -1950,7 +1953,7 @@ mod tests {
 
         // Pre-populate globals/classes/aliases so only the events path is tested.
         // (Without this, globals_changed is true because the file isn't in the map yet.)
-        let (globals, _) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), false, false);
+        let (globals, _) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), false, false, &crate::annotations::CreatesGlobalMap::new());
         let scan_pre = crate::annotations::scan_all_annotations(root);
         ws.ws_file_globals.insert(file_path.clone(), globals);
         ws.ws_file_classes.insert(file_path.clone(), scan_pre.classes);
@@ -2026,8 +2029,10 @@ mod tests {
             flavor_guard: 0,
             implicit_nil_return: false,
             narrows_arg: None,
+            creates_global: None,
             requires: Vec::new(),
             body_derived_returns: false,
+            deferred_call_type: false,
             name_start: 0,
             name_end: 0,
         }

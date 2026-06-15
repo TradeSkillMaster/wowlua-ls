@@ -289,8 +289,10 @@ fn build_func_external(
         flavor_guard: annotations.flavor_guard,
         implicit_nil_return,
         narrows_arg: annotations.narrows_arg,
+        creates_global: annotations.creates_global,
         requires: annotations.requires,
         body_derived_returns: is_body_derived,
+        deferred_call_type: false,
         name_start,
         name_end,
     }
@@ -376,7 +378,7 @@ pub fn scan_dynamic_global_prefixes(root: SyntaxNode<'_>) -> Vec<String> {
 // ── Global declaration scanning ─────────────────────────────────────────────
 
 pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
-    scan_file_globals_with_synth(root, source_path, true, false).0
+    scan_file_globals_with_synth(root, source_path, true, false, &CreatesGlobalMap::new()).0
 }
 
 /// Variant of [`scan_file_globals`] retaining the per-file
@@ -395,6 +397,7 @@ pub(crate) fn scan_file_globals_with_synth(
     source_path: Option<&Path>,
     _correlated_return_overloads: bool,
     implicit_protected_prefix: bool,
+    creates_global_specs: &CreatesGlobalMap,
 ) -> (Vec<ExternalGlobal>, Option<String>) {
     let owned_path = source_path.map(|p| p.to_path_buf());
     let Some(block) = Block::cast(root) else { return (Vec::new(), None); };
@@ -633,87 +636,13 @@ pub(crate) fn scan_file_globals_with_synth(
         }
     }
 
-    let mut globals = Vec::new();
-
-    // Detect CreateFrame/CreateFont/CreateFontFamily calls with string-literal
-    // name arguments. These calls implicitly create a named global as a side
-    // effect; registering it eliminates false `undefined-global` at read sites
-    // in other files (mirrors how xml_scan.rs registers name= frames as
-    // ExternalGlobal). Runs before the main statement loop so these entries
-    // appear first in the globals vec and win initial registration in
-    // build_on_stubs — the explicit `returns` type is needed because the
-    // deferred resolution path filters out CreateFrame's generic TypeVariable.
-    for stmt in &all_stmts {
-        let call = match stmt {
-            Statement::FunctionCall(c) => Some(*c),
-            Statement::LocalAssign(a) => {
-                a.expression_list().and_then(|el| {
-                    el.expressions().into_iter().find_map(|e| {
-                        if let Expression::FunctionCall(c) = e { Some(c) } else { None }
-                    })
-                })
-            }
-            Statement::Assign(a) => {
-                a.expression_list().and_then(|el| {
-                    el.expressions().into_iter().find_map(|e| {
-                        if let Expression::FunctionCall(c) = e { Some(c) } else { None }
-                    })
-                })
-            }
-            _ => None,
-        };
-        if let Some(ref call) = call
-            && let Some((name, frame_type)) = extract_createframe_named_global(call)
-        {
-            // These are all top-level WoW API globals (CreateFrame, CreateFont,
-            // CreateFontFamily); no addon_ns / class_vars normalization is needed
-            // since the callee is always a plain global name.
-            let callee_names = call.identifier()
-                .map(|id| id.names())
-                .unwrap_or_default();
-            let range = call.syntax().text_range();
-            globals.push(ExternalGlobal {
-                name,
-                kind: ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(
-                    callee_names,
-                    Some(frame_type.clone()),
-                )),
-                params: Vec::new(),
-                returns: vec![AnnotationType::Simple(frame_type)],
-                return_names: Vec::new(),
-                return_descriptions: Vec::new(),
-                overloads: Vec::new(),
-                doc: None,
-                deprecated: false,
-                nodiscard: false,
-                constructor: false,
-                visibility: Visibility::Public,
-                generics: Vec::new(),
-                defclass: None,
-                defclass_parent: None,
-                source_path: owned_path.clone(),
-                def_start: u32::from(range.start()),
-                def_end: u32::from(range.end()),
-                builds_field: None,
-                built_name: None,
-                built_extends: false,
-                type_narrows: None,
-                type_narrows_class: None,
-                string_value: None,
-                number_value: None,
-                is_override: false,
-                see: Vec::new(),
-                flavors: 0,
-                flavor_guard: 0,
-                implicit_nil_return: false,
-                narrows_arg: None,
-                requires: Vec::new(),
-                body_derived_returns: false,
-                name_start: u32::from(range.start()),
-                name_end: u32::from(range.end()),
-            });
-        }
-    }
+    // Named globals created as a side effect of calling functions annotated with
+    // `@creates-global` (e.g. WoW's `CreateFrame(type, "Name")` creates `_G.Name`).
+    // Annotation-driven so no specific function names are hard-coded here; the
+    // spec map is sourced from the stub globals' `creates_global` field. Collected
+    // first so they win initial registration in build_on_stubs over a same-named
+    // assignment whose RHS type is less precise. See `scan_created_globals`.
+    let mut globals = scan_created_globals(root, creates_global_specs, source_path);
 
     // Track field names assigned on the addon table in this file (e.g. ns.LibTSMApp = ...)
     // Used to gate 3-part chains so we don't inject fields onto unrelated external classes
@@ -901,8 +830,10 @@ pub(crate) fn scan_file_globals_with_synth(
                                 flavors: 0, flavor_guard: annotations.flavor_guard,
                                 implicit_nil_return: false,
                                 narrows_arg: None,
+                                creates_global: None,
                                 requires: Vec::new(),
                                 body_derived_returns: false,
+                                deferred_call_type: false,
                                 name_start: ns, name_end: ne,
                             });
                         } else if names.len() >= 2 {
@@ -1107,8 +1038,10 @@ pub(crate) fn scan_file_globals_with_synth(
                                 flavors: 0, flavor_guard: annotations.flavor_guard,
                                 implicit_nil_return: false,
                                 narrows_arg: None,
+                                creates_global: None,
                                 requires: Vec::new(),
                                 body_derived_returns: false,
+                                deferred_call_type: false,
                                 name_start: u32::from(range.start()),
                                 name_end: u32::from(range.end()),
                             });
@@ -1209,33 +1142,109 @@ fn string_literal_value(expr: &Expression<'_>) -> Option<String> {
     None
 }
 
-/// Check if a function call is `CreateFrame(type, "name", ...)`,
-/// `CreateFont("name")`, or `CreateFontFamily("name", ...)` with
-/// string-literal name arguments.
-/// Returns `(global_name, resolved_type)` if matched.
-fn extract_createframe_named_global(call: &FunctionCall<'_>) -> Option<(String, String)> {
+/// Map of function name → [`CreatesGlobalSpec`]. Built from stub globals'
+/// `creates_global` field via [`build_creates_global_map`] and threaded into the
+/// global scanner so the set of "creates a named global" functions is
+/// annotation-driven, not hard-coded.
+pub type CreatesGlobalMap = HashMap<String, super::CreatesGlobalSpec>;
+
+/// Build a [`CreatesGlobalMap`] from a slice of globals (typically the stub
+/// globals), collecting those that carry a `@creates-global` annotation.
+pub fn build_creates_global_map(globals: &[ExternalGlobal]) -> CreatesGlobalMap {
+    globals.iter()
+        .filter_map(|g| g.creates_global.as_ref().map(|cg| (g.name.clone(), cg.clone())))
+        .collect()
+}
+
+/// Scan a file for calls to `@creates-global` functions and return the implicit
+/// named globals they create as a side effect (e.g. WoW's
+/// `CreateFrame(type, "Name")` creates `_G.Name`). Registering these eliminates
+/// false `undefined-global` at read sites in other files (mirrors how
+/// `xml_scan.rs` registers `name=` frames as `ExternalGlobal`). Returns an empty
+/// vec when `specs` is empty (no `@creates-global` functions known).
+pub(crate) fn scan_created_globals(
+    root: SyntaxNode<'_>,
+    specs: &CreatesGlobalMap,
+    source_path: Option<&Path>,
+) -> Vec<ExternalGlobal> {
+    let mut out = Vec::new();
+    if specs.is_empty() { return out; }
+    let owned_path = source_path.map(|p| p.to_path_buf());
+    // Walk every call in the file (not just top-level statements): a named global
+    // is created wherever the call runs — inside an init function body, as a
+    // nested call argument (`AceEvent:Embed(CreateFrame(...))`), etc.
+    for node in root.descendants() {
+        let Some(call) = FunctionCall::cast(node) else { continue };
+        if let Some(name) = extract_created_global(&call, specs) {
+            // The callee is always a plain global name (e.g. CreateFrame), so no
+            // addon_ns / class_vars normalization is needed.
+            let callee_names = call.identifier().map(|id| id.names()).unwrap_or_default();
+            let range = call.syntax().text_range();
+            // No explicit `returns`: the global is marked `deferred_call_type` so
+            // its type is harvested from the creating call's *resolved* return
+            // type (`def_start` locates the call in `source_path`). This yields the
+            // full type — including any template/mixin intersection a `CreateFrame`
+            // call produces — instead of a coarse annotation-reconstructed type.
+            out.push(ExternalGlobal {
+                name,
+                kind: ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(
+                    callee_names,
+                    None,
+                )),
+                params: Vec::new(),
+                returns: Vec::new(),
+                return_names: Vec::new(),
+                return_descriptions: Vec::new(),
+                overloads: Vec::new(),
+                doc: None,
+                deprecated: false,
+                nodiscard: false,
+                constructor: false,
+                visibility: Visibility::Public,
+                generics: Vec::new(),
+                defclass: None,
+                defclass_parent: None,
+                source_path: owned_path.clone(),
+                def_start: u32::from(range.start()),
+                def_end: u32::from(range.end()),
+                builds_field: None,
+                built_name: None,
+                built_extends: false,
+                type_narrows: None,
+                type_narrows_class: None,
+                string_value: None,
+                number_value: None,
+                is_override: false,
+                see: Vec::new(),
+                flavors: 0,
+                flavor_guard: 0,
+                implicit_nil_return: false,
+                narrows_arg: None,
+                creates_global: None,
+                requires: Vec::new(),
+                body_derived_returns: false,
+                deferred_call_type: true,
+                name_start: u32::from(range.start()),
+                name_end: u32::from(range.end()),
+            });
+        }
+    }
+    out
+}
+
+/// If `call` invokes a `@creates-global` function (per `specs`) with a
+/// string-literal at the name parameter, return the created global's name (e.g.
+/// `CreateFrame("Button", "X")` → `Some("X")`). The global's *type* is not
+/// derived here — it is harvested from the call's resolved return type.
+fn extract_created_global(call: &FunctionCall<'_>, specs: &CreatesGlobalMap) -> Option<String> {
     let ident = call.identifier()?;
     if ident.is_call_to_self() { return None; }
     let names = ident.names();
     if names.len() != 1 { return None; }
+    let spec = specs.get(&names[0])?;
     let args = call.arguments()?.expressions();
-
-    match names[0].as_str() {
-        "CreateFrame" => {
-            // CreateFrame(frameType, "name", ...)
-            if args.len() < 2 { return None; }
-            let frame_type = string_literal_value(&args[0])?;
-            let name = string_literal_value(&args[1])?;
-            Some((name, frame_type))
-        }
-        "CreateFont" | "CreateFontFamily" => {
-            // CreateFont("name") / CreateFontFamily("name", ...)
-            if args.is_empty() { return None; }
-            let name = string_literal_value(&args[0])?;
-            Some((name, "Font".to_string()))
-        }
-        _ => None,
-    }
+    // 1-based index into the argument list.
+    string_literal_value(args.get(spec.name_param.checked_sub(1)?)?)
 }
 
 /// Extract named fields from a table constructor as a `TableLiteral` annotation.

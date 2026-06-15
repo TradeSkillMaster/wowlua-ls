@@ -84,6 +84,44 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@see symbol` | Cross-reference shown in hover. |
 | `@constructor` | Mark a method as the class constructor. |
 | `@accessor name [visibility]` | Set visibility for methods defined through a sub-table accessor. [Guide](/guide/classes#accessor-visibility-accessor) |
+| `@creates-global N` | Calling this function with a string literal at param `N` creates a named global. The global's type is taken from the call's return type. |
+
+### `@creates-global N`
+
+Some functions create a global as a side effect of being called — for example
+World of Warcraft's `CreateFrame("Frame", "MyFrame")` defines `_G.MyFrame`. Mark
+such a function so that reading the created name in another file does not produce
+a false [`undefined-global`](/reference/diagnostics) diagnostic:
+
+- `N` (1-based) is the parameter whose **string-literal** argument names the
+  created global.
+
+The created global's **type is the call's actual return type** — you don't
+specify it. This means a call carrying a template/mixin gets the full type: a
+`CreateFrame("Frame", "MyFrame", parent, "MyTemplate")` global is typed
+`Frame & MyTemplate`, not a bare `Frame`.
+
+```lua
+---@param frameType FrameType
+---@param name? string
+---@return T frame
+---@creates-global 2   -- param 2 names the global; its type is the return type
+function CreateFrame(frameType, name, ...) end
+
+---@param name string
+---@return Font
+---@creates-global 1   -- param 1 names the global; it is a Font (from @return)
+function CreateFont(name) end
+```
+
+Only string-literal arguments are detected; dynamic names (e.g.
+`CreateFrame("Frame", varName)`) are not registered.
+
+::: info
+Currently, only functions defined in API stubs are detected as `@creates-global`
+sources. The annotation is parsed on workspace-defined functions but their calls
+are not yet scanned for created globals.
+:::
 
 ## Opaque aliases
 

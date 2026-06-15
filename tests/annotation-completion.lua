@@ -5,7 +5,7 @@
 
 -- All tags after ---@ (no context: shows everything)
 ---@
---  ^ comp: param, return, type, class, field, alias, enum, event, overload, defclass, generic, cast, as, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, accessor, meta, diagnostic, type-narrows, flavor-narrows, narrows-arg, requires, correlated, see
+--  ^ comp: param, return, type, class, field, alias, enum, event, overload, defclass, generic, cast, as, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, accessor, meta, diagnostic, type-narrows, flavor-narrows, narrows-arg, creates-global, requires, correlated, see
 
 -- Partial prefix: "re" → return, requires
 ---@diagnostic disable-next-line: malformed-annotation
@@ -37,6 +37,11 @@
 ---@fl
 --    ^ comp: flavor-narrows
 
+-- Partial prefix: "cr" → creates-global
+---@diagnostic disable-next-line: malformed-annotation
+---@cr
+--    ^ comp: creates-global
+
 -- Non-matching prefix: no tag starts with "xyz" → empty, no fallback to globals
 ---@diagnostic disable-next-line: malformed-annotation
 ---@xyz
@@ -47,7 +52,7 @@
 -- Function context: after @param, only function-applicable tags appear
 ---@param x number
 ---@
---  ^ comp: param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, requires, see
+--  ^ comp: param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, creates-global, requires, see
 function ctxFuncTest(x) end
 
 -- Class context: after @class, only class-applicable tags appear
@@ -57,12 +62,12 @@ function ctxFuncTest(x) end
 
 -- Function context inferred from function below (no prior tags)
 ---@
---  ^ comp: param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, requires, see
+--  ^ comp: param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, creates-global, requires, see
 function ctxInferredFunc() end
 
 -- Function context with params: "Annotate function" appears alongside tags
 ---@
---  ^ comp: Annotate function, param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, requires, see
+--  ^ comp: Annotate function, param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, flavor-narrows, narrows-arg, creates-global, requires, see
 function ctxWithParams(a, b) end
 
 -- ── Param name completions ───────────────────────────────────────────────────

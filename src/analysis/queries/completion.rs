@@ -1286,6 +1286,7 @@ impl AnalysisResult {
             ("type-narrows",   "Type guard that narrows target param",    F,         None),
             ("flavor-narrows", "Flavor guard that narrows WoW API availability", F,  None),
             ("narrows-arg",    "In-place argument type narrowing",        F,         Some("narrows-arg ${1:N}")),
+            ("creates-global", "Call creates a named global (e.g. CreateFrame)", F,   Some("creates-global ${1:N}")),
             ("requires",       "Restrict method by receiver type-param constraint", F,  Some("requires ${1:T}: ${2:Constraint}")),
             ("correlated",     "Declare fields that are always nil/non-nil together", C, None),
             ("see",            "Cross-reference link to related symbol or URL", F|C|S, None),
@@ -1363,7 +1364,7 @@ impl AnalysisResult {
                         match tag {
                             "param" | "return" | "generic" | "builds-field" | "built-name"
                             | "built-extends" | "type-narrows" | "defclass" | "flavor-narrows"
-                            | "narrows-arg" | "requires" => {
+                            | "narrows-arg" | "creates-global" | "requires" => {
                                 has_function_tag = true;
                             }
                             "class" | "enum" | "field" | "accessor" | "correlated" => {

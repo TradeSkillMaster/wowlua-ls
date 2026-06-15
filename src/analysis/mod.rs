@@ -407,6 +407,14 @@ pub(crate) struct Ir {
     /// consults this map first for external indices, so resolution, diagnostics,
     /// and hover all see the precise type without any `effective_*` plumbing.
     pub(crate) overlay: HashMap<FunctionIndex, Function>,
+    /// Per-file overlay of precise `Symbol`s for external `@creates-global`
+    /// side-effect globals this file references. Populated lazily
+    /// (`ensure_symbol_overlay`) by harvesting the creating call's resolved
+    /// return type. The value is the coarse external `Symbol` with its last
+    /// version's `resolved_type` replaced by the harvested type. `sym()` consults
+    /// this map first for external indices, so resolution, diagnostics, hover,
+    /// and completion all see the precise created-global type.
+    pub(crate) symbol_overlay: HashMap<SymbolIndex, Symbol>,
 }
 
 /// Metadata for a string literal argument annotated as `expression<C, R>`.
@@ -517,6 +525,9 @@ impl Ir {
     // Two-tier lookup: indices < EXT_BASE are local, >= EXT_BASE are external
     pub(crate) fn sym(&self, idx: SymbolIndex) -> &Symbol {
         if idx.is_external() {
+            if let Some(s) = self.symbol_overlay.get(&idx) {
+                return s;
+            }
             &self.ext.symbols[idx.ext_offset()]
         } else {
             &self.symbols[idx.val()]
@@ -2172,6 +2183,7 @@ impl<'a> Analysis<'a> {
                 tc_expected_class: HashMap::new(),
                 pending_bracket_assigns: Vec::new(),
                 overlay: HashMap::new(),
+                symbol_overlay: HashMap::new(),
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),

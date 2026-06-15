@@ -75,7 +75,11 @@ fn run_annotation_tests(config: &TestConfig) {
     let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
     let pre_globals = if config.with_stubs {
         if let Some(ref dir) = abs_scan_dir {
-            let scan = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+            // Pass the stub `@creates-global` specs (but empty stub globals/classes,
+            // to keep defclass/built-name scan behavior unchanged) so that named
+            // globals from e.g. `CreateFrame(type, "Name")` are detected — mirroring
+            // the LSP, which scans with stubs available.
+            let scan = lsp::scan_workspace_with_stubs(std::slice::from_ref(dir), &mut project_configs, &[], &[], STUB_GLOBALS.creates_global_specs());
             let (sc, mut sa, sg, ans, se, ws_callable) = (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
             wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
             let stub_pre = &*STUB_GLOBALS;

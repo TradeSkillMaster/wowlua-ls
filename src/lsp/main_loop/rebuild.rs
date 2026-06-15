@@ -23,6 +23,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.string_value == y.string_value
         && x.number_value == y.number_value
         && x.requires == y.requires
+        && x.creates_global == y.creates_global
 }
 
 pub(super) fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
@@ -247,7 +248,7 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
 
     let synth = ws.configs.correlated_return_overloads_for(&file_path);
     let ipp = ws.configs.implicit_protected_prefix_for(&file_path);
-    let (new_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), synth, ipp);
+    let (new_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), synth, ipp, ws.stub_pre_globals.creates_global_specs());
     if let Some(name) = addon_ns_class {
         ws.ws_file_addon_ns_class.insert(file_path.clone(), name);
     } else {

@@ -34,7 +34,18 @@ use std::sync::Arc;
 
 use crate::analysis::{Analysis, AnalysisConfig, Ir};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::types::{FunctionIndex, ResolvedOverload, ValueType};
+use crate::types::{Expr, FunctionIndex, ResolvedOverload, SymbolIndex, ValueType};
+
+/// Locates the creating call for a `@creates-global` side-effect global (e.g.
+/// the `_G.MyFrame` from `CreateFrame("Frame", "MyFrame", ...)`) so its type can
+/// be harvested from that call's *resolved* return type rather than reconstructed
+/// from annotations. `call_offset` is the creating call's start offset within
+/// `path` — it matches `Expr::FunctionCall.call_range.0` in the defining file.
+#[derive(Debug, Clone)]
+pub(crate) struct DeferredCallGlobal {
+    pub(crate) path: PathBuf,
+    pub(crate) call_offset: u32,
+}
 
 /// The whole-file harvest's precise signature for one deferred function, in
 /// external-index space. One bundle holds *everything* body-derived inference
@@ -80,6 +91,31 @@ impl Ir {
         precise.return_annotations = sig.returns;
         precise.overloads = sig.overloads;
         self.overlay.insert(func_idx, precise);
+    }
+
+    /// Ensure the per-file `symbol_overlay` holds a precise `Symbol` for an
+    /// external `@creates-global` side-effect global. Idempotent: an overlay hit,
+    /// a non-external index, or a non-created/unresolvable global is a no-op.
+    ///
+    /// The overlay value is the coarse external `Symbol` with its last version's
+    /// `resolved_type` replaced by the type harvested from the creating call. After
+    /// this call, `sym()` transparently returns the precise symbol, so the created
+    /// global resolves to the full call type (e.g. `Frame & Template`) everywhere.
+    pub(crate) fn ensure_symbol_overlay(&mut self, sym_idx: SymbolIndex) {
+        if !sym_idx.is_external() || self.symbol_overlay.contains_key(&sym_idx) {
+            return;
+        }
+        if !self.ext.deferred_call_globals.contains_key(&sym_idx) {
+            return;
+        }
+        let Some(ty) = resolve_deferred_call_global_type(&self.ext, sym_idx) else {
+            return;
+        };
+        let mut precise = self.ext.symbols[sym_idx.ext_offset()].clone();
+        if let Some(ver) = precise.versions.last_mut() {
+            ver.resolved_type = Some(ty);
+        }
+        self.symbol_overlay.insert(sym_idx, precise);
     }
 }
 
@@ -288,6 +324,114 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     if let Ok(mut cache) = ext.deferred_sig_cache.write() {
         for (fidx, sig) in harvested {
             cache.insert(fidx, sig);
+        }
+    }
+}
+
+/// Resolve the type of a `@creates-global` side-effect global (e.g. the
+/// `_G.MyFrame` from `CreateFrame("Frame", "MyFrame", ...)`) by harvesting the
+/// *resolved* return type of the creating call from its defining file (memoized).
+/// This is what makes a created global carry the full call type — including any
+/// template/mixin intersection — rather than a coarse annotation-reconstructed
+/// base type. Returns `None` when the global isn't a created global or the call
+/// can't be resolved (the caller then leaves the symbol untyped).
+pub(crate) fn resolve_deferred_call_global_type(
+    ext: &Arc<PreResolvedGlobals>,
+    sym_idx: SymbolIndex,
+) -> Option<ValueType> {
+    // Memo hit. `Some(None)` means "harvested but unresolvable" — don't re-harvest.
+    if let Ok(cache) = ext.deferred_call_global_cache.read()
+        && let Some(hit) = cache.get(&sym_idx)
+    {
+        return hit.clone();
+    }
+
+    let path = ext.deferred_call_globals.get(&sym_idx)?.path.clone();
+
+    // Re-entrancy / cycle guard: if this file is already being analyzed on the
+    // stack (e.g. the defining file reads its own created global), bail for this
+    // edge — the nested harvest below still fills the memo from a fresh analysis.
+    let entered = IN_PROGRESS.with(|set| set.borrow_mut().insert(path.clone()));
+    if !entered {
+        return None;
+    }
+
+    harvest_call_globals_in_file(ext, &path);
+
+    IN_PROGRESS.with(|set| {
+        set.borrow_mut().remove(&path);
+    });
+
+    ext.deferred_call_global_cache
+        .read()
+        .ok()
+        .and_then(|cache| cache.get(&sym_idx).cloned())
+        .flatten()
+}
+
+/// Analyze `path` once and harvest the resolved type of *every* created global
+/// defined in it, writing each into the memo (`None` when unresolvable, so the
+/// file is not re-analyzed). For each created global, locate the creating call by
+/// its recorded start offset (matching `Expr::FunctionCall.call_range.0`), read
+/// the call's first-return resolved type from the engine's expression cache, and
+/// lift it into ext-index space. Does nothing on I/O failure.
+fn harvest_call_globals_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
+    let text = ext
+        .document_overrides
+        .read()
+        .ok()
+        .and_then(|docs| docs.get(path).cloned());
+    let text = match text {
+        Some(t) => t,
+        None => match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(_) => return,
+        },
+    };
+
+    let config = match &ext.project_configs {
+        Some(configs) => AnalysisConfig {
+            correlated_return_overloads: configs.correlated_return_overloads_for(path),
+            backward_param_types: configs.backward_param_types_for(path),
+            ..AnalysisConfig::default()
+        },
+        None => AnalysisConfig::default(),
+    };
+
+    let tree = crate::syntax::parser::parse(&text);
+    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(ext), config);
+    analysis.resolve_types();
+    let result = analysis.into_result();
+    let ir = &result.ir;
+
+    let Some(syms) = ext.deferred_call_globals_by_path.get(path) else { return };
+
+    let mut harvested: Vec<(SymbolIndex, Option<ValueType>)> = Vec::new();
+    for &sym_idx in syms {
+        let Some(dcg) = ext.deferred_call_globals.get(&sym_idx) else { continue };
+        let offset = dcg.call_offset;
+        // The first-return value of the creating call (ret_index 0) is the created
+        // object; its resolved type is the global's type.
+        let mut resolved: Option<ValueType> = None;
+        for (i, expr) in ir.exprs.iter().enumerate() {
+            if let Expr::FunctionCall { call_range, ret_index: 0, .. } = expr
+                && call_range.0 == offset
+            {
+                resolved = result
+                    .resolved_expr_cache
+                    .get(i)
+                    .and_then(|v| v.clone())
+                    .map(|t| lift_local_type_to_ext(&t, ir, ext))
+                    .filter(|t| !contains_any(t));
+                break;
+            }
+        }
+        harvested.push((sym_idx, resolved));
+    }
+
+    if let Ok(mut cache) = ext.deferred_call_global_cache.write() {
+        for (sym_idx, ty) in harvested {
+            cache.insert(sym_idx, ty);
         }
     }
 }

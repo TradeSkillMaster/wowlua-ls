@@ -14,4 +14,5 @@
 ---@param template? `Tp` | Template
 ---@param id? number
 ---@return T frame
+---@creates-global 2
 function CreateFrame(frameType, name, parent, template, id) end

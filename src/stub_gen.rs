@@ -5556,7 +5556,7 @@ pub fn regenerate_stubs() {
     let mut paths = collect_stub_scan_paths(&vendor_dirs, &gen_dir, &overrides_dir, &override_stems, &mut override_set);
 
     phase!("write generated stubs + enum/constants merge");
-    let scan_result = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
+    let scan_result = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[], &crate::annotations::CreatesGlobalMap::new());
     let (mut classes, mut aliases, mut globals, stub_events) =
         (scan_result.classes, scan_result.aliases, scan_result.globals, scan_result.events);
     phase!("scan_paths_with_overrides (pass 1)");
@@ -5630,7 +5630,7 @@ pub fn regenerate_stubs() {
         log::info!("Re-scanning stubs with inferred returns (pass 2)...");
         paths = collect_stub_scan_paths(&vendor_dirs, &gen_dir, &overrides_dir, &override_stems, &mut override_set);
 
-        let scan_result2 = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[]);
+        let scan_result2 = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[], &crate::annotations::CreatesGlobalMap::new());
         let (classes2, aliases2, globals2, stub_events2) =
             (scan_result2.classes, scan_result2.aliases, scan_result2.globals, scan_result2.events);
         phase!("scan_paths_with_overrides (pass 2)");
