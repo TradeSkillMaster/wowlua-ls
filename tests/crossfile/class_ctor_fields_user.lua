@@ -58,3 +58,15 @@ local _negexpr = ExprFields.NegExpr
 --                          ^ hover: (field) NegExpr: number
 local _lit = ExprFields.Literal
 --                      ^ hover: (field) Literal: string
+
+-- Constructor fields from a @class declared inside a function body must resolve
+-- cross-file (regression: a value typed as the nested class previously reported
+-- undefined-field on these constructor-inferred fields).
+---@type NestedCtorFields
+local nested = {}
+local _nf1 = nested.skyridingEnabled
+--                  ^ hover: (field) skyridingEnabled: boolean
+local _nf2 = nested.reportPurchases
+--                  ^ hover: (field) reportPurchases: boolean
+local _nf3 = nested.rideAlong
+--                  ^ hover: (field) rideAlong: number

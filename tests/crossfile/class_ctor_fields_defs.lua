@@ -47,3 +47,15 @@ ns.ExprFields = {
     NegExpr = -(1 + 2),
     Literal = "simple",
 }
+
+-- Nested-scope @class: constructor fields inside a function body must be visible cross-file.
+local function buildNestedDefaults()
+    ---@class NestedCtorFields
+    local defaults = {
+        reportPurchases = true,
+        skyridingEnabled = true,
+        rideAlong = 1,
+    }
+    return defaults
+end
+buildNestedDefaults()

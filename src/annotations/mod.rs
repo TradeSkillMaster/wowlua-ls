@@ -957,10 +957,9 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
 /// After scanning annotations, walk statements to find table constructor fields
 /// for `@class` declarations. This makes constructor fields visible cross-file.
 fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut ScanResult) {
-    use crate::ast::{Block, Statement, Expression, FieldKind};
+    use crate::ast::{Statement, Expression, FieldKind};
     use crate::syntax::tree::SyntaxToken;
 
-    let Some(block) = Block::cast(root) else { return };
     if result.classes.is_empty() { return; }
 
     // Build a map from class name to class index for matching.
@@ -968,7 +967,12 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
         .map(|(i, c)| (c.name.clone(), i))
         .collect();
 
-    for stmt in block.statements() {
+    // Walk every assignment statement at any nesting depth (not just the file's
+    // top-level block) so that `@class` declarations on nested locals — e.g.
+    // `local defaults = {...}` inside a function body — still contribute their
+    // table-constructor fields to the class cross-file.
+    for node in root.descendants() {
+        let Some(stmt) = Statement::cast(node) else { continue };
         // Extract expression list from LocalAssign or Assign (global assignment)
         let expr_list = match &stmt {
             Statement::LocalAssign(local) => local.expression_list(),
