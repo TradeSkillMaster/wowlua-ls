@@ -61,6 +61,7 @@ mod scan;
 mod semantic_token_encoding;
 mod state;
 mod stub_loading;
+mod watchdog;
 
 use conversions::*;
 use diagnostics_handlers::*;
@@ -640,6 +641,10 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         .and_then(|ci| ci.snippet_support)
         .unwrap_or(false);
 
+    // Decouple the main loop from stdin backpressure before entering it (see
+    // `buffered_input_connection`): a long single-threaded analysis must never
+    // stop draining stdin, or the client deadlocks writing to us.
+    let connection = buffered_input_connection(connection);
     main_loop(connection, ws, ClientSupport {
         progress: supports_progress,
         code_lens_refresh: supports_code_lens_refresh,
@@ -648,6 +653,44 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         diagnostic_refresh: supports_diagnostic_refresh,
         snippets: client_snippet_support,
     })
+}
+
+/// Interpose an unbounded in-process buffer, drained by a dedicated thread,
+/// between lsp-server's stdin reader and the main loop.
+///
+/// lsp-server's stdio transport uses a zero-capacity rendezvous channel
+/// (`bounded(0)`): its reader thread parks on `reader_sender.send(msg)` until
+/// the main loop calls `recv()`. Our request loop is single-threaded, so while
+/// it is busy in a long analysis it calls neither `recv()` nor anything else —
+/// the reader stays parked mid-handoff and **stops reading stdin**. The OS stdin
+/// pipe then fills as the client keeps sending requests, and the client's write
+/// to our stdin blocks. In an lsp4j client (IntelliJ) that blocked write is
+/// performed while holding the lock its own response-reader needs, so the client
+/// deadlocks against itself and the editor UI freezes — observed as repeated
+/// multi-second "no response from the server" stalls that can become permanent.
+///
+/// The pump thread continuously moves messages from the real reader into an
+/// unbounded buffer (`in_tx.send` never blocks), so the reader's handoff always
+/// completes immediately and stdin is drained regardless of what the main loop
+/// is doing. The main loop reads from the buffer instead; the real (rendezvous)
+/// sender is kept as-is so outbound responses — including the shutdown reply —
+/// remain synchronously flushed.
+fn buffered_input_connection(connection: Connection) -> Connection {
+    let Connection { sender, receiver: real_rx } = connection;
+    let (in_tx, in_rx) = crossbeam_channel::unbounded::<Message>();
+    std::thread::Builder::new()
+        .name("lsp-in-pump".to_string())
+        .spawn(move || {
+            // Ends when the real reader disconnects (stdin EOF on shutdown) or
+            // the main loop drops the buffered receiver.
+            for msg in real_rx {
+                if in_tx.send(msg).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("spawn lsp input pump thread");
+    Connection { sender, receiver: in_rx }
 }
 
 /// Client capability flags negotiated during initialization.
@@ -667,6 +710,11 @@ fn main_loop(
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut documents: HashMap<String, Document> = HashMap::new();
     let mut progress_counter: i32 = 1; // 0 is used by the startup loading token
+
+    // Spawn the main-loop watchdog so a stalled analysis or request self-reports
+    // in the server log (naming the file/method) instead of only manifesting as
+    // client-side "no response from the server" timeouts.
+    watchdog::spawn_watchdog();
     // Tracks when the last textDocument/didChange was processed. Used to implement
     // a proper debounce: diagnostics are only published after DEBOUNCE_MS of quiet
     // time since the LAST change, not just since the start of the current loop
@@ -873,6 +921,10 @@ fn main_loop(
         // the next recv_timeout is measured from the most recent user edit.
         let has_did_change = notifications.iter().any(|n| n.method == "textDocument/didChange");
         for not in notifications {
+            let _wg = watchdog::WorkGuard::new(format!(
+                "notification {} {}", not.method,
+                watchdog::message_uri(&not.params).unwrap_or_default(),
+            ));
             handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter, &bg);
         }
         if has_did_change {
@@ -936,6 +988,7 @@ fn main_loop(
                             // document is still dirty. Publishing partial-state diagnostics mid-
                             // keystroke causes flickering warnings. Phase 4's debounced cycle
                             // publishes diagnostics once the user pauses.
+                            let _wg = watchdog::WorkGuard::new(format!("analyze (interactive) {uri_str}"));
                             let result = Some(analyze_lua_parsed(
                                 &uri, &ws.pre_globals, &ws.configs, &tree,
                             ));
@@ -951,6 +1004,10 @@ fn main_loop(
         // Phase 3: Handle all requests (now with up-to-date text and analysis
         // for the requested documents).
         for req in requests {
+            let _wg = watchdog::WorkGuard::new(format!(
+                "request {} {}", req.method,
+                watchdog::message_uri(&req.params).unwrap_or_default(),
+            ));
             handle_request(&connection, &mut documents, &mut ws, req, client.snippets);
         }
 
@@ -1034,7 +1091,13 @@ fn main_loop(
                     // A file that would trigger a workspace rebuild makes the batch
                     // bail (no side effects); fall back to the sequential path for
                     // the remaining still-dirty docs, which handles rebuilds safely.
-                    if !try_batch_analyze(chunk, &mut documents, &ws) {
+                    let batch_ok = {
+                        let _wg = watchdog::WorkGuard::new(format!(
+                            "phase4 batch analyze ({} files)", chunk.len()
+                        ));
+                        try_batch_analyze(chunk, &mut documents, &ws)
+                    };
+                    if !batch_ok {
                         all_ok = false;
                         break;
                     }
@@ -1085,6 +1148,7 @@ fn main_loop(
                         continue;
                     }
                     {
+                        let _wg = watchdog::WorkGuard::new(format!("phase4 analyze {uri_str}"));
                         let uri = match lsp_types::Uri::from_str(uri_str) {
                             Ok(u) => u,
                             Err(e) => {
