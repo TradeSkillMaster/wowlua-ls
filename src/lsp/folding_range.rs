@@ -9,10 +9,18 @@ pub(crate) fn compute_folding_ranges(tree: &SyntaxTree, text: &str) -> Vec<Foldi
 
     for nid in tree.descendants(tree.root()) {
         let kind = tree.node_kind(nid);
-        // IfBranch/ElseBranch nodes exclude the closing keyword (elseif/else/end),
-        // so their end_line is already the last content line. Other block nodes
-        // include the closing keyword (end / }), so we subtract 1 to keep it visible.
-        let adjust = match kind {
+        // Both block nodes (which carry a trailing `end` / `}` / `until …` on
+        // their last line) and branch nodes (IfBranch/ElseBranch, which end on
+        // their last content line) fold through the node's last line. For block
+        // nodes we also pin `end_character = 0`: line-folding clients (VS Code)
+        // ignore it and hide the closer along with the body, while
+        // character-precise clients (e.g. IntelliJ) fold only up to the start of
+        // the closing line, leaving the closer rendered inline after the
+        // placeholder (`if foo then … end`). `min_extra_lines` is how many lines
+        // must follow the start line for a fold to be worthwhile: 2 for blocks
+        // (header + body + closer, so a body-less `function f()\nend` is skipped),
+        // 1 for branches (header + content).
+        let (min_extra_lines, has_closer) = match kind {
             SyntaxKind::FunctionDefinition
             | SyntaxKind::IfChain
             | SyntaxKind::DoBlock
@@ -20,9 +28,9 @@ pub(crate) fn compute_folding_ranges(tree: &SyntaxTree, text: &str) -> Vec<Foldi
             | SyntaxKind::RepeatUntilLoop
             | SyntaxKind::ForCountLoop
             | SyntaxKind::ForInLoop
-            | SyntaxKind::TableConstructor => 1,
+            | SyntaxKind::TableConstructor => (2, true),
             SyntaxKind::IfBranch
-            | SyntaxKind::ElseBranch => 0,
+            | SyntaxKind::ElseBranch => (1, false),
             _ => continue,
         };
         let node = tree.node(nid);
@@ -31,15 +39,14 @@ pub(crate) fn compute_folding_ranges(tree: &SyntaxTree, text: &str) -> Vec<Foldi
         }
         let start_line = numbers.line_col(node.start as usize).0 .0;
         let end_line = numbers.line_col(node.end.saturating_sub(1).max(node.start) as usize).0 .0;
-        if end_line < start_line + adjust + 1 {
+        if end_line < start_line + min_extra_lines {
             continue;
         }
-        let fold_end = end_line - adjust;
         ranges.push(FoldingRange {
             start_line,
             start_character: None,
-            end_line: fold_end,
-            end_character: None,
+            end_line,
+            end_character: if has_closer { Some(0) } else { None },
             kind: Some(FoldingRangeKind::Region),
             collapsed_text: None,
         });
@@ -132,8 +139,7 @@ fn collect_multiline_string_folds(
         let start_line = numbers.line_col(tok.start as usize).0 .0;
         let end_line =
             numbers.line_col(tok.end.saturating_sub(1).max(tok.start) as usize).0 .0;
-        // Subtract 1 so the closing ]] delimiter stays visible when folded,
-        // matching how block nodes keep their closing keyword visible.
+        // Subtract 1 so the closing ]] delimiter stays visible when folded.
         if end_line > start_line + 1 {
             ranges.push(FoldingRange {
                 start_line,
@@ -169,15 +175,15 @@ mod tests {
 
     #[test]
     fn function_body() {
-        // end line kept visible: fold stops one line before `end`
+        // fold runs through the `end` line (closer hidden in line-folding clients)
         let ranges = fold("function foo()\n  print('hi')\nend");
-        assert_eq!(ranges, vec![(0, 1, "region")]);
+        assert_eq!(ranges, vec![(0, 2, "region")]);
     }
 
     #[test]
     fn local_function() {
         let ranges = fold("local function bar()\n  return 1\nend");
-        assert_eq!(ranges, vec![(0, 1, "region")]);
+        assert_eq!(ranges, vec![(0, 2, "region")]);
     }
 
     #[test]
@@ -196,7 +202,8 @@ mod tests {
     #[test]
     fn if_simple() {
         let ranges = fold("if true then\n  x = 1\nend");
-        assert!(ranges.contains(&(0, 1, "region")));
+        assert!(ranges.contains(&(0, 2, "region")), "IfChain fold");
+        assert!(ranges.contains(&(0, 1, "region")), "if branch fold");
     }
 
     #[test]
@@ -204,7 +211,7 @@ mod tests {
         let ranges = fold(
             "if a then\n  x = 1\nelseif b then\n  x = 2\nelse\n  x = 3\nend",
         );
-        assert!(ranges.contains(&(0, 5, "region")), "IfChain fold");
+        assert!(ranges.contains(&(0, 6, "region")), "IfChain fold");
         assert!(ranges.contains(&(0, 1, "region")), "if branch fold");
         assert!(ranges.contains(&(2, 3, "region")), "elseif branch fold");
         assert!(ranges.contains(&(4, 5, "region")), "else branch fold");
@@ -213,37 +220,37 @@ mod tests {
     #[test]
     fn while_loop() {
         let ranges = fold("while true do\n  break\nend");
-        assert_eq!(ranges, vec![(0, 1, "region")]);
+        assert_eq!(ranges, vec![(0, 2, "region")]);
     }
 
     #[test]
     fn repeat_until() {
         let ranges = fold("repeat\n  x = 1\nuntil true");
-        assert_eq!(ranges, vec![(0, 1, "region")]);
+        assert_eq!(ranges, vec![(0, 2, "region")]);
     }
 
     #[test]
     fn for_count_loop() {
         let ranges = fold("for i = 1, 10 do\n  print(i)\nend");
-        assert_eq!(ranges, vec![(0, 1, "region")]);
+        assert_eq!(ranges, vec![(0, 2, "region")]);
     }
 
     #[test]
     fn for_in_loop() {
         let ranges = fold("for k, v in pairs(t) do\n  print(k)\nend");
-        assert_eq!(ranges, vec![(0, 1, "region")]);
+        assert_eq!(ranges, vec![(0, 2, "region")]);
     }
 
     #[test]
     fn do_block() {
         let ranges = fold("do\n  local x = 1\nend");
-        assert_eq!(ranges, vec![(0, 1, "region")]);
+        assert_eq!(ranges, vec![(0, 2, "region")]);
     }
 
     #[test]
     fn table_constructor() {
         let ranges = fold("local t = {\n  a = 1,\n  b = 2,\n}");
-        assert_eq!(ranges, vec![(0, 2, "region")]);
+        assert_eq!(ranges, vec![(0, 3, "region")]);
     }
 
     #[test]
@@ -257,8 +264,36 @@ mod tests {
         let ranges = fold(
             "function foo()\n  if true then\n    return 1\n  end\nend",
         );
-        assert!(ranges.contains(&(0, 3, "region")), "function fold");
-        assert!(ranges.contains(&(1, 2, "region")), "if chain fold");
+        assert!(ranges.contains(&(0, 4, "region")), "function fold");
+        assert!(ranges.contains(&(1, 3, "region")), "if chain fold");
+    }
+
+    #[test]
+    fn block_fold_pins_end_character_zero() {
+        // Block folds run through the closing line and set end_character = 0 so
+        // character-precise clients keep the closer (`end`) visible inline.
+        let text = "function foo()\n  print('hi')\nend";
+        let tree = parse(text);
+        let ranges = compute_folding_ranges(&tree, text);
+        let f = ranges
+            .iter()
+            .find(|r| r.start_line == 0 && r.end_line == 2)
+            .expect("function fold");
+        assert_eq!(f.end_character, Some(0));
+    }
+
+    #[test]
+    fn branch_fold_has_no_end_character() {
+        // Branch folds end on their last content line, so they fold to
+        // end-of-line (end_character = None) — there is no trailing closer.
+        let text = "if a then\n  x = 1\nelse\n  y = 2\nend";
+        let tree = parse(text);
+        let ranges = compute_folding_ranges(&tree, text);
+        let branch = ranges
+            .iter()
+            .find(|r| r.start_line == 0 && r.end_line == 1)
+            .expect("if branch fold");
+        assert_eq!(branch.end_character, None);
     }
 
     #[test]
@@ -301,7 +336,7 @@ mod tests {
         assert_eq!(comment_folds.len(), 1);
         assert_eq!(comment_folds[0], &(0, 1, "comment"));
         assert_eq!(region_folds.len(), 1);
-        assert_eq!(region_folds[0], &(2, 3, "region"));
+        assert_eq!(region_folds[0], &(2, 4, "region"));
     }
 
     #[test]
