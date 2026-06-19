@@ -1489,10 +1489,23 @@ impl<'a> Analysis<'a> {
 
     pub(super) fn resolve_event_param_type_static(ir: &super::Ir, param: &crate::pre_globals::EventPayloadParam) -> Option<ValueType> {
         let at = crate::annotations::annotation_types::parse_type(&param.type_name);
-        // No generic type variables in scope for event params
-        let base = crate::annotations::resolve_annotation_type(&at, &[], &ir.ext.classes, &ir.ext.aliases)
-            .or_else(|| crate::annotations::resolve_annotation_type(&at, &[], &ir.classes, &ir.aliases))
-            .unwrap_or(ValueType::Any);
+        let resolve = |a: &crate::annotations::AnnotationType| {
+            crate::annotations::resolve_annotation_type(a, &[], &ir.ext.classes, &ir.ext.aliases)
+                .or_else(|| crate::annotations::resolve_annotation_type(a, &[], &ir.classes, &ir.aliases))
+        };
+        let mut base = resolve(&at).unwrap_or(ValueType::Any);
+        // Recover fun() signature lost by Function(None) resolution (same as @param recovery in resolve_call.rs).
+        if matches!(base, ValueType::Function(None))
+            && let Some(sig) = crate::annotations::extract_fun_sig(&at, &ir.alias_fun_types, &ir.ext.alias_fun_types)
+        {
+            let params: Vec<ShapeParam> = sig.params.iter().map(|p| ShapeParam {
+                name: p.name.clone(),
+                ty: resolve(&p.typ).unwrap_or(ValueType::Any),
+                optional: p.optional,
+            }).collect();
+            let returns: Vec<ValueType> = sig.returns.iter().map(|r| resolve(r).unwrap_or(ValueType::Any)).collect();
+            base = ValueType::FunctionSig(Box::new(FunctionShape { params, returns, is_vararg: sig.is_vararg }));
+        }
         if param.nilable {
             Some(ValueType::union(base, ValueType::Nil))
         } else {

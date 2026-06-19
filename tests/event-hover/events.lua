@@ -40,6 +40,12 @@
 ---| "BATCH_RESULT" -> success: boolean, canRetry: boolean
 ---| "BATCH_OPTIONAL" -> name: string, count?: number
 ---| "BATCH_GENERIC_PARAM" -> iter: IteratorObject<fun(): number, string>
+---| "BATCH_FUN_ALIAS" -> prepareFunc: PrepareFunc
+---| "BATCH_FUN_INLINE" -> onDone: fun(ok: boolean): number
+
+-- Function-typed payload via an @alias: the payload param keeps the alias's
+-- fun(...) signature on hover instead of decaying to the bare word "function".
+---@alias PrepareFunc fun(self: table, button: table)
 
 -- Alias referencing an event type name — tests that event type aliases
 -- (e.g. WowEvent → string) are resolved before dependent aliases.
@@ -71,6 +77,14 @@ function RegisterAction(event, callback) end
 ---@param event E
 ---@param callback fun(...params<E>)
 function EventFrame:OnAction(event, callback) end
+
+-- Register-by-name constrained to BatchAction, used to exercise function-typed
+-- payload params (e.g. BATCH_FUN_ALIAS -> prepareFunc: PrepareFunc) through the
+-- inline-callback narrowing path.
+---@generic E: BatchAction
+---@param event E
+---@param callback fun(...params<E>)
+function RegisterFunPayload(event, callback) end
 
 -- Callback annotation with a named param before ...params<E> (vararg_pos=1).
 ---@generic E: ActionEvent

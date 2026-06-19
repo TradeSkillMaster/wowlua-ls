@@ -199,7 +199,7 @@ handleBatchHover("BATCH_OPTIONAL")
 
 -- Completions for batch events
 handleBatchHover("")
---                ^ comp: BATCH_COMPLETED, BATCH_GENERIC_PARAM, BATCH_OPTIONAL, BATCH_RESULT, BATCH_START
+--                ^ comp: BATCH_COMPLETED, BATCH_FUN_ALIAS, BATCH_FUN_INLINE, BATCH_GENERIC_PARAM, BATCH_OPTIONAL, BATCH_RESULT, BATCH_START
 
 -- params<BatchAction> narrowing
 ---@param action BatchAction
@@ -235,6 +235,34 @@ local function handleBatchParamTypes(action, ...)
 -- (base class resolved; type args not substituted by resolve_annotation_type)
     end
 end
+
+-- ── Function-typed event payload params (alias + inline) ──
+-- Regression: a payload param typed as an @alias to a fun(...) (or an inline
+-- fun(...)) must keep its signature on hover, not decay to bare "function".
+
+handleBatchHover("BATCH_FUN_ALIAS")
+--                ^ hover: (event) BATCH_FUN_ALIAS → prepareFunc: PrepareFunc  def: external
+
+---@param action BatchAction
+---@param ... params<BatchAction>
+local function handleBatchFunPayload(action, ...)
+    if action == "BATCH_FUN_ALIAS" then
+        local prepareFunc = ...
+        local pf = prepareFunc
+--            ^ hover: (local) pf: fun(self: table, button: table)
+    end
+    if action == "BATCH_FUN_INLINE" then
+        local onDone = ...
+        local cb = onDone
+--            ^ hover: (local) cb: fun(ok: boolean): number
+    end
+end
+
+-- Named-param callback form keeps the alias signature too.
+RegisterFunPayload("BATCH_FUN_ALIAS", function(prepareFunc)
+    local pf = prepareFunc
+--        ^ hover: (local) pf: fun(self: table, button: table)
+end)
 
 -- ── Inline params on single @event ──
 
