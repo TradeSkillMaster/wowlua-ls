@@ -107,7 +107,7 @@ impl AnalysisResult {
     /// symbol version for redefined locals, params, and external symbols.
     ///
     /// This is the version-tracking logic shared by `type_definition_at` and `hover_at`.
-    pub(super) fn symbol_resolved_type_at(&self, symbol_idx: SymbolIndex, token_start: u32) -> Option<&ValueType> {
+    pub(crate) fn symbol_resolved_type_at(&self, symbol_idx: SymbolIndex, token_start: u32) -> Option<&ValueType> {
         let symbol = self.sym(symbol_idx);
         let is_param = self.is_param_symbol(symbol_idx);
         if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {

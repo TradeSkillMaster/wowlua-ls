@@ -1,19 +1,28 @@
 //! LSP semantic-token classification.
 //!
 //! Narrow by design: emits a token only for bare `Name` tokens that resolve to
-//! a function symbol. Everything else (parameters, local variables, fields,
-//! method/dot access, class/namespace bindings) is left to the editor's
-//! built-in Lua grammar so coloring matches the pre-feature behavior.
+//! a function symbol, plus the name chain of a function/method *definition*
+//! header. Everything else (parameters, local variables, fields, method/dot
+//! *access*, namespace bindings) is left to the editor's built-in Lua grammar.
 //!
-//! The one job this feature adds on top of the grammar: ensure a function
-//! referenced as a value (e.g. `local f = strupper`) still renders in the
-//! function color, and carries `defaultLibrary` / `deprecated` modifiers when
-//! applicable.
+//! Two jobs this feature adds on top of the grammar:
+//! 1. A function referenced as a value (e.g. `local f = strupper`) still renders
+//!    in the function color, with `defaultLibrary` / `deprecated` modifiers when
+//!    applicable.
+//! 2. A definition header like `function Class.accessor:method()` colors its
+//!    segments by resolved kind — the root receiver as `class` when it resolves
+//!    to a `@class` type, intermediate field/accessor segments as `property`,
+//!    and the defined name as `method` (colon) or `function` (dot). A grammar
+//!    alone can't distinguish a class receiver from a namespace or an accessor
+//!    field in a dotted chain; the analysis can, so it emits the tokens here.
+//!    (See `collect_function_def_name_tokens`.)
 //!
 //! Additionally, tokens inside `expression<C, R>` string literals are
 //! classified to provide syntax highlighting: field identifiers as `variable`,
 //! Lua keywords as `keyword`, number literals as `number`, and operators as
 //! `operator`.
+
+use std::collections::HashSet;
 
 use crate::diagnostics::expression_type::compute_content_start;
 use crate::syntax::parser::Parser;
@@ -29,6 +38,9 @@ pub const SEMANTIC_TOKEN_TYPES: &[&str] = &[
     "keyword",  // 2
     "number",   // 3
     "operator", // 4
+    "class",    // 5
+    "property", // 6
+    "method",   // 7
 ];
 
 pub const SEMANTIC_TOKEN_MODIFIERS: &[&str] = &[
@@ -41,6 +53,9 @@ const TT_VARIABLE: u32 = 1;
 const TT_KEYWORD: u32 = 2;
 const TT_NUMBER: u32 = 3;
 const TT_OPERATOR: u32 = 4;
+const TT_CLASS: u32 = 5;
+const TT_PROPERTY: u32 = 6;
+const TT_METHOD: u32 = 7;
 
 const MOD_DEFAULT_LIBRARY: u32 = 1 << 0;
 const MOD_DEPRECATED: u32 = 1 << 1;
@@ -57,6 +72,14 @@ impl AnalysisResult {
     /// Classify function-valued Name tokens. Returned in source order.
     pub fn semantic_tokens(&self, tree: &SyntaxTree) -> Vec<RawSemanticToken> {
         let mut out = Vec::new();
+
+        // Classify the name chain of function/method definition headers first,
+        // then record the offsets it owns so the bare-name pass below never
+        // double-emits at a chain segment (e.g. a method whose name also
+        // matches a global function).
+        self.collect_function_def_name_tokens(tree, &mut out);
+        let def_covered: HashSet<u32> = out.iter().map(|t| t.start).collect();
+
         let root = SyntaxNode::new_root(tree);
         for item in root.descendants_with_tokens() {
             let NodeOrToken::Token(tok) = item else { continue; };
@@ -67,6 +90,10 @@ impl AnalysisResult {
             let start = u32::from(range.start());
             let end = u32::from(range.end());
             if end <= start {
+                continue;
+            }
+            // Already classified as a definition-header segment.
+            if def_covered.contains(&start) {
                 continue;
             }
             // Field / method access is left to the grammar.
@@ -90,6 +117,104 @@ impl AnalysisResult {
         // Must be sorted by start position for LSP delta encoding
         out.sort_by_key(|t| t.start);
         out
+    }
+
+    /// Classify the name chain of a function/method *definition* header
+    /// (`function Class.accessor:method()`): the root receiver as `class` when
+    /// it resolves to a `@class` type, intermediate field/accessor segments as
+    /// `property`, and the defined name as `method` (colon-defined) or
+    /// `function` (dot-defined). A simple `function foo()` definition has no
+    /// chain wrapper and is left to the bare-name pass above. When the root
+    /// receiver is non-class (e.g. a plain namespace table), the root token is
+    /// left to the grammar, but intermediate and terminal segments are still
+    /// classified.
+    ///
+    /// Middle segments are classified as `property` *syntactically* — never by
+    /// resolved type. A transparent `@accessor` (e.g. `__private`) resolves to
+    /// its owning class type (that is how `self` gets typed inside the method),
+    /// so a type-based check would mis-color the accessor as `class`. Only the
+    /// root receiver's type is consulted; everything after a `.`/`:` is a field
+    /// access and renders as a property.
+    fn collect_function_def_name_tokens(&self, tree: &SyntaxTree, out: &mut Vec<RawSemanticToken>) {
+        let root = SyntaxNode::new_root(tree);
+        for node in root.descendants() {
+            if node.kind() != SyntaxKind::FunctionDefinition {
+                continue;
+            }
+            // The dotted/colon name is wrapped in a DotAccess node by
+            // `parser::parse_function_name` (always DotAccess, even for colon
+            // methods; MethodCall is kept as a defensive fallback).
+            let Some(chain) = node
+                .children()
+                .find(|c| matches!(c.kind(), SyntaxKind::DotAccess | SyntaxKind::MethodCall))
+            else {
+                continue;
+            };
+            // Collect `(start, end, separator-before)` for each Name in order.
+            let mut segs: Vec<(u32, u32, Option<SyntaxKind>)> = Vec::with_capacity(4);
+            let mut pending_sep: Option<SyntaxKind> = None;
+            for child in chain.children_with_tokens() {
+                let NodeOrToken::Token(t) = child else { continue };
+                match t.kind() {
+                    SyntaxKind::Name => {
+                        let r = t.text_range();
+                        segs.push((u32::from(r.start()), u32::from(r.end()), pending_sep.take()));
+                    }
+                    SyntaxKind::Dot | SyntaxKind::Colon => pending_sep = Some(t.kind()),
+                    _ => {}
+                }
+            }
+            for (i, &(start, end, sep)) in segs.iter().enumerate() {
+                if end <= start {
+                    continue;
+                }
+                let is_root = i == 0;
+                let is_last = i + 1 == segs.len();
+                let token_type = if is_last && !is_root {
+                    // The defined name: a method when colon-defined, else a
+                    // dot-defined function-valued field.
+                    if sep == Some(SyntaxKind::Colon) { TT_METHOD } else { TT_FUNCTION }
+                } else if is_root {
+                    if self.def_receiver_is_class(tree, start) {
+                        TT_CLASS
+                    } else {
+                        continue; // non-class receiver: leave to the grammar
+                    }
+                } else {
+                    TT_PROPERTY
+                };
+                out.push(RawSemanticToken {
+                    start,
+                    length: end - start,
+                    token_type,
+                    modifiers: 0,
+                });
+            }
+        }
+    }
+
+    /// Whether the symbol named at `start` resolves to a `@class` type (directly
+    /// or as a member of a union/intersection).
+    fn def_receiver_is_class(&self, tree: &SyntaxTree, start: u32) -> bool {
+        let Some((sym_idx, _, token_start)) = self.find_symbol_at(tree, start) else {
+            return false;
+        };
+        let Some(vt) = self.symbol_resolved_type_at(sym_idx, token_start) else {
+            return false;
+        };
+        self.value_type_is_class(vt)
+    }
+
+    /// A `@class` type is a table carrying a `class_name`. Unions/intersections
+    /// count when any member is a class (mirrors `type_definition_for_value`).
+    fn value_type_is_class(&self, vt: &ValueType) -> bool {
+        match vt {
+            ValueType::Table(Some(idx)) => self.table(*idx).class_name.is_some(),
+            ValueType::Union(types) | ValueType::Intersection(types) => {
+                types.iter().any(|t| self.value_type_is_class(t))
+            }
+            _ => false,
+        }
     }
 
     /// Emit semantic tokens for all meaningful tokens inside expression strings.
