@@ -32,3 +32,21 @@ end
 local handler
 local h = handler
 --    ^ hover: (local) function h(x: number)\n-> boolean  def: local
+
+-- Cross-file @return of a function-typed alias yields the full signature, so the
+-- returned callback gets argument type-checking.
+local xfcb = GetXfCallback()
+--    ^ hover: (local) function xfcb(x: number)\n-> boolean  def: local
+xfcb("bad")
+-- ^ diag: type-mismatch
+
+-- Cross-file @param with function-typed alias: wrong type triggers type-mismatch.
+InvokeCallback("not a function")
+--             ^ diag: type-mismatch
+InvokeCallback(function(x) return true end)
+
+-- Cross-file @overload with function-typed alias param: wrong type triggers mismatch.
+local ov1 = OverloadWithAlias(function(x) return true end)
+--    ^ hover: (local) ov1: boolean  def: local
+local ov2 = OverloadWithAlias(10)
+--    ^ hover: (local) ov2: number  def: local

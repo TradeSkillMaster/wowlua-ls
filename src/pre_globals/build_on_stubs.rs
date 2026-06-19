@@ -271,6 +271,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             false, 0, 0,
                             dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                             &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                            &self.alias_fun_types,
                         );
                         Some(ValueType::Function(Some(func_idx)))
                     } else {
@@ -339,6 +340,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 false, 0, 0,
                 dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                 &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                &self.alias_fun_types,
             );
             self.tables[local_idx].call_func = Some(func_idx);
         }
@@ -565,6 +567,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     g.implicit_nil_return, g.flavors, g.flavor_guard,
                     dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                     &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                    &self.alias_fun_types,
                 );
                 if let Some(source_path) = &g.source_path {
                     self.function_locations.insert(func_idx, ExternalLocation {
@@ -805,6 +808,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 false, 0, 0,
                 dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                 &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                &self.alias_fun_types,
             );
             self.tables[local_idx].call_func = Some(func_idx);
             self.tables[local_idx].call_func_is_metamethod = true;
@@ -1142,6 +1146,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     g.implicit_nil_return, g.flavors, g.flavor_guard,
                     dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                     &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                    &self.alias_fun_types,
                 );
                 if let Some(path) = &g.source_path {
                     let loc = ExternalLocation {

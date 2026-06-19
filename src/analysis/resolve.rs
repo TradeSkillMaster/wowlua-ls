@@ -3003,7 +3003,7 @@ impl<'a> Analysis<'a> {
                         return Some(ValueType::make_union(parent_field_types));
                     }
                 }
-                None
+                self.ir.explicit_map_value_type(&table_indices)
             }
             Expr::VarArgs(ret_index, file_level) => {
                 if *file_level {

@@ -1059,6 +1059,7 @@ impl BuildContext {
                             false, 0, 0,
                             dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                             &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                            &self.alias_fun_types,
                         );
                         Some(ValueType::Function(Some(func_idx)))
                     } else {
@@ -1133,6 +1134,7 @@ impl BuildContext {
                 false, 0, 0,
                 DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
                 &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                &self.alias_fun_types,
             );
             self.tables[local_idx].call_func = Some(func_idx);
         }
@@ -1158,6 +1160,7 @@ impl BuildContext {
                 false, 0, 0,
                 DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
                 &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                &self.alias_fun_types,
             );
             self.tables[local_idx].call_func = Some(func_idx);
             self.tables[local_idx].call_func_is_metamethod = true;
@@ -1350,6 +1353,7 @@ impl BuildContext {
                     g.implicit_nil_return, g.flavors, g.flavor_guard,
                     DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
                     &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                    &self.alias_fun_types,
                 );
                 if let Some(source_path) = &g.source_path {
                     self.function_locations.insert(func_idx, ExternalLocation {
@@ -1881,6 +1885,7 @@ impl BuildContext {
                     g.implicit_nil_return, g.flavors, g.flavor_guard,
                     DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
                     &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                    &self.alias_fun_types,
                 );
                 if let Some(path) = &g.source_path {
                     let loc = ExternalLocation {
@@ -3056,6 +3061,7 @@ impl PreResolvedGlobals {
         classes: &HashMap<String, TableIndex>,
         aliases: &HashMap<String, ValueType>,
         parameterized_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
+        alias_fun_types: &HashMap<String, AnnotationType>,
     ) -> FunctionIndex {
         let func_scope_local = scopes.len();
         let func_scope = ScopeIndex(EXT_BASE + func_scope_local);
@@ -3109,14 +3115,31 @@ impl PreResolvedGlobals {
             }
         }
         let generic_annotations = effective_generic_annotations.as_slice();
+        let empty_alias_fun_types: HashMap<String, AnnotationType> = HashMap::new();
         let mut has_vararg_param = false;
         for p in params {
             if p.name == "..." {
                 has_vararg_param = true;
                 continue;
             }
-            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
-                .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
+            let resolved = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = &p.typ {
+                Some(Self::materialize_fun_type(
+                    inner_params, inner_returns, *inner_vararg, generic_annotations,
+                    dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                ))
+            } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
+                crate::annotations::reduce_to_fun_alias(&p.typ, alias_fun_types, &empty_alias_fun_types)
+            {
+                let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
+                let func_vt = Self::materialize_fun_type(
+                    &ip, &ir_, iv, generic_annotations,
+                    dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                );
+                Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
+            } else {
+                Self::resolve_annotation_gen(&p.typ, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+            }
+            .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
             let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
             symbols.push(Symbol {
                 id: SymbolIdentifier::Name(p.name.clone()),
@@ -3225,6 +3248,19 @@ impl PreResolvedGlobals {
                         inner_params, inner_returns, *inner_vararg, generic_annotations,
                         dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
                     ))
+                } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
+                    crate::annotations::reduce_to_fun_alias(rt, alias_fun_types, &empty_alias_fun_types)
+                {
+                    // A function-typed alias return (e.g. `@return F` where
+                    // `F = fun(...)`) otherwise resolves to a signature-less
+                    // `Function(None)`; materialize the alias's concrete signature
+                    // so a caller's `local cb = f()` can be type-checked.
+                    let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
+                    let func_vt = Self::materialize_fun_type(
+                        &ip, &ir_, iv, generic_annotations,
+                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                    );
+                    Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
                 } else {
                     Self::resolve_annotation_gen(rt, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
                 };
@@ -3248,6 +3284,15 @@ impl PreResolvedGlobals {
                         inner_params, inner_returns, *inner_vararg, generic_annotations,
                         dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
                     ))
+                } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
+                    crate::annotations::reduce_to_fun_alias(&p.typ, alias_fun_types, &empty_alias_fun_types)
+                {
+                    let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
+                    let func_vt = Self::materialize_fun_type(
+                        &ip, &ir_, iv, generic_annotations,
+                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                    );
+                    Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
                 } else {
                     Self::resolve_annotation_gen(&p.typ, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
                 };
@@ -3261,16 +3306,22 @@ impl PreResolvedGlobals {
                 crate::annotations::extract_overload_self_return(&sig.returns);
             let returns = non_self_returns.iter()
                 .filter_map(|at| {
-                    match at {
-                        AnnotationType::Fun(inner_params, inner_returns, inner_vararg) => {
-                            Some(Self::materialize_fun_type(
-                                inner_params, inner_returns, *inner_vararg, generic_annotations,
-                                dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
-                            ))
-                        }
-                        _ => {
-                            Self::resolve_annotation_gen(at, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
-                        }
+                    if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = at {
+                        Some(Self::materialize_fun_type(
+                            inner_params, inner_returns, *inner_vararg, generic_annotations,
+                            dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                        ))
+                    } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
+                        crate::annotations::reduce_to_fun_alias(at, alias_fun_types, &empty_alias_fun_types)
+                    {
+                        let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
+                        let func_vt = Self::materialize_fun_type(
+                            &ip, &ir_, iv, generic_annotations,
+                            dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                        );
+                        Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
+                    } else {
+                        Self::resolve_annotation_gen(at, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
                     }
                 })
                 .collect();

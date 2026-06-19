@@ -582,6 +582,19 @@ impl Ir {
         }
     }
 
+    /// Map dot-access fallback: for `m.x` on `table<K, V>`, return the value
+    /// type. Gated to `is_explicit_map` so class field access returns None
+    /// (preserving `undefined-field`).
+    pub(crate) fn explicit_map_value_type(&self, table_indices: &[TableIndex]) -> Option<ValueType> {
+        for &idx in table_indices {
+            if self.table(idx).is_explicit_map
+                && let Some(vt) = self.table(idx).value_type.clone() {
+                    return Some(vt);
+                }
+        }
+        None
+    }
+
     /// True when `sym_idx` is a **function parameter** whose declared (version-0)
     /// type is an "open" literal union — a union of two or more string/number/bool
     /// literals (optionally with nil), such as `@param x "A"|"B"|"C"`.

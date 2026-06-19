@@ -356,3 +356,49 @@ local function testSelfReturn(w)
     local r = w:withNumber(1)
     --     ^ hint: : Wrapper<string>
 end
+
+-- ── Function-typed alias parameters ───────────────────────────────────────────
+-- A `@param` typed as an alias to `fun(...)` must materialize the signature so
+-- calls through the parameter get parameter-name hints and argument type-checks.
+---@alias SpellCallback fun(spellId: number, slotId: number)
+
+---@param cb SpellCallback
+local function withCallback(cb)
+    cb(1, 2)
+--     ^ hint: spellId:
+--        ^ hint: slotId:
+    cb("bad", 2)
+--     ^ diag: type-mismatch
+end
+
+-- A `@return` typed as a function alias likewise materializes the signature, so
+-- a caller's `local cb = getCallback()` gets parameter-name hints and arg checks.
+---@return SpellCallback
+---@diagnostic disable-next-line: missing-return
+local function getCallback() end
+
+local returned = getCallback()
+returned(1, 2)
+--       ^ hint: spellId:
+--          ^ hint: slotId:
+returned("bad", 2)
+--       ^ diag: type-mismatch
+
+-- A function-typed alias inside a container (`F[]`, `table<string, F>`) keeps
+-- the element/value signature, so indexing/lookup then calling is type-checked
+-- and still produces parameter-name hints.
+---@param cbs SpellCallback[]
+local function withArray(cbs)
+    local first = cbs[1]
+    first(1, 2)
+--        ^ hint: spellId:
+    first("bad", 2)
+--        ^ diag: type-mismatch
+end
+
+---@param m table<string, SpellCallback>
+local function withMap(m)
+    local one = m["k"]
+    one("bad", 2)
+--      ^ diag: type-mismatch
+end

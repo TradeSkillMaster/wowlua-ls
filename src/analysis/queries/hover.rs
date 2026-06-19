@@ -234,8 +234,21 @@ impl AnalysisResult {
                 };
                 let display_ref = display_type.as_ref().unwrap_or(resolved);
                 let doc = self.doc_for_type(display_ref);
+                // A param whose annotation is a function-typed alias (e.g.
+                // `@param cb MyFuncType` where `MyFuncType = fun(...)`) is
+                // materialized to a concrete Function for type-checking, but its
+                // hover should keep showing the alias name + expanded signature
+                // (handled by the param-annotation block below), not the bare
+                // `function name(...)` form. A direct `fun(...)` annotation is
+                // excluded so it still renders as `function name(...)`.
+                let is_fun_alias_param = kind == "param" && ver_idx == 0 && display_type.is_none()
+                    && self.find_param_annotation_raw(symbol_idx).is_some_and(|raw| {
+                        !matches!(raw, crate::annotations::AnnotationType::Fun(..))
+                            && self.expand_alias_fun_signature(raw).is_some()
+                    });
                 // Declaration-style for functions
-                if let ValueType::Function(Some(func_idx)) = display_ref {
+                if !is_fun_alias_param
+                    && let ValueType::Function(Some(func_idx)) = display_ref {
                     let type_str = format!("({}) {}", kind, self.format_function_decl(*func_idx, &name, false, None));
                     return Some(HoverResult { type_str, doc });
                 }

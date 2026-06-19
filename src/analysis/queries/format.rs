@@ -269,7 +269,9 @@ pub(super) fn resolve_expr_type_impl(
                     }
                 }
             }
-            if field_types.is_empty() { return None; }
+            if field_types.is_empty() {
+                return ir.explicit_map_value_type(&table_indices);
+            }
             Some(ValueType::make_union(field_types))
         }
         Expr::FunctionCall { func, ret_index, .. } => {

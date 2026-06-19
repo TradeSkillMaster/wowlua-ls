@@ -1501,7 +1501,37 @@ impl<'a> Analysis<'a> {
                     }
             }
         }
-        if to_materialize.is_empty() { return; }
+        // Container fields whose element/value type is a function-typed alias
+        // (e.g. `@field cbs F[]` or `@field m table<string, F>`): the field's
+        // annotation is a Table whose `value_type` stayed `Function(None)`.
+        // The inline calls in resolve_annotation_type_mut_gen (Array/Map paths)
+        // handle direct single-hop aliases eagerly; this fixup catches what they
+        // miss — primarily @field annotations, which go through the non-gen
+        // resolver that defers fun() materialization to avoid prescan
+        // scope-index conflicts, plus any multi-hop alias chain that
+        // reduce_to_fun_alias couldn't resolve during initial annotation
+        // resolution.
+        let mut containers_to_materialize: Vec<(TableIndex, AnnotationType)> = Vec::new();
+        for table in self.ir.tables.iter() {
+            for fi in table.fields.values() {
+                if let Some(ValueType::Table(Some(arr_idx))) = &fi.annotation
+                    && !arr_idx.is_external()
+                    && matches!(self.ir.tables[arr_idx.val()].value_type, Some(ValueType::Function(None)))
+                    && let Some(raw) = &fi.annotation_type_raw
+                {
+                    let inner = match raw {
+                        AnnotationType::Array(inner) => Some(inner.as_ref().clone()),
+                        AnnotationType::Parameterized(base, args)
+                            if base == "table" && args.len() == 2 => Some(args[1].clone()),
+                        _ => None,
+                    };
+                    if let Some(inner) = inner {
+                        containers_to_materialize.push((*arr_idx, inner));
+                    }
+                }
+            }
+        }
+        if to_materialize.is_empty() && containers_to_materialize.is_empty() { return; }
 
         let dummy_node = DefNode::DUMMY;
         for (table_idx, field_name, fun_text, in_union) in to_materialize {
@@ -1704,6 +1734,14 @@ impl<'a> Analysis<'a> {
                 fi.expr = expr_id;
             }
         }
+        // Materialize each container's element/value fun-alias signature and store
+        // it back into the array/map table's `value_type`, so indexing or lookup
+        // (`h.cbs[1]`, `m.x`) yields the full signature instead of bare `function`.
+        for (arr_idx, inner) in containers_to_materialize {
+            if let Some(vt) = self.try_materialize_fun_alias(&inner) {
+                self.ir.tables[arr_idx.val()].value_type = Some(vt);
+            }
+        }
     }
 
     /// Minimal per-file injection: only non-class global tables (a few dozen).
@@ -1831,7 +1869,12 @@ impl<'a> Analysis<'a> {
     /// Like resolve_annotation_type_mut but also supports generic type parameters.
     pub(super) fn resolve_annotation_type_mut_gen(&mut self, at: &AnnotationType, generics: &[(String, Option<String>)]) -> Option<ValueType> {
         if let AnnotationType::Array(inner) = at {
-            if let Some(elem_vt) = self.resolve_annotation_type_mut_gen(inner, generics) {
+            // Eagerly materialize a function-typed alias element (e.g. `F[]`
+            // where `F = fun(...)`) when possible. Falls back to the post-build_ir
+            // container fixup pass (materialize_fun_annotations) for multi-hop alias
+            // chains that resolve too late for reduce_to_fun_alias here.
+            if let Some(elem_vt) = self.resolve_annotation_type_mut_gen(inner, generics)
+                .map(|vt| self.materialize_fun_alias(vt, inner)) {
                 let table_idx = TableIndex(self.ir.tables.len());
                 self.ir.tables.push(TableInfo {
                     key_type: Some(ValueType::Number),
@@ -1873,7 +1916,11 @@ impl<'a> Analysis<'a> {
                 }
             if base == "table" && args.len() == 2 {
                 let key_vt = self.resolve_annotation_type_mut_gen(&args[0], generics);
-                let val_vt = self.resolve_annotation_type_mut_gen(&args[1], generics);
+                // Eagerly materialize a function-typed alias value (e.g.
+                // `table<string, F>` where `F = fun(...)`). Falls back to the
+                // post-build_ir container fixup pass for multi-hop chains.
+                let val_vt = self.resolve_annotation_type_mut_gen(&args[1], generics)
+                    .map(|vt| self.materialize_fun_alias(vt, &args[1]));
                 if key_vt.is_some() || val_vt.is_some() {
                     let vt_annotated = val_vt.is_some();
                     let table_idx = TableIndex(self.ir.tables.len());
@@ -2201,6 +2248,23 @@ impl<'a> Analysis<'a> {
             Some(ValueType::union(func_vt, ValueType::Nil))
         } else {
             Some(func_vt)
+        }
+    }
+
+    /// If `vt` resolves to a bare `Function(None)` (directly, or as a member of
+    /// a union) that originated from a function-typed alias annotation `at`,
+    /// materialize the alias's concrete `fun(...)` signature so it survives for
+    /// type-checking, hover, and parameter-name inlay hints. Any other type
+    /// passes through unchanged. A direct `fun(...)` annotation is already
+    /// materialized by `resolve_annotation_type_mut_gen`, so this only rewrites
+    /// alias references that collapsed to a signature-less `Function(None)`.
+    pub(super) fn materialize_fun_alias(&mut self, vt: ValueType, at: &AnnotationType) -> ValueType {
+        match &vt {
+            ValueType::Function(None) => self.try_materialize_fun_alias(at).unwrap_or(vt),
+            ValueType::Union(parts)
+                if parts.iter().any(|t| matches!(t, ValueType::Function(None))) =>
+                self.try_materialize_fun_alias(at).unwrap_or(vt),
+            _ => vt,
         }
     }
 

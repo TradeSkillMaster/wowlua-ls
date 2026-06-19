@@ -624,18 +624,11 @@ impl<'a> Analysis<'a> {
                             if index == 0 {
                                 let annotations = extract_annotations(assign.syntax());
                                 if let Some(ref at) = annotations.var_type {
+                                    // If the annotation reduces to a function-typed alias,
+                                    // materialize a real Function entry so the signature
+                                    // survives propagation through `local y = x`.
                                     let vt_opt = self.resolve_annotation_type_mut_gen(at, &[])
-                                        // If the annotation reduces to a function-typed alias,
-                                        // materialize a real Function entry so the signature
-                                        // survives propagation through `local y = x`.
-                                        .map(|vt| match &vt {
-                                            ValueType::Function(None) =>
-                                                self.try_materialize_fun_alias(at).unwrap_or(vt),
-                                            ValueType::Union(parts)
-                                                if parts.iter().any(|t| matches!(t, ValueType::Function(None))) =>
-                                                self.try_materialize_fun_alias(at).unwrap_or(vt),
-                                            _ => vt,
-                                        });
+                                        .map(|vt| self.materialize_fun_alias(vt, at));
                                     if let Some(vt) = vt_opt {
                                         let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                         self.ir.set_type_source(symbol_idx, expr_id);
@@ -734,14 +727,7 @@ impl<'a> Analysis<'a> {
                                             });
                                         if let Some(inline_at) = inline_at {
                                             let vt_opt = self.resolve_annotation_type_mut_gen(&inline_at, &[])
-                                                .map(|vt| match &vt {
-                                                    ValueType::Function(None) =>
-                                                        self.try_materialize_fun_alias(&inline_at).unwrap_or(vt),
-                                                    ValueType::Union(parts)
-                                                        if parts.iter().any(|t| matches!(t, ValueType::Function(None))) =>
-                                                        self.try_materialize_fun_alias(&inline_at).unwrap_or(vt),
-                                                    _ => vt,
-                                                });
+                                                .map(|vt| self.materialize_fun_alias(vt, &inline_at));
                                             if let Some(vt) = vt_opt {
                                                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                                 self.ir.set_type_source(symbol_idx, expr_id);
@@ -2654,7 +2640,12 @@ impl<'a> Analysis<'a> {
             }
             // Positional `@param x params<F>` is rejected — `params<F>` only
             // fits in the vararg slot. `returns<F>` in positional is allowed.
-            let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics);
+            // If the annotation reduces to a function-typed alias (e.g.
+            // `@param cb MyFuncType` where `MyFuncType = fun(...)`), materialize a
+            // real Function entry so the signature survives for arg-type checking
+            // and parameter-name inlay hints.
+            let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics)
+                .map(|vt| self.materialize_fun_alias(vt, &p.typ));
             // Always record the raw annotation type (even for `any` which resolves to None)
             for (i, &arg_sym_idx) in func_args.iter().enumerate() {
                 if self.ir.symbols[arg_sym_idx.val()].id == SymbolIdentifier::Name(p.name.clone()) {
@@ -2893,7 +2884,11 @@ impl<'a> Analysis<'a> {
                         }
                         None => {}
                     }
-                    if let Some(vt) = self.resolve_annotation_type_mut_gen(ret_annotation, generics) {
+                    if let Some(vt) = self.resolve_annotation_type_mut_gen(ret_annotation, generics)
+                        // Materialize a function-typed alias (e.g. `@return MyFuncType`
+                        // where `MyFuncType = fun(...)`) so the signature survives into
+                        // a caller's `local cb = GetCallback()` for type-checking/hints.
+                        .map(|vt| self.materialize_fun_alias(vt, ret_annotation)) {
                         let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
                         let ret_sym_idx = self.ir.insert_symbol(
                             SymbolIdentifier::FunctionRet(func_idx, i),

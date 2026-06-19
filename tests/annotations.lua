@@ -116,6 +116,21 @@ function AliasFieldHost:UseIter()
 --             ^ hover: (field) _iter: PrepareFunc!\n  = fun(link: string, qty: number): boolean
 end
 
+-- Field whose type is a container of a function-typed alias: indexing the array
+-- (or looking up the map) must yield the element's full signature, not `function`.
+---@class AliasContainerHost
+---@field iters PrepareFunc[]
+---@field byName table<string, PrepareFunc>
+local AliasContainerHost = {}
+
+function AliasContainerHost:UseContainers()
+    local fromArr = self.iters[1]
+--        ^ hover: (local) function fromArr(link: string, qty: number)\n-> boolean
+    local fromMap = self.byName.go
+--        ^ hover: (local) function fromMap(link: string, qty: number)\n-> boolean
+    return fromArr, fromMap
+end
+
 -- Chained alias expansion: A -> B -> fun(...)
 ---@alias ChainedPrepareFunc PrepareFunc
 local chainedVar ---@type ChainedPrepareFunc
@@ -258,6 +273,10 @@ dog:speak()
 -- Bracket index followed by field access: tbl[key].field
 local dogSound = animals["dog"].sound
 --       ^ hover: (local) dogSound: string  def: local
+
+-- Dot access on a string-keyed map resolves the value type, like bracket access
+local dogByDot = animals.dog
+--    ^ hover: (local) dogByDot: Animal {
 
 ---@class Registry
 ---@field items table<number, Animal>
