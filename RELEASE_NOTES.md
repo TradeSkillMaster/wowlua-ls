@@ -1,8 +1,8 @@
-### Improvements
-
-- Code folding now extends through a block's closing keyword (`end`, `}`, `until …`). Line-folding editors like VS Code collapse the closer along with the body, while character-precise editors like IntelliJ keep it rendered inline after the placeholder (`if foo then … end`).
-
 ### Bug Fixes
 
-- Fixed a deadlock that could freeze IntelliJ while the language server was busy. The server now buffers its stdin so it keeps draining client input even under load, with a watchdog that detects stalls in the main loop.
-- Fixed a false `undefined-field` diagnostic on fields initialized in a nested `@class` constructor when that class is accessed from another file.
+- Function-typed aliases (e.g. `---@alias Callback fun(link: string, qty: number): boolean`) now keep their full signature on hover everywhere — in parameters, return types, containers (arrays/maps of the alias), cross-file usages, and `@event` payload fields — instead of decaying to a bare `function`.
+
+### Improvements
+
+- Improved syntax highlighting: method definition headers now color their class / accessor / method segments, `@alias` declaration names are colored like class names, and boolean constants (`true`/`false`) are colored consistently inside `expression<…>` strings.
+- `check --severity hint` now exits non-zero when hints are found, so hint-level issues can fail CI.
