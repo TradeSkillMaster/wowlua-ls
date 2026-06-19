@@ -215,7 +215,7 @@ goto myLabel
 -- Annotation: @alias
 ---@alias MyAlias number|string
 -- ^^^^^^ storage.type.annotation.lua
---        ^^^^^^^ variable.lua
+--        ^^^^^^^ support.class.lua
 
 -- Annotation: @generic
 ---@generic T

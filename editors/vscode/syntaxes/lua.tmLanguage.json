@@ -312,7 +312,7 @@
           "patterns": [
             {
               "begin": "\\b([a-zA-Z_\\*][a-zA-Z0-9_\\.\\*\\-]*)",
-              "beginCaptures": {"0": {"name": "variable.lua"}},
+              "beginCaptures": {"0": {"name": "support.class.lua"}},
               "end": "(?=[\\n#])",
               "patterns": [{"include": "#emmydoc.type"}]
             }
