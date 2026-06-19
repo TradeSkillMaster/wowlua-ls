@@ -63,6 +63,23 @@ checkBool([[progress == 1 and not active]])
 --                            ^ tok: keyword
 --                                ^ tok: variable
 
+-- Boolean/nil literals are `builtinConstant` (the constant color), distinct from the
+-- `keyword` color used for the `and`/`or`/`not` logical operators, matching plain Lua.
+checkBool([[active and true or false]])
+--            ^ tok: variable
+--                  ^ tok: keyword
+--                      ^ tok: builtinConstant
+--                          ^ tok: keyword
+--                              ^ tok: builtinConstant
+
+-- Boolean literal in a grouped subexpression with `not` (mirrors the reported case)
+checkBool([[(active or active) and true or not active or active]])
+--                                   ^ tok: builtinConstant
+
+-- `nil` literal also gets `builtinConstant` (not just `true`/`false`)
+checkAny([[active or nil]])
+--                    ^ tok: builtinConstant
+
 -- expression<self> resolves to receiver's class
 ---@class SelfExprState
 ---@field ready boolean

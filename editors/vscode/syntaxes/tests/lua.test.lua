@@ -83,6 +83,17 @@ string.find("a", "b")
 math.floor(1.5)
 -- <-------- support.function.library.lua
 
+-- Lookbehind edge cases: a constant after `..` concatenation still highlights,
+-- while a field/method name after `.`/`:` is an attribute, not a constant.
+-- (The constant/self/builtin/attribute rules use fixed-width lookbehinds so strict
+--  TextMate regex engines don't reject them and silently drop the highlighting.)
+local cc = s .. true
+--              ^^^^ constant.language.lua
+local fa = a.field
+--           ^^^^^ entity.other.attribute.lua
+local ma = obj:attr
+--             ^^^^ entity.other.attribute.lua
+
 -- Comments
 -- this is a line comment
 -- <-- punctuation.definition.comment.lua

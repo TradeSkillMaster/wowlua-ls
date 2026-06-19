@@ -19,8 +19,12 @@
 //!
 //! Additionally, tokens inside `expression<C, R>` string literals are
 //! classified to provide syntax highlighting: field identifiers as `variable`,
-//! Lua keywords as `keyword`, number literals as `number`, and operators as
-//! `operator`.
+//! logical keywords (`and`/`or`/`not`) as `keyword`, boolean/`nil` literals as
+//! `builtinConstant`, number literals as `number`, and operators as `operator`.
+//! `builtinConstant` is a non-standard token type mapped to `constant.language`
+//! by the editor plugins (VS Code `semanticTokenScopes`), so `true`/`false`/`nil`
+//! render in the same constant color the grammar gives them in plain Lua rather
+//! than the keyword color used for `and`/`or`/`not`.
 
 use std::collections::HashSet;
 
@@ -33,14 +37,15 @@ use crate::types::*;
 use super::AnalysisResult;
 
 pub const SEMANTIC_TOKEN_TYPES: &[&str] = &[
-    "function", // 0
-    "variable", // 1
-    "keyword",  // 2
-    "number",   // 3
-    "operator", // 4
-    "class",    // 5
-    "property", // 6
-    "method",   // 7
+    "function",        // 0
+    "variable",        // 1
+    "keyword",         // 2
+    "number",          // 3
+    "operator",        // 4
+    "class",           // 5
+    "property",        // 6
+    "method",          // 7
+    "builtinConstant", // 8 — true/false/nil; mapped to constant.language by the editor plugins
 ];
 
 pub const SEMANTIC_TOKEN_MODIFIERS: &[&str] = &[
@@ -56,6 +61,7 @@ const TT_OPERATOR: u32 = 4;
 const TT_CLASS: u32 = 5;
 const TT_PROPERTY: u32 = 6;
 const TT_METHOD: u32 = 7;
+const TT_BUILTIN_CONSTANT: u32 = 8;
 
 const MOD_DEFAULT_LIBRARY: u32 = 1 << 0;
 const MOD_DEPRECATED: u32 = 1 << 1;
@@ -247,9 +253,14 @@ impl AnalysisResult {
                         let Some(field) = field else { continue };
                         self.expression_field_token_type(field)
                     }
-                    SyntaxKind::AndKeyword | SyntaxKind::OrKeyword | SyntaxKind::NotKeyword |
-                    SyntaxKind::NilKeyword | SyntaxKind::TrueKeyword | SyntaxKind::FalseKeyword => {
+                    SyntaxKind::AndKeyword | SyntaxKind::OrKeyword | SyntaxKind::NotKeyword => {
                         TT_KEYWORD
+                    }
+                    // Boolean / nil literals are constants, not keywords — give them
+                    // their own type so the editor can color them like `constant.language`
+                    // (matching plain Lua) instead of lumping them with `and`/`or`/`not`.
+                    SyntaxKind::NilKeyword | SyntaxKind::TrueKeyword | SyntaxKind::FalseKeyword => {
+                        TT_BUILTIN_CONSTANT
                     }
                     SyntaxKind::Number => TT_NUMBER,
                     SyntaxKind::EqualsBoolean | SyntaxKind::NotEqualsBoolean |

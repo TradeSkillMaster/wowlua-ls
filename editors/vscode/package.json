@@ -62,6 +62,17 @@
         "path": "./syntaxes/toc.tmLanguage.json"
       }
     ],
+    "semanticTokenScopes": [
+      {
+        "language": "lua",
+        "scopes": {
+          "builtinConstant": [
+            "constant.language.lua",
+            "constant.language"
+          ]
+        }
+      }
+    ],
     "configuration": {
       "type": "object",
       "title": "WoW Lua LS",
