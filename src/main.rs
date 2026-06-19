@@ -907,7 +907,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             eprintln!("  Type coverage: {:.1}% of symbols resolved", pct);
         }
         eprintln!();
-        let has_issues = stats.errors > 0 || stats.warnings > 0;
+        let has_issues = stats.errors > 0 || stats.warnings > 0 || (include_hints && stats.hints > 0);
         if has_issues || stats.hints > 0 {
             let mut parts = Vec::new();
             if stats.errors > 0 {
