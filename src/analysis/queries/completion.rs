@@ -241,6 +241,14 @@ impl AnalysisResult {
                     .and_then(|t| t.parent());
                 node.and_then(|n| self.find_enclosing_class(&n))
             };
+            // Mirror access.rs: if the receiver is a defclass-created instance in
+            // this file, protected fields are accessible at file scope (the module
+            // file is the class's own implementation). Without this, inherited
+            // `@protected` methods (e.g. a module's `OnModuleLoad`) are wrongly
+            // hidden from completion even though calling them is allowed.
+            let receiver_is_own_defclass = self.defclass_vars
+                .get(token.text())
+                .is_some_and(|&dc_table| self.is_subclass_of(dc_table, table_idx));
             // _G global-environment redirect: show all globals as completions
             if self.ir.is_global_env(table_idx) {
                 let mut items: Vec<CompletionItem> = Vec::new();
@@ -332,7 +340,8 @@ impl AnalysisResult {
                                 enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
                             }
                             crate::annotations::Visibility::Protected => {
-                                enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
+                                receiver_is_own_defclass
+                                    || enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
                             }
                             crate::annotations::Visibility::Public => true,
                         };

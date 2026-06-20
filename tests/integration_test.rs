@@ -1300,6 +1300,15 @@ fn access_modifiers() {
 }
 
 #[test]
+fn defclass_protected_completion() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/defclass-protected-completion/module.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/defclass-protected-completion"),
+    });
+}
+
+#[test]
 fn semantic_tokens() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/semantic-tokens.lua",
