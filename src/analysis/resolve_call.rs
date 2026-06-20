@@ -1328,7 +1328,7 @@ impl<'a> Analysis<'a> {
                     && base == "expression" && !type_args.is_empty()
                     && let Some(&(start, end)) = arg_ranges.get(i)
                 {
-                    let table_idxs = self.resolve_expression_tables(&type_args[0], receiver_table_idx);
+                    let table_idxs = self.resolve_expression_tables(&type_args[0], receiver_table_idx, &class_type_param_subs);
                     if !table_idxs.is_empty() {
                         // When the result type `R` is one of the method's generic
                         // type parameters, infer it from the expression body and
@@ -4009,15 +4009,25 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Resolve the class name from an `expression<C, R>` annotation's first type arg.
-    /// `receiver_table_idx` is the table index of the method receiver (for resolving `self`).
     /// Resolve the context type parameter of `expression<C, R>` to table indices.
+    /// `receiver_table_idx` is the table index of the method receiver (for resolving `self`).
     /// Supports simple class names, `self`, and intersection types (`C1 & C2`).
-    fn resolve_expression_tables(&self, class_ann: &crate::annotations::AnnotationType, receiver_table_idx: Option<TableIndex>) -> Vec<TableIndex> {
+    fn resolve_expression_tables(
+        &self,
+        class_ann: &crate::annotations::AnnotationType,
+        receiver_table_idx: Option<TableIndex>,
+        class_type_param_subs: &HashMap<String, ValueType>,
+    ) -> Vec<TableIndex> {
         match class_ann {
             crate::annotations::AnnotationType::Simple(name) => {
                 if name == "self" {
                     receiver_table_idx.into_iter().collect()
+                } else if let Some(sub) = class_type_param_subs.get(name.as_str()) {
+                    // The context type references a class generic type param (e.g.
+                    // `expression<T & Builtins, R>` on a method of `Mgr<T>`). Resolve
+                    // `T` through the receiver's binding so the substituted class's
+                    // fields are visible inside the expression string.
+                    collect_table_indices(sub)
                 } else {
                     self.ir.classes.get(name.as_str()).copied()
                         .or_else(|| self.ir.ext.classes.get(name.as_str()).copied())
@@ -4026,7 +4036,7 @@ impl<'a> Analysis<'a> {
             }
             crate::annotations::AnnotationType::Intersection(parts) => {
                 parts.iter()
-                    .flat_map(|part| self.resolve_expression_tables(part, receiver_table_idx))
+                    .flat_map(|part| self.resolve_expression_tables(part, receiver_table_idx, class_type_param_subs))
                     .collect()
             }
             _ => Vec::new(),
@@ -4035,6 +4045,16 @@ impl<'a> Analysis<'a> {
 }
 
 // ── Free functions ───────────────────────────────────────────────────────────
+
+fn collect_table_indices(vt: &ValueType) -> Vec<TableIndex> {
+    match vt {
+        ValueType::Table(Some(idx)) => vec![*idx],
+        ValueType::Intersection(parts) | ValueType::Union(parts) => {
+            parts.iter().flat_map(collect_table_indices).collect()
+        }
+        _ => Vec::new(),
+    }
+}
 
 fn build_sig_param(vt: ValueType) -> Option<BackwardInferenceSigParam> {
     if vt.contains_nil() {

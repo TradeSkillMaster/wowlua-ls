@@ -142,6 +142,72 @@ sw:compute([[clamp(value, 0, 100)]])
 --            ^ hover: (field) clamp: fun(v: number, lo: number, hi: number): number
 --                   ^ hover: (field) value: number
 
+-- ── Class generic type param in expression context ──────────────────────────
+-- `expression<T & Builtins, R>` on a method of `Mgr<T: Base>`: the receiver's
+-- bound T (a concrete state class) must contribute its fields to the expression
+-- context alongside the intersection's other member. Regression: a generic type
+-- param like T was looked up as a class name (and never found), collapsing the
+-- intersection to just Builtins so the state fields read as undefined.
+---@class ExprStateBase
+local ExprStateBase = {}
+
+---@class ExprBuiltins
+---@field rand fun(): number
+
+---@class StateMgr<T: ExprStateBase>
+local StateMgr = {}
+
+---@generic R
+---@param key string
+---@param expr expression<T & ExprBuiltins, R>
+function StateMgr:SetFromExpr(key, expr) end
+
+---@class MgrState : ExprStateBase
+---@field flag boolean
+---@field level number
+
+---@type StateMgr<MgrState>
+local mgr = {}
+
+-- Fields of the bound T (MgrState) are visible in the expression
+mgr:SetFromExpr("x", [[flag and level > 0]])
+--                     ^ hover: (field) flag: boolean
+--                              ^ hover: (field) level: number
+
+-- The other intersection member's fields are also visible
+mgr:SetFromExpr("y", [[rand() > 0.5]])
+--                     ^ hover: (field) rand: fun(): number
+
+-- Unknown name still flagged
+mgr:SetFromExpr("z", [[missing or flag]])
+--                     ^ diag: undefined-field
+
+-- ── Compound ValueType in generic substitution ────────────────────────────
+-- When T is bound to an intersection (`StateMgr<Foo & Bar>`), the substituted
+-- ValueType is `Intersection([Table(a), Table(b)])`. Both components' fields
+-- must be visible in the expression context.
+---@class MgrPartA : ExprStateBase
+---@field health number
+
+---@class MgrPartB : ExprStateBase
+---@field mana number
+
+---@type StateMgr<MgrPartA & MgrPartB>
+local mgr2 = {}
+
+-- Fields from both intersection members are visible
+mgr2:SetFromExpr("a", [[health + mana]])
+--                      ^ hover: (field) health: number
+--                               ^ hover: (field) mana: number
+
+-- Builtins intersection member is also still present
+mgr2:SetFromExpr("b", [[rand() > 0.5]])
+--                      ^ hover: (field) rand: fun(): number
+
+-- Unknown name still flagged with compound binding
+mgr2:SetFromExpr("c", [[missing]])
+--                      ^ diag: undefined-field
+
 -- ── Generic result type: R is inferred from the expression and flows to @return ──
 ---@class ExprSchema<R>
 local ExprSchema = {}

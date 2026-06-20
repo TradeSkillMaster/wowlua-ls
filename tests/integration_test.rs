@@ -3066,6 +3066,32 @@ fn find_sym<'a>(symbols: &'a [DocumentSymbolEntry], name: &str) -> &'a DocumentS
             symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()))
 }
 
+// Regression: a class-type-param constraint violation on a `@param` must
+// underline only the parameter's name token, not the entire enclosing function
+// definition (which `def_node` spans).
+#[test]
+fn generic_constraint_mismatch_narrows_to_param_token() {
+    let src = "\
+---@class Animal
+local Animal = {}
+
+---@class Cage<T: Animal>
+local Cage = {}
+
+---@param thecage Cage<number>
+function UseCage(thecage) end
+";
+    let (tree, analysis) = analyze_source_with_tree(src);
+    let diag = analysis.run_diagnostics(&tree).into_iter()
+        .find(|d| d.code == "generic-constraint-mismatch")
+        .expect("expected a generic-constraint-mismatch diagnostic");
+    let span = &src[diag.start as usize..diag.end as usize];
+    assert_eq!(
+        span, "thecage",
+        "diagnostic should underline just the parameter token, got {:?}", span
+    );
+}
+
 #[test]
 fn call_hierarchy() {
     let text = std::fs::read_to_string("tests/call-hierarchy.lua").unwrap();

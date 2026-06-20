@@ -1307,6 +1307,31 @@ local function wrapGeneric(u) return { value = u } end
 ---@type FreeWrap<Rock>
 local freeWrap
 
+-- ── Constrained @class type-param: subclass type arg ─────────────────────────
+-- Regression: a `@class C<T: Base>` used with a *subclass* of Base as the type
+-- argument must NOT warn. The class-type-param constraint check previously used
+-- only the bare `ValueType::is_assignable_to`, which can't walk parent classes,
+-- so any non-identical subtype was rejected. Now it also tries `is_table_subtype`.
+
+---@class AnimalCage<T: Animal>
+---@field occupant T
+local AnimalCage = {}
+
+-- No false positive: Dog is a subclass of Animal.
+---@param c AnimalCage<Dog>
+local function useDogCage(c) end
+
+-- No false positive: Animal satisfies its own constraint.
+---@type AnimalCage<Animal>
+local animalCage
+
+-- Should WARN: Rock is unrelated to Animal.
+---@param c AnimalCage<Rock>
+local function useRockCage(c) end
+--    ^ diag: generic-constraint-mismatch
+
+_G.useClassConstraints = { useDogCage, useRockCage, animalCage }
+
 _G.useAliasConstraints = { useAnimalWrap, makeAnimalWrap, wrapGeneric, awGood, awExact, awBadClass, awBadPrim, freeWrap }
 
 _G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2, mathRound, funParamApply, numToStr, unannotated, retBound, numId, ignoreIfEquals, pairSameGeneric, Holder, MyBucket, nb, nsOwn, LinkedClass, lc }
