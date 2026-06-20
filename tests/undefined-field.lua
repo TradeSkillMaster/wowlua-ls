@@ -280,3 +280,74 @@ _consume(opaqueUnion.targetA)
 _consume(opaqueUnion.libMethod)
 _consume(opaqueUnion.missing)
 --                   ^ diag: undefined-field
+
+-- ═══════════════════════════════════════════════════════════
+-- Closed-record (module-private table) undefined-field.
+-- A `local X = {}` whose fields are all statically assigned
+-- in-file is a closed contract: reading an unassigned field is
+-- a typo, even without a @class annotation. (The reported bug:
+-- `private.Typo()` produced no diagnostic.)
+-- ═══════════════════════════════════════════════════════════
+
+local closedRec = {}
+closedRec.alpha = 1
+function closedRec.Beta()
+    return closedRec.alpha
+end
+
+-- Known field / method: no diagnostic
+_consume(closedRec.alpha)
+_consume(closedRec.Beta)
+
+-- Typo on a field and on a method name: both flagged
+_consume(closedRec.alfa)
+--                 ^ diag: undefined-field
+_consume(closedRec.Bet)
+--                 ^ diag: undefined-field
+
+-- Escape via a bare reference (passed as a value): the field set is open
+-- because callees can add fields, so unknown-field reads are NOT flagged.
+local escapeRec = {}
+escapeRec.known = 1
+_consume(escapeRec)
+_consume(escapeRec.maybeAddedByCallee)
+
+-- Dynamic bracket write (`rec[k] = v`) opens the field set: NOT flagged.
+local mapRec = {}
+mapRec.fixed = 1
+local function fillMap(k, v)
+    mapRec[k] = v
+end
+_consume(fillMap)
+_consume(mapRec.dynamicKey)
+
+-- Reassigned variable (more than one definition) is not a pure record: the
+-- field set may differ per assignment, so unknown reads are NOT flagged.
+local reassigned = {}
+reassigned.first = 1
+reassigned = { second = 2 }
+_consume(reassigned.neither)
+
+-- A parameter typed only by usage is not a constructor-backed local: its record
+-- is back-inferred from accesses and incomplete, so reads are NOT flagged.
+local function usesParam(p)
+    p.writeField = 1
+    return p.readOnlyField
+end
+_consume(usesParam)
+
+-- Inline constructor fields (`local t = {a = 1, b = 2}`): the field set is
+-- still statically known even when fields come from the constructor itself.
+local inlineRec = { x = 1, y = 2 }
+function inlineRec.sum()
+    return inlineRec.x + inlineRec.y
+end
+
+-- Known field / method: no diagnostic
+_consume(inlineRec.x)
+_consume(inlineRec.y)
+_consume(inlineRec.sum)
+
+-- Typo on a field: flagged
+_consume(inlineRec.z)
+--                 ^ diag: undefined-field

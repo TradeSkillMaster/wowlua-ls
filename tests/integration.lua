@@ -99,6 +99,7 @@ local kf = MyObj.knownField
 --    ^ hover: (local) kf: number  def: local
 local hp = MyObj._Helper
 --    ^ hover: (local) hp: ?  def: local
+--               ^ diag: undefined-field
 
 -- ── Right-associative ^ operator ──
 local pow = 2 ^ 3 ^ 4

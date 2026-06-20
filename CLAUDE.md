@@ -111,7 +111,7 @@ Diagnostic modules under `src/diagnostics/` (40 modules implementing `Diagnostic
 
 **Variable/field/global checks:**
 - `undefined_global.rs` — references to unresolved global names (`undefined-global`)
-- `undefined_field.rs` — accessing nonexistent fields on `@class` tables (`undefined-field`)
+- `undefined_field.rs` — accessing nonexistent fields on `@class` tables (`undefined-field`); also fires on **module-private record tables** — a `local X = {}` whose complete field set is statically known. Gated by `collect_pure_record_symbols` (single-version local with a `{}` constructor RHS, never referenced bare/escaping) + `is_closed_record` (no `key_type`/`value_type`/metatable/dynamic bracket write/etc.), so parameter-inferred records, the addon namespace, globals, maps, and escaping tables are excluded
 - `unused_local.rs` — unreferenced local variables (`unused-local`, HINT)
 - `redefined_local.rs` — same-scope local variable redefinition (`redefined-local`)
 - `shadowed_local.rs` — local variable shadows a variable from an outer scope (`shadowed-local`, HINT)

@@ -21,7 +21,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `grouped-return-mismatch` | Return values don't match any tuple-union `@return` case |
 | `missing-return` | Function missing return statement |
 | `undefined-global` | Reference to unresolved global name |
-| `undefined-field` | Accessing nonexistent field on `@class` |
+| `undefined-field` | Accessing nonexistent field on a `@class` or a module-private table (`local p = {}`) |
 | `need-check-nil` | Field/method access on possibly-nil value **(off by default)** |
 | `nil-index` | Bracket-indexing a table with a possibly-nil key **(off by default)** |
 | `nil-table-key` | Table key type annotation includes nil (`table<string?, V>`) |
