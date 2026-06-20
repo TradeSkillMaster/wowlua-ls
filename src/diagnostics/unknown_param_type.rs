@@ -40,6 +40,8 @@ impl DiagnosticPass for UnknownParamType {
                 let sym_idx = func.args[arg_i];
                 if sym_idx.is_external() { continue; }
                 if name == "self" { continue; }
+                // `_` is the conventional throwaway name; its type is intentionally ignored.
+                if name == "_" { continue; }
                 let annotated = func.param_annotations.get(arg_i)
                     .is_some_and(|a| a != &sentinel);
                 if annotated { continue; }

@@ -34,6 +34,15 @@ local function explicit_any(x)
 end
 _consume(explicit_any)
 
+-- No fire on `_`: it's the conventional throwaway name whose type is
+-- intentionally ignored. The sibling `value` param still fires as usual.
+local function ignoresFirst(_, value)
+--                                 ^ diag: unknown-param-type
+    return value
+    -- ^ diag: unknown-return-type
+end
+_consume(ignoresFirst)
+
 -- No fire: backward inference determines the type from body arithmetic.
 local function inferred(n)
     return n + 1
@@ -62,6 +71,10 @@ _consume(varargFn)
 local u = passthrough(nil)
 --    ^ diag: unknown-local-type
 _consume(u)
+
+-- No fire: `_` is the conventional throwaway name; its type is intentionally
+-- ignored even when the RHS is unresolvable.
+local _ = passthrough(nil)
 
 -- No fire: number literal.
 local k = 42
