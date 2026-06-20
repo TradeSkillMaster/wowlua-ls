@@ -1,4 +1,4 @@
----@diagnostic disable: unused-local
+---@diagnostic disable: unused-local, undefined-global
 -- Test: invalid-op diagnostic (arithmetic/concatenation on incompatible types)
 local function _use(...) end
 
@@ -325,3 +325,65 @@ local function _andGuardCorrelated(cond)
     _use(_r)
 end
 _use(_andGuardCorrelated)
+
+-- assert(not x or y) records "x truthy implies y truthy". Inside `if x and ...`
+-- the `and` guard narrows x truthy, so the implication narrows y to non-nil and
+-- the comparison `y > 2` is valid (no invalid-op).
+local function _assertImplication()
+    local x = nil ---@type boolean
+    local y = nil ---@type number?
+    assert(not x or y)
+    if x and y > 2 then
+        _use(y)
+    end
+end
+_use(_assertImplication)
+
+-- Symmetric operand order `assert(y or not x)` records the same implication.
+local function _assertImplicationSwapped()
+    local x = nil ---@type boolean
+    local y = nil ---@type number?
+    assert(y or not x)
+    if x and y > 2 then
+        _use(y)
+    end
+end
+_use(_assertImplicationSwapped)
+
+-- Without the `if x` guard, the implication does not apply, so the bare
+-- comparison on the nilable `y` is still flagged.
+local function _assertImplicationNoGuard()
+    local x = nil ---@type boolean
+    local y = nil ---@type number?
+    assert(not x or y)
+    local _r = y > 2
+    --         ^ diag: invalid-op
+    _use(_r)
+end
+_use(_assertImplicationNoGuard)
+
+-- Reassigning the consequent after the assert invalidates the implication.
+local function _assertImplicationReassigned()
+    local x = nil ---@type boolean
+    local y = nil ---@type number?
+    assert(not x or y)
+    y = nil
+    if x and y > 2 then
+    --       ^ diag: invalid-op
+        _use(y)
+    end
+end
+_use(_assertImplicationReassigned)
+
+-- Reassigning the antecedent after the assert invalidates the implication.
+local function _assertImplicationAntecedentReassigned()
+    local x = nil ---@type boolean
+    local y = nil ---@type number?
+    assert(not x or y)
+    x = true
+    if x and y > 2 then
+    --       ^ diag: invalid-op
+        _use(y)
+    end
+end
+_use(_assertImplicationAntecedentReassigned)

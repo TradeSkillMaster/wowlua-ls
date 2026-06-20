@@ -125,6 +125,41 @@ impl<'a> Analysis<'a> {
                         } else { None }
                     } else { None };
                     let guard_sym = guard_result.as_ref().map(|(si, _)| *si);
+                    // Apply assert-derived truthiness implications (`assert(not A or B)`):
+                    // when a guard symbol `A` is narrowed truthy here, the recorded
+                    // implication narrows its consequent `B` truthy too. Done before the
+                    // guards are narrowed so the antecedent's pre-narrow version matches
+                    // the version captured at the assert. Restored after the RHS alongside
+                    // the other temporary narrowings.
+                    let mut impl_pre_narrow: Vec<(SymbolIndex, usize)> = Vec::new();
+                    {
+                        let mut antecedents: Vec<SymbolIndex> = Vec::new();
+                        if let Some((s, GuardNarrow::StripFalsy)) = &guard_result {
+                            antecedents.push(*s);
+                        }
+                        for (s, k) in &extra_chain_guards {
+                            if matches!(k, GuardNarrow::StripFalsy) {
+                                antecedents.push(*s);
+                            }
+                        }
+                        for ant in antecedents {
+                            let ant_ver = self.ir.version_for_scope(ant, scope_idx);
+                            for cons in self.implication_consequents(ant, ant_ver, scope_idx) {
+                                // Skip if the consequent is itself a guard (already
+                                // narrowed by the guard machinery) or already handled.
+                                if cons == ant
+                                    || guard_sym == Some(cons)
+                                    || extra_chain_guards.iter().any(|(s, _)| *s == cons)
+                                    || impl_pre_narrow.iter().any(|(s, _)| *s == cons)
+                                {
+                                    continue;
+                                }
+                                let v = self.ir.version_for_scope(cons, scope_idx);
+                                self.push_strip_falsy_version(cons, scope_idx);
+                                impl_pre_narrow.push((cons, v));
+                            }
+                        }
+                    }
                     // Track symbols + narrow kinds we narrowed as primary/extra guards,
                     // so we can propagate to any `x = x or source` coalesce derivatives.
                     let mut narrowed_sources: Vec<(SymbolIndex, bool)> = Vec::new(); // (src, strip_falsy)
@@ -520,6 +555,10 @@ impl<'a> Analysis<'a> {
                     // Restore primary guard
                     if let (Some(sym_idx), Some(ver)) = (guard_sym, pre_narrow_ver) {
                         self.ir.push_alias_version(sym_idx, ver, scope_idx);
+                    }
+                    // Restore assert-implication consequents (reverse order)
+                    for (sym_idx, ver) in impl_pre_narrow.iter().rev() {
+                        self.ir.push_alias_version(*sym_idx, *ver, scope_idx);
                     }
                     let expr_id = self.ir.push_expr(Expr::BinaryOp { op, lhs: lhs_id, rhs: rhs_id });
                     // Track binary-op sites for diagnostics:

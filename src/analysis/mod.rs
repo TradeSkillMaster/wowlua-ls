@@ -175,6 +175,22 @@ pub(crate) struct NarrowingState {
     /// evidence) from tests on a reassigned version (not nil evidence for the
     /// parameter's type). Populated in `narrow_symbol_strip_falsy`.
     pub(crate) falsy_narrowed_pre_reassign: HashSet<SymbolIndex>,
+    /// Truthiness implications established by `assert(not A or B)` (and the
+    /// symmetric `assert(B or not A)`): when `A` is truthy, `B` must be truthy.
+    /// Keyed by the scope the assert ran in; applied when `A` is later narrowed
+    /// truthy in an `and`-chain guard. The recorded symbol versions guard against
+    /// reassignment of either symbol between the assert and the use.
+    pub(crate) assert_implications: HashMap<ScopeIndex, Vec<AssertImplication>>,
+}
+
+/// A truthiness implication `antecedent truthy ⟹ consequent truthy`, recorded
+/// from an `assert(not A or B)` expression. See `NarrowingState::assert_implications`.
+#[derive(Clone)]
+pub(crate) struct AssertImplication {
+    pub(crate) antecedent: SymbolIndex,
+    pub(crate) antecedent_ver: usize,
+    pub(crate) consequent: SymbolIndex,
+    pub(crate) consequent_ver: usize,
 }
 
 impl NarrowingState {

@@ -3,7 +3,7 @@ use crate::ast::*;
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
-use super::{Analysis, Ir, NarrowTarget};
+use super::{Analysis, AssertImplication, Ir, NarrowTarget};
 use super::build_ir::OverloadCheck;
 
 enum OrTermEffect {
@@ -1309,6 +1309,17 @@ impl<'a> Analysis<'a> {
                     }
                     return;
                 }
+                if matches!(op, Operator::Or) {
+                    // assert(not A or B) ⟹ "A truthy implies B truthy". Record the
+                    // implication so a later `if A and ...` guard narrows B truthy.
+                    // Try both operand orderings to also cover `assert(B or not A)`.
+                    let terms = bin.get_terms();
+                    if let [a, b] = terms.as_slice() {
+                        self.record_or_implication(a, b, scope_idx);
+                        self.record_or_implication(b, a, scope_idx);
+                    }
+                    return;
+                }
                 let is_eq = matches!(op, Operator::Equals);
                 let is_neq = matches!(op, Operator::NotEquals);
                 if !is_eq && !is_neq { return; }
@@ -1408,6 +1419,83 @@ impl<'a> Analysis<'a> {
             }
             _ => {}
         }
+    }
+
+    /// Resolve a bare single-name expression (`x`, possibly parenthesized) to its
+    /// symbol. Returns `None` for field accesses, calls, or multi-name chains.
+    fn bare_name_symbol(&self, expr: &Expression<'_>, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
+        match expr {
+            Expression::GroupedExpression(g) => {
+                g.get_expression().and_then(|inner| self.bare_name_symbol(&inner, scope_idx))
+            }
+            Expression::Identifier(ident) => {
+                let names = ident.names();
+                if names.len() == 1 {
+                    self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// If `expr` is `not <bare name>` (possibly parenthesized), resolve the negated
+    /// operand to its symbol.
+    fn not_operand_symbol(&self, expr: &Expression<'_>, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
+        match expr {
+            Expression::GroupedExpression(g) => {
+                g.get_expression().and_then(|inner| self.not_operand_symbol(&inner, scope_idx))
+            }
+            Expression::UnaryExpression(u) if u.kind() == Operator::Not => {
+                u.get_terms().first().and_then(|operand| self.bare_name_symbol(operand, scope_idx))
+            }
+            _ => None,
+        }
+    }
+
+    /// Record an implication from one ordering of an `assert(... or ...)`: if
+    /// `not_term` is `not A` and `bare_term` is a bare name `B`, then `A` being
+    /// truthy implies `B` is truthy. The current symbol versions are captured so
+    /// the implication is dropped if either symbol is reassigned before use.
+    fn record_or_implication(&mut self, not_term: &Expression<'_>, bare_term: &Expression<'_>, scope_idx: ScopeIndex) {
+        let Some(antecedent) = self.not_operand_symbol(not_term, scope_idx) else { return };
+        let Some(consequent) = self.bare_name_symbol(bare_term, scope_idx) else { return };
+        if antecedent == consequent || antecedent.is_external() || consequent.is_external() {
+            return;
+        }
+        let antecedent_ver = self.ir.version_for_scope(antecedent, scope_idx);
+        let consequent_ver = self.ir.version_for_scope(consequent, scope_idx);
+        self.narrowing.assert_implications.entry(scope_idx).or_default().push(AssertImplication {
+            antecedent,
+            antecedent_ver,
+            consequent,
+            consequent_ver,
+        });
+    }
+
+    /// Find consequents to narrow truthy because their antecedent (`ant`, currently
+    /// at version `ant_ver`) was narrowed truthy. Walks ancestor scopes for
+    /// implications recorded by `assert(not A or B)`. An implication only fires when
+    /// both the antecedent and consequent are still on the versions recorded at the
+    /// assert (i.e. neither was reassigned in between).
+    pub(super) fn implication_consequents(&self, ant: SymbolIndex, ant_ver: usize, scope_idx: ScopeIndex) -> Vec<SymbolIndex> {
+        let mut out = Vec::new();
+        for scope in super::ancestor_scopes(&self.ir.scopes, scope_idx) {
+            let Some(impls) = self.narrowing.assert_implications.get(&scope) else { continue };
+            for imp in impls {
+                if imp.antecedent != ant || imp.antecedent_ver != ant_ver {
+                    continue;
+                }
+                if self.ir.version_for_scope(imp.consequent, scope_idx) != imp.consequent_ver {
+                    continue;
+                }
+                if !out.contains(&imp.consequent) {
+                    out.push(imp.consequent);
+                }
+            }
+        }
+        out
     }
 
     /// Expand tail-call return statements to match the max arity established by
