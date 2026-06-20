@@ -403,10 +403,60 @@ impl<'a> Analysis<'a> {
         // runtime fields (e.g. `self.display = CreateFrame(...)`) are visible
         // when deep field injections walk intermediate chains
         // (e.g. `self.display.wrapped = ...`).
+        let had_deferred = !self.deferred_field_assignments.is_empty()
+            || !self.deep_field_injections.is_empty();
         self.resolve_deferred_field_assignments();
         self.resolve_deep_field_injections();
+        // The two passes above can add fields that didn't exist during the
+        // fixpoint. Any local that read such a field (e.g. `local Thing =
+        // Enum.Thing`, where `Enum` aliases a namespace sub-table via
+        // `local Enum = private.Enum` and `Enum.Thing` is set by a deferred
+        // assignment) resolved to nothing during the loop and would otherwise
+        // keep a stale unknown type. Re-resolve those leftovers now.
+        if had_deferred {
+            self.reresolve_unresolved_after_deferred();
+        }
         self.finalize_enum_kinds();
         self.populate_deferred_overlay();
+    }
+
+    /// Re-resolve symbols whose type stayed unknown through the fixpoint because
+    /// a field they depend on was only added afterward by
+    /// `resolve_deferred_field_assignments` / `resolve_deep_field_injections`.
+    ///
+    /// Only symbols that still lack a `resolved_type` are touched, so this never
+    /// downgrades an already-resolved type. A few passes collapse short alias
+    /// chains (`local A = Enum.Thing; local B = A.x`); the loop exits as soon as
+    /// a pass makes no progress.
+    fn reresolve_unresolved_after_deferred(&mut self) {
+        const MAX_PASSES: usize = 8;
+        for _ in 0..MAX_PASSES {
+            let pending: Vec<(SymbolIndex, usize)> = self.ir.symbols.iter().enumerate()
+                .flat_map(|(si, sym)| {
+                    sym.versions.iter().enumerate()
+                        .filter(|(_, ver)| ver.type_source.is_some() && ver.resolved_type.is_none())
+                        .map(move |(vi, _)| (SymbolIndex(si), vi))
+                })
+                .collect();
+            if pending.is_empty() {
+                break;
+            }
+            let mut progressed = false;
+            for (si, vi) in pending {
+                let expr_id = self.ir.symbols[si.val()].versions[vi].type_source.unwrap();
+                // Clear stale cache entry so resolve_expr re-evaluates from scratch.
+                if let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
+                    *slot = None;
+                }
+                if let Some(resolved) = self.resolve_expr(expr_id) {
+                    self.ir.symbols[si.val()].versions[vi].resolved_type = Some(resolved);
+                    progressed = true;
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
     }
 
     /// After the fixpoint loop, determine each local `@enum` table's value kind

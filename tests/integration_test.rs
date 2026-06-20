@@ -1653,6 +1653,15 @@ fn crossfile_ns_alias_funcall() {
 }
 
 #[test]
+fn crossfile_ns_alias_field_readback() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/ns_alias_field_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_chain() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/chain_user.lua",

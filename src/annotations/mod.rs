@@ -787,9 +787,11 @@ pub(crate) fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
             }
             let text = token.text();
             if is_annotation_comment(text) {
-                // Track position of @class comment for positional disambiguation
+                // Backward walk: keep only the closest @class offset (first hit),
+                // matching block.class which retains the last in reading order.
                 let stripped = text.trim_start_matches('-').trim();
-                if stripped.starts_with("@class") || stripped.starts_with("@enum") {
+                if (stripped.starts_with("@class") || stripped.starts_with("@enum"))
+                    && class_comment_start.is_none() {
                     class_comment_start = Some(u32::from(token.text_range().start()));
                 }
                 annotation_lines.push(text.to_string());

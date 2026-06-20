@@ -1399,3 +1399,30 @@ local plainUnionVal = plainUnionTable["key"]
 local dedupNested = nil ---@diagnostic disable-line: assign-type-mismatch
 local dedupNestedTbl = dedupNested.a or dedupNested.b or dedupNested.c
 --    ^ hover: (local) dedupNestedTbl: string[][]
+
+-- Regression: `local X = {}` with `@class X` where a contiguous comment block
+-- declares an EARLIER `@class` above it (no blank line separating them) must bind
+-- the variable to the closest @class (X), not the first one in the block. Walking
+-- the comment block backward used to overwrite the @class offset with the farthest
+-- declaration, mismatching the resolved name and linking X to the wrong table.
+---@class PriorClass
+---@field priorField number
+---@class OwnerClass
+---@field ownedField PriorClass
+local OwnerClass = {}
+
+local ownerHover = OwnerClass
+--    ^ hover: (local) ownerHover: OwnerClass {
+local ownedHover = OwnerClass.ownedField
+--    ^ hover: (local) ownedHover: PriorClass {
+
+-- Same shape but the field is a table<K, V> whose value type is a @class — the
+-- original report (Enum.MapID typed table<string, MapID> lost its type on assign).
+---@class KeyedValue
+---@field vfield number
+---@class KeyedOwner
+---@field mapping table<string, KeyedValue>
+local KeyedOwner = {}
+
+local keyedMap = KeyedOwner.mapping
+--    ^ hover: (local) keyedMap: table<string, KeyedValue>
