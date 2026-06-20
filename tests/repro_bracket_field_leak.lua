@@ -103,3 +103,29 @@ local function Extend(seq)
     -- "timeout" must NOT appear as a field of `pending` itself.
     pending[seq].timeout = 100
 end
+
+-- Case 6: Nested bracket write `t[a][b] = v` must attribute v to the INNER
+-- table's element type, not to `t`'s. The outer table is an array of arrays,
+-- so the value written into the inner list must not pollute `t`'s value_type.
+---@alias MapID number
+local continentMaps = {}
+--    ^ hover: (local) continentMaps: table[]
+
+---@param a MapID
+---@param b MapID
+local function SortMaps(a, b)
+    return a < b
+end
+
+---@param continentID number
+---@param mapID MapID
+local function AddMap(continentID, mapID)
+    continentMaps[continentID] = continentMaps[continentID] or {}
+    continentMaps[continentID][#continentMaps[continentID] + 1] = mapID
+    -- The inner element is a MapID list, so this sorts fine. The `comp` arg
+    -- binds table.sort's generic `T = MapID`, forcing `list` to be `MapID[]`.
+    -- Before the fix `mapID` leaked into continentMaps' value_type, making the
+    -- element type `table | MapID`; the `MapID` (number) member is not
+    -- assignable to `MapID[]`, producing a spurious `type-mismatch` here.
+    table.sort(continentMaps[continentID], SortMaps)
+end

@@ -2198,8 +2198,18 @@ impl<'a> Analysis<'a> {
                                         {
                                             let syntax = ident.syntax();
                                             let mut children = syntax.children();
-                                            let _base = children.next();
-                                            if let Some(key_node) = children.next()
+                                            let base = children.next();
+                                            // Only attribute the RHS to the root table's value_type
+                                            // when the bracket base is the root name itself (a single
+                                            // level index `name[key] = value`). For a nested write like
+                                            // `name[a][b] = value` or `name.f[b] = value`, the value is
+                                            // an element of the *inner* table, not of `name`, so
+                                            // registering it here would pollute `name`'s element type.
+                                            let base_is_root_name = base
+                                                .as_ref()
+                                                .is_some_and(|b| b.kind() == SyntaxKind::NameRef);
+                                            if base_is_root_name
+                                                && let Some(key_node) = children.next()
                                                 && let Some(key_expr) = Expression::cast(key_node) {
                                                     let key_id = self.lower_expression(&key_expr, scope_idx);
                                                     if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)

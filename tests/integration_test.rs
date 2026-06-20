@@ -1998,7 +1998,7 @@ fn nil_index() {
 fn bracket_field_leak() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/repro_bracket_field_leak.lua",
-        with_stubs: false,
+        with_stubs: true,
         scan_dir: None,
     });
 }
