@@ -201,6 +201,14 @@ pub struct PreResolvedGlobals {
     pub(crate) alias_fun_types: HashMap<String, AnnotationType>,
     /// Raw annotation types and type params for parameterized aliases (e.g. @alias Foo<K,V> V[]).
     pub(crate) parameterized_aliases: HashMap<String, (Vec<String>, AnnotationType)>,
+    /// Per-param constraints for parameterized aliases (parallel to the type params
+    /// in `parameterized_aliases`), e.g. `@alias Box<T: Frame>` →
+    /// `[Some(("Frame", parsed_type))]`. Pre-parsed at registration time.
+    /// `#[serde(skip)]` — populated at runtime during workspace scanning, not from
+    /// the stub blob (stub aliases carry no constraints), so it needs no BLOB_VERSION
+    /// bump. Used by `generic-constraint-mismatch` to enforce alias type-arg bounds.
+    #[serde(skip)]
+    pub(crate) parameterized_alias_constraints: HashMap<String, Vec<Option<(String, AnnotationType)>>>,
     /// Raw annotation types for external aliases whose body is a tuple or
     /// union-of-tuples (new-style multi-return aliases).
     #[serde(default)]
@@ -747,6 +755,7 @@ struct BuildContext {
     aliases: HashMap<String, ValueType>,
     alias_fun_types: HashMap<String, AnnotationType>,
     parameterized_aliases: HashMap<String, (Vec<String>, AnnotationType)>,
+    parameterized_alias_constraints: HashMap<String, Vec<Option<(String, AnnotationType)>>>,
     tuple_form_aliases: HashMap<String, AnnotationType>,
     scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
 
@@ -800,6 +809,7 @@ impl BuildContext {
             aliases: HashMap::new(),
             alias_fun_types: HashMap::new(),
             parameterized_aliases: HashMap::new(),
+            parameterized_alias_constraints: HashMap::new(),
             tuple_form_aliases: HashMap::new(),
             scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
@@ -974,6 +984,12 @@ impl BuildContext {
         for alias in external_aliases {
             if !alias.type_params.is_empty() {
                 self.parameterized_aliases.insert(alias.name.clone(), (alias.type_params.clone(), alias.typ.clone()));
+                if alias.type_param_constraints.iter().any(Option::is_some) {
+                    let parsed: Vec<Option<(String, AnnotationType)>> = alias.type_param_constraints.iter().map(|c| {
+                        c.as_ref().map(|s| (s.clone(), crate::annotations::parse_type(s)))
+                    }).collect();
+                    self.parameterized_alias_constraints.insert(alias.name.clone(), parsed);
+                }
             } else if crate::annotations::annotation_is_tuple_form(&alias.typ) {
                 self.tuple_form_aliases.insert(alias.name.clone(), alias.typ.clone());
             } else if let Some(vt) = PreResolvedGlobals::resolve_annotation(&alias.typ, &self.classes, &self.aliases, &self.parameterized_aliases) {
@@ -2354,7 +2370,9 @@ impl BuildContext {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,
             exprs: self.exprs, tables: self.tables,
             classes: self.classes, aliases: self.aliases, alias_fun_types: self.alias_fun_types,
-            parameterized_aliases: self.parameterized_aliases, tuple_form_aliases: self.tuple_form_aliases,
+            parameterized_aliases: self.parameterized_aliases,
+            parameterized_alias_constraints: self.parameterized_alias_constraints,
+            tuple_form_aliases: self.tuple_form_aliases,
             creates_global_specs: HashMap::new(),
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
@@ -2464,6 +2482,7 @@ impl PreResolvedGlobals {
             aliases: HashMap::new(),
             alias_fun_types: HashMap::new(),
             parameterized_aliases: HashMap::new(),
+            parameterized_alias_constraints: HashMap::new(),
             tuple_form_aliases: HashMap::new(),
             creates_global_specs: HashMap::new(),
             scope0_symbols,

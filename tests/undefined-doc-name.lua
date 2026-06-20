@@ -15,6 +15,14 @@ local function _consume(...) end
 
 ---@alias KnownParamAlias<T> T[]
 
+-- A constrained type param does not make its own name undefined in the body, and
+-- a valid constraint type resolves cleanly.
+---@alias ConstrainedAlias<T: KnownClass> T[]
+
+-- The constraint type name itself is validated.
+---@alias BadConstraintAlias<T: MissingConstraint> T[]
+-- ^ diag: undefined-doc-name
+
 -- ── @field type references ───────────────────────────────────────────────
 
 ---@class FieldTestClass

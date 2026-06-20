@@ -1468,6 +1468,16 @@ fn crossfile_defclass_parent() {
 }
 
 #[test]
+fn crossfile_alias_constraint() {
+    // Test @alias Foo<T: Constraint> bound enforcement across files.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/alias_constraint_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_rhs_propagate() {
     // Test that child class assignments propagate concrete RHS types
     // to fields inherited as `any` from the parent class.

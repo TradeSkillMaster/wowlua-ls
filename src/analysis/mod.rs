@@ -323,6 +323,12 @@ pub(crate) struct Ir {
     pub(crate) alias_fun_types: HashMap<String, crate::annotations::AnnotationType>,
     /// Raw annotation types and type params for parameterized aliases (e.g. @alias Foo<K,V> V[]).
     pub(crate) parameterized_aliases: HashMap<String, (Vec<String>, crate::annotations::AnnotationType)>,
+    /// Per-param constraints for parameterized aliases (parallel to the type params
+    /// in `parameterized_aliases`). `@alias Box<T: Frame>` records
+    /// `[Some(("Frame", parsed_type))]`. Pre-parsed at registration time to avoid
+    /// re-parsing on every use-site check.
+    /// Used by `generic-constraint-mismatch` to enforce alias type-argument bounds.
+    pub(crate) parameterized_alias_constraints: HashMap<String, Vec<Option<(String, crate::annotations::AnnotationType)>>>,
     /// Raw annotation types for aliases whose body is a tuple or union-of-tuples
     /// (new-style multi-return aliases, e.g. `@alias Result (true, T) | (false, string)`).
     /// Not stored in `aliases` because tuples don't have a single `ValueType`.
@@ -1677,6 +1683,8 @@ impl Ir {
                 for arg in args {
                     self.check_annotation_type_names(arg, generics, start, end, diags);
                 }
+                // Enforce `@alias Foo<T: Constraint>` type-argument bounds.
+                self.check_parameterized_alias_constraints(base, args, generics, start, end, diags);
             }
             AnnotationType::Fun(params, returns, _) => {
                 for p in params {
@@ -1705,6 +1713,115 @@ impl Ir {
                     self.check_annotation_type_names(&p.typ, generics, start, end, diags);
                 }
             }
+        }
+    }
+
+    /// Enforce `@alias Foo<T: Constraint>` bounds at a `Foo<Arg>` use site: each
+    /// type argument must satisfy its parameter's constraint. Emits
+    /// `generic-constraint-mismatch`. Args that are unresolved type variables /
+    /// generics, or types we can't statically resolve, are skipped (no false
+    /// positives). Unlike classes, aliases are purely substituted, so this is the
+    /// only place alias type-arg bounds are checked.
+    fn check_parameterized_alias_constraints(
+        &self,
+        base: &str,
+        args: &[crate::annotations::AnnotationType],
+        generics: &[(String, Option<String>)],
+        start: usize,
+        end: usize,
+        diags: &mut Vec<crate::diagnostics::WowDiagnostic>,
+    ) {
+        let template = self.parameterized_aliases.get(base)
+            .or_else(|| self.ext.parameterized_aliases.get(base));
+        let constraints = self.parameterized_alias_constraints.get(base)
+            .or_else(|| self.ext.parameterized_alias_constraints.get(base));
+        let (Some((type_params, _)), Some(constraints)) = (template, constraints) else { return };
+        for (i, (arg, constraint)) in args.iter().zip(constraints.iter()).enumerate() {
+            let Some((constraint_str, constraint_at)) = constraint else { continue };
+            let Some(arg_vt) = self.resolve_annotation_type_for_check(arg, generics) else { continue };
+            let Some(constraint_vt) = self.resolve_annotation_type_for_check(constraint_at, generics) else { continue };
+            let actual = arg_vt.strip_nil();
+            let is_pure_nil = matches!(actual, ValueType::Nil)
+                || matches!(&actual, ValueType::Union(t) if t.is_empty());
+            if is_pure_nil
+                || (!actual.is_assignable_to(&constraint_vt)
+                    && !is_table_subtype_impl(self, &[], &actual, &constraint_vt))
+            {
+                let param_name = type_params.get(i).map(|s| s.as_str()).unwrap_or("?");
+                let actual_str = crate::annotations::format_annotation_type(arg);
+                crate::diagnostics::GENERIC_CONSTRAINT_MISMATCH.emit(
+                    diags,
+                    format!(
+                        "type `{}` does not satisfy constraint `{}` on generic `{}`",
+                        actual_str, constraint_str, param_name
+                    ),
+                    start,
+                    end,
+                );
+            }
+        }
+    }
+
+    /// Resolve an annotation type to a `ValueType` for constraint checking,
+    /// consulting both local and external class/alias tables. Returns `None` for
+    /// type variables / unresolved generics (names appearing in `generics`) and
+    /// for shapes we don't statically check (so the caller skips them rather than
+    /// flagging a false positive). Used by both alias constraint enforcement and
+    /// (via `AnalysisResult::resolve_annotation_type_simple`) class constraint /
+    /// completion logic.
+    fn resolve_annotation_type_for_check(
+        &self,
+        at: &crate::annotations::AnnotationType,
+        generics: &[(String, Option<String>)],
+    ) -> Option<ValueType> {
+        use crate::annotations::AnnotationType;
+        match at {
+            AnnotationType::Simple(name) => {
+                if generics.iter().any(|(g, _)| g == name) { return None; }
+                match name.as_str() {
+                    "number" | "integer" => Some(ValueType::Number),
+                    "string" => Some(ValueType::String(None)),
+                    "boolean" | "bool" => Some(ValueType::Boolean(None)),
+                    "true" => Some(ValueType::Boolean(Some(true))),
+                    "false" => Some(ValueType::Boolean(Some(false))),
+                    "table" => Some(ValueType::Table(None)),
+                    "function" | "fun" => Some(ValueType::Function(None)),
+                    "any" | "unknown" => Some(ValueType::Any),
+                    "nil" => Some(ValueType::Nil),
+                    "userdata" => Some(ValueType::Userdata),
+                    "thread" => Some(ValueType::Thread),
+                    _ => {
+                        if (name.starts_with('"') && name.ends_with('"'))
+                            || (name.starts_with('\'') && name.ends_with('\''))
+                        {
+                            let s = name.trim_matches(|c| c == '"' || c == '\'');
+                            return Some(ValueType::String(Some(s.to_string())));
+                        }
+                        if crate::annotations::is_number_literal(name) {
+                            return Some(ValueType::NumberLiteral(name.clone()));
+                        }
+                        if let Some(&idx) = self.classes.get(name.as_str())
+                            .or_else(|| self.ext.classes.get(name.as_str()))
+                        {
+                            return Some(ValueType::Table(Some(idx)));
+                        }
+                        self.aliases.get(name.as_str())
+                            .or_else(|| self.ext.aliases.get(name.as_str()))
+                            .cloned()
+                    }
+                }
+            }
+            AnnotationType::Union(parts) => {
+                let vts: Vec<ValueType> = parts.iter()
+                    .filter_map(|p| self.resolve_annotation_type_for_check(p, generics))
+                    .collect();
+                if vts.len() != parts.len() { return None; }
+                Some(ValueType::make_union(vts))
+            }
+            AnnotationType::NonNil(inner) | AnnotationType::Backtick(inner) => {
+                self.resolve_annotation_type_for_check(inner, generics)
+            }
+            _ => None,
         }
     }
 }
@@ -1832,33 +1949,7 @@ impl AnalysisResult {
     }
 
     fn resolve_annotation_type_simple(&self, at: &crate::annotations::AnnotationType) -> Option<ValueType> {
-        match at {
-            crate::annotations::AnnotationType::Simple(name) => {
-                match name.as_str() {
-                    "number" | "integer" => Some(ValueType::Number),
-                    "string" => Some(ValueType::String(None)),
-                    "boolean" => Some(ValueType::Boolean(None)),
-                    "table" => Some(ValueType::Table(None)),
-                    "function" => Some(ValueType::Function(None)),
-                    "any" => Some(ValueType::Any),
-                    "nil" => Some(ValueType::Nil),
-                    _ => {
-                        let table_idx = self.ir.classes.get(name.as_str())
-                            .or_else(|| self.ir.ext.classes.get(name.as_str()))
-                            .copied()?;
-                        Some(ValueType::Table(Some(table_idx)))
-                    }
-                }
-            }
-            crate::annotations::AnnotationType::Union(members) => {
-                let resolved: Vec<ValueType> = members.iter()
-                    .filter_map(|m| self.resolve_annotation_type_simple(m))
-                    .collect();
-                if resolved.len() != members.len() { return None; }
-                Some(ValueType::Union(resolved))
-            }
-            _ => None,
-        }
+        self.ir.resolve_annotation_type_for_check(at, &[])
     }
 
     pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
@@ -2177,6 +2268,7 @@ impl<'a> Analysis<'a> {
                 aliases: HashMap::new(),
                 alias_fun_types: HashMap::new(),
                 parameterized_aliases: HashMap::new(),
+                parameterized_alias_constraints: HashMap::new(),
                 tuple_form_aliases: HashMap::new(),
                 string_literals: HashMap::new(),
                 number_literals: HashMap::new(),

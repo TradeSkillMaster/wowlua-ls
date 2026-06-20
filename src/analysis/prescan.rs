@@ -176,6 +176,15 @@ impl<'a> Analysis<'a> {
                     alias.name.clone(),
                     (alias.type_params.clone(), alias.typ.clone()),
                 );
+                if alias.type_param_constraints.iter().any(Option::is_some) {
+                    let parsed = alias.type_param_constraints.iter().map(|c| {
+                        c.as_ref().map(|s| (s.clone(), crate::annotations::parse_type(s)))
+                    }).collect();
+                    self.ir.parameterized_alias_constraints.insert(
+                        alias.name.clone(),
+                        parsed,
+                    );
+                }
             } else if crate::annotations::annotation_is_tuple_form(&alias.typ) {
                 // Tuple / tuple-union alias — stored raw for use-site expansion in
                 // `@return Name` / `fun(): Name` positions. Not registered in the

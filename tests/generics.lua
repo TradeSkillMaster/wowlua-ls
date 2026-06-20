@@ -1249,4 +1249,64 @@ local lc
 lc:Set("hello")
 --  ^ hover: (method) function LinkedClass:Set(v: string)
 
+-- ── Parameterized alias type-param constraints ──────────────────────────────
+-- `@alias Foo<T: Constraint>` enforces the bound at every use site (the alias is
+-- purely substituted, so there is no call site — the check runs on the annotation).
+
+---@class Rock
+
+---@alias AnimalWrap<T: Animal> { value: T }
+
+-- Should NOT warn: Dog is a subclass of Animal.
+---@type AnimalWrap<Dog>
+local awGood
+
+-- Should NOT warn: Animal satisfies its own constraint.
+---@type AnimalWrap<Animal>
+local awExact
+
+-- Should WARN: Rock is unrelated to Animal.
+---@type AnimalWrap<Rock>
+local awBadClass
+-- ^ diag: generic-constraint-mismatch
+
+-- Should WARN: a primitive does not satisfy a class constraint.
+---@type AnimalWrap<number>
+local awBadPrim
+-- ^ diag: generic-constraint-mismatch
+
+-- Constraint enforced in @param position.
+---@param w AnimalWrap<Rock>
+local function useAnimalWrap(w) end
+-- ^ diag: generic-constraint-mismatch
+
+-- Constraint enforced in @return position.
+---@param r Rock
+---@return AnimalWrap<Rock>
+local function makeAnimalWrap(r) return { value = r } end
+-- ^ diag: generic-constraint-mismatch
+
+-- Constraint enforced in @field position.
+---@class WrapHolder
+---@field w AnimalWrap<Rock>
+-- ^ diag: generic-constraint-mismatch
+
+-- No false positive: an alias whose body forwards its own (constrained) type
+-- parameter to another constrained alias — T is a type variable, not a concrete
+-- type, so it is skipped.
+---@alias AnimalWrapOuter<T: Animal> AnimalWrap<T>
+
+-- No false positive: a function's constrained generic flowing into the alias arg.
+---@generic U: Animal
+---@param u U
+---@return AnimalWrap<U>
+local function wrapGeneric(u) return { value = u } end
+
+-- No false positive on an unconstrained parameterized alias.
+---@alias FreeWrap<T> T[]
+---@type FreeWrap<Rock>
+local freeWrap
+
+_G.useAliasConstraints = { useAnimalWrap, makeAnimalWrap, wrapGeneric, awGood, awExact, awBadClass, awBadPrim, freeWrap }
+
 _G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2, mathRound, funParamApply, numToStr, unannotated, retBound, numId, ignoreIfEquals, pairSameGeneric, Holder, MyBucket, nb, nsOwn, LinkedClass, lc }

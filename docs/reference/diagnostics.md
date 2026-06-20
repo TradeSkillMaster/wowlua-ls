@@ -12,7 +12,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `return-mismatch` | Return type vs `@return` mismatch |
 | `field-type-mismatch` | Field assignment vs `@field` type mismatch |
 | `assign-type-mismatch` | Reassignment vs `@type` mismatch |
-| `generic-constraint-mismatch` | Generic argument doesn't satisfy class or `keyof` constraint |
+| `generic-constraint-mismatch` | Generic argument doesn't satisfy a class, alias, or `keyof` constraint |
 | `param-constraint-mismatch` | Method called when the receiver's `@requires` type-param constraint isn't satisfied |
 | `missing-parameter` | Missing required function arguments |
 | `redundant-parameter` | Extra function arguments |

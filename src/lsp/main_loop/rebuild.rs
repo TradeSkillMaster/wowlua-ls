@@ -61,6 +61,7 @@ pub(super) fn classes_match(a: &[ClassDecl], b: &[ClassDecl]) -> bool {
 pub(super) fn alias_semantic_eq(x: &AliasDecl, y: &AliasDecl) -> bool {
     x.name == y.name
         && x.type_params == y.type_params
+        && x.type_param_constraints == y.type_param_constraints
         && x.typ == y.typ
         && x.is_opaque == y.is_opaque
 }

@@ -76,7 +76,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 
 | Annotation | Description |
 |---|---|
-| `@alias Name type` | Type alias. Supports parameters: `@alias Name<K,V> V[]`. Use `@alias (opaque) Name type` for a nominally distinct type (see below). |
+| `@alias Name type` | Type alias. Supports parameters: `@alias Name<K,V> V[]`, including constrained parameters: `@alias Box<T: Frame> { value: T }`. Use `@alias (opaque) Name type` for a nominally distinct type (see below). |
 | `@deprecated` | Mark as deprecated. |
 | `@nodiscard` | Warn if return value is ignored. |
 | `@meta` | Declaration-only file (suppresses all diagnostics). |

@@ -2106,6 +2106,7 @@ mod tests {
         AliasDecl {
             name: name.to_string(),
             type_params: Vec::new(),
+            type_param_constraints: Vec::new(),
             typ,
             def_range: None,
             def_path: None,

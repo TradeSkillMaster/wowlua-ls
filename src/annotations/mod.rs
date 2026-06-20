@@ -575,6 +575,10 @@ impl ClassDecl {
 pub struct AliasDecl {
     pub name: String,
     pub type_params: Vec<String>,
+    /// Optional constraint per type param (parallel to `type_params`), e.g.
+    /// `@alias Wrapper<T: Animal>` records `Some("Animal")` for `T`. `None` when
+    /// the param is unconstrained.
+    pub type_param_constraints: Vec<Option<String>>,
     pub typ: AnnotationType,
     /// Byte range of the @alias comment token: (start_byte, end_byte).
     pub def_range: Option<(u32, u32)>,
@@ -658,6 +662,7 @@ pub fn register_event_type_aliases(aliases: &mut Vec<AliasDecl>, events: &[Event
         to_insert.push(AliasDecl {
             name: ev.event_type.clone(),
             type_params: Vec::new(),
+            type_param_constraints: Vec::new(),
             typ: AnnotationType::Simple("string".to_string()),
             def_range: None,
             def_path: None,
@@ -684,6 +689,7 @@ pub(crate) struct AnnotationBlock {
     pub(crate) field_descriptions: HashMap<String, String>,
     pub(crate) alias: Option<(String, AnnotationType)>,
     pub(crate) alias_type_params: Vec<String>,
+    pub(crate) alias_type_param_constraints: Vec<Option<String>>,
     pub(crate) alias_is_opaque: bool,
     pub(crate) alias_continuations: Vec<AnnotationType>,
     pub(crate) overloads: Vec<String>,
@@ -1254,7 +1260,7 @@ fn flush_group(
             parts.extend(block.alias_continuations);
             if parts.len() == 1 { parts.pop().unwrap() } else { AnnotationType::Union(parts) }
         };
-        result.aliases.push(AliasDecl { name, type_params: block.alias_type_params, typ, def_range: alias_range, def_path: None, is_opaque: block.alias_is_opaque });
+        result.aliases.push(AliasDecl { name, type_params: block.alias_type_params, type_param_constraints: block.alias_type_param_constraints, typ, def_range: alias_range, def_path: None, is_opaque: block.alias_is_opaque });
     }
     if let Some(event_type) = block.event_type {
         let doc_lines: Vec<&str> = lines.iter()
@@ -1499,13 +1505,27 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             let type_str = after_name.strip_prefix(':').unwrap_or(after_name).trim();
             if !name_raw.is_empty() {
                 // Parse type params: @alias Foo<K, V> TYPE → name="Foo", type_params=["K","V"]
-                let (name, type_params) = if let Some(open) = name_raw.find('<') {
+                // Constraints are supported too: @alias Foo<T: Animal> → params=["T"], constraints=[Some("Animal")]
+                let (name, type_params, type_param_constraints) = if let Some(open) = name_raw.find('<') {
                     let n = &name_raw[..open];
                     let params_str = name_raw[open+1..].trim_end_matches('>');
-                    let params: Vec<String> = params_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                    (n.to_string(), params)
+                    let mut params = Vec::new();
+                    let mut constraints = Vec::new();
+                    for part in params_str.split(',') {
+                        let part = part.trim();
+                        if part.is_empty() { continue; }
+                        if let Some((pname, constraint)) = part.split_once(':') {
+                            params.push(pname.trim().to_string());
+                            let c = constraint.trim();
+                            constraints.push(if c.is_empty() { None } else { Some(c.to_string()) });
+                        } else {
+                            params.push(part.to_string());
+                            constraints.push(None);
+                        }
+                    }
+                    (n.to_string(), params, constraints)
                 } else {
-                    (name_raw.to_string(), Vec::new())
+                    (name_raw.to_string(), Vec::new(), Vec::new())
                 };
                 if !type_str.is_empty() {
                     let typ = parse_type(type_str);
@@ -1515,6 +1535,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     block.alias = Some((name, AnnotationType::Simple("unknown".to_string())));
                 }
                 block.alias_type_params = type_params;
+                block.alias_type_param_constraints = type_param_constraints;
             }
         } else if let Some(rest) = content.strip_prefix('|') {
             // ---|  continuation line — merge into the active @return tuple union,

@@ -1102,6 +1102,19 @@ local function useTestArrayColon(items)
     --    ^ hover: (local) y: number
 end
 
+-- Parameterized alias with a constrained type param: the constraint is parsed
+-- away so the param name is `T` (not `T: AliasAnimal`), the body still resolves,
+-- and the constraint does not trigger a spurious undefined-doc-name.
+---@class AliasAnimal
+---@class AliasDog : AliasAnimal
+---@alias ConstrainedWrap<T: AliasAnimal> { value: T }
+--        ^ hover: (alias) ConstrainedWrap<T> = {value: T}
+---@param w ConstrainedWrap<AliasDog>
+local function useConstrainedWrap(w)
+    return w.value
+    --       ^ hover: (field) value: AliasDog
+end
+
 -- Parameterized alias: table<K,V> body
 ---@alias TestDict<K, V> table<K, V>
 ---@param d TestDict<string, number>

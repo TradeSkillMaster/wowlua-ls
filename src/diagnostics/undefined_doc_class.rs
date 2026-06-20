@@ -165,6 +165,11 @@ impl DiagnosticPass for UndefinedDocClass {
                     .collect();
                 let check_generics = if generics.is_empty() { &no_generics } else { &generics };
                 analysis.ir.check_annotation_type_names(&alias.typ, check_generics, start as usize, end as usize, diags);
+                // Validate the constraint type names themselves, e.g. `@alias W<T: Bogus>`.
+                for constraint in alias.type_param_constraints.iter().flatten() {
+                    let parsed = crate::annotations::parse_type(constraint);
+                    analysis.ir.check_annotation_type_names(&parsed, check_generics, start as usize, end as usize, diags);
+                }
             }
         }
     }

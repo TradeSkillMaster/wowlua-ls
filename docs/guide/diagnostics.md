@@ -119,6 +119,16 @@ Generic argument doesn't satisfy the class constraint:
 local b = {}
 ```
 
+The same check applies to constrained parameterized aliases (`@alias Name<T: Constraint> ...`):
+
+```lua
+---@class Frame
+---@alias Wrapper<T: Frame> { value: T }
+
+---@type Wrapper<number> -- generic-constraint-mismatch
+local w = {}
+```
+
 ### `need-check-nil` <Badge type="warning" text="Warning" /> <Badge type="info" text="Off by default" />
 
 Field/method access on a possibly-nil value:

@@ -23,6 +23,7 @@ struct BuildOnStubsContext<'a> {
     aliases: HashMap<String, ValueType>,
     alias_fun_types: HashMap<String, AnnotationType>,
     parameterized_aliases: HashMap<String, (Vec<String>, AnnotationType)>,
+    parameterized_alias_constraints: HashMap<String, Vec<Option<(String, crate::annotations::AnnotationType)>>>,
     tuple_form_aliases: HashMap<String, AnnotationType>,
     scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
@@ -92,6 +93,7 @@ impl<'a> BuildOnStubsContext<'a> {
             aliases,
             alias_fun_types: stubs_base.alias_fun_types.clone(),
             parameterized_aliases: stubs_base.parameterized_aliases.clone(),
+            parameterized_alias_constraints: stubs_base.parameterized_alias_constraints.clone(),
             tuple_form_aliases: stubs_base.tuple_form_aliases.clone(),
             scope0_symbols,
             framexml_scope0_symbols,
@@ -185,6 +187,12 @@ impl<'a> BuildOnStubsContext<'a> {
         for alias in ws_aliases {
             if !alias.type_params.is_empty() {
                 self.parameterized_aliases.insert(alias.name.clone(), (alias.type_params.clone(), alias.typ.clone()));
+                if alias.type_param_constraints.iter().any(Option::is_some) {
+                    let parsed: Vec<Option<(String, crate::annotations::AnnotationType)>> = alias.type_param_constraints.iter().map(|c| {
+                        c.as_ref().map(|s| (s.clone(), crate::annotations::parse_type(s)))
+                    }).collect();
+                    self.parameterized_alias_constraints.insert(alias.name.clone(), parsed);
+                }
             } else if crate::annotations::annotation_is_tuple_form(&alias.typ) {
                 self.tuple_form_aliases.insert(alias.name.clone(), alias.typ.clone());
             } else if let Some(vt) = PreResolvedGlobals::resolve_annotation(&alias.typ, &self.classes, &self.aliases, &self.parameterized_aliases) {
@@ -1590,7 +1598,9 @@ impl<'a> BuildOnStubsContext<'a> {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,
             exprs: self.exprs, tables: self.tables,
             classes: self.classes, aliases: self.aliases, alias_fun_types: self.alias_fun_types,
-            parameterized_aliases: self.parameterized_aliases, tuple_form_aliases: self.tuple_form_aliases,
+            parameterized_aliases: self.parameterized_aliases,
+            parameterized_alias_constraints: self.parameterized_alias_constraints,
+            tuple_form_aliases: self.tuple_form_aliases,
             creates_global_specs: self.stubs_base.creates_global_specs.clone(),
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols: self.framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
