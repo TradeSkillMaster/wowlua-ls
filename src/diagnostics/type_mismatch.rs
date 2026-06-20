@@ -45,6 +45,21 @@ fn is_unconstrained_type_arg(vt: &ValueType) -> bool {
     matches!(vt, ValueType::Any | ValueType::TypeVariable(_))
 }
 
+/// Whether an expected type discriminates on specific string literals (an
+/// enum-like literal union such as `"A"|"B"|"C"`). Used to decide when to
+/// upgrade a source string-literal argument to its literal type so the
+/// union-membership check can reject out-of-set values.
+fn expects_string_literal(vt: &ValueType) -> bool {
+    match vt {
+        ValueType::String(Some(_)) => true,
+        ValueType::Union(types) | ValueType::Intersection(types) => {
+            types.iter().any(expects_string_literal)
+        }
+        ValueType::OpaqueAlias(_, inner) => expects_string_literal(inner),
+        _ => false,
+    }
+}
+
 /// Detect a generic type-argument (variance) violation that the structural
 /// class-subtype check ignores. Generic type arguments are tracked out-of-band
 /// (not part of `ValueType::Table`), so passing `Schema<BaseFrame>` where
@@ -163,6 +178,17 @@ impl DiagnosticPass for TypeMismatch {
                             }
                         }
                     }
+                // Source-code string literals resolve to the generic `String(None)`
+                // type, with the literal value kept in `ir.string_literals`. When the
+                // expected type discriminates on specific string literals, upgrade the
+                // argument to its literal type so the union-membership check below can
+                // reject values outside the set (e.g. `"x"` against `"A"|"B"|"C"`).
+                if matches!(arg_type, ValueType::String(None))
+                    && expects_string_literal(expected_type)
+                    && let Some(lit) = analysis.ir.string_literals.get(&check.arg_expr)
+                {
+                    arg_type = ValueType::String(Some(lit.clone()));
+                }
                 if arg_type.contains_type_variable() { continue; }
                 if check.skip_if_nil && matches!(arg_type, ValueType::Nil) { continue; }
                 // A @class table is compatible with a function parameter type (factory pattern)

@@ -1,6 +1,8 @@
----@diagnostic disable: undefined-global
+---@diagnostic disable: undefined-global, type-mismatch
 -- Cross-file test: string literal completions and call resolution for
 -- @field fun() types defined on workspace-scanned classes.
+-- (Partial strings like "O" are completion placeholders, not valid values,
+--  so type-mismatch is suppressed here.)
 
 ---@class FFCCallbackLib
 local _, FFCCallbackLib = ...

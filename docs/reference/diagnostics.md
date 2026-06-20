@@ -8,7 +8,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 |---|---|
 | `deprecated` | Usage of `@deprecated` symbols |
 | `discard-returns` | Ignoring `@nodiscard` return values |
-| `type-mismatch` | Argument type vs `@param` mismatch (including generic type arguments, e.g. `Container<number>` vs `Container<boolean>`) |
+| `type-mismatch` | Argument type vs `@param` mismatch (including generic type arguments, e.g. `Container<number>` vs `Container<boolean>`, and string-literal unions, e.g. `"x"` against `"A"\|"B"\|"C"`) |
 | `return-mismatch` | Return type vs `@return` mismatch |
 | `field-type-mismatch` | Field assignment vs `@field` type mismatch |
 | `assign-type-mismatch` | Reassignment vs `@type` mismatch |

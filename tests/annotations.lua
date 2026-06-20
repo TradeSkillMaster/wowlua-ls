@@ -57,6 +57,18 @@ local function getUnit(unit)
 --                     ^ hover: (param) unit: UnitId
 end
 
+-- Multi-line alias whose first member carries the LuaCATS default-value marker
+-- (`---|>"..."`); the `>` must be stripped so the default value is included.
+---@alias GcOption
+---|>"collect"
+---| "stop"
+---| "count"
+
+---@param opt GcOption
+local function gcCall(opt)
+--                    ^ hover: (param) opt: GcOption
+end
+
 -- String literal aliases with pipe characters inside the strings (WoW color codes)
 ---@alias StateText "|cff00ff88RUNNING|r" | "|cff0088ffPAUSED|r" | "|cffffff00FINISHED|r"
 

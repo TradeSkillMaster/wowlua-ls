@@ -1520,6 +1520,10 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             // ---|  continuation line — merge into the active @return tuple union,
             // fall back to batch event entry, or alias union.
             let rest = rest.trim();
+            // A leading `>` is the LuaCATS default-value marker on an enum-alias
+            // member (`---|>"value"` selects the preferred completion). Strip it
+            // so the value parses as a plain type/literal rather than `>"value"`.
+            let rest = rest.strip_prefix('>').map(str::trim_start).unwrap_or(rest);
             let rest_no_hash = if let Some(hash_pos) = find_hash_comment(rest) {
                 rest[..hash_pos].trim()
             } else {

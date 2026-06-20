@@ -217,6 +217,67 @@ local narrowed_val = maybeNum()
 assert(narrowed_val)
 typed(narrowed_val, "ok")
 
+-- ── String literal union (enum-like) argument checking ──────────────────────
+-- A string literal that is not a member of a literal-union @param/@alias is a
+-- type-mismatch. A plain `string` value stays permissively assignable (we don't
+-- model its runtime value), so it must NOT warn.
+
+---@alias TMStrEnum "A"|"B"|"C"
+
+---@param e TMStrEnum
+local function tmStrEnum(e) _consume(e) end
+
+-- Should warn: "x" is not "A" | "B" | "C"
+tmStrEnum("x")
+--        ^ diag: type-mismatch
+
+-- Should NOT warn: valid members
+tmStrEnum("A")
+tmStrEnum("C")
+
+-- Should NOT warn: a plain string value can be any literal at runtime
+---@type string
+local tmDynStr = "A"
+tmStrEnum(tmDynStr)
+
+-- Inline literal union (no alias) behaves the same.
+---@param p "left"|"right"
+local function tmInline(p) _consume(p) end
+tmInline("up")
+--       ^ diag: type-mismatch
+tmInline("left")
+
+-- A variable typed as a specific literal that isn't a member also warns.
+---@type "up"
+local tmLit = "up"
+tmInline(tmLit)
+--       ^ diag: type-mismatch
+
+-- Method call with a literal-union param.
+---@class TMStrHost
+local TMStrHost = {}
+---@param mode "on"|"off"
+function TMStrHost:setMode(mode) _consume(mode) end
+TMStrHost:setMode("toggle")
+--                ^ diag: type-mismatch
+TMStrHost:setMode("on")
+
+-- Multi-line alias whose first member uses the LuaCATS default-value marker
+-- (`---|>"..."`). The default member must still be part of the union (regression
+-- for the marker leaking the `>` into the parsed literal and dropping the value).
+---@alias TMGcOpt
+---|>"collect"
+---| "stop"
+---| "count"
+
+---@param o TMGcOpt
+local function tmGc(o) _consume(o) end
+tmGc("collect")
+tmGc("stop")
+-- Should warn: not a member
+tmGc("nope")
+--   ^ diag: type-mismatch
+
 -- ── Return type mismatch ────────────────────────────────────────────────────
 
 ---@return number

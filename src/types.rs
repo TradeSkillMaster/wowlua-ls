@@ -371,8 +371,13 @@ impl ValueType {
             (ValueType::Nil, ValueType::Union(types)) => types.contains(&ValueType::Nil),
             // Boolean literal assignable to generic boolean
             (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
-            // String types are mutually assignable (generic ↔ literal)
-            (ValueType::String(_), ValueType::String(_)) => true,
+            // Generic `string` is mutually assignable with any string type — we
+            // don't model the runtime value of a plain `string`, mirroring the
+            // NumberLiteral↔Number rule below. Two *different* string literals
+            // are NOT assignable, so a literal-union enum like `"A"|"B"|"C"`
+            // rejects `"x"`. Equal literals hit the `self == expected` fast path.
+            (ValueType::String(None), ValueType::String(_))
+            | (ValueType::String(_), ValueType::String(None)) => true,
             // Number literal ↔ generic number are mutually assignable (we don't
             // model numeric ranges, so a plain number may be any literal).
             (ValueType::NumberLiteral(_), ValueType::Number)

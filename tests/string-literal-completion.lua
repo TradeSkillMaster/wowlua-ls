@@ -1,5 +1,8 @@
 -- String literal completion tests: suggesting values from string literal union types
 -- in == and ~= comparisons.
+-- Partial/empty strings (e.g. "") in the function-param completion fixtures below
+-- are mid-typing placeholders, not valid union values, so type-mismatch is suppressed.
+---@diagnostic disable: type-mismatch
 
 -- ── Field access with string literal union ──────────────────────────────────
 
