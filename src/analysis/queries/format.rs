@@ -702,7 +702,7 @@ impl AnalysisResult {
         self.format_type_depth(vt, 0)
     }
 
-    pub(super) fn get_type_args_for_expr(&self, expr_id: ExprId) -> Vec<ValueType> {
+    pub(crate) fn get_type_args_for_expr(&self, expr_id: ExprId) -> Vec<ValueType> {
         if let Some(args) = self.call_type_args.get(&expr_id) {
             return args.clone();
         }

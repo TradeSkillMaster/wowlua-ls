@@ -1594,6 +1594,22 @@ impl<'a> BuildOnStubsContext<'a> {
             by_path
         };
 
+        // Constructor self-fields whose coarse type is `any` — record where their
+        // RHS call lives so the precise generic type args can be harvested lazily.
+        let mut deferred_field_type_args: HashMap<(String, String), crate::analysis::deferred::DeferredFieldTypeArgs> = HashMap::new();
+        let mut deferred_field_type_args_by_path: HashMap<PathBuf, Vec<(String, String)>> = HashMap::new();
+        for class in ws_classes {
+            let Some(ref path) = class.def_path else { continue };
+            for (field_name, &call_range) in &class.deferred_field_call_ranges {
+                let key = (class.name.clone(), field_name.clone());
+                deferred_field_type_args.insert(key.clone(), crate::analysis::deferred::DeferredFieldTypeArgs {
+                    path: path.clone(),
+                    call_range,
+                });
+                deferred_field_type_args_by_path.entry(path.clone()).or_default().push(key);
+            }
+        }
+
         PreResolvedGlobals {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,
             exprs: self.exprs, tables: self.tables,
@@ -1623,6 +1639,9 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,
             deferred_call_global_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_field_type_args,
+            deferred_field_type_args_by_path,
+            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::new()),
             document_overrides: std::sync::RwLock::new(HashMap::new()),
             project_configs: None,
         }

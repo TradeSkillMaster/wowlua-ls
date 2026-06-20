@@ -328,6 +328,25 @@ pub struct PreResolvedGlobals {
     /// the shared `Arc`, so a wholesale rebuild invalidates it. `#[serde(skip)]`.
     #[serde(skip)]
     pub(crate) deferred_call_global_cache: std::sync::RwLock<HashMap<SymbolIndex, Option<ValueType>>>,
+    /// Constructor self-fields whose coarse type is `any` (the RHS is an
+    /// unresolvable function call), keyed by `(class_name, field_name)`. The
+    /// per-file engine *can* resolve the call — including generic type args — so
+    /// the precise type arguments are harvested lazily from the defining file.
+    /// Populated at build time from `ClassDecl::deferred_field_call_ranges`.
+    /// Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub(crate) deferred_field_type_args:
+        HashMap<crate::analysis::deferred::DeferredFieldKey, crate::analysis::deferred::DeferredFieldTypeArgs>,
+    /// Reverse index: path → `(class_name, field_name)` deferred fields defined in
+    /// that file, so one whole-file harvest warms every deferred field at once.
+    #[serde(skip)]
+    pub(crate) deferred_field_type_args_by_path:
+        HashMap<PathBuf, Vec<crate::analysis::deferred::DeferredFieldKey>>,
+    /// Memoized harvested type arguments (in ext-index space) per deferred field.
+    /// Lives behind the shared `Arc`, so a wholesale rebuild invalidates it.
+    /// `#[serde(skip)]`.
+    #[serde(skip)]
+    pub(crate) deferred_field_type_args_cache: crate::analysis::deferred::DeferredFieldArgsCache,
     /// In-memory document content for files the editor has open. When set,
     /// the deferred harvester reads from here instead of disk, so unsaved
     /// edits are picked up immediately. Updated by the LSP layer on
@@ -2397,6 +2416,12 @@ impl BuildContext {
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,
             deferred_call_global_cache: std::sync::RwLock::new(HashMap::new()),
+            // Stubs carry no defclass constructor self-fields needing harvest, and
+            // these maps are #[serde(skip)] anyway; the workspace path
+            // (build_on_stubs) populates them at runtime.
+            deferred_field_type_args: HashMap::new(),
+            deferred_field_type_args_by_path: HashMap::new(),
+            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::new()),
             document_overrides: std::sync::RwLock::new(HashMap::new()),
             project_configs: None,
         }
@@ -2513,6 +2538,9 @@ impl PreResolvedGlobals {
             deferred_call_globals: HashMap::new(),
             deferred_call_globals_by_path: HashMap::new(),
             deferred_call_global_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_field_type_args: HashMap::new(),
+            deferred_field_type_args_by_path: HashMap::new(),
+            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::new()),
             document_overrides: std::sync::RwLock::new(HashMap::new()),
             project_configs: None,
         }
@@ -3543,6 +3571,7 @@ mod tests {
             field_literals: std::collections::HashMap::new(),
             field_descriptions: std::collections::HashMap::new(),
             bare_inferred_field_names: std::collections::HashSet::new(),
+            deferred_field_call_ranges: std::collections::HashMap::new(),
         }
     }
 

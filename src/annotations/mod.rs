@@ -306,6 +306,13 @@ pub(crate) struct SelfFieldEntry {
     pub(crate) byte_range: Option<(u32, u32)>,
     /// True when type was inferred (no `---@type`) — may be nil before assignment runs.
     pub(crate) inferred: bool,
+    /// Full byte range `(start, end)` of the RHS function-call expression when the
+    /// coarse scan could not resolve it to a concrete type (the inferred type is
+    /// `any`). The per-file engine *can* resolve it (including generic type args),
+    /// so this range lets the deferred harvest re-analyze the defining file and
+    /// recover the field's precise type arguments. `None` for non-funcall or
+    /// coarsely-resolvable fields. Matches `Expr::FunctionCall.call_range`.
+    pub(crate) deferred_call_range: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -512,6 +519,12 @@ pub struct ClassDecl {
     /// since the assignment may not have run yet.
     #[serde(skip)]
     pub bare_inferred_field_names: HashSet<String>,
+    /// For constructor self-fields whose coarse type is `any` because the RHS is a
+    /// function call the scan couldn't resolve: maps field name → the RHS call's
+    /// byte range. Lets the deferred harvest recover the field's precise type
+    /// arguments from the per-file engine. Workspace-only (not in the stub blob).
+    #[serde(skip)]
+    pub deferred_field_call_ranges: HashMap<String, (u32, u32)>,
 }
 
 impl ClassDecl {
@@ -544,6 +557,7 @@ impl ClassDecl {
             field_literals: HashMap::new(),
             field_descriptions: HashMap::new(),
             bare_inferred_field_names: HashSet::new(),
+            deferred_field_call_ranges: HashMap::new(),
         }
     }
 
@@ -1248,7 +1262,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::new() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::new(), deferred_field_call_ranges: HashMap::new() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {

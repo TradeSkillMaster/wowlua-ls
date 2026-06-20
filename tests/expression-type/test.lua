@@ -208,6 +208,25 @@ mgr2:SetFromExpr("b", [[rand() > 0.5]])
 mgr2:SetFromExpr("c", [[missing]])
 --                      ^ diag: undefined-field
 
+-- ── Unbound generic type param in context: suppress, don't false-positive ──
+-- When the receiver carries no type argument, the `T` in `expression<T & Builtins>`
+-- can't be bound to a concrete class. `Builtins` still resolves, but `T` would have
+-- supplied the other fields, so we must NOT flag names as undefined — the context is
+-- only partially known. (Real-world trigger: a class field whose generic type arg is
+-- lost across files, e.g. a chained-builder result the coarse cross-file scan can't
+-- resolve, leaving the field typed `any`.)
+---@type StateMgr
+local mgrNoArg = {}
+
+-- A name that would be a field of the (unbound) T must not be flagged. The
+-- harness fails on any uncovered diagnostic, so the absence of a `diag:` here
+-- asserts no false positive is emitted on these names.
+mgrNoArg:SetFromExpr("x", [[flag and level > 0]])
+
+-- The resolvable Builtins member is still available for hover
+mgrNoArg:SetFromExpr("y", [[rand() > 0.5]])
+--                          ^ hover: (field) rand: fun(): number
+
 -- ── Generic result type: R is inferred from the expression and flows to @return ──
 ---@class ExprSchema<R>
 local ExprSchema = {}

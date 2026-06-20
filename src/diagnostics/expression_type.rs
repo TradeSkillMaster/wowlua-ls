@@ -10,6 +10,13 @@ pub(crate) struct ExpressionType;
 impl DiagnosticPass for ExpressionType {
     fn run(&self, analysis: &AnalysisResult, _tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for (&expr_id, arg_info) in &analysis.ir.expression_args {
+            // When the context type couldn't be fully resolved (an unbound generic
+            // type-param member), `table_idxs` is only a partial view of the
+            // available fields — suppress diagnostics to avoid false positives on
+            // names the missing member would supply (hover/completion still work).
+            if arg_info.context_incomplete {
+                continue;
+            }
             let table_idxs = &arg_info.table_idxs;
             let expected_return = &arg_info.return_type;
             let (str_start, str_end) = arg_info.str_range;

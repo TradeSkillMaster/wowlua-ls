@@ -389,6 +389,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                             field_literals: HashMap::new(),
                             field_descriptions: HashMap::new(),
                             bare_inferred_field_names: HashSet::new(),
+                            deferred_field_call_ranges: HashMap::new(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name, implicit_protected_prefix)));
                     } else {
@@ -429,6 +430,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                 field_literals: HashMap::new(),
                 field_descriptions: HashMap::new(),
                 bare_inferred_field_names: HashSet::new(),
+                deferred_field_call_ranges: HashMap::new(),
             });
         }
     }
@@ -574,6 +576,10 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                         }
                         if entry.inferred {
                             results[result_idx].bare_inferred_field_names.insert(entry.name.clone());
+                        }
+                        if let Some(call_range) = entry.deferred_call_range {
+                            results[result_idx].deferred_field_call_ranges
+                                .insert(entry.name.clone(), call_range);
                         }
                         results[result_idx].fields.push((
                             entry.name,
@@ -878,9 +884,23 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>,
                                         let r = t.text_range();
                                         (u32::from(r.start()), u32::from(r.end()))
                                     });
+                                // When the inferred type is `any` and the RHS is a
+                                // function call, the coarse scan gave up (e.g. a chained
+                                // generic builder call). Record the call's range so the
+                                // deferred harvest can recover the precise type args from
+                                // the per-file engine. See SelfFieldEntry::deferred_call_range.
+                                let deferred_call_range = if inferred
+                                    && matches!(&ann_type, AnnotationType::Simple(s) if s == "any")
+                                    && let Some(Expression::FunctionCall(call)) = exprs.get(i)
+                                {
+                                    let r = call.syntax().text_range();
+                                    Some((u32::from(r.start()), u32::from(r.end())))
+                                } else {
+                                    None
+                                };
                                 fields.push(SelfFieldEntry {
                                     name: field_name.clone(), annotation_type: ann_type,
-                                    byte_range: field_range, inferred,
+                                    byte_range: field_range, inferred, deferred_call_range,
                                 });
                             }
                         }

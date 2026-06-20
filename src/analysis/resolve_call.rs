@@ -1328,7 +1328,7 @@ impl<'a> Analysis<'a> {
                     && base == "expression" && !type_args.is_empty()
                     && let Some(&(start, end)) = arg_ranges.get(i)
                 {
-                    let table_idxs = self.resolve_expression_tables(&type_args[0], receiver_table_idx, &class_type_param_subs);
+                    let (table_idxs, context_incomplete) = self.resolve_expression_tables(&type_args[0], receiver_table_idx, &class_type_param_subs);
                     if !table_idxs.is_empty() {
                         // When the result type `R` is one of the method's generic
                         // type parameters, infer it from the expression body and
@@ -1379,6 +1379,7 @@ impl<'a> Analysis<'a> {
                             table_idxs,
                             return_type,
                             str_range: (start, end),
+                            context_incomplete,
                         });
                     }
                 }
@@ -2703,17 +2704,33 @@ impl<'a> Analysis<'a> {
                             self.field_type_args_cache.insert((table_idx, field), resolved.clone());
                             return resolved;
                         }
+                        // NOTE: do NOT cache these into field_type_args_cache — the
+                        // underlying call_type_args refine during the fixpoint (e.g. a
+                        // generic bound from a builder-built argument resolves from the
+                        // base class to the precise built subtype only late), so caching
+                        // an early value poisons every later read. Re-read each time.
                         if let Some(args) = self.call_type_args.get(&field_expr) {
-                            let args = args.clone();
-                            self.field_type_args_cache.insert((table_idx, field), args.clone());
-                            return args;
+                            return args.clone();
                         }
                         for extra in &extra_exprs {
                             if let Some(args) = self.call_type_args.get(extra) {
-                                let args = args.clone();
-                                self.field_type_args_cache.insert((table_idx, field), args.clone());
-                                return args;
+                                return args.clone();
                             }
+                        }
+                    }
+                    // Deferred constructor self-field: the coarse cross-file scan
+                    // typed this field `any` (its RHS is an unresolvable chained/
+                    // generic call), so its generic type args were lost. Harvest them
+                    // from the defining file's real analysis and cache the result.
+                    if table_idx.is_external()
+                        && let Some(class_name) = self.table(table_idx).class_name.clone()
+                    {
+                        let ext = std::sync::Arc::clone(&self.ir.ext);
+                        if let Some(args) = crate::analysis::deferred::resolve_deferred_field_type_args(
+                            &ext, &class_name, &field,
+                        ) {
+                            self.field_type_args_cache.insert((table_idx, field), args.clone());
+                            return args;
                         }
                     }
                 }
@@ -4012,34 +4029,60 @@ impl<'a> Analysis<'a> {
     /// Resolve the context type parameter of `expression<C, R>` to table indices.
     /// `receiver_table_idx` is the table index of the method receiver (for resolving `self`).
     /// Supports simple class names, `self`, and intersection types (`C1 & C2`).
+    ///
+    /// Returns `(tables, incomplete)`. `incomplete` is set when a `self` or generic
+    /// type-parameter member of the context couldn't be bound to a concrete table —
+    /// e.g. `expression<T & Builtins, R>` where the receiver's `T` binding is lost
+    /// (cross-file inference gap). In that case `Builtins` still resolves, so hover
+    /// and completion work on the part we know, but the caller must NOT emit
+    /// `undefined-field` for names in the string: the missing member could supply
+    /// them, and flagging would be a false positive. Mirrors how unresolved generics
+    /// are skipped elsewhere (e.g. parameterized-alias constraint checking).
     fn resolve_expression_tables(
         &self,
         class_ann: &crate::annotations::AnnotationType,
         receiver_table_idx: Option<TableIndex>,
         class_type_param_subs: &HashMap<String, ValueType>,
-    ) -> Vec<TableIndex> {
+    ) -> (Vec<TableIndex>, bool) {
         match class_ann {
             crate::annotations::AnnotationType::Simple(name) => {
                 if name == "self" {
-                    receiver_table_idx.into_iter().collect()
+                    let tables: Vec<TableIndex> = receiver_table_idx.into_iter().collect();
+                    let incomplete = tables.is_empty();
+                    (tables, incomplete)
                 } else if let Some(sub) = class_type_param_subs.get(name.as_str()) {
                     // The context type references a class generic type param (e.g.
                     // `expression<T & Builtins, R>` on a method of `Mgr<T>`). Resolve
                     // `T` through the receiver's binding so the substituted class's
                     // fields are visible inside the expression string.
-                    collect_table_indices(sub)
+                    let tables = collect_table_indices(sub);
+                    let incomplete = tables.is_empty();
+                    (tables, incomplete)
+                } else if let Some(idx) = self.ir.classes.get(name.as_str()).copied()
+                    .or_else(|| self.ir.ext.classes.get(name.as_str()).copied())
+                {
+                    (vec![idx], false)
                 } else {
-                    self.ir.classes.get(name.as_str()).copied()
-                        .or_else(|| self.ir.ext.classes.get(name.as_str()).copied())
-                        .into_iter().collect()
+                    // A name that isn't `self`, a bound type param, or a known class.
+                    // It's almost always an unbound generic type parameter whose
+                    // receiver binding was lost (the class declares it but the call
+                    // site couldn't resolve the concrete argument). Treat the context
+                    // as incomplete rather than reporting every field as undefined.
+                    (Vec::new(), true)
                 }
             }
             crate::annotations::AnnotationType::Intersection(parts) => {
-                parts.iter()
-                    .flat_map(|part| self.resolve_expression_tables(part, receiver_table_idx, class_type_param_subs))
-                    .collect()
+                let mut tables = Vec::new();
+                let mut incomplete = false;
+                for part in parts {
+                    let (part_tables, part_incomplete) =
+                        self.resolve_expression_tables(part, receiver_table_idx, class_type_param_subs);
+                    tables.extend(part_tables);
+                    incomplete |= part_incomplete;
+                }
+                (tables, incomplete)
             }
-            _ => Vec::new(),
+            _ => (Vec::new(), false),
         }
     }
 }

@@ -1327,6 +1327,24 @@ fn crossfile_semantic_tokens() {
 }
 
 #[test]
+fn expression_deferred_field_harvest() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/expression-deferred-harvest/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/expression-deferred-harvest"),
+    });
+}
+
+#[test]
+fn expression_builder_module_field_refines() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/expression-deferred-harvest/builder_module_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/expression-deferred-harvest"),
+    });
+}
+
+#[test]
 fn crossfile_addon_table() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/file_b.lua",

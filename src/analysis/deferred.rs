@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use crate::analysis::{Analysis, AnalysisConfig, Ir};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::types::{Expr, FunctionIndex, ResolvedOverload, SymbolIndex, ValueType};
+use crate::types::{Expr, ExprId, FunctionIndex, ResolvedOverload, SymbolIndex, ValueType};
 
 /// Locates the creating call for a `@creates-global` side-effect global (e.g.
 /// the `_G.MyFrame` from `CreateFrame("Frame", "MyFrame", ...)`) so its type can
@@ -45,6 +45,25 @@ use crate::types::{Expr, FunctionIndex, ResolvedOverload, SymbolIndex, ValueType
 pub(crate) struct DeferredCallGlobal {
     pub(crate) path: PathBuf,
     pub(crate) call_offset: u32,
+}
+
+/// `(class_name, field_name)` identifying a deferred constructor self-field.
+pub(crate) type DeferredFieldKey = (String, String);
+
+/// Memo of harvested type arguments per deferred field. `None` means "harvested
+/// but unresolvable" (don't re-harvest).
+pub(crate) type DeferredFieldArgsCache =
+    std::sync::RwLock<HashMap<DeferredFieldKey, Option<Vec<ValueType>>>>;
+
+/// Locates the RHS call of a constructor self-field whose coarse type is `any`
+/// (e.g. `self._manager = UIManager.Create(...):SuppressActionLog(...)`), so the
+/// field's precise generic type *arguments* can be harvested from that call's
+/// resolved type in the defining file rather than lost to the coarse scan.
+/// `call_range` matches `Expr::FunctionCall.call_range` (the whole chained call).
+#[derive(Debug, Clone)]
+pub(crate) struct DeferredFieldTypeArgs {
+    pub(crate) path: PathBuf,
+    pub(crate) call_range: (u32, u32),
 }
 
 /// The whole-file harvest's precise signature for one deferred function, in
@@ -432,6 +451,116 @@ fn harvest_call_globals_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     if let Ok(mut cache) = ext.deferred_call_global_cache.write() {
         for (sym_idx, ty) in harvested {
             cache.insert(sym_idx, ty);
+        }
+    }
+}
+
+/// Resolve the precise generic type arguments for a deferred constructor
+/// self-field — a `self.x = <funcall>` whose coarse type is `any` because the
+/// chained/generic call couldn't be resolved by the scan. Re-analyzes the
+/// defining file (memoized) and reads the type args off the RHS call's resolved
+/// type. Returns `None` when the field isn't deferred or the args are
+/// unresolvable; callers then keep the coarse (arg-less) behavior.
+pub(crate) fn resolve_deferred_field_type_args(
+    ext: &Arc<PreResolvedGlobals>,
+    class_name: &str,
+    field_name: &str,
+) -> Option<Vec<ValueType>> {
+    let key = (class_name.to_string(), field_name.to_string());
+
+    // Memo hit. `Some(None)` means "harvested but unresolvable" — don't re-harvest.
+    if let Ok(cache) = ext.deferred_field_type_args_cache.read()
+        && let Some(hit) = cache.get(&key)
+    {
+        return hit.clone();
+    }
+
+    let path = ext.deferred_field_type_args.get(&key)?.path.clone();
+
+    // Re-entrancy / cycle guard: if this file is already being analyzed on the
+    // stack, bail for this edge — the nested harvest still fills the memo.
+    let entered = IN_PROGRESS.with(|set| set.borrow_mut().insert(path.clone()));
+    if !entered {
+        return None;
+    }
+
+    harvest_field_type_args_in_file(ext, &path);
+
+    IN_PROGRESS.with(|set| {
+        set.borrow_mut().remove(&path);
+    });
+
+    ext.deferred_field_type_args_cache
+        .read()
+        .ok()
+        .and_then(|cache| cache.get(&key).cloned())
+        .flatten()
+}
+
+/// Analyze `path` once and harvest the precise type args of *every* deferred
+/// constructor self-field defined in it, writing each into the memo (`None` when
+/// unresolvable). Each field is located by its RHS call's byte range (matching
+/// `Expr::FunctionCall.call_range`), and the call's bound type args are read from
+/// the engine and lifted into ext-index space. Does nothing on I/O failure.
+fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
+    let text = ext
+        .document_overrides
+        .read()
+        .ok()
+        .and_then(|docs| docs.get(path).cloned());
+    let text = match text {
+        Some(t) => t,
+        None => match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(_) => return,
+        },
+    };
+
+    let config = match &ext.project_configs {
+        Some(configs) => AnalysisConfig {
+            correlated_return_overloads: configs.correlated_return_overloads_for(path),
+            backward_param_types: configs.backward_param_types_for(path),
+            ..AnalysisConfig::default()
+        },
+        None => AnalysisConfig::default(),
+    };
+
+    let tree = crate::syntax::parser::parse(&text);
+    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(ext), config);
+    analysis.resolve_types();
+    let result = analysis.into_result();
+    let ir = &result.ir;
+
+    let Some(keys) = ext.deferred_field_type_args_by_path.get(path) else { return };
+
+    let mut harvested: Vec<(DeferredFieldKey, Option<Vec<ValueType>>)> = Vec::new();
+    for key in keys {
+        let Some(dfta) = ext.deferred_field_type_args.get(key) else { continue };
+        let target = dfta.call_range;
+        let mut resolved: Option<Vec<ValueType>> = None;
+        for (i, expr) in ir.exprs.iter().enumerate() {
+            if let Expr::FunctionCall { call_range, ret_index: 0, .. } = expr
+                && *call_range == target
+            {
+                let args = result.get_type_args_for_expr(ExprId(i));
+                if !args.is_empty() {
+                    let lifted: Vec<ValueType> =
+                        args.iter().map(|a| lift_local_type_to_ext(a, ir, ext)).collect();
+                    // An `any` arg carries no more than the coarse fallback — skip it
+                    // so a partial/unresolved harvest doesn't replace the coarse path.
+                    if !lifted.iter().any(contains_any) {
+                        resolved = Some(lifted);
+                    }
+                }
+                break;
+            }
+        }
+        harvested.push((key.clone(), resolved));
+    }
+
+    if let Ok(mut cache) = ext.deferred_field_type_args_cache.write() {
+        for (key, args) in harvested {
+            cache.insert(key, args);
         }
     }
 }

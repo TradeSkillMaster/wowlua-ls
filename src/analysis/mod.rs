@@ -449,6 +449,12 @@ pub(crate) struct ExpressionArg {
     pub return_type: Option<ValueType>,
     /// Source range `(start, end)` of the string literal in the file.
     pub str_range: (u32, u32),
+    /// True when the context type `C` contains a `self`/generic-param member that
+    /// couldn't be bound to a concrete table, so `table_idxs` is only a partial view
+    /// of the available fields. Hover/completion still use the resolved tables, but
+    /// the `undefined-field`/return-type diagnostics must be suppressed to avoid
+    /// false positives on fields supplied by the unresolved member.
+    pub context_incomplete: bool,
 }
 
 /// Extract the inner content of a long-bracket block comment (`--[[...]]`, `--[=[...]=]`,
