@@ -714,27 +714,33 @@ impl<'a> Analysis<'a> {
                                 // @defclass: if this variable was identified as a defclass target,
                                 // eagerly set its type to the auto-created class table
                                 // Inline ---@type on expression (e.g. `local x = {} ---@type Foo`)
-                                // Also checks inside table constructor opening: `{ ---@type Foo ... }`
-                                if annotations.var_type.is_none() && effective_class.is_none()
-                                    && let Some(expr) = expression {
-                                        let inline_at = Self::extract_inline_type(expr.syntax())
+                                // Also checks inside table constructor opening: `{ ---@type Foo ... }`.
+                                // For a forward declaration with no initializer
+                                // (`local Options ---@type Foo`) the trailing @type sits on the
+                                // local statement node itself, so fall back to that node.
+                                if annotations.var_type.is_none() && effective_class.is_none() {
+                                    let inline_at = if let Some(expr) = expression {
+                                        Self::extract_inline_type(expr.syntax())
                                             .or_else(|| {
                                                 if let Expression::TableConstructor(tc) = expr {
                                                     Self::extract_table_constructor_type(tc.syntax())
                                                 } else {
                                                     None
                                                 }
-                                            });
-                                        if let Some(inline_at) = inline_at {
-                                            let vt_opt = self.resolve_annotation_type_mut_gen(&inline_at, &[])
-                                                .map(|vt| self.materialize_fun_alias(vt, &inline_at));
-                                            if let Some(vt) = vt_opt {
-                                                let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
-                                                self.ir.set_type_source(symbol_idx, expr_id);
-                                                self.record_symbol_annotation(symbol_idx, &inline_at, vt);
-                                            }
+                                            })
+                                    } else {
+                                        Self::extract_trailing_local_type(assign.syntax())
+                                    };
+                                    if let Some(inline_at) = inline_at {
+                                        let vt_opt = self.resolve_annotation_type_mut_gen(&inline_at, &[])
+                                            .map(|vt| self.materialize_fun_alias(vt, &inline_at));
+                                        if let Some(vt) = vt_opt {
+                                            let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
+                                            self.ir.set_type_source(symbol_idx, expr_id);
+                                            self.record_symbol_annotation(symbol_idx, &inline_at, vt);
                                         }
                                     }
+                                }
                                 if annotations.var_type.is_none() && effective_class.is_none()
                                     && let Some(&defclass_table_idx) = self.defclass_vars.get(name) {
                                         // Merge table literal argument fields into the defclass table,
@@ -3449,6 +3455,32 @@ impl<'a> Analysis<'a> {
     /// Delegates to the shared implementation in `annotation_scanning`.
     pub(crate) fn extract_inline_type(field_node: SyntaxNode<'_>) -> Option<AnnotationType> {
         crate::annotations::annotation_scanning::extract_inline_type_from_node(field_node)
+    }
+
+    /// Extract a trailing `---@type X` from a forward-declared `local` statement
+    /// (`local Options ---@type Foo`, no initializer). The parser folds the
+    /// trailing comment into the statement node as trivia, so the comment is the
+    /// last non-newline token of the node rather than a following sibling — the
+    /// general `extract_inline_type_from_node` can't see it (its within-node Name
+    /// search only walks direct children, and the names are nested in a NameList).
+    /// Walk backward from the node's last token through trailing trivia to find it.
+    fn extract_trailing_local_type(local_node: SyntaxNode<'_>) -> Option<AnnotationType> {
+        let mut tok = local_node.last_token();
+        while let Some(t) = tok {
+            match t.kind() {
+                SyntaxKind::Whitespace | SyntaxKind::Newline => {
+                    tok = t.prev_token();
+                }
+                SyntaxKind::Comment => {
+                    let content = t.text().trim_start_matches('-').trim();
+                    let rest = content.strip_prefix("@type")?.trim();
+                    if rest.is_empty() { return None; }
+                    return Some(crate::annotations::parse_type(rest));
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// Record a `---@type` annotation against a local symbol: store the resolved

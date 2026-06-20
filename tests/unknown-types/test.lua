@@ -90,6 +90,17 @@ _consume(anyLocal)
 local strLocal = passthrough(nil)
 _consume(strLocal)
 
+-- No fire: forward declaration (no initializer) with a trailing inline @type.
+-- The trailing comment is folded into the local statement node as trivia, so it
+-- must still be picked up the same way a preceding ---@type would be.
+local fwdLocal ---@type string
+_consume(fwdLocal)
+
+-- No fire: same, but the inline @type is on the line above (preceding form).
+---@type string
+local fwdAbove
+_consume(fwdAbove)
+
 -- ── unknown-return-type ──────────────────────────────────────────────────
 
 -- Fires: the return expression has no resolvable type.
