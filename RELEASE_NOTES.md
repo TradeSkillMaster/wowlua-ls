@@ -1,3 +1,3 @@
 ### Bug Fixes
 
-- Fixed a false positive in the `unused-function` diagnostic where functions dispatched dynamically via `keyof` indexing were incorrectly reported as unused.
+- Fixed a reassigned local variable incorrectly leaking as a cross-file global, which could cause spurious global resolution across files.
