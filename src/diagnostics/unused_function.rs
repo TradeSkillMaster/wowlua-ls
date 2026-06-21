@@ -118,6 +118,52 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
         }
     }
 
+    // Collect external methods referenced via dynamic dispatch: a string literal
+    // passed to a `keyof T`-constrained generic parameter names a method on the
+    // `T` target (e.g. `publisher:CallMethod(obj, "MethodName")` with
+    // `@generic Obj, K: keyof Obj`). The string is a genuine reference to that
+    // method — without this, such a method is falsely reported as unused.
+    // Mirrors the keyof handling in `queries/references.rs`.
+    for cr in analysis.ir.call_resolutions.values() {
+        if cr.generic_subs.is_empty() {
+            continue;
+        }
+        let func = analysis.ir.func(cr.func_idx);
+        let keyof_targets: Vec<(&str, &str)> = func
+            .generic_constraints_raw
+            .iter()
+            .filter_map(|(n, c)| {
+                c.as_deref()
+                    .and_then(crate::annotations::parse_keyof_constraint)
+                    .map(|ref_name| (n.as_str(), ref_name))
+            })
+            .collect();
+        if keyof_targets.is_empty() {
+            continue;
+        }
+        for (gen_name, bound_type, _) in &cr.generic_subs {
+            let Some(ref_name) = keyof_targets
+                .iter()
+                .find(|(n, _)| *n == gen_name.as_str())
+                .map(|(_, r)| *r)
+            else {
+                continue;
+            };
+            let ValueType::String(Some(key)) = bound_type else {
+                continue;
+            };
+            let Some(table_idx) = cr.resolve_keyof_target(ref_name) else {
+                continue;
+            };
+            if let Some(field) = analysis.ir.get_field(table_idx, key)
+                && let Expr::FunctionDef(func_idx) = analysis.ir.expr(field.expr)
+                && func_idx.is_external()
+            {
+                referenced_external_functions.insert(*func_idx);
+            }
+        }
+    }
+
     // Identify scope-0 symbols that are locally referenced within this file.
     let scope0 = &analysis.ir.scopes[0];
     for (id, &sym_idx) in &scope0.symbols {

@@ -47,3 +47,10 @@ end
 local p = GetProcessor("x")
 if not p then return end
 p:Execute()
+
+-- Dynamic dispatch: the method is named only by a string literal passed to a
+-- `keyof Obj`-constrained generic parameter. This counts as a reference to
+-- Dispatched:DynamicMethod, so it must not be flagged as unused.
+local disp = Dispatcher
+local dInstance = Dispatched
+disp:CallMethod(dInstance, "DynamicMethod")

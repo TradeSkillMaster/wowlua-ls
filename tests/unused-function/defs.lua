@@ -122,6 +122,32 @@ function CreateWorker()
     return Worker
 end
 
+-- Dynamic dispatch via a `keyof`-constrained generic parameter. A method named
+-- only by a string literal passed to CallMethod is still a genuine reference.
+---@class Dispatcher
+Dispatcher = {}
+
+---@generic Obj, K: keyof Obj
+---@param obj Obj
+---@param method K
+function Dispatcher:CallMethod(obj, method)
+end
+
+---@class Dispatched
+Dispatched = {}
+
+-- Referenced only via `disp:CallMethod(d, "DynamicMethod")` in user.lua.
+-- Should NOT be flagged as unused.
+function Dispatched:DynamicMethod()
+    return 50
+end
+
+-- Genuinely unused method on the same class — proves dynamic-dispatch tracking
+-- doesn't blanket-suppress real unused methods.
+function Dispatched:UnusedDynamicMethod()
+    return 51
+end
+
 -- Method called on a narrowed return value from a local function.
 ---@class Processor
 local Processor = {}

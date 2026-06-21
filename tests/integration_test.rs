@@ -5385,4 +5385,19 @@ fn test_unused_function_cross_file() {
         unused_names.contains("Processor:UnusedProcessorMethod"),
         "Processor:UnusedProcessorMethod should be flagged as unused, got: {:?}", unused_names,
     );
+
+    // Dynamic dispatch via a keyof-constrained generic: the method is named only
+    // by the string literal `"DynamicMethod"` passed to disp:CallMethod(...). This
+    // is a genuine reference and must not be flagged (the original TSM
+    // `publisher:CallMethod(obj, "MethodName")` false-positive).
+    assert!(
+        !unused_names.contains("Dispatched:DynamicMethod"),
+        "Dispatched:DynamicMethod should not be flagged — referenced by a string literal passed to a keyof-constrained generic, got: {:?}", unused_names,
+    );
+    // The sibling method never named anywhere IS still flagged — dynamic-dispatch
+    // tracking doesn't blanket-suppress the whole class.
+    assert!(
+        unused_names.contains("Dispatched:UnusedDynamicMethod"),
+        "Dispatched:UnusedDynamicMethod should be flagged as unused, got: {:?}", unused_names,
+    );
 }
