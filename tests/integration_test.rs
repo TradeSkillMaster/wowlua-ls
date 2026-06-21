@@ -2755,6 +2755,16 @@ fn crossfile_local_func_no_leak() {
 }
 
 #[test]
+fn crossfile_local_var_no_leak() {
+    // A reassigned local variable must not leak as a cross-file global
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/local_var_no_leak_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_access() {
     // Cross-file private/protected field access diagnostics
     run_annotation_tests(&TestConfig {

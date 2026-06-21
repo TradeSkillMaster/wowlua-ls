@@ -719,8 +719,17 @@ pub(crate) fn scan_file_globals_with_synth(
                     if idents.len() == 1 && exprs.len() == 1 {
                         let mut names = idents[0].names();
                         // Redirect _G.field to a top-level global (matches build_ir.rs behavior)
+                        let mut was_g_redirect = false;
                         if names.len() >= 2 && names[0] == "_G" && !local_vars.contains(&names[0]) {
                             names.remove(0);
+                            was_g_redirect = true;
+                        }
+                        // A plain `value = ...` assignment to a name that is declared as a
+                        // local somewhere in this file is a reassignment, not an implicit
+                        // global creation — skip it so locals don't leak as phantom globals.
+                        // (An explicit `_G.value = ...` write still creates a global.)
+                        if names.len() == 1 && !was_g_redirect && local_vars.contains(&names[0]) {
+                            continue;
                         }
                         if names.len() == 1 {
                             let range = assign.syntax().text_range();
