@@ -715,3 +715,27 @@ function useOverlayTarget(target)
     local it = target.items
     --    ^ hover: (local) it: number[]
 end
+
+-- ── Completion in a chain after a commented-out line ────────────────
+-- Regression: a commented-out line inside a multi-line builder chain must
+-- not break member-access completion on the next chained call. The receiver
+-- resolution walks backward past whitespace/newlines AND comments to the
+-- prior call's closing ')'.
+
+---@class CommentChain
+local CC = {}
+
+---@return self
+function CC:Foo() return self end
+
+---@return self
+function CC:Bar() return self end
+
+---@return self
+function CC:Done() return self end
+
+local cc = CC
+    :Foo()
+    -- :Bar()
+    :Done()
+--   ^ comp: Bar, Done, Foo

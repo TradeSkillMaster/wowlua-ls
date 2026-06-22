@@ -184,10 +184,11 @@ impl AnalysisResult {
             let text_size = TextSize::from(prefix_offset);
             let mut token = SyntaxNode::new_root(tree).token_at_offset(text_size).right_biased()?;
 
-            // Skip whitespace/newline tokens backwards for multi-line chains like:
+            // Skip whitespace/newline/comment tokens backwards for multi-line chains like:
             //   func(args)
+            //       -- :commentedOut()
             //       :method()
-            while matches!(token.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline) {
+            while matches!(token.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline | SyntaxKind::Comment) {
                 token = token.prev_token()?;
             }
 
@@ -869,7 +870,7 @@ impl AnalysisResult {
         let text_size = TextSize::from(prefix_offset);
         let mut token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
 
-        while matches!(token.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline) {
+        while matches!(token.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline | SyntaxKind::Comment) {
             token = token.prev_token()?;
         }
 
