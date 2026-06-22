@@ -1597,6 +1597,44 @@ mod tests {
         assert!(child.fields.iter().any(|(n, _, _)| n == "new"), "non-colliding defclass field must be added");
     }
 
+    /// End-to-end go-to-definition wiring for FrameEvents. `test-query` only prints
+    /// the raw ExternalLocation path; the actual LSP path runs through
+    /// `resolve_external_definition`, which reads the embedded file-contents blob and
+    /// returns None if the file key is missing. This asserts both a documented event
+    /// (UNIT_AURA, from APIDocumentation with payload) and a payload-less
+    /// FrameXML-only event (CRAFT_SHOW) have an event_location pointing at an
+    /// embedded file, and that resolve_external_definition actually produces a
+    /// navigable location.
+    #[test]
+    fn frame_event_definition_resolves_through_embedded_blob() {
+        let stubs = match load_precomputed_stubs() {
+            Some(s) => s,
+            None => return, // No embedded stubs in this build configuration — skip.
+        };
+        let pre = &stubs.pre_globals;
+        let contents = stub_file_contents();
+
+        for event in ["UNIT_AURA", "CRAFT_SHOW"] {
+            let loc = pre
+                .event_locations
+                .get("FrameEvent")
+                .and_then(|m| m.get(event))
+                .unwrap_or_else(|| panic!("no event_location for {event}"));
+
+            let key = loc.path.to_string_lossy();
+            assert!(
+                contents.contains_key(key.as_ref()),
+                "embedded file blob is missing key {key:?} for event {event} — go-to-definition would silently return None",
+            );
+
+            let def = resolve_external_definition(loc);
+            assert!(
+                def.is_some(),
+                "resolve_external_definition returned None for {event} (path {key:?})",
+            );
+        }
+    }
+
     /// Regression: `cached_built_name_func_names` only included direct @built-name
     /// function names (like `__init`), missing wrapper functions that return a class
     /// with @built-name on its method. When `didOpen` fired for a file using a wrapper

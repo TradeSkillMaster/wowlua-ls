@@ -1371,8 +1371,58 @@ fn parse_event_alias_names(content: &str) -> HashSet<String> {
     names
 }
 
+/// Scan wow-ui-source Lua for events registered via `RegisterEvent("X")` /
+/// `RegisterUnitEvent("X", ...)` calls. Blizzard's own FrameXML registers many
+/// real, fireable events (e.g. `CRAFT_SHOW`, `GLYPH_ADDED`, `UNIT_HEALTH_FREQUENT`,
+/// login/store/VAS events) that aren't in `Blizzard_APIDocumentationGenerated`. We
+/// harvest the registered names so they're recognized as valid `FrameEvent`s even
+/// though we have no documented payload for them.
+fn scan_registered_events(ui_source_dirs: &[PathBuf]) -> HashSet<String> {
+    use rayon::prelude::*;
+    // `:RegisterEvent("X")` or `:RegisterUnitEvent("X", ...)`. The trailing `\(`
+    // (not `s(`) avoids matching `RegisterFrameForEvents` / `RegisterFrameForUnitEvents`.
+    let re = regex_lite::Regex::new(
+        r#"Register(?:Unit)?Event\s*\(\s*"([A-Z_][A-Z0-9_]*)""#
+    ).unwrap();
+
+    let mut lua_files = Vec::new();
+    for dir in ui_source_dirs {
+        let interface_dir = dir.join("Interface");
+        if !interface_dir.is_dir() {
+            continue;
+        }
+        collect_lua_paths(&interface_dir, &mut lua_files);
+    }
+
+    lua_files
+        .par_iter()
+        .map(|path| {
+            let mut local = HashSet::new();
+            if let Ok(content) = std::fs::read_to_string(path) {
+                for cap in re.captures_iter(&content) {
+                    local.insert(cap.get(1).unwrap().as_str().to_string());
+                }
+            }
+            local
+        })
+        .reduce(HashSet::new, |mut acc, local| {
+            acc.extend(local);
+            acc
+        })
+}
+
 /// Generate `@event` stubs from parsed Blizzard Events.
-fn generate_blizzard_event_stubs(docs: &BlizzardApiDocs, known_enums: &HashSet<String>) -> String {
+///
+/// `extra_event_names` are FrameXML-only events (e.g. from Ketho's `Event.lua`
+/// `FrameEvent` alias) that aren't documented in Blizzard_APIDocumentationGenerated
+/// and therefore have no known payload. They're still real, registrable events
+/// (e.g. `CRAFT_SHOW`, `GLYPH_ADDED`), so we emit them with an empty payload so
+/// they're recognized as valid `FrameEvent`s rather than flagged as undefined.
+fn generate_blizzard_event_stubs(
+    docs: &BlizzardApiDocs,
+    known_enums: &HashSet<String>,
+    extra_event_names: &HashSet<String>,
+) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     writeln!(out, "---@meta _").unwrap();
@@ -1381,6 +1431,8 @@ fn generate_blizzard_event_stubs(docs: &BlizzardApiDocs, known_enums: &HashSet<S
 
     let mut sorted: Vec<&BlizzardEvent> = docs.events.iter().collect();
     sorted.sort_by_key(|e| &e.literal_name);
+
+    let documented: HashSet<&str> = docs.events.iter().map(|e| e.literal_name.as_str()).collect();
 
     for ev in &sorted {
         writeln!(out, "---[Documentation](https://warcraft.wiki.gg/wiki/{})", ev.literal_name).unwrap();
@@ -1396,7 +1448,24 @@ fn generate_blizzard_event_stubs(docs: &BlizzardApiDocs, known_enums: &HashSet<S
         writeln!(out).unwrap();
     }
 
-    log::info!("  BlizzardEvents: {} events generated", sorted.len());
+    // FrameXML-only events with no documented payload.
+    let mut extra: Vec<&String> = extra_event_names
+        .iter()
+        .filter(|name| !documented.contains(name.as_str()))
+        .collect();
+    extra.sort();
+    for name in &extra {
+        writeln!(out, "---[Documentation](https://warcraft.wiki.gg/wiki/{name})").unwrap();
+        writeln!(out, "---@event FrameEvent \"{name}\"").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    log::info!(
+        "  BlizzardEvents: {} documented + {} FrameXML-only (no payload) = {} events generated",
+        sorted.len(),
+        extra.len(),
+        sorted.len() + extra.len()
+    );
     out
 }
 
@@ -5511,26 +5580,30 @@ pub fn regenerate_stubs() {
     let constants_lua = generate_constants_stubs(&constants_tables);
     std::fs::write(gen_dir.join("Constants.lua"), &constants_lua).unwrap();
 
-    // Events: use only Blizzard APIDocumentation events.
-    // Ketho's Event.lua merges FrameXML-only events not in APIDocumentation — we intentionally
-    // skip those because they lack payload annotations and can be added as overrides if needed.
-    let blizzard_events_lua = generate_blizzard_event_stubs(&blizzard_docs, &known_enum_names);
-    std::fs::write(gen_dir.join("BlizzardEvents.lua"), &blizzard_events_lua).unwrap();
-
-    // Log coverage gap vs Ketho's Event.lua alias for visibility.
+    // Events: Blizzard APIDocumentation events (with payloads) plus FrameXML-only
+    // events that aren't in APIDocumentation and so lack payload annotations, but
+    // are still real, registrable events — emit those with an empty payload so
+    // they're recognized as valid FrameEvents. Two FrameXML sources:
+    //   1. Ketho's Event.lua `FrameEvent` alias (curated name list).
+    //   2. `RegisterEvent("X")` / `RegisterUnitEvent("X", ...)` calls harvested
+    //      directly from the wow-ui-source clones — these catch events (e.g.
+    //      CRAFT_SHOW, GLYPH_ADDED, UNIT_HEALTH_FREQUENT, login/store/VAS events)
+    //      that neither APIDocumentation nor Ketho's curated list includes.
     let event_lua_path = clone_dir.join("Annotations/Core/Data/Event.lua");
-    if let Ok(alias_content) = std::fs::read_to_string(&event_lua_path) {
-        let ketho_events = parse_event_alias_names(&alias_content);
-        let blizzard_event_names: HashSet<&str> = blizzard_docs.events.iter()
-            .map(|e| e.literal_name.as_str()).collect();
-        let dropped: Vec<&str> = ketho_events.iter()
-            .filter(|name| !blizzard_event_names.contains(name.as_str()))
-            .map(|s| s.as_str()).collect();
-        if !dropped.is_empty() {
-            log::info!("  Skipped {} FrameXML-only events from Ketho Event.lua (not in APIDocumentation)", dropped.len());
-            log::debug!("  Skipped events: {:?}", dropped);
-        }
+    let mut extra_event_names = std::fs::read_to_string(&event_lua_path)
+        .map(|c| parse_event_alias_names(&c))
+        .unwrap_or_default();
+    if extra_event_names.is_empty() {
+        source_errors.push("FrameEvent alias names from Event.lua: 0 (expected >0)".to_string());
     }
+    let registered_events = scan_registered_events(&all_ui_dirs);
+    log::info!("  Harvested {} RegisterEvent names from wow-ui-source", registered_events.len());
+    if registered_events.len() < 50 {
+        source_errors.push(format!("RegisterEvent names from wow-ui-source: {} (expected ≥50)", registered_events.len()));
+    }
+    extra_event_names.extend(registered_events);
+    let blizzard_events_lua = generate_blizzard_event_stubs(&blizzard_docs, &known_enum_names, &extra_event_names);
+    std::fs::write(gen_dir.join("BlizzardEvents.lua"), &blizzard_events_lua).unwrap();
 
     // Step 6: Collect all stub file paths for scanning
     log::info!("Scanning stubs...");
@@ -7199,5 +7272,64 @@ TestUtil.CreateTest = GenerateClosure(CreateAndInitFromMixin, TestMixin)
         assert!(output.contains("NewUtil"), "output:\n{output}");
         assert!(output.contains("function NewUtil.DoThing() end"), "output:\n{output}");
         assert!(generated.contains("NewUtil"), "generated: {generated:?}");
+    }
+
+    #[test]
+    fn test_scan_registered_events() {
+        let tmp = std::env::temp_dir().join("wowlua-ls-test-scan-registered-events");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let interface_dir = tmp.join("Interface/AddOns/Blizzard_Test");
+        std::fs::create_dir_all(&interface_dir).unwrap();
+
+        std::fs::write(interface_dir.join("Test.lua"), r#"
+local f = CreateFrame("Frame")
+f:RegisterEvent("CRAFT_SHOW")
+f:RegisterUnitEvent("UNIT_HEALTH_FREQUENT", "player")
+self:RegisterEvent( "GLYPH_ADDED" )
+-- RegisterFrameForEvents must NOT match (it takes a table, not a name)
+FrameUtil.RegisterFrameForEvents(f, { "SHOULD_NOT_MATCH" })
+-- lowercase / non-event strings must not be captured
+f:RegisterEvent("lowercase_thing")
+"#).unwrap();
+
+        let events = scan_registered_events(std::slice::from_ref(&tmp));
+
+        assert!(events.contains("CRAFT_SHOW"), "should find RegisterEvent name");
+        assert!(events.contains("UNIT_HEALTH_FREQUENT"), "should find RegisterUnitEvent name");
+        assert!(events.contains("GLYPH_ADDED"), "should handle whitespace in call");
+        assert!(!events.contains("SHOULD_NOT_MATCH"), "RegisterFrameForEvents must not match");
+        assert!(!events.contains("lowercase_thing"), "lowercase names must not match");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_generate_blizzard_event_stubs_extra_events() {
+        let docs = BlizzardApiDocs {
+            functions: vec![],
+            events: vec![BlizzardEvent {
+                literal_name: "PLAYER_LOGIN".to_string(),
+                payload: vec![],
+            }],
+            structures: vec![],
+            script_objects: vec![],
+        };
+        let known_enums = HashSet::new();
+        let mut extra = HashSet::new();
+        // One genuinely-new FrameXML-only event and one that's already documented.
+        extra.insert("CRAFT_SHOW".to_string());
+        extra.insert("PLAYER_LOGIN".to_string());
+
+        let out = generate_blizzard_event_stubs(&docs, &known_enums, &extra);
+
+        // The documented event is emitted exactly once (not duplicated by the extra set).
+        assert_eq!(
+            out.matches("\"PLAYER_LOGIN\"").count(),
+            1,
+            "documented event must not be duplicated:\n{out}"
+        );
+        // The FrameXML-only event is emitted with no payload.
+        assert!(out.contains("---@event FrameEvent \"CRAFT_SHOW\""), "out:\n{out}");
+        assert!(!out.contains("CRAFT_SHOW\"\n---@param"), "extra event must have no payload:\n{out}");
     }
 }
