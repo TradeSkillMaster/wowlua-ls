@@ -108,15 +108,15 @@ Path prefixes to exclude from scanning. Relative to the config file's directory.
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Paths to scan for type information but with all diagnostics suppressed. Useful for third-party libraries where you want classes, globals, and type information available to the rest of your project, but can't fix any diagnostic issues in the library code. Relative entries use the same pattern syntax as `ignore`. Absolute paths are also supported for libraries outside the workspace.
+Paths to scan for type information but with all diagnostics suppressed. Useful for third-party libraries where you want classes, globals, and type information available to the rest of your project, but can't fix any diagnostic issues in the library code. Relative entries use the same pattern syntax as `ignore`. Absolute paths — and relative paths that point *outside* the workspace (for example `../shared`) — are also supported for libraries that live next to your addon rather than inside it.
 
 ```json
-{ "library": ["Libs/", "/home/user/shared-libs/"] }
+{ "library": ["Libs/", "../shared-libs", "/home/user/shared-libs/"] }
 ```
 
 Unlike `ignore` (which skips files entirely), `library` files are fully scanned and analyzed — their `@class`, `@alias`, global functions, and other type information are available throughout the workspace. Only diagnostic output is suppressed.
 
-Absolute paths are automatically added as extra scan directories, so external libraries don't need to be inside your workspace.
+External library directories are automatically added as extra scan directories, so libraries don't need to be inside your workspace. A relative entry that escapes the workspace root (one containing `..`) is resolved against the directory holding the `.wowluarc.json` and scanned as an external directory — prefer this over an absolute path for libraries checked into version control, since it stays portable across machines.
 
 Marking a directory as a library suppresses diagnostics for the **whole subtree**, including any nested `.wowluarc.json` files inside it. A vendored library that ships its own `.wowluarc.json` (for example one pulled in via a symlink) cannot re-enable diagnostics for itself — the parent's `library` declaration wins. See [Hierarchy behavior](#hierarchy-behavior) for how this differs from other settings.
 

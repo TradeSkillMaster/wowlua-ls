@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use lsp_types::DiagnosticSeverity;
 use serde::Deserialize;
@@ -108,9 +108,12 @@ impl AllowedGlobals {
 #[derive(Clone, Default, Debug)]
 pub struct ProjectConfig {
     pub ignore: Vec<String>,
-    /// Relative library patterns (scanned but diagnostics suppressed).
+    /// Relative library patterns that stay within the workspace (scanned by the
+    /// normal downward traversal, diagnostics suppressed).
     pub library_relative: Vec<String>,
-    /// Absolute library patterns (external directories, scanned but diagnostics suppressed).
+    /// Absolute library directories scanned as external scan targets (diagnostics
+    /// suppressed). Holds both config-supplied absolute paths and relative entries
+    /// that escape the workspace (e.g. `../shared`), resolved against the config dir.
     pub library_absolute: Vec<String>,
     pub disabled_diagnostics: HashSet<String>,
     pub enabled_diagnostics: HashSet<String>,
@@ -154,6 +157,29 @@ pub struct ProjectConfig {
     pub auto_insert_end: Option<bool>,
 }
 
+
+/// Lexically normalize a path by collapsing `.` and `..` components without
+/// touching the filesystem (so symlinks are preserved — important for vendored
+/// libraries pulled in via symlink). A `..` above the root is a no-op (you
+/// can't `cd` above `/`); a leading `..` with no preceding normal component
+/// on a relative path is kept as-is.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut out: Vec<Component> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.last(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !matches!(out.last(), Some(Component::RootDir | Component::Prefix(_))) {
+                    out.push(comp);
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.iter().collect()
+}
 
 /// Check if a path matches any of the given patterns.
 /// Supports glob patterns (`*`, `?`, `**`), directory prefixes (`Libs/`),
@@ -967,9 +993,31 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     };
 
     let ignore = raw.ignore.unwrap_or_default();
-    let library = raw.library.unwrap_or_default();
-    let (library_relative, library_absolute): (Vec<String>, Vec<String>) =
-        library.into_iter().partition(|p| !Path::new(p).is_absolute());
+    // Partition `library` entries into relative patterns (matched against
+    // workspace-relative paths, reached by the downward directory scan) and
+    // absolute external directories (explicitly scanned). A relative path that
+    // *escapes* the config directory (e.g. `../shared`) is reachable by neither
+    // path on its own, so resolve it against the config dir and treat it as an
+    // external directory — this is the portable way to reference a sibling
+    // shared-libs folder from a checked-in config.
+    let mut library_relative: Vec<String> = Vec::new();
+    let mut library_absolute: Vec<String> = Vec::new();
+    let normalized_dir = normalize_lexically(dir);
+    for entry in raw.library.unwrap_or_default() {
+        let p = Path::new(&entry);
+        if p.is_absolute() {
+            library_absolute.push(entry);
+            continue;
+        }
+        let resolved = normalize_lexically(&dir.join(p));
+        if resolved.starts_with(&normalized_dir) {
+            // Stays within the workspace subtree: keep as a relative pattern.
+            library_relative.push(entry);
+        } else {
+            // Escapes the workspace: scan it as an external directory.
+            library_absolute.push(resolved.to_string_lossy().into_owned());
+        }
+    }
     let diag = raw.diagnostics.unwrap_or_default();
     let disabled_diagnostics: HashSet<String> = diag.disable.unwrap_or_default().into_iter().collect();
     let enabled_diagnostics: HashSet<String> = diag.enable.unwrap_or_default().into_iter().collect();
@@ -1223,6 +1271,50 @@ mod tests {
         assert!(configs.is_library(&nested.join("Core/Cell.lua")));
         assert!(configs.is_library(&root.join("Libraries/Other.lua")));
         assert!(!configs.is_library(&root.join("Core/Init.lua")));
+    }
+
+    #[test]
+    fn test_normalize_lexically() {
+        assert_eq!(normalize_lexically(Path::new("/a/b/../c")), PathBuf::from("/a/c"));
+        assert_eq!(normalize_lexically(Path::new("/a/./b")), PathBuf::from("/a/b"));
+        assert_eq!(normalize_lexically(Path::new("/a/b/c/../../d")), PathBuf::from("/a/d"));
+        // A leading `..` with nothing to pop on a relative path is preserved.
+        assert_eq!(normalize_lexically(Path::new("../shared")), PathBuf::from("../shared"));
+        // `..` above root is a no-op — can't go above `/`.
+        assert_eq!(normalize_lexically(Path::new("/../foo")), PathBuf::from("/foo"));
+        assert_eq!(normalize_lexically(Path::new("/a/../../b")), PathBuf::from("/b"));
+    }
+
+    #[test]
+    fn test_library_relative_escape_becomes_external() {
+        // A relative `../shared` library path that escapes the config directory
+        // is resolved against it and treated as an external (absolute) library
+        // dir, while in-tree relative patterns stay relative.
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+        let root = std::env::temp_dir().join(format!(
+            "wowlua_ls_test_lib_escape_{}",
+            std::process::id()
+        ));
+        let _cleanup = Cleanup(root.clone());
+        let addon = root.join("addon");
+        let _ = std::fs::create_dir_all(&addon);
+        std::fs::write(addon.join(".wowluarc.json"), r#"{
+            "library": ["libs/", "../shared"]
+        }"#).unwrap();
+        let config = load_if_exists(&addon).expect("config should load");
+
+        // In-tree pattern stays relative.
+        assert_eq!(config.library_relative, vec!["libs/".to_string()]);
+        // Escaping pattern resolves to the sibling `shared` dir (no `..`).
+        let shared = normalize_lexically(&root.join("shared"));
+        assert_eq!(config.library_absolute, vec![shared.to_string_lossy().into_owned()]);
+
+        // The resolved external dir is reported for scanning and matches its files.
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&addon);
+        assert!(configs.external_library_dirs().contains(&shared));
+        assert!(configs.is_library(&shared.join("lib.lua")));
     }
 
     #[test]
