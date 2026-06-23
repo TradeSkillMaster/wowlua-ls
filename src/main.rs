@@ -252,7 +252,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             }
         }
 
-        if let Some(completions) = result.completions_at(&tree, offset, &s, false) {
+        if let Some(completions) = result.completions_at(&tree, offset, &s, false, false) {
             let preview: Vec<_> = completions.iter().take(50).map(|c| c.label.as_str()).collect();
             println!("completions: {} total [{}{}]", completions.len(), preview.join(", "),
                 if completions.len() > 50 { ", ..." } else { "" });

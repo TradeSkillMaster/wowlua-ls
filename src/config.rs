@@ -145,6 +145,10 @@ pub struct ProjectConfig {
     pub plugins: Vec<PathBuf>,
     /// Whether to emit LSP snippet completions (InsertTextFormat::Snippet). Default: true.
     pub completion_snippets: Option<bool>,
+    /// Whether to auto-fill a function's parameters (e.g. `foo(${1:a}, ${2:b})`) when
+    /// completing a function name. Independent of `completion_snippets`, which also gates
+    /// annotation-tag snippets. Default: true.
+    pub completion_call_snippets: Option<bool>,
     /// Whether to auto-insert `end`/`until` when Enter is pressed after a block-opening
     /// keyword. Default: true.
     pub auto_insert_end: Option<bool>,
@@ -569,6 +573,11 @@ impl ProjectConfigs {
         self.deepest_bool(file_path, |c| c.completion_snippets, true)
     }
 
+    /// Returns whether function-call parameter auto-fill is enabled for the given file (default: true).
+    pub fn completion_call_snippets_for(&self, file_path: &Path) -> bool {
+        self.deepest_bool(file_path, |c| c.completion_call_snippets, true)
+    }
+
     /// Returns whether auto-insert `end`/`until` on Enter is enabled for the given file (default: true).
     pub fn auto_insert_end_for(&self, file_path: &Path) -> bool {
         self.deepest_bool(file_path, |c| c.auto_insert_end, true)
@@ -632,6 +641,8 @@ struct RawConfig {
 #[derive(Deserialize, Default)]
 struct RawCompletionConfig {
     snippets: Option<bool>,
+    #[serde(rename = "callSnippets")]
+    call_snippets: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -1024,7 +1035,8 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         .map(|p| dir.join(p).components().collect::<PathBuf>())
         .collect();
 
-    let completion_snippets = raw.completion.and_then(|c| c.snippets);
+    let completion_snippets = raw.completion.as_ref().and_then(|c| c.snippets);
+    let completion_call_snippets = raw.completion.and_then(|c| c.call_snippets);
     let auto_insert_end = raw.editor.and_then(|e| e.auto_insert_end);
 
     Some(ProjectConfig {
@@ -1043,6 +1055,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         addon_root: raw.addon_root.unwrap_or(false),
         plugins,
         completion_snippets,
+        completion_call_snippets,
         auto_insert_end,
     })
 }

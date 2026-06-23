@@ -97,7 +97,11 @@ pub(super) fn collect_type_name_completions<'a>(
 }
 
 impl AnalysisResult {
-    pub fn completions_at(&self, tree: &SyntaxTree, offset: u32, source: &str, snippets: bool) -> Option<Vec<lsp_types::CompletionItem>> {
+    /// `snippets` gates all snippet completions (requires client support). `call_snippets`
+    /// additionally gates only the function-call parameter auto-fill (`foo(${1:a})`); when
+    /// false, function completions insert just the name while annotation-tag snippets still
+    /// honor `snippets`.
+    pub fn completions_at(&self, tree: &SyntaxTree, offset: u32, source: &str, snippets: bool, call_snippets: bool) -> Option<Vec<lsp_types::CompletionItem>> {
         use lsp_types::{CompletionItem, CompletionItemKind};
 
         if offset == 0 {
@@ -139,7 +143,7 @@ impl AnalysisResult {
         // Suppress function-call snippets when a '(' already follows the cursor.
         // This handles swapping one function name for another in an existing call —
         // inserting parens+params would duplicate the existing ones.
-        let snippets = snippets && source.get(offset as usize..)
+        let call_snippets = call_snippets && source.get(offset as usize..)
             .is_none_or(|rest| rest.bytes()
                 .find(|&b| b != b' ' && b != b'\t') != Some(b'('));
 
@@ -283,7 +287,7 @@ impl AnalysisResult {
                         } else {
                             format!("0{}", name)
                         };
-                        let (insert_text, insert_text_format) = if snippets {
+                        let (insert_text, insert_text_format) = if call_snippets {
                             if let Some(ValueType::Function(Some(func_idx))) = resolved {
                                 if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, is_colon) {
                                     (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
@@ -371,7 +375,7 @@ impl AnalysisResult {
                     } else {
                         format!("0{}", name)
                     };
-                    let (insert_text, insert_text_format) = if snippets {
+                    let (insert_text, insert_text_format) = if call_snippets {
                         if let Some(ValueType::Function(Some(func_idx))) = &resolved {
                             if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, is_colon) {
                                 (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
@@ -508,7 +512,7 @@ impl AnalysisResult {
                             } else {
                                 format!("0{}", name)
                             };
-                            let (insert_text, insert_text_format) = if snippets {
+                            let (insert_text, insert_text_format) = if call_snippets {
                                 if let Some(ValueType::Function(Some(func_idx))) = resolved {
                                     if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, false) {
                                         (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
@@ -568,7 +572,7 @@ impl AnalysisResult {
                             } else {
                                 format!("2{}", name)
                             };
-                            let (insert_text, insert_text_format) = if snippets {
+                            let (insert_text, insert_text_format) = if call_snippets {
                                 if let Some(ValueType::Function(Some(func_idx))) = resolved {
                                     if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, false) {
                                         (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))

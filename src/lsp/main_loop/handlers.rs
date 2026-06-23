@@ -242,9 +242,13 @@ pub(super) fn handle_request(
                 let config_snippets = file_path.as_ref()
                     .map(|p| ws.configs.completion_snippets_for(p))
                     .unwrap_or(true);
+                let config_call_snippets = file_path.as_ref()
+                    .map(|p| ws.configs.completion_call_snippets_for(p))
+                    .unwrap_or(true);
                 let snippets = client_snippet_support && config_snippets;
+                let call_snippets = snippets && config_call_snippets;
                 let mut result: Vec<lsp_types::CompletionItem> = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
-                    analysis.completions_at(tree, offset, &doc.text, snippets)
+                    analysis.completions_at(tree, offset, &doc.text, snippets, call_snippets)
                 }).unwrap_or_default();
 
                 let uri_str = uri.to_string();

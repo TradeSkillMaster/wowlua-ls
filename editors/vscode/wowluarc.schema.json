@@ -179,6 +179,23 @@
         }
       }
     },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Control code-completion behavior.",
+      "properties": {
+        "snippets": {
+          "type": "boolean",
+          "default": true,
+          "description": "Emit snippet completions (e.g. parameter placeholders and annotation tag bodies). Set to false to disable all snippet completions."
+        },
+        "callSnippets": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-fill a function's parameters (e.g. foo(${1:a}, ${2:b})) when completing a function name. Set to false to insert just the function name. Independent of completion.snippets."
+        }
+      }
+    },
     "diagnostics": {
       "type": "object",
       "additionalProperties": false,

@@ -51,6 +51,10 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
   "editor": {
     "autoInsertEnd": true
   },
+  "completion": {
+    "snippets": true,
+    "callSnippets": true
+  },
   "plugins": ["string"],
   "diagnostics": {
     "disable": ["string"],
@@ -284,6 +288,24 @@ Automatically insert `end` or `until` when Enter is pressed after a block-openin
 { "editor": { "autoInsertEnd": false } }
 ```
 
+### `completion.snippets`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Emit snippet completions (`InsertTextFormat.Snippet`). This covers both function-call parameter auto-fill and annotation-tag bodies (e.g. `@param`). Set to `false` to disable all snippet completions; items then insert plain text only. Requires snippet support from the editor.
+
+### `completion.callSnippets`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Auto-fill a function's parameters when you complete a function name — e.g. completing `strmatch` inserts `strmatch(${1:s}, ${2:pattern})` with the cursor on the first parameter. Set to `false` to insert just the function name (`strmatch`) and let you type the call yourself. This is independent of [`completion.snippets`](#completion-snippets): annotation-tag snippets still work when only `callSnippets` is disabled.
+
+```json
+{ "completion": { "callSnippets": false } }
+```
+
 ### `diagnostics.disable`
 
 - **Type:** `string[]`
@@ -331,6 +353,7 @@ When `.wowluarc.json` files are nested, settings combine according to one of the
 | `hint.*` | Inherited |
 | `codeLens.*` | Inherited |
 | `editor.*` | Inherited |
+| `completion.*` | Inherited |
 | `addon_root` | Nearest (deepest) `addon_root: true` wins (structural) |
 
 ::: warning Isolated settings do not inherit
