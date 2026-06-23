@@ -610,6 +610,66 @@ impl Ir {
         }
     }
 
+    // ── Read-only query surface (post-build consumers) ─────────────────────────
+    // Diagnostics and queries must read the IR through these accessors rather than
+    // indexing the raw arenas directly, so the EXT_BASE two-tier routing and the
+    // overlay fallbacks above stay encapsulated. The `local_*` iterators walk only
+    // the per-file (local) arena — external stub entries (>= EXT_BASE) live in
+    // `self.ext` and are deliberately excluded, matching how diagnostics only ever
+    // diagnose user code.
+
+    /// Iterate the per-file symbol arena, pairing each symbol with its local `SymbolIndex`.
+    #[inline]
+    pub(crate) fn local_symbols(&self) -> impl Iterator<Item = (SymbolIndex, &Symbol)> {
+        self.symbols.iter().enumerate().map(|(i, s)| (SymbolIndex::from(i), s))
+    }
+
+    /// Iterate the per-file function arena, pairing each function with its local `FunctionIndex`.
+    #[inline]
+    pub(crate) fn local_functions(&self) -> impl Iterator<Item = (FunctionIndex, &Function)> {
+        self.functions.iter().enumerate().map(|(i, f)| (FunctionIndex::from(i), f))
+    }
+
+    /// Iterate the per-file table arena, pairing each table with its local `TableIndex`.
+    #[inline]
+    pub(crate) fn local_tables(&self) -> impl Iterator<Item = (TableIndex, &TableInfo)> {
+        self.tables.iter().enumerate().map(|(i, t)| (TableIndex::from(i), t))
+    }
+
+    /// Iterate the per-file expression arena, pairing each expr with its local `ExprId`.
+    #[inline]
+    pub(crate) fn local_exprs(&self) -> impl Iterator<Item = (ExprId, &Expr)> {
+        self.exprs.iter().enumerate().map(|(i, e)| (ExprId::from(i), e))
+    }
+
+    /// Two-tier scope lookup. Routes EXT_BASE indices to `ext.scopes` exactly like
+    /// `sym()`/`func()`/`table()` route their arenas.
+    #[inline]
+    pub(crate) fn scope(&self, idx: ScopeIndex) -> &Scope {
+        if idx.is_external() {
+            &self.ext.scopes[idx.ext_offset()]
+        } else {
+            &self.scopes[idx.val()]
+        }
+    }
+
+    /// Fallible two-tier scope lookup for callers that tolerate a missing scope.
+    #[inline]
+    pub(crate) fn try_scope(&self, idx: ScopeIndex) -> Option<&Scope> {
+        if idx.is_external() {
+            self.ext.scopes.get(idx.ext_offset())
+        } else {
+            self.scopes.get(idx.val())
+        }
+    }
+
+    /// Walk the local scope chain upward from `start` (inclusive). Encapsulates
+    /// the per-file scope arena for post-build consumers.
+    #[inline]
+    pub(crate) fn ancestor_scopes(&self, start: ScopeIndex) -> impl Iterator<Item = ScopeIndex> + '_ {
+        ancestor_scopes(&self.scopes, start)
+    }
+
     /// Map dot-access fallback: for `m.x` on `table<K, V>`, return the value
     /// type. Gated to `is_explicit_map` so class field access returns None
     /// (preserving `undefined-field`).
@@ -1906,6 +1966,12 @@ impl AnalysisResult {
     #[inline] pub(crate) fn func(&self, idx: FunctionIndex) -> &Function { self.ir.func(idx) }
     #[inline] pub(crate) fn expr(&self, idx: ExprId) -> &Expr { self.ir.expr(idx) }
     #[inline] pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo { self.ir.table(idx) }
+    #[inline] pub(crate) fn scope(&self, idx: ScopeIndex) -> &Scope { self.ir.scope(idx) }
+    #[inline] pub(crate) fn try_scope(&self, idx: ScopeIndex) -> Option<&Scope> { self.ir.try_scope(idx) }
+    #[inline] pub(crate) fn local_symbols(&self) -> impl Iterator<Item = (SymbolIndex, &Symbol)> { self.ir.local_symbols() }
+    #[inline] pub(crate) fn local_functions(&self) -> impl Iterator<Item = (FunctionIndex, &Function)> { self.ir.local_functions() }
+    #[inline] pub(crate) fn local_tables(&self) -> impl Iterator<Item = (TableIndex, &TableInfo)> { self.ir.local_tables() }
+    #[inline] pub(crate) fn local_exprs(&self) -> impl Iterator<Item = (ExprId, &Expr)> { self.ir.local_exprs() }
     #[inline] pub(crate) fn type_contains_type_variable_deep(&self, vt: &ValueType) -> bool { self.ir.type_contains_type_variable_deep(vt) }
     #[inline] pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> { self.ir.get_symbol(id, scope_idx) }
     #[inline] pub(crate) fn get_symbol_excluding(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex, exclude: SymbolIndex) -> Option<SymbolIndex> { self.ir.get_symbol_excluding(id, scope_idx, exclude) }
@@ -1915,6 +1981,7 @@ impl AnalysisResult {
     #[inline] pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool { self.ir.is_subclass_of(child_idx, parent_idx) }
     #[inline] pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode<'_>) -> Option<TableIndex> { self.ir.find_enclosing_class(node) }
     #[inline] pub(crate) fn function_name(&self, func_idx: FunctionIndex) -> Option<String> { self.ir.function_name(func_idx) }
+    #[inline] pub(crate) fn resolved_expr_cache_get(&self, id: ExprId) -> Option<&ValueType> { self.resolved_expr_cache.get(id.val()).and_then(|v| v.as_ref()) }
 
     pub fn is_meta(&self) -> bool {
         self.is_meta

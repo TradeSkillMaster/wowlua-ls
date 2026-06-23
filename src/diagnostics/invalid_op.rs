@@ -45,7 +45,7 @@ fn supports_length(ty: &ValueType) -> bool {
 impl DiagnosticPass for InvalidOp {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for site in &analysis.ir.binary_op_sites {
-            let Expr::BinaryOp { op, lhs, rhs } = analysis.ir.exprs[site.expr_id.val()] else { continue };
+            let Expr::BinaryOp { op, lhs, rhs } = *analysis.expr(site.expr_id) else { continue };
             // Logical or/and are always valid in Lua (any value is truthy/falsy); they are
             // tracked in binary_op_sites only for the redundant-or/redundant-and diagnostics.
             if matches!(op, Operator::Or | Operator::And) { continue; }
@@ -76,7 +76,7 @@ impl DiagnosticPass for InvalidOp {
 
         // Check unary # (length) operator on types that don't support it.
         for &(expr_id, start, end) in &analysis.ir.unary_op_sites {
-            let Expr::UnaryOp { operand, .. } = analysis.ir.exprs[expr_id.val()] else { continue };
+            let Expr::UnaryOp { operand, .. } = *analysis.expr(expr_id) else { continue };
             let Some(operand_type) = analysis.resolve_expr_type(operand) else { continue };
             if is_type_permissive(&operand_type) { continue; }
             if supports_length(&operand_type) { continue; }

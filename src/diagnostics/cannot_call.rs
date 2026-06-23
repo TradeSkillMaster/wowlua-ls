@@ -43,7 +43,7 @@ fn is_table_callable(table_idx: crate::types::TableIndex, analysis: &AnalysisRes
 
 impl DiagnosticPass for CannotCall {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        for expr in analysis.ir.exprs.iter() {
+        for (_, expr) in analysis.local_exprs() {
             let Expr::FunctionCall { func: callee, ret_index, call_range, .. } = expr else { continue };
             if *ret_index != 0 { continue; }
             let Some(callee_type) = analysis.resolve_expr_type(*callee) else { continue };

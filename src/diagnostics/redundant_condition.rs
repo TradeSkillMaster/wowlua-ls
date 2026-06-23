@@ -1,4 +1,4 @@
-use crate::analysis::{AnalysisResult, ancestor_scopes};
+use crate::analysis::AnalysisResult;
 use crate::analysis::resolve::parse_num_literal_str;
 use crate::ast::Operator;
 use crate::types::{EnumKind, Expr, ExprId, ScopeIndex, SymbolIndex, SymbolIdentifier, ValueType};
@@ -100,7 +100,7 @@ impl DiagnosticPass for RedundantCondition {
 /// permissive / truthiness-uncertainty FP guards at the leaves.
 fn eval_condition_constant(analysis: &AnalysisResult, expr_id: ExprId) -> Option<Verdict> {
     let ir = &analysis.ir;
-    let inner = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    let inner = unwrap_to_inner_expr(ir, expr_id);
     match ir.expr(inner) {
         // `not <expr>`: evaluate the operand and flip the verdict. Handles
         // `if not t` (t always truthy → always false) and `if not (x == nil)`.
@@ -188,11 +188,11 @@ fn eval_equality(analysis: &AnalysisResult, op: Operator, lhs: ExprId, rhs: Expr
 /// comparing against that literal is genuinely always-true.
 fn operand_is_stripped_open_union(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
     let ir = &analysis.ir;
-    let id = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    let id = unwrap_to_inner_expr(ir, expr_id);
     match ir.expr(id) {
         // A direct strip expression (`CastRemove(SymbolRef, ..)`).
         Expr::CastRemove(inner, _) => {
-            let inner_id = unwrap_to_inner_expr(&ir.exprs, *inner);
+            let inner_id = unwrap_to_inner_expr(ir, *inner);
             matches!(ir.expr(inner_id),
                 Expr::SymbolRef(s, _) if ir.is_open_literal_union_symbol(*s))
         }
@@ -362,7 +362,7 @@ fn possible_type_kinds(t: &ValueType) -> Option<Vec<&'static str>> {
 /// to descend into the argument.
 fn is_builtin_type_call(ir: &crate::analysis::Ir, func: ExprId, args: &[ExprId]) -> bool {
     if args.len() != 1 { return false; }
-    let f = unwrap_to_inner_expr(&ir.exprs, func);
+    let f = unwrap_to_inner_expr(ir, func);
     matches!(ir.expr(f),
         Expr::SymbolRef(sym_idx, _)
             if sym_idx.is_external()
@@ -373,11 +373,11 @@ fn is_builtin_type_call(ir: &crate::analysis::Ir, func: ExprId, args: &[ExprId])
 /// argument expression.
 fn type_call_arg(analysis: &AnalysisResult, expr_id: ExprId) -> Option<ExprId> {
     let ir = &analysis.ir;
-    let id = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    let id = unwrap_to_inner_expr(ir, expr_id);
     let Expr::FunctionCall { func, args, .. } = ir.expr(id) else { return None };
     if args.len() != 1 { return None; }
     let arg = args[0];
-    let f = unwrap_to_inner_expr(&ir.exprs, *func);
+    let f = unwrap_to_inner_expr(ir, *func);
     let Expr::SymbolRef(sym_idx, _) = ir.expr(f) else { return None };
     match &analysis.sym(*sym_idx).id {
         SymbolIdentifier::Name(n) if n == "type" && sym_idx.is_external() => Some(arg),
@@ -387,7 +387,7 @@ fn type_call_arg(analysis: &AnalysisResult, expr_id: ExprId) -> Option<ExprId> {
 
 /// If `expr_id` is a string literal, return its (delimiter-stripped) value.
 fn string_literal_value(ir: &crate::analysis::Ir, expr_id: ExprId) -> Option<String> {
-    let id = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    let id = unwrap_to_inner_expr(ir, expr_id);
     if matches!(ir.expr(id), Expr::Literal(ValueType::String(_))) {
         ir.string_literals.get(&id).cloned()
     } else {
@@ -398,8 +398,8 @@ fn string_literal_value(ir: &crate::analysis::Ir, expr_id: ExprId) -> Option<Str
 /// Conservative syntactic equality for self-comparison: same symbol, or the
 /// same field-access chain.
 fn exprs_syntactically_equal(ir: &crate::analysis::Ir, a: ExprId, b: ExprId) -> bool {
-    let a = unwrap_to_inner_expr(&ir.exprs, a);
-    let b = unwrap_to_inner_expr(&ir.exprs, b);
+    let a = unwrap_to_inner_expr(ir, a);
+    let b = unwrap_to_inner_expr(ir, b);
     match (ir.expr(a), ir.expr(b)) {
         // Version index intentionally ignored: two references to the same
         // variable in `x < x` share the same version at the comparison site,
@@ -599,7 +599,7 @@ fn has_uncertain_reassignment(
 
 /// Find the nearest ancestor scope (inclusive) that is a loop body.
 fn find_enclosing_loop(ir: &crate::analysis::Ir, scope: ScopeIndex) -> Option<ScopeIndex> {
-    ancestor_scopes(&ir.scopes, scope).find(|&s| ir.scopes[s.val()].is_loop)
+    ir.ancestor_scopes(scope).find(|&s| ir.scope(s).is_loop)
 }
 
 

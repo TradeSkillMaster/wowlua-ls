@@ -16,8 +16,7 @@ impl DiagnosticPass for IncompleteSignatureDoc {
 
         let sentinel = crate::annotations::AnnotationType::Simple(String::new());
 
-        for func_idx in 0..analysis.ir.functions.len() {
-            let func = &analysis.ir.functions[func_idx];
+        for (_func_idx, func) in analysis.local_functions() {
             let Some(nid) = func.def_node.node_id else { continue };
 
             let has_return_ann = !func.return_annotations.is_empty()
@@ -47,7 +46,7 @@ impl DiagnosticPass for IncompleteSignatureDoc {
             }
 
             let self_injected = func.args.len() == src_params.len() + 1
-                && matches!(&analysis.ir.symbols[func.args[0].val()].id,
+                && matches!(&analysis.sym(func.args[0]).id,
                     SymbolIdentifier::Name(n) if n == "self");
 
             let arg_offset = if self_injected { 1 } else { 0 };

@@ -12,8 +12,7 @@ impl DiagnosticPass for UnknownParamType {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         if analysis.is_meta { return; }
         let sentinel = crate::annotations::AnnotationType::Simple(String::new());
-        for func_idx in 0..analysis.ir.functions.len() {
-            let func = &analysis.ir.functions[func_idx];
+        for (_func_idx, func) in analysis.local_functions() {
             let Some(nid) = func.def_node.node_id else { continue };
             let func_node = SyntaxNode { tree, id: nid };
             let Some(func_def) = FunctionDefinition::cast(func_node) else { continue };
@@ -30,7 +29,7 @@ impl DiagnosticPass for UnknownParamType {
                 .collect();
 
             let self_injected = func.args.len() == src_params.len() + 1
-                && matches!(&analysis.ir.symbols[func.args[0].val()].id,
+                && matches!(&analysis.sym(func.args[0]).id,
                     SymbolIdentifier::Name(n) if n == "self");
             let arg_offset = if self_injected { 1 } else { 0 };
 
@@ -45,7 +44,7 @@ impl DiagnosticPass for UnknownParamType {
                 let annotated = func.param_annotations.get(arg_i)
                     .is_some_and(|a| a != &sentinel);
                 if annotated { continue; }
-                let resolved = analysis.ir.symbols[sym_idx.val()].versions.first()
+                let resolved = analysis.sym(sym_idx).versions.first()
                     .and_then(|v| v.resolved_type.as_ref());
                 if resolved.is_some() { continue; }
                 check(diags, name, *pstart as usize, *pend as usize);

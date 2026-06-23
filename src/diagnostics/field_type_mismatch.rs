@@ -72,7 +72,7 @@ impl DiagnosticPass for FieldTypeMismatch {
         // class's @field annotation.
         // Only checks version 0 (initial assignment). Reassignments like
         // `obj = { x = "wrong" }` on a class-typed variable are not caught.
-        for sym in &analysis.ir.symbols {
+        for (_, sym) in analysis.local_symbols() {
             let ver = &sym.versions[0];
             let Some(original_expr) = ver.original_type_source else { continue };
             let Some(type_source) = ver.type_source else { continue };

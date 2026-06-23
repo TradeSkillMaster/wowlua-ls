@@ -86,7 +86,7 @@ fn find_call_resolution(
     call_start: u32,
     call_end: u32,
 ) -> Option<(ExprId, CallResolution)> {
-    for (idx, expr) in analysis.ir.exprs.iter().enumerate() {
+    for (expr_id, expr) in analysis.local_exprs() {
         if let Expr::FunctionCall {
             call_range: (s, e),
             ret_index: 0,
@@ -94,7 +94,6 @@ fn find_call_resolution(
         } = expr
             && *s == call_start && *e == call_end
         {
-            let expr_id = ExprId(idx);
             if let Some(cr) = analysis.ir.call_resolutions.get(&expr_id) {
                 return Some((expr_id, cr.clone()));
             }

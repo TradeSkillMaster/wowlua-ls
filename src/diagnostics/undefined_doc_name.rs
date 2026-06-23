@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::analysis::{Analysis, AnalysisResult};
 use crate::ast::{AstNode, ExpressionList};
 use crate::syntax::{SyntaxKind, SyntaxNode};
@@ -21,7 +19,7 @@ impl DiagnosticPass for UndefinedDocName {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let root = SyntaxNode::new_root(tree);
 
-        let func_by_start: HashMap<u32, usize> = analysis.ir.functions.iter().enumerate()
+        let func_by_start = analysis.local_functions()
             .filter_map(|(i, f)| f.def_node.node_id.map(|_| (f.def_node.start, i)))
             .collect();
 

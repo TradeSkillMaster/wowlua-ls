@@ -8,8 +8,7 @@ pub(crate) struct MissingReturn;
 
 impl DiagnosticPass for MissingReturn {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        for func_idx in 0..analysis.ir.functions.len() {
-            let func = &analysis.ir.functions[func_idx];
+        for (_func_idx, func) in analysis.local_functions() {
             if func.return_annotations.is_empty() { continue; }
             // All-optional returns: falling off the end returns nil, which matches Type?
             if func.return_annotations.iter().all(|t| t.contains_nil()) { continue; }

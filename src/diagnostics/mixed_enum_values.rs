@@ -1,14 +1,14 @@
 use crate::analysis::AnalysisResult;
-use crate::types::{EnumFieldClassification, EXT_BASE};
+use crate::types::EnumFieldClassification;
 use super::{DiagnosticPass, WowDiagnostic};
 
 pub(crate) struct MixedEnumValues;
 
 impl DiagnosticPass for MixedEnumValues {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        for (idx, table) in analysis.ir.tables.iter().enumerate() {
+        // `local_tables()` yields only per-file tables (index < EXT_BASE).
+        for (_tidx, table) in analysis.local_tables() {
             if !table.enum_kind.is_enum() { continue; }
-            if idx >= EXT_BASE { continue; }
             if table.is_key_enum { continue; }
             let Some(class_name) = &table.class_name else { continue };
             let Some(&(start, end)) = analysis.ir.class_def_ranges.get(class_name) else { continue };

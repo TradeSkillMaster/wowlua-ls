@@ -1,7 +1,6 @@
 use crate::analysis::{Analysis, AnalysisResult};
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::SyntaxTree;
-use crate::types::FunctionIndex;
 use super::{DiagnosticPass, WowDiagnostic};
 
 pub(crate) struct FunctionAnnotationChecks;
@@ -12,8 +11,7 @@ pub(crate) struct FunctionAnnotationChecks;
 /// (the last via Ir::check_annotation_type_names).
 impl DiagnosticPass for FunctionAnnotationChecks {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        for func_idx in 0..analysis.ir.functions.len() {
-            let func = &analysis.ir.functions[func_idx];
+        for (func_idx, func) in analysis.local_functions() {
             let Some(nid) = func.def_node.node_id else { continue };
             let func_node = SyntaxNode { tree, id: nid };
             let annotations = crate::annotations::extract_annotations(func_node);
@@ -25,7 +23,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
             let func_end = u32::from(func_node.text_range().end()) as usize;
 
             // ── redundant @generic on class methods ──
-            if let Some(class_name) = analysis.function_owner_class.get(&FunctionIndex(func_idx)) {
+            if let Some(class_name) = analysis.function_owner_class.get(&func_idx) {
                 let class_type_params: Vec<String> = analysis.ir.classes.get(class_name.as_str())
                     .map(|&tidx| analysis.ir.table(tidx).class_type_params.clone())
                     .unwrap_or_default();
@@ -125,7 +123,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
             });
             if !annotations.requires.is_empty() || has_self_reparam {
                 let method_class_type_params: Vec<String> = analysis.function_owner_class
-                    .get(&FunctionIndex(func_idx))
+                    .get(&func_idx)
                     .and_then(|cn| analysis.ir.classes.get(cn.as_str()))
                     .map(|&tidx| analysis.ir.table(tidx).class_type_params.clone())
                     .unwrap_or_default();
@@ -176,7 +174,7 @@ impl DiagnosticPass for FunctionAnnotationChecks {
             // only populated for method calls (`receiver:method(...)`). A function
             // that isn't owned by a class can't have a receiver, so the constraint
             // would silently accept any string — flag it as malformed.
-            if !analysis.function_owner_class.contains_key(&FunctionIndex(func_idx)) {
+            if !analysis.function_owner_class.contains_key(&func_idx) {
                 for (gname, constraint) in annotations.generics.iter() {
                     let Some(raw) = constraint.as_deref() else { continue };
                     if crate::annotations::parse_keyof_constraint(raw)

@@ -61,7 +61,7 @@ impl DiagnosticPass for GenericConstraintMismatch {
         }
 
         // Class type param case: walk symbols with type_args
-        for sym in &analysis.ir.symbols {
+        for (_, sym) in analysis.local_symbols() {
             let ver = &sym.versions[0];
             if ver.type_args.is_empty() { continue; }
             let Some(type_source) = ver.type_source else { continue };

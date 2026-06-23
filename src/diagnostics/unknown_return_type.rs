@@ -10,7 +10,7 @@ pub(crate) struct UnknownReturnType;
 impl DiagnosticPass for UnknownReturnType {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         if analysis.is_meta { return; }
-        for func in &analysis.ir.functions {
+        for (_, func) in analysis.local_functions() {
             if func.explicit_void_return { continue; }
             if func.returns_self || func.returns_built { continue; }
             for &ret_sym_idx in &func.rets {

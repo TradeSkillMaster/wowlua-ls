@@ -25,7 +25,7 @@ impl DiagnosticPass for MultiReturnProjection {
         // This lets us detect when the caller captures multiple return slots via
         // expansion (e.g. `local a, b = wrap(f)` has ret_index 0 and 1).
         let mut max_ret_at_call: HashMap<u32, usize> = HashMap::new();
-        for expr in &analysis.ir.exprs {
+        for (_, expr) in analysis.local_exprs() {
             if let Expr::FunctionCall { call_range, ret_index, .. } = expr
                 && relevant.contains(&call_range.0)
             {

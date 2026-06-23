@@ -10,8 +10,7 @@ pub(crate) struct GroupedReturnMismatch;
 
 impl DiagnosticPass for GroupedReturnMismatch {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        for func_idx in 0..analysis.ir.functions.len() {
-            let func = &analysis.ir.functions[func_idx];
+        for (_func_idx, func) in analysis.local_functions() {
             let return_only_overloads: Vec<_> = func.overloads.iter()
                 .filter(|o| o.is_return_only)
                 .collect();

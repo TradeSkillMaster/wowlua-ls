@@ -7,7 +7,7 @@ pub(crate) struct ShadowedLocal;
 
 impl DiagnosticPass for ShadowedLocal {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        for sym in &analysis.ir.symbols {
+        for (_, sym) in analysis.local_symbols() {
             let name = match &sym.id {
                 SymbolIdentifier::Name(n) => n,
                 _ => continue,
@@ -19,7 +19,7 @@ impl DiagnosticPass for ShadowedLocal {
             if scope_idx.val() == 0 || scope_idx.is_external() { continue; }
 
             // Walk parent scopes to find a same-named symbol
-            let parent = analysis.ir.scopes[scope_idx.val()].parent;
+            let parent = analysis.scope(scope_idx).parent;
             let Some(parent_scope) = parent else { continue; };
 
             let sym_id = &sym.id;
@@ -31,12 +31,15 @@ impl DiagnosticPass for ShadowedLocal {
             let mut found = false;
             while let Some(s) = si {
                 if s.is_external() { break; }
-                let Some(scope_obj) = analysis.ir.scopes.get(s.val()) else { break; };
+                let Some(scope_obj) = analysis.try_scope(s) else { break; };
                 if let Some(&outer_idx) = scope_obj.symbols.get(sym_id) {
                     // Only count as shadowed if the outer symbol is declared before
                     // the inner one. A later declaration in an outer scope is not
                     // visible at the inner declaration site.
-                    let outer_declared_before = analysis.ir.symbols.get(outer_idx.val())
+                    // Outer scope maps only hold local symbols; an external index
+                    // (shouldn't occur in inner scopes) is treated as not-found.
+                    let outer_declared_before = (!outer_idx.is_external())
+                        .then(|| analysis.sym(outer_idx))
                         .and_then(|s| s.versions.first())
                         .is_some_and(|v| v.def_node.start < inner_start);
                     if outer_declared_before {

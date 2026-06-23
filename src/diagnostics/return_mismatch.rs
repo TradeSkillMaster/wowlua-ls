@@ -10,8 +10,7 @@ pub(crate) struct ReturnMismatch;
 
 impl DiagnosticPass for ReturnMismatch {
     fn run_inject(&self, analysis: &AnalysisResult, tree: &SyntaxTree, excess_inject: &mut Vec<InjectFieldCheck>, diags: &mut Vec<WowDiagnostic>) {
-        for func_idx in 0..analysis.ir.functions.len() {
-            let func = &analysis.ir.functions[func_idx];
+        for (_func_idx, func) in analysis.local_functions() {
             // Related info points to the function definition where @return is declared.
             // def_node is always valid for local functions (func_idx < EXT_BASE).
             let func_related = if func.def_node.node_id.is_some() {

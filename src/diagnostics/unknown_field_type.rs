@@ -9,8 +9,7 @@ impl DiagnosticPass for UnknownFieldType {
         if analysis.is_meta { return; }
         let mut pending: Vec<(String, String, ExprId, u32, u32)> = Vec::new();
 
-        for table_idx in 0..analysis.ir.tables.len() {
-            let table = analysis.table(TableIndex(table_idx));
+        for (_table_idx, table) in analysis.local_tables() {
             let Some(class_name) = table.class_name.clone() else { continue };
             for (field_name, fi) in &table.fields {
                 if fi.annotation_type_raw.is_some() { continue; }

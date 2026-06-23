@@ -429,7 +429,7 @@ pub(crate) fn is_type_permissive(ty: &ValueType) -> bool {
 pub(crate) fn effective_type(analysis: &crate::analysis::AnalysisResult, expr_id: crate::types::ExprId) -> Option<ValueType> {
     use crate::types::Expr;
     let ir = &analysis.ir;
-    let id = unwrap_to_inner_expr(&ir.exprs, expr_id);
+    let id = unwrap_to_inner_expr(ir, expr_id);
     if let Expr::Literal(vt) = ir.expr(id) {
         match vt {
             ValueType::String(None) => {
@@ -524,9 +524,9 @@ fn base_kind(t: &ValueType) -> u8 {
 /// Unwrap StripNil / StripFalsy / StripTruthy / Grouped wrappers to reach the
 /// underlying expression. Narrowing scopes wrap expressions in these, but
 /// suppression checks need to see the original expression.
-pub(crate) fn unwrap_to_inner_expr(exprs: &[Expr], mut id: ExprId) -> ExprId {
+pub(crate) fn unwrap_to_inner_expr(ir: &crate::analysis::Ir, mut id: ExprId) -> ExprId {
     loop {
-        match &exprs[id.val()] {
+        match ir.expr(id) {
             Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner) | Expr::Grouped(inner) => {
                 id = *inner;
             }
@@ -572,8 +572,8 @@ pub(crate) fn is_expr_truthiness_uncertain(analysis: &AnalysisResult, expr_id: E
 /// but the chain can short-circuit to nil/false at runtime if ANY term is
 /// uncertain. Walk the left-associative spine and check each term.
 fn is_and_chain_with_uncertain_term(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
-    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
-    let Expr::BinaryOp { op: crate::ast::Operator::And, lhs, rhs, .. } = &analysis.ir.exprs[id.val()] else { return false };
+    let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::BinaryOp { op: crate::ast::Operator::And, lhs, rhs, .. } = analysis.expr(id) else { return false };
     is_expr_truthiness_uncertain(analysis, *rhs)
     || is_expr_truthiness_uncertain(analysis, *lhs)
 }
@@ -596,11 +596,11 @@ fn is_and_chain_with_uncertain_term(analysis: &AnalysisResult, expr_id: ExprId) 
 /// `direct_subclasses()` index — typically a handful of classes — instead of
 /// scanning every class in the workspace.
 fn is_overridable_method_call(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
-    let inner = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
-    let Expr::FunctionCall { func, .. } = &analysis.ir.exprs[inner.val()] else { return false };
+    let inner = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::FunctionCall { func, .. } = analysis.expr(inner) else { return false };
     let func = *func;
-    let func_inner = unwrap_to_inner_expr(&analysis.ir.exprs, func);
-    let Expr::FieldAccess { table, field, .. } = &analysis.ir.exprs[func_inner.val()] else { return false };
+    let func_inner = unwrap_to_inner_expr(&analysis.ir, func);
+    let Expr::FieldAccess { table, field, .. } = analysis.expr(func_inner) else { return false };
     let receiver_expr = *table;
     let method_name = field.clone();
 
@@ -675,8 +675,8 @@ fn annotation_admits_function(ty: &ValueType) -> bool {
 /// nil at runtime, so `if not x then x = init() end` initialization patterns
 /// must not be flagged as redundant.
 fn is_lateinit_local_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
-    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
-    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[id.val()] else { return false };
+    let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::SymbolRef(sym_idx, _) = analysis.expr(id) else { return false };
     analysis.ir.lateinit_symbols.contains(sym_idx)
 }
 
@@ -686,8 +686,8 @@ fn is_lateinit_local_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
 /// project's targeted flavors (e.g. a retail-only global in a retail-only
 /// project is guaranteed to exist, so the check is genuinely redundant).
 fn is_flavor_restricted_global(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
-    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
-    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[id.val()] else { return false };
+    let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::SymbolRef(sym_idx, _) = analysis.expr(id) else { return false };
     if !sym_idx.is_external() { return false; }
     let sym_flavors = analysis.sym(*sym_idx).flavors;
     if sym_flavors == 0 { return false; }
@@ -700,8 +700,8 @@ fn is_flavor_restricted_global(analysis: &AnalysisResult, expr_id: ExprId) -> bo
 
 /// Lateinit (`T!`) field access: typed non-nil but can be nil at runtime.
 fn is_lateinit_field_access(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
-    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
-    let Expr::FieldAccess { table, field, .. } = &analysis.ir.exprs[id.val()] else { return false };
+    let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::FieldAccess { table, field, .. } = analysis.expr(id) else { return false };
     let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
     let table_type = table_type.into_strip_opaque();
     analysis.ir.any_table_field_matches(&table_type, field, |fi| fi.lateinit)
@@ -711,8 +711,8 @@ fn is_lateinit_field_access(analysis: &AnalysisResult, expr_id: ExprId) -> bool 
 /// table itself: bare tables (no `@class`) and `@class` tables where the field
 /// is only inherited or code-discovered.
 fn is_field_without_direct_annotation(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
-    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
-    let Expr::FieldAccess { table, field, .. } = &analysis.ir.exprs[id.val()] else { return false };
+    let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::FieldAccess { table, field, .. } = analysis.expr(id) else { return false };
     let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
     let table_type = table_type.into_strip_opaque();
     any_table_lacks_own_field_annotation(analysis, &table_type, field)
@@ -721,8 +721,8 @@ fn is_field_without_direct_annotation(analysis: &AnalysisResult, expr_id: ExprId
 /// Dynamic bracket index into a dictionary/array: the element type is non-nil
 /// for the LS, but a missing key / out-of-bounds index returns nil at runtime.
 fn is_dynamic_bracket_index(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
-    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
-    let Expr::BracketIndex { table, literal_key, .. } = &analysis.ir.exprs[id.val()] else { return false };
+    let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::BracketIndex { table, literal_key, .. } = analysis.expr(id) else { return false };
     let literal_key = literal_key.clone();
     let Some(table_type) = analysis.resolve_expr_type(*table) else { return false };
     let table_type = table_type.into_strip_opaque();
@@ -738,11 +738,11 @@ fn is_dynamic_bracket_index(analysis: &AnalysisResult, expr_id: ExprId) -> bool 
 /// Unannotated function parameter: backward inference may resolve to a non-nil
 /// type, but the parameter may be intended as optional.
 fn is_unannotated_param_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
-    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
-    let Expr::SymbolRef(sym_idx, _) = &analysis.ir.exprs[id.val()] else { return false };
+    let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::SymbolRef(sym_idx, _) = analysis.expr(id) else { return false };
     let sym_idx = *sym_idx;
     if sym_idx.is_external() { return false; }
-    for func in &analysis.ir.functions {
+    for (_, func) in analysis.local_functions() {
         if let Some(pos) = func.args.iter().position(|&s| s == sym_idx) {
             return func.param_annotations.get(pos)
                 .is_none_or(|ann| matches!(ann, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
@@ -759,8 +759,8 @@ fn is_unannotated_param_ref(analysis: &AnalysisResult, expr_id: ExprId) -> bool 
 /// does NOT propagate (two-level indirection is rare in practice and
 /// recursive tracing risks unbounded walks).
 fn is_symbol_from_uncertain_source(analysis: &AnalysisResult, expr_id: ExprId) -> bool {
-    let id = unwrap_to_inner_expr(&analysis.ir.exprs, expr_id);
-    let Expr::SymbolRef(sym_idx, ver_idx) = &analysis.ir.exprs[id.val()] else { return false };
+    let id = unwrap_to_inner_expr(&analysis.ir, expr_id);
+    let Expr::SymbolRef(sym_idx, ver_idx) = analysis.expr(id) else { return false };
     if sym_idx.is_external() { return false; }
     let sym = analysis.ir.sym(*sym_idx);
     let Some(ver) = sym.versions.get(*ver_idx) else { return false };

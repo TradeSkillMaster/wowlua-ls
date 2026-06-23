@@ -125,7 +125,7 @@ impl DiagnosticPass for NilTableKey {
         }
 
         // ── Function annotations (@param, @return, @overload) ──
-        for func in &analysis.ir.functions {
+        for (_, func) in analysis.local_functions() {
             let Some(nid) = func.def_node.node_id else { continue };
             let func_node = SyntaxNode { tree, id: nid };
             let annotations = crate::annotations::extract_annotations(func_node);

@@ -107,7 +107,7 @@ fn check_missing_fields_union(
 impl DiagnosticPass for MissingFields {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         // Pass 1: Symbols with @class type annotation assigned a table constructor
-        for sym in &analysis.ir.symbols {
+        for (_, sym) in analysis.local_symbols() {
             let ver = &sym.versions[0];
             let Some(original_expr) = ver.original_type_source else { continue };
             let Some(type_source) = ver.type_source else { continue };

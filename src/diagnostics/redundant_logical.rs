@@ -1,4 +1,4 @@
-use crate::analysis::{AnalysisResult, ancestor_scopes};
+use crate::analysis::AnalysisResult;
 use crate::ast::Operator;
 use crate::types::{Expr, ExprId, ScopeIndex, Symbol, SymbolIndex};
 use super::{DiagnosticPass, WowDiagnostic, effective_type, is_type_permissive, is_expr_truthiness_uncertain, unwrap_to_inner_expr};
@@ -6,8 +6,8 @@ use super::{DiagnosticPass, WowDiagnostic, effective_type, is_type_permissive, i
 pub(crate) struct RedundantLogical;
 
 fn lhs_symbol_info(analysis: &AnalysisResult, lhs: ExprId) -> Option<(SymbolIndex, usize, &Symbol)> {
-    let lhs = unwrap_to_inner_expr(&analysis.ir.exprs, lhs);
-    let Expr::SymbolRef(sym_idx, ver_idx) = &analysis.ir.exprs[lhs.val()] else { return None };
+    let lhs = unwrap_to_inner_expr(&analysis.ir, lhs);
+    let Expr::SymbolRef(sym_idx, ver_idx) = analysis.expr(lhs) else { return None };
     let sym_idx = *sym_idx;
     if sym_idx.is_external() { return None; }
     Some((sym_idx, *ver_idx, analysis.sym(sym_idx)))
@@ -36,9 +36,9 @@ fn lhs_initial_version_is_nilable(analysis: &AnalysisResult, lhs: ExprId) -> boo
 /// Even if the LS resolves `x` as always truthy — making `x and y` always
 /// evaluate to `y` — the `or z` expresses a conditional intent that should not
 /// be flagged as redundant.
-fn lhs_is_and_expression(exprs: &[Expr], lhs: ExprId) -> bool {
-    let lhs = unwrap_to_inner_expr(exprs, lhs);
-    matches!(&exprs[lhs.val()], Expr::BinaryOp { op: Operator::And, .. })
+fn lhs_is_and_expression(ir: &crate::analysis::Ir, lhs: ExprId) -> bool {
+    let lhs = unwrap_to_inner_expr(ir, lhs);
+    matches!(ir.expr(lhs), Expr::BinaryOp { op: Operator::And, .. })
 }
 
 /// Returns true when the LHS is a bare symbol that has been genuinely
@@ -80,9 +80,9 @@ fn lhs_symbol_has_self_and_reassignment(analysis: &AnalysisResult, lhs: ExprId) 
     let Some((sym_idx, _, sym)) = lhs_symbol_info(analysis, lhs) else { return false };
     sym.versions.iter().any(|v| {
         let Some(src) = v.type_source else { return false };
-        let Expr::BinaryOp { op: Operator::And, lhs: and_lhs, .. } = &analysis.ir.exprs[src.val()] else { return false };
-        let inner = unwrap_to_inner_expr(&analysis.ir.exprs, *and_lhs);
-        matches!(&analysis.ir.exprs[inner.val()], Expr::SymbolRef(s, _) if *s == sym_idx)
+        let Expr::BinaryOp { op: Operator::And, lhs: and_lhs, .. } = analysis.expr(src) else { return false };
+        let inner = unwrap_to_inner_expr(&analysis.ir, *and_lhs);
+        matches!(analysis.expr(inner), Expr::SymbolRef(s, _) if *s == sym_idx)
     })
 }
 
@@ -106,8 +106,8 @@ fn lhs_symbol_has_loop_body_reassignment(analysis: &AnalysisResult, lhs: ExprId,
     // Also check condition_sites: `while` and `repeat` conditions are lowered
     // in the parent scope, so `scope_at_offset` won't find the loop body.
     let enclosing_loops: Vec<ScopeIndex> = {
-        let mut loops: Vec<ScopeIndex> = ancestor_scopes(&ir.scopes, site_scope)
-            .filter(|&s| ir.scopes[s.val()].is_loop)
+        let mut loops: Vec<ScopeIndex> = ir.ancestor_scopes(site_scope)
+            .filter(|&s| ir.scope(s).is_loop)
             .collect();
         for cs in &ir.condition_sites {
             if let Some(ls) = cs.loop_scope
@@ -156,7 +156,7 @@ fn lhs_symbol_has_loop_body_reassignment(analysis: &AnalysisResult, lhs: ExprId,
 impl DiagnosticPass for RedundantLogical {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for site in &analysis.ir.binary_op_sites {
-            let Expr::BinaryOp { op, lhs, .. } = analysis.ir.exprs[site.expr_id.val()] else { continue };
+            let Expr::BinaryOp { op, lhs, .. } = *analysis.expr(site.expr_id) else { continue };
 
             if !matches!(op, Operator::Or | Operator::And) { continue; }
 
@@ -167,7 +167,7 @@ impl DiagnosticPass for RedundantLogical {
             // Skip the Lua ternary idiom `x and y or z`: the `or z` is the
             // else-branch and shouldn't be flagged even if the LS thinks
             // `x and y` is always truthy.
-            if matches!(op, Operator::Or) && lhs_is_and_expression(&analysis.ir.exprs, lhs) { continue; }
+            if matches!(op, Operator::Or) && lhs_is_and_expression(&analysis.ir, lhs) { continue; }
 
             // Skip expressions whose truthiness can't be reliably determined
             // from static types (lateinit fields, unannotated fields, dynamic

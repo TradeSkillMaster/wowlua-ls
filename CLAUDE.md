@@ -52,6 +52,16 @@ For Neovim diagnostic integration details (push/pull namespaces, `workspace_diag
 ### Two-tier index space (EXT_BASE)
 External globals (WoW API stubs) use indices >= `EXT_BASE` (1,000,000). Per-file locals use indices < `EXT_BASE`. All lookup functions (`sym()`, `func()`, `table()`, `expr()`) route via `idx >= EXT_BASE` check. This avoids cloning ~9000 external symbols per file.
 
+### IR read-only query surface (post-build consumers)
+The `Ir` arenas (`symbols`, `functions`, `tables`, `exprs`, `scopes`) carry load-bearing, convention-only invariants — the EXT_BASE two-tier routing, the symbol/function overlay fallbacks, and scope-chain walking. **Post-build consumers (everything in `src/diagnostics/`) must read the IR through the narrow query surface on `Ir` (and the delegators re-exposed on `AnalysisResult`/`Analysis`), never by indexing the raw arena `Vec`s directly.** The surface is defined in `analysis/mod.rs` next to the existing routing helpers:
+
+- **Indexed routing accessors** (handle EXT_BASE + overlays): `sym(idx)`, `func(idx)`, `expr(idx)`, `table(idx)`, `scope(idx)`, `try_scope(idx)` (fallible).
+- **Local-arena iterators** (per-file entries only; external stub entries live in `self.ext` and are deliberately excluded): `local_symbols()`, `local_functions()`, `local_tables()`, `local_exprs()` — each yields `(TypedIndex, &T)` so callers get the correctly-typed local index for free instead of reconstructing `FunctionIndex(usize)` etc.
+- **Scope-chain walk**: `get_symbol(...)`, `scope_at_offset(...)`, `ancestor_scopes(start)`.
+- **Resolved-type cache**: `resolved_expr_cache_get(ExprId) -> Option<&ValueType>` on `AnalysisResult` — avoids raw `resolved_expr_cache[id.val()]` indexing in diagnostics.
+
+The shared `unwrap_to_inner_expr(ir: &Ir, id)` helper in `diagnostics/mod.rs` also takes `&Ir` (not a raw `&[Expr]` slice) so its expr lookups route through `expr()`. Rule of thumb when writing a new diagnostic: iterate user code via `analysis.local_*()`, resolve any index via `analysis.sym/func/expr/table/scope(idx)`, and never write `analysis.ir.symbols[...]` / `.functions[...]` / `.exprs[...]` / `.tables[...]` / `.scopes[...]`. (Method calls like `analysis.ir.expr(idx)`, `.ir.get_field(...)`, `.ir.classes`, and the deferred-check collection fields such as `.ir.call_resolutions` / `.ir.binary_op_sites` are fine — they don't bypass routing.) The `queries/*.rs` modules live *inside* `analysis/` and are trusted to touch the arenas directly; migrating them onto the same surface is a possible follow-up. The arena fields remain `pub(crate)` (rather than module-private) because `stub_gen.rs` and `plugins/query.rs` still index/clone them; demoting the fields to lock the boundary at the type level is blocked on migrating those out-of-scope consumers.
+
 ### Key query functions (in `queries/nav.rs`)
 - `find_symbol_at(offset)` — Resolves direct names: gets token at offset → scope lookup → returns `(SymbolIndex, name)`
 - `find_field_at(offset)` — Resolves dot/colon chains (`x.y.z`): walks table fields to find the target field's `ExprId`

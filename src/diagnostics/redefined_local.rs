@@ -10,7 +10,7 @@ pub(crate) struct RedefinedLocal;
 impl DiagnosticPass for RedefinedLocal {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let root = SyntaxNode::new_root(tree);
-        for sym in &analysis.ir.symbols {
+        for (_, sym) in analysis.local_symbols() {
             let name = match &sym.id {
                 SymbolIdentifier::Name(n) => n.clone(),
                 _ => continue,

@@ -102,8 +102,7 @@ impl DiagnosticPass for AnnotationMetadata {
     // ── Part 2: Function-level annotation checks ──────────────────
     // duplicate_doc_param, undefined_doc_param, builds_field_not_self,
     // constructor_return, return_self_class_name
-    let func_by_start: HashMap<u32, usize> = analysis.ir.functions.iter()
-        .enumerate()
+    let func_by_start: HashMap<u32, FunctionIndex> = analysis.local_functions()
         .filter(|(_, f)| f.def_node != DefNode::DUMMY)
         .map(|(i, f)| (f.def_node.start, i))
         .collect();
@@ -112,13 +111,13 @@ impl DiagnosticPass for AnnotationMetadata {
         if node.kind() != SyntaxKind::FunctionDefinition { continue; }
         let node_start = u32::from(node.text_range().start());
         let Some(&func_idx) = func_by_start.get(&node_start) else { continue };
-        let func = &analysis.ir.functions[func_idx];
+        let func = analysis.func(func_idx);
 
         let annotations = crate::annotations::extract_annotations(node);
 
         if !annotations.params.is_empty() {
             let arg_names: HashSet<String> = func.args.iter()
-                .filter_map(|&sym_idx| match &analysis.ir.symbols[sym_idx.val()].id {
+                .filter_map(|&sym_idx| match &analysis.sym(sym_idx).id {
                     SymbolIdentifier::Name(n) => Some(n.clone()),
                     _ => None,
                 })
@@ -161,7 +160,7 @@ impl DiagnosticPass for AnnotationMetadata {
             );
         }
 
-        let func_index = FunctionIndex(func_idx);
+        let func_index = func_idx;
         if analysis.inherited_constructors.contains(&func_index)
             && !func.constructor
             && !func.return_annotations.is_empty()
@@ -230,7 +229,7 @@ impl DiagnosticPass for AnnotationMetadata {
     }
 
     // ── Part 3: Deprecated call-site checks ──────────────────────
-    for expr in analysis.ir.exprs.iter() {
+    for (_, expr) in analysis.local_exprs() {
         let Expr::FunctionCall { func: callee, call_range, .. } = expr else { continue };
         let callee = *callee;
         let call_range = *call_range;

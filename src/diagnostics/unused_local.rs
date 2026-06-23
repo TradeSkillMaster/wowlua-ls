@@ -14,7 +14,7 @@ impl DiagnosticPass for UnusedLocal {
             let start = u32::from(range.start()) as usize;
             let end = u32::from(range.end()) as usize;
             // Emit more specific unused-function for function definitions
-            let is_func = analysis.ir.symbols[sym_idx.val()].versions.last()
+            let is_func = analysis.sym(sym_idx).versions.last()
                 .and_then(|v| v.type_source)
                 .map(|e| matches!(analysis.expr(e), Expr::FunctionDef(_)))
                 .unwrap_or(false);

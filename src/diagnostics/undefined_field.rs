@@ -143,7 +143,7 @@ pub(crate) struct UndefinedField;
 impl DiagnosticPass for UndefinedField {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let pure_records = collect_pure_record_symbols(analysis, tree);
-        for expr in analysis.ir.exprs.iter() {
+        for (_, expr) in analysis.local_exprs() {
             let Expr::FieldAccess { table, field, field_range } = expr else { continue };
             let Some((start, end)) = field_range else { continue };
             let Some(table_type) = analysis.resolve_expr_type(*table) else { continue };

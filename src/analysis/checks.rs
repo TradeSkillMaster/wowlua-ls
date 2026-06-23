@@ -299,8 +299,8 @@ impl AnalysisResult {
     pub(crate) fn find_enclosing_function_idx(
         &self,
         node: SyntaxNode<'_>,
-        func_by_start: &HashMap<u32, usize>,
-    ) -> Option<usize> {
+        func_by_start: &HashMap<u32, FunctionIndex>,
+    ) -> Option<FunctionIndex> {
         let mut current = node.parent();
         while let Some(n) = current {
             if n.kind() == SyntaxKind::FunctionDefinition {
@@ -315,10 +315,10 @@ impl AnalysisResult {
     pub(crate) fn find_enclosing_function_generics(
         &self,
         node: SyntaxNode<'_>,
-        func_by_start: &HashMap<u32, usize>,
+        func_by_start: &HashMap<u32, FunctionIndex>,
     ) -> Option<Vec<(String, Option<String>)>> {
         if let Some(func_idx) = self.find_enclosing_function_idx(node, func_by_start) {
-            let gcr = &self.ir.functions[func_idx].generic_constraints_raw;
+            let gcr = &self.func(func_idx).generic_constraints_raw;
             if !gcr.is_empty() {
                 return Some(gcr.clone());
             }

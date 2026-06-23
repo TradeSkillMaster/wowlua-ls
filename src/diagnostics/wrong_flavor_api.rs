@@ -7,7 +7,7 @@ pub(crate) struct WrongFlavorApi;
 impl DiagnosticPass for WrongFlavorApi {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         if analysis.project_flavors == 0 { return; }
-        for expr in analysis.ir.exprs.iter() {
+        for (_, expr) in analysis.local_exprs() {
             let Expr::FunctionCall { func: callee, ret_index, call_range, .. } = expr else { continue };
             if *ret_index != 0 { continue; }
             let Some(ValueType::Function(Some(func_idx))) = analysis.resolve_expr_type(*callee) else { continue };

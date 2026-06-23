@@ -27,11 +27,11 @@ fn check_nil_suppressed(analysis: &AnalysisResult, table_expr: ExprId, start: u3
 
 pub(crate) fn run_access(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
     let mut seen = HashSet::new();
-    for (idx, expr) in analysis.ir.exprs.iter().enumerate() {
+    for (expr_id, expr) in analysis.local_exprs() {
         let Expr::FieldAccess { table, field_range: Some((start, end)), .. } = expr else { continue };
         let (table, start, end) = (*table, *start, *end);
         if !seen.insert((start, end)) { continue; }
-        if analysis.ir.and_guarded_nil_check_exprs.contains(&ExprId(idx)) { continue; }
+        if analysis.ir.and_guarded_nil_check_exprs.contains(&expr_id) { continue; }
         let Some(vt) = analysis.resolve_expr_type(table) else { continue };
         if !is_nullable(&vt) { continue; }
         if check_nil_suppressed(analysis, table, start) { continue; }
@@ -63,7 +63,7 @@ pub(crate) fn run_access(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnosti
 /// when narrowing resolved after the call was first seen (e.g. a nil guard later in the
 /// fixpoint), which is more correct than the prior inline emission.
 pub(crate) fn run_callee(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
-    for expr in analysis.ir.exprs.iter() {
+    for (_, expr) in analysis.local_exprs() {
         let Expr::FunctionCall { func: callee, call_range, .. } = expr else { continue };
         let callee = *callee;
         let call_range = *call_range;
@@ -98,7 +98,7 @@ pub(crate) fn run_callee(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnosti
 
 pub(crate) fn run_length(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
     for &(expr_id, start, end) in &analysis.ir.unary_op_sites {
-        let Expr::UnaryOp { operand, .. } = analysis.ir.exprs[expr_id.val()] else { continue };
+        let Expr::UnaryOp { operand, .. } = *analysis.expr(expr_id) else { continue };
         let Some(operand_type) = analysis.resolve_expr_type(operand) else { continue };
         if !is_nullable(&operand_type) { continue; }
         if check_nil_suppressed(analysis, operand, start) { continue; }

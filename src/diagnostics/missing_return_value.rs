@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::analysis::AnalysisResult;
 use crate::ast::{AstNode, Expression, ExpressionList};
 use crate::syntax::{SyntaxKind, SyntaxNode};
@@ -17,14 +15,14 @@ impl DiagnosticPass for MissingReturnValue {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let root = SyntaxNode::new_root(tree);
 
-        let func_by_start: HashMap<u32, usize> = analysis.ir.functions.iter().enumerate()
+        let func_by_start = analysis.local_functions()
             .filter_map(|(i, f)| f.def_node.node_id.map(|_| (f.def_node.start, i)))
             .collect();
 
         for node in root.descendants() {
             if node.kind() != SyntaxKind::ReturnStatement { continue; }
             let Some(func_idx) = analysis.find_enclosing_function_idx(node, &func_by_start) else { continue };
-            let func = &analysis.ir.functions[func_idx];
+            let func = analysis.func(func_idx);
             let expected_count = func.return_annotations.len();
             if expected_count == 0 { continue; }
 

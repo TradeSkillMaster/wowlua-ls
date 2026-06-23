@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::analysis::{AnalysisResult, Ir};
 use crate::annotations::annotation_scanning::{ExternalGlobal, ExternalGlobalKind, FieldValueKind};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::types::{Expr, ExprId, FunctionIndex, SymbolIdentifier, SymbolIndex, TableIndex, ValueType, EXT_BASE};
+use crate::types::{Expr, ExprId, FunctionIndex, ScopeIndex, SymbolIdentifier, SymbolIndex, TableIndex, ValueType, EXT_BASE};
 
 use super::WowDiagnostic;
 
@@ -92,14 +92,14 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
     // 2. Manual resolve — for FieldAccess nodes whose cache slot is empty (e.g. table
     //    constructor field values that are never read back), walk the base SymbolRef
     //    directly to the external table field's FunctionDef.
-    for (idx, expr) in analysis.ir.exprs.iter().enumerate() {
+    for (eid, expr) in analysis.local_exprs() {
         let Expr::FieldAccess { table: base_expr, field, .. } = expr else { continue };
 
         // Path 1: cache hit. The field-access type is a single function or a
         // union of functions (method access on a union receiver `A | B`); record
         // every external member so a method reached only through a union-typed
         // receiver isn't reported as unused.
-        if let Some(Some(cached)) = analysis.resolved_expr_cache.get(idx) {
+        if let Some(cached) = analysis.resolved_expr_cache_get(eid) {
             let mut recorded = false;
             visit_function_members(cached, &mut |func_idx| {
                 if func_idx.is_external() {
@@ -165,7 +165,7 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
     }
 
     // Identify scope-0 symbols that are locally referenced within this file.
-    let scope0 = &analysis.ir.scopes[0];
+    let scope0 = analysis.scope(ScopeIndex::from(0));
     for (id, &sym_idx) in &scope0.symbols {
         if analysis.referenced_symbols.contains(&sym_idx)
             && let SymbolIdentifier::Name(name) = id

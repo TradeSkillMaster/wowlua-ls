@@ -7,7 +7,7 @@ pub(crate) struct CreateGlobal;
 
 impl DiagnosticPass for CreateGlobal {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        for sym in &analysis.ir.symbols {
+        for (_, sym) in analysis.local_symbols() {
             if sym.scope_idx != ScopeIndex(0) { continue; }
             let name = match &sym.id {
                 SymbolIdentifier::Name(n) => n.clone(),

@@ -9,7 +9,7 @@ pub(crate) struct CallArity;
 /// and projected arity from `params<F>`.
 impl DiagnosticPass for CallArity {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        for expr in analysis.ir.exprs.iter() {
+        for (_, expr) in analysis.local_exprs() {
             let Expr::FunctionCall { func: callee, args, arg_ranges, ret_index,
                                      call_range, is_method_call, .. } = expr else { continue };
             if *ret_index != 0 { continue; }
