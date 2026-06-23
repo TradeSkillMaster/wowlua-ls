@@ -2765,6 +2765,17 @@ fn crossfile_local_var_no_leak() {
 }
 
 #[test]
+fn crossfile_global_before_local_shadow() {
+    // A global assigned before a same-named `local X = X` shadow must still be
+    // recognized as a cross-file global (FrameXML money-constant pattern).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/global_before_local_shadow_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_access() {
     // Cross-file private/protected field access diagnostics
     run_annotation_tests(&TestConfig {

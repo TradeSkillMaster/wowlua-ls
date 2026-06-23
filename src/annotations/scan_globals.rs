@@ -435,6 +435,13 @@ pub(crate) fn scan_file_globals_with_synth(
     // non-class, non-table locals (e.g. `local frame = CreateFrame(...); frame.x = 1`
     // should not create a phantom global class "frame").
     let mut local_vars: HashSet<String> = HashSet::new();
+    // Byte offset of the *first* `local X` declaration for each name. A plain
+    // `X = ...` assignment is only a reassignment of that local (not an implicit
+    // global) if it appears at or after the local comes into scope. Tracking the
+    // earliest declaration offset lets a genuine global assignment that *precedes*
+    // a later same-named `local X` (e.g. `X = 100` then `local X = X`) still be
+    // recognized as a global.
+    let mut first_local_offset: HashMap<String, u32> = HashMap::new();
     // Track local variables annotated with @class (e.g. local LibTSMCore = {} ---@class LibTSMCore)
     let mut class_vars: HashMap<String, String> = HashMap::new();
     // Track locals with @type annotations so field assignments on them are emitted
@@ -445,8 +452,10 @@ pub(crate) fn scan_file_globals_with_synth(
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
                 let names = name_list.names();
                 let exprs = expr_list.expressions();
+                let decl_offset: u32 = assign.syntax().text_range().start().into();
                 for name in &names {
                     local_vars.insert(name.clone());
+                    first_local_offset.entry(name.clone()).or_insert(decl_offset);
                 }
                 if names.len() == 1 && exprs.len() == 1 {
                     if let Expression::Identifier(ident) = &exprs[0] {
@@ -514,6 +523,8 @@ pub(crate) fn scan_file_globals_with_synth(
         if let Statement::FunctionDefinition(func) = stmt
             && func.is_local()
             && let Some(name) = func.name() {
+                let decl_offset: u32 = func.syntax().text_range().start().into();
+                first_local_offset.entry(name.clone()).or_insert(decl_offset);
                 local_vars.insert(name.clone());
                 local_functions.insert(name);
             }
@@ -682,8 +693,13 @@ pub(crate) fn scan_file_globals_with_synth(
                         let root_name = &names[0];
                         let method_name = &names[names.len() - 1];
                         let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
-                        // Skip methods on locals that aren't class-typed or table constructors
-                        if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && addon_ns_var.as_deref() != Some(root_name.as_str()) {
+                        // Skip methods on locals that aren't class-typed or table constructors.
+                        // Use offset-aware check: only skip if the function definition
+                        // comes after the local declaration (same logic as single-name assignments).
+                        let func_offset: u32 = func.syntax().text_range().start().into();
+                        if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && addon_ns_var.as_deref() != Some(root_name.as_str())
+                            && first_local_offset.get(root_name).is_some_and(|&lo| func_offset >= lo)
+                        {
                             continue;
                         }
                         // Buffer methods defined on local tables (any depth) for later
@@ -725,11 +741,19 @@ pub(crate) fn scan_file_globals_with_synth(
                             was_g_redirect = true;
                         }
                         // A plain `value = ...` assignment to a name that is declared as a
-                        // local somewhere in this file is a reassignment, not an implicit
-                        // global creation — skip it so locals don't leak as phantom globals.
+                        // local *earlier in the file* is a reassignment of that local, not an
+                        // implicit global creation — skip it so locals don't leak as phantom
+                        // globals. A global assignment that *precedes* a later same-named
+                        // `local X` (e.g. `X = 100` then `local X = X`, common in FrameXML
+                        // money constants) is still a genuine global, so compare offsets.
                         // (An explicit `_G.value = ...` write still creates a global.)
-                        if names.len() == 1 && !was_g_redirect && local_vars.contains(&names[0]) {
-                            continue;
+                        if names.len() == 1 && !was_g_redirect {
+                            let assign_offset: u32 = assign.syntax().text_range().start().into();
+                            if first_local_offset.get(&names[0])
+                                .is_some_and(|&local_off| assign_offset >= local_off)
+                            {
+                                continue;
+                            }
                         }
                         if names.len() == 1 {
                             let range = assign.syntax().text_range();
@@ -851,8 +875,12 @@ pub(crate) fn scan_file_globals_with_synth(
                             if idents[0].has_non_string_bracket_tail() { continue; }
                             let root_name = &names[0];
                             let is_addon_root = addon_ns_var.as_deref() == Some(root_name.as_str());
-                            // Skip field assignments on locals that aren't class-typed, table constructors, or @type-annotated
-                            if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && !local_type_vars.contains_key(root_name) && !is_addon_root {
+                            // Skip field assignments on locals that aren't class-typed, table constructors, or @type-annotated.
+                            // Use offset-aware check: only skip if the assignment comes after the local declaration.
+                            let assign_offset: u32 = assign.syntax().text_range().start().into();
+                            if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && !local_type_vars.contains_key(root_name) && !is_addon_root
+                                && first_local_offset.get(root_name).is_some_and(|&lo| assign_offset >= lo)
+                            {
                                 continue;
                             }
                             // Drop 3+ part chains for local non-class variables to avoid
@@ -864,7 +892,9 @@ pub(crate) fn scan_file_globals_with_synth(
                             // (global class roots emit deep chains that are later skipped)
                             // for simpler filter logic here — the downstream guard is the
                             // single source of truth for class-global deep-path suppression.
-                            if names.len() >= 3 && !is_addon_root && local_vars.contains(root_name) && !class_vars.contains_key(root_name) { continue; }
+                            if names.len() >= 3 && !is_addon_root && local_vars.contains(root_name) && !class_vars.contains_key(root_name)
+                                && first_local_offset.get(root_name).is_some_and(|&lo| assign_offset >= lo)
+                            { continue; }
                             let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
                             let field_name = names[names.len()-1].clone();
                             let canonical_name = if is_addon_root {
