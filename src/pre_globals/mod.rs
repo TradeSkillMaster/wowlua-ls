@@ -265,6 +265,21 @@ pub struct PreResolvedGlobals {
     /// Source locations for external class field definitions (table_idx → field_name → location)
     #[serde(default)]
     pub(crate) field_locations: HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    /// All workspace source locations for each global name, including definitions
+    /// dropped by name-dedup during registration. Powers multi-result
+    /// go-to-definition when a global is defined in more than one file. Keyed by
+    /// the global's name (the resolved symbol's `SymbolIdentifier::Name`). Runtime
+    /// only — populated by `build_on_stubs`, never serialized into the stub blob.
+    #[serde(skip)]
+    pub(crate) symbol_locations_by_name: HashMap<String, Vec<ExternalLocation>>,
+    /// All workspace source locations for each `@class` name (partial classes
+    /// declared across multiple files). Runtime only — see `symbol_locations_by_name`.
+    #[serde(skip)]
+    pub(crate) class_locations_all: HashMap<String, Vec<ExternalLocation>>,
+    /// All workspace source locations for each `@alias` name. Runtime only —
+    /// see `symbol_locations_by_name`.
+    #[serde(skip)]
+    pub(crate) alias_locations_all: HashMap<String, Vec<ExternalLocation>>,
     /// Function index for the built-in `setmetatable()` — used for metatable type inference.
     pub(crate) setmetatable_func_idx: Option<FunctionIndex>,
     /// Function index for the built-in `getmetatable()` — used for metatable type inference.
@@ -2408,6 +2423,11 @@ impl BuildContext {
             class_locations: self.class_locations,
             alias_locations: self.alias_locations,
             field_locations: self.field_locations,
+            // Multiplicity of stub-defined globals/types is not tracked (these
+            // are runtime-only and the workspace path populates them).
+            symbol_locations_by_name: HashMap::new(),
+            class_locations_all: HashMap::new(),
+            alias_locations_all: HashMap::new(),
             setmetatable_func_idx: self.setmetatable_func_idx,
             getmetatable_func_idx: self.getmetatable_func_idx,
             stub_symbols_end: 0,
@@ -2444,6 +2464,21 @@ impl PreResolvedGlobals {
     pub fn symbols_len(&self) -> usize { self.symbols.len() }
     pub fn functions_len(&self) -> usize { self.functions.len() }
     pub fn tables_len(&self) -> usize { self.tables.len() }
+
+    /// All workspace definition locations for a global name (multi-result
+    /// go-to-definition). Empty slice when the name has no recorded workspace
+    /// definitions (e.g. pure-stub globals, whose multiplicity is not tracked).
+    pub(crate) fn symbol_locations_for_name(&self, name: &str) -> &[ExternalLocation] {
+        self.symbol_locations_by_name.get(name).map_or(&[], Vec::as_slice)
+    }
+    /// All workspace definition locations for a `@class` name.
+    pub(crate) fn class_locations_for_name(&self, name: &str) -> &[ExternalLocation] {
+        self.class_locations_all.get(name).map_or(&[], Vec::as_slice)
+    }
+    /// All workspace definition locations for an `@alias` name.
+    pub(crate) fn alias_locations_for_name(&self, name: &str) -> &[ExternalLocation] {
+        self.alias_locations_all.get(name).map_or(&[], Vec::as_slice)
+    }
 
     // ── Read-only routing accessors (post-build consumers) ──────────────────────
     // Every index into the precomputed arenas is external (>= `EXT_BASE`). These
@@ -2589,6 +2624,9 @@ impl PreResolvedGlobals {
             class_locations: HashMap::new(),
             alias_locations: HashMap::new(),
             field_locations: HashMap::new(),
+            symbol_locations_by_name: HashMap::new(),
+            class_locations_all: HashMap::new(),
+            alias_locations_all: HashMap::new(),
             setmetatable_func_idx: None,
             getmetatable_func_idx: None,
             stub_symbols_end: 0,

@@ -211,7 +211,9 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_hover = extract_field(annotation, "hover:");
         let expected_doc = extract_field(annotation, "doc:");
         let expected_def = extract_field(annotation, "def:");
+        let expected_defs = extract_field(annotation, "defs:");
         let expected_typedef = extract_field(annotation, "typedef:");
+        let expected_typedefs = extract_field(annotation, "typedefs:");
         let expected_sig = extract_field(annotation, "sig:");
         let expected_diag = extract_field(annotation, "diag:");
         let expected_refs = extract_field(annotation, "refs:");
@@ -340,6 +342,29 @@ fn run_annotation_tests(config: &TestConfig) {
             }
         }
 
+        // Check definition count (multi-result go-to-definition). Value is the
+        // expected number of distinct definition sites returned by definitions_at.
+        if let Some(expected) = &expected_defs {
+            let defs = result.definitions_at(&tree, offset);
+            let actual = defs.len();
+            let expected_n: usize = expected.trim().parse().unwrap_or_else(|_| {
+                panic!("defs: expects a number, got {expected:?}")
+            });
+            if actual != expected_n {
+                let detail: Vec<String> = defs.iter().map(|d| match d {
+                    DefinitionResult::Local(range) => {
+                        let start = numbers.from_offset(u32::from(range.start()) as usize);
+                        format!("local {}:{}", start.0.0 + 1, start.1 + 1)
+                    }
+                    DefinitionResult::External(loc) => format!("external {}", loc.path.display()),
+                }).collect();
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    defs expected: {}\n    defs actual:   {} [{}]",
+                    config.lua_file, i + 1, location, expected_n, actual, detail.join(", ")
+                ));
+            }
+        }
+
         // Check type definition
         if let Some(expected) = &expected_typedef {
             let actual = match result.type_definition_at(&tree, offset) {
@@ -364,6 +389,20 @@ fn run_annotation_tests(config: &TestConfig) {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    typedef expected: {}\n    typedef actual:   {}",
                     config.lua_file, i + 1, location, expected, actual
+                ));
+            }
+        }
+
+        // Check type-definition count (multi-result go-to-type-definition).
+        if let Some(expected) = &expected_typedefs {
+            let actual = result.type_definitions_at(&tree, offset).len();
+            let expected_n: usize = expected.trim().parse().unwrap_or_else(|_| {
+                panic!("typedefs: expects a number, got {expected:?}")
+            });
+            if actual != expected_n {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    typedefs expected: {}\n    typedefs actual:   {}",
+                    config.lua_file, i + 1, location, expected_n, actual
                 ));
             }
         }
@@ -675,7 +714,7 @@ fn normalize_tok(s: &str) -> Vec<String> {
 /// Keep in sync with the `extract_field` call sites above and the annotation
 /// format documented in CLAUDE.md ("Supported fields: hover:, def:, …").
 const FIELD_PREFIXES: &[&str] = &[
-    "hover:", "doc:", "def:", "typedef:", "sig:", "diag:", "refs:",
+    "hover:", "doc:", "def:", "defs:", "typedef:", "typedefs:", "sig:", "diag:", "refs:",
     "linked:", "comp:", "tok:", "highlight:", "hint:", "lens:",
 ];
 
@@ -1341,6 +1380,15 @@ fn expression_builder_module_field_refines() {
         lua_file: "tests/expression-deferred-harvest/builder_module_user.lua",
         with_stubs: true,
         scan_dir: Some("tests/expression-deferred-harvest"),
+    });
+}
+
+#[test]
+fn multi_definition() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-definition/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/multi-definition"),
     });
 }
 

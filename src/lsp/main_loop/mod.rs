@@ -1690,11 +1690,11 @@ mod tests {
 
     /// End-to-end go-to-definition wiring for FrameEvents. `test-query` only prints
     /// the raw ExternalLocation path; the actual LSP path runs through
-    /// `resolve_external_definition`, which reads the embedded file-contents blob and
+    /// `resolve_external_location`, which reads the embedded file-contents blob and
     /// returns None if the file key is missing. This asserts both a documented event
     /// (UNIT_AURA, from APIDocumentation with payload) and a payload-less
     /// FrameXML-only event (CRAFT_SHOW) have an event_location pointing at an
-    /// embedded file, and that resolve_external_definition actually produces a
+    /// embedded file, and that resolve_external_location actually produces a
     /// navigable location.
     #[test]
     fn frame_event_definition_resolves_through_embedded_blob() {
@@ -1718,10 +1718,10 @@ mod tests {
                 "embedded file blob is missing key {key:?} for event {event} — go-to-definition would silently return None",
             );
 
-            let def = resolve_external_definition(loc);
+            let def = resolve_external_location(loc);
             assert!(
                 def.is_some(),
-                "resolve_external_definition returned None for {event} (path {key:?})",
+                "resolve_external_location returned None for {event} (path {key:?})",
             );
         }
     }

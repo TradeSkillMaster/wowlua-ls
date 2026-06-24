@@ -892,12 +892,13 @@ pub fn search_workspace_symbols(
     results
 }
 
-/// Resolve an external definition to an LSP GotoDefinitionResponse.
-/// Tries the file on disk first; if absent, falls back to embedded stub content.
-pub(super) fn resolve_external_definition(
+/// Resolve an external definition location to an LSP `Location`, reading from
+/// disk (dev mode) or lazily-materialized embedded stub content. Drives the
+/// go-to-definition / go-to-type-definition responses.
+pub(super) fn resolve_external_location(
     loc: &crate::types::ExternalLocation,
-) -> Option<GotoDefinitionResponse> {
-    use lsp_types::{GotoDefinitionResponse, Location};
+) -> Option<lsp_types::Location> {
+    use lsp_types::Location;
 
     // Try reading the file on disk first (works in dev mode with stubs checkout)
     let (text, file_uri) = if loc.path.exists() {
@@ -925,8 +926,8 @@ pub(super) fn resolve_external_definition(
     };
 
     let numbers = crate::lsp::SafeLinePositions::new(text.as_ref());
-    Some(GotoDefinitionResponse::Scalar(Location {
+    Some(Location {
         uri: file_uri,
         range: numbers.lsp_range(loc.start as usize, loc.end as usize, use_utf8()),
-    }))
+    })
 }

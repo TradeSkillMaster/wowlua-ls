@@ -5,6 +5,48 @@ pub(super) fn parse_lua(text: &str) -> SyntaxTree {
     crate::syntax::parser::parse(text)
 }
 
+/// Convert a list of definition results into a `GotoDefinitionResponse`. Local
+/// results resolve against the current document; external results against their
+/// source file (or embedded stub content). Identical `(uri, range)` pairs are
+/// deduplicated — this collapses the current file appearing both as a live local
+/// result and as a workspace-scan external result. Returns `None` when nothing
+/// resolves so the caller can fall back to an empty array.
+fn definition_results_to_response(
+    defs: &[DefinitionResult],
+    uri: &lsp_types::Uri,
+    doc_text: &str,
+) -> Option<GotoDefinitionResponse> {
+    if defs.is_empty() {
+        return None;
+    }
+    let numbers = crate::lsp::SafeLinePositions::new(doc_text);
+    let mut locs: Vec<Location> = Vec::with_capacity(defs.len());
+    for def in defs {
+        let loc = match def {
+            DefinitionResult::Local(range) => Location {
+                uri: uri.clone(),
+                range: numbers.lsp_range(
+                    u32::from(range.start()) as usize,
+                    u32::from(range.end()) as usize,
+                    use_utf8(),
+                ),
+            },
+            DefinitionResult::External(loc) => match resolve_external_location(loc) {
+                Some(l) => l,
+                None => continue,
+            },
+        };
+        if !locs.iter().any(|e| e.uri == loc.uri && e.range == loc.range) {
+            locs.push(loc);
+        }
+    }
+    match locs.len() {
+        0 => None,
+        1 => Some(GotoDefinitionResponse::Scalar(locs.pop().unwrap())),
+        _ => Some(GotoDefinitionResponse::Array(locs)),
+    }
+}
+
 /// Analyze a Lua source string from scratch. Returns a `(SyntaxTree, AnalysisResult)`.
 pub(super) fn analyze_lua(
     uri: &lsp_types::Uri,
@@ -129,19 +171,8 @@ pub(super) fn handle_request(
                     return;
                 }
                 let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
-                    let def = analysis.definition_at(tree, offset)?;
-                    match def {
-                        DefinitionResult::Local(def_range) => {
-                            let numbers = crate::lsp::SafeLinePositions::new(doc.text.as_str());
-                            Some(GotoDefinitionResponse::Scalar(Location {
-                                uri: uri.clone(),
-                                range: numbers.lsp_range(u32::from(def_range.start()) as usize, u32::from(def_range.end()) as usize, use_utf8()),
-                            }))
-                        }
-                        DefinitionResult::External(ref loc) => {
-                            resolve_external_definition(loc)
-                        }
-                    }
+                    let defs = analysis.definitions_at(tree, offset);
+                    definition_results_to_response(&defs, &uri, doc.text.as_str())
                 }).unwrap_or(GotoDefinitionResponse::Array(Vec::new()));
                 send_response(connection, id, &result);
             }
@@ -151,19 +182,8 @@ pub(super) fn handle_request(
                 let uri = params.text_document_position_params.text_document.uri;
                 let position = params.text_document_position_params.position;
                 let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
-                    let def = analysis.type_definition_at(tree, offset)?;
-                    match def {
-                        DefinitionResult::Local(def_range) => {
-                            let numbers = crate::lsp::SafeLinePositions::new(doc.text.as_str());
-                            Some(GotoDefinitionResponse::Scalar(Location {
-                                uri: uri.clone(),
-                                range: numbers.lsp_range(u32::from(def_range.start()) as usize, u32::from(def_range.end()) as usize, use_utf8()),
-                            }))
-                        }
-                        DefinitionResult::External(ref loc) => {
-                            resolve_external_definition(loc)
-                        }
-                    }
+                    let defs = analysis.type_definitions_at(tree, offset);
+                    definition_results_to_response(&defs, &uri, doc.text.as_str())
                 }).unwrap_or(GotoDefinitionResponse::Array(Vec::new()));
                 send_response(connection, id, &result);
             }

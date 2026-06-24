@@ -1563,16 +1563,22 @@ impl<'a> BuildOnStubsContext<'a> {
             }
         }
 
-        // Extend class locations with workspace classes
+        // Extend class locations with workspace classes. `class_locations` keeps a
+        // single primary per name (last write wins, as before); `class_locations_all`
+        // accumulates every distinct workspace declaration so a partial `@class`
+        // split across files reports all sites via go-to-definition.
         let mut class_locations = self.stubs_base.class_locations.clone();
+        let mut class_locations_all: HashMap<String, Vec<ExternalLocation>> = HashMap::new();
         for class in ws_classes {
             if let Some((start, end)) = class.def_range
                 && let Some(ref path) = class.def_path {
-                    class_locations.insert(class.name.clone(), ExternalLocation {
+                    let loc = ExternalLocation {
                         path: path.clone(),
                         start,
                         end, ..Default::default()
-                    });
+                    };
+                    push_distinct_location(class_locations_all.entry(class.name.clone()).or_default(), &loc);
+                    class_locations.insert(class.name.clone(), loc);
                 }
         }
 
@@ -1626,6 +1632,10 @@ impl<'a> BuildOnStubsContext<'a> {
             addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),
             constructor_method_names, class_locations,
             alias_locations: self.alias_locations, field_locations: self.field_locations,
+            // Populated by `build_on_stubs` after `finish` (it has ws_globals/aliases).
+            symbol_locations_by_name: HashMap::new(),
+            class_locations_all,
+            alias_locations_all: HashMap::new(),
             setmetatable_func_idx: self.stubs_base.setmetatable_func_idx,
             getmetatable_func_idx: self.stubs_base.getmetatable_func_idx,
             stub_symbols_end: self.stubs_base.stub_symbols_end,
@@ -1666,9 +1676,48 @@ impl PreResolvedGlobals {
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(ws_globals);
         let mut pg = ctx.finish(ws_classes);
+        // Record every workspace definition site per global/alias name (independent
+        // of the name-dedup that registration applies) so go-to-definition can
+        // offer all of them when a name is defined in more than one file.
+        // `class_locations_all` is built inside `finish` (it owns ws_classes).
+        use crate::annotations::ExternalGlobalKind;
+        for g in ws_globals {
+            // Only kinds that register a top-level scope-0 symbol named `g.name`.
+            match &g.kind {
+                ExternalGlobalKind::Function
+                | ExternalGlobalKind::Variable(_)
+                | ExternalGlobalKind::Table => {
+                    if let Some(path) = &g.source_path {
+                        push_distinct_location(
+                            pg.symbol_locations_by_name.entry(g.name.clone()).or_default(),
+                            &ExternalLocation { path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default() },
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        for alias in ws_aliases {
+            if let Some((start, end)) = alias.def_range
+                && let Some(ref path) = alias.def_path {
+                    push_distinct_location(
+                        pg.alias_locations_all.entry(alias.name.clone()).or_default(),
+                        &ExternalLocation { path: path.clone(), start, end, ..Default::default() },
+                    );
+                }
+        }
         // Two merge passes: (1) sub-table methods → class tables, (2) top-level ns fields → ns-class
         pg.merge_addon_ns_subtable_methods();
         pg.merge_addon_ns_into_classes(addon_ns_class_files);
         pg
+    }
+}
+
+/// Append `loc` to `locs` unless an entry with the same path and start offset is
+/// already present. Definition sites are deduplicated by `(path, start)` so the
+/// same declaration scanned through multiple passes isn't listed twice.
+fn push_distinct_location(locs: &mut Vec<ExternalLocation>, loc: &ExternalLocation) {
+    if !locs.iter().any(|l| l.path == loc.path && l.start == loc.start) {
+        locs.push(loc.clone());
     }
 }

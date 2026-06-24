@@ -91,7 +91,7 @@ wowlua-ls understands the patterns WoW addons actually use:
 
 ### IDE features
 
-Hover, go-to-definition, find references, rename, completions, signature help, semantic tokens, inlay hints (6 categories), code lens (usages, implementations, overrides), and call hierarchy.
+Hover, go-to-definition (lists every site when a global or type is defined across multiple files), find references, rename, completions, signature help, semantic tokens, inlay hints (6 categories), code lens (usages, implementations, overrides), and call hierarchy.
 
 ### Type system
 

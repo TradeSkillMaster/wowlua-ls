@@ -28,7 +28,18 @@ impl AnalysisResult {
         false
     }
 
+    /// Single-result go-to-definition (the primary definition). Convenience
+    /// wrapper over [`Self::definitions_at`] for callers that only want one
+    /// location (the CLI `test-query` and the integration-test harness).
     pub fn definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
+        self.definitions_at(tree, offset).into_iter().next()
+    }
+
+    /// All definition locations for the symbol/type at `offset`. When a global,
+    /// `@class`, or `@alias` is defined in more than one file, every site is
+    /// returned (primary first) so the editor can present a picker. Single-def
+    /// cases return a one-element vector, matching the previous behavior.
+    pub fn definitions_at(&self, tree: &SyntaxTree, offset: u32) -> Vec<DefinitionResult> {
         // Try field access first so that a same-named global doesn't shadow the field.
         if let Some((table_idx, field_name, expr_id, _, _)) = self.resolve_field_chain_at(tree, offset) {
             // Check the field's local definition range first (from @field annotation,
@@ -44,14 +55,14 @@ impl AnalysisResult {
                         TextSize::from(start),
                         TextSize::from(end),
                     );
-                    return Some(DefinitionResult::Local(range));
+                    return vec![DefinitionResult::Local(range)];
                 }
             if let Some(result) = self.definition_for_expr(expr_id) {
-                return Some(result);
+                return vec![result];
             }
             // Fall back to external field location (stubs / workspace @field annotations)
             if let Some(loc) = self.find_external_field_location(table_idx, &field_name) {
-                return Some(DefinitionResult::External(loc.clone()));
+                return vec![DefinitionResult::External(loc.clone())];
             }
             // Last resort for fields materialized from annotations (e.g. TableLiteral):
             // find the parent table that has a field pointing to this sub-table, then
@@ -67,7 +78,7 @@ impl AnalysisResult {
                         if matches!(&fi.annotation, Some(ValueType::Table(Some(idx))) if *idx == table_idx)
                             && let Some(loc) = locs.get(fname)
                         {
-                            return Some(DefinitionResult::External(loc.clone()));
+                            return vec![DefinitionResult::External(loc.clone())];
                         }
                     }
                 }
@@ -77,44 +88,95 @@ impl AnalysisResult {
         // Mirrors the same guard in hover_at(); _G.X (including indirect references) is
         // exempted so global-environment field access still works.
         if Self::is_field_position(tree, offset) && !self.is_g_dot_field(tree, offset) {
-            return None;
+            return Vec::new();
         }
         // Table constructor field: definition is itself. Check before find_symbol_at
         // so that a same-named global doesn't shadow the field key.
         if self.find_constructor_field_at(tree, offset).is_some() {
             let text_size = TextSize::from(offset);
             if let TokenAtOffset::Single(t) | TokenAtOffset::Between(t, _) = SyntaxNode::new_root(tree).token_at_offset(text_size) {
-                return Some(DefinitionResult::Local(t.text_range()));
+                return vec![DefinitionResult::Local(t.text_range())];
             }
         }
         if let Some((symbol_idx, _, token_start)) = self.find_symbol_at(tree, offset) {
             if symbol_idx.is_external() {
-                if let Some(loc) = self.ir.ext.symbol_locations.get(&symbol_idx) {
-                    return Some(DefinitionResult::External(loc.clone()));
-                }
-                return None;
+                return self.external_symbol_definitions(symbol_idx);
             }
             let symbol = self.sym(symbol_idx);
-            let version = self.version_at_def_site(symbol, token_start)
-                .or_else(|| symbol.versions.first())?;
-            return Some(DefinitionResult::Local(TextRange::new(
-                TextSize::from(version.def_node.start),
-                TextSize::from(version.def_node.end),
-            )));
+            if let Some(version) = self.version_at_def_site(symbol, token_start)
+                .or_else(|| symbol.versions.first())
+            {
+                return vec![DefinitionResult::Local(TextRange::new(
+                    TextSize::from(version.def_node.start),
+                    TextSize::from(version.def_node.end),
+                ))];
+            }
+            return Vec::new();
         }
         // Try expression string go-to-definition
         if let Some(result) = self.expression_definition_at(tree, offset) {
-            return Some(result);
+            return vec![result];
         }
         // Try event string go-to-definition
         if let Some(result) = self.event_string_definition_at(tree, offset) {
-            return Some(result);
+            return vec![result];
         }
-        // Try annotation class/alias name go-to-definition
-        if let Some(result) = self.annotation_name_definition_at(tree, offset) {
-            return Some(result);
+        // Try annotation class/alias name go-to-definition (may be multi-file)
+        let anno = self.annotation_name_definitions_at(tree, offset);
+        if !anno.is_empty() {
+            return anno;
         }
-        None
+        Vec::new()
+    }
+
+    /// All definition sites for an external (global) symbol: the primary
+    /// recorded location plus every other workspace file that defines a global
+    /// of the same name. Deduplicated by `(path, start)`, primary first.
+    fn external_symbol_definitions(&self, symbol_idx: SymbolIndex) -> Vec<DefinitionResult> {
+        let primary = self.ir.ext.symbol_locations.get(&symbol_idx);
+        let all = match &self.sym(symbol_idx).id {
+            SymbolIdentifier::Name(name) => self.ir.ext.symbol_locations_for_name(name),
+            _ => &[],
+        };
+        Self::merge_external_locations(primary, all)
+    }
+
+    /// Combine an optional primary location with a list of additional locations
+    /// into definition results, deduplicating by `(path, start)` and keeping the
+    /// primary (if any) first.
+    fn merge_external_locations(
+        primary: Option<&ExternalLocation>,
+        all: &[ExternalLocation],
+    ) -> Vec<DefinitionResult> {
+        Self::merge_external_locations_excluding(primary, all, None)
+    }
+
+    /// Like [`Self::merge_external_locations`], but also excludes any external
+    /// location whose `start` offset matches `exclude_start` (used to avoid
+    /// duplicating a local result that was already pushed by the caller).
+    fn merge_external_locations_excluding(
+        primary: Option<&ExternalLocation>,
+        all: &[ExternalLocation],
+        exclude_start: Option<u32>,
+    ) -> Vec<DefinitionResult> {
+        let excluded = |loc: &ExternalLocation| {
+            exclude_start.is_some_and(|s| loc.start == s)
+        };
+        let mut locs: Vec<ExternalLocation> = Vec::new();
+        if let Some(p) = primary
+            && !excluded(p)
+        {
+            locs.push(p.clone());
+        }
+        for loc in all {
+            if excluded(loc) {
+                continue;
+            }
+            if !locs.iter().any(|l| l.path == loc.path && l.start == loc.start) {
+                locs.push(loc.clone());
+            }
+        }
+        locs.into_iter().map(DefinitionResult::External).collect()
     }
 
     /// Navigate from a variable to its type's declaration (`textDocument/typeDefinition`).
@@ -124,73 +186,99 @@ impl AnalysisResult {
     /// For union types, returns the first navigable class/alias member.
     /// Returns `None` for primitives and unresolvable types.
     pub fn type_definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
+        self.type_definitions_at(tree, offset).into_iter().next()
+    }
+
+    /// All type-declaration locations for the variable/field at `offset`. When the
+    /// resolved type is a `@class`/`@alias` declared in more than one file, every
+    /// declaration site is returned (primary first). Single-declaration types
+    /// return a one-element vector, matching the previous behavior.
+    pub fn type_definitions_at(&self, tree: &SyntaxTree, offset: u32) -> Vec<DefinitionResult> {
         // Try field access first so a same-named global doesn't shadow a field result.
         // Invariant: when resolve_field_chain_at returns Some, the token is always at a
         // field position, so the is_field_position guard below would also return None.
-        // We return None explicitly here to make that intent clear and prevent symbol
-        // lookup from returning the container variable's type for a non-navigable field.
+        // We return early here to make that intent clear and prevent symbol lookup
+        // from returning the container variable's type for a non-navigable field.
         if let Some((table_idx, field_name, expr_id, _, _)) = self.resolve_field_chain_at(tree, offset) {
             let resolved_type = self.resolve_expr_type(expr_id).or_else(|| {
                 self.get_field(table_idx, &field_name)
                     .and_then(|fi| fi.annotation.clone())
             });
-            return if let Some(vt) = resolved_type {
-                self.type_definition_for_value(&vt)
-            } else {
-                None
-            };
+            return resolved_type
+                .map(|vt| self.type_definitions_for_value(&vt))
+                .unwrap_or_default();
         }
         if Self::is_field_position(tree, offset) && !self.is_g_dot_field(tree, offset) {
-            return None;
+            return Vec::new();
         }
         if let Some((symbol_idx, _, token_start)) = self.find_symbol_at(tree, offset)
             && let Some(resolved) = self.symbol_resolved_type_at(symbol_idx, token_start)
         {
-            return self.type_definition_for_value(resolved);
+            return self.type_definitions_for_value(resolved);
         }
-        None
+        Vec::new()
     }
 
-    /// Map a resolved `ValueType` to the source location of its class or alias declaration.
-    pub(super) fn type_definition_for_value(&self, vt: &ValueType) -> Option<DefinitionResult> {
+    /// Map a resolved `ValueType` to all source locations of its class or alias
+    /// declaration(s). For unions/intersections, returns the locations of the
+    /// first navigable member (matching the previous single-result priority).
+    pub(super) fn type_definitions_for_value(&self, vt: &ValueType) -> Vec<DefinitionResult> {
         match vt {
-            ValueType::Table(Some(idx)) => {
-                let class_name = self.table(*idx).class_name.as_deref()?;
-                self.class_definition_by_name(class_name)
-            }
-            ValueType::OpaqueAlias(name, _) => self.alias_definition_by_name(name),
-            ValueType::Union(types) => types.iter().find_map(|t| self.type_definition_for_value(t)),
-            ValueType::Intersection(types) => types.iter().find_map(|t| self.type_definition_for_value(t)),
-            _ => None,
+            ValueType::Table(Some(idx)) => match self.table(*idx).class_name.as_deref() {
+                Some(class_name) => self.class_definitions_by_name(class_name),
+                None => Vec::new(),
+            },
+            ValueType::OpaqueAlias(name, _) => self.alias_definitions_by_name(name),
+            ValueType::Union(types) | ValueType::Intersection(types) => types
+                .iter()
+                .map(|t| self.type_definitions_for_value(t))
+                .find(|defs| !defs.is_empty())
+                .unwrap_or_default(),
+            _ => Vec::new(),
         }
     }
 
-    /// Look up a `@class` declaration by name, preferring local then external.
-    pub(super) fn class_definition_by_name(&self, name: &str) -> Option<DefinitionResult> {
-        if let Some(&(start, end)) = self.ir.class_def_ranges.get(name) {
-            return Some(DefinitionResult::Local(TextRange::new(
+    /// All `@class` declarations for a name: the live local declaration (current
+    /// file) first, then every external/workspace declaration of the same name.
+    /// The first element matches the previous single-result priority (local then
+    /// external).
+    pub(super) fn class_definitions_by_name(&self, name: &str) -> Vec<DefinitionResult> {
+        let mut out = Vec::new();
+        let local_start = if let Some(&(start, end)) = self.ir.class_def_ranges.get(name) {
+            out.push(DefinitionResult::Local(TextRange::new(
                 TextSize::from(start),
                 TextSize::from(end),
             )));
-        }
-        if let Some(loc) = self.ir.ext.class_locations.get(name) {
-            return Some(DefinitionResult::External(loc.clone()));
-        }
-        None
+            Some(start)
+        } else {
+            None
+        };
+        out.extend(Self::merge_external_locations_excluding(
+            self.ir.ext.class_locations.get(name),
+            self.ir.ext.class_locations_for_name(name),
+            local_start,
+        ));
+        out
     }
 
-    /// Look up an `@alias` declaration by name, preferring local then external.
-    pub(super) fn alias_definition_by_name(&self, name: &str) -> Option<DefinitionResult> {
-        if let Some(&(start, end)) = self.ir.alias_def_ranges.get(name) {
-            return Some(DefinitionResult::Local(TextRange::new(
+    /// All `@alias` declarations for a name. See [`Self::class_definitions_by_name`].
+    pub(super) fn alias_definitions_by_name(&self, name: &str) -> Vec<DefinitionResult> {
+        let mut out = Vec::new();
+        let local_start = if let Some(&(start, end)) = self.ir.alias_def_ranges.get(name) {
+            out.push(DefinitionResult::Local(TextRange::new(
                 TextSize::from(start),
                 TextSize::from(end),
             )));
-        }
-        if let Some(loc) = self.ir.ext.alias_locations.get(name) {
-            return Some(DefinitionResult::External(loc.clone()));
-        }
-        None
+            Some(start)
+        } else {
+            None
+        };
+        out.extend(Self::merge_external_locations_excluding(
+            self.ir.ext.alias_locations.get(name),
+            self.ir.ext.alias_locations_for_name(name),
+            local_start,
+        ));
+        out
     }
 
     pub(super) fn definition_for_expr(&self, expr_id: ExprId) -> Option<DefinitionResult> {
@@ -229,32 +317,18 @@ impl AnalysisResult {
     }
 
     /// Go-to-definition on a class or alias name inside an annotation comment.
-    pub(super) fn annotation_name_definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
-        let word = self.annotation_word_at(tree, offset)?;
-        // Check local class def ranges
-        if let Some(&(start, end)) = self.ir.class_def_ranges.get(&word) {
-            let range = TextRange::new(
-                TextSize::from(start),
-                TextSize::from(end),
-            );
-            return Some(DefinitionResult::Local(range));
+    /// Returns all declaration sites (class first, then alias) so a type defined
+    /// across multiple files lists every site. The first element preserves the
+    /// previous single-result priority (local class, local alias, external class,
+    /// external alias).
+    pub(super) fn annotation_name_definitions_at(&self, tree: &SyntaxTree, offset: u32) -> Vec<DefinitionResult> {
+        let Some(word) = self.annotation_word_at(tree, offset) else { return Vec::new() };
+        // A name resolves to a class or an alias, never both; check class first to
+        // match the previous resolution order.
+        let class_defs = self.class_definitions_by_name(&word);
+        if !class_defs.is_empty() {
+            return class_defs;
         }
-        // Check local alias def ranges
-        if let Some(&(start, end)) = self.ir.alias_def_ranges.get(&word) {
-            let range = TextRange::new(
-                TextSize::from(start),
-                TextSize::from(end),
-            );
-            return Some(DefinitionResult::Local(range));
-        }
-        // Check external class locations
-        if let Some(loc) = self.ir.ext.class_locations.get(&word) {
-            return Some(DefinitionResult::External(loc.clone()));
-        }
-        // Check external alias locations
-        if let Some(loc) = self.ir.ext.alias_locations.get(&word) {
-            return Some(DefinitionResult::External(loc.clone()));
-        }
-        None
+        self.alias_definitions_by_name(&word)
     }
 }

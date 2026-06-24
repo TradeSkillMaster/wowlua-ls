@@ -231,17 +231,24 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             println!("hover: None");
         }
 
-        match result.definition_at(&tree, offset) {
-            Some(crate::types::DefinitionResult::Local(range)) => {
-                let numbers = line_numbers::LinePositions::from(s.as_str());
-                let start = numbers.from_offset(u32::from(range.start()) as usize);
-                println!("definition: local {}:{}", start.0.0 + 1, start.1 + 1);
+        let defs = result.definitions_at(&tree, offset);
+        if defs.is_empty() {
+            println!("definition: None");
+        } else {
+            if defs.len() > 1 {
+                println!("definitions: {} sites", defs.len());
             }
-            Some(crate::types::DefinitionResult::External(loc)) => {
-                println!("definition: external {}", loc.path.display());
-            }
-            None => {
-                println!("definition: None");
+            let numbers = line_numbers::LinePositions::from(s.as_str());
+            for def in &defs {
+                match def {
+                    crate::types::DefinitionResult::Local(range) => {
+                        let start = numbers.from_offset(u32::from(range.start()) as usize);
+                        println!("definition: local {}:{}", start.0.0 + 1, start.1 + 1);
+                    }
+                    crate::types::DefinitionResult::External(loc) => {
+                        println!("definition: external {}", loc.path.display());
+                    }
+                }
             }
         }
 

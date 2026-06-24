@@ -212,7 +212,7 @@ impl AnalysisResult {
     }
 
     /// A `@class` type is a table carrying a `class_name`. Unions/intersections
-    /// count when any member is a class (mirrors `type_definition_for_value`).
+    /// count when any member is a class (mirrors `type_definitions_for_value`).
     fn value_type_is_class(&self, vt: &ValueType) -> bool {
         match vt {
             ValueType::Table(Some(idx)) => self.table(*idx).class_name.is_some(),
