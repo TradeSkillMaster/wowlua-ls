@@ -2881,12 +2881,25 @@ impl<'a> Analysis<'a> {
                     // Primitive types with implicit metatables (e.g. string → string library)
                     vt => self.ir.library_table_for_type(vt).into_iter().collect(),
                 };
-                if table_indices.is_empty() { return None; }
+
+                // Inline `TableShape` members (cross-file overlay carriers, e.g.
+                // `Frame & { DropDown: ... }`) declare fields by value with no
+                // arena index. Their types are already resolved/ext-lifted, so
+                // collect them directly — they seed `field_types` below.
+                let mut shape_field_types: Vec<ValueType> = Vec::new();
+                table_type.collect_shape_field_types(field, &mut shape_field_types);
+
+                if table_indices.is_empty() {
+                    if !shape_field_types.is_empty() {
+                        return Some(ValueType::make_union(shape_field_types));
+                    }
+                    return None;
+                }
 
                 // Try each table in the union for the field, collecting types
                 // Prefer @type annotation when available, else use expr + extra_exprs
-                let mut field_types: Vec<ValueType> = Vec::new();
-                let mut field_exists = false;
+                let mut field_exists = !shape_field_types.is_empty();
+                let mut field_types: Vec<ValueType> = shape_field_types;
                 for &idx in &table_indices {
                     if let Some(fi) = self.ir.get_field(idx, field) {
                         field_exists = true;

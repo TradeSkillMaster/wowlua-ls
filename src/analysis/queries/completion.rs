@@ -239,6 +239,20 @@ impl AnalysisResult {
             let table_idx = table_idx?;
             let table = self.table(table_idx);
             let is_colon = prev_char == b':';
+            // When the receiver is a simple local/global whose type is an
+            // `Intersection` carrying an inline `TableShape` (cross-file injected
+            // fields, e.g. `dropdown: Frame & { DropDown: ... }`), surface those
+            // shape fields too. Guarded by matching the resolved `table_idx` so a
+            // mis-resolved receiver (dotted chain reusing a local name) can't leak
+            // unrelated completions.
+            let receiver_shape_type: Option<ValueType> = if token.kind() == SyntaxKind::Name {
+                self.scope_at_offset(text_size)
+                    .and_then(|s| self.get_symbol(&SymbolIdentifier::Name(token.text().to_string()), s))
+                    .and_then(|si| self.sym(si).versions.last().and_then(|v| v.resolved_type.clone()))
+                    .filter(|t| Self::extract_table_idx(t) == Some(table_idx))
+            } else {
+                None
+            };
             // Determine enclosing class for visibility filtering
             let enclosing_class = {
                 let node = SyntaxNode::new_root(tree).token_at_offset(text_size)
@@ -399,6 +413,54 @@ impl AnalysisResult {
                     })
                 })
                 .collect();
+            // Append inline `TableShape` fields carried by the receiver type.
+            if let Some(rt) = &receiver_shape_type {
+                let existing: HashSet<String> = items.iter().map(|i| i.label.clone()).collect();
+                let mut names: Vec<String> = Vec::new();
+                rt.collect_shape_field_names(&mut names);
+                for name in names {
+                    if existing.contains(&name) {
+                        continue;
+                    }
+                    if !member_prefix_lower.is_empty()
+                        && !name.to_ascii_lowercase().starts_with(&member_prefix_lower)
+                    {
+                        continue;
+                    }
+                    let mut tys: Vec<ValueType> = Vec::new();
+                    rt.collect_shape_field_types(&name, &mut tys);
+                    let is_func = matches!(
+                        tys.first(),
+                        Some(ValueType::Function(_) | ValueType::FunctionSig(_))
+                    );
+                    if is_colon && !is_func {
+                        continue;
+                    }
+                    let kind = if is_func {
+                        CompletionItemKind::METHOD
+                    } else {
+                        CompletionItemKind::FIELD
+                    };
+                    let sort_text = if name.starts_with('_') {
+                        format!("1{}", name)
+                    } else {
+                        format!("0{}", name)
+                    };
+                    let detail = if tys.is_empty() {
+                        None
+                    } else {
+                        Some(self.format_type(&ValueType::make_union(tys)))
+                    };
+                    items.push(CompletionItem {
+                        label: name,
+                        kind: Some(kind),
+                        detail,
+                        sort_text: Some(sort_text),
+                        data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): member_offset})),
+                        ..CompletionItem::default()
+                    });
+                }
+            }
             items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
             Some(items)
         } else {

@@ -171,6 +171,17 @@ impl AnalysisResult {
             }
             return None;
         }
+        // Injected field carried cross-file by an inline `TableShape` member
+        // (e.g. `dropdown.DropDown` where `dropdown: Frame & { DropDown: ... }`).
+        // These have no arena `TableIndex`, so the class-field chain above misses
+        // them; resolve the field's type directly off the shape.
+        if let Some((field_name, field_ty)) = self.shape_field_hover_at(offset) {
+            let formatted = self.format_type(&field_ty);
+            return Some(HoverResult {
+                type_str: format!("(field) {}: {}", field_name, formatted),
+                doc: self.doc_for_type(&field_ty),
+            });
+        }
         // Check for @accessor token hover (e.g. __private in Widget.__private:Method)
         if let Some(result) = self.accessor_hover_at(tree, offset, enclosing_class) {
             return Some(result);
@@ -520,5 +531,27 @@ impl AnalysisResult {
         }
 
         Some(HoverResult { type_str: "(varargs) ...: ?".to_string(), doc: None })
+    }
+
+    /// Hover for a field access whose receiver type carries the field as an
+    /// inline `TableShape` member (cross-file injected-field carrier). Finds the
+    /// `Expr::FieldAccess` whose field name range covers `offset`, resolves the
+    /// receiver type, and returns `(field_name, field_type)` when a shape member
+    /// declares the field. `None` for ordinary class/record fields (handled by
+    /// the table-index field-chain path).
+    fn shape_field_hover_at(&self, offset: u32) -> Option<(String, ValueType)> {
+        for expr in self.ir.exprs.iter() {
+            let Expr::FieldAccess { table, field, field_range: Some((s, e)) } = expr else { continue };
+            if offset < *s || offset >= *e {
+                continue;
+            }
+            let Some(recv) = self.resolve_expr_type(*table).map(|t| t.into_strip_opaque()) else { continue };
+            let mut tys: Vec<ValueType> = Vec::new();
+            recv.collect_shape_field_types(field, &mut tys);
+            if !tys.is_empty() {
+                return Some((field.clone(), ValueType::make_union(tys)));
+            }
+        }
+        None
     }
 }

@@ -20,7 +20,13 @@
 //! its signature, so cross-file callers see the precise `fun(...)` rather than a
 //! bare `function`. Everything else nameable (class instances, primitives,
 //! unions) is preserved; anonymous tables still decay to `any` (their arena
-//! index is meaningless cross-file).
+//! index is meaningless cross-file). A returned class instance carrying per-file
+//! overlay fields (`frame.DropDown = ...` on a `CreateFrame` result) is lifted
+//! into `Class & { DropDown: ... }` — an `Intersection` of its ext class with an
+//! inline `ValueType::TableShape` carrying the injected fields (each field type
+//! resolved and lifted to ext space). The shape makes the injected fields
+//! resolve, complete, and hover cross-file, and the intersection marks the value
+//! as a concrete instance so `undefined-field` doesn't fire on them downstream.
 //!
 //! Resolution is re-entrant: when the nested analysis reads a deferred return
 //! defined in *another* file it recurses, so multi-hop chains resolve precisely.
@@ -316,7 +322,8 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                         .into_iter()
                         .map(|t| {
                             let lifted = lift_local_type_to_ext(&t, ir, ext);
-                            if contains_any(&lifted) { ValueType::Any } else { lifted }
+                            if contains_any(&lifted) { ValueType::Any }
+                            else { wrap_overlay_shape(&t, lifted, &result, ext) }
                         })
                         .collect();
                     // Lift the engine-synthesized overloads (precise correlated
@@ -600,6 +607,70 @@ fn contains_any(ty: &ValueType) -> bool {
         }
         _ => false,
     }
+}
+
+/// When a deferred function returns an external class instance that had per-file
+/// overlay fields injected on it (`frame.DropDown = ...`, stored in
+/// `ir.overlay_fields`), carry those fields cross-file by intersecting the lifted
+/// class with an inline `TableShape` of the injected fields. Each field's type is
+/// resolved in the defining file and lifted to ext space; fields that lift to
+/// bare `any` are dropped (no information). `orig` is the pre-lift return type;
+/// `lifted` is its ext-space lift (a `Table(Some(ext_class))`). Returns `lifted`
+/// unchanged when there are no carryable overlay fields.
+///
+/// **Per-file aggregation (intentional, pre-existing).** `overlay_fields` is keyed
+/// by the *shared* external class index (every `CreateFrame("Frame")` in a file
+/// resolves to the same `Frame` index), so this carries the union of every
+/// same-classed instance's injected fields in the defining file — not just the
+/// returned variable's. This exactly mirrors what same-file hover already shows
+/// for a `Frame`-typed local (which reads the same per-file overlay), so the
+/// cross-file view stays consistent with the same-file view. True per-instance
+/// fields would require per-symbol field tracking the external-index optimization
+/// deliberately avoids.
+fn wrap_overlay_shape(
+    orig: &ValueType,
+    lifted: ValueType,
+    result: &crate::analysis::AnalysisResult,
+    ext: &PreResolvedGlobals,
+) -> ValueType {
+    let ValueType::Table(Some(idx)) = orig else { return lifted };
+    if !idx.is_external() {
+        return lifted;
+    }
+    let ir = &result.ir;
+    let Some(overlay) = ir.overlay_fields.get(idx) else { return lifted };
+    if overlay.is_empty() {
+        return lifted;
+    }
+    let mut fields: Vec<(String, ValueType)> = Vec::new();
+    for (name, fi) in overlay.iter() {
+        // Don't re-carry a field the canonical ext class already declares — the
+        // class member of the intersection handles it, and overriding it here
+        // could mask an inherited type.
+        if ext_class_declares(ext, *idx, name) {
+            continue;
+        }
+        let Some(ty) = result.resolve_field_type(fi) else { continue };
+        let lifted_ty = lift_local_type_to_ext(&ty, ir, ext);
+        if matches!(lifted_ty, ValueType::Any) {
+            continue;
+        }
+        fields.push((name.clone(), lifted_ty));
+    }
+    if fields.is_empty() {
+        return lifted;
+    }
+    ValueType::Intersection(vec![lifted, ValueType::TableShape(Box::new(crate::types::TableShape::new(fields)))])
+}
+
+/// True when ext class `idx` (or any ancestor) declares `field`. `parent_classes`
+/// on ext tables is a transitive closure, so a single-level walk suffices.
+fn ext_class_declares(ext: &PreResolvedGlobals, idx: crate::types::TableIndex, field: &str) -> bool {
+    let Some(t) = ext.tables.get(idx.ext_offset()) else { return false };
+    t.fields.contains_key(field)
+        || t.parent_classes.iter().any(|p| {
+            ext.tables.get(p.ext_offset()).is_some_and(|pt| pt.fields.contains_key(field))
+        })
 }
 
 /// Depth bound for the lift's structural recursion. A returned local function

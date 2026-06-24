@@ -150,6 +150,14 @@ fn format_value_type(vt: &ValueType, pg: &PreResolvedGlobals) -> String {
                 .collect::<Vec<_>>()
                 .join(" & ")
         }
+        // Runtime-only (cross-file harvest); never appears in stub-sourced docs.
+        ValueType::TableShape(shape) => {
+            let fields = shape.fields.iter()
+                .map(|(n, t)| format!("{}: {}", n, format_value_type(t, pg)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ {} }}", fields)
+        }
     }
 }
 

@@ -259,6 +259,38 @@ pub(crate) enum ValueType {
     /// Runtime-only — never serialized into the precomputed-stub blob, so it is
     /// appended after `NumberLiteral` to keep the blob's variant indices stable.
     FunctionSig(Box<FunctionShape>),
+    /// Inline anonymous table shape produced by the cross-file harvest lift when
+    /// a deferred function returns a class instance carrying per-file overlay
+    /// fields (`frame.DropDown = ...` on a `CreateFrame` result). The local arena
+    /// index is meaningless cross-file, so the injected fields are carried inline
+    /// (name → already-resolved ext type) for lossless field access, completion,
+    /// and hover. Almost always appears as a member of an `Intersection` with the
+    /// instance's ext class (`Frame & { DropDown: ... }`). Runtime-only — never
+    /// serialized into the precomputed-stub blob, so it is appended after
+    /// `FunctionSig` to keep the blob's variant indices stable.
+    TableShape(Box<TableShape>),
+}
+
+/// Inline anonymous table type carried by [`ValueType::TableShape`]. Minimal by
+/// design: an ordered (sorted-by-name, for deterministic output) list of
+/// `field → type` pairs, where each type is already in ext-index space.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TableShape {
+    pub(crate) fields: Vec<(String, ValueType)>,
+}
+
+impl TableShape {
+    /// Build a shape from `field → type` pairs, sorting by name so equal field
+    /// sets compare equal and hover/completion output is stable.
+    pub(crate) fn new(mut fields: Vec<(String, ValueType)>) -> Self {
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        TableShape { fields }
+    }
+
+    /// The declared type of `name`, if this shape carries it.
+    pub(crate) fn field(&self, name: &str) -> Option<&ValueType> {
+        self.fields.iter().find(|(n, _)| n == name).map(|(_, t)| t)
+    }
 }
 
 /// Inline function signature carried by [`ValueType::FunctionSig`]. Minimal by
@@ -288,6 +320,45 @@ impl ValueType {
             t = inner;
         }
         t
+    }
+
+    /// Collect inline `TableShape` field types for `field` across this type,
+    /// recursing into `Union`/`Intersection` members and unwrapping opaque
+    /// aliases. Each pushed type is already in ext-index space (the shape carries
+    /// resolved types). Empty when no shape member declares `field`.
+    pub(crate) fn collect_shape_field_types(&self, field: &str, out: &mut Vec<ValueType>) {
+        match self {
+            ValueType::TableShape(shape) => {
+                if let Some(t) = shape.field(field) {
+                    out.push(t.clone());
+                }
+            }
+            ValueType::Union(members) | ValueType::Intersection(members) => {
+                for m in members {
+                    m.collect_shape_field_types(field, out);
+                }
+            }
+            ValueType::OpaqueAlias(_, inner) => inner.collect_shape_field_types(field, out),
+            _ => {}
+        }
+    }
+
+    /// All field names declared by inline `TableShape` members of this type
+    /// (recursing into `Union`/`Intersection`). Used by completion to surface the
+    /// injected fields carried cross-file.
+    pub(crate) fn collect_shape_field_names(&self, out: &mut Vec<String>) {
+        match self {
+            ValueType::TableShape(shape) => {
+                out.extend(shape.fields.iter().map(|(n, _)| n.clone()));
+            }
+            ValueType::Union(members) | ValueType::Intersection(members) => {
+                for m in members {
+                    m.collect_shape_field_names(out);
+                }
+            }
+            ValueType::OpaqueAlias(_, inner) => inner.collect_shape_field_names(out),
+            _ => {}
+        }
     }
 
     /// Strip all `OpaqueAlias` wrappers, consuming self.
@@ -320,6 +391,7 @@ impl ValueType {
             ValueType::Function(_) => false,
             ValueType::FunctionSig(_) => false,
             ValueType::Table(_) => false,
+            ValueType::TableShape(_) => false,
             ValueType::Union(types) => types.iter().all(|t| t.can_concat_to_string()),
             ValueType::Intersection(_) => false,
             ValueType::TypeVariable(_) => false,
@@ -341,6 +413,7 @@ impl ValueType {
                 | ValueType::Function(_)
                 | ValueType::FunctionSig(_)
                 | ValueType::Table(_)
+                | ValueType::TableShape(_)
                 | ValueType::Intersection(_)
                 | ValueType::TypeVariable(_)
                 | ValueType::Userdata
@@ -395,6 +468,14 @@ impl ValueType {
             (ValueType::FunctionSig(_), ValueType::Function(_))
             | (ValueType::Function(_), ValueType::FunctionSig(_))
             | (ValueType::FunctionSig(_), ValueType::FunctionSig(_)) => true,
+            // An inline table shape behaves like a concrete table instance: it is
+            // permissively assignable to/from any table type (no structural
+            // rejection — mirrors the FunctionSig rule above). Structural matching
+            // against a `@class` target rides on the ext-class member of the
+            // surrounding intersection, so a bare shape never needs to be rejected.
+            (ValueType::TableShape(_), ValueType::Table(_))
+            | (ValueType::Table(_), ValueType::TableShape(_))
+            | (ValueType::TableShape(_), ValueType::TableShape(_)) => true,
             // Intersection-to-intersection: each expected member satisfied by some actual member
             (ValueType::Intersection(actuals), ValueType::Intersection(expecteds)) =>
                 expecteds.iter().all(|e| actuals.iter().any(|a| a.is_assignable_to(e))),

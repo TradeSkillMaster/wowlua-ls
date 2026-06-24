@@ -1032,6 +1032,12 @@ impl Ir {
                     .collect();
                 format!("I({})", parts.join("&"))
             }
+            ValueType::TableShape(shape) => {
+                let parts: Vec<String> = shape.fields.iter()
+                    .map(|(n, t)| format!("{}:{}", n, self.type_sig_str(Some(t), depth + 1)))
+                    .collect();
+                format!("S({{{}}})", parts.join(","))
+            }
         }
     }
 

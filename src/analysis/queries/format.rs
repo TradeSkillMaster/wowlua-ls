@@ -677,7 +677,7 @@ impl AnalysisResult {
 
     /// Resolve a field's type considering annotation, primary expr, and extra_exprs.
     /// Skips nil primary when extras exist (matches reassignment semantics).
-    pub(super) fn resolve_field_type(&self, fi: &FieldInfo) -> Option<ValueType> {
+    pub(crate) fn resolve_field_type(&self, fi: &FieldInfo) -> Option<ValueType> {
         if let Some(ref ann) = fi.annotation {
             return Some(ann.clone());
         }
@@ -1286,6 +1286,15 @@ impl AnalysisResult {
             ValueType::Intersection(types) => {
                 let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth + 1)).collect();
                 parts.join(" & ")
+            }
+            ValueType::TableShape(shape) => {
+                // Inline anonymous shape (cross-file overlay carrier). Format
+                // compactly on one line; field types are formatted at depth+1 so
+                // class-typed fields show as class names, not expanded listings.
+                let fields: Vec<String> = shape.fields.iter()
+                    .map(|(n, t)| format!("{}: {}", n, self.format_value_type_depth(t, depth + 1)))
+                    .collect();
+                format!("{{ {} }}", fields.join(", "))
             }
             ValueType::TypeVariable(name) => name.clone(),
             ValueType::Userdata => "userdata".to_string(),

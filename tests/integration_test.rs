@@ -2605,6 +2605,21 @@ fn crossfile_body_returns() {
 }
 
 #[test]
+fn crossfile_frame_factory_overlay() {
+    // A cross-file factory returning a Frame with extra fields injected on the
+    // instance (`frame.DropDown = ...`) carries those fields cross-file as an
+    // inline `TableShape` member (`Frame & { DropDown: ... }`): no false
+    // `undefined-field`, and the injected fields resolve, hover, and complete
+    // with their precise types. A plain factory in its own file keeps the bare
+    // `Frame` class (the per-file overlay carries no fields there).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/frame_factory_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_inferred_field_return() {
     // Cross-file lazy resolution of a body-inferred, class-typed field-access
     // return (no @return). The coarse scan yields `any`; the deferred resolver
