@@ -1690,6 +1690,67 @@ mod tests {
         }
     }
 
+    fn pending_stub_doc(text: &str, stub_open_seq: u64) -> Document {
+        Document {
+            text: text.to_string(),
+            pending_text: None,
+            analysis: None,
+            tree: None,
+            toc: None,
+            plugin_diags: Vec::new(),
+            dirty: false,
+            ws_generation: 0,
+            pending_line_delta: None,
+            pending_edit_map: None,
+            cached_diagnostics: None,
+            stub_open_seq,
+        }
+    }
+
+    /// Regression: stub / `@meta` files opened via go-to-definition are parsed +
+    /// analyzed on a background thread, leaving `analysis: None` until it lands.
+    /// A navigation request that arrives first — IntelliJ fires them eagerly the
+    /// instant the file opens — used to fall through `with_doc_at_position` to an
+    /// empty result, surfacing as "Cannot find declaration to go to" when doing
+    /// go-to-definition WITHIN the stub file. `ensure_stub_doc_analyzed` analyzes
+    /// such a doc synchronously on demand so the query gets a real answer.
+    #[test]
+    fn ensure_stub_doc_analyzed_warms_pending_background_stub() {
+        let ws = WorkspaceState::for_test(None);
+        let uri = lsp_types::Uri::from_str("file:///tmp/wowlua-ls-stubs/Test.lua").unwrap();
+        let text = "local x = 1\nlocal y = x\n";
+
+        // A pending background stub doc (stub_open_seq != 0, analysis None) is
+        // warmed in place.
+        let mut documents = HashMap::new();
+        documents.insert(uri.to_string(), pending_stub_doc(text, 7));
+        ensure_stub_doc_analyzed(&mut documents, &uri, &ws);
+        let doc = &documents[&uri.to_string()];
+        assert!(doc.analysis.is_some(), "pending stub doc must be analyzed on demand");
+        assert!(doc.tree.is_some(), "pending stub doc must be parsed on demand");
+
+        // And go-to-definition WITHIN the stub file now resolves: the `x` in
+        // `local y = x` points back to the `local x` definition.
+        let tree = doc.tree.as_ref().unwrap();
+        let analysis = doc.analysis.as_ref().unwrap();
+        let use_offset = text.find("x\n").unwrap() as u32;
+        let def = analysis.definition_at(tree, use_offset);
+        assert!(
+            matches!(def, Some(DefinitionResult::Local(_))),
+            "navigation within the warmed stub file must resolve to the local definition",
+        );
+
+        // Shebang / ignored docs carry analysis None with stub_open_seq == 0 on
+        // purpose — they must be left untouched.
+        let mut documents = HashMap::new();
+        documents.insert(uri.to_string(), pending_stub_doc(text, 0));
+        ensure_stub_doc_analyzed(&mut documents, &uri, &ws);
+        assert!(
+            documents[&uri.to_string()].analysis.is_none(),
+            "non-background docs (stub_open_seq == 0) must not be analyzed",
+        );
+    }
+
     /// Regression: `cached_built_name_func_names` only included direct @built-name
     /// function names (like `__init`), missing wrapper functions that return a class
     /// with @built-name on its method. When `didOpen` fired for a file using a wrapper

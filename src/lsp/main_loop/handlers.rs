@@ -46,6 +46,43 @@ pub(super) fn analyze_lua_parsed(
     analysis.into_result()
 }
 
+/// Ensure a stub / `@meta` document opened via go-to-definition has its
+/// analysis ready before a query runs against it.
+///
+/// Stub and `@meta` files are parsed + analyzed on a background thread (see the
+/// `didOpen` handler) so large generated files (e.g. the 2.4 MB
+/// `ClassicGlobals.lua`) don't block the main loop. A navigation/query request
+/// that arrives before that background work lands would see `analysis: None`
+/// and fall through `with_doc_at_position` to an empty result — surfacing as
+/// "Cannot find declaration to go to" in editors (e.g. IntelliJ) that fire
+/// requests eagerly the instant the stub file is opened. Hover used to sidestep
+/// this with a "Loading…" placeholder, but navigation needs a real answer.
+/// Analyze the document synchronously on demand and patch it in; the in-flight
+/// background result is later dropped by the drain guard
+/// (`doc.analysis.is_none()`), so there is no double-install.
+///
+/// Gated on `stub_open_seq != 0` — the marker the `didOpen` handler stamps onto
+/// exactly the docs it routes through background analysis. This deliberately
+/// excludes shebang/ignored docs (which carry `analysis: None` with
+/// `stub_open_seq == 0` on purpose) and is a no-op for already-analyzed docs.
+pub(super) fn ensure_stub_doc_analyzed(
+    documents: &mut HashMap<String, Document>,
+    uri: &lsp_types::Uri,
+    ws: &WorkspaceState,
+) {
+    let uri_key = uri.to_string();
+    let Some(doc) = documents.get(&uri_key) else { return };
+    if doc.analysis.is_some() || doc.stub_open_seq == 0 {
+        return;
+    }
+    let text = doc.text.clone();
+    let (tree, analysis) = analyze_lua(uri, &text, &ws.pre_globals, &ws.configs);
+    if let Some(doc) = documents.get_mut(&uri_key) {
+        doc.tree = Some(tree);
+        doc.analysis = Some(analysis);
+    }
+}
+
 /// Handle an LSP request using the cached Analysis from documents.
 pub(super) fn handle_request(
     connection: &Connection,
@@ -56,6 +93,18 @@ pub(super) fn handle_request(
 ) {
     let method = req.method.clone();
     let req_start = std::time::Instant::now();
+    // If this request targets a stub / `@meta` file whose background analysis
+    // hasn't landed yet, analyze it synchronously now so the query below sees a
+    // real `AnalysisResult` instead of falling through to an empty response.
+    // All position/document requests carry the URI at `params.textDocument.uri`.
+    if let Some(uri) = req.params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(|u| u.as_str())
+        .and_then(|s| lsp_types::Uri::from_str(s).ok())
+    {
+        ensure_stub_doc_analyzed(documents, &uri, ws);
+    }
     match &*req.method {
         "textDocument/definition" => {
             if let Ok((id, params)) = cast_req::<request::GotoDefinition>(req) {
@@ -142,21 +191,9 @@ pub(super) fn handle_request(
                     send_response(connection, id, &result);
                     return;
                 }
-                // Show "Loading…" while background stub analysis is in progress
-                if is_stub_path(&uri)
-                    && let Some(doc) = documents.get(&uri.to_string())
-                    && doc.analysis.is_none()
-                {
-                    let loading = Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: "*Loading…*".to_string(),
-                        }),
-                        range: None,
-                    });
-                    send_response(connection, id, &loading);
-                    return;
-                }
+                // Stub files opened via go-to-definition are analyzed
+                // synchronously on demand at the top of `handle_request`
+                // (`ensure_stub_doc_analyzed`), so `analysis` is ready here.
                 let result = with_doc_at_position(documents, &uri, position, |_doc, tree, analysis, offset| {
                     let hover = analysis.hover_at(tree, offset)?;
                     let value = match &hover.doc {
