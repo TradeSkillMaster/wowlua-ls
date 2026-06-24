@@ -29,8 +29,7 @@ impl DiagnosticPass for MissingAnnotations {
         // lazily on the first dotted/colon candidate). See `escaping_methods`.
         let mut escaping: Option<HashSet<u32>> = None;
 
-        for func_idx in 0..analysis.ir.functions.len() {
-            let func = &analysis.ir.functions[func_idx];
+        for (_func_idx, func) in analysis.local_functions() {
             let Some(nid) = func.def_node.node_id else { continue };
 
             let func_node = SyntaxNode { tree, id: nid };
@@ -185,7 +184,7 @@ fn bare_name_is_file_local(
     func_scope: ScopeIndex,
     name: &str,
 ) -> bool {
-    let enclosing = analysis.ir.scopes.get(func_scope.val())
+    let enclosing = analysis.ir.try_scope(func_scope)
         .and_then(|s| s.parent)
         .unwrap_or(ScopeIndex(0));
     let Some(sym_idx) = analysis.ir

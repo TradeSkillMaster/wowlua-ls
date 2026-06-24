@@ -666,10 +666,10 @@ fn wrap_overlay_shape(
 /// True when ext class `idx` (or any ancestor) declares `field`. `parent_classes`
 /// on ext tables is a transitive closure, so a single-level walk suffices.
 fn ext_class_declares(ext: &PreResolvedGlobals, idx: crate::types::TableIndex, field: &str) -> bool {
-    let Some(t) = ext.tables.get(idx.ext_offset()) else { return false };
+    let Some(t) = ext.try_table(idx) else { return false };
     t.fields.contains_key(field)
         || t.parent_classes.iter().any(|p| {
-            ext.tables.get(p.ext_offset()).is_some_and(|pt| pt.fields.contains_key(field))
+            ext.try_table(*p).is_some_and(|pt| pt.fields.contains_key(field))
         })
 }
 
