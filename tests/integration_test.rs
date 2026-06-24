@@ -2306,6 +2306,24 @@ fn incomplete_signature_doc() {
 }
 
 #[test]
+fn missing_annotation() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/missing-annotation/test.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn missing_annotation_escape() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/missing-annotation/escape.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn incomplete_signature_doc_meta() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/incomplete-signature-doc-meta/test.lua",

@@ -1,0 +1,8 @@
+{
+    "diagnostics": {
+        "enable": [
+            "missing-param-annotation",
+            "missing-return-annotation"
+        ]
+    }
+}

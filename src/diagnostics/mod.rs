@@ -19,6 +19,7 @@ mod incomplete_signature_doc;
 mod inject_field;
 mod invalid_op;
 mod malformed_annotation;
+mod missing_annotation;
 mod missing_fields;
 mod missing_return;
 mod mixed_enum_values;
@@ -140,6 +141,8 @@ pub(crate) const CONSTRUCTOR_RETURN: DiagnosticDef      = DiagnosticDef { code: 
 pub(crate) const COUNT_DOWN_LOOP: DiagnosticDef         = DiagnosticDef { code: "count-down-loop",          severity: DiagnosticSeverity::WARNING };
 pub(crate) const UNUSED_VARARG: DiagnosticDef           = DiagnosticDef { code: "unused-vararg",            severity: DiagnosticSeverity::HINT };
 pub(crate) const INCOMPLETE_SIGNATURE_DOC: DiagnosticDef = DiagnosticDef { code: "incomplete-signature-doc", severity: DiagnosticSeverity::HINT };
+pub(crate) const MISSING_PARAM_ANNOTATION: DiagnosticDef = DiagnosticDef { code: "missing-param-annotation",  severity: DiagnosticSeverity::HINT };
+pub(crate) const MISSING_RETURN_ANNOTATION: DiagnosticDef = DiagnosticDef { code: "missing-return-annotation", severity: DiagnosticSeverity::HINT };
 pub(crate) const EMPTY_BLOCK: DiagnosticDef             = DiagnosticDef { code: "empty-block",              severity: DiagnosticSeverity::HINT };
 pub(crate) const TRAILING_SPACE: DiagnosticDef          = DiagnosticDef { code: "trailing-space",           severity: DiagnosticSeverity::HINT };
 pub(crate) const REDUNDANT_RETURN: DiagnosticDef        = DiagnosticDef { code: "redundant-return",         severity: DiagnosticSeverity::HINT };
@@ -175,7 +178,8 @@ const CATALOG: &[&DiagnosticDef] = &[
     &UNDEFINED_DOC_NAME, &MISSING_FIELDS, &MALFORMED_ANNOTATION, &CIRCLE_DOC_CLASS,
     &GROUPED_RETURN_MISMATCH, &BUILDS_FIELD_NOT_SELF, &RETURN_SELF_CLASS_NAME,
     &IMPLICIT_NIL_RETURN, &CREATE_GLOBAL, &DUPLICATE_CONSTRUCTOR, &CONSTRUCTOR_RETURN,
-    &COUNT_DOWN_LOOP, &UNUSED_VARARG, &INCOMPLETE_SIGNATURE_DOC, &EMPTY_BLOCK,
+    &COUNT_DOWN_LOOP, &UNUSED_VARARG, &INCOMPLETE_SIGNATURE_DOC,
+    &MISSING_PARAM_ANNOTATION, &MISSING_RETURN_ANNOTATION, &EMPTY_BLOCK,
     &TRAILING_SPACE, &REDUNDANT_RETURN, &NOT_PRECEDENCE, &WRONG_FLAVOR_API,
     &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
     &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SHADOWED_LOCAL,
@@ -293,6 +297,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &grouped_return_mismatch::GroupedReturnMismatch,
         &missing_return::MissingReturn,
         &incomplete_signature_doc::IncompleteSignatureDoc,
+        &missing_annotation::MissingAnnotations,
         &redefined_local::RedefinedLocal,
         &shadowed_local::ShadowedLocal,
         &unknown_diag_code::UnknownDiagCode,
@@ -396,6 +401,8 @@ pub(crate) const DEFAULT_DISABLED_CODES: &[&str] = &[
     NIL_INDEX.code,
     UNUSED_VARARG.code,
     INCOMPLETE_SIGNATURE_DOC.code,
+    MISSING_PARAM_ANNOTATION.code,
+    MISSING_RETURN_ANNOTATION.code,
     UNKNOWN_PARAM_TYPE.code,
     UNKNOWN_RETURN_TYPE.code,
     UNKNOWN_LOCAL_TYPE.code,

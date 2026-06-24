@@ -70,6 +70,8 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `unreachable-code` | Code after return |
 | `code-after-break` | Code after break |
 | `incomplete-signature-doc` | Partial `@param`/`@return` annotations **(off by default)** |
+| `missing-param-annotation` | Non-file-local function parameter has no `@param` **(off by default)** |
+| `missing-return-annotation` | Non-file-local function returns a value but has no `@return` **(off by default)** |
 | `empty-block` | Empty control flow body |
 | `redundant-return` | Bare `return` at end of function |
 | `trailing-space` | Line ends with whitespace |
@@ -82,6 +84,39 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `unknown-return-type` | Return value has no resolvable type **(off by default)** |
 | `unknown-local-type` | Local assignment has unknown type **(off by default)** |
 | `unknown-field-type` | Field assignment has unknown type **(off by default)** |
+
+### `missing-param-annotation` / `missing-return-annotation`
+
+Flag functions that lack `@param` / `@return` documentation. Both are off by default — enable them when you want every public function fully documented:
+
+```json
+{
+  "diagnostics": {
+    "enable": ["missing-param-annotation", "missing-return-annotation"]
+  }
+}
+```
+
+`missing-param-annotation` fires once per source parameter without a matching `@param` (the implicit `self` of a colon method and the conventional `_` throwaway are skipped). `missing-return-annotation` fires once on a function whose body returns a value but has no `@return`.
+
+**Scope — only functions reachable beyond their file are checked.** Checked:
+
+- ✅ Global functions: `function GlobalFn() end`
+- ✅ Methods/fields on a global table: `function GlobalApi.Run() end`
+- ✅ Methods/fields on a `@class`: `function Widget:SetValue() end`
+- ✅ Methods/fields on the addon namespace: `function ns.Module.Process() end`
+- ✅ Methods on a local table that is attached to the addon namespace (`local M = {}; function M.foo() end; ns.M = M`)
+
+Skipped:
+
+- ❌ `local function` definitions
+- ❌ Anonymous function literals (`local f = function() … end`, callback arguments)
+- ❌ Bare `function foo()` that reassigns a forward-declared `local foo`
+- ❌ **Methods on a file-private local table** (`local cache = {}; function cache.get() end`) that never escapes the file
+
+The escape test for table methods reuses the workspace global scan — a method is "reachable" exactly when the language server registers it as a cross-file symbol, so this stays consistent with go-to-definition and find-references.
+
+This differs from `incomplete-signature-doc`, which fires only when a signature is *partially* annotated (and regardless of where the function lives). `missing-*-annotation` fires even on a completely undocumented function, but only for non-file-local ones. The two can be enabled together; a partially-annotated global will then report under both.
 
 ### `redundant-condition`
 
