@@ -20,11 +20,11 @@ impl AnalysisResult {
         }
         // Also include methods from external class tables.
         for (name, &table_idx) in &self.ir.ext.classes {
-            let table = &self.ir.ext.tables[table_idx.ext_offset()];
+            let table = self.table(table_idx);
             for (field_name, field) in &table.fields {
                 let is_func = field.annotation.as_ref().is_some_and(|a| matches!(a, ValueType::Function(_)))
                     || (field.expr.is_external()
-                        && matches!(self.ir.ext.exprs.get(field.expr.ext_offset()), Some(Expr::FunctionDef(_))));
+                        && matches!(self.ir.try_expr(field.expr), Some(Expr::FunctionDef(_))));
                 if is_func {
                     class_methods.entry(name.as_str()).or_default().insert(field_name.as_str());
                 }
@@ -41,7 +41,7 @@ impl AnalysisResult {
             }
         }
         for &table_idx in self.ir.ext.classes.values() {
-            for &parent_idx in &self.ir.ext.tables[table_idx.ext_offset()].parent_classes {
+            for &parent_idx in &self.table(table_idx).parent_classes {
                 if let Some(parent_name) = &self.table(parent_idx).class_name {
                     *child_counts.entry(parent_name.as_str()).or_insert(0) += 1;
                 }
@@ -136,7 +136,7 @@ impl AnalysisResult {
         let mut targets = Vec::new();
 
         // Top-level named functions (scope 0)
-        for (id, &sym_idx) in &self.ir.scopes[0].symbols {
+        for (id, sym_idx) in self.ir.scope0_local_symbols() {
             let SymbolIdentifier::Name(name) = id else { continue };
             if sym_idx.is_external() { continue; }
             let sym = self.sym(sym_idx);
@@ -171,7 +171,7 @@ impl AnalysisResult {
         }
 
         // Scope-0 non-class tables (e.g. `local M = {}; function M.foo() end`)
-        for (id, &sym_idx) in &self.ir.scopes[0].symbols {
+        for (id, sym_idx) in self.ir.scope0_local_symbols() {
             let SymbolIdentifier::Name(_) = id else { continue };
             if sym_idx.is_external() { continue; }
             let sym = self.sym(sym_idx);

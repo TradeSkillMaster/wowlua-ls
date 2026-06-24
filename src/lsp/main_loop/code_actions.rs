@@ -311,7 +311,7 @@ pub(super) fn make_generate_annotations_action(
     let byte_offset = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, use_utf8());
 
     // Find the enclosing function by byte range.
-    let func = analysis.ir.functions.iter().find(|f| {
+    let func = analysis.ir.local_functions().map(|(_, f)| f).find(|f| {
         f.def_node.start <= byte_offset && byte_offset <= f.def_node.end
     })?;
 
@@ -411,7 +411,7 @@ pub fn make_generate_annotation_stubs_source_action(
     // cursor on the `function` keyword line (which is the most natural place for
     // this action) would not be covered. def_node.end is an exclusive bound
     // (TextRange convention), so the comparison is `start <= cursor < end`.
-    let func = analysis.ir.functions.iter()
+    let func = analysis.ir.local_functions().map(|(_, f)| f)
         .filter(|f| f.def_node.start <= cursor_offset && cursor_offset < f.def_node.end)
         .min_by_key(|f| f.def_node.end - f.def_node.start)?;
 
@@ -545,7 +545,7 @@ pub(super) fn make_combine_returns_action(
         // Cursor is inside a function: use the line immediately above its
         // definition, which must be the last line of the `@return` run.
         let (_, analysis) = tree_and_analysis?;
-        let func = analysis.ir.functions.iter()
+        let func = analysis.ir.local_functions().map(|(_, f)| f)
             .filter(|f| f.def_node.start <= cursor_offset && cursor_offset < f.def_node.end)
             .min_by_key(|f| f.def_node.end - f.def_node.start)?;
         let (func_line, _) = numbers.line_col(func.def_node.start as usize);
@@ -855,7 +855,7 @@ pub(super) fn make_nil_coalesce_action(
     // Locate the IR binary-op site whose range matches the diagnostic.
     let site = analysis.ir.binary_op_sites.iter()
         .find(|s| s.expr_start == diag_start && s.expr_end == diag_end)?;
-    let crate::types::Expr::BinaryOp { lhs, rhs, .. } = analysis.ir.exprs[site.expr_id.val()] else { return None };
+    let crate::types::Expr::BinaryOp { lhs, rhs, .. } = *analysis.ir.expr(site.expr_id) else { return None };
 
     // Determine the coalesce default for each operand (None if not nilable num/str).
     let lhs_default = analysis.resolve_expr_type(lhs).as_ref().and_then(nil_coalesce_default);

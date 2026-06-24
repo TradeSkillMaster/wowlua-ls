@@ -189,11 +189,16 @@ pub struct EventPayload {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct PreResolvedGlobals {
-    pub(crate) scopes: Vec<Scope>,
-    pub(crate) symbols: Vec<Symbol>,
-    pub(crate) functions: Vec<Function>,
-    pub(crate) exprs: Vec<Expr>,
-    pub(crate) tables: Vec<TableInfo>,
+    // Arena fields are private to the `pre_globals` module: the 5-phase builder and
+    // `build_on_stubs` (a descendant module) mutate them during construction, but
+    // every *post-build* read must go through the routing accessors below
+    // (`sym`/`func`/`expr`/`table`/`try_*`/`iter_symbols`/`*_len`) so the `EXT_BASE`
+    // offset math stays encapsulated. Do not re-widen to `pub(crate)`.
+    scopes: Vec<Scope>,
+    symbols: Vec<Symbol>,
+    functions: Vec<Function>,
+    exprs: Vec<Expr>,
+    tables: Vec<TableInfo>,
     pub(crate) classes: HashMap<String, TableIndex>,
     pub(crate) aliases: HashMap<String, ValueType>,
     /// Raw annotation types for external aliases that resolve to Function(None).
@@ -2439,6 +2444,65 @@ impl PreResolvedGlobals {
     pub fn symbols_len(&self) -> usize { self.symbols.len() }
     pub fn functions_len(&self) -> usize { self.functions.len() }
     pub fn tables_len(&self) -> usize { self.tables.len() }
+
+    // ── Read-only routing accessors (post-build consumers) ──────────────────────
+    // Every index into the precomputed arenas is external (>= `EXT_BASE`). These
+    // accessors encapsulate the `ext_offset()` (`idx - EXT_BASE`) math so consumers
+    // outside `pre_globals` — `doc_gen`, the LSP hierarchy queries, the
+    // unused-function diagnostic, and the `Ir` routing layer in `analysis` that
+    // reads through its `ext` field — never hand-roll it. They panic on a missing
+    // or local index, mirroring `Ir::sym`/`func`/`expr`/`table`/`scope`; use the
+    // `try_*` variants where a miss must degrade gracefully.
+    #[inline] pub(crate) fn sym(&self, idx: SymbolIndex) -> &Symbol { &self.symbols[idx.ext_offset()] }
+    #[inline] pub(crate) fn func(&self, idx: FunctionIndex) -> &Function { &self.functions[idx.ext_offset()] }
+    #[inline] pub(crate) fn expr(&self, idx: ExprId) -> &Expr { &self.exprs[idx.ext_offset()] }
+    #[inline] pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo { &self.tables[idx.ext_offset()] }
+    #[inline] pub(crate) fn scope(&self, idx: ScopeIndex) -> &Scope { &self.scopes[idx.ext_offset()] }
+
+    /// Fallible expr lookup (external index) for callers that tolerate a miss.
+    #[inline] pub(crate) fn try_expr(&self, idx: ExprId) -> Option<&Expr> {
+        if !idx.is_external() { return None; }
+        self.exprs.get(idx.ext_offset())
+    }
+    /// Fallible scope lookup (external index), mirroring `Ir::try_scope`.
+    #[inline] pub(crate) fn try_scope(&self, idx: ScopeIndex) -> Option<&Scope> {
+        if !idx.is_external() { return None; }
+        self.scopes.get(idx.ext_offset())
+    }
+    /// Fallible table lookup (external index) for structural-matching scans that
+    /// tolerate a class entry pointing past the table arena.
+    #[inline] pub(crate) fn try_table(&self, idx: TableIndex) -> Option<&TableInfo> {
+        if !idx.is_external() { return None; }
+        self.tables.get(idx.ext_offset())
+    }
+
+    /// Iterate every precomputed (external) symbol.
+    #[inline] pub(crate) fn iter_symbols(&self) -> impl Iterator<Item = &Symbol> { self.symbols.iter() }
+
+    // ── Test-only synthetic construction ────────────────────────────────────────
+    // `doc_gen`'s unit tests build a `PreResolvedGlobals` by hand; these helpers let
+    // them push entries and recover the `EXT_BASE`-offset index without reaching
+    // into the (private) arena fields.
+    #[cfg(test)]
+    pub(crate) fn push_ext_symbol(&mut self, s: Symbol) -> SymbolIndex {
+        self.symbols.push(s);
+        SymbolIndex(EXT_BASE + self.symbols.len() - 1)
+    }
+    #[cfg(test)]
+    pub(crate) fn push_ext_function(&mut self, f: Function) -> FunctionIndex {
+        self.functions.push(f);
+        FunctionIndex(EXT_BASE + self.functions.len() - 1)
+    }
+    #[cfg(test)]
+    pub(crate) fn push_ext_expr(&mut self, e: Expr) -> ExprId {
+        self.exprs.push(e);
+        ExprId(EXT_BASE + self.exprs.len() - 1)
+    }
+    #[cfg(test)]
+    pub(crate) fn push_ext_table(&mut self, t: TableInfo) -> TableIndex {
+        self.tables.push(t);
+        TableIndex(EXT_BASE + self.tables.len() - 1)
+    }
 
     pub fn merge_events(&mut self, events: &[crate::annotations::EventDecl]) {
         for ev in events {

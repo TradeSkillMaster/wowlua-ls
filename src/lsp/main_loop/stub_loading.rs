@@ -55,8 +55,8 @@ pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> 
     // Record the boundary so we can tell stub symbols from workspace ones added
     // later via `build_on_stubs`. Needed for the `defaultLibrary` semantic token
     // modifier, which should only apply to actual WoW API stubs.
-    stubs.pre_globals.stub_symbols_end = stubs.pre_globals.symbols.len();
-    stubs.pre_globals.stub_functions_end = stubs.pre_globals.functions.len();
+    stubs.pre_globals.stub_symbols_end = stubs.pre_globals.symbols_len();
+    stubs.pre_globals.stub_functions_end = stubs.pre_globals.functions_len();
     stubs.pre_globals.fixup_enum_tables();
     stubs.pre_globals.creates_global_specs =
         crate::annotations::build_creates_global_map(&stubs.stub_globals);

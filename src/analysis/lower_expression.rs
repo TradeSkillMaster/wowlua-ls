@@ -936,7 +936,7 @@ impl<'a> Analysis<'a> {
                         && self.current_func_id.is_none() {
                         let table_idx = TableIndex(self.ir.tables.len());
                         let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
-                            self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
+                            self.ir.ext.table(addon_idx).fields.clone()
                         } else {
                             HashMap::new()
                         };
@@ -1271,7 +1271,7 @@ impl<'a> Analysis<'a> {
             && self.current_func_id.is_none() {
             let table_idx = TableIndex(self.ir.tables.len());
             let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
-                self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
+                self.ir.ext.table(addon_idx).fields.clone()
             } else {
                 HashMap::new()
             };

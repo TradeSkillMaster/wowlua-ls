@@ -1790,8 +1790,8 @@ fn extract_inferred_return(
     }
 
     let params: Vec<String> = func.args.iter().filter_map(|&arg_idx| {
-        if arg_idx.val() >= crate::types::EXT_BASE { return None; }
-        Some(match &ar.ir.symbols[arg_idx.val()].id {
+        if arg_idx.is_external() { return None; }
+        Some(match &ar.ir.sym(arg_idx).id {
             SymbolIdentifier::Name(n) => n.clone(),
             _ => "_".to_string(),
         })
@@ -1882,27 +1882,27 @@ fn infer_fxml_return_types(
         let ar = analysis.into_result();
 
         // Walk scope 0 symbols to find global function definitions.
-        if ar.ir.scopes.is_empty() {
+        if ar.ir.local_scopes().next().is_none() {
             return vec![];
         }
         let mut file_results = Vec::new();
-        for (sym_id, &sym_idx) in &ar.ir.scopes[0].symbols {
+        for (sym_id, sym_idx) in ar.ir.scope0_local_symbols() {
             let SymbolIdentifier::Name(name) = sym_id else { continue };
             if !needs_return.contains(name) {
                 continue;
             }
             // External symbols don't exist in per-file ir.symbols — bail out.
-            if sym_idx.val() >= crate::types::EXT_BASE {
+            if sym_idx.is_external() {
                 continue;
             }
-            let sym = &ar.ir.symbols[sym_idx.val()];
+            let sym = ar.ir.sym(sym_idx);
             let Some(ver) = sym.versions.first() else { continue };
             let Some(ref resolved) = ver.resolved_type else { continue };
             let ValueType::Function(Some(func_idx)) = resolved else { continue };
-            if func_idx.val() >= crate::types::EXT_BASE {
+            if func_idx.is_external() {
                 continue;
             }
-            let func = &ar.ir.functions[func_idx.val()];
+            let func = ar.ir.func(*func_idx);
             if let Some(inferred) = extract_inferred_return(&ar, func) {
                 file_results.push((name.clone(), inferred));
             }
@@ -1911,8 +1911,7 @@ fn infer_fxml_return_types(
         // Walk all local functions to find utility table methods (dotted/coloned
         // names like `function AnchorUtil.CreateAnchorFromPoint(...)`).
         if !util_table_names.is_empty() {
-            for (func_idx, func) in ar.ir.functions.iter().enumerate() {
-                if func_idx >= crate::types::EXT_BASE { break; }
+            for (_func_idx, func) in ar.ir.local_functions() {
                 let Some(node_id) = func.def_node.node_id else { continue };
                 let syntax_node = SyntaxNode { tree: &tree, id: node_id };
                 let Some(func_def) = FunctionDefinition::cast(syntax_node) else { continue };
@@ -1974,9 +1973,7 @@ fn discover_runtime_fields(
     let class_field_map: HashMap<String, HashSet<String>> = {
         let mut map: HashMap<String, HashSet<String>> = HashMap::new();
         for (class_name, &table_idx) in &pre_globals.classes {
-            let offset = table_idx.ext_offset();
-            if offset >= pre_globals.tables.len() { continue; }
-            let table = &pre_globals.tables[offset];
+            let Some(table) = pre_globals.try_table(table_idx) else { continue };
             let fields: &mut HashSet<String> = map.entry(class_name.clone()).or_default();
             for field_name in table.fields.keys() {
                 fields.insert(field_name.clone());
@@ -1984,9 +1981,8 @@ fn discover_runtime_fields(
             // Include parent class fields (for structural matching accuracy)
             for &parent_idx in &table.parent_classes {
                 if !parent_idx.is_external() { continue; }
-                let po = parent_idx.ext_offset();
-                if po >= pre_globals.tables.len() { continue; }
-                for field_name in pre_globals.tables[po].fields.keys() {
+                let Some(parent) = pre_globals.try_table(parent_idx) else { continue };
+                for field_name in parent.fields.keys() {
                     fields.insert(field_name.clone());
                 }
             }
@@ -2029,7 +2025,7 @@ fn discover_runtime_fields(
         // merged.  E.g. all `lineData` params in TooltipDataRules.lua contribute
         // their accessed fields to a single group.
         let mut any_var_fields: HashMap<String, HashSet<String>> = HashMap::new();
-        for expr in ar.ir.exprs.iter() {
+        for (_, expr) in ar.ir.local_exprs() {
             let Expr::FieldAccess { table, field, .. } = expr else { continue };
             let table_type = ar.resolve_expr_type(*table);
             // Include both Any and None (unresolved) — untyped function
@@ -2039,9 +2035,9 @@ fn discover_runtime_fields(
                 _ => continue,
             }
             // Check if the table expression is a simple variable reference
-            if let Expr::SymbolRef(sym_idx, _) = &ar.ir.exprs[table.val()] {
+            if let Expr::SymbolRef(sym_idx, _) = ar.ir.expr(*table) {
                 if sym_idx.is_external() { continue; }
-                let sym = &ar.ir.symbols[sym_idx.val()];
+                let sym = ar.ir.sym(*sym_idx);
                 if let crate::types::SymbolIdentifier::Name(ref name) = sym.id {
                     any_var_fields.entry(name.clone()).or_default().insert(field.clone());
                 }

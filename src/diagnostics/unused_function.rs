@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::analysis::{AnalysisResult, Ir};
 use crate::annotations::annotation_scanning::{ExternalGlobal, ExternalGlobalKind, FieldValueKind};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::types::{Expr, ExprId, FunctionIndex, ScopeIndex, SymbolIdentifier, SymbolIndex, TableIndex, ValueType, EXT_BASE};
+use crate::types::{Expr, ExprId, FunctionIndex, ScopeIndex, SymbolIdentifier, SymbolIndex, TableIndex, ValueType};
 
 use super::WowDiagnostic;
 
@@ -75,7 +75,7 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
 
     // Collect external function indices from call resolutions.
     for cr in analysis.ir.call_resolutions.values() {
-        if cr.func_idx.val() >= EXT_BASE {
+        if cr.func_idx.is_external() {
             referenced_external_functions.insert(cr.func_idx);
         }
     }
@@ -460,7 +460,7 @@ pub fn find_unused_from_pre_globals(
         }
 
         // Check the symbol is a function.
-        let sym = &pre_globals.symbols[ext_sym.ext_offset()];
+        let sym = pre_globals.sym(ext_sym);
         let is_func = sym
             .versions
             .last()

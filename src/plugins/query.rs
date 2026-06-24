@@ -31,11 +31,13 @@ pub(super) struct AnalysisSnapshot {
 impl AnalysisSnapshot {
     pub(super) fn from_result(analysis: &AnalysisResult) -> Self {
         AnalysisSnapshot {
-            symbols: analysis.ir.symbols.clone(),
-            functions: analysis.ir.functions.clone(),
-            tables: analysis.ir.tables.clone(),
-            exprs: analysis.ir.exprs.clone(),
-            scopes: analysis.ir.scopes.clone(),
+            // The per-file arenas are private to `analysis`; clone the local entries
+            // through the read-only iterator surface rather than the raw fields.
+            symbols: analysis.ir.local_symbols().map(|(_, s)| s.clone()).collect(),
+            functions: analysis.ir.local_functions().map(|(_, f)| f.clone()).collect(),
+            tables: analysis.ir.local_tables().map(|(_, t)| t.clone()).collect(),
+            exprs: analysis.ir.local_exprs().map(|(_, e)| e.clone()).collect(),
+            scopes: analysis.ir.local_scopes().map(|(_, s)| s.clone()).collect(),
             field_assignments: analysis.ir.field_assignments.clone(),
             string_literals: analysis.ir.string_literals.clone(),
             number_literals: analysis.ir.number_literals.clone(),

@@ -544,12 +544,12 @@ pub(super) fn find_ext_function_idx(
     let class_name = analysis.function_owner_class.get(&local_func_idx)?;
     let func_name = analysis.function_name(local_func_idx)?;
     let ext_table_idx = pre_globals.classes.get(class_name)?;
-    let ext_table = &pre_globals.tables[ext_table_idx.ext_offset()];
+    let ext_table = pre_globals.table(*ext_table_idx);
     let fi = ext_table.fields.get(&func_name)?;
     if let Some(crate::types::ValueType::Function(Some(idx))) = &fi.annotation {
         Some(*idx)
     } else if fi.expr.is_external() {
-        if let crate::types::Expr::FunctionDef(idx) = &pre_globals.exprs[fi.expr.ext_offset()] {
+        if let crate::types::Expr::FunctionDef(idx) = pre_globals.expr(fi.expr) {
             Some(*idx)
         } else {
             None
@@ -674,7 +674,7 @@ pub(super) fn find_symbol_for_function(
     func_idx: crate::types::FunctionIndex,
     name: &str,
 ) -> Option<crate::analysis::queries::ReferenceTarget> {
-    for (i, sym) in analysis.ir.symbols.iter().enumerate() {
+    for (sym_idx, sym) in analysis.ir.local_symbols() {
         if let crate::types::SymbolIdentifier::Name(ref n) = sym.id
             && n == name
         {
@@ -683,7 +683,7 @@ pub(super) fn find_symbol_for_function(
                     && *idx == func_idx
                 {
                     return Some(crate::analysis::queries::ReferenceTarget::Symbol {
-                        idx: crate::types::SymbolIndex(i),
+                        idx: sym_idx,
                         name: name.to_string(),
                     });
                 }
@@ -698,7 +698,7 @@ pub(super) fn resolve_ext_symbol_to_function(
     sym_idx: crate::types::SymbolIndex,
 ) -> Option<crate::types::FunctionIndex> {
     if !sym_idx.is_external() { return None; }
-    let sym = &pre_globals.symbols[sym_idx.ext_offset()];
+    let sym = pre_globals.sym(sym_idx);
     for ver in &sym.versions {
         if let Some(crate::types::ValueType::Function(Some(idx))) = &ver.resolved_type {
             return Some(*idx);
@@ -714,7 +714,7 @@ pub fn search_workspace_symbols(
     query: &str,
     pre: &PreResolvedGlobals,
 ) -> Vec<SymbolInformation> {
-    use crate::types::{Expr, SymbolIdentifier, ValueType, EXT_BASE};
+    use crate::types::{Expr, SymbolIdentifier, ValueType};
 
     let query_lower = query.to_lowercase();
     let stub_end = pre.stub_symbols_end;
@@ -743,15 +743,15 @@ pub fn search_workspace_symbols(
         if results.len() >= LIMIT { break; }
         let SymbolIdentifier::Name(name) = sym_id else { continue };
         if !name.to_lowercase().contains(&query_lower) { continue; }
-        let Some(local_idx) = sym_idx.0.checked_sub(EXT_BASE) else { continue };
-        if local_idx < stub_end { continue; }
+        if !sym_idx.is_external() { continue; }
+        if sym_idx.ext_offset() < stub_end { continue; }
         let Some(loc) = pre.symbol_locations.get(&sym_idx) else { continue };
 
-        let sym = &pre.symbols[local_idx];
+        let sym = pre.sym(sym_idx);
         let kind = match sym.versions.last().and_then(|v| v.resolved_type.as_ref()) {
             Some(ValueType::Function(_)) => SymbolKind::FUNCTION,
-            Some(ValueType::Table(Some(ti))) if ti.0 >= EXT_BASE => {
-                let table = &pre.tables[ti.0 - EXT_BASE];
+            Some(ValueType::Table(Some(ti))) if ti.is_external() => {
+                let table = pre.table(*ti);
                 if table.class_name.is_some() {
                     seen_class_names.insert(name.clone());
                     SymbolKind::CLASS
@@ -798,16 +798,16 @@ pub fn search_workspace_symbols(
     // Methods (function-typed fields on class tables)
     for (class_name, &table_idx) in &pre.classes {
         if results.len() >= LIMIT { break; }
-        let Some(local_idx) = table_idx.0.checked_sub(EXT_BASE) else { continue };
-        let table = &pre.tables[local_idx];
+        if !table_idx.is_external() { continue; }
+        let table = pre.table(table_idx);
         let Some(field_locs) = pre.field_locations.get(&table_idx) else { continue };
         for (field_name, field_info) in &table.fields {
             if results.len() >= LIMIT { break; }
             let is_method = matches!(
                 field_info.annotation.as_ref(),
                 Some(ValueType::Function(_))
-            ) || field_info.expr.0.checked_sub(EXT_BASE).is_some_and(|ei| matches!(
-                pre.exprs.get(ei),
+            ) || (field_info.expr.is_external() && matches!(
+                pre.try_expr(field_info.expr),
                 Some(Expr::FunctionDef(_)) | Some(Expr::Literal(ValueType::Function(_)))
             ));
             if !is_method { continue; }

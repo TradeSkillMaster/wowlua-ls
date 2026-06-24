@@ -599,9 +599,7 @@ impl AnalysisResult {
     /// Returns the symbol's resolved type. Used for `_G.field` redirect.
     pub(super) fn resolve_global_symbol_type(&self, name: &str) -> Option<ValueType> {
         let sym_id = SymbolIdentifier::Name(name.to_string());
-        let sym_idx = self.ir.scopes[0].symbols.get(&sym_id).copied()
-            .or_else(|| self.ir.ext.scope0_symbols.get(&sym_id).copied());
-        let si = sym_idx?;
+        let si = self.ir.scope0_global_symbol(&sym_id)?;
         let sym = self.sym(si);
         sym.versions.last().and_then(|v| v.resolved_type.clone())
     }

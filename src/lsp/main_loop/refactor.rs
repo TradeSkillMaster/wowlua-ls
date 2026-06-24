@@ -248,7 +248,7 @@ pub(super) fn find_complete_statements_range(tree: &SyntaxTree, sel_start: u32, 
 /// Find the byte offset where the innermost enclosing function definition begins,
 /// for use as the insertion point when placing the extracted function.
 pub(super) fn find_enclosing_function_start(analysis: &AnalysisResult, offset: u32) -> Option<u32> {
-    analysis.ir.functions.iter()
+    analysis.ir.local_functions().map(|(_, f)| f)
         .filter(|f| {
             f.def_node.start < offset
                 && f.def_node.end > offset

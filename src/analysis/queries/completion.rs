@@ -259,8 +259,8 @@ impl AnalysisResult {
                 let mut items: Vec<CompletionItem> = Vec::new();
                 let mut seen = HashSet::new();
                 // Collect from local scope0 and external scope0_symbols
-                let scope0_iter = self.ir.scopes[0].symbols.iter()
-                    .map(|(id, &idx)| (id.clone(), idx));
+                let scope0_iter = self.ir.scope0_local_symbols()
+                    .map(|(id, idx)| (id.clone(), idx));
                 let ext_iter = self.ir.ext.scope0_symbols.iter()
                     .map(|(id, &idx)| (id.clone(), idx));
                 for (id, sym_idx) in scope0_iter.chain(ext_iter) {
@@ -479,7 +479,7 @@ impl AnalysisResult {
             let mut items = Vec::new();
             let mut current_scope = Some(scope_idx);
             while let Some(si) = current_scope {
-                let scope = &self.ir.scopes[si.val()];
+                let scope = self.scope(si);
                 for (id, &sym_idx) in &scope.symbols {
                     if let SymbolIdentifier::Name(name) = id
                         && seen.insert(name.clone()) {
@@ -734,7 +734,7 @@ impl AnalysisResult {
         let prefix_lower = prefix.to_ascii_lowercase();
 
         // Collect already-set field names from the constructor to exclude them
-        let ctor_table = &self.ir.tables[ctor_idx.val()];
+        let ctor_table = self.table(ctor_idx);
         let already_set: HashSet<&String> = ctor_table.fields.keys().collect();
 
         // Collect fields from all candidate classes and their parents
@@ -1545,7 +1545,7 @@ impl AnalysisResult {
             if si.val() == 0 {
                 break;
             }
-            let scope = &self.ir.scopes[si.val()];
+            let scope = self.scope(si);
             for id in scope.symbols.keys() {
                 if let SymbolIdentifier::Name(name) = id
                     && name.starts_with(partial_name) && seen.insert(name)

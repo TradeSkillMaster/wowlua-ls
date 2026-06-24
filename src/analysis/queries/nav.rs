@@ -559,9 +559,7 @@ impl AnalysisResult {
     pub(super) fn resolve_g_env_field(&self, table_idx: TableIndex, field_name: &str, access: FieldAccessKind) -> Option<(TableIndex, String, ExprId, FieldAccessKind)> {
         if !self.ir.is_global_env(table_idx) { return None; }
         let sym_id = SymbolIdentifier::Name(field_name.to_string());
-        let sym_idx = self.ir.scopes[0].symbols.get(&sym_id).copied()
-            .or_else(|| self.ir.ext.scope0_symbols.get(&sym_id).copied());
-        if let Some(si) = sym_idx
+        if let Some(si) = self.ir.scope0_global_symbol(&sym_id)
             && let Some(source) = self.sym(si).versions.last().and_then(|v| v.type_source) {
                 return Some((table_idx, field_name.to_string(), source, access));
             }

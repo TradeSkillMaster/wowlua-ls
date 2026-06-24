@@ -668,7 +668,7 @@ impl<'a> Analysis<'a> {
                 } else {
                     let func_sym_id = SymbolIdentifier::Name(func_names[0].clone());
                     let func_idx = if let Some(&sym_idx) = ext.scope0_symbols.get(&func_sym_id) {
-                        match &ext.symbols[sym_idx.ext_offset()].versions.last() {
+                        match &ext.sym(sym_idx).versions.last() {
                             Some(ver) => match &ver.resolved_type {
                                 Some(ValueType::Function(Some(idx))) => Some(*idx),
                                 Some(ValueType::Table(Some(table_idx))) => {
@@ -933,7 +933,7 @@ impl<'a> Analysis<'a> {
             let method_name = &func_names[func_names.len() - 1];
             let root_sym_id = SymbolIdentifier::Name(root_name.clone());
             let table_idx = if let Some(&sym_idx) = ext.scope0_symbols.get(&root_sym_id) {
-                match &ext.symbols[sym_idx.ext_offset()].versions.last() {
+                match &ext.sym(sym_idx).versions.last() {
                     Some(ver) => match &ver.resolved_type {
                         Some(ValueType::Table(Some(idx))) => Some(*idx),
                         _ => None,
@@ -1388,7 +1388,7 @@ impl<'a> Analysis<'a> {
                 let ext = &self.ir.ext;
                 let sym_id = SymbolIdentifier::Name(name.clone());
                 if let Some(&sym_idx) = ext.scope0_symbols.get(&sym_id)
-                    && let Some(ver) = ext.symbols[sym_idx.ext_offset()].versions.last()
+                    && let Some(ver) = ext.sym(sym_idx).versions.last()
                         && let Some(ValueType::Table(Some(idx))) = &ver.resolved_type {
                             return Some(*idx);
                         }

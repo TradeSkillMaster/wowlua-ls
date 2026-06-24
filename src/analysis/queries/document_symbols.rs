@@ -123,7 +123,7 @@ impl AnalysisResult {
             .collect();
 
         // Collect scope-0 symbols (file-level definitions)
-        for (id, &sym_idx) in &self.ir.scopes[0].symbols {
+        for (id, sym_idx) in self.ir.scope0_local_symbols() {
             let SymbolIdentifier::Name(name) = id else { continue };
             if sym_idx.is_external() { continue; }
             let sym = self.sym(sym_idx);

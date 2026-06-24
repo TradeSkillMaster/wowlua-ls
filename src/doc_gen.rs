@@ -73,8 +73,8 @@ pub fn dump_stub_globals(pg: &PreResolvedGlobals) -> Vec<(String, String)> {
     for maps in [&pg.scope0_symbols, &pg.framexml_scope0_symbols] {
         for (sym_id, sym_idx) in maps {
             let SymbolIdentifier::Name(name) = sym_id else { continue };
-            let Some(local_idx) = sym_idx.0.checked_sub(EXT_BASE) else { continue };
-            let sym = &pg.symbols[local_idx];
+            if !sym_idx.is_external() { continue; }
+            let sym = pg.sym(*sym_idx);
             let type_str = match sym.versions.last().and_then(|v| v.resolved_type.as_ref()) {
                 Some(vt) => format_value_type(vt, pg),
                 None => "?".to_string(),
@@ -107,7 +107,7 @@ fn format_value_type(vt: &ValueType, pg: &PreResolvedGlobals) -> String {
         ValueType::Function(Some(func_idx)) => format_function_type(*func_idx, pg),
         ValueType::Function(None) | ValueType::FunctionSig(_) => "function".to_string(),
         ValueType::Table(Some(table_idx)) => {
-            let table = ext_table(pg, *table_idx);
+            let table = pg.table(*table_idx);
             if let Some(ref name) = table.class_name {
                 name.clone()
             } else if let Some(ref val_vt) = table.value_type {
@@ -155,7 +155,7 @@ fn format_value_type(vt: &ValueType, pg: &PreResolvedGlobals) -> String {
 
 /// Format a function type as `fun(params): returns`.
 fn format_function_type(func_idx: FunctionIndex, pg: &PreResolvedGlobals) -> String {
-    let func = ext_func(pg, func_idx);
+    let func = pg.func(func_idx);
     let args = format_function_params(func, pg);
     let rets = format_function_returns(func, pg);
     if rets.is_empty() {
@@ -195,7 +195,7 @@ fn has_top_level_comma(s: &str) -> bool {
 /// Format function parameter list as strings.
 fn format_function_params(func: &Function, pg: &PreResolvedGlobals) -> Vec<String> {
     let mut result: Vec<String> = func.args.iter().enumerate().map(|(i, &sym_idx)| {
-        let name = match &ext_sym(pg, sym_idx).id {
+        let name = match &pg.sym(sym_idx).id {
             SymbolIdentifier::Name(n) => n.clone(),
             _ => "?".to_string(),
         };
@@ -205,7 +205,7 @@ fn format_function_params(func: &Function, pg: &PreResolvedGlobals) -> Vec<Strin
         let suffix = if optional && !ann_has_nil { "?" } else { "" };
         let type_str = param_annotation_text(func, i)
             .or_else(|| {
-                ext_sym(pg, sym_idx).versions.first()
+                pg.sym(sym_idx).versions.first()
                     .and_then(|v| v.resolved_type.as_ref())
                     .map(|rt| {
                         let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
@@ -280,29 +280,14 @@ fn format_value_type_for_doc(vt: &ValueType, pg: &PreResolvedGlobals, generics: 
     }
 }
 
-/// Look up a symbol in PreResolvedGlobals (adjusting for EXT_BASE).
-fn ext_sym(pg: &PreResolvedGlobals, idx: SymbolIndex) -> &Symbol {
-    &pg.symbols[idx.0 - EXT_BASE]
-}
-
-/// Look up a function in PreResolvedGlobals (adjusting for EXT_BASE).
-fn ext_func(pg: &PreResolvedGlobals, idx: FunctionIndex) -> &Function {
-    &pg.functions[idx.0 - EXT_BASE]
-}
-
-/// Look up a table in PreResolvedGlobals (adjusting for EXT_BASE).
-fn ext_table(pg: &PreResolvedGlobals, idx: TableIndex) -> &TableInfo {
-    &pg.tables[idx.0 - EXT_BASE]
-}
-
 /// Resolve the function index for a field: checks annotation first, then the
 /// field's expression (which is `Expr::FunctionDef(idx)` for method fields).
 fn resolve_field_func_idx(field: &FieldInfo, pg: &PreResolvedGlobals) -> Option<FunctionIndex> {
     if let Some(ValueType::Function(Some(idx))) = &field.annotation {
         return Some(*idx);
     }
-    if field.expr.0 >= EXT_BASE
-        && let Expr::FunctionDef(idx) = &pg.exprs[field.expr.0 - EXT_BASE] {
+    if field.expr.is_external()
+        && let Expr::FunctionDef(idx) = pg.expr(field.expr) {
             return Some(*idx);
         }
     None
@@ -357,7 +342,7 @@ pub(crate) fn generate_docs(pg: &PreResolvedGlobals, project_root: &Path, class_
     class_entries.sort_by_key(|(name, _)| name.as_str());
 
     for &(class_name, table_idx) in &class_entries {
-        let table = ext_table(pg, *table_idx);
+        let table = pg.table(*table_idx);
         let ns = build_class_namespace(class_name, table, *table_idx, pg);
         namespaces.push(ns);
     }
@@ -374,7 +359,7 @@ fn build_class_namespace(
 ) -> DocNamespace {
     let parent_views: Vec<DocBaseClass> = table.parent_classes.iter()
         .filter_map(|&parent_idx| {
-            let parent_table = ext_table(pg, parent_idx);
+            let parent_table = pg.table(parent_idx);
             parent_table.class_name.as_ref().map(|name| DocBaseClass { view: name.clone() })
         })
         .collect();
@@ -438,15 +423,15 @@ fn build_doc_field(
 
     // Determine if this is a function field
     if let Some(func_idx) = resolve_field_func_idx(field, pg) {
-        let func = ext_func(pg, func_idx);
+        let func = pg.func(func_idx);
         let is_method = func.args.first().is_some_and(|&sym_idx| {
-            matches!(&ext_sym(pg, sym_idx).id, SymbolIdentifier::Name(n) if n == "self")
+            matches!(&pg.sym(sym_idx).id, SymbolIdentifier::Name(n) if n == "self")
         });
         let kind = if is_method { DocFieldKind::Method } else { DocFieldKind::Function };
 
         // Build params
         let args: Vec<DocParam> = func.args.iter().enumerate().map(|(i, &sym_idx)| {
-            let param_name = match &ext_sym(pg, sym_idx).id {
+            let param_name = match &pg.sym(sym_idx).id {
                 SymbolIdentifier::Name(n) => Some(n.clone()),
                 _ => None,
             };
@@ -465,7 +450,7 @@ fn build_doc_field(
                         Some(format_annotation_for_doc_param(ann))
                     })
                     .or_else(|| {
-                        ext_sym(pg, sym_idx).versions.first()
+                        pg.sym(sym_idx).versions.first()
                             .and_then(|v| v.resolved_type.as_ref())
                             .map(|rt| {
                                 let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
@@ -595,8 +580,7 @@ mod tests {
                 flavor_guard: 0,
                 flavors: 0,
             };
-            pg.symbols.push(sym);
-            Some(SymbolIndex(EXT_BASE + pg.symbols.len() - 1))
+            Some(pg.push_ext_symbol(sym))
         } else {
             None
         };
@@ -647,11 +631,9 @@ mod tests {
             requires_constraints: Vec::new(),
             returns_self_type_args: None,
         };
-        pg.functions.push(func);
-        let func_idx = FunctionIndex(EXT_BASE + pg.functions.len() - 1);
+        let func_idx = pg.push_ext_function(func);
 
-        pg.exprs.push(Expr::FunctionDef(func_idx));
-        let expr_id = ExprId(EXT_BASE + pg.exprs.len() - 1);
+        let expr_id = pg.push_ext_expr(Expr::FunctionDef(func_idx));
 
         FieldInfo {
             expr: expr_id,
@@ -676,8 +658,7 @@ mod tests {
         for (name, field) in fields {
             table.fields.insert(name.to_string(), field);
         }
-        pg.tables.push(table);
-        let table_idx = TableIndex(EXT_BASE + pg.tables.len() - 1);
+        let table_idx = pg.push_ext_table(table);
         pg.classes.insert(class_name.to_string(), table_idx);
         if !declared.is_empty() {
             pg.declared_class_fields.insert(

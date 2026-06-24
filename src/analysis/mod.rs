@@ -310,11 +310,18 @@ impl NarrowingState {
 pub(crate) struct Ir {
     pub(crate) framexml_enabled: bool,
     pub(crate) ext: Arc<PreResolvedGlobals>,
-    pub(crate) scopes: Vec<Scope>,
-    pub(crate) symbols: Vec<Symbol>,
-    pub(crate) functions: Vec<Function>,
-    pub(crate) tables: Vec<TableInfo>,
-    pub(crate) exprs: Vec<Expr>,
+    // The 5 per-file arenas are private to the `analysis` module. Builders and
+    // queries live in descendant modules (`build_ir`, `resolve`, `queries`, …) and
+    // can still touch them, but post-build consumers *outside* `analysis`
+    // (diagnostics, doc_gen, stub_gen, the LSP main loop, plugins) must read through
+    // the routing/iterator surface above (`sym`/`func`/`expr`/`table`/`scope`,
+    // `local_*`, `get_symbol`, `scope_at_offset`, `ancestor_scopes`, `scope0_*`).
+    // Do not re-widen to `pub(crate)`.
+    scopes: Vec<Scope>,
+    symbols: Vec<Symbol>,
+    functions: Vec<Function>,
+    tables: Vec<TableInfo>,
+    exprs: Vec<Expr>,
     pub(crate) block_scopes: Vec<(u32, u32, ScopeIndex)>,
     pub(crate) classes: HashMap<String, TableIndex>,
     pub(crate) aliases: HashMap<String, ValueType>,
@@ -556,7 +563,7 @@ impl Ir {
             if let Some(s) = self.symbol_overlay.get(&idx) {
                 return s;
             }
-            &self.ext.symbols[idx.ext_offset()]
+            self.ext.sym(idx)
         } else {
             &self.symbols[idx.val()]
         }
@@ -567,7 +574,7 @@ impl Ir {
             if let Some(f) = self.overlay.get(&idx) {
                 return f;
             }
-            &self.ext.functions[idx.ext_offset()]
+            self.ext.func(idx)
         } else {
             &self.functions[idx.val()]
         }
@@ -596,15 +603,26 @@ impl Ir {
 
     pub(crate) fn expr(&self, idx: ExprId) -> &Expr {
         if idx.is_external() {
-            &self.ext.exprs[idx.ext_offset()]
+            self.ext.expr(idx)
         } else {
             &self.exprs[idx.val()]
         }
     }
 
+    /// Fallible two-tier expr lookup, routing EXT_BASE indices to `ext` exactly
+    /// like `expr()` but tolerating a missing index.
+    #[inline]
+    pub(crate) fn try_expr(&self, idx: ExprId) -> Option<&Expr> {
+        if idx.is_external() {
+            self.ext.try_expr(idx)
+        } else {
+            self.exprs.get(idx.val())
+        }
+    }
+
     pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo {
         if idx.is_external() {
-            &self.ext.tables[idx.ext_offset()]
+            self.ext.table(idx)
         } else {
             &self.tables[idx.val()]
         }
@@ -642,12 +660,41 @@ impl Ir {
         self.exprs.iter().enumerate().map(|(i, e)| (ExprId::from(i), e))
     }
 
+    /// Iterate the per-file scope arena, pairing each scope with its local `ScopeIndex`.
+    /// (Used by the plugin query snapshot; most scope walking goes through
+    /// `ancestor_scopes`/`scope_at_offset`.)
+    #[inline]
+    pub(crate) fn local_scopes(&self) -> impl Iterator<Item = (ScopeIndex, &Scope)> {
+        self.scopes.iter().enumerate().map(|(i, s)| (ScopeIndex::from(i), s))
+    }
+
+    /// Iterate the file's own scope-0 (global/file-level) symbol bindings as
+    /// `(name-id, SymbolIndex)`. Excludes the precomputed external `scope0_symbols`;
+    /// callers that also want those chain `ext.scope0_symbols` explicitly (e.g. the
+    /// `_G`-redirect completion path). Encapsulates the `scopes[0].symbols` access.
+    #[inline]
+    pub(crate) fn scope0_local_symbols(&self) -> impl Iterator<Item = (&SymbolIdentifier, SymbolIndex)> {
+        self.scopes.first().into_iter().flat_map(|s| s.symbols.iter().map(|(id, &idx)| (id, idx)))
+    }
+
+    /// Look up `id` among the file's scope-0 (global) symbols, falling back to the
+    /// precomputed external `scope0_symbols`. Does **not** consult framexml globals —
+    /// callers that need those use `get_symbol`. Encapsulates the manual
+    /// `scopes[0].symbols.get(..).or(ext.scope0_symbols.get(..))` pattern used by the
+    /// `_G`-redirect / global-symbol resolution paths.
+    #[inline]
+    pub(crate) fn scope0_global_symbol(&self, id: &SymbolIdentifier) -> Option<SymbolIndex> {
+        self.scopes.first()
+            .and_then(|s| s.symbols.get(id).copied())
+            .or_else(|| self.ext.scope0_symbols.get(id).copied())
+    }
+
     /// Two-tier scope lookup. Routes EXT_BASE indices to `ext.scopes` exactly like
     /// `sym()`/`func()`/`table()` route their arenas.
     #[inline]
     pub(crate) fn scope(&self, idx: ScopeIndex) -> &Scope {
         if idx.is_external() {
-            &self.ext.scopes[idx.ext_offset()]
+            self.ext.scope(idx)
         } else {
             &self.scopes[idx.val()]
         }
@@ -657,7 +704,7 @@ impl Ir {
     #[inline]
     pub(crate) fn try_scope(&self, idx: ScopeIndex) -> Option<&Scope> {
         if idx.is_external() {
-            self.ext.scopes.get(idx.ext_offset())
+            self.ext.try_scope(idx)
         } else {
             self.scopes.get(idx.val())
         }
@@ -771,7 +818,7 @@ impl Ir {
         let mut scope_idx = Some(scope_idx);
         while let Some(si) = scope_idx {
             let scope_obj = if si.is_external() {
-                self.ext.scopes.get(si.ext_offset())?
+                self.ext.try_scope(si)?
             } else {
                 self.scopes.get(si.val())?
             };
@@ -806,8 +853,7 @@ impl Ir {
             _ => return None,
         };
         let sym_id = SymbolIdentifier::Name(lib_name.to_string());
-        let sym_idx = self.scopes.first()?.symbols.get(&sym_id).copied()
-            .or_else(|| self.ext.scope0_symbols.get(&sym_id).copied());
+        let sym_idx = self.scope0_global_symbol(&sym_id);
         let sym = self.sym(sym_idx?);
         match sym.versions.last()?.resolved_type.as_ref()? {
             ValueType::Table(Some(idx)) => Some(*idx),
@@ -1411,7 +1457,7 @@ impl Ir {
     pub(crate) fn version_for_scope(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> usize {
         // External symbols always have a single version; no branch filtering needed
         if sym_idx.is_external() {
-            return self.ext.symbols[sym_idx.ext_offset()].versions.len() - 1;
+            return self.ext.sym(sym_idx).versions.len() - 1;
         }
         let scope_order = self.scopes[scope_idx.val()].creation_order;
         let sym = &self.symbols[sym_idx.val()];
@@ -1503,7 +1549,7 @@ impl Ir {
     /// Used by BranchMerge to find the pre-branch version without picking up child scope assignments.
     pub(crate) fn version_for_scope_ancestors_only(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> usize {
         if sym_idx.is_external() {
-            return self.ext.symbols[sym_idx.ext_offset()].versions.len() - 1;
+            return self.ext.sym(sym_idx).versions.len() - 1;
         }
         let sym = &self.symbols[sym_idx.val()];
         for (i, ver) in sym.versions.iter().enumerate().rev() {
@@ -1520,7 +1566,7 @@ impl Ir {
     /// textually after the narrowing branch).
     pub(crate) fn version_for_scope_ancestors_with_order(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> usize {
         if sym_idx.is_external() {
-            return self.ext.symbols[sym_idx.ext_offset()].versions.len() - 1;
+            return self.ext.sym(sym_idx).versions.len() - 1;
         }
         let scope_order = self.scopes[scope_idx.val()].creation_order;
         let sym = &self.symbols[sym_idx.val()];
@@ -1577,7 +1623,7 @@ impl Ir {
                 }
             }
         }
-        for sym in &self.ext.symbols {
+        for sym in self.ext.iter_symbols() {
             if let SymbolIdentifier::Name(name) = &sym.id {
                 for ver in &sym.versions {
                     if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type
@@ -2319,7 +2365,7 @@ impl<'a> Analysis<'a> {
         let g_table_idx = pre_globals.scope0_symbols
             .get(&SymbolIdentifier::Name("_G".to_string()))
             .and_then(|&sym_idx| {
-                let sym = &pre_globals.symbols[sym_idx.ext_offset()];
+                let sym = pre_globals.sym(sym_idx);
                 match sym.versions.last()?.resolved_type.as_ref()? {
                     ValueType::Table(Some(idx)) => Some(*idx),
                     _ => None,

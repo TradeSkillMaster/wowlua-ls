@@ -3928,11 +3928,7 @@ impl<'a> Analysis<'a> {
     /// Only follows one level of indirection (one SymbolRef hop). Chained
     /// assignments (`local A = "Lib"; local B = A; f(B)`) are not traced.
     fn resolve_string_literal_through_expr(&self, expr_id: &ExprId) -> Option<String> {
-        let expr = if expr_id.is_external() {
-            self.ir.ext.exprs.get(expr_id.ext_offset())?
-        } else {
-            self.ir.exprs.get(expr_id.val())?
-        };
+        let expr = self.ir.try_expr(*expr_id)?;
         match expr {
             Expr::SymbolRef(sym_idx, ver_idx) => {
                 let symbol = self.sym(*sym_idx);

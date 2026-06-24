@@ -106,7 +106,7 @@ impl Ir {
         let Some(sig) = resolve_deferred_sig(&self.ext, func_idx) else {
             return;
         };
-        let mut precise = self.ext.functions[func_idx.ext_offset()].clone();
+        let mut precise = self.ext.func(func_idx).clone();
         precise.return_annotations = sig.returns;
         precise.overloads = sig.overloads;
         self.overlay.insert(func_idx, precise);
@@ -130,7 +130,7 @@ impl Ir {
         let Some(ty) = resolve_deferred_call_global_type(&self.ext, sym_idx) else {
             return;
         };
-        let mut precise = self.ext.symbols[sym_idx.ext_offset()].clone();
+        let mut precise = self.ext.sym(sym_idx).clone();
         if let Some(ver) = precise.versions.last_mut() {
             ver.resolved_type = Some(ty);
         }
@@ -332,8 +332,8 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                 // No matching function in the re-analyzed file (shouldn't happen, but
                 // be safe): keep the coarse values so we don't re-analyze repeatedly.
                 None => DeferredSig {
-                    returns: ext.functions[fidx.ext_offset()].return_annotations.clone(),
-                    overloads: ext.functions[fidx.ext_offset()].overloads.clone(),
+                    returns: ext.func(fidx).return_annotations.clone(),
+                    overloads: ext.func(fidx).overloads.clone(),
                 },
             };
             harvested.push((fidx, sig));
