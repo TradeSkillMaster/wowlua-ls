@@ -318,7 +318,7 @@ Diagnostic codes to suppress.
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Diagnostic codes to enable. Used for default-off diagnostics or to override a parent's `disable`.
+Diagnostic codes to enable. Used for default-off diagnostics or to counteract a `disable` entry in the same config.
 
 ### `diagnostics.severity`
 

@@ -19,12 +19,17 @@ MyAddon/
     └── TestSuite.lua
 ```
 
-Settings merge across the hierarchy:
-- `ignore` patterns are relative to the config file's directory
-- Disabled diagnostics and allowed globals are **unioned** across ancestors
-- `diagnostics.enable` applies after `diagnostics.disable` at each level (a child can re-enable what a parent disabled)
-- Severity overrides from deeper configs take precedence
-- `framexml`, `inference.*`, and `hint.*` use the nearest (deepest) config value
+How settings combine depends on whether they affect diagnostics:
+
+- **Anything that affects diagnostics is *isolated*** — a file's effective value comes solely from its single nearest ancestor config. Keys that config doesn't set fall back to their **default**, *not* to a parent's value. This covers `ignore`, `diagnostics.*`, `globals.*`, `framexml`, `flavors`, `inference.*`, and `plugins`. The point is that a check run from a subdirectory produces the same results as one run from the project root.
+- **Editor-experience settings are *inherited*** — `hint.*`, `codeLens.*`, `editor.*`, and `completion.*` use the deepest config that sets the key, falling back to ancestors and then the default.
+- **`library` is *inherited downward*** — once any ancestor marks a subtree as a library, every file beneath it has diagnostics suppressed, and a nested config inside that subtree cannot opt back in.
+
+`ignore` and `library` patterns are always relative to the config file's directory. For the full per-setting policy table, see the [Configuration reference](/reference/configuration#hierarchy-behavior).
+
+::: warning Isolated settings do not inherit
+If a subdirectory has its own `.wowluarc.json`, any isolated setting it does **not** restate reverts to the default — it does *not* pick up the parent's value. A child config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` unless it repeats them.
+:::
 
 ## Full reference
 
@@ -32,6 +37,7 @@ Settings merge across the hierarchy:
 {
   "addon_root": false,
   "ignore": ["Libs/", "External/"],
+  "library": ["Vendor/", "../shared-libs"],
   "framexml": false,
   "flavors": ["retail", "classic"],
   "globals": {
@@ -83,6 +89,23 @@ Array of path prefixes to exclude from scanning. Relative to the config file's d
 Use this for vendored libraries, generated code, or anything you don't want diagnostics on.
 
 Files starting with a shebang (`#!/usr/bin/lua`) are always skipped automatically — no `ignore` entry needed.
+
+### `library`
+
+Array of paths to scan for type information but with all diagnostics **suppressed**. Use this for third-party libraries you can't fix but whose types you still want available throughout your project.
+
+```json
+{ "library": ["Vendor/", "../shared-libs", "/opt/wow/shared"] }
+```
+
+This differs from `ignore` in an important way:
+
+- **`ignore`** skips the files entirely — no scanning, no types, no diagnostics.
+- **`library`** fully scans and analyzes the files — their `@class`, `@alias`, global functions, and other type information flow to the rest of your workspace — but no diagnostics are reported on the library files themselves.
+
+Relative entries use the same pattern syntax as `ignore`. Absolute paths are supported, as are relative paths that point *outside* the workspace (e.g. `../shared`) — these are resolved against the config file's directory and scanned as extra external directories, so a library doesn't have to live inside your workspace. Prefer a relative `../` path over an absolute one for libraries checked into version control, since it stays portable across machines.
+
+Marking a directory as a library suppresses diagnostics for the **whole subtree**. Unlike the isolated diagnostics settings, this is inherited downward: a vendored library that ships its own `.wowluarc.json` cannot re-enable diagnostics for itself — the ancestor's `library` declaration wins. See the [reference](/reference/configuration#library) for the full hierarchy semantics.
 
 ### `framexml`
 
@@ -210,14 +233,14 @@ Fine-grained control over which diagnostics fire and at what severity:
 ```
 
 - **`disable`** — suppress these diagnostic codes
-- **`enable`** — opt into diagnostics that are off by default, or override a parent's `disable`
+- **`enable`** — opt into diagnostics that are off by default, or counteract a `disable` entry in the same config
 - **`severity`** — override severity: `"warning"`, `"info"`, `"hint"`
 
 #### Diagnostics disabled by default
 
 These diagnostics are off unless you explicitly enable them:
 
-`need-check-nil`, `nil-index`, `implicit-nil-return`, `invalid-op`, `unused-vararg`, `unused-function`, `incomplete-signature-doc`, `redundant-or`, `redundant-and`, `redundant-condition`, `unknown-param-type`, `unknown-return-type`, `unknown-local-type`, `unknown-field-type`
+`need-check-nil`, `nil-index`, `implicit-nil-return`, `invalid-op`, `unused-vararg`, `unused-function`, `incomplete-signature-doc`, `missing-param-annotation`, `missing-return-annotation`, `redundant-or`, `redundant-and`, `redundant-condition`, `unknown-param-type`, `unknown-return-type`, `unknown-local-type`, `unknown-field-type`
 
 ### `addon_root`
 
