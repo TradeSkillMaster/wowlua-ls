@@ -25,8 +25,7 @@ The plugin adds:
 
 ## Requirements
 
-- JetBrains IDE 2024.1 or newer
-- [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin (install from the JetBrains Marketplace)
+- A JetBrains IDE with LSP support, 2024.1 or newer
 - JDK 17+ (for building)
 - `wowlua_ls` binary ([releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release` from the repo root)
 
@@ -98,7 +97,7 @@ src/main/
 │   ├── WowLuaParser.kt              # Minimal pass-through parser
 │   ├── WowLuaParserDefinition.kt    # Parser definition
 │   ├── WowLuaSyntaxHighlighter.kt   # Syntax highlighter + factory
-│   ├── WowLuaLspServerProvider.kt   # LSP4IJ language server factory
+│   ├── WowLuaLspServerSupportProvider.kt # LSP server support provider (native IntelliJ LSP API)
 │   ├── WowLuaSettings.kt            # Persistent settings (server path)
 │   ├── WowLuaSettingsConfigurable.kt # Settings UI
 │   ├── WowLuaCommenter.kt           # Comment toggling
