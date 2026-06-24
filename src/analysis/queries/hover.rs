@@ -112,7 +112,7 @@ impl AnalysisResult {
                         if types.is_empty() {
                             ("?".to_string(), None, false)
                         } else {
-                            let unified = ValueType::make_union(types);
+                            let unified = ValueType::make_union(self.ir.collapse_subset_tables(types));
                             let s = self.format_type_accessible(&unified, enclosing_class);
                             (s, Some(unified), false)
                         }

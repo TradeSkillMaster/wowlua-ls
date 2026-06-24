@@ -1722,6 +1722,15 @@ fn crossfile_generic_funcall_no_false_positive() {
 }
 
 #[test]
+fn ns_module_shape_no_union() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ns-module-shape/module.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/ns-module-shape"),
+    });
+}
+
+#[test]
 fn crossfile_ns_alias_funcall() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/ns_alias_user.lua",

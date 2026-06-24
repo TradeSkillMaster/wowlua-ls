@@ -693,7 +693,7 @@ impl AnalysisResult {
             if let Some(vt) = self.resolve_expr_type(eid)
                 && !types.contains(&vt) { types.push(vt); }
         }
-        if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
+        if types.is_empty() { None } else { Some(ValueType::make_union(self.ir.collapse_subset_tables(types))) }
     }
 
     pub(crate) fn format_type(&self, vt: &ValueType) -> String {
@@ -1020,7 +1020,7 @@ impl AnalysisResult {
         if types.is_empty() {
             return "?".to_string();
         }
-        let unified = ValueType::make_union(types);
+        let unified = ValueType::make_union(self.ir.collapse_subset_tables(types));
         self.format_type_depth(&unified, depth + 1)
     }
 

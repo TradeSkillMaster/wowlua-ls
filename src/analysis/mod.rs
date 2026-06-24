@@ -1395,6 +1395,50 @@ impl Ir {
         self.get_field(table_idx, field_name).is_some()
     }
 
+    /// Collapse a field-type union by dropping any table member whose field set
+    /// is subsumed by another table member's. A field assigned `ns.Mod = Mod`
+    /// gets two table values for the same logical table: the coarse cross-file
+    /// scan's body-blind view (only the methods defined as `function Mod:M`) and
+    /// the per-file engine's precise view (those methods *plus* `self.x` fields
+    /// written inside method bodies). Without this, hover shows a spurious
+    /// `{... N fields} | {... M fields}` of one table.
+    ///
+    /// A member is dropped when another table member's field-name set is a strict
+    /// superset of it (the richer view wins), or an equal set at a higher index
+    /// (dedupes two identical-looking tables, keeping the later/precise one). Only
+    /// concrete, non-empty (`Table(Some)` with fields) members are droppable: an
+    /// empty placeholder table (e.g. a scan that couldn't resolve a generic
+    /// return), a bare `table`, and non-table members are always kept — so mixed
+    /// unions (`string | MyClass`, `table | MyClass`) and disjoint table unions
+    /// (`{a} | {b}`) are preserved.
+    pub(crate) fn collapse_subset_tables(&self, types: Vec<ValueType>) -> Vec<ValueType> {
+        if types.len() < 2 { return types; }
+        let sets: Vec<Option<HashSet<String>>> = types.iter().map(|t| match t {
+            ValueType::Table(Some(idx)) => Some(self.table_field_name_set(*idx)),
+            _ => None,
+        }).collect();
+        let keep: Vec<bool> = (0..types.len()).map(|i| {
+            let Some(si) = sets[i].as_ref() else { return true };
+            if si.is_empty() { return true; }
+            // Keep i unless some other table member subsumes it.
+            !(0..types.len()).any(|j| {
+                if i == j { return false; }
+                let Some(sj) = sets[j].as_ref() else { return false };
+                si.is_subset(sj) && (sj.len() > si.len() || j > i)
+            })
+        }).collect();
+        types.into_iter().zip(keep).filter_map(|(t, k)| k.then_some(t)).collect()
+    }
+
+    /// Field-name set of a table: own fields plus any per-file overlay fields.
+    fn table_field_name_set(&self, idx: TableIndex) -> HashSet<String> {
+        let mut names: HashSet<String> = self.table(idx).fields.keys().cloned().collect();
+        if let Some(ov) = self.overlay_fields.get(&idx) {
+            names.extend(ov.keys().cloned());
+        }
+        names
+    }
+
     /// Checks whether any table in a (possibly union/intersection) type has a
     /// field with the given name where the predicate returns true.
     pub(crate) fn any_table_field_matches(

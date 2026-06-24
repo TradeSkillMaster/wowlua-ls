@@ -2911,6 +2911,7 @@ impl<'a> Analysis<'a> {
         let mut field_exists = !shape_field_types.is_empty();
         let mut field_types: Vec<ValueType> = shape_field_types;
         for &idx in &table_indices {
+            let pre_len = field_types.len();
             if let Some(fi) = self.ir.get_field(idx, field) {
                 field_exists = true;
                 // Extract what we need before releasing the borrow on self.ir
@@ -2985,6 +2986,14 @@ impl<'a> Analysis<'a> {
                         field_types.push(ValueType::Any);
                     }
                 }
+            }
+            // Collapse subset-table duplicates contributed by this single
+            // table index (coarse-scan vs per-file views of the same field)
+            // without collapsing types from different union-receiver branches.
+            if field_types.len() > pre_len + 1 {
+                let new_portion: Vec<ValueType> = field_types.drain(pre_len..).collect();
+                let collapsed = self.ir.collapse_subset_tables(new_portion);
+                field_types.extend(collapsed);
             }
         }
         // If the field resolved to a meaningful type, return it.
