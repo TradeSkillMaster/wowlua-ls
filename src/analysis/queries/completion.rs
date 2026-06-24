@@ -102,8 +102,6 @@ impl AnalysisResult {
     /// false, function completions insert just the name while annotation-tag snippets still
     /// honor `snippets`.
     pub fn completions_at(&self, tree: &SyntaxTree, offset: u32, source: &str, snippets: bool, call_snippets: bool) -> Option<Vec<lsp_types::CompletionItem>> {
-        use lsp_types::{CompletionItem, CompletionItemKind};
-
         if offset == 0 {
             return None;
         }
@@ -180,121 +178,415 @@ impl AnalysisResult {
         let member_prefix_lower = member_prefix.to_ascii_lowercase();
 
         if is_member_access {
-            // Dot/colon completion: resolve the prefix to a table, enumerate fields
-            let offset = member_offset;
-            if offset < 2 { return None; }
-            let prev_char = source.as_bytes()[(offset - 1) as usize];
-            let prefix_offset = offset - 2;
-            let text_size = TextSize::from(prefix_offset);
-            let mut token = SyntaxNode::new_root(tree).token_at_offset(text_size).right_biased()?;
+            self.complete_member_access(tree, source, member_offset, &member_prefix_lower, call_snippets)
+        } else {
+            self.complete_scope(tree, source, offset, call_snippets)
+        }
+    }
 
-            // Skip whitespace/newline/comment tokens backwards for multi-line chains like:
-            //   func(args)
-            //       -- :commentedOut()
-            //       :method()
-            while matches!(token.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline | SyntaxKind::Comment) {
-                token = token.prev_token()?;
-            }
+    /// Dot/colon member completion: resolve the receiver to a table and enumerate its fields.
+    fn complete_member_access(&self, tree: &SyntaxTree, source: &str, offset: u32, member_prefix_lower: &str, call_snippets: bool) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
 
-            // Handle function call return completions: func(). or func():
-            // The token before the dot is ')' (RightBracket), so resolve the FunctionCall
-            let table_idx = if token.kind() == SyntaxKind::RightBracket {
-                if let Some(funcall_node) = token.parent().filter(|p| p.kind() == SyntaxKind::ArgumentList)
-                    .and_then(|al| al.parent())
-                    .filter(|p| p.kind() == SyntaxKind::FunctionCall || p.kind() == SyntaxKind::MethodCall)
-                {
-                    Some(self.resolve_funcall_node_to_table(&funcall_node, text_size)?)
-                } else if let Some(grouped) = token.parent().filter(|p| p.kind() == SyntaxKind::GroupedExpression) {
-                    // ("str"). or ("str"):  — grouped expression containing a string literal
-                    let vt = Self::resolve_literal_receiver_type(&grouped)?;
-                    let mut indices = Vec::new();
-                    self.ir.collect_library_table_indices(&vt, &mut indices);
-                    Some(*indices.first()?)
-                } else {
-                    return None;
-                }
-            } else if token.kind() == SyntaxKind::String {
-                // "str". or "str":  — bare string literal
-                let vt = ValueType::String(None);
+        // Dot/colon completion: resolve the prefix to a table, enumerate fields
+        if offset < 2 { return None; }
+        let prev_char = source.as_bytes()[(offset - 1) as usize];
+        let prefix_offset = offset - 2;
+        let text_size = TextSize::from(prefix_offset);
+        let mut token = SyntaxNode::new_root(tree).token_at_offset(text_size).right_biased()?;
+
+        // Skip whitespace/newline/comment tokens backwards for multi-line chains like:
+        //   func(args)
+        //       -- :commentedOut()
+        //       :method()
+        while matches!(token.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline | SyntaxKind::Comment) {
+            token = token.prev_token()?;
+        }
+
+        // Handle function call return completions: func(). or func():
+        // The token before the dot is ')' (RightBracket), so resolve the FunctionCall
+        let table_idx = if token.kind() == SyntaxKind::RightBracket {
+            if let Some(funcall_node) = token.parent().filter(|p| p.kind() == SyntaxKind::ArgumentList)
+                .and_then(|al| al.parent())
+                .filter(|p| p.kind() == SyntaxKind::FunctionCall || p.kind() == SyntaxKind::MethodCall)
+            {
+                Some(self.resolve_funcall_node_to_table(&funcall_node, text_size)?)
+            } else if let Some(grouped) = token.parent().filter(|p| p.kind() == SyntaxKind::GroupedExpression) {
+                // ("str"). or ("str"):  — grouped expression containing a string literal
+                let vt = Self::resolve_literal_receiver_type(&grouped)?;
                 let mut indices = Vec::new();
                 self.ir.collect_library_table_indices(&vt, &mut indices);
                 Some(*indices.first()?)
-            } else if token.kind() != SyntaxKind::Name {
-                return None;
-            } else if let Some(parent) = token.parent() {
-                if parent.kind().is_identifier() {
-                    Some(self.resolve_identifier_to_table(&parent, text_size)?)
-                } else {
-                    let name = token.text().to_string();
-                    let scope_idx = self.scope_at_offset(text_size)?;
-                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)?;
-                    let ver = self.sym(symbol_idx).versions.last()?;
-                    let resolved = ver.resolved_type.as_ref()?;
-                    Some(Self::extract_table_idx(resolved)?)
-                }
             } else {
                 return None;
-            };
+            }
+        } else if token.kind() == SyntaxKind::String {
+            // "str". or "str":  — bare string literal
+            let vt = ValueType::String(None);
+            let mut indices = Vec::new();
+            self.ir.collect_library_table_indices(&vt, &mut indices);
+            Some(*indices.first()?)
+        } else if token.kind() != SyntaxKind::Name {
+            return None;
+        } else if let Some(parent) = token.parent() {
+            if parent.kind().is_identifier() {
+                Some(self.resolve_identifier_to_table(&parent, text_size)?)
+            } else {
+                let name = token.text().to_string();
+                let scope_idx = self.scope_at_offset(text_size)?;
+                let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)?;
+                let ver = self.sym(symbol_idx).versions.last()?;
+                let resolved = ver.resolved_type.as_ref()?;
+                Some(Self::extract_table_idx(resolved)?)
+            }
+        } else {
+            return None;
+        };
 
-            let table_idx = table_idx?;
-            let table = self.table(table_idx);
-            let is_colon = prev_char == b':';
-            // When the receiver is a simple local/global whose type is an
-            // `Intersection` carrying an inline `TableShape` (cross-file injected
-            // fields, e.g. `dropdown: Frame & { DropDown: ... }`), surface those
-            // shape fields too. Guarded by matching the resolved `table_idx` so a
-            // mis-resolved receiver (dotted chain reusing a local name) can't leak
-            // unrelated completions.
-            let receiver_shape_type: Option<ValueType> = if token.kind() == SyntaxKind::Name {
-                self.scope_at_offset(text_size)
-                    .and_then(|s| self.get_symbol(&SymbolIdentifier::Name(token.text().to_string()), s))
-                    .and_then(|si| self.sym(si).versions.last().and_then(|v| v.resolved_type.clone()))
-                    .filter(|t| Self::extract_table_idx(t) == Some(table_idx))
+        let table_idx = table_idx?;
+        let table = self.table(table_idx);
+        let is_colon = prev_char == b':';
+        // When the receiver is a simple local/global whose type is an
+        // `Intersection` carrying an inline `TableShape` (cross-file injected
+        // fields, e.g. `dropdown: Frame & { DropDown: ... }`), surface those
+        // shape fields too. Guarded by matching the resolved `table_idx` so a
+        // mis-resolved receiver (dotted chain reusing a local name) can't leak
+        // unrelated completions.
+        let receiver_shape_type: Option<ValueType> = if token.kind() == SyntaxKind::Name {
+            self.scope_at_offset(text_size)
+                .and_then(|s| self.get_symbol(&SymbolIdentifier::Name(token.text().to_string()), s))
+                .and_then(|si| self.sym(si).versions.last().and_then(|v| v.resolved_type.clone()))
+                .filter(|t| Self::extract_table_idx(t) == Some(table_idx))
+        } else {
+            None
+        };
+        // Determine enclosing class for visibility filtering
+        let enclosing_class = {
+            let node = SyntaxNode::new_root(tree).token_at_offset(text_size)
+                .right_biased()
+                .and_then(|t| t.parent());
+            node.and_then(|n| self.find_enclosing_class(&n))
+        };
+        // Mirror access.rs: if the receiver is a defclass-created instance in
+        // this file, protected fields are accessible at file scope (the module
+        // file is the class's own implementation). Without this, inherited
+        // `@protected` methods (e.g. a module's `OnModuleLoad`) are wrongly
+        // hidden from completion even though calling them is allowed.
+        let receiver_is_own_defclass = self.defclass_vars
+            .get(token.text())
+            .is_some_and(|&dc_table| self.is_subclass_of(dc_table, table_idx));
+        // _G global-environment redirect: show all globals as completions
+        if self.ir.is_global_env(table_idx) {
+            return Some(self.complete_global_env_members(offset, member_prefix_lower, is_colon, call_snippets));
+        }
+
+        // Collect all fields: base table + overlay + inherited from parent_classes
+        let overlay = self.ir.overlay_fields.get(&table_idx);
+        let mut seen_fields: HashSet<&String> = table.fields.keys().collect();
+        let mut all_fields: Vec<(&String, &FieldInfo)> = table.fields.iter().collect();
+        if let Some(ov) = overlay {
+            for (name, fi) in ov.iter() {
+                if seen_fields.insert(name) {
+                    all_fields.push((name, fi));
+                }
+            }
+        }
+        // Add inherited fields from parent classes
+        for &parent_idx in &table.parent_classes {
+            let parent_table = self.table(parent_idx);
+            for (name, fi) in &parent_table.fields {
+                if seen_fields.insert(name) {
+                    all_fields.push((name, fi));
+                }
+            }
+        }
+        let mut items: Vec<CompletionItem> = all_fields.iter()
+            .filter_map(|(name, field_info)| {
+                // Filter out inaccessible private/protected fields
+                let vis = field_info.visibility;
+                if vis != crate::annotations::Visibility::Public {
+                    let accessible = match vis {
+                        crate::annotations::Visibility::Private => {
+                            enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
+                        }
+                        crate::annotations::Visibility::Protected => {
+                            receiver_is_own_defclass
+                                || enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
+                        }
+                        crate::annotations::Visibility::Public => true,
+                    };
+                    if !accessible { return None; }
+                }
+                // Filter by typed prefix (e.g. "Regis" in `frame:Regis`)
+                if !member_prefix_lower.is_empty()
+                    && !name.to_ascii_lowercase().starts_with(member_prefix_lower)
+                {
+                    return None;
+                }
+                let resolved = self.resolve_expr_type(field_info.expr);
+                let kind = match &resolved {
+                    Some(ValueType::Function(_)) => CompletionItemKind::METHOD,
+                    Some(_) => {
+                        if is_colon { return None; }
+                        CompletionItemKind::FIELD
+                    }
+                    None => {
+                        if is_colon { return None; }
+                        CompletionItemKind::FIELD
+                    }
+                };
+                let sort_text = if name.starts_with('_') {
+                    format!("1{}", name)
+                } else {
+                    format!("0{}", name)
+                };
+                let (insert_text, insert_text_format) = if call_snippets {
+                    if let Some(ValueType::Function(Some(func_idx))) = &resolved {
+                        if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, is_colon) {
+                            (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
+                        } else {
+                            (None, None)
+                        }
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+                Some(CompletionItem {
+                    label: name.to_string(),
+                    kind: Some(kind),
+                    sort_text: Some(sort_text),
+                    insert_text,
+                    insert_text_format,
+                    data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): offset})),
+                    ..CompletionItem::default()
+                })
+            })
+            .collect();
+        // Append inline `TableShape` fields carried by the receiver type.
+        if let Some(rt) = &receiver_shape_type {
+            let existing: HashSet<String> = items.iter().map(|i| i.label.clone()).collect();
+            let mut names: Vec<String> = Vec::new();
+            rt.collect_shape_field_names(&mut names);
+            for name in names {
+                if existing.contains(&name) {
+                    continue;
+                }
+                if !member_prefix_lower.is_empty()
+                    && !name.to_ascii_lowercase().starts_with(member_prefix_lower)
+                {
+                    continue;
+                }
+                let mut tys: Vec<ValueType> = Vec::new();
+                rt.collect_shape_field_types(&name, &mut tys);
+                let is_func = matches!(
+                    tys.first(),
+                    Some(ValueType::Function(_) | ValueType::FunctionSig(_))
+                );
+                if is_colon && !is_func {
+                    continue;
+                }
+                let kind = if is_func {
+                    CompletionItemKind::METHOD
+                } else {
+                    CompletionItemKind::FIELD
+                };
+                let sort_text = if name.starts_with('_') {
+                    format!("1{}", name)
+                } else {
+                    format!("0{}", name)
+                };
+                let detail = if tys.is_empty() {
+                    None
+                } else {
+                    Some(self.format_type(&ValueType::make_union(tys)))
+                };
+                items.push(CompletionItem {
+                    label: name,
+                    kind: Some(kind),
+                    detail,
+                    sort_text: Some(sort_text),
+                    data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): offset})),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+        items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
+        Some(items)
+    }
+
+    /// Build `_G` global-environment member completions (all globals as members of `_G`).
+    fn complete_global_env_members(&self, offset: u32, member_prefix_lower: &str, is_colon: bool, call_snippets: bool) -> Vec<lsp_types::CompletionItem> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
+
+        let mut items: Vec<CompletionItem> = Vec::new();
+        let mut seen = HashSet::new();
+        // Collect from local scope0 and external scope0_symbols
+        let scope0_iter = self.ir.scope0_local_symbols()
+            .map(|(id, idx)| (id.clone(), idx));
+        let ext_iter = self.ir.ext.scope0_symbols.iter()
+            .map(|(id, &idx)| (id.clone(), idx));
+        for (id, sym_idx) in scope0_iter.chain(ext_iter) {
+            if let SymbolIdentifier::Name(name) = &id {
+                if !seen.insert(name.clone()) { continue; }
+                if !member_prefix_lower.is_empty()
+                    && !name.to_ascii_lowercase().starts_with(member_prefix_lower)
+                {
+                    continue;
+                }
+                let sym = self.sym(sym_idx);
+                let resolved = sym.versions.last().and_then(|v| v.resolved_type.as_ref());
+                let kind = match resolved {
+                    Some(ValueType::Function(_)) => {
+                        if is_colon { CompletionItemKind::METHOD } else { CompletionItemKind::FUNCTION }
+                    }
+                    _ => {
+                        if is_colon { continue; }
+                        CompletionItemKind::VARIABLE
+                    }
+                };
+                let sort_text = if name.starts_with('_') {
+                    format!("1{}", name)
+                } else {
+                    format!("0{}", name)
+                };
+                let (insert_text, insert_text_format) = if call_snippets {
+                    if let Some(ValueType::Function(Some(func_idx))) = resolved {
+                        if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, is_colon) {
+                            (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
+                        } else {
+                            (None, None)
+                        }
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+                items.push(CompletionItem {
+                    label: name.clone(),
+                    kind: Some(kind),
+                    sort_text: Some(sort_text),
+                    insert_text,
+                    insert_text_format,
+                    data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): offset})),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+        items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
+        items
+    }
+
+    /// Scope/global completion: walk the scope chain, external globals, and Lua keywords.
+    fn complete_scope(&self, tree: &SyntaxTree, source: &str, offset: u32, call_snippets: bool) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
+
+        // Block ranges are end-exclusive, so use offset-1 to stay inside the enclosing block.
+        let scope_lookup = TextSize::from(offset.saturating_sub(1));
+
+        // Suppress completions when the cursor is on a keyword token (e.g. "then", "end", "do").
+        if let Some(tok) = SyntaxNode::new_root(tree).token_at_offset(scope_lookup).left_biased()
+            && tok.kind().is_keyword()
+        {
+            return None;
+        }
+
+        // --- Table constructor field completion ---
+        // When cursor is inside a table constructor whose expected type is a
+        // known class, offer the class's field names as completions.
+        if let Some(items) = self.constructor_field_completions(tree, offset, source) {
+            return Some(items);
+        }
+
+        let scope_idx = self.scope_at_offset(scope_lookup)?;
+
+        // Extract the typed prefix (partial identifier before the cursor)
+        // so we can filter symbols server-side. This keeps the response
+        // small even with 60K+ external globals.
+        // Note: scanning backwards through as_bytes() is safe because Lua
+        // identifiers are ASCII-only; a multi-byte UTF-8 byte would fail
+        // the is_ascii_alphanumeric() check, keeping slice boundaries valid.
+        let prefix_start;
+        let prefix = {
+            let end = offset as usize;
+            let mut start = end;
+            while start > 0 {
+                let ch = source.as_bytes()[start - 1];
+                if ch.is_ascii_alphanumeric() || ch == b'_' {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            prefix_start = start;
+            if start < end {
+                &source[start..end]
             } else {
-                None
-            };
-            // Determine enclosing class for visibility filtering
-            let enclosing_class = {
-                let node = SyntaxNode::new_root(tree).token_at_offset(text_size)
-                    .right_biased()
-                    .and_then(|t| t.parent());
-                node.and_then(|n| self.find_enclosing_class(&n))
-            };
-            // Mirror access.rs: if the receiver is a defclass-created instance in
-            // this file, protected fields are accessible at file scope (the module
-            // file is the class's own implementation). Without this, inherited
-            // `@protected` methods (e.g. a module's `OnModuleLoad`) are wrongly
-            // hidden from completion even though calling them is allowed.
-            let receiver_is_own_defclass = self.defclass_vars
-                .get(token.text())
-                .is_some_and(|&dc_table| self.is_subclass_of(dc_table, table_idx));
-            // _G global-environment redirect: show all globals as completions
-            if self.ir.is_global_env(table_idx) {
-                let mut items: Vec<CompletionItem> = Vec::new();
-                let mut seen = HashSet::new();
-                // Collect from local scope0 and external scope0_symbols
-                let scope0_iter = self.ir.scope0_local_symbols()
-                    .map(|(id, idx)| (id.clone(), idx));
-                let ext_iter = self.ir.ext.scope0_symbols.iter()
-                    .map(|(id, &idx)| (id.clone(), idx));
-                for (id, sym_idx) in scope0_iter.chain(ext_iter) {
-                    if let SymbolIdentifier::Name(name) = &id {
-                        if !seen.insert(name.clone()) { continue; }
-                        if !member_prefix_lower.is_empty()
-                            && !name.to_ascii_lowercase().starts_with(&member_prefix_lower)
-                        {
+                ""
+            }
+        };
+        let prefix_lower = prefix.to_ascii_lowercase();
+        let has_prefix = !prefix.is_empty();
+
+        // When the grammar unambiguously requires a specific keyword at this position
+        // (e.g. `then` after an `if` condition, `do` after `while`), return only that
+        // keyword so the user doesn't see unrelated scope symbols.
+        if let Some(required_kw) = Self::detect_keyword_only_position(tree, prefix_start) {
+            if required_kw.starts_with(&prefix_lower) {
+                return Some(vec![CompletionItem {
+                    label: required_kw.to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    sort_text: Some(format!("0{}", required_kw)),
+                    data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
+                    ..CompletionItem::default()
+                }]);
+            }
+            // Prefix doesn't match the required keyword — nothing useful to offer.
+            return None;
+        }
+
+        // Cursor's enclosing block start — if it's past a def_node's start,
+        // the cursor is in the body (keep the symbol), not the header (skip it).
+        let cursor_block_start = SyntaxNode::new_root(tree)
+            .token_at_offset(scope_lookup)
+            .left_biased()
+            .and_then(|t| t.parent())
+            .and_then(|n| n.ancestors().find(|a| a.kind() == SyntaxKind::Block))
+            .map(|b| u32::from(b.text_range().start()));
+
+        let mut seen = HashSet::new();
+        let mut items = Vec::new();
+        let mut current_scope = Some(scope_idx);
+        while let Some(si) = current_scope {
+            let scope = self.scope(si);
+            for (id, &sym_idx) in &scope.symbols {
+                if let SymbolIdentifier::Name(name) = id
+                    && seen.insert(name.clone()) {
+                        if has_prefix && !name.to_ascii_lowercase().starts_with(&prefix_lower) {
                             continue;
                         }
                         let sym = self.sym(sym_idx);
-                        let resolved = sym.versions.last().and_then(|v| v.resolved_type.as_ref());
+                        if sym.versions.iter().any(|v| {
+                            let d = &v.def_node;
+                            offset >= d.start && offset < d.end
+                                && cursor_block_start.is_none_or(|bs| bs <= d.start)
+                        }) {
+                            continue;
+                        }
+                        let resolved = sym.versions.iter().rev()
+                            .find_map(|v| v.resolved_type.as_ref());
                         let kind = match resolved {
-                            Some(ValueType::Function(_)) => {
-                                if is_colon { CompletionItemKind::METHOD } else { CompletionItemKind::FUNCTION }
+                            Some(ValueType::Function(_)) => CompletionItemKind::FUNCTION,
+                            Some(ValueType::Table(Some(idx))) => {
+                                if self.table(*idx).class_name.is_some() {
+                                    CompletionItemKind::CLASS
+                                } else {
+                                    CompletionItemKind::VARIABLE
+                                }
                             }
-                            _ => {
-                                if is_colon { continue; }
-                                CompletionItemKind::VARIABLE
-                            }
+                            _ => CompletionItemKind::VARIABLE,
                         };
                         let sort_text = if name.starts_with('_') {
                             format!("1{}", name)
@@ -303,7 +595,7 @@ impl AnalysisResult {
                         };
                         let (insert_text, insert_text_format) = if call_snippets {
                             if let Some(ValueType::Function(Some(func_idx))) = resolved {
-                                if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, is_colon) {
+                                if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, false) {
                                     (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
                                 } else {
                                     (None, None)
@@ -320,368 +612,94 @@ impl AnalysisResult {
                             sort_text: Some(sort_text),
                             insert_text,
                             insert_text_format,
-                            data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): member_offset})),
+                            data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
                             ..CompletionItem::default()
                         });
                     }
-                }
-                items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
-                return Some(items);
             }
+            current_scope = scope.parent;
+        }
 
-            // Collect all fields: base table + overlay + inherited from parent_classes
-            let overlay = self.ir.overlay_fields.get(&table_idx);
-            let mut seen_fields: HashSet<&String> = table.fields.keys().collect();
-            let mut all_fields: Vec<(&String, &FieldInfo)> = table.fields.iter().collect();
-            if let Some(ov) = overlay {
-                for (name, fi) in ov.iter() {
-                    if seen_fields.insert(name) {
-                        all_fields.push((name, fi));
-                    }
-                }
-            }
-            // Add inherited fields from parent classes
-            for &parent_idx in &table.parent_classes {
-                let parent_table = self.table(parent_idx);
-                for (name, fi) in &parent_table.fields {
-                    if seen_fields.insert(name) {
-                        all_fields.push((name, fi));
-                    }
-                }
-            }
-            let mut items: Vec<CompletionItem> = all_fields.iter()
-                .filter_map(|(name, field_info)| {
-                    // Filter out inaccessible private/protected fields
-                    let vis = field_info.visibility;
-                    if vis != crate::annotations::Visibility::Public {
-                        let accessible = match vis {
-                            crate::annotations::Visibility::Private => {
-                                enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
+        // Include external globals (WoW API functions, tables, etc.)
+        let ext_maps: Vec<&HashMap<SymbolIdentifier, SymbolIndex>> = if self.ir.framexml_enabled {
+            vec![&self.ir.ext.scope0_symbols, &self.ir.ext.framexml_scope0_symbols]
+        } else {
+            vec![&self.ir.ext.scope0_symbols]
+        };
+        for ext_map in ext_maps {
+            for (id, &sym_idx) in ext_map {
+                if let SymbolIdentifier::Name(name) = id
+                    && seen.insert(name.clone()) {
+                        if has_prefix && !name.to_ascii_lowercase().starts_with(&prefix_lower) {
+                            continue;
+                        }
+                        let resolved = self.sym(sym_idx).versions.iter().rev()
+                            .find_map(|v| v.resolved_type.as_ref());
+                        let kind = match resolved {
+                            Some(ValueType::Function(_)) => CompletionItemKind::FUNCTION,
+                            Some(ValueType::Table(Some(idx))) => {
+                                if self.table(*idx).class_name.is_some() {
+                                    CompletionItemKind::CLASS
+                                } else {
+                                    CompletionItemKind::MODULE
+                                }
                             }
-                            crate::annotations::Visibility::Protected => {
-                                receiver_is_own_defclass
-                                    || enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
-                            }
-                            crate::annotations::Visibility::Public => true,
+                            _ => CompletionItemKind::VARIABLE,
                         };
-                        if !accessible { return None; }
-                    }
-                    // Filter by typed prefix (e.g. "Regis" in `frame:Regis`)
-                    if !member_prefix_lower.is_empty()
-                        && !name.to_ascii_lowercase().starts_with(&member_prefix_lower)
-                    {
-                        return None;
-                    }
-                    let resolved = self.resolve_expr_type(field_info.expr);
-                    let kind = match &resolved {
-                        Some(ValueType::Function(_)) => CompletionItemKind::METHOD,
-                        Some(_) => {
-                            if is_colon { return None; }
-                            CompletionItemKind::FIELD
-                        }
-                        None => {
-                            if is_colon { return None; }
-                            CompletionItemKind::FIELD
-                        }
-                    };
-                    let sort_text = if name.starts_with('_') {
-                        format!("1{}", name)
-                    } else {
-                        format!("0{}", name)
-                    };
-                    let (insert_text, insert_text_format) = if call_snippets {
-                        if let Some(ValueType::Function(Some(func_idx))) = &resolved {
-                            if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, is_colon) {
-                                (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
+                        // Sort-text prefixes "2"/"3" identify external globals;
+                        // main_loop.rs depends on this to set isIncomplete.
+                        let sort_text = if name.starts_with('_') {
+                            format!("3{}", name)
+                        } else {
+                            format!("2{}", name)
+                        };
+                        let (insert_text, insert_text_format) = if call_snippets {
+                            if let Some(ValueType::Function(Some(func_idx))) = resolved {
+                                if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, false) {
+                                    (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
+                                } else {
+                                    (None, None)
+                                }
                             } else {
                                 (None, None)
                             }
                         } else {
                             (None, None)
-                        }
-                    } else {
-                        (None, None)
-                    };
-                    Some(CompletionItem {
-                        label: name.to_string(),
-                        kind: Some(kind),
-                        sort_text: Some(sort_text),
-                        insert_text,
-                        insert_text_format,
-                        data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): member_offset})),
-                        ..CompletionItem::default()
-                    })
-                })
-                .collect();
-            // Append inline `TableShape` fields carried by the receiver type.
-            if let Some(rt) = &receiver_shape_type {
-                let existing: HashSet<String> = items.iter().map(|i| i.label.clone()).collect();
-                let mut names: Vec<String> = Vec::new();
-                rt.collect_shape_field_names(&mut names);
-                for name in names {
-                    if existing.contains(&name) {
-                        continue;
-                    }
-                    if !member_prefix_lower.is_empty()
-                        && !name.to_ascii_lowercase().starts_with(&member_prefix_lower)
-                    {
-                        continue;
-                    }
-                    let mut tys: Vec<ValueType> = Vec::new();
-                    rt.collect_shape_field_types(&name, &mut tys);
-                    let is_func = matches!(
-                        tys.first(),
-                        Some(ValueType::Function(_) | ValueType::FunctionSig(_))
-                    );
-                    if is_colon && !is_func {
-                        continue;
-                    }
-                    let kind = if is_func {
-                        CompletionItemKind::METHOD
-                    } else {
-                        CompletionItemKind::FIELD
-                    };
-                    let sort_text = if name.starts_with('_') {
-                        format!("1{}", name)
-                    } else {
-                        format!("0{}", name)
-                    };
-                    let detail = if tys.is_empty() {
-                        None
-                    } else {
-                        Some(self.format_type(&ValueType::make_union(tys)))
-                    };
-                    items.push(CompletionItem {
-                        label: name,
-                        kind: Some(kind),
-                        detail,
-                        sort_text: Some(sort_text),
-                        data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): member_offset})),
-                        ..CompletionItem::default()
-                    });
-                }
-            }
-            items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
-            Some(items)
-        } else {
-            // Block ranges are end-exclusive, so use offset-1 to stay inside the enclosing block.
-            let scope_lookup = TextSize::from(offset.saturating_sub(1));
-
-            // Suppress completions when the cursor is on a keyword token (e.g. "then", "end", "do").
-            if let Some(tok) = SyntaxNode::new_root(tree).token_at_offset(scope_lookup).left_biased()
-                && tok.kind().is_keyword()
-            {
-                return None;
-            }
-
-            // --- Table constructor field completion ---
-            // When cursor is inside a table constructor whose expected type is a
-            // known class, offer the class's field names as completions.
-            if let Some(items) = self.constructor_field_completions(tree, offset, source) {
-                return Some(items);
-            }
-
-            let scope_idx = self.scope_at_offset(scope_lookup)?;
-
-            // Extract the typed prefix (partial identifier before the cursor)
-            // so we can filter symbols server-side. This keeps the response
-            // small even with 60K+ external globals.
-            // Note: scanning backwards through as_bytes() is safe because Lua
-            // identifiers are ASCII-only; a multi-byte UTF-8 byte would fail
-            // the is_ascii_alphanumeric() check, keeping slice boundaries valid.
-            let prefix_start;
-            let prefix = {
-                let end = offset as usize;
-                let mut start = end;
-                while start > 0 {
-                    let ch = source.as_bytes()[start - 1];
-                    if ch.is_ascii_alphanumeric() || ch == b'_' {
-                        start -= 1;
-                    } else {
-                        break;
-                    }
-                }
-                prefix_start = start;
-                if start < end {
-                    &source[start..end]
-                } else {
-                    ""
-                }
-            };
-            let prefix_lower = prefix.to_ascii_lowercase();
-            let has_prefix = !prefix.is_empty();
-
-            // When the grammar unambiguously requires a specific keyword at this position
-            // (e.g. `then` after an `if` condition, `do` after `while`), return only that
-            // keyword so the user doesn't see unrelated scope symbols.
-            if let Some(required_kw) = Self::detect_keyword_only_position(tree, prefix_start) {
-                if required_kw.starts_with(&prefix_lower) {
-                    return Some(vec![CompletionItem {
-                        label: required_kw.to_string(),
-                        kind: Some(CompletionItemKind::KEYWORD),
-                        sort_text: Some(format!("0{}", required_kw)),
-                        data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
-                        ..CompletionItem::default()
-                    }]);
-                }
-                // Prefix doesn't match the required keyword — nothing useful to offer.
-                return None;
-            }
-
-            // Cursor's enclosing block start — if it's past a def_node's start,
-            // the cursor is in the body (keep the symbol), not the header (skip it).
-            let cursor_block_start = SyntaxNode::new_root(tree)
-                .token_at_offset(scope_lookup)
-                .left_biased()
-                .and_then(|t| t.parent())
-                .and_then(|n| n.ancestors().find(|a| a.kind() == SyntaxKind::Block))
-                .map(|b| u32::from(b.text_range().start()));
-
-            let mut seen = HashSet::new();
-            let mut items = Vec::new();
-            let mut current_scope = Some(scope_idx);
-            while let Some(si) = current_scope {
-                let scope = self.scope(si);
-                for (id, &sym_idx) in &scope.symbols {
-                    if let SymbolIdentifier::Name(name) = id
-                        && seen.insert(name.clone()) {
-                            if has_prefix && !name.to_ascii_lowercase().starts_with(&prefix_lower) {
-                                continue;
-                            }
-                            let sym = self.sym(sym_idx);
-                            if sym.versions.iter().any(|v| {
-                                let d = &v.def_node;
-                                offset >= d.start && offset < d.end
-                                    && cursor_block_start.is_none_or(|bs| bs <= d.start)
-                            }) {
-                                continue;
-                            }
-                            let resolved = sym.versions.iter().rev()
-                                .find_map(|v| v.resolved_type.as_ref());
-                            let kind = match resolved {
-                                Some(ValueType::Function(_)) => CompletionItemKind::FUNCTION,
-                                Some(ValueType::Table(Some(idx))) => {
-                                    if self.table(*idx).class_name.is_some() {
-                                        CompletionItemKind::CLASS
-                                    } else {
-                                        CompletionItemKind::VARIABLE
-                                    }
-                                }
-                                _ => CompletionItemKind::VARIABLE,
-                            };
-                            let sort_text = if name.starts_with('_') {
-                                format!("1{}", name)
-                            } else {
-                                format!("0{}", name)
-                            };
-                            let (insert_text, insert_text_format) = if call_snippets {
-                                if let Some(ValueType::Function(Some(func_idx))) = resolved {
-                                    if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, false) {
-                                        (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
-                                    } else {
-                                        (None, None)
-                                    }
-                                } else {
-                                    (None, None)
-                                }
-                            } else {
-                                (None, None)
-                            };
-                            items.push(CompletionItem {
-                                label: name.clone(),
-                                kind: Some(kind),
-                                sort_text: Some(sort_text),
-                                insert_text,
-                                insert_text_format,
-                                data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
-                                ..CompletionItem::default()
-                            });
-                        }
-                }
-                current_scope = scope.parent;
-            }
-
-            // Include external globals (WoW API functions, tables, etc.)
-            let ext_maps: Vec<&HashMap<SymbolIdentifier, SymbolIndex>> = if self.ir.framexml_enabled {
-                vec![&self.ir.ext.scope0_symbols, &self.ir.ext.framexml_scope0_symbols]
-            } else {
-                vec![&self.ir.ext.scope0_symbols]
-            };
-            for ext_map in ext_maps {
-                for (id, &sym_idx) in ext_map {
-                    if let SymbolIdentifier::Name(name) = id
-                        && seen.insert(name.clone()) {
-                            if has_prefix && !name.to_ascii_lowercase().starts_with(&prefix_lower) {
-                                continue;
-                            }
-                            let resolved = self.sym(sym_idx).versions.iter().rev()
-                                .find_map(|v| v.resolved_type.as_ref());
-                            let kind = match resolved {
-                                Some(ValueType::Function(_)) => CompletionItemKind::FUNCTION,
-                                Some(ValueType::Table(Some(idx))) => {
-                                    if self.table(*idx).class_name.is_some() {
-                                        CompletionItemKind::CLASS
-                                    } else {
-                                        CompletionItemKind::MODULE
-                                    }
-                                }
-                                _ => CompletionItemKind::VARIABLE,
-                            };
-                            // Sort-text prefixes "2"/"3" identify external globals;
-                            // main_loop.rs depends on this to set isIncomplete.
-                            let sort_text = if name.starts_with('_') {
-                                format!("3{}", name)
-                            } else {
-                                format!("2{}", name)
-                            };
-                            let (insert_text, insert_text_format) = if call_snippets {
-                                if let Some(ValueType::Function(Some(func_idx))) = resolved {
-                                    if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, false) {
-                                        (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
-                                    } else {
-                                        (None, None)
-                                    }
-                                } else {
-                                    (None, None)
-                                }
-                            } else {
-                                (None, None)
-                            };
-                            items.push(CompletionItem {
-                                label: name.clone(),
-                                kind: Some(kind),
-                                sort_text: Some(sort_text),
-                                insert_text,
-                                insert_text_format,
-                                data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
-                                ..CompletionItem::default()
-                            });
-                        }
-                }
-            }
-
-            // Add Lua keyword completions that match the prefix.
-            // This ensures that e.g. `th<TAB>` offers `then` before any external globals
-            // like `THE_ALLIANCE` that happen to match the same prefix.
-            // Keywords can never appear in `seen` (Lua reserves them, so no local can have
-            // a keyword name), so the deduplication guard is omitted here.
-            if has_prefix {
-                for &kw in LUA_KEYWORDS {
-                    if kw.starts_with(&prefix_lower) {
+                        };
                         items.push(CompletionItem {
-                            label: kw.to_string(),
-                            kind: Some(CompletionItemKind::KEYWORD),
-                            sort_text: Some(format!("0{}", kw)),
+                            label: name.clone(),
+                            kind: Some(kind),
+                            sort_text: Some(sort_text),
+                            insert_text,
+                            insert_text_format,
                             data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
                             ..CompletionItem::default()
                         });
                     }
+            }
+        }
+
+        // Add Lua keyword completions that match the prefix.
+        // This ensures that e.g. `th<TAB>` offers `then` before any external globals
+        // like `THE_ALLIANCE` that happen to match the same prefix.
+        // Keywords can never appear in `seen` (Lua reserves them, so no local can have
+        // a keyword name), so the deduplication guard is omitted here.
+        if has_prefix {
+            for &kw in LUA_KEYWORDS {
+                if kw.starts_with(&prefix_lower) {
+                    items.push(CompletionItem {
+                        label: kw.to_string(),
+                        kind: Some(CompletionItemKind::KEYWORD),
+                        sort_text: Some(format!("0{}", kw)),
+                        data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
+                        ..CompletionItem::default()
+                    });
                 }
             }
-
-            items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
-            if items.is_empty() { None } else { Some(items) }
         }
+
+        items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
+        if items.is_empty() { None } else { Some(items) }
     }
 
     /// If the cursor is in a position where the grammar requires exactly one keyword

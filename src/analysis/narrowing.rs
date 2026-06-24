@@ -250,7 +250,32 @@ impl<'a> Analysis<'a> {
             // `if x then` or `if self.field then` — bare truthiness guard.
             // Also handles falsy-direction via recursion from `UnaryExpression(Not)` and
             // from the `else` branch of explicit `if/else` chains.
-            Expression::Identifier(ident) => {
+            Expression::Identifier(ident) => self.narrow_identifier_guard(ident, parent_scope, target_scope, is_then_branch),
+            // `if x ~= nil then` or `if x == nil then`
+            // `if type(x) == "string" then` (any non-nil type literal)
+            // `if a and b then` — recurse into both sides
+            Expression::BinaryExpression(bin) => self.narrow_binary_guard(bin, parent_scope, target_scope, is_then_branch),
+            // Unwrap grouping: `if (x) then`
+            Expression::GroupedExpression(g) => {
+                if let Some(inner) = g.get_expression() {
+                    self.analyze_nil_guard_inner(&inner, parent_scope, target_scope, is_then_branch);
+                }
+            }
+            // Custom type guard: `if IsType(x, "Foo") then`
+            // Also handles literal-bool union discrimination: `if x:IsSubRow() then`
+            Expression::FunctionCall(call) => self.narrow_funcall_guard(call, parent_scope, target_scope, is_then_branch),
+            // `not expr` flips the branch sense
+            Expression::UnaryExpression(u) if u.kind() == Operator::Not => {
+                if let Some(inner) = u.get_terms().into_iter().next() {
+                    self.analyze_nil_guard_inner(&inner, parent_scope, target_scope, !is_then_branch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Bare-truthiness guard handling for `Expression::Identifier` conditions.
+    fn narrow_identifier_guard(&mut self, ident: &Identifier<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
                 if is_then_branch {
                     let names = ident.names_with_brackets();
                     if names.len() == 1 {
@@ -301,11 +326,10 @@ impl<'a> Analysis<'a> {
                         }
                     }
                 }
-            }
-            // `if x ~= nil then` or `if x == nil then`
-            // `if type(x) == "string" then` (any non-nil type literal)
-            // `if a and b then` — recurse into both sides
-            Expression::BinaryExpression(bin) => {
+    }
+
+    /// Comparison/logical guard handling for `Expression::BinaryExpression` conditions.
+    fn narrow_binary_guard(&mut self, bin: &BinaryExpression<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
                 let op = bin.kind();
                 // `a and b` — both conditions hold in the then-branch.
                 // Also handle Operator::None which the parser produces for the outer
@@ -615,16 +639,10 @@ impl<'a> Analysis<'a> {
                         self.try_event_param_narrowing(lhs, rhs, parent_scope, target_scope);
                     }
                 }
-            }
-            // Unwrap grouping: `if (x) then`
-            Expression::GroupedExpression(g) => {
-                if let Some(inner) = g.get_expression() {
-                    self.analyze_nil_guard_inner(&inner, parent_scope, target_scope, is_then_branch);
-                }
-            }
-            // Custom type guard: `if IsType(x, "Foo") then`
-            // Also handles literal-bool union discrimination: `if x:IsSubRow() then`
-            Expression::FunctionCall(call) => {
+    }
+
+    /// Custom-type-guard / literal-bool discriminator handling for `Expression::FunctionCall` conditions.
+    fn narrow_funcall_guard(&mut self, call: &FunctionCall<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
                 if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, parent_scope) {
                     // @type-narrows only narrows in then-branch (no else-branch semantic)
                     if is_then_branch {
@@ -639,15 +657,6 @@ impl<'a> Analysis<'a> {
                     self.narrowing.type_narrowed.entry(target_scope).or_default()
                         .insert(NarrowTarget::Field(sym_idx, chain), narrowed);
                 }
-            }
-            // `not expr` flips the branch sense
-            Expression::UnaryExpression(u) if u.kind() == Operator::Not => {
-                if let Some(inner) = u.get_terms().into_iter().next() {
-                    self.analyze_nil_guard_inner(&inner, parent_scope, target_scope, !is_then_branch);
-                }
-            }
-            _ => {}
-        }
     }
 
     /// For `a or b` in then-branch, try to narrow if all terms constrain the same

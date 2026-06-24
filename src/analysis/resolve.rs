@@ -2845,543 +2845,457 @@ impl<'a> Analysis<'a> {
                 })
             }
 
-            Expr::FieldAccess { table, field, field_range: _ } => {
-                let table_type = self.resolve_expr(*table)?;
-                // Field access on any yields any
-                if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
-                // Unwrap opaque aliases — field access works on the inner type
-                let table_type = table_type.into_strip_opaque();
-                let table_indices: Vec<TableIndex> = match &table_type {
-                    ValueType::Table(Some(idx)) => vec![*idx],
-                    ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
-                        ValueType::Table(Some(idx)) => Some(*idx),
-                        _ => None,
-                    }).collect(),
-                    ValueType::Union(types) => {
-                        let mut indices = Vec::new();
-                        for t in types {
-                            match t {
-                                ValueType::Table(Some(idx)) => indices.push(*idx),
-                                ValueType::Intersection(itypes) => {
-                                    for it in itypes {
-                                        if let ValueType::Table(Some(idx)) = it {
-                                            indices.push(*idx);
-                                        }
-                                    }
-                                }
-                                other => {
-                                    if let Some(lib_idx) = self.ir.library_table_for_type(other) {
-                                        indices.push(lib_idx);
-                                    }
+            Expr::FieldAccess { table, field, field_range: _ } => self.resolve_field_access(*table, field),
+            Expr::VarArgs(ret_index, file_level) => self.resolve_varargs(expr_id, *ret_index, *file_level),
+            Expr::BracketIndex { table, key, literal_key } => self.resolve_bracket_index(*table, *key, literal_key.clone()),
+            Expr::ForInVar { iterator_call, var_index, state_expr } => self.resolve_forin_var(*iterator_call, *var_index, *state_expr),
+
+            _ => None,
+        }
+    }
+
+    /// Resolve `Expr::FieldAccess`: dot/colon field lookup over a table type (with union/intersection/shape/parent-class handling).
+    fn resolve_field_access(&mut self, table: ExprId, field: &str) -> Option<ValueType> {
+        let table_type = self.resolve_expr(table)?;
+        // Field access on any yields any
+        if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
+        // Unwrap opaque aliases — field access works on the inner type
+        let table_type = table_type.into_strip_opaque();
+        let table_indices: Vec<TableIndex> = match &table_type {
+            ValueType::Table(Some(idx)) => vec![*idx],
+            ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
+                ValueType::Table(Some(idx)) => Some(*idx),
+                _ => None,
+            }).collect(),
+            ValueType::Union(types) => {
+                let mut indices = Vec::new();
+                for t in types {
+                    match t {
+                        ValueType::Table(Some(idx)) => indices.push(*idx),
+                        ValueType::Intersection(itypes) => {
+                            for it in itypes {
+                                if let ValueType::Table(Some(idx)) = it {
+                                    indices.push(*idx);
                                 }
                             }
                         }
-                        indices
+                        other => {
+                            if let Some(lib_idx) = self.ir.library_table_for_type(other) {
+                                indices.push(lib_idx);
+                            }
+                        }
                     }
-                    // Primitive types with implicit metatables (e.g. string → string library)
-                    vt => self.ir.library_table_for_type(vt).into_iter().collect(),
-                };
-
-                // Inline `TableShape` members (cross-file overlay carriers, e.g.
-                // `Frame & { DropDown: ... }`) declare fields by value with no
-                // arena index. Their types are already resolved/ext-lifted, so
-                // collect them directly — they seed `field_types` below.
-                let mut shape_field_types: Vec<ValueType> = Vec::new();
-                table_type.collect_shape_field_types(field, &mut shape_field_types);
-
-                if table_indices.is_empty() {
-                    if !shape_field_types.is_empty() {
-                        return Some(ValueType::make_union(shape_field_types));
-                    }
-                    return None;
                 }
+                indices
+            }
+            // Primitive types with implicit metatables (e.g. string → string library)
+            vt => self.ir.library_table_for_type(vt).into_iter().collect(),
+        };
 
-                // Try each table in the union for the field, collecting types
-                // Prefer @type annotation when available, else use expr + extra_exprs
-                let mut field_exists = !shape_field_types.is_empty();
-                let mut field_types: Vec<ValueType> = shape_field_types;
-                for &idx in &table_indices {
-                    if let Some(fi) = self.ir.get_field(idx, field) {
-                        field_exists = true;
-                        // Extract what we need before releasing the borrow on self.ir
-                        let ann_vt = fi.annotation.clone();
-                        let is_any = matches!(ann_vt, Some(ValueType::Any));
-                        if let Some(ref ann_vt) = ann_vt {
-                            if is_any {
-                                // When the annotation is Any (inherited from a parent
-                                // class), prefer concrete types from the primary expr
-                                // and any extra_exprs (child-class assignments).
-                                let primary = fi.expr;
-                                let extras: Vec<ExprId> = fi.extra_exprs.clone();
-                                let has_extras = !extras.is_empty();
-                                let all_exprs: Vec<ExprId> = std::iter::once(primary).chain(extras).collect();
-                                let mut found_specific = false;
-                                let mut has_unresolvable = false;
-                                for expr_id in all_exprs {
-                                    if let Some(vt) = self.resolve_expr(expr_id) {
-                                        if !matches!(vt, ValueType::Any | ValueType::Nil)
-                                            && !field_types.contains(&vt) {
-                                                field_types.push(vt);
-                                                found_specific = true;
-                                            }
-                                    } else {
-                                        has_unresolvable = true;
+        // Inline `TableShape` members (cross-file overlay carriers, e.g.
+        // `Frame & { DropDown: ... }`) declare fields by value with no
+        // arena index. Their types are already resolved/ext-lifted, so
+        // collect them directly — they seed `field_types` below.
+        let mut shape_field_types: Vec<ValueType> = Vec::new();
+        table_type.collect_shape_field_types(field, &mut shape_field_types);
+
+        if table_indices.is_empty() {
+            if !shape_field_types.is_empty() {
+                return Some(ValueType::make_union(shape_field_types));
+            }
+            return None;
+        }
+
+        // Try each table in the union for the field, collecting types
+        // Prefer @type annotation when available, else use expr + extra_exprs
+        let mut field_exists = !shape_field_types.is_empty();
+        let mut field_types: Vec<ValueType> = shape_field_types;
+        for &idx in &table_indices {
+            if let Some(fi) = self.ir.get_field(idx, field) {
+                field_exists = true;
+                // Extract what we need before releasing the borrow on self.ir
+                let ann_vt = fi.annotation.clone();
+                let is_any = matches!(ann_vt, Some(ValueType::Any));
+                if let Some(ref ann_vt) = ann_vt {
+                    if is_any {
+                        // When the annotation is Any (inherited from a parent
+                        // class), prefer concrete types from the primary expr
+                        // and any extra_exprs (child-class assignments).
+                        let primary = fi.expr;
+                        let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                        let has_extras = !extras.is_empty();
+                        let all_exprs: Vec<ExprId> = std::iter::once(primary).chain(extras).collect();
+                        let mut found_specific = false;
+                        let mut has_unresolvable = false;
+                        for expr_id in all_exprs {
+                            if let Some(vt) = self.resolve_expr(expr_id) {
+                                if !matches!(vt, ValueType::Any | ValueType::Nil)
+                                    && !field_types.contains(&vt) {
+                                        field_types.push(vt);
+                                        found_specific = true;
                                     }
-                                }
-                                // If the field was assigned multiple times and
-                                // any assignment couldn't be resolved, the field
-                                // could hold any type — keep as Any.  Uses
-                                // has_extras (not skip_primary) because in this
-                                // branch the primary is always Any, not Nil.
-                                if has_unresolvable && has_extras {
-                                    if !field_types.contains(ann_vt) {
-                                        field_types.push(ann_vt.clone());
-                                    }
-                                } else if !found_specific && !field_types.contains(ann_vt) {
-                                    field_types.push(ann_vt.clone());
-                                }
-                            } else if !field_types.contains(ann_vt) {
+                            } else {
+                                has_unresolvable = true;
+                            }
+                        }
+                        // If the field was assigned multiple times and
+                        // any assignment couldn't be resolved, the field
+                        // could hold any type — keep as Any.  Uses
+                        // has_extras (not skip_primary) because in this
+                        // branch the primary is always Any, not Nil.
+                        if has_unresolvable && has_extras {
+                            if !field_types.contains(ann_vt) {
                                 field_types.push(ann_vt.clone());
                             }
-                        } else {
-                            let primary = fi.expr;
-                            let extras: Vec<ExprId> = fi.extra_exprs.clone();
-                            let has_extras = !extras.is_empty();
-                            // If there are reassignments and the initial value is nil,
-                            // skip the nil — it's just a placeholder initializer.
-                            let skip_primary = has_extras
-                                && matches!(self.resolve_expr(primary), Some(ValueType::Nil));
-                            let all_exprs: Vec<ExprId> = if skip_primary {
-                                extras
-                            } else {
-                                std::iter::once(primary).chain(extras).collect()
-                            };
-                            let mut has_unresolvable = false;
-                            for expr_id in all_exprs {
-                                if let Some(vt) = self.resolve_expr(expr_id) {
-                                    if !field_types.contains(&vt) {
-                                        field_types.push(vt);
-                                    }
-                                } else {
-                                    has_unresolvable = true;
-                                }
-                            }
-                            // If the primary was a nil placeholder (skipped) and
-                            // any reassignment couldn't be resolved, the field
-                            // could hold any type — widen to Any.
-                            if has_unresolvable && skip_primary
-                                && !field_types.contains(&ValueType::Any)
-                            {
-                                field_types.push(ValueType::Any);
-                            }
+                        } else if !found_specific && !field_types.contains(ann_vt) {
+                            field_types.push(ann_vt.clone());
                         }
-                    }
-                }
-                // If the field resolved to a meaningful type, return it.
-                // But if all types are Table(None) placeholders (from unresolvable
-                // self-referential builder chains), try parent classes first.
-                let all_placeholder = !field_types.is_empty()
-                    && field_types.iter().all(|vt| matches!(vt, ValueType::Table(None)));
-                if !field_types.is_empty() && !all_placeholder {
-                    return Some(ValueType::make_union(field_types));
-                }
-                // Field exists but type is unresolvable or only Table(None) placeholder.
-                // For class tables, try parent classes for a better type. This handles
-                // self-referential assignments like X.field = X.field:Method() where
-                // the local field's expression can't resolve due to the cycle.
-                if field_exists && table_indices.first().is_some_and(|&idx| self.table(idx).class_name.is_some()) {
-                    let mut parent_field_types: Vec<ValueType> = Vec::new();
-                    for &idx in &table_indices {
-                        let parents = self.table(idx).parent_classes.clone();
-                        for &parent_idx in &parents {
-                            if let Some(fi) = self.ir.get_field(parent_idx, field) {
-                                if let Some(ref ann_vt) = fi.annotation {
-                                    if !matches!(ann_vt, ValueType::Any | ValueType::Table(None))
-                                        && !parent_field_types.contains(ann_vt) {
-                                        parent_field_types.push(ann_vt.clone());
-                                    }
-                                } else {
-                                    let expr = fi.expr;
-                                    if let Some(vt) = self.resolve_expr(expr)
-                                        && !matches!(vt, ValueType::Any | ValueType::Table(None))
-                                        && !parent_field_types.contains(&vt) {
-                                            parent_field_types.push(vt);
-                                        }
-                                }
-                            }
-                        }
-                    }
-                    if !parent_field_types.is_empty() {
-                        return Some(ValueType::make_union(parent_field_types));
-                    }
-                }
-                // Return placeholder type if we have one, otherwise None
-                if !field_types.is_empty() {
-                    return Some(ValueType::make_union(field_types));
-                }
-                if field_exists {
-                    return None;
-                }
-
-                // _G global-environment redirect: look up field as a scope0 symbol
-                for &idx in &table_indices {
-                    if self.ir.is_global_env(idx) {
-                        let sym_id = SymbolIdentifier::Name(field.clone());
-                        let sym_idx = self.ir.scopes[0].symbols.get(&sym_id).copied()
-                            .or_else(|| self.ir.ext.scope0_symbols.get(&sym_id).copied());
-                        if let Some(si) = sym_idx {
-                            let sym = self.sym(si);
-                            if let Some(vt) = sym.versions.last().and_then(|v| v.resolved_type.clone()) {
-                                return Some(vt);
-                            }
-                        }
-                        return None;
-                    }
-                }
-
-                // Field not found — check parent classes, then undefined-field diagnostic
-                let first_idx = table_indices[0];
-                if self.table(first_idx).class_name.is_some() {
-                    // Resolve field from parent classes
-                    let mut parent_field_types: Vec<ValueType> = Vec::new();
-                    for &idx in &table_indices {
-                        let parents = self.table(idx).parent_classes.clone();
-                        for &parent_idx in &parents {
-                            if let Some(fi) = self.ir.get_field(parent_idx, field) {
-                                if let Some(ref ann_vt) = fi.annotation {
-                                    if !parent_field_types.contains(ann_vt) {
-                                        parent_field_types.push(ann_vt.clone());
-                                    }
-                                } else {
-                                    let expr = fi.expr;
-                                    if let Some(vt) = self.resolve_expr(expr)
-                                        && !parent_field_types.contains(&vt) {
-                                            parent_field_types.push(vt);
-                                        }
-                                }
-                            }
-                        }
-                    }
-                    if !parent_field_types.is_empty() {
-                        return Some(ValueType::make_union(parent_field_types));
-                    }
-                }
-                self.ir.explicit_map_value_type(&table_indices)
-            }
-            Expr::VarArgs(ret_index, file_level) => {
-                if *file_level {
-                    // WoW passes (addonName: string, addonTable: table) at file scope
-                    match ret_index {
-                        0 => Some(ValueType::String(self.ir.addon_folder_name.clone())),
-                        1 => {
-                            if let Some(addon_idx) = self.ir.addon_table_idx() {
-                                Some(ValueType::Table(Some(addon_idx)))
-                            } else {
-                                let table_idx = TableIndex(self.ir.tables.len());
-                                self.ir.tables.push(TableInfo::default());
-                                Some(ValueType::Table(Some(table_idx)))
-                            }
-                        }
-                        _ => Some(ValueType::Nil),
+                    } else if !field_types.contains(ann_vt) {
+                        field_types.push(ann_vt.clone());
                     }
                 } else {
-                    let ret_index = *ret_index;
-                    if let Some(&scope_idx) = self.ir.varargs_scope.get(&expr_id)
-                        && let Some(vt) = self.find_event_vararg_type(scope_idx, ret_index)
+                    let primary = fi.expr;
+                    let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                    let has_extras = !extras.is_empty();
+                    // If there are reassignments and the initial value is nil,
+                    // skip the nil — it's just a placeholder initializer.
+                    let skip_primary = has_extras
+                        && matches!(self.resolve_expr(primary), Some(ValueType::Nil));
+                    let all_exprs: Vec<ExprId> = if skip_primary {
+                        extras
+                    } else {
+                        std::iter::once(primary).chain(extras).collect()
+                    };
+                    let mut has_unresolvable = false;
+                    for expr_id in all_exprs {
+                        if let Some(vt) = self.resolve_expr(expr_id) {
+                            if !field_types.contains(&vt) {
+                                field_types.push(vt);
+                            }
+                        } else {
+                            has_unresolvable = true;
+                        }
+                    }
+                    // If the primary was a nil placeholder (skipped) and
+                    // any reassignment couldn't be resolved, the field
+                    // could hold any type — widen to Any.
+                    if has_unresolvable && skip_primary
+                        && !field_types.contains(&ValueType::Any)
                     {
+                        field_types.push(ValueType::Any);
+                    }
+                }
+            }
+        }
+        // If the field resolved to a meaningful type, return it.
+        // But if all types are Table(None) placeholders (from unresolvable
+        // self-referential builder chains), try parent classes first.
+        let all_placeholder = !field_types.is_empty()
+            && field_types.iter().all(|vt| matches!(vt, ValueType::Table(None)));
+        if !field_types.is_empty() && !all_placeholder {
+            return Some(ValueType::make_union(field_types));
+        }
+        // Field exists but type is unresolvable or only Table(None) placeholder.
+        // For class tables, try parent classes for a better type. This handles
+        // self-referential assignments like X.field = X.field:Method() where
+        // the local field's expression can't resolve due to the cycle.
+        if field_exists && table_indices.first().is_some_and(|&idx| self.table(idx).class_name.is_some()) {
+            let mut parent_field_types: Vec<ValueType> = Vec::new();
+            for &idx in &table_indices {
+                let parents = self.table(idx).parent_classes.clone();
+                for &parent_idx in &parents {
+                    if let Some(fi) = self.ir.get_field(parent_idx, field) {
+                        if let Some(ref ann_vt) = fi.annotation {
+                            if !matches!(ann_vt, ValueType::Any | ValueType::Table(None))
+                                && !parent_field_types.contains(ann_vt) {
+                                parent_field_types.push(ann_vt.clone());
+                            }
+                        } else {
+                            let expr = fi.expr;
+                            if let Some(vt) = self.resolve_expr(expr)
+                                && !matches!(vt, ValueType::Any | ValueType::Table(None))
+                                && !parent_field_types.contains(&vt) {
+                                    parent_field_types.push(vt);
+                                }
+                        }
+                    }
+                }
+            }
+            if !parent_field_types.is_empty() {
+                return Some(ValueType::make_union(parent_field_types));
+            }
+        }
+        // Return placeholder type if we have one, otherwise None
+        if !field_types.is_empty() {
+            return Some(ValueType::make_union(field_types));
+        }
+        if field_exists {
+            return None;
+        }
+
+        // _G global-environment redirect: look up field as a scope0 symbol
+        for &idx in &table_indices {
+            if self.ir.is_global_env(idx) {
+                let sym_id = SymbolIdentifier::Name(field.to_string());
+                let sym_idx = self.ir.scopes[0].symbols.get(&sym_id).copied()
+                    .or_else(|| self.ir.ext.scope0_symbols.get(&sym_id).copied());
+                if let Some(si) = sym_idx {
+                    let sym = self.sym(si);
+                    if let Some(vt) = sym.versions.last().and_then(|v| v.resolved_type.clone()) {
                         return Some(vt);
                     }
-                    None
+                }
+                return None;
+            }
+        }
+
+        // Field not found — check parent classes, then undefined-field diagnostic
+        let first_idx = table_indices[0];
+        if self.table(first_idx).class_name.is_some() {
+            // Resolve field from parent classes
+            let mut parent_field_types: Vec<ValueType> = Vec::new();
+            for &idx in &table_indices {
+                let parents = self.table(idx).parent_classes.clone();
+                for &parent_idx in &parents {
+                    if let Some(fi) = self.ir.get_field(parent_idx, field) {
+                        if let Some(ref ann_vt) = fi.annotation {
+                            if !parent_field_types.contains(ann_vt) {
+                                parent_field_types.push(ann_vt.clone());
+                            }
+                        } else {
+                            let expr = fi.expr;
+                            if let Some(vt) = self.resolve_expr(expr)
+                                && !parent_field_types.contains(&vt) {
+                                    parent_field_types.push(vt);
+                                }
+                        }
+                    }
                 }
             }
-            Expr::BracketIndex { table, key, literal_key } => {
-                let table_expr = *table;
-                let literal_key = literal_key.clone();
-                let table_type = self.resolve_expr(table_expr)?;
-                // Bracket index on any yields any
-                if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
-                // Unwrap opaque aliases — bracket index works on the inner type
-                let table_type = table_type.into_strip_opaque();
-                match &table_type {
-                    ValueType::Table(Some(idx)) => {
-                        // Literal key → try named field lookup first (e.g. op[1] → field "[1]")
+            if !parent_field_types.is_empty() {
+                return Some(ValueType::make_union(parent_field_types));
+            }
+        }
+        self.ir.explicit_map_value_type(&table_indices)
+    }
+
+    /// Resolve `Expr::VarArgs`: file-level `...` (addonName/addonTable) or event-payload vararg types.
+    fn resolve_varargs(&mut self, expr_id: ExprId, ret_index: usize, file_level: bool) -> Option<ValueType> {
+        if file_level {
+            // WoW passes (addonName: string, addonTable: table) at file scope
+            match ret_index {
+                0 => Some(ValueType::String(self.ir.addon_folder_name.clone())),
+                1 => {
+                    if let Some(addon_idx) = self.ir.addon_table_idx() {
+                        Some(ValueType::Table(Some(addon_idx)))
+                    } else {
+                        let table_idx = TableIndex(self.ir.tables.len());
+                        self.ir.tables.push(TableInfo::default());
+                        Some(ValueType::Table(Some(table_idx)))
+                    }
+                }
+                _ => Some(ValueType::Nil),
+            }
+        } else {
+            if let Some(&scope_idx) = self.ir.varargs_scope.get(&expr_id)
+                && let Some(vt) = self.find_event_vararg_type(scope_idx, ret_index)
+            {
+                return Some(vt);
+            }
+            None
+        }
+    }
+
+    /// Resolve `Expr::BracketIndex`: `t[key]` lookup over table/union/intersection types (literal-key fields, key-type filtering, value_type).
+    fn resolve_bracket_index(&mut self, table_expr: ExprId, key: ExprId, literal_key: Option<String>) -> Option<ValueType> {
+        let table_type = self.resolve_expr(table_expr)?;
+        // Bracket index on any yields any
+        if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
+        // Unwrap opaque aliases — bracket index works on the inner type
+        let table_type = table_type.into_strip_opaque();
+        match &table_type {
+            ValueType::Table(Some(idx)) => {
+                // Literal key → try named field lookup first (e.g. op[1] → field "[1]")
+                if let Some(ref lk) = literal_key
+                    && let Some(fi) = self.get_field(*idx, lk).cloned() {
+                        if let Some(ann_vt) = fi.annotation {
+                            return Some(ann_vt);
+                        }
+                        if let Some(vt) = self.resolve_expr(fi.expr) {
+                            return Some(vt);
+                        }
+                    }
+                let vt = self.table(*idx).value_type.clone();
+                if let Some(ref val) = vt
+                    && val.contains_type_variable() {
+                        let type_args = self.get_expr_type_args(table_expr);
+                        if !type_args.is_empty() {
+                            let params = self.table(*idx).class_type_params.clone();
+                            let subs: HashMap<String, ValueType> = params.into_iter()
+                                .zip(type_args)
+                                .collect();
+                            return Some(self.substitute_generics_deep(val, &subs));
+                        }
+                    }
+                // No explicit value_type — try key-aware lookup, then field inference.
+                if vt.is_none() {
+                    // If the key resolves to a string literal or string literal
+                    // union, look up only the matching fields. This avoids unioning
+                    // all field values (which produces redundant `table | table | ...`)
+                    // and works correctly for named classes where all-field union is
+                    // nonsensical.
+                    let key_expr = key;
+                    let key_literals = self.resolve_expr(key_expr)
+                        .map(|kt| Self::extract_string_literals(&kt))
+                        .unwrap_or_default();
+                    if !key_literals.is_empty() {
+                        // Key is a string literal union (not bare `string`), so
+                        // assume the table is designed for these keys — access is
+                        // non-nil.
+                        let mut field_types: Vec<ValueType> = Vec::new();
+                        for lit in &key_literals {
+                            if let Some(fi) = self.get_field(*idx, lit).cloned()
+                                && let Some(vt) = fi.annotation.or_else(|| self.resolve_expr(fi.expr))
+                                && !field_types.iter().any(|existing| self.types_equivalent(existing, &vt))
+                            {
+                                field_types.push(vt);
+                            }
+                        }
+                        if !field_types.is_empty() {
+                            return Some(ValueType::make_union(field_types));
+                        }
+                    }
+                    // Skip all-field inference for named classes — their fields are
+                    // methods/properties, not dictionary values, so a union of all
+                    // field types is nonsensical. Return Any so downstream expressions
+                    // resolve (avoids fixpoint churn).
+                    let is_named_class = self.table(*idx).class_name.is_some();
+                    if is_named_class {
+                        return Some(ValueType::Any);
+                    }
+                    let field_data: Vec<(ExprId, Option<ValueType>)> = {
+                        let t = self.table(*idx);
+                        if t.key_type.is_none() && !t.fields.is_empty() {
+                            t.fields.values()
+                                .map(|fi| (fi.expr, fi.annotation.clone()))
+                                .collect()
+                        } else {
+                            Vec::new()
+                        }
+                    };
+                    if !field_data.is_empty() {
+                        let mut inferred: Vec<ValueType> = Vec::new();
+                        for (expr, ann) in field_data {
+                            if let Some(field_vt) = ann.or_else(|| self.resolve_expr(expr))
+                                && !field_vt.contains_type_variable()
+                                && !inferred.iter().any(|existing| self.types_equivalent(existing, &field_vt)) {
+                                    inferred.push(field_vt);
+                                }
+                        }
+                        if !inferred.is_empty() {
+                            inferred.push(ValueType::Nil);
+                            return Some(ValueType::make_union(inferred));
+                        }
+                    }
+                }
+                vt
+            }
+            ValueType::Union(types) | ValueType::Intersection(types) => {
+                let is_intersection = matches!(table_type, ValueType::Intersection(_));
+                // If any member is plain `table`, bracket access is `any`.
+                if types.iter().any(|t| matches!(t, ValueType::Table(None))) {
+                    return Some(ValueType::Any);
+                }
+                let mut value_types: Vec<ValueType> = Vec::new();
+                let key_type_resolved = self.resolve_expr(key);
+                for t in types {
+                    if let ValueType::Table(Some(idx)) = t {
+                        // Literal key → try named field lookup first
                         if let Some(ref lk) = literal_key
                             && let Some(fi) = self.get_field(*idx, lk).cloned() {
-                                if let Some(ann_vt) = fi.annotation {
-                                    return Some(ann_vt);
-                                }
-                                if let Some(vt) = self.resolve_expr(fi.expr) {
-                                    return Some(vt);
-                                }
-                            }
-                        let vt = self.table(*idx).value_type.clone();
-                        if let Some(ref val) = vt
-                            && val.contains_type_variable() {
-                                let type_args = self.get_expr_type_args(table_expr);
-                                if !type_args.is_empty() {
-                                    let params = self.table(*idx).class_type_params.clone();
-                                    let subs: HashMap<String, ValueType> = params.into_iter()
-                                        .zip(type_args)
-                                        .collect();
-                                    return Some(self.substitute_generics_deep(val, &subs));
-                                }
-                            }
-                        // No explicit value_type — try key-aware lookup, then field inference.
-                        if vt.is_none() {
-                            // If the key resolves to a string literal or string literal
-                            // union, look up only the matching fields. This avoids unioning
-                            // all field values (which produces redundant `table | table | ...`)
-                            // and works correctly for named classes where all-field union is
-                            // nonsensical.
-                            let key_expr = *key;
-                            let key_literals = self.resolve_expr(key_expr)
-                                .map(|kt| Self::extract_string_literals(&kt))
-                                .unwrap_or_default();
-                            if !key_literals.is_empty() {
-                                // Key is a string literal union (not bare `string`), so
-                                // assume the table is designed for these keys — access is
-                                // non-nil.
-                                let mut field_types: Vec<ValueType> = Vec::new();
-                                for lit in &key_literals {
-                                    if let Some(fi) = self.get_field(*idx, lit).cloned()
-                                        && let Some(vt) = fi.annotation.or_else(|| self.resolve_expr(fi.expr))
-                                        && !field_types.iter().any(|existing| self.types_equivalent(existing, &vt))
-                                    {
-                                        field_types.push(vt);
+                                let field_vt = fi.annotation.or_else(|| self.resolve_expr(fi.expr));
+                                if let Some(vt) = field_vt {
+                                    if !value_types.iter().any(|existing| self.types_equivalent(existing, &vt)) {
+                                        value_types.push(vt);
                                     }
-                                }
-                                if !field_types.is_empty() {
-                                    return Some(ValueType::make_union(field_types));
+                                    continue;
                                 }
                             }
-                            // Skip all-field inference for named classes — their fields are
-                            // methods/properties, not dictionary values, so a union of all
-                            // field types is nonsensical. Return Any so downstream expressions
-                            // resolve (avoids fixpoint churn).
-                            let is_named_class = self.table(*idx).class_name.is_some();
-                            if is_named_class {
-                                return Some(ValueType::Any);
+                        // Skip this member if its key_type is incompatible
+                        // with the actual key (e.g. indexing V[]&table<K,V>
+                        // or table<K,V>|T[] with K — only yield V)
+                        if let Some(ref kt) = key_type_resolved
+                            && let Some(ref table_kt) = self.table(*idx).key_type
+                            && !kt.is_assignable_to(table_kt)
+                            && !self.is_table_subtype(kt, table_kt) {
+                                continue;
                             }
-                            let field_data: Vec<(ExprId, Option<ValueType>)> = {
-                                let t = self.table(*idx);
-                                if t.key_type.is_none() && !t.fields.is_empty() {
-                                    t.fields.values()
-                                        .map(|fi| (fi.expr, fi.annotation.clone()))
-                                        .collect()
-                                } else {
-                                    Vec::new()
-                                }
-                            };
-                            if !field_data.is_empty() {
-                                let mut inferred: Vec<ValueType> = Vec::new();
-                                for (expr, ann) in field_data {
-                                    if let Some(field_vt) = ann.or_else(|| self.resolve_expr(expr))
-                                        && !field_vt.contains_type_variable()
-                                        && !inferred.iter().any(|existing| self.types_equivalent(existing, &field_vt)) {
-                                            inferred.push(field_vt);
-                                        }
-                                }
-                                if !inferred.is_empty() {
-                                    inferred.push(ValueType::Nil);
-                                    return Some(ValueType::make_union(inferred));
-                                }
+                        if let Some(vt) = &self.table(*idx).value_type
+                            && !value_types.iter().any(|existing| self.types_equivalent(existing, vt)) {
+                                value_types.push(vt.clone());
                             }
-                        }
-                        vt
                     }
-                    ValueType::Union(types) | ValueType::Intersection(types) => {
-                        let is_intersection = matches!(table_type, ValueType::Intersection(_));
-                        // If any member is plain `table`, bracket access is `any`.
-                        if types.iter().any(|t| matches!(t, ValueType::Table(None))) {
-                            return Some(ValueType::Any);
-                        }
-                        let mut value_types: Vec<ValueType> = Vec::new();
-                        let key_type_resolved = self.resolve_expr(*key);
-                        for t in types {
-                            if let ValueType::Table(Some(idx)) = t {
-                                // Literal key → try named field lookup first
-                                if let Some(ref lk) = literal_key
-                                    && let Some(fi) = self.get_field(*idx, lk).cloned() {
-                                        let field_vt = fi.annotation.or_else(|| self.resolve_expr(fi.expr));
-                                        if let Some(vt) = field_vt {
-                                            if !value_types.iter().any(|existing| self.types_equivalent(existing, &vt)) {
-                                                value_types.push(vt);
-                                            }
-                                            continue;
-                                        }
-                                    }
-                                // Skip this member if its key_type is incompatible
-                                // with the actual key (e.g. indexing V[]&table<K,V>
-                                // or table<K,V>|T[] with K — only yield V)
-                                if let Some(ref kt) = key_type_resolved
-                                    && let Some(ref table_kt) = self.table(*idx).key_type
-                                    && !kt.is_assignable_to(table_kt)
-                                    && !self.is_table_subtype(kt, table_kt) {
-                                        continue;
-                                    }
-                                if let Some(vt) = &self.table(*idx).value_type
-                                    && !value_types.iter().any(|existing| self.types_equivalent(existing, vt)) {
-                                        value_types.push(vt.clone());
-                                    }
-                            }
-                        }
-                        if value_types.is_empty() { None }
-                        else if is_intersection && value_types.len() > 1 {
-                            Some(ValueType::Intersection(value_types))
-                        } else { Some(ValueType::make_union(value_types)) }
-                    }
-                    // Plain `table` (no type params) is the most generic dictionary —
-                    // bracket access yields any.
-                    ValueType::Table(None) => Some(ValueType::Any),
-                    _ => None,
                 }
+                if value_types.is_empty() { None }
+                else if is_intersection && value_types.len() > 1 {
+                    Some(ValueType::Intersection(value_types))
+                } else { Some(ValueType::make_union(value_types)) }
             }
-            Expr::ForInVar { iterator_call, var_index, state_expr } => {
-                let iter_call = *iterator_call;
-                let var_idx = *var_index;
-                let state_eid = *state_expr;
+            // Plain `table` (no type params) is the most generic dictionary —
+            // bracket access yields any.
+            ValueType::Table(None) => Some(ValueType::Any),
+            _ => None,
+        }
+    }
 
-                // Primary: resolve the iterator call and extract the iterator function's returns.
-                // For pairs(tbl), the call resolves to the first return which is the iterator function.
-                if let Some(iter_type) = self.resolve_expr(iter_call) {
-                    match iter_type {
-                    ValueType::Function(Some(func_idx)) => {
-                        // Get return type at var_index from the iterator function
-                        let effective_var_idx = self.func(func_idx).effective_return_index(var_idx);
-                        let ret_vt = self.func(func_idx).return_annotations.get(effective_var_idx).cloned();
-                        if let Some(ref vt) = ret_vt
-                            && !vt.contains_type_variable() {
-                                // var_idx 0: nil terminates the for-in loop (language guarantee).
-                                // Other positions: strip nil when annotated with ! (e.g. V!).
-                                if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective_var_idx) {
-                                    return Some(self.ir.dedupe_union_tables(vt.strip_nil()));
-                                }
-                                return Some(self.ir.dedupe_union_tables(vt.clone()));
-                            }
-                        // Try return symbol
-                        let func_scope = self.func(func_idx).scope;
-                        let ret_id = SymbolIdentifier::FunctionRet(func_idx, var_idx);
-                        if let Some(ret_sym_idx) = self.get_symbol(&ret_id, func_scope) {
-                            let ret_type = self.sym(ret_sym_idx).versions.first()
-                                .and_then(|v| v.resolved_type.clone());
-                            if let Some(ref vt) = ret_type
-                                && !vt.contains_type_variable() {
-                                    if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective_var_idx) {
-                                        return Some(self.ir.dedupe_union_tables(vt.strip_nil()));
-                                    }
-                                    return ret_type.map(|t| self.ir.dedupe_union_tables(t));
-                                }
+    /// Resolve `Expr::ForInVar`: type of a for-in loop variable from the iterator function's returns / table key/value types.
+    fn resolve_forin_var(&mut self, iter_call: ExprId, var_idx: usize, state_eid: Option<ExprId>) -> Option<ValueType> {
+        // Primary: resolve the iterator call and extract the iterator function's returns.
+        // For pairs(tbl), the call resolves to the first return which is the iterator function.
+        if let Some(iter_type) = self.resolve_expr(iter_call) {
+            match iter_type {
+            ValueType::Function(Some(func_idx)) => {
+                // Get return type at var_index from the iterator function
+                let effective_var_idx = self.func(func_idx).effective_return_index(var_idx);
+                let ret_vt = self.func(func_idx).return_annotations.get(effective_var_idx).cloned();
+                if let Some(ref vt) = ret_vt
+                    && !vt.contains_type_variable() {
+                        // var_idx 0: nil terminates the for-in loop (language guarantee).
+                        // Other positions: strip nil when annotated with ! (e.g. V!).
+                        if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective_var_idx) {
+                            return Some(self.ir.dedupe_union_tables(vt.strip_nil()));
                         }
-                        // For generic iterators with state expression (e.g. `for k, v in next, tbl`):
-                        // prefer the table's explicit key_type/value_type when available,
-                        // as these give the correct type without unwanted nil from the
-                        // iterator's return annotations.
-                        if let Some(state_eid) = state_eid {
-                            if let Some(arg_type) = self.resolve_expr(state_eid) {
-                                let table_indices = super::table_indices_from_type(&arg_type);
-                                if !table_indices.is_empty() {
-                                    match var_idx {
-                                        0 => {
-                                            let key_types: Vec<ValueType> = table_indices.iter()
-                                                .filter_map(|&ti| self.table(ti).key_type.clone())
-                                                .collect();
-                                            if !key_types.is_empty() {
-                                                // Control variable is never nil inside the loop body
-                                                return Some(self.ir.dedupe_union_tables(ValueType::make_union(key_types)).strip_nil());
-                                            }
-                                        }
-                                        1 => {
-                                            let val_types: Vec<ValueType> = table_indices.iter()
-                                                .filter_map(|&ti| self.table(ti).value_type.clone())
-                                                .collect();
-                                            if !val_types.is_empty() {
-                                                // Lua tables cannot store nil values, so iteration
-                                                // never yields nil — strip nil from the value type.
-                                                return Some(self.ir.dedupe_union_tables(ValueType::make_union(val_types)).strip_nil());
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
+                        return Some(self.ir.dedupe_union_tables(vt.clone()));
+                    }
+                // Try return symbol
+                let func_scope = self.func(func_idx).scope;
+                let ret_id = SymbolIdentifier::FunctionRet(func_idx, var_idx);
+                if let Some(ret_sym_idx) = self.get_symbol(&ret_id, func_scope) {
+                    let ret_type = self.sym(ret_sym_idx).versions.first()
+                        .and_then(|v| v.resolved_type.clone());
+                    if let Some(ref vt) = ret_type
+                        && !vt.contains_type_variable() {
+                            if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective_var_idx) {
+                                return Some(self.ir.dedupe_union_tables(vt.strip_nil()));
                             }
-                            // Fall back to generic resolution (handles tables with only named fields)
-                            if let Some(substituted) = self.resolve_forin_generic_iterator(func_idx, var_idx, state_eid) {
-                                // var_idx 0: nil terminates the loop (language guarantee).
-                                // Other positions: strip nil when annotated with ! (e.g. V!).
-                                let effective = self.func(func_idx).effective_return_index(var_idx);
-                                if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective) {
-                                    return Some(substituted.strip_nil());
-                                }
-                                return Some(substituted);
-                            }
+                            return ret_type.map(|t| self.ir.dedupe_union_tables(t));
                         }
-                    }
-                    ValueType::Table(Some(table_idx)) => {
-                        if let Some(call_func_idx) = self.table(table_idx).call_func {
-                            let class_type_params = self.table(table_idx).class_type_params.clone();
-                            let type_args = self.get_expr_type_args(iter_call);
-                            // Check for returns<F> projection with type_args substitution
-                            if let Some(crate::types::ProjectionKind::Return(ref name, _)) =
-                                self.func(call_func_idx).return_projections.get(&0).cloned()
-                            {
-                                let bound = class_type_params.iter().enumerate()
-                                    .find(|(_, p)| *p == name)
-                                    .and_then(|(pos, _)| type_args.get(pos).cloned());
-                                if let Some(ValueType::Function(Some(f_idx))) = bound {
-                                    let f_returns = self.func(f_idx).return_annotations.clone();
-                                    let f_has_vararg = self.func(f_idx).has_vararg_return;
-                                    let vt = f_returns.get(var_idx).cloned()
-                                        .or_else(|| {
-                                            if f_has_vararg && !f_returns.is_empty() {
-                                                f_returns.last().cloned()
-                                            } else if f_returns.is_empty() {
-                                                let f_scope = self.func(f_idx).scope;
-                                                let ret_id = SymbolIdentifier::FunctionRet(f_idx, var_idx);
-                                                self.get_symbol(&ret_id, f_scope)
-                                                    .and_then(|si| self.sym(si).versions.first()
-                                                        .and_then(|v| v.resolved_type.clone()))
-                                            } else { None }
-                                        });
-                                    return vt.or(Some(ValueType::Nil));
-                                }
-                            }
-                            // Fallback: direct return annotations from call_func
-                            let effective_var_idx = self.func(call_func_idx).effective_return_index(var_idx);
-                            let ret_vt = self.func(call_func_idx).return_annotations.get(effective_var_idx).cloned();
-                            if let Some(ref vt) = ret_vt
-                                && !vt.contains_type_variable() {
-                                    return ret_vt;
-                                }
-                        }
-                    }
-                    _ => {}
-                    }
                 }
-
-                // Fallback: infer from the table's key_type/value_type.
-                // This handles generic iterators (pairs/ipairs) where K/V aren't fully inferred.
-                // Check both the function call's first arg (pairs(tbl)) and the state expr (next, tbl).
-                let table_arg_expr = {
-                    let iter_expr = self.expr(iter_call).clone();
-                    if let Expr::FunctionCall { args, .. } = &iter_expr {
-                        args.first().copied()
-                    } else {
-                        state_eid
-                    }
-                };
-                if let Some(table_arg) = table_arg_expr
-                    && let Some(arg_type) = self.resolve_expr(table_arg) {
+                // For generic iterators with state expression (e.g. `for k, v in next, tbl`):
+                // prefer the table's explicit key_type/value_type when available,
+                // as these give the correct type without unwanted nil from the
+                // iterator's return annotations.
+                if let Some(state_eid) = state_eid {
+                    if let Some(arg_type) = self.resolve_expr(state_eid) {
                         let table_indices = super::table_indices_from_type(&arg_type);
                         if !table_indices.is_empty() {
                             match var_idx {
-                                // Lua tables cannot store nil keys or nil values — strip nil
-                                // so that iterating a `(T|nil)[]` or `table<K|nil, V|nil>`
-                                // gives T/K/V instead of T?/K?/V? in the loop variables.
                                 0 => {
                                     let key_types: Vec<ValueType> = table_indices.iter()
                                         .filter_map(|&ti| self.table(ti).key_type.clone())
                                         .collect();
                                     if !key_types.is_empty() {
+                                        // Control variable is never nil inside the loop body
                                         return Some(self.ir.dedupe_union_tables(ValueType::make_union(key_types)).strip_nil());
                                     }
                                 }
@@ -3390,6 +3304,8 @@ impl<'a> Analysis<'a> {
                                         .filter_map(|&ti| self.table(ti).value_type.clone())
                                         .collect();
                                     if !val_types.is_empty() {
+                                        // Lua tables cannot store nil values, so iteration
+                                        // never yields nil — strip nil from the value type.
                                         return Some(self.ir.dedupe_union_tables(ValueType::make_union(val_types)).strip_nil());
                                     }
                                 }
@@ -3397,11 +3313,100 @@ impl<'a> Analysis<'a> {
                             }
                         }
                     }
-                None
+                    // Fall back to generic resolution (handles tables with only named fields)
+                    if let Some(substituted) = self.resolve_forin_generic_iterator(func_idx, var_idx, state_eid) {
+                        // var_idx 0: nil terminates the loop (language guarantee).
+                        // Other positions: strip nil when annotated with ! (e.g. V!).
+                        let effective = self.func(func_idx).effective_return_index(var_idx);
+                        if var_idx == 0 || is_forin_non_nil_return(self.func(func_idx), effective) {
+                            return Some(substituted.strip_nil());
+                        }
+                        return Some(substituted);
+                    }
+                }
             }
-
-            _ => None,
+            ValueType::Table(Some(table_idx)) => {
+                if let Some(call_func_idx) = self.table(table_idx).call_func {
+                    let class_type_params = self.table(table_idx).class_type_params.clone();
+                    let type_args = self.get_expr_type_args(iter_call);
+                    // Check for returns<F> projection with type_args substitution
+                    if let Some(crate::types::ProjectionKind::Return(ref name, _)) =
+                        self.func(call_func_idx).return_projections.get(&0).cloned()
+                    {
+                        let bound = class_type_params.iter().enumerate()
+                            .find(|(_, p)| *p == name)
+                            .and_then(|(pos, _)| type_args.get(pos).cloned());
+                        if let Some(ValueType::Function(Some(f_idx))) = bound {
+                            let f_returns = self.func(f_idx).return_annotations.clone();
+                            let f_has_vararg = self.func(f_idx).has_vararg_return;
+                            let vt = f_returns.get(var_idx).cloned()
+                                .or_else(|| {
+                                    if f_has_vararg && !f_returns.is_empty() {
+                                        f_returns.last().cloned()
+                                    } else if f_returns.is_empty() {
+                                        let f_scope = self.func(f_idx).scope;
+                                        let ret_id = SymbolIdentifier::FunctionRet(f_idx, var_idx);
+                                        self.get_symbol(&ret_id, f_scope)
+                                            .and_then(|si| self.sym(si).versions.first()
+                                                .and_then(|v| v.resolved_type.clone()))
+                                    } else { None }
+                                });
+                            return vt.or(Some(ValueType::Nil));
+                        }
+                    }
+                    // Fallback: direct return annotations from call_func
+                    let effective_var_idx = self.func(call_func_idx).effective_return_index(var_idx);
+                    let ret_vt = self.func(call_func_idx).return_annotations.get(effective_var_idx).cloned();
+                    if let Some(ref vt) = ret_vt
+                        && !vt.contains_type_variable() {
+                            return ret_vt;
+                        }
+                }
+            }
+            _ => {}
+            }
         }
+
+        // Fallback: infer from the table's key_type/value_type.
+        // This handles generic iterators (pairs/ipairs) where K/V aren't fully inferred.
+        // Check both the function call's first arg (pairs(tbl)) and the state expr (next, tbl).
+        let table_arg_expr = {
+            let iter_expr = self.expr(iter_call).clone();
+            if let Expr::FunctionCall { args, .. } = &iter_expr {
+                args.first().copied()
+            } else {
+                state_eid
+            }
+        };
+        if let Some(table_arg) = table_arg_expr
+            && let Some(arg_type) = self.resolve_expr(table_arg) {
+                let table_indices = super::table_indices_from_type(&arg_type);
+                if !table_indices.is_empty() {
+                    match var_idx {
+                        // Lua tables cannot store nil keys or nil values — strip nil
+                        // so that iterating a `(T|nil)[]` or `table<K|nil, V|nil>`
+                        // gives T/K/V instead of T?/K?/V? in the loop variables.
+                        0 => {
+                            let key_types: Vec<ValueType> = table_indices.iter()
+                                .filter_map(|&ti| self.table(ti).key_type.clone())
+                                .collect();
+                            if !key_types.is_empty() {
+                                return Some(self.ir.dedupe_union_tables(ValueType::make_union(key_types)).strip_nil());
+                            }
+                        }
+                        1 => {
+                            let val_types: Vec<ValueType> = table_indices.iter()
+                                .filter_map(|&ti| self.table(ti).value_type.clone())
+                                .collect();
+                            if !val_types.is_empty() {
+                                return Some(self.ir.dedupe_union_tables(ValueType::make_union(val_types)).strip_nil());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        None
     }
 
     /// Bind a generic iterator function's type variables from the state expression
