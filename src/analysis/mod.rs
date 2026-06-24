@@ -3015,6 +3015,29 @@ pub(crate) fn structural_mismatch_details_impl(
 ) -> Option<Vec<StructuralMismatchDetail>> {
     let (actual_idx, expected_idx) = match (actual, expected) {
         (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => (*a, *b),
+        // Optional / multi-class unions (e.g. `Class?` = `Class | nil`): describe
+        // the mismatch against the class member the literal best matches (fewest
+        // details), mirroring `missing_fields.rs::check_missing_fields_union`. This
+        // keeps the "missing field" / "wrong type" suffix on type-mismatch messages
+        // for optional class parameters, not just bare ones.
+        (ValueType::Table(Some(a)), ValueType::Union(types)) => {
+            let missing_count = |d: &[StructuralMismatchDetail]| {
+                d.iter().filter(|x| matches!(x, StructuralMismatchDetail::Missing { .. })).count()
+            };
+            let mut best: Option<Vec<StructuralMismatchDetail>> = None;
+            for t in types {
+                let ValueType::Table(Some(b)) = t else { continue };
+                if ir.table(*a).class_name.is_some() || ir.table(*b).class_name.is_none() { continue; }
+                let details = check_fields_impl(ir, resolved_expr_cache, *a, *b);
+                // A fully-satisfied member means the literal is assignable to the
+                // union — no mismatch to describe.
+                if details.is_empty() { return None; }
+                if best.as_ref().is_none_or(|d| missing_count(&details) < missing_count(d)) {
+                    best = Some(details);
+                }
+            }
+            return best;
+        }
         _ => return None,
     };
     let at = ir.table(actual_idx);

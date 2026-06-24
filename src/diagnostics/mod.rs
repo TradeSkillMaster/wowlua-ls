@@ -187,16 +187,14 @@ const CATALOG: &[&DiagnosticDef] = &[
     &REDUNDANT_OR, &REDUNDANT_AND, &REDUNDANT_CONDITION,
 ];
 
-pub(crate) fn append_structural_mismatch_suffix(
+pub(crate) fn append_structural_details_suffix(
     message: &mut String,
     analysis: &AnalysisResult,
-    actual: &ValueType,
-    expected: &ValueType,
+    details: &[StructuralMismatchDetail],
 ) {
-    let Some(details) = analysis.structural_mismatch_details(actual, expected) else { return };
     let mut missing = Vec::new();
     let mut wrong = Vec::new();
-    for d in &details {
+    for d in details {
         match d {
             StructuralMismatchDetail::Missing { field } => missing.push(field.as_str()),
             StructuralMismatchDetail::WrongType { field, expected: exp_ty, actual: act_ty } => {
@@ -222,6 +220,16 @@ pub(crate) fn append_structural_mismatch_suffix(
             wrong.join(", "),
         ));
     }
+}
+
+pub(crate) fn append_structural_mismatch_suffix(
+    message: &mut String,
+    analysis: &AnalysisResult,
+    actual: &ValueType,
+    expected: &ValueType,
+) {
+    let Some(details) = analysis.structural_mismatch_details(actual, expected) else { return };
+    append_structural_details_suffix(message, analysis, &details);
 }
 
 // ── Core types ──────────────────────────────────────────────────────────────────

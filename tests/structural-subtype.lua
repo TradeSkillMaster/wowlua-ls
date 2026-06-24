@@ -55,25 +55,31 @@ useOptional({ name = "test" })
 -- Should NOT warn: optional field provided
 useOptional({ name = "test", tag = "v1" })
 
--- Should WARN: missing required field 'content'
+-- Should WARN: missing required field 'content'. A non-empty literal whose only
+-- problem is omitting required fields is owned by the dedicated `missing-fields`
+-- diagnostic; the redundant `type-mismatch` is suppressed.
 useLine({ label = "hello" })
---       ^ diag: type-mismatch ~missing field: 'content'
+--       ^ diag: missing-fields ~missing required field 'content'
 
--- Should WARN: missing required field 'x'
+-- Should WARN: missing required field 'x' (missing-fields, not type-mismatch)
 usePoint({ y = 2 })
---        ^ diag: type-mismatch ~missing field: 'x'
+--        ^ diag: missing-fields ~missing required field 'x'
 
--- Should WARN: wrong field type (number instead of string)
+-- Should WARN: wrong field type (number instead of string). A wrong-typed field
+-- is not covered by `missing-fields`, so `type-mismatch` still fires.
 useLine({ label = 42, content = "world" })
 --       ^ diag: type-mismatch ~wrong type for field: 'label' (expected `string`, got `number`)
 
--- Should WARN: empty table has no fields to match — still lists missing fields
+-- Should WARN: empty table has no fields to match. `missing-fields` skips empty
+-- literals (they read as deferred placeholders), so `type-mismatch` stays the
+-- sole signal here and still lists the missing fields.
 useLine({})
 --      ^ diag: type-mismatch ~missing fields: 'content', 'label'
 
 -- Should WARN: table literal does not have parent's required field 'color'
+-- (missing-fields, not type-mismatch)
 useChild({ sides = 4 })
---        ^ diag: type-mismatch ~missing field: 'color'
+--        ^ diag: missing-fields ~missing required field 'color'
 
 -- Should NOT warn: inherited field satisfied, no excess
 useChild({ sides = 4, color = "red" })
@@ -113,6 +119,27 @@ _consume(ctx)
 local ctx2 = { path = "test", ready = "wrong", callback = nil }
 --           ^ diag: assign-type-mismatch ~wrong type for field: 'ready' (expected `boolean`, got `string`)
 _consume(ctx2)
+
+-- Optional class parameter (`p?`) receiving a partial table literal: the
+-- expected type is `Options?` (a `Class | nil` union). A correctly-typed subset
+-- still reports `missing-fields` against the class member, and the redundant
+-- `type-mismatch` (which previously fired with no explanatory detail because the
+-- expected type was a union) is suppressed. Mirrors `LibDBIcon:Register`'s
+-- `db?` parameter receiving `{ hide = false }`.
+---@class Options
+---@field hide boolean
+---@field lock boolean
+
+---@param opts? Options
+local function useOptions(opts) end
+
+useOptions({ hide = false })
+--          ^ diag: missing-fields ~missing required field 'lock'
+
+-- A wrong-typed field on the optional-union parameter still surfaces a
+-- `type-mismatch` (missing-fields cannot report wrong types).
+useOptions({ hide = 1, lock = true })
+--          ^ diag: type-mismatch ~wrong type for field: 'hide' (expected `boolean`, got `number`)
 
 -- Hash-map + array mixed table: table<K,V> with non-number keys is compatible
 -- with array parameters because Lua tables have both hash and array parts.

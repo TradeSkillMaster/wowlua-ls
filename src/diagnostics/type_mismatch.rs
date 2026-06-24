@@ -193,6 +193,26 @@ impl DiagnosticPass for TypeMismatch {
                 if check.skip_if_nil && matches!(arg_type, ValueType::Nil) { continue; }
                 // A @class table is compatible with a function parameter type (factory pattern)
                 if is_class_table_for_func(&arg_type, expected_type, analysis) { continue; }
+                // For table-literal args against @class params, compute structural
+                // mismatch details once and reuse for both the suppression decision
+                // and the diagnostic suffix (avoids redundant check_fields_impl walks).
+                let precomputed_structural = if let ValueType::Table(Some(arg_idx)) = &arg_type
+                    && analysis.ir.tc_expected_class.contains_key(arg_idx)
+                    && !analysis.table(*arg_idx).fields.is_empty()
+                    && analysis.table(*arg_idx).class_name.is_none()
+                {
+                    analysis.structural_mismatch_details(&arg_type, expected_type)
+                } else {
+                    None
+                };
+                // Suppress redundant type-mismatch when the only incompatibility is
+                // missing required fields — the dedicated `missing-fields` diagnostic
+                // already covers it. Wrong-typed fields and empty `{}` literals fire normally.
+                if let Some(ref details) = precomputed_structural
+                    && details.iter().all(|d| matches!(d, super::StructuralMismatchDetail::Missing { .. }))
+                {
+                    continue;
+                }
                 let structurally_matched = !arg_type.is_assignable_to(expected_type)
                     && analysis.is_table_subtype(&arg_type, expected_type);
                 if structurally_matched {
@@ -223,7 +243,11 @@ impl DiagnosticPass for TypeMismatch {
                         );
                     } else {
                         let mut message = format!("expected `{}` for parameter '{}', got `{}`", expected_str, check.param_name, actual_str);
-                        super::append_structural_mismatch_suffix(&mut message, analysis, &arg_type, expected_type);
+                        if let Some(ref details) = precomputed_structural {
+                            super::append_structural_details_suffix(&mut message, analysis, details);
+                        } else {
+                            super::append_structural_mismatch_suffix(&mut message, analysis, &arg_type, expected_type);
+                        }
                         let related = param_declared_here(analysis, cr.func_idx);
                         super::TYPE_MISMATCH.emit_with_related(
                             diags,
