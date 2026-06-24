@@ -2994,32 +2994,73 @@ fn check_fields_impl(
     let mut details = Vec::new();
     for (field_name, expected_type, lateinit) in &expected_fields {
         let is_optional = matches!(expected_type, ValueType::Union(types) if types.contains(&ValueType::Nil));
-        if let Some(actual_field) = at.fields.get(field_name.as_str()) {
-            let actual_type = actual_field.annotation.clone().or_else(|| {
-                match ir.expr(actual_field.expr) {
-                    Expr::Literal(vt) => Some(vt.clone()),
-                    Expr::FunctionDef(idx) => Some(ValueType::Function(Some(*idx))),
-                    Expr::TableConstructor(idx) => Some(ValueType::Table(Some(*idx))),
-                    _ => resolved_expr_cache.get(actual_field.expr.val())
-                        .and_then(|v| v.clone()),
+        // `None` => field absent; `Some(None)` => present but type unresolvable
+        // (treated as OK); `Some(Some(t))` => present with a known type.
+        match actual_field_type_impl(ir, resolved_expr_cache, at, field_name) {
+            Some(Some(actual_type)) => {
+                if actual_type != ValueType::Nil
+                    && !actual_type.is_assignable_to(expected_type)
+                    && !is_table_subtype_impl(ir, resolved_expr_cache, &actual_type, expected_type)
+                {
+                    details.push(StructuralMismatchDetail::WrongType {
+                        field: field_name.clone(),
+                        expected: expected_type.clone(),
+                        actual: actual_type,
+                    });
                 }
-            });
-            if let Some(actual_type) = actual_type
-                && actual_type != ValueType::Nil
-                && !actual_type.is_assignable_to(expected_type)
-                && !is_table_subtype_impl(ir, resolved_expr_cache, &actual_type, expected_type)
-            {
-                details.push(StructuralMismatchDetail::WrongType {
-                    field: field_name.clone(),
-                    expected: expected_type.clone(),
-                    actual: actual_type,
-                });
             }
-        } else if !is_optional && !lateinit {
-            details.push(StructuralMismatchDetail::Missing { field: field_name.clone() });
+            Some(None) => {}
+            None => {
+                if !is_optional && !lateinit {
+                    details.push(StructuralMismatchDetail::Missing { field: field_name.clone() });
+                }
+            }
         }
     }
     details
+}
+
+/// Resolve the type an actual table supplies for an expected field name.
+///
+/// Outer `None` means the field is absent; `Some(None)` means it is present but
+/// its type couldn't be resolved (treated as a match); `Some(Some(t))` carries
+/// the resolved type. First checks named fields, then — for integer-index
+/// expected fields written as `[N]` (e.g. the `{ [1]: T }` table-literal form) —
+/// falls back to the actual table's positional element, since in Lua `{ x }` is
+/// `{ [1] = x }`.
+fn actual_field_type_impl(
+    ir: &Ir,
+    resolved_expr_cache: &[Option<ValueType>],
+    at: &crate::types::TableInfo,
+    field_name: &str,
+) -> Option<Option<ValueType>> {
+    let expr_type = |expr_id: ExprId| -> Option<ValueType> {
+        match ir.expr(expr_id) {
+            Expr::Literal(vt) => Some(vt.clone()),
+            Expr::FunctionDef(idx) => Some(ValueType::Function(Some(*idx))),
+            Expr::TableConstructor(idx) => Some(ValueType::Table(Some(*idx))),
+            _ => resolved_expr_cache.get(expr_id.val()).and_then(|v| v.clone()),
+        }
+    };
+    if let Some(actual_field) = at.fields.get(field_name) {
+        return Some(actual_field.annotation.clone().or_else(|| expr_type(actual_field.expr)));
+    }
+    // Integer-index expected field `[N]`: satisfy from the array's positional
+    // element, or from a numeric-keyed map's value type.
+    if let Some(n) = field_name.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+    {
+        if let Some(&elem) = at.array_fields.get(n - 1) {
+            return Some(expr_type(elem));
+        }
+        if at.value_type.is_some()
+            && at.key_type.as_ref().is_none_or(|k| ValueType::Number.is_assignable_to(k))
+        {
+            return Some(at.value_type.clone());
+        }
+    }
+    None
 }
 
 pub(crate) enum StructuralMismatchDetail {

@@ -1298,17 +1298,38 @@ local function useRow(row)
     --    ^ hover: (local) flag: boolean
 end
 
--- Integer-keyed table literal in @return type
+-- Integer-keyed table literal in @return type: a positional array literal
+-- `{"hello", 42}` is `{[1]="hello", [2]=42}`, so it satisfies `{[1]: string, [2]: number}`.
 ---@return {[1]: string, [2]: number}
 local function getPair()
     return {"hello", 42}
-    -- ^ diag: return-mismatch
 end
 local pair = getPair()
 local pairFirst = pair[1]
 --    ^ hover: (local) pairFirst: string
 local pairSecond = pair[2]
 --    ^ hover: (local) pairSecond: number
+
+-- Wrong element type against an integer-keyed table literal is still caught.
+---@return {[1]: string, [2]: number}
+local function getBadPair()
+    return {"hello", "world"}
+    -- ^ diag: return-mismatch
+end
+
+-- Nested array-of-struct against `{ [1]: { ... } }` (BlizzMove pattern):
+-- an array containing one struct satisfies a single-element integer-keyed literal.
+---@return nil | { [1]: { name: string, count: number } }
+local function getNested()
+    return {
+        {
+            ["name"] = "x",
+            ["count"] = 1,
+        },
+    }
+end
+local nested = getNested()
+--    ^ hover: (local) nested: {[1]: {count: number, name: string}}?
 
 -- Regression: @class + @type on same variable — @type should win for the variable type.
 ---@class TokenSet
