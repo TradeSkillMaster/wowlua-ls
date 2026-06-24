@@ -1372,6 +1372,18 @@ fn crossfile_addon_table_select() {
 }
 
 #[test]
+fn crossfile_infunc_field() {
+    // Namespace fields assigned only from inside function bodies (single-target,
+    // multi-target, deep-chain, and a complex/mixin-style value) must register
+    // existence-only so cross-file reads don't false-positive as undefined-field.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/infunc_field_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_select_field_access() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/file_d.lua",

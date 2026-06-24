@@ -1124,6 +1124,86 @@ pub(crate) fn scan_file_globals_with_synth(
         }
     }
 
+    // Register the *existence* of namespace/class fields assigned only from
+    // inside function bodies. The scan above walks only top-level + control-flow
+    // statements (via `collect_statements_recursive`), because the coarse
+    // cross-file scan cannot reliably *type* values produced inside functions
+    // (locals, `Mixin`'d frames, chained builder results, etc.) — committing a
+    // wrong concrete type there causes worse false positives than it fixes. But
+    // a field assigned to the addon namespace / a `@class` table from within a
+    // function (e.g. `ns.CurrentFont = GetFont()` in an event handler) is still
+    // a real field; never registering it makes every *read* of it elsewhere
+    // false-positive as `undefined-field`.
+    //
+    // So we emit an existence-only entry (`FieldValueKind::Unknown`, no type)
+    // for each such field. The build's Unknown-field pass registers an
+    // otherwise-absent field as a bare `table` with no annotation — enough to
+    // suppress `undefined-field` on reads without fabricating a type (so no
+    // `field-type-mismatch` on the write and no spurious `undefined-field` on
+    // its own sub-fields) — and *skips* fields that already carry a precise type
+    // or methods, so this never clobbers a better definition. Multi-target
+    // assignments (`a.x, a.y = f()`) are handled uniformly by iterating every
+    // LHS target.
+    for node in root.descendants() {
+        let Some(Statement::Assign(assign)) = Statement::cast(node) else { continue };
+        let Some(var_list) = assign.variable_list() else { continue };
+        let idents = var_list.identifiers();
+        // The main loop already precisely handles single-target, top-level (and
+        // control-flow) field writes. We only need to fill the gaps it leaves:
+        // writes nested inside a function body, and multi-target assignments
+        // (`a.x, a.y = ...`), which it does not scan at all.
+        let in_function = node.ancestors().any(|a| a.kind() == SyntaxKind::FunctionDefinition);
+        if !in_function && idents.len() < 2 { continue; }
+        for ident in &idents {
+            // Skip bracket-element writes (`ns.field[123] = ...`): those write to
+            // an element of the field, not to the field itself.
+            if ident.has_non_string_bracket_tail() { continue; }
+            let mut names = ident.names();
+            // Redirect `_G.field` to a top-level global (matches build_ir.rs).
+            if names.len() >= 2 && names[0] == "_G" && !local_vars.contains(&names[0]) {
+                names.remove(0);
+            }
+            if names.len() < 2 { continue; }
+            let root_name = &names[0];
+            let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
+                ADDON_NS_NAME.to_string()
+            } else if let Some(class_name) = class_vars.get(root_name) {
+                class_name.clone()
+            } else if let Some(type_name) = local_type_vars.get(root_name) {
+                type_name.clone()
+            } else {
+                // Not a known namespace/class root (e.g. a function-local table or
+                // `self`): the coarse scan can't attribute the field, so skip.
+                continue;
+            };
+            let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
+            let field_name = names[names.len()-1].clone();
+            let range = assign.syntax().text_range();
+            globals.push(ExternalGlobal {
+                name: canonical_name,
+                kind: ExternalGlobalKind::TableField(intermediates, field_name, FieldValueKind::Unknown),
+                params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(), overloads: Vec::new(),
+                doc: None, deprecated: false, nodiscard: false, constructor: false,
+                visibility: Visibility::Public, generics: Vec::new(),
+                defclass: None, defclass_parent: None, source_path: owned_path.clone(),
+                def_start: u32::from(range.start()), def_end: u32::from(range.end()),
+                builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
+                string_value: None, number_value: None,
+                is_override: false,
+                see: Vec::new(),
+                flavors: 0, flavor_guard: 0,
+                implicit_nil_return: false,
+                narrows_arg: None,
+                creates_global: None,
+                requires: Vec::new(),
+                body_derived_returns: false,
+                deferred_call_type: false,
+                name_start: u32::from(range.start()),
+                name_end: u32::from(range.end()),
+            });
+        }
+    }
+
     let addon_ns_class = addon_ns_var.as_ref()
         .and_then(|var| class_vars.get(var))
         .cloned();
