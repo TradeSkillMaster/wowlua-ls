@@ -333,6 +333,46 @@ fn send_progress(connection: &Connection, token: &NumberOrString, value: WorkDon
     )));
 }
 
+/// Begin a work-done progress for the background workspace-diagnostic warm
+/// (the cross-file re-check that runs off the main loop after edits/rebuilds).
+/// No-op when the client doesn't support progress or a warm progress is already
+/// active — successive coalesced warms share one progress span so the spinner
+/// stays up continuously instead of flickering between them.
+fn begin_warm_progress(
+    connection: &Connection,
+    progress_counter: &mut i32,
+    supports_progress: bool,
+    token_slot: &mut Option<NumberOrString>,
+) {
+    if !supports_progress || token_slot.is_some() {
+        return;
+    }
+    let token = NumberOrString::Number(*progress_counter);
+    *progress_counter += 1;
+    let create_req = Request::new(
+        RequestId::from(*progress_counter),
+        "window/workDoneProgress/create".to_string(),
+        lsp_types::WorkDoneProgressCreateParams { token: token.clone() },
+    );
+    let _ = connection.sender.send(Message::Request(create_req));
+    send_progress(connection, &token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
+        title: "wowlua_ls: Checking diagnostics".to_string(),
+        message: None,
+        percentage: None,
+        cancellable: Some(false),
+    }));
+    *token_slot = Some(token);
+}
+
+/// End the background-warm progress span if one is active.
+fn end_warm_progress(connection: &Connection, token_slot: &mut Option<NumberOrString>) {
+    if let Some(token) = token_slot.take() {
+        send_progress(connection, &token, WorkDoneProgress::End(WorkDoneProgressEnd {
+            message: Some("Ready".to_string()),
+        }));
+    }
+}
+
 pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     log::info!("Starting wowlua_ls");
     // Create the transport. Includes the stdio (stdin and stdout) versions but this could
@@ -736,6 +776,10 @@ fn main_loop(
     // falling back to full. The in-flight flag itself lives on
     // `ws.warm_in_flight` so request handlers can consult it.
     let mut pending_rewarm: Option<RebuildScope> = None;
+    // Active work-done progress span for the in-flight background warm, if any.
+    // Held across coalesced warms (a `pending_rewarm` that spawns immediately on
+    // completion keeps the same span) and ended only once no warm is in flight.
+    let mut warm_progress_token: Option<NumberOrString> = None;
 
     // Background stub-file analysis channel. Stub files are parsed + analyzed
     // off the main thread so large generated files (e.g. ClassicGlobals.lua,
@@ -762,6 +806,7 @@ fn main_loop(
         inputs.is_initial = true;
         ws.warm_in_flight = true;
         spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
+        begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token);
     }
 
     loop {
@@ -812,12 +857,20 @@ fn main_loop(
                     let inputs = ws.warm_inputs(affected);
                     ws.warm_in_flight = true;
                     spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
+                    // A coalesced warm took over; keep the existing progress span.
+                    begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token);
                 } else {
                     // Shouldn't happen (we just cleared warm_in_flight above),
                     // but defensively put the scope back.
                     pending_rewarm = Some(scope);
                 }
             }
+        }
+        // The warm completed and nothing re-spawned one — end the progress span.
+        // Skip when a lazy warm is about to take over so begin_warm_progress
+        // (which no-ops on an existing token) reuses the span without flicker.
+        if !ws.warm_in_flight && !ws.pending_lazy_warm {
+            end_warm_progress(&connection, &mut warm_progress_token);
         }
 
         // Spawn a background warm if handle_workspace_diagnostic deferred one.
@@ -829,6 +882,7 @@ fn main_loop(
             let inputs = ws.warm_inputs(None);
             ws.warm_in_flight = true;
             spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
+            begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token);
         }
 
         // Drain completed background stub analyses and patch into documents.
@@ -1275,6 +1329,7 @@ fn main_loop(
                     let inputs = ws.warm_inputs(affected);
                     ws.warm_in_flight = true;
                     spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
+                    begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token);
                 }
             }
 
