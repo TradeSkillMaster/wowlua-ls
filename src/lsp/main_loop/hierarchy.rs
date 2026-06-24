@@ -91,39 +91,94 @@ pub(super) fn find_references_across_workspace(
         .filter(|p| p.extension().is_some_and(|e| e == "lua") && !searched_paths.contains(*p))
         .collect();
 
-    let disk_results: Vec<(PathBuf, String, Vec<crate::syntax::TextRange>)> = unopened
+    // Reuse analyses cached for this generation. Code-lens "N usages" resolves the
+    // same lenses repeatedly and a single batch resolves dozens of distinct lenses
+    // — without the cache each one re-read + re-parsed + re-`resolve_types`'d every
+    // matching file from disk, blocking the loop for seconds. Snapshot the relevant
+    // entries as cheap `Arc` clones so the parallel section can read them without
+    // holding the `Mutex` lock across threads.
+    let generation = ws.ws_generation;
+    let cached: HashMap<PathBuf, Arc<CachedAnalyzedFile>> = {
+        let cache = ws.xfile_analysis_cache.lock().unwrap();
+        if cache.generation == generation {
+            unopened.iter()
+                .filter_map(|p| cache.files.get(*p).map(|a| ((*p).clone(), Arc::clone(a))))
+                .collect()
+        } else {
+            HashMap::new()
+        }
+    };
+
+    struct DiskHit {
+        path: PathBuf,
+        analyzed: Arc<CachedAnalyzedFile>,
+        refs: Vec<crate::syntax::TextRange>,
+        /// Newly built this call (absent from the snapshot) → insert into the cache.
+        fresh: bool,
+    }
+
+    let disk_hits: Vec<DiskHit> = unopened
         .par_iter()
         .filter_map(|&path| {
-            let text = std::fs::read_to_string(path).ok()?;
-            if crate::has_shebang(&text) { return None; }
-            if !text.contains(xfile_target.name()) { return None; }
-            let tree = crate::syntax::parser::parse(&text);
-            let addon_table_override = ws.pre_globals.addon_table_for_root(ws.configs.addon_root_for(path));
-            let mut analysis = Analysis::new_with_tree(
-                &tree, Arc::clone(&ws.pre_globals), AnalysisConfig {
-                    framexml_enabled: ws.configs.framexml_enabled_for(path),
-                    allowed_read_globals: ws.configs.allowed_read_globals_for(path),
-                    allowed_write_globals: ws.configs.allowed_write_globals_for(path),
-                    allow_slash_commands: ws.configs.allow_slash_commands_for(path),
-                    allow_binding_globals: ws.configs.allow_binding_globals_for(path),
-                    project_flavors: ws.configs.flavors_for(path),
-                    backward_param_types: ws.configs.backward_param_types_for(path),
-                    correlated_return_overloads: ws.configs.correlated_return_overloads_for(path),
-                    implicit_protected_prefix: ws.configs.implicit_protected_prefix_for(path),
-                    addon_table_override,
-                    addon_folder_name: ws.configs.addon_name_for(path),
-                },
+            let (analyzed, fresh) = if let Some(a) = cached.get(path) {
+                (Arc::clone(a), false)
+            } else {
+                let text = std::fs::read_to_string(path).ok()?;
+                if crate::has_shebang(&text) { return None; }
+                // Files lacking the name can't match. Skip without parsing; they
+                // stay uncached (a fresh read off the OS page cache is cheap).
+                if !text.contains(xfile_target.name()) { return None; }
+                let tree = crate::syntax::parser::parse(&text);
+                let addon_table_override = ws.pre_globals.addon_table_for_root(ws.configs.addon_root_for(path));
+                let mut analysis = Analysis::new_with_tree(
+                    &tree, Arc::clone(&ws.pre_globals), AnalysisConfig {
+                        framexml_enabled: ws.configs.framexml_enabled_for(path),
+                        allowed_read_globals: ws.configs.allowed_read_globals_for(path),
+                        allowed_write_globals: ws.configs.allowed_write_globals_for(path),
+                        allow_slash_commands: ws.configs.allow_slash_commands_for(path),
+                        allow_binding_globals: ws.configs.allow_binding_globals_for(path),
+                        project_flavors: ws.configs.flavors_for(path),
+                        backward_param_types: ws.configs.backward_param_types_for(path),
+                        correlated_return_overloads: ws.configs.correlated_return_overloads_for(path),
+                        implicit_protected_prefix: ws.configs.implicit_protected_prefix_for(path),
+                        addon_table_override,
+                        addon_folder_name: ws.configs.addon_name_for(path),
+                    },
+                );
+                analysis.resolve_types();
+                let result = analysis.into_result();
+                (Arc::new(CachedAnalyzedFile { text, tree, result }), true)
+            };
+            if !fresh && !analyzed.text.contains(xfile_target.name()) {
+                return None;
+            }
+            let refs = analyzed.result.references_for_target(
+                &analyzed.tree, &xfile_target, include_declaration, strict_shadow,
             );
-            analysis.resolve_types();
-            let result = analysis.into_result();
-            let refs = result.references_for_target(&tree, &xfile_target, include_declaration, strict_shadow);
-            if refs.is_empty() { None } else { Some((path.clone(), text, refs)) }
+            if refs.is_empty() && !fresh { return None; }
+            Some(DiskHit { path: path.clone(), analyzed, refs, fresh })
         })
         .collect();
 
-    for (path, text, refs) in disk_results {
-        let Some(uri) = abs_path_to_uri(&path) else { continue; };
-        push_file(&mut locations, &uri, &text, &refs);
+    // Insert newly-built analyses for reuse by later queries in this generation.
+    {
+        let mut cache = ws.xfile_analysis_cache.lock().unwrap();
+        if cache.generation != generation {
+            cache.files.clear();
+            cache.generation = generation;
+        }
+        for hit in &disk_hits {
+            if hit.fresh && cache.files.len() < XFILE_CACHE_MAX_FILES {
+                cache.files.entry(hit.path.clone())
+                    .or_insert_with(|| Arc::clone(&hit.analyzed));
+            }
+        }
+    }
+
+    for hit in &disk_hits {
+        if hit.refs.is_empty() { continue; }
+        let Some(uri) = abs_path_to_uri(&hit.path) else { continue; };
+        push_file(&mut locations, &uri, &hit.analyzed.text, &hit.refs);
     }
 
     Some(locations)

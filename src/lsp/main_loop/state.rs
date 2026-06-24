@@ -376,6 +376,7 @@ impl WorkspaceState {
             warm_in_flight: false,
             pending_lazy_warm: false,
             live_generation: Arc::new(AtomicU64::new(0)),
+            xfile_analysis_cache: std::sync::Mutex::new(super::XfileAnalysisCache::default()),
         }
     }
 }

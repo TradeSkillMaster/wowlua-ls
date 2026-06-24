@@ -223,7 +223,42 @@ struct WorkspaceState {
     /// This keeps rapid edits (each forcing a rebuild) from stacking up
     /// CPU-saturating warms that starve the single-threaded main loop.
     live_generation: Arc<AtomicU64>,
+    /// Per-generation cache of parsed + type-resolved *unopened* workspace files,
+    /// shared by every cross-file reference query (`find_references_across_workspace`).
+    /// Code-lens "N usages" resolves the same lenses repeatedly (scroll/repaint)
+    /// and a single batch resolves dozens of distinct lenses — without this each
+    /// resolve re-read, re-parsed, and re-`resolve_types`'d every matching file
+    /// from disk, blocking the single-threaded loop for seconds (the reported
+    /// IntelliJ stalls). Keyed by `ws_generation`; self-invalidates on rebuild.
+    /// Lives behind `Mutex` (not `RefCell`) so `WorkspaceState` stays `Sync` for
+    /// the rayon closures elsewhere that capture `&WorkspaceState`. The query
+    /// only locks it on the main loop thread, outside its parallel section.
+    xfile_analysis_cache: std::sync::Mutex<XfileAnalysisCache>,
 }
+
+/// One unopened workspace file, parsed and type-resolved, cached for reuse across
+/// repeated cross-file reference queries. The retained `text` powers line-number
+/// conversion for the matched ranges without re-reading from disk.
+pub(super) struct CachedAnalyzedFile {
+    pub(super) text: String,
+    pub(super) tree: SyntaxTree,
+    pub(super) result: AnalysisResult,
+}
+
+/// Generation-scoped store backing [`WorkspaceState::xfile_analysis_cache`].
+/// Cleared whenever `ws_generation` advances, so an entry can never be served
+/// stale relative to the cross-file index it was built against.
+#[derive(Default)]
+pub(super) struct XfileAnalysisCache {
+    pub(super) generation: u64,
+    pub(super) files: HashMap<PathBuf, Arc<CachedAnalyzedFile>>,
+}
+
+/// Upper bound on cached analyzed files, so an enormous monorepo can't grow the
+/// cache without limit within a single generation. Comfortably above realistic
+/// addon sizes; once reached, further files just aren't cached (they still
+/// resolve correctly, only without the reuse speedup).
+pub(super) const XFILE_CACHE_MAX_FILES: usize = 6000;
 
 /// All inputs a workspace-diagnostic warm needs, snapshotted as owned / `Arc`
 /// data so the warm can run on a background thread (see `spawn_warm`). The
@@ -630,6 +665,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         warm_in_flight: false,
         pending_lazy_warm: false,
         live_generation: Arc::new(AtomicU64::new(0)),
+        xfile_analysis_cache: std::sync::Mutex::new(XfileAnalysisCache::default()),
     };
     let plugin_paths = ws.configs.all_plugins();
     if !plugin_paths.is_empty() {
@@ -2820,5 +2856,115 @@ mod tests {
         let mut xml_paths = Vec::new();
         collect_lua_paths_filtered(dir, &mut lua_paths, &mut xml_paths, configs);
         lua_paths
+    }
+
+    /// Build a `WorkspaceState` (with cross-file `pre_globals` and the per-file
+    /// path index) over a directory of `.lua` files, for cross-file query tests.
+    fn build_ws_for_dir(dir: &std::path::Path) -> WorkspaceState {
+        let mut configs = crate::config::ProjectConfigs::default();
+        configs.try_load(dir);
+        let scan = crate::lsp::scan_workspace(std::slice::from_ref(&dir.to_path_buf()), &mut configs);
+        let mut sa = scan.aliases;
+        crate::annotations::register_event_type_aliases(&mut sa, &scan.events);
+        let ipp = configs.implicit_protected_prefix_for(dir);
+        let mut pg = PreResolvedGlobals::build(
+            &scan.globals, &scan.classes, &sa, ipp,
+            &scan.addon_ns_class_files, &scan.callable_classes,
+        );
+        pg.merge_events(&scan.events);
+
+        let mut ws = WorkspaceState::for_test(Some(dir.to_path_buf()));
+        ws.pre_globals = Arc::new(pg);
+        ws.configs = Arc::new(configs);
+        // The disk scan enumerates `ws_file_globals.keys()`; values are unused
+        // there (cross-file resolution reads `pre_globals`), so seed empty vecs.
+        let paths = collect_lua_paths(dir, &mut crate::config::ProjectConfigs::default());
+        for p in paths {
+            ws.ws_file_globals.insert(p, Vec::new());
+        }
+        ws.ws_generation = 1;
+        ws
+    }
+
+    fn open_doc(ws: &WorkspaceState, path: &std::path::Path) -> (lsp_types::Uri, Document) {
+        let uri = abs_path_to_uri(path).unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        let tree = parse_lua(&text);
+        let analysis = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
+        let doc = Document {
+            text, pending_text: None, analysis: Some(analysis), tree: Some(tree),
+            toc: None, plugin_diags: Vec::new(), dirty: false,
+            ws_generation: ws.ws_generation, pending_line_delta: None,
+            pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0,
+        };
+        (uri, doc)
+    }
+
+    #[test]
+    fn xfile_reference_cache_reuses_analysis_within_generation() {
+        // Copy the cross-file fixture to a unique temp dir so we can delete a file
+        // on disk mid-test and prove the second query is served from the cache
+        // (not re-read from disk). `UsedGlobal` is defined in defs.lua and
+        // referenced in user.lua.
+        let tmp = std::env::temp_dir().join(format!("wowlua_xref_cache_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let src = std::env::current_dir().unwrap().join("tests/unused-function");
+        let defs = tmp.join("defs.lua");
+        let user = tmp.join("user.lua");
+        std::fs::copy(src.join("defs.lua"), &defs).unwrap();
+        std::fs::copy(src.join("user.lua"), &user).unwrap();
+
+        let ws = build_ws_for_dir(&tmp);
+        // Open defs.lua (the definition site); user.lua stays unopened on disk so
+        // it flows through the cached disk-scan path.
+        let (defs_uri, defs_doc) = open_doc(&ws, &defs);
+        let mut documents: HashMap<String, Document> = HashMap::new();
+        documents.insert(defs_uri.to_string(), defs_doc);
+
+        // `function UsedGlobal()` is on line index 3; the name starts at column 9.
+        let pos = Position { line: 3, character: 9 };
+        let user_uri_str = abs_path_to_uri(&user).unwrap().to_string();
+
+        let locs1 = find_references_across_workspace(&defs_uri, pos, true, false, &documents, &ws)
+            .expect("target resolves");
+        assert!(
+            locs1.iter().any(|l| l.uri.to_string() == user_uri_str),
+            "first query must find the cross-file reference in user.lua: {locs1:?}"
+        );
+
+        // The unopened file's analysis is now cached for this generation.
+        {
+            let cache = ws.xfile_analysis_cache.lock().unwrap();
+            assert_eq!(cache.generation, ws.ws_generation);
+            assert!(cache.files.contains_key(&user), "user.lua analysis cached");
+        }
+
+        // Delete user.lua from disk. A re-read would now fail, so if the second
+        // query still finds the reference it can only have come from the cache.
+        std::fs::remove_file(&user).unwrap();
+        let locs2 = find_references_across_workspace(&defs_uri, pos, true, false, &documents, &ws)
+            .expect("target resolves");
+        assert_eq!(
+            locs1.len(), locs2.len(),
+            "cached query returns identical results despite the file being gone"
+        );
+        assert!(
+            locs2.iter().any(|l| l.uri.to_string() == user_uri_str),
+            "cached reference survives the on-disk deletion"
+        );
+
+        // Advancing the generation invalidates the cache. With user.lua gone from
+        // disk the reference can no longer be recovered.
+        let mut ws2 = ws;
+        ws2.ws_generation += 1;
+        let locs3 = find_references_across_workspace(&defs_uri, pos, true, false, &documents, &ws2)
+            .expect("target resolves");
+        assert!(
+            !locs3.iter().any(|l| l.uri.to_string() == user_uri_str),
+            "stale-generation cache is dropped; deleted file yields no reference"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
