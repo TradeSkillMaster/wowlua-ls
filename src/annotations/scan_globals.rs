@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall, Operator};
+use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall, Operator,
+    LocalAssign, FunctionDefinition, ForCountLoop, ForInLoop, ParameterList};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use super::{
@@ -30,6 +31,57 @@ fn unwrap_logical_chain<'a>(mut expr: Expression<'a>) -> Expression<'a> {
         }
         return expr;
     }
+}
+
+/// Collect every name bound as a local *anywhere* in the file: `local` declarations,
+/// `local function` names, function parameters (named and anonymous), and for-loop
+/// variables — including those inside function bodies. Used to decide whether a bare
+/// `X = ...` assignment nested in a function body is a genuine implicit global creation
+/// (name absent from this set) or just a reassignment of a function-scoped local.
+///
+/// This is a deliberate file-wide over-approximation: if a name is *ever* a local in
+/// the file, an assignment to it is treated as a local write and not registered as a
+/// cross-file global. That conservatively avoids leaking function locals as phantom
+/// globals at the cost of occasionally missing a genuine global that shadows a same-named
+/// local elsewhere — the safe direction for the coarse cross-file scan.
+fn collect_all_local_names(root: &SyntaxNode<'_>) -> HashSet<String> {
+    let mut locals: HashSet<String> = HashSet::new();
+    for node in root.descendants() {
+        match node.kind() {
+            SyntaxKind::LocalAssignStatement => {
+                if let Some(assign) = LocalAssign::cast(node)
+                    && let Some(name_list) = assign.name_list() {
+                    locals.extend(name_list.names());
+                }
+            }
+            SyntaxKind::FunctionDefinition => {
+                if let Some(func) = FunctionDefinition::cast(node)
+                    && func.is_local()
+                    && let Some(name) = func.name() {
+                    locals.insert(name);
+                }
+            }
+            SyntaxKind::ParameterList => {
+                if let Some(params) = ParameterList::cast(node) {
+                    locals.extend(params.parameters());
+                }
+            }
+            SyntaxKind::ForCountLoop => {
+                if let Some(for_loop) = ForCountLoop::cast(node)
+                    && let Some(name) = for_loop.name() {
+                    locals.insert(name);
+                }
+            }
+            SyntaxKind::ForInLoop => {
+                if let Some(for_loop) = ForInLoop::cast(node)
+                    && let Some(name_list) = for_loop.name_list() {
+                    locals.extend(name_list.names());
+                }
+            }
+            _ => {}
+        }
+    }
+    locals
 }
 
 /// Extract named field kinds from a table constructor for `FieldValueKind::Table`.
@@ -1144,13 +1196,18 @@ pub(crate) fn scan_file_globals_with_synth(
     // or methods, so this never clobbers a better definition. Multi-target
     // assignments (`a.x, a.y = f()`) are handled uniformly by iterating every
     // LHS target.
+    // Names bound as locals (incl. params and for-vars) anywhere in the file —
+    // used to tell a genuine implicit-global write nested in a function body from
+    // a reassignment of a function-scoped local. Computed lazily on the first
+    // candidate so files without any in-function/multi-target writes pay nothing.
+    let mut all_local_names: Option<HashSet<String>> = None;
     for node in root.descendants() {
         let Some(Statement::Assign(assign)) = Statement::cast(node) else { continue };
         let Some(var_list) = assign.variable_list() else { continue };
         let idents = var_list.identifiers();
         // The main loop already precisely handles single-target, top-level (and
-        // control-flow) field writes. We only need to fill the gaps it leaves:
-        // writes nested inside a function body, and multi-target assignments
+        // control-flow) writes. We only need to fill the gaps it leaves: writes
+        // nested inside a function body, and multi-target assignments
         // (`a.x, a.y = ...`), which it does not scan at all.
         let in_function = node.ancestors().any(|a| a.kind() == SyntaxKind::FunctionDefinition);
         if !in_function && idents.len() < 2 { continue; }
@@ -1160,8 +1217,64 @@ pub(crate) fn scan_file_globals_with_synth(
             if ident.has_non_string_bracket_tail() { continue; }
             let mut names = ident.names();
             // Redirect `_G.field` to a top-level global (matches build_ir.rs).
+            let mut was_g_redirect = false;
             if names.len() >= 2 && names[0] == "_G" && !local_vars.contains(&names[0]) {
                 names.remove(0);
+                was_g_redirect = true;
+            }
+            // Single-name write: a bare `X = ...` (or `_G.X = ...`). The main loop
+            // only catches these at top level / control flow, so a global created
+            // inside a function body (e.g. a saved-variable global initialized in an
+            // event handler) is otherwise never registered, making every cross-file
+            // *read* of it false-positive as `undefined-global`. Register an
+            // existence-only entry (no type) so reads resolve, mirroring the
+            // Unknown-field treatment below. A bare name that is a local *anywhere*
+            // in the file is a local reassignment, not a global — skip it (an
+            // explicit `_G.X = ...` write is always a global, so it bypasses the
+            // local check).
+            // Extract the last Name token range from the identifier for precise
+            // go-to-definition navigation (highlights just the name, not the
+            // whole assignment statement).
+            let last_name_range = ident.syntax().descendants_with_tokens()
+                .filter_map(|c| match c {
+                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text_range()),
+                    _ => None,
+                })
+                .last();
+            if names.len() == 1 {
+                let name = &names[0];
+                if !was_g_redirect {
+                    let locals = all_local_names
+                        .get_or_insert_with(|| collect_all_local_names(&root));
+                    if locals.contains(name) { continue; }
+                }
+                let range = assign.syntax().text_range();
+                let (ns, ne) = last_name_range
+                    .map(|r| (u32::from(r.start()), u32::from(r.end())))
+                    .unwrap_or((u32::from(range.start()), u32::from(range.end())));
+                globals.push(ExternalGlobal {
+                    name: name.clone(),
+                    kind: ExternalGlobalKind::Variable(FieldValueKind::Unknown),
+                    params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(), overloads: Vec::new(),
+                    doc: None, deprecated: false, nodiscard: false, constructor: false,
+                    visibility: Visibility::Public, generics: Vec::new(),
+                    defclass: None, defclass_parent: None, source_path: owned_path.clone(),
+                    def_start: u32::from(range.start()), def_end: u32::from(range.end()),
+                    builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
+                    string_value: None, number_value: None,
+                    is_override: false,
+                    see: Vec::new(),
+                    flavors: 0, flavor_guard: 0,
+                    implicit_nil_return: false,
+                    narrows_arg: None,
+                    creates_global: None,
+                    requires: Vec::new(),
+                    body_derived_returns: false,
+                    deferred_call_type: false,
+                    name_start: ns,
+                    name_end: ne,
+                });
+                continue;
             }
             if names.len() < 2 { continue; }
             let root_name = &names[0];
@@ -1179,6 +1292,9 @@ pub(crate) fn scan_file_globals_with_synth(
             let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
             let field_name = names[names.len()-1].clone();
             let range = assign.syntax().text_range();
+            let (ns, ne) = last_name_range
+                .map(|r| (u32::from(r.start()), u32::from(r.end())))
+                .unwrap_or((u32::from(range.start()), u32::from(range.end())));
             globals.push(ExternalGlobal {
                 name: canonical_name,
                 kind: ExternalGlobalKind::TableField(intermediates, field_name, FieldValueKind::Unknown),
@@ -1198,8 +1314,8 @@ pub(crate) fn scan_file_globals_with_synth(
                 requires: Vec::new(),
                 body_derived_returns: false,
                 deferred_call_type: false,
-                name_start: u32::from(range.start()),
-                name_end: u32::from(range.end()),
+                name_start: ns,
+                name_end: ne,
             });
         }
     }
