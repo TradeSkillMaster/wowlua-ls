@@ -1447,3 +1447,36 @@ local KeyedOwner = {}
 
 local keyedMap = KeyedOwner.mapping
 --    ^ hover: (local) keyedMap: table<string, KeyedValue>
+
+-- @alias with a trailing `# description` comment. The comment must be stripped
+-- from the type body; otherwise it glues onto the type, the alias fails to
+-- resolve, and is silently dropped from the registry — making every use site
+-- false-positive as undefined-doc-name.
+---@class FrameEntry
+---@field name string
+---@alias FrameTable table<string, FrameEntry> # Frame name as key
+-- Alias whose body references the previous alias, also carrying a `# comment`.
+---@alias AddonFrameTable table<string, FrameTable> # Addon name as key
+
+---@param frames FrameTable
+local function registerFrames(frames)
+--                            ^ hover: (param) frames: FrameTable
+end
+
+---@param addonFrames AddonFrameTable
+local function registerAddonFrames(addonFrames)
+--                                 ^ hover: (param) addonFrames: AddonFrameTable
+end
+
+-- Same trailing-comment stripping for a string-union alias.
+---@alias SaveStrategy "session"|"permanent"|"off" # how positions are saved
+local strategyVar ---@type SaveStrategy
+--                         ^ hover: (alias) SaveStrategy = "session" | "permanent" | "off"
+
+-- The `@ description` marker (LuaCATS allows it alongside `#`) must be stripped
+-- the same way, or the alias type fails to resolve and is dropped.
+---@alias AtCommentedTable table<string, FrameEntry> @ frame name as key
+---@param atFrames AtCommentedTable
+local function registerAtFrames(atFrames)
+--                              ^ hover: (param) atFrames: AtCommentedTable
+end

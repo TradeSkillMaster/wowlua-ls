@@ -3,7 +3,7 @@ use crate::ast::AstNode;
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::{ResolvedOverload, ValueType};
-use annotation_types::find_hash_comment;
+use annotation_types::{find_hash_comment, find_inline_description};
 
 // ── Annotation types ─────────────────────────────────────────────────────────
 
@@ -1519,6 +1519,16 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             let after_name = rest[alias_name_end..].trim();
             // Strip leading colon from type portion (for `@alias Foo<K,V>: TYPE` syntax)
             let type_str = after_name.strip_prefix(':').unwrap_or(after_name).trim();
+            // Strip a trailing `# ...` / `@ ...` description (LuaCATS allows a
+            // per-alias doc comment, e.g. `@alias T table<string, V> # Frame
+            // name`). Without this the comment is glued onto the type body and
+            // the whole thing fails to resolve, silently dropping the alias from
+            // the registry.
+            let type_str = if let Some(desc_pos) = find_inline_description(type_str) {
+                type_str[..desc_pos].trim()
+            } else {
+                type_str
+            };
             if !name_raw.is_empty() {
                 // Parse type params: @alias Foo<K, V> TYPE → name="Foo", type_params=["K","V"]
                 // Constraints are supported too: @alias Foo<T: Animal> → params=["T"], constraints=[Some("Animal")]
@@ -1561,6 +1571,9 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             // member (`---|>"value"` selects the preferred completion). Strip it
             // so the value parses as a plain type/literal rather than `>"value"`.
             let rest = rest.strip_prefix('>').map(str::trim_start).unwrap_or(rest);
+            // Strip only `#` here, not `@`: in a `---|` line an `@`-prefixed tail
+            // is a meaningful per-case description that `parse_return_line`
+            // captures for tuple-union returns (see `find_inline_description`).
             let rest_no_hash = if let Some(hash_pos) = find_hash_comment(rest) {
                 rest[..hash_pos].trim()
             } else {

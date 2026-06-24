@@ -618,18 +618,42 @@ pub(crate) fn strip_return_description(s: &str) -> &str {
     s[..end].trim_end()
 }
 
-pub(super) fn find_hash_comment(s: &str) -> Option<usize> {
+/// Find the start of an inline description marker in an annotation type body.
+///
+/// Always matches an unquoted `#`. When `match_at` is true, also matches a
+/// whitespace-preceded `@` (the second LuaCATS description marker).
+///
+/// `match_at = false` (`find_hash_comment`): used by the `---|` continuation
+/// path where an `@`-prefixed tail is a meaningful per-case description that
+/// `parse_return_line` captures for tuple-union returns.
+///
+/// `match_at = true` (`find_inline_description`): used by the single-line
+/// `@alias` parser which consumes the whole remainder as the type — without
+/// stripping, the description glues onto the type body, makes it fail to
+/// resolve, and silently drops the alias from the registry.
+fn find_description_marker(s: &str, match_at: bool) -> Option<usize> {
     let mut in_single = false;
     let mut in_double = false;
+    let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
             '\'' if !in_double => in_single = !in_single,
             '"' if !in_single => in_double = !in_double,
             '#' if !in_single && !in_double => return Some(i),
+            '@' if match_at && !in_single && !in_double
+                && i > 0 && bytes[i - 1].is_ascii_whitespace() => return Some(i),
             _ => {}
         }
     }
     None
+}
+
+pub(super) fn find_hash_comment(s: &str) -> Option<usize> {
+    find_description_marker(s, false)
+}
+
+pub(super) fn find_inline_description(s: &str) -> Option<usize> {
+    find_description_marker(s, true)
 }
 
 pub(crate) fn extract_type_prefix(s: &str) -> &str {
