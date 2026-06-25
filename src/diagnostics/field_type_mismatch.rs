@@ -89,12 +89,20 @@ impl DiagnosticPass for FieldTypeMismatch {
                 if rhs_field.annotation.is_some() { continue; }
                 let Some(class_field) = class_table.fields.get(field_name) else { continue };
                 let Some(ref expected) = class_field.annotation else { continue };
-                let class_field_def_range = class_field.def_range;
-                let class_table_idx_val = *class_table_idx;
                 check_constructor_field(
-                    analysis, field_name, rhs_field.expr, rhs_field.def_range,
-                    rhs_table_idx, expected, class_field.lateinit,
-                    class_table_idx_val, class_field_def_range,
+                    analysis,
+                    ConstructorField {
+                        field_name,
+                        field_expr: rhs_field.expr,
+                        def_range: rhs_field.def_range,
+                        fallback_table_idx: rhs_table_idx,
+                    },
+                    ExpectedField {
+                        expected,
+                        lateinit: class_field.lateinit,
+                        class_table_idx: *class_table_idx,
+                        class_field_def_range: class_field.def_range,
+                    },
                     excess_inject, diags,
                 );
             }
@@ -132,11 +140,20 @@ impl DiagnosticPass for FieldTypeMismatch {
                 for (field_name, field_expr, def_range) in &inner_fields {
                     let Some(expected_field) = analysis.get_field(elem_table_idx, field_name) else { continue };
                     let Some(ref expected) = expected_field.annotation else { continue };
-                    let ef_def_range = expected_field.def_range;
                     check_constructor_field(
-                        analysis, field_name, *field_expr, *def_range,
-                        inner_table_idx, expected, expected_field.lateinit,
-                        elem_table_idx, ef_def_range,
+                        analysis,
+                        ConstructorField {
+                            field_name,
+                            field_expr: *field_expr,
+                            def_range: *def_range,
+                            fallback_table_idx: inner_table_idx,
+                        },
+                        ExpectedField {
+                            expected,
+                            lateinit: expected_field.lateinit,
+                            class_table_idx: elem_table_idx,
+                            class_field_def_range: expected_field.def_range,
+                        },
                         excess_inject, diags,
                     );
                 }
@@ -145,24 +162,35 @@ impl DiagnosticPass for FieldTypeMismatch {
     }
 }
 
-/// Check a single constructor field's actual type against an expected annotation type.
-/// Shared by Phase 2 (class constructor fields) and Phase 3 (array element fields).
-/// `class_table_idx` is the table where the field annotation lives (for related info).
-/// `class_field_def_range` is the annotation's source range (for related info).
-#[allow(clippy::too_many_arguments)]
-fn check_constructor_field(
-    analysis: &AnalysisResult,
-    field_name: &str,
+/// A constructor field whose actual value type is being checked.
+/// `fallback_table_idx` supplies a source range when the field has no `def_range`.
+struct ConstructorField<'a> {
+    field_name: &'a str,
     field_expr: ExprId,
     def_range: Option<(u32, u32)>,
     fallback_table_idx: TableIndex,
-    expected: &ValueType,
+}
+
+/// The declared `@field` annotation a constructor field is checked against.
+/// `class_table_idx`/`class_field_def_range` locate the annotation for related info.
+struct ExpectedField<'a> {
+    expected: &'a ValueType,
     lateinit: bool,
     class_table_idx: TableIndex,
     class_field_def_range: Option<(u32, u32)>,
+}
+
+/// Check a single constructor field's actual type against an expected annotation type.
+/// Shared by Phase 2 (class constructor fields) and Phase 3 (array element fields).
+fn check_constructor_field(
+    analysis: &AnalysisResult,
+    field: ConstructorField,
+    expected: ExpectedField,
     excess_inject: &mut Vec<InjectFieldCheck>,
     diags: &mut Vec<WowDiagnostic>,
 ) {
+    let ConstructorField { field_name, field_expr, def_range, fallback_table_idx } = field;
+    let ExpectedField { expected, lateinit, class_table_idx, class_field_def_range } = expected;
     let Some(actual) = analysis.resolve_expr_type(field_expr) else { return };
     if matches!(actual, ValueType::Nil) { return; }
 

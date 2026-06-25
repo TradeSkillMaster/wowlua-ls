@@ -8,6 +8,7 @@ use super::{
     PreResolvedGlobals, annotation_type_references_type_params,
     substitute_annotation_type, record_field_location, walk_deep_path,
     resolve_funcall_chain, GlobalLookupCtx, populate_table_fields,
+    FnBuildCtx, FnMeta, DeepPathCtx,
 };
 
 struct BuildOnStubsContext<'a> {
@@ -150,6 +151,33 @@ impl<'a> BuildOnStubsContext<'a> {
         PreResolvedGlobals::resolve_annotation(at, &self.classes, &self.aliases, &self.parameterized_aliases)
     }
 
+    /// Bundle the IR arenas and class/alias registries into a [`FnBuildCtx`] for
+    /// `build_function`/`materialize_fun_type` (mirrors `BuildContext::fn_build_ctx`).
+    fn fn_build_ctx(&mut self) -> FnBuildCtx<'_> {
+        FnBuildCtx {
+            scopes: &mut self.scopes,
+            symbols: &mut self.symbols,
+            functions: &mut self.functions,
+            tables: &mut self.tables,
+            exprs: &mut self.exprs,
+            classes: &self.classes,
+            aliases: &self.aliases,
+            parameterized_aliases: &self.parameterized_aliases,
+            alias_fun_types: &self.alias_fun_types,
+        }
+    }
+
+    /// Bundle the arenas and build-state maps that `walk_deep_path` writes into.
+    fn deep_path_ctx(&mut self) -> DeepPathCtx<'_> {
+        DeepPathCtx {
+            tables: &mut self.tables,
+            exprs: &mut self.exprs,
+            sub_tables: &mut self.sub_tables,
+            field_locations: &mut self.field_locations,
+            implicit_protected_prefix: self.implicit_protected_prefix,
+        }
+    }
+
     fn global_lookup_ctx(&self) -> GlobalLookupCtx<'_> {
         GlobalLookupCtx {
             tables: &self.tables,
@@ -273,13 +301,8 @@ impl<'a> BuildOnStubsContext<'a> {
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
                     if let Some(sig) = parse_overload(name) {
                         let func_idx = PreResolvedGlobals::build_function(
-                            &sig.params, &sig.returns, &[], &[], &[], None, Vec::new(),
-                            false, false, None, None, &[],
-                            None, None, false, None, None, None, Vec::new(), false, None, &[],
-                            false, 0, 0,
-                            dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                            &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
-                            &self.alias_fun_types,
+                            FnMeta::minimal(&sig.params, &sig.returns, dummy_node),
+                            &mut self.fn_build_ctx(),
                         );
                         Some(ValueType::Function(Some(func_idx)))
                     } else {
@@ -342,13 +365,13 @@ impl<'a> BuildOnStubsContext<'a> {
             let local_idx = table_idx.ext_offset();
             let overload = &class.overloads[0];
             let func_idx = PreResolvedGlobals::build_function(
-                &overload.params, &overload.returns, &[], &[], &[], None, Vec::new(),
-                false, false, None, None, &class.generics,
-                None, None, false, None, None, None, Vec::new(), false, Some(&class.name), &class.type_params,
-                false, 0, 0,
-                dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
-                &self.alias_fun_types,
+                FnMeta {
+                    generic_annotations: &class.generics,
+                    owner_class_name: Some(&class.name),
+                    class_type_params: &class.type_params,
+                    ..FnMeta::minimal(&overload.params, &overload.returns, dummy_node)
+                },
+                &mut self.fn_build_ctx(),
             );
             self.tables[local_idx].call_func = Some(func_idx);
         }
@@ -368,9 +391,7 @@ impl<'a> BuildOnStubsContext<'a> {
         match annotation_type {
             AnnotationType::Fun(params, returns, is_vararg) => {
                 Some(PreResolvedGlobals::materialize_fun_type(
-                    params, returns, *is_vararg, gen_context,
-                    dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                    &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                    params, returns, *is_vararg, gen_context, dummy_node, &mut self.fn_build_ctx(),
                 ))
             }
             AnnotationType::Union(members) => {
@@ -519,8 +540,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     let Some(&root_idx) = self.non_class_tables.get(&g.name) else { continue };
                     let Some((leaf_idx, _)) = walk_deep_path(
                         root_idx, &g.name, path,
-                        &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                        &mut self.field_locations, g, self.implicit_protected_prefix,
+                        &mut self.deep_path_ctx(), g,
                     ) else { continue };
                     leaf_idx
                 } else {
@@ -568,14 +588,10 @@ impl<'a> BuildOnStubsContext<'a> {
                 let target_class_name = self.tables[target_local].class_name.clone();
                 let target_class_type_params = self.tables[target_local].class_type_params.clone();
                 let func_idx = PreResolvedGlobals::build_function(
-                    &g.params, &g.returns, &g.return_names, &g.return_descriptions, &g.overloads, g.doc.clone(), g.see.clone(),
-                    g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, g.requires.clone(), *is_colon,
-                    target_class_name.as_deref(), &target_class_type_params,
-                    g.implicit_nil_return, g.flavors, g.flavor_guard,
-                    dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                    &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
-                    &self.alias_fun_types,
+                    FnMeta::from_global(
+                        g, *is_colon, target_class_name.as_deref(), &target_class_type_params, dummy_node,
+                    ),
+                    &mut self.fn_build_ctx(),
                 );
                 if let Some(source_path) = &g.source_path {
                     self.function_locations.insert(func_idx, ExternalLocation {
@@ -664,8 +680,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
-                    &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g, self.implicit_protected_prefix,
+                    &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
@@ -759,8 +774,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
-                    &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g, self.implicit_protected_prefix,
+                    &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
@@ -810,13 +824,8 @@ impl<'a> BuildOnStubsContext<'a> {
             let local_idx = table_idx.ext_offset();
             if self.tables[local_idx].call_func.is_some() { continue; }
             let func_idx = PreResolvedGlobals::build_function(
-                std::slice::from_ref(&vararg_param), &[], &[], &[], &[], None, Vec::new(),
-                false, false, None, None, &[],
-                None, None, false, None, None, None, Vec::new(), false, None, &[],
-                false, 0, 0,
-                dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
-                &self.alias_fun_types,
+                FnMeta::minimal(std::slice::from_ref(&vararg_param), &[], dummy_node),
+                &mut self.fn_build_ctx(),
             );
             self.tables[local_idx].call_func = Some(func_idx);
             self.tables[local_idx].call_func_is_metamethod = true;
@@ -1148,13 +1157,8 @@ impl<'a> BuildOnStubsContext<'a> {
                 }
 
                 let func_idx = PreResolvedGlobals::build_function(
-                    &g.params, &g.returns, &g.return_names, &g.return_descriptions, &g.overloads, g.doc.clone(), g.see.clone(),
-                    g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, g.requires.clone(), false, None, &[],
-                    g.implicit_nil_return, g.flavors, g.flavor_guard,
-                    dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                    &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
-                    &self.alias_fun_types,
+                    FnMeta::from_global(g, false, None, &[], dummy_node),
+                    &mut self.fn_build_ctx(),
                 );
                 if let Some(path) = &g.source_path {
                     let loc = ExternalLocation {
@@ -1252,8 +1256,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
-                    &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g, self.implicit_protected_prefix,
+                    &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
@@ -1342,8 +1345,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
-                    &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g, self.implicit_protected_prefix,
+                    &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
@@ -1466,8 +1468,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
-                    &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g, self.implicit_protected_prefix,
+                    &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).

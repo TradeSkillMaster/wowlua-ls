@@ -469,62 +469,57 @@ fn populate_table_fields(
 /// `sub_tables`. First-time intermediate creations record a field_locations
 /// entry so that go-to-definition on an intermediate resolves to the originating
 /// assignment.
-#[allow(clippy::too_many_arguments)]
 fn walk_deep_path(
     root_idx: TableIndex,
     root_name: &str,
     path: &[String],
-    tables: &mut Vec<TableInfo>,
-    exprs: &mut Vec<Expr>,
-    sub_tables: &mut HashMap<(String, String), TableIndex>,
-    field_locations: &mut HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    ctx: &mut DeepPathCtx,
     g: &crate::annotations::ExternalGlobal,
-    implicit_protected_prefix: bool,
 ) -> Option<(TableIndex, String)> {
     let mut current_idx = root_idx;
     let mut current_name = root_name.to_string();
     for seg in path {
         let key = (current_name.clone(), seg.clone());
-        let next_idx = if let Some(&idx) = sub_tables.get(&key) {
+        let next_idx = if let Some(&idx) = ctx.sub_tables.get(&key) {
             idx
         } else {
             let local = current_idx.ext_offset();
             // Inspect the existing field (if any) at this segment: reuse when it
             // already points at a Table literal; bail when it holds a non-table
             // value; otherwise fall through and create a fresh sub-table.
-            let existing_status = tables[local].fields.get(seg).map(|fi| {
+            let existing_status = ctx.tables[local].fields.get(seg).map(|fi| {
                 if fi.expr.is_external()
-                    && let Expr::Literal(ValueType::Table(Some(idx))) = &exprs[fi.expr.ext_offset()] {
+                    && let Expr::Literal(ValueType::Table(Some(idx))) = &ctx.exprs[fi.expr.ext_offset()] {
                         return Some(*idx);
                     }
                 None
             });
             match existing_status {
                 Some(Some(idx)) => {
-                    let shared_class_name = tables[idx.ext_offset()].class_name.clone();
+                    let shared_class_name = ctx.tables[idx.ext_offset()].class_name.clone();
                     if shared_class_name.is_some() {
-                        let new_idx = TableIndex(EXT_BASE + tables.len());
+                        let new_idx = TableIndex(EXT_BASE + ctx.tables.len());
                         let mut parents = vec![idx];
-                        for &ancestor in &tables[idx.ext_offset()].parent_classes {
+                        for &ancestor in &ctx.tables[idx.ext_offset()].parent_classes {
                             if !parents.contains(&ancestor) {
                                 parents.push(ancestor);
                             }
                         }
-                        tables.push(TableInfo {
+                        ctx.tables.push(TableInfo {
                             class_name: shared_class_name,
                             parent_classes: parents,
                             ..Default::default()
                         });
-                        let expr_idx = ExprId(EXT_BASE + exprs.len());
-                        exprs.push(Expr::Literal(ValueType::Table(Some(new_idx))));
-                        if let Some(fi) = tables[local].fields.get_mut(seg) {
+                        let expr_idx = ExprId(EXT_BASE + ctx.exprs.len());
+                        ctx.exprs.push(Expr::Literal(ValueType::Table(Some(new_idx))));
+                        if let Some(fi) = ctx.tables[local].fields.get_mut(seg) {
                             fi.expr = expr_idx;
                             fi.annotation = Some(ValueType::Table(Some(new_idx)));
                         }
-                        sub_tables.insert(key.clone(), new_idx);
+                        ctx.sub_tables.insert(key.clone(), new_idx);
                         new_idx
                     } else {
-                        sub_tables.insert(key.clone(), idx);
+                        ctx.sub_tables.insert(key.clone(), idx);
                         idx
                     }
                 }
@@ -533,12 +528,12 @@ fn walk_deep_path(
                     return None;
                 }
                 None => {
-                    let new_idx = TableIndex(EXT_BASE + tables.len());
-                    tables.push(TableInfo::default());
-                    let expr_idx = ExprId(EXT_BASE + exprs.len());
-                    exprs.push(Expr::Literal(ValueType::Table(Some(new_idx))));
-                    let visibility = crate::annotations::default_visibility_for_name(seg, implicit_protected_prefix);
-                    tables[local].fields.insert(seg.clone(), FieldInfo {
+                    let new_idx = TableIndex(EXT_BASE + ctx.tables.len());
+                    ctx.tables.push(TableInfo::default());
+                    let expr_idx = ExprId(EXT_BASE + ctx.exprs.len());
+                    ctx.exprs.push(Expr::Literal(ValueType::Table(Some(new_idx))));
+                    let visibility = crate::annotations::default_visibility_for_name(seg, ctx.implicit_protected_prefix);
+                    ctx.tables[local].fields.insert(seg.clone(), FieldInfo {
                         expr: expr_idx,
                         visibility,
                         annotation: None,
@@ -551,8 +546,8 @@ fn walk_deep_path(
                         description: None,
                         from_scan: false,
                     });
-                    record_field_location(field_locations, current_idx, seg, g);
-                    sub_tables.insert(key.clone(), new_idx);
+                    record_field_location(ctx.field_locations, current_idx, seg, g);
+                    ctx.sub_tables.insert(key.clone(), new_idx);
                     new_idx
                 }
             }
@@ -575,6 +570,142 @@ struct GlobalLookupCtx<'a> {
     classes: &'a HashMap<String, TableIndex>,
     scope0_symbols: &'a HashMap<SymbolIdentifier, SymbolIndex>,
     symbols: &'a [Symbol],
+}
+
+/// The mutable arenas and build-state maps `walk_deep_path` writes into while
+/// materializing intermediate sub-tables for a deep namespace path.
+pub(crate) struct DeepPathCtx<'a> {
+    pub(crate) tables: &'a mut Vec<TableInfo>,
+    pub(crate) exprs: &'a mut Vec<Expr>,
+    pub(crate) sub_tables: &'a mut HashMap<(String, String), TableIndex>,
+    pub(crate) field_locations: &'a mut HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    pub(crate) implicit_protected_prefix: bool,
+}
+
+/// The IR arenas plus class/alias registries that function-building threads
+/// through `build_function`/`materialize_fun_type`. Bundling them keeps those
+/// call sites self-documenting and lets the arenas be borrowed mutably while the
+/// registries are read immutably (a split borrow off the owning context).
+pub(crate) struct FnBuildCtx<'a> {
+    pub(crate) scopes: &'a mut Vec<Scope>,
+    pub(crate) symbols: &'a mut Vec<Symbol>,
+    pub(crate) functions: &'a mut Vec<Function>,
+    pub(crate) tables: &'a mut Vec<TableInfo>,
+    pub(crate) exprs: &'a mut Vec<Expr>,
+    pub(crate) classes: &'a HashMap<String, TableIndex>,
+    pub(crate) aliases: &'a HashMap<String, ValueType>,
+    pub(crate) parameterized_aliases: &'a HashMap<String, (Vec<String>, AnnotationType)>,
+    pub(crate) alias_fun_types: &'a HashMap<String, AnnotationType>,
+}
+
+/// Annotation-derived metadata describing the function `build_function` should
+/// create. Groups every per-function input (signature, doc, modifiers, class
+/// context, flavor masks) so the arena/registry context stays a separate concern.
+pub(crate) struct FnMeta<'a> {
+    pub(crate) params: &'a [crate::annotations::ParamInfo],
+    pub(crate) returns: &'a [AnnotationType],
+    pub(crate) return_names: &'a [Option<String>],
+    pub(crate) return_descriptions: &'a [Option<String>],
+    pub(crate) overload_sigs: &'a [crate::annotations::OverloadSig],
+    pub(crate) doc: Option<String>,
+    pub(crate) see: Vec<String>,
+    pub(crate) deprecated: bool,
+    pub(crate) nodiscard: bool,
+    pub(crate) defclass: Option<String>,
+    pub(crate) defclass_parent: Option<String>,
+    pub(crate) generic_annotations: &'a [(String, Option<String>)],
+    pub(crate) builds_field_raw: Option<&'a (usize, AnnotationType)>,
+    pub(crate) built_name_raw: Option<usize>,
+    pub(crate) built_extends: bool,
+    pub(crate) type_narrows_raw: Option<(usize, usize)>,
+    pub(crate) type_narrows_class_raw: Option<String>,
+    pub(crate) narrows_arg_raw: Option<usize>,
+    pub(crate) requires_raw: Vec<(String, String)>,
+    pub(crate) is_colon: bool,
+    pub(crate) owner_class_name: Option<&'a str>,
+    pub(crate) class_type_params: &'a [String],
+    pub(crate) implicit_nil_return: bool,
+    pub(crate) flavors_mask: u8,
+    pub(crate) flavor_guard_mask: u8,
+    pub(crate) dummy_node: DefNode,
+}
+
+impl<'a> FnMeta<'a> {
+    /// Metadata for a function with no doc-annotation extras — used for the
+    /// synthesized signatures (`parse_overload` results, minimal vararg call
+    /// functions) where only the parameter/return shape matters.
+    pub(crate) fn minimal(
+        params: &'a [crate::annotations::ParamInfo],
+        returns: &'a [AnnotationType],
+        dummy_node: DefNode,
+    ) -> Self {
+        FnMeta {
+            params,
+            returns,
+            return_names: &[],
+            return_descriptions: &[],
+            overload_sigs: &[],
+            doc: None,
+            see: Vec::new(),
+            deprecated: false,
+            nodiscard: false,
+            defclass: None,
+            defclass_parent: None,
+            generic_annotations: &[],
+            builds_field_raw: None,
+            built_name_raw: None,
+            built_extends: false,
+            type_narrows_raw: None,
+            type_narrows_class_raw: None,
+            narrows_arg_raw: None,
+            requires_raw: Vec::new(),
+            is_colon: false,
+            owner_class_name: None,
+            class_type_params: &[],
+            implicit_nil_return: false,
+            flavors_mask: 0,
+            flavor_guard_mask: 0,
+            dummy_node,
+        }
+    }
+
+    /// Metadata harvested from a scanned global function/method declaration.
+    pub(crate) fn from_global(
+        g: &'a crate::annotations::ExternalGlobal,
+        is_colon: bool,
+        owner_class_name: Option<&'a str>,
+        class_type_params: &'a [String],
+        dummy_node: DefNode,
+    ) -> Self {
+        FnMeta {
+            params: &g.params,
+            returns: &g.returns,
+            return_names: &g.return_names,
+            return_descriptions: &g.return_descriptions,
+            overload_sigs: &g.overloads,
+            doc: g.doc.clone(),
+            see: g.see.clone(),
+            deprecated: g.deprecated,
+            nodiscard: g.nodiscard,
+            defclass: g.defclass.clone(),
+            defclass_parent: g.defclass_parent.clone(),
+            generic_annotations: &g.generics,
+            builds_field_raw: g.builds_field.as_ref(),
+            built_name_raw: g.built_name,
+            built_extends: g.built_extends,
+            type_narrows_raw: g.type_narrows,
+            type_narrows_class_raw: g.type_narrows_class.clone(),
+            narrows_arg_raw: g.narrows_arg,
+            requires_raw: g.requires.clone(),
+            is_colon,
+            owner_class_name,
+            class_type_params,
+            implicit_nil_return: g.implicit_nil_return,
+            flavors_mask: g.flavors,
+            flavor_guard_mask: g.flavor_guard,
+            dummy_node,
+        }
+    }
 }
 
 /// Look up a field on a table, falling back to parent classes if not found directly.
@@ -913,6 +1044,34 @@ impl BuildContext {
         PreResolvedGlobals::resolve_annotation_gen(at, &self.classes, &self.aliases, &self.parameterized_aliases, generics, &mut self.tables, &mut self.exprs)
     }
 
+    /// Bundle the IR arenas and class/alias registries into a [`FnBuildCtx`] for
+    /// `build_function`/`materialize_fun_type`. The mutable arena borrows and the
+    /// shared registry borrows are disjoint fields, so this is a single split borrow.
+    fn fn_build_ctx(&mut self) -> FnBuildCtx<'_> {
+        FnBuildCtx {
+            scopes: &mut self.scopes,
+            symbols: &mut self.symbols,
+            functions: &mut self.functions,
+            tables: &mut self.tables,
+            exprs: &mut self.exprs,
+            classes: &self.classes,
+            aliases: &self.aliases,
+            parameterized_aliases: &self.parameterized_aliases,
+            alias_fun_types: &self.alias_fun_types,
+        }
+    }
+
+    /// Bundle the arenas and build-state maps that `walk_deep_path` writes into.
+    fn deep_path_ctx(&mut self) -> DeepPathCtx<'_> {
+        DeepPathCtx {
+            tables: &mut self.tables,
+            exprs: &mut self.exprs,
+            sub_tables: &mut self.sub_tables,
+            field_locations: &mut self.field_locations,
+            implicit_protected_prefix: self.implicit_protected_prefix,
+        }
+    }
+
     /// Resolve a field annotation type, materializing `Fun(...)` types into proper
     /// Function entries with parameter symbols. Without this, `@field name fun(...)`
     /// from workspace-scanned classes would resolve to `Function(None)`, preventing
@@ -926,9 +1085,7 @@ impl BuildContext {
         match annotation_type {
             AnnotationType::Fun(params, returns, is_vararg) => {
                 Some(PreResolvedGlobals::materialize_fun_type(
-                    params, returns, *is_vararg, gen_context,
-                    dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                    &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
+                    params, returns, *is_vararg, gen_context, dummy_node, &mut self.fn_build_ctx(),
                 ))
             }
             AnnotationType::Union(members) => {
@@ -1108,13 +1265,8 @@ impl BuildContext {
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
                     if let Some(sig) = parse_overload(name) {
                         let func_idx = PreResolvedGlobals::build_function(
-                            &sig.params, &sig.returns, &[], &[], &[], None, Vec::new(),
-                            false, false, None, None, &[],
-                            None, None, false, None, None, None, Vec::new(), false, None, &[],
-                            false, 0, 0,
-                            dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                            &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
-                            &self.alias_fun_types,
+                            FnMeta::minimal(&sig.params, &sig.returns, dummy_node),
+                            &mut self.fn_build_ctx(),
                         );
                         Some(ValueType::Function(Some(func_idx)))
                     } else {
@@ -1183,13 +1335,14 @@ impl BuildContext {
             let local_idx = table_idx.ext_offset();
             let overload = &class.overloads[0];
             let func_idx = PreResolvedGlobals::build_function(
-                &overload.params, &overload.returns, &[], &[], &class.overloads[1..], None, Vec::new(),
-                false, false, None, None, &class.generics,
-                None, None, false, None, None, None, Vec::new(), false, Some(&class.name), &class.type_params,
-                false, 0, 0,
-                DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
-                &self.alias_fun_types,
+                FnMeta {
+                    overload_sigs: &class.overloads[1..],
+                    generic_annotations: &class.generics,
+                    owner_class_name: Some(&class.name),
+                    class_type_params: &class.type_params,
+                    ..FnMeta::minimal(&overload.params, &overload.returns, DefNode::DUMMY)
+                },
+                &mut self.fn_build_ctx(),
             );
             self.tables[local_idx].call_func = Some(func_idx);
         }
@@ -1209,13 +1362,8 @@ impl BuildContext {
             if self.tables[local_idx].call_func.is_some() { continue; }
             // Create a minimal vararg call function
             let func_idx = PreResolvedGlobals::build_function(
-                std::slice::from_ref(&vararg_param), &[], &[], &[], &[], None, Vec::new(),
-                false, false, None, None, &[],
-                None, None, false, None, None, None, Vec::new(), false, None, &[],
-                false, 0, 0,
-                DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
-                &self.alias_fun_types,
+                FnMeta::minimal(std::slice::from_ref(&vararg_param), &[], DefNode::DUMMY),
+                &mut self.fn_build_ctx(),
             );
             self.tables[local_idx].call_func = Some(func_idx);
             self.tables[local_idx].call_func_is_metamethod = true;
@@ -1346,8 +1494,7 @@ impl BuildContext {
                     let Some(&root_idx) = self.non_class_tables.get(&g.name) else { continue };
                     let Some((leaf_idx, _)) = walk_deep_path(
                         root_idx, &g.name, path,
-                        &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                        &mut self.field_locations, g, self.implicit_protected_prefix,
+                        &mut self.deep_path_ctx(), g,
                     ) else { continue };
                     leaf_idx
                 } else {
@@ -1401,14 +1548,10 @@ impl BuildContext {
                 let target_class_name = self.tables[target_local].class_name.clone();
                 let target_class_type_params = self.tables[target_local].class_type_params.clone();
                 let func_idx = PreResolvedGlobals::build_function(
-                    &g.params, &g.returns, &g.return_names, &g.return_descriptions, &g.overloads, g.doc.clone(), g.see.clone(),
-                    g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, g.requires.clone(), *is_colon,
-                    target_class_name.as_deref(), &target_class_type_params,
-                    g.implicit_nil_return, g.flavors, g.flavor_guard,
-                    DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                    &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
-                    &self.alias_fun_types,
+                    FnMeta::from_global(
+                        g, *is_colon, target_class_name.as_deref(), &target_class_type_params, DefNode::DUMMY,
+                    ),
+                    &mut self.fn_build_ctx(),
                 );
                 if let Some(source_path) = &g.source_path {
                     self.function_locations.insert(func_idx, ExternalLocation {
@@ -1506,8 +1649,7 @@ impl BuildContext {
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
-                    &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g, self.implicit_protected_prefix,
+                    &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
@@ -1582,8 +1724,7 @@ impl BuildContext {
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, _leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
-                    &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g, self.implicit_protected_prefix,
+                    &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
@@ -1934,13 +2075,8 @@ impl BuildContext {
             if let ExternalGlobalKind::Function = &g.kind {
                 if !seen_functions.insert(&g.name) && !g.is_override { continue; }
                 let func_idx = PreResolvedGlobals::build_function(
-                    &g.params, &g.returns, &g.return_names, &g.return_descriptions, &g.overloads, g.doc.clone(), g.see.clone(),
-                    g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, g.requires.clone(), false, None, &[],
-                    g.implicit_nil_return, g.flavors, g.flavor_guard,
-                    DefNode::DUMMY, &mut self.scopes, &mut self.symbols, &mut self.functions,
-                    &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
-                    &self.alias_fun_types,
+                    FnMeta::from_global(g, false, None, &[], DefNode::DUMMY),
+                    &mut self.fn_build_ctx(),
                 );
                 if let Some(path) = &g.source_path {
                     let loc = ExternalLocation {
@@ -2152,8 +2288,7 @@ impl BuildContext {
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
-                    &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g, self.implicit_protected_prefix,
+                    &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
@@ -2234,8 +2369,7 @@ impl BuildContext {
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
-                    &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g, self.implicit_protected_prefix,
+                    &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
@@ -2315,8 +2449,7 @@ impl BuildContext {
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
-                    &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g, self.implicit_protected_prefix,
+                    &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
@@ -3029,25 +3162,17 @@ impl PreResolvedGlobals {
     }
 
     /// Create a Function entry from an inline fun() annotation type.
-    #[allow(clippy::too_many_arguments)]
     fn materialize_fun_type(
         params: &[crate::annotations::ParamInfo],
         returns: &[AnnotationType],
         is_vararg: bool,
         generics: &[(String, Option<String>)],
         dummy_node: DefNode,
-        scopes: &mut Vec<Scope>,
-        symbols: &mut Vec<Symbol>,
-        functions: &mut Vec<Function>,
-        tables: &mut Vec<TableInfo>,
-        exprs: &mut Vec<Expr>,
-        classes: &HashMap<String, TableIndex>,
-        aliases: &HashMap<String, ValueType>,
-        parameterized_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
+        ctx: &mut FnBuildCtx,
     ) -> ValueType {
-        let func_scope_local = scopes.len();
+        let func_scope_local = ctx.scopes.len();
         let func_scope = ScopeIndex(EXT_BASE + func_scope_local);
-        scopes.push(Scope { parent: Some(ScopeIndex(0)), symbols: HashMap::new(), creation_order: 0, is_loop: false });
+        ctx.scopes.push(Scope { parent: Some(ScopeIndex(0)), symbols: HashMap::new(), creation_order: 0, is_loop: false });
 
         let mut arg_symbols = Vec::new();
         let mut param_annotations = Vec::new();
@@ -3067,23 +3192,23 @@ impl PreResolvedGlobals {
                 }
                 continue;
             }
-            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, parameterized_aliases, generics, tables, exprs)
+            let resolved = Self::resolve_annotation_gen(&p.typ, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generics, ctx.tables, ctx.exprs)
                 .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
-            let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
-            symbols.push(Symbol {
+            let sym_idx = SymbolIndex(EXT_BASE + ctx.symbols.len());
+            ctx.symbols.push(Symbol {
                 id: SymbolIdentifier::Name(p.name.clone()),
                 scope_idx: func_scope,
                 versions: vec![SymbolVersion { def_node: dummy_node, type_source: None, resolved_type: resolved, type_args: Vec::new(), created_in_scope: func_scope, creation_order: 0, original_type_source: None }],
                 flavor_guard: 0,
                 flavors: 0,
             });
-            scopes[func_scope_local].symbols.insert(SymbolIdentifier::Name(p.name.clone()), sym_idx);
+            ctx.scopes[func_scope_local].symbols.insert(SymbolIdentifier::Name(p.name.clone()), sym_idx);
             arg_symbols.push(sym_idx);
             param_annotations.push(p.typ.clone());
             param_optional.push(p.optional);
         }
 
-        let func_idx = FunctionIndex(EXT_BASE + functions.len());
+        let func_idx = FunctionIndex(EXT_BASE + ctx.functions.len());
         let mut has_vararg_return = returns.last().is_some_and(|r| matches!(r, AnnotationType::VarArgs(_)));
 
         // Handle tuple-union / single-tuple returns in `fun(): (A, B) | (C, D)`.
@@ -3097,11 +3222,11 @@ impl PreResolvedGlobals {
                 has_vararg_return = true;
             }
             crate::annotations::lower_tuple_form_cases(&cases, |at| {
-                Self::resolve_annotation_gen(at, classes, aliases, parameterized_aliases, generics, tables, exprs)
+                Self::resolve_annotation_gen(at, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generics, ctx.tables, ctx.exprs)
             })
         } else {
             let vts: Vec<ValueType> = returns.iter()
-                .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, parameterized_aliases, generics, tables, exprs))
+                .filter_map(|rt| Self::resolve_annotation_gen(rt, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generics, ctx.tables, ctx.exprs))
                 .collect();
             (vts, returns.to_vec(), Vec::new(), Vec::new())
         };
@@ -3123,7 +3248,7 @@ impl PreResolvedGlobals {
         // If we have a vararg projection, the fun() is effectively vararg
         let effective_is_vararg = is_vararg || vararg_proj.is_some();
 
-        functions.push(Function {
+        ctx.functions.push(Function {
             def_node: dummy_node,
             scope: func_scope,
             args: arg_symbols,
@@ -3174,47 +3299,41 @@ impl PreResolvedGlobals {
 
     /// Build a Function entry. All returned indices use EXT_BASE so they're
     /// directly usable in the global index space without per-file adjustment.
-    #[allow(clippy::too_many_arguments)]
-    fn build_function(
-        params: &[crate::annotations::ParamInfo],
-        returns: &[AnnotationType],
-        return_names: &[Option<String>],
-        return_descriptions: &[Option<String>],
-        overload_sigs: &[crate::annotations::OverloadSig],
-        doc: Option<String>,
-        see: Vec<String>,
-        deprecated: bool,
-        nodiscard: bool,
-        defclass: Option<String>,
-        defclass_parent: Option<String>,
-        generic_annotations: &[(String, Option<String>)],
-        builds_field_raw: Option<&(usize, AnnotationType)>,
-        built_name_raw: Option<usize>,
-        built_extends: bool,
-        type_narrows_raw: Option<(usize, usize)>,
-        type_narrows_class_raw: Option<String>,
-        narrows_arg_raw: Option<usize>,
-        requires_raw: Vec<(String, String)>,
-        is_colon: bool,
-        owner_class_name: Option<&str>,
-        class_type_params: &[String],
-        implicit_nil_return: bool,
-        flavors_mask: u8,
-        flavor_guard_mask: u8,
-        dummy_node: DefNode,
-        scopes: &mut Vec<Scope>,
-        symbols: &mut Vec<Symbol>,
-        functions: &mut Vec<Function>,
-        tables: &mut Vec<TableInfo>,
-        exprs: &mut Vec<Expr>,
-        classes: &HashMap<String, TableIndex>,
-        aliases: &HashMap<String, ValueType>,
-        parameterized_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
-        alias_fun_types: &HashMap<String, AnnotationType>,
-    ) -> FunctionIndex {
-        let func_scope_local = scopes.len();
+    ///
+    /// `meta` carries the annotation-derived function metadata; `ctx` bundles the
+    /// IR arenas and the class/alias registries the build writes into.
+    fn build_function(meta: FnMeta, ctx: &mut FnBuildCtx) -> FunctionIndex {
+        let FnMeta {
+            params,
+            returns,
+            return_names,
+            return_descriptions,
+            overload_sigs,
+            doc,
+            see,
+            deprecated,
+            nodiscard,
+            defclass,
+            defclass_parent,
+            generic_annotations,
+            builds_field_raw,
+            built_name_raw,
+            built_extends,
+            type_narrows_raw,
+            type_narrows_class_raw,
+            narrows_arg_raw,
+            requires_raw,
+            is_colon,
+            owner_class_name,
+            class_type_params,
+            implicit_nil_return,
+            flavors_mask,
+            flavor_guard_mask,
+            dummy_node,
+        } = meta;
+        let func_scope_local = ctx.scopes.len();
         let func_scope = ScopeIndex(EXT_BASE + func_scope_local);
-        scopes.push(Scope {
+        ctx.scopes.push(Scope {
             parent: Some(ScopeIndex(0)),
             symbols: HashMap::new(),
             creation_order: 0,
@@ -3227,8 +3346,8 @@ impl PreResolvedGlobals {
         // to stub colon methods (e.g. GameTooltip.Show(frame)) would report a
         // false-positive redundant-parameter diagnostic.
         if is_colon {
-            let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
-            symbols.push(Symbol {
+            let sym_idx = SymbolIndex(EXT_BASE + ctx.symbols.len());
+            ctx.symbols.push(Symbol {
                 id: SymbolIdentifier::Name("self".to_string()),
                 scope_idx: func_scope,
                 versions: vec![SymbolVersion {
@@ -3243,17 +3362,17 @@ impl PreResolvedGlobals {
                 flavor_guard: 0,
                 flavors: 0,
             });
-            scopes[func_scope_local].symbols.insert(
+            ctx.scopes[func_scope_local].symbols.insert(
                 SymbolIdentifier::Name("self".to_string()), sym_idx,
             );
             arg_symbols.push(sym_idx);
         }
         // Build effective generics early so param/return resolution sees class type params.
         let class_tp_constraints: Vec<Option<String>> = owner_class_name
-            .and_then(|name| classes.get(name))
+            .and_then(|name| ctx.classes.get(name))
             .map(|&idx| {
                 let local = idx.ext_offset();
-                if local < tables.len() { tables[local].class_type_param_constraints.clone() } else { Vec::new() }
+                if local < ctx.tables.len() { ctx.tables[local].class_type_param_constraints.clone() } else { Vec::new() }
             })
             .unwrap_or_default();
         let mut effective_generic_annotations: Vec<(String, Option<String>)> = generic_annotations.to_vec();
@@ -3274,23 +3393,23 @@ impl PreResolvedGlobals {
             let resolved = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = &p.typ {
                 Some(Self::materialize_fun_type(
                     inner_params, inner_returns, *inner_vararg, generic_annotations,
-                    dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                    dummy_node, ctx,
                 ))
             } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
-                crate::annotations::reduce_to_fun_alias(&p.typ, alias_fun_types, &empty_alias_fun_types)
+                crate::annotations::reduce_to_fun_alias(&p.typ, ctx.alias_fun_types, &empty_alias_fun_types)
             {
                 let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
                 let func_vt = Self::materialize_fun_type(
                     &ip, &ir_, iv, generic_annotations,
-                    dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                    dummy_node, ctx,
                 );
                 Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
             } else {
-                Self::resolve_annotation_gen(&p.typ, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+                Self::resolve_annotation_gen(&p.typ, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
             }
             .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
-            let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
-            symbols.push(Symbol {
+            let sym_idx = SymbolIndex(EXT_BASE + ctx.symbols.len());
+            ctx.symbols.push(Symbol {
                 id: SymbolIdentifier::Name(p.name.clone()),
                 scope_idx: func_scope,
                 versions: vec![SymbolVersion {
@@ -3305,7 +3424,7 @@ impl PreResolvedGlobals {
                 flavor_guard: 0,
                 flavors: 0,
             });
-            scopes[func_scope_local].symbols.insert(
+            ctx.scopes[func_scope_local].symbols.insert(
                 SymbolIdentifier::Name(p.name.clone()), sym_idx,
             );
             arg_symbols.push(sym_idx);
@@ -3361,7 +3480,7 @@ impl PreResolvedGlobals {
             });
             let (col_vts, col_raws, labels, overloads) =
                 crate::annotations::lower_tuple_form_cases(&cases, |at| {
-                    Self::resolve_annotation_gen(at, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+                    Self::resolve_annotation_gen(at, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
                 });
             TupleFormReturnData {
                 return_annotations: col_vts, labels, overloads,
@@ -3385,7 +3504,7 @@ impl PreResolvedGlobals {
                     // Resolve self as the owner class type
                     if let Some(class_name) = owner_class_name {
                         let class_type = AnnotationType::Simple(class_name.to_string());
-                        if let Some(vt) = Self::resolve_annotation_gen(&class_type, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs) {
+                        if let Some(vt) = Self::resolve_annotation_gen(&class_type, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs) {
                             vts.push(vt);
                             labels.push(return_names.get(i).cloned().flatten());
                         }
@@ -3395,10 +3514,10 @@ impl PreResolvedGlobals {
                 let resolved = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = rt {
                     Some(Self::materialize_fun_type(
                         inner_params, inner_returns, *inner_vararg, generic_annotations,
-                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                        dummy_node, ctx,
                     ))
                 } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
-                    crate::annotations::reduce_to_fun_alias(rt, alias_fun_types, &empty_alias_fun_types)
+                    crate::annotations::reduce_to_fun_alias(rt, ctx.alias_fun_types, &empty_alias_fun_types)
                 {
                     // A function-typed alias return (e.g. `@return F` where
                     // `F = fun(...)`) otherwise resolves to a signature-less
@@ -3407,11 +3526,11 @@ impl PreResolvedGlobals {
                     let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
                     let func_vt = Self::materialize_fun_type(
                         &ip, &ir_, iv, generic_annotations,
-                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                        dummy_node, ctx,
                     );
                     Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
                 } else {
-                    Self::resolve_annotation_gen(rt, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+                    Self::resolve_annotation_gen(rt, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
                 };
                 if let Some(vt) = resolved {
                     vts.push(vt);
@@ -3431,19 +3550,19 @@ impl PreResolvedGlobals {
                 let vt = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = &p.typ {
                     Some(Self::materialize_fun_type(
                         inner_params, inner_returns, *inner_vararg, generic_annotations,
-                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                        dummy_node, ctx,
                     ))
                 } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
-                    crate::annotations::reduce_to_fun_alias(&p.typ, alias_fun_types, &empty_alias_fun_types)
+                    crate::annotations::reduce_to_fun_alias(&p.typ, ctx.alias_fun_types, &empty_alias_fun_types)
                 {
                     let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
                     let func_vt = Self::materialize_fun_type(
                         &ip, &ir_, iv, generic_annotations,
-                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                        dummy_node, ctx,
                     );
                     Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
                 } else {
-                    Self::resolve_annotation_gen(&p.typ, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+                    Self::resolve_annotation_gen(&p.typ, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
                 };
                 crate::types::ResolvedOverloadParam {
                     name: p.name.clone(),
@@ -3458,19 +3577,19 @@ impl PreResolvedGlobals {
                     if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = at {
                         Some(Self::materialize_fun_type(
                             inner_params, inner_returns, *inner_vararg, generic_annotations,
-                            dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                            dummy_node, ctx,
                         ))
                     } else if let Some((AnnotationType::Fun(ip, ir_, iv), wraps_nil)) =
-                        crate::annotations::reduce_to_fun_alias(at, alias_fun_types, &empty_alias_fun_types)
+                        crate::annotations::reduce_to_fun_alias(at, ctx.alias_fun_types, &empty_alias_fun_types)
                     {
                         let (ip, ir_, iv) = (ip.clone(), ir_.clone(), *iv);
                         let func_vt = Self::materialize_fun_type(
                             &ip, &ir_, iv, generic_annotations,
-                            dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                            dummy_node, ctx,
                         );
                         Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
                     } else {
-                        Self::resolve_annotation_gen(at, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+                        Self::resolve_annotation_gen(at, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
                     }
                 })
                 .collect();
@@ -3484,12 +3603,12 @@ impl PreResolvedGlobals {
         let mut overloads = overloads;
         overloads.extend(tuple_ret.overloads);
 
-        let func_idx = FunctionIndex(EXT_BASE + functions.len());
+        let func_idx = FunctionIndex(EXT_BASE + ctx.functions.len());
         let mut ret_symbols = Vec::new();
         for i in 0..tuple_ret.return_annotations.len() {
             let resolved = tuple_ret.return_annotations.get(i).cloned();
-            let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
-            symbols.push(Symbol {
+            let sym_idx = SymbolIndex(EXT_BASE + ctx.symbols.len());
+            ctx.symbols.push(Symbol {
                 id: SymbolIdentifier::FunctionRet(func_idx, i),
                 scope_idx: func_scope,
                 versions: vec![SymbolVersion {
@@ -3504,7 +3623,7 @@ impl PreResolvedGlobals {
                 flavor_guard: 0,
                 flavors: 0,
             });
-            scopes[func_scope_local].symbols.insert(
+            ctx.scopes[func_scope_local].symbols.insert(
                 SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
             );
             ret_symbols.push(sym_idx);
@@ -3514,7 +3633,7 @@ impl PreResolvedGlobals {
         let resolved_generics: Vec<(String, Option<ValueType>)> = generic_annotations.iter().map(|(name, constraint)| {
             let resolved_constraint = constraint.as_ref().and_then(|c| {
                 let parsed = crate::annotations::parse_type(c);
-                Self::resolve_annotation(&parsed, classes, aliases, parameterized_aliases)
+                Self::resolve_annotation(&parsed, ctx.classes, ctx.aliases, ctx.parameterized_aliases)
             });
             (name.clone(), resolved_constraint)
         }).collect();
@@ -3579,15 +3698,14 @@ impl PreResolvedGlobals {
             let vt = if let AnnotationType::Fun(fun_params, fun_returns, fun_is_vararg) = inner {
                 Some(Self::materialize_fun_type(
                     fun_params, fun_returns, *fun_is_vararg, generic_annotations, dummy_node,
-                    scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
-                ))
+                    ctx,                ))
             } else {
-                Self::resolve_annotation_gen(inner, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+                Self::resolve_annotation_gen(inner, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
             };
             vt.map(|vt| (*idx, vt, is_lateinit))
         });
 
-        functions.push(Function {
+        ctx.functions.push(Function {
             def_node: dummy_node,
             scope: func_scope,
             args: arg_symbols,
