@@ -984,6 +984,12 @@ pub(super) fn find_assignment_in_line(line: &str, name: &str) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut idx = 0;
     while idx + name.len() <= line.len() {
+        // `idx` advances byte-by-byte, so it can land inside a multibyte UTF-8
+        // character (e.g. `©`). Slicing there would panic; skip non-boundaries.
+        if !line.is_char_boundary(idx) {
+            idx += 1;
+            continue;
+        }
         if line[idx..].starts_with(name) {
             let before_ok = idx == 0 || {
                 let b = bytes[idx - 1];
@@ -1177,5 +1183,33 @@ pub(super) fn make_disable_file_action(
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_assignment_in_line_handles_multibyte_chars() {
+        // Regression: `idx` advances byte-by-byte and could slice inside a
+        // multibyte UTF-8 char (e.g. `©`), panicking on a non-char-boundary.
+        let line = "-- Copyright © 2024";
+        assert_eq!(find_assignment_in_line(line, "foo"), None);
+
+        // Assignment LHS after a multibyte char on the same line resolves to
+        // the correct byte column without panicking.
+        let line = "x = \"© sym\"";
+        assert_eq!(find_assignment_in_line(line, "x"), Some(0));
+    }
+
+    #[test]
+    fn find_first_assignment_line_handles_multibyte_chars() {
+        let text = "-- Copyright © 2024 Acme\nlocal y\nmyVar = 5\n";
+        assert_eq!(find_first_assignment_line(text, "myVar"), Some((2, 0)));
+
+        // A multibyte char earlier on the same line before the assignment match.
+        let text = "tbl.field = \"© sym\"\nmyVar = 5";
+        assert_eq!(find_first_assignment_line(text, "myVar"), Some((1, 0)));
     }
 }
