@@ -25,7 +25,7 @@ src/
 ├── ast.rs               # AST node definitions and casts over SyntaxNode
 ├── config.rs            # .wowluarc.json loading
 ├── flavor.rs            # Retail/classic/classic_era flavor bitmask
-├── stub_gen.rs          # Stub generation from WoW API primary sources
+├── stub_gen/            # Stub generation from WoW API primary sources (split by pipeline stage)
 ├── annotations/
 │   ├── mod.rs           # Core types (AnnotationType, ClassDecl, AliasDecl, etc.)
 │   ├── annotation_types.rs    # Type expression parsing and formatting
