@@ -576,6 +576,13 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
                             glob_pattern: lsp_types::GlobPattern::String("**/.wowluarc.json".to_string()),
                             kind: None,
                         },
+                        // XML frame/template files feed the directory scan, not the
+                        // per-file Lua incremental path, so on-disk changes to them
+                        // must trigger a full workspace rescan (see is_full_rescan_trigger).
+                        lsp_types::FileSystemWatcher {
+                            glob_pattern: lsp_types::GlobPattern::String("**/*.xml".to_string()),
+                            kind: None,
+                        },
                     ],
                 }
             ).unwrap()),
@@ -3012,6 +3019,111 @@ mod tests {
         assert!(
             !locs3.iter().any(|l| l.uri.to_string() == user_uri_str),
             "stale-generation cache is dropped; deleted file yields no reference"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Config (`.wowluarc.json`), XML frame/template files, and `.toc` files all
+    /// feed the directory scan (TOC via SavedVariables → allowed globals), so a
+    /// change to any of them must trigger a full workspace rescan. Lua files
+    /// refresh through the per-file incremental path and must be excluded.
+    #[test]
+    fn full_rescan_trigger_matches_config_xml_and_toc() {
+        assert!(is_full_rescan_trigger("file:///addon/Frames.xml"));
+        assert!(is_full_rescan_trigger("file:///addon/sub/UI.xml"));
+        assert!(is_full_rescan_trigger("file:///addon/.wowluarc.json"));
+        assert!(is_full_rescan_trigger("file:///addon/Addon.toc"));
+        assert!(!is_full_rescan_trigger("file:///addon/Core.lua"));
+        assert!(!is_full_rescan_trigger("file:///addon/notes.txt"));
+    }
+
+    /// The `**/*.xml` watcher is broad, so the handlers gate on whether the
+    /// changed path actually participates in the scan: ignored paths are skipped,
+    /// but library paths (whose types feed user code) and normal paths rebuild.
+    /// Mirrors the scanner's `!is_ignored || is_library` inclusion rule.
+    #[test]
+    fn participation_filter_skips_ignored_but_keeps_library_and_normal() {
+        let tmp = std::env::temp_dir().join(format!("wowlua_participation_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join(".wowluarc.json"),
+            r#"{"ignore": ["vendor/"], "library": ["libs/"]}"#,
+        ).unwrap();
+
+        let mut configs = crate::config::ProjectConfigs::default();
+        configs.try_load(&tmp);
+        let mut ws = WorkspaceState::for_test(Some(tmp.clone()));
+        ws.configs = Arc::new(configs);
+
+        let uri_for = |rel: &str| abs_path_to_uri(&tmp.join(rel)).unwrap();
+
+        // Normal frame XML participates.
+        assert!(change_participates_in_scan(&uri_for("UI/Frames.xml"), &ws));
+        // Library XML participates — its types flow into user code.
+        assert!(change_participates_in_scan(&uri_for("libs/Lib.xml"), &ws));
+        // XML under an ignored subtree does not participate → no rescan.
+        assert!(!change_participates_in_scan(&uri_for("vendor/Junk.xml"), &ws));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Regression: editing an `.xml` file must refresh XML-bound names. XML
+    /// frames/templates are discovered only by the directory scan, never by the
+    /// per-file Lua incremental path, so previously a renamed/added/removed frame
+    /// stayed stale until the editor was reloaded. `rescan_workspace_from_disk`
+    /// (the engine driven for config, XML, and TOC changes) must re-read the XML
+    /// from disk and rebuild the workspace globals.
+    #[test]
+    fn xml_edit_refreshes_workspace_globals_on_rescan() {
+        let tmp = std::env::temp_dir().join(format!("wowlua_xml_rescan_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let xml = tmp.join("Frames.xml");
+
+        // A non-virtual named frame creates a global of the same name.
+        let xml_with = |frame_name: &str| format!(
+            "<Ui xmlns=\"http://www.blizzard.com/wow/ui/\">\n    \
+             <Frame name=\"{frame_name}\" parent=\"UIParent\"></Frame>\n</Ui>\n"
+        );
+
+        std::fs::write(&xml, xml_with("OldFrame")).unwrap();
+
+        let mut ws = WorkspaceState::for_test(Some(tmp.clone()));
+        let mut documents: HashMap<String, Document> = HashMap::new();
+
+        rescan_workspace_from_disk(&mut documents, &mut ws);
+
+        let global_names = |ws: &WorkspaceState| -> Vec<String> {
+            ws.ws_file_globals.values().flatten().map(|g| g.name.clone()).collect()
+        };
+
+        let gen_after_first = ws.ws_generation;
+        assert!(gen_after_first > 0, "rescan must bump ws_generation");
+        assert!(
+            global_names(&ws).iter().any(|n| n == "OldFrame"),
+            "initial XML scan must register the frame global: {:?}",
+            global_names(&ws),
+        );
+
+        // Edit the XML on disk (rename the frame) and rescan, as a save/watch
+        // notification would. The new name must appear and the old one vanish.
+        std::fs::write(&xml, xml_with("NewFrame")).unwrap();
+        rescan_workspace_from_disk(&mut documents, &mut ws);
+
+        assert!(
+            ws.ws_generation > gen_after_first,
+            "second rescan must bump ws_generation again",
+        );
+        let names = global_names(&ws);
+        assert!(
+            names.iter().any(|n| n == "NewFrame"),
+            "edited XML must register the renamed global: {names:?}",
+        );
+        assert!(
+            !names.iter().any(|n| n == "OldFrame"),
+            "stale XML global must be gone after rescan: {names:?}",
         );
 
         let _ = std::fs::remove_dir_all(&tmp);

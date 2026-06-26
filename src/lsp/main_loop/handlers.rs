@@ -1219,18 +1219,23 @@ pub(super) fn handle_notification(
         }
         "textDocument/didSave" => {
             if let Ok(params) = cast_not::<notification::DidSaveTextDocument>(not)
-                && params.text_document.uri.as_str().ends_with(".wowluarc.json")
+                && is_full_rescan_trigger(params.text_document.uri.as_str())
+                && change_participates_in_scan(&params.text_document.uri, ws)
             {
-                reload_config(connection, documents, ws, analysis_token);
+                rescan_workspace_with_progress(connection, documents, ws, analysis_token);
             }
         }
         "workspace/didChangeWatchedFiles" => {
             if let Ok(params) = cast_not::<notification::DidChangeWatchedFiles>(not) {
-                let has_config_change = params.changes.iter().any(|e|
-                    e.uri.as_str().ends_with(".wowluarc.json")
+                // Only rescan when a changed path actually participates in the
+                // scan — a broad `**/*.xml` watcher otherwise rebuilds the whole
+                // workspace on unrelated/ignored XML changes.
+                let needs_rescan = params.changes.iter().any(|e|
+                    is_full_rescan_trigger(e.uri.as_str())
+                        && change_participates_in_scan(&e.uri, ws)
                 );
-                if has_config_change {
-                    reload_config(connection, documents, ws, analysis_token);
+                if needs_rescan {
+                    rescan_workspace_with_progress(connection, documents, ws, analysis_token);
                 }
             }
         }
@@ -1325,21 +1330,77 @@ pub(super) fn handle_notification(
     }
 }
 
-pub(super) fn reload_config(
+/// Whether a saved/changed file requires a full workspace rescan.
+///
+/// These file types feed the directory scan rather than the per-file Lua
+/// incremental path, so a change to any of them must trigger
+/// [`rescan_workspace_with_progress`] to refresh cross-file state:
+/// - `.wowluarc.json` — project config (globals, ignore/library, flavors, …).
+/// - `.xml` — frame/template declarations (→ classes and globals).
+/// - `.toc` — `SavedVariables`/`SavedVariablesPerCharacter` become allowed
+///   globals via `ProjectConfigs::try_load_toc`. The per-file TOC path only
+///   refreshes TOC *diagnostics*; its SavedVariables-derived globals live in the
+///   config and are only rebuilt by a full rescan, so without this a newly added
+///   saved variable would false-positive as `undefined-global` until reload.
+///
+/// Lua files refresh via the normal `didChange` → `maybe_rebuild_workspace`
+/// path and are intentionally excluded here.
+pub(super) fn is_full_rescan_trigger(uri: &str) -> bool {
+    uri.ends_with(".wowluarc.json") || uri.ends_with(".xml") || uri.ends_with(".toc")
+}
+
+/// Whether a changed file at `uri` actually participates in the workspace scan,
+/// mirroring the scanner's own inclusion rule (`collect_lua_paths_filtered`): a
+/// path is scanned unless it is ignored and not a library. This filters out
+/// changes that cannot affect analysis — e.g. an `.xml` under an `ignore`
+/// subtree, or unrelated editor/build XML — so they don't force a needless full
+/// rescan. Library files are *kept* (their types flow into user code, so a
+/// change there must rebuild). A `uri` that can't be mapped to a path is treated
+/// as non-participating.
+pub(super) fn change_participates_in_scan(uri: &lsp_types::Uri, ws: &WorkspaceState) -> bool {
+    match uri_to_abs_path(uri) {
+        Some(path) => !ws.configs.is_ignored(&path) || ws.configs.is_library(&path),
+        None => false,
+    }
+}
+
+/// Thin wrapper over [`rescan_workspace_from_disk`] that guards on a workspace
+/// root and reports progress. Driven by `didSave`/`didChangeWatchedFiles` for any
+/// [`is_full_rescan_trigger`] file (config, XML, or TOC).
+pub(super) fn rescan_workspace_with_progress(
     connection: &Connection,
     documents: &mut HashMap<String, Document>,
     ws: &mut WorkspaceState,
     analysis_token: &Option<NumberOrString>,
 ) {
-    let Some(ref root) = ws.root else { return };
-    log::debug!("reloading .wowluarc.json configs");
+    if ws.root.is_none() {
+        return;
+    }
+    log::debug!("rescanning workspace from disk (config, XML, or TOC change)");
     if let Some(token) = analysis_token {
         send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
-            message: Some("Reloading config...".to_string()),
+            message: Some("Rescanning workspace...".to_string()),
             percentage: None,
             cancellable: Some(false),
         }));
     }
+    rescan_workspace_from_disk(documents, ws);
+}
+
+/// Full workspace rescan from disk: re-reads every `.wowluarc.json`, re-scans all
+/// Lua **and XML** files, rebuilds derived caches, and re-analyzes open documents.
+///
+/// This is the shared engine behind both `.wowluarc.json` config changes and
+/// `.xml` frame/template changes. XML-derived classes/globals (and config-driven
+/// globals) are discovered only by the directory scan — never by the per-file Lua
+/// incremental rebuild (`maybe_rebuild_workspace`) — so any edit to those inputs
+/// requires a full rescan to refresh cross-file names. Without this, XML-bound
+/// names went stale until the editor was reloaded.
+pub(super) fn rescan_workspace_from_disk(
+    documents: &mut HashMap<String, Document>,
+    ws: &mut WorkspaceState,
+) {
+    let Some(ref root) = ws.root else { return };
     // Build a fresh config locally (scan mutates it), then swap in a new Arc.
     let mut new_configs = crate::config::ProjectConfigs::default();
     let DirectoryScanResult {
