@@ -173,3 +173,9 @@ These diagnostics apply to `.toc` files only. See the [TOC Files guide](/guide/t
 | `invisible` | `access-private`, `access-protected` |
 | `param-type-mismatch` | `type-mismatch` |
 | `return-type-mismatch` | `return-mismatch` |
+
+Diagnostic codes that LuaLS defines but wowlua_ls has no equivalent for (e.g.
+`lowercase-global`, `cast-type-mismatch`, `unused-label`) are accepted silently
+in `---@diagnostic` directives — they suppress nothing here, but won't trip
+`unknown-diag-code`, so a project that also runs LuaLS can keep its suppressions
+without noise.

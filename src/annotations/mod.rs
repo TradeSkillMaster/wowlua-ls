@@ -1656,6 +1656,19 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     block.return_names.push(None);
                     block.return_descriptions.push(None);
                     last_tuple_return_idx = None;
+                } else if let Some(entries) = annotation_types::parse_multi_return_line(rest) {
+                    // LuaLS-style comma-separated multi-return (`@return T1, T2` or
+                    // `@return T1 name1, T2 name2`). Only splits when the first
+                    // `<type> [name]` is immediately followed by a top-level comma,
+                    // so a single return whose description contains a comma stays
+                    // one return. Tuple / tuple-union / vararg / built forms also
+                    // fall through to the single-slot path below (helper returns None).
+                    for (typ, name, desc) in entries {
+                        block.returns.push(typ);
+                        block.return_names.push(name);
+                        block.return_descriptions.push(desc);
+                    }
+                    last_tuple_return_idx = None;
                 } else {
                     let (typ, name, desc) = parse_return_line(rest, false);
                     let is_tuple = annotation_is_tuple_form(&typ);

@@ -402,6 +402,37 @@ pub(crate) const CODE_ALIASES: &[(&str, &[&str])] = &[
     ("return-type-mismatch", &[RETURN_MISMATCH.code]),
 ];
 
+/// Diagnostic codes defined by LuaLS but with no wowlua_ls equivalent. We never
+/// emit these, but a project running LuaLS alongside wowlua_ls may suppress them
+/// via `---@diagnostic disable: <code>`. Accept the codes silently rather than
+/// flagging `unknown-diag-code` (they suppress nothing here, since we don't emit
+/// them — codes that *do* map to one of ours belong in `CODE_ALIASES` instead).
+pub(crate) const LUALS_ONLY_CODES: &[&str] = &[
+    "ambiguity-1",
+    "await-in-sync",
+    "cast-local-type",
+    "cast-type-mismatch",
+    "close-non-object",
+    "codestyle-check",
+    "different-requires",
+    "global-element",
+    "global-in-nil-env",
+    "lowercase-global",
+    "missing-global-doc",
+    "missing-local-export-doc",
+    "name-style-check",
+    "newfield-call",
+    "newline-call",
+    "no-unknown",
+    "not-yieldable",
+    "spell-check",
+    "undefined-env-child",
+    "unknown-cast-variable",
+    "unknown-operator",
+    "unnecessary-assert",
+    "unused-label",
+];
+
 /// Diagnostic codes that are disabled by default. Users opt back in via
 /// `.wowluarc.json`'s `diagnostics.enable` list. Inline `---@diagnostic enable`
 /// directives cannot re-enable a file-level disable — they only undo a prior
@@ -836,5 +867,6 @@ fn any_table_has_value_type(analysis: &AnalysisResult, ty: &ValueType) -> bool {
 pub(crate) fn known_codes() -> Vec<&'static str> {
     let mut codes: Vec<&'static str> = CATALOG.iter().map(|d| d.code).collect();
     for &(alias, _) in CODE_ALIASES { codes.push(alias); }
+    codes.extend_from_slice(LUALS_ONLY_CODES);
     codes
 }

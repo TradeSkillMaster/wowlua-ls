@@ -265,6 +265,19 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
         };
         return AnnotationType::VarArgs(Box::new(inner_type));
     }
+    // Leading-`?` optional shorthand (`?number`). Some authors write the optional
+    // marker as a prefix on the type rather than the canonical suffix (`number?`).
+    // The form is unambiguous (no type legitimately starts with `?`), so accept it
+    // leniently and treat `?T` as `T | nil`, matching the suffix form.
+    if let Some(rest) = s.strip_prefix('?') {
+        let rest = rest.trim();
+        let base = if rest.is_empty() {
+            AnnotationType::Simple("any".to_string())
+        } else {
+            parse_type(rest)
+        };
+        return AnnotationType::Union(vec![base, AnnotationType::Simple("nil".to_string())]);
+    }
     if let Some(without_bang) = s.strip_suffix('!') {
         let mut depth = 0usize;
         let is_fun_type = without_bang.starts_with("fun(") || without_bang.starts_with("async fun(");
@@ -337,6 +350,30 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
         && let Some(sig) = parse_overload(fun_str) {
             return AnnotationType::Fun(sig.params, sig.returns, sig.is_vararg);
         }
+    // `[T1, T2, ...]` — LuaLS fixed-shape tuple syntax. Lower to a table literal
+    // with integer-literal keys (`{ [1]: T1, [2]: T2 }`), reusing the existing
+    // table-literal materialization, field access, and type-name validation
+    // rather than introducing a dedicated tuple value type.
+    if s.starts_with('[') && s.ends_with(']')
+        && let Some(close) = find_matching_bracket(s)
+        && close == s.len() - 1
+    {
+        let inner = s[1..s.len() - 1].trim();
+        if inner.is_empty() {
+            return AnnotationType::Simple("table".to_string());
+        }
+        let fields: Vec<(String, AnnotationType)> = split_at_top_level(inner, ',')
+            .iter()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .enumerate()
+            .map(|(i, p)| (format!("[{}]", i + 1), parse_type(p)))
+            .collect();
+        if fields.is_empty() {
+            return AnnotationType::Simple("table".to_string());
+        }
+        return AnnotationType::TableLiteral(fields);
+    }
     if s.ends_with(']') && !s.starts_with('[') {
         // Find matching '[' at top level (not inside <>, (), {})
         let bytes = s.as_bytes();
@@ -527,6 +564,66 @@ fn parse_tuple_positions(parts: &[&str]) -> Vec<TuplePosition> {
     }).collect()
 }
 
+/// A single parsed `@return` value: `(type, optional name, optional description)`.
+pub(crate) type ReturnEntry = (AnnotationType, Option<String>, Option<String>);
+
+/// Parse a LuaLS comma-separated multi-return `@return` line into one entry per
+/// return value: `@return T1, T2` or `@return T1 name1, T2 name2` (with an
+/// optional trailing `# description` or free-text description on the final
+/// entry). Returns `None` when the line is a *single* return — i.e. the first
+/// `<type> [name]` is not immediately followed by a top-level comma — so the
+/// caller falls back to `parse_return_line` for the richer single-return forms
+/// (parenthesized tuples, tuple-unions, vararg `T ...`, and `built`).
+///
+/// The parse is left-to-right, matching LuaLS: after each `<type> [name]` the
+/// type list continues only when the very next non-space char is a comma.
+/// This keeps a single return whose description happens to contain a comma
+/// (`@return number red Red color, from 0 to 1`) as one return rather than
+/// splitting the description into a bogus second return type.
+///
+/// Each entry is `(type, optional name, optional description)`; only the final
+/// entry can carry a description.
+pub(crate) fn parse_multi_return_line(s: &str) -> Option<Vec<ReturnEntry>> {
+    let mut entries: Vec<ReturnEntry> = Vec::new();
+    let mut rem = s.trim();
+    loop {
+        let type_only = extract_type_prefix(rem);
+        if type_only.trim().is_empty() { return None; }
+        let after_type = rem[type_only.len()..].trim_start();
+        let (name, after_name) = split_leading_identifier(after_type);
+        let after_name = after_name.trim_start();
+        if let Some(next) = after_name.strip_prefix(',') {
+            entries.push((parse_type(type_only.trim()), name, None));
+            rem = next.trim_start();
+            continue;
+        }
+        // Final segment: trailing text after the optional name is the description.
+        let desc = {
+            let d = after_name.strip_prefix('#').unwrap_or(after_name).trim();
+            if d.is_empty() { None } else { Some(d.to_string()) }
+        };
+        entries.push((parse_type(type_only.trim()), name, desc));
+        break;
+    }
+    if entries.len() >= 2 { Some(entries) } else { None }
+}
+
+/// Split off a leading bare identifier (a return/param name like `text` or
+/// `minLevel`). Returns `(Some(name), rest)` when `s` starts with an
+/// alphanumeric/underscore identifier, else `(None, s)`.
+fn split_leading_identifier(s: &str) -> (Option<String>, &str) {
+    let s = s.trim_start();
+    let bytes = s.as_bytes();
+    if bytes.first().is_none_or(|&b| !(b.is_ascii_alphabetic() || b == b'_')) {
+        return (None, s);
+    }
+    let mut end = 0;
+    while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+        end += 1;
+    }
+    (Some(s[..end].to_string()), &s[end..])
+}
+
 pub(crate) fn parse_return_line(s: &str, force_tuple: bool) -> (AnnotationType, Option<String>, Option<String>) {
     let s = s.trim();
     if s.starts_with('(') {
@@ -677,8 +774,8 @@ pub(crate) fn extract_type_prefix(s: &str) -> &str {
                 if !in_single_quote { after_colon = false; after_comma = false; after_pipe = false; after_ampersand = false; }
             }
             _ if in_single_quote || in_double_quote => {}
-            '<' | '(' | '{' => { depth += 1; after_colon = false; in_fun_ret = false; after_comma = false; after_pipe = false; after_ampersand = false; }
-            '>' | ')' | '}' => {
+            '<' | '(' | '{' | '[' => { depth += 1; after_colon = false; in_fun_ret = false; after_comma = false; after_pipe = false; after_ampersand = false; }
+            '>' | ')' | '}' | ']' => {
                 depth = depth.saturating_sub(1);
                 after_colon = false;
                 after_comma = false;
@@ -748,8 +845,8 @@ pub(crate) fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
             '"' if !in_single_quote => { in_double_quote = !in_double_quote; }
             '\'' if !in_double_quote => { in_single_quote = !in_single_quote; }
             _ if in_single_quote || in_double_quote => {}
-            '<' | '(' | '{' => { depth += 1; }
-            '>' | ')' | '}' => {
+            '<' | '(' | '{' | '[' => { depth += 1; }
+            '>' | ')' | '}' | ']' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 && c == ')' {
                     let mut j = i + 1;

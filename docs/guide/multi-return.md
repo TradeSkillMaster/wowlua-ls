@@ -196,3 +196,19 @@ function getInfo() end
 ```
 
 Don't mix legacy `@return` lines with tuple-union syntax on the same function — the LS will emit `malformed-annotation`.
+
+## Comma-separated returns
+
+A single `@return` line may list several comma-separated types (LuaLS-style),
+each with an optional name — equivalent to writing one `@return` line per value:
+
+```lua
+---@return string name, number level
+function getInfo() end
+
+---@return string, boolean   -- names are optional
+function parse() end
+```
+
+A comma inside a return's free-text *description* is not a separator, so
+`---@return number red Red color, from 0 to 1` stays a single return.

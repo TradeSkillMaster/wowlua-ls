@@ -7,7 +7,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | Annotation | Description | Guide |
 |---|---|---|
 | `@param name type` | Parameter type. `name?` for optional. | [Basic Annotations](/guide/basic-annotations) |
-| `@return type [name]` | Return type. Multiple lines for multi-return. | [Basic Annotations](/guide/basic-annotations) |
+| `@return type [name]` | Return type. Use multiple lines or one comma-separated line (`@return A, B`) for multi-return. | [Basic Annotations](/guide/basic-annotations) |
 | `@return (A, B) \| (C, D)` | Tuple-union return with correlated narrowing. | [Multi-Return](/guide/multi-return) |
 | `@return ...T` | Variadic return — fills remaining positions with T. | [Multi-Return](/guide/multi-return) |
 | `@type type` | Variable type annotation. | [Basic Annotations](/guide/basic-annotations) |
@@ -239,7 +239,9 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `A & B` | Intersection |
 | `T[]` | Array |
 | `T[K]` | Indexed access — field type of K on T |
+| `[T1, T2]` | Tuple — fixed-shape table (`{ [1]: T1, [2]: T2 }`) |
 | `T?` | Optional (`T \| nil`) |
+| `?T` | Optional, prefix form — same as `T?` |
 | `T!` | Non-nil / lateinit |
 | `table<K, V>` | Map type |
 | `fun(a: T): R` | Function type |

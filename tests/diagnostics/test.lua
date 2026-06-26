@@ -1374,15 +1374,15 @@ local function malformed4(x) end
 -- ^ diag: malformed-annotation
 local function malformed5() end
 
--- @return with comma-separated types (not supported)
+-- @return with comma-separated types is accepted as LuaLS multi-return (one
+-- return slot per top-level comma segment); returning the matching arity is
+-- clean (no malformed-annotation, no missing-return-value).
 ---@return string, boolean
--- ^ diag: malformed-annotation
-local function malformed5b() return "" end
+local function notMalformedReturn0a() return "", true end
 
--- @return with comma-separated union types
+-- @return with comma-separated union types is likewise accepted.
 ---@return string|number, boolean
--- ^ diag: malformed-annotation
-local function malformed5c() return "" end
+local function notMalformedReturn0b() return "", true end
 
 -- @return with comma inside parameterized type (valid, no diagnostic)
 ---@return table<string, number>

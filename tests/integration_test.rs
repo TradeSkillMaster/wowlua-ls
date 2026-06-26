@@ -2212,6 +2212,24 @@ fn tuple_union_returns() {
 }
 
 #[test]
+fn luals_annotations() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/luals-annotations.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn luals_diag_codes() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/luals-diag-codes.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn cast_and_as() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/cast.lua",
