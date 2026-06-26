@@ -6,7 +6,8 @@ use super::{DiagnosticPass, WowDiagnostic};
 const FUNCTION_LEVEL_TAGS: &[&str] = &[
     "param", "return", "overload", "generic", "nodiscard", "deprecated",
     "constructor", "builds-field", "built-name", "built-extends",
-    "type-narrows", "defclass", "narrows-arg", "creates-global", "requires",
+    "type-narrows", "defclass", "narrows-arg", "creates-global", "generates-events",
+    "callback-event-arg", "requires",
 ];
 
 const CLASS_VALID_TAGS: &[&str] = &["overload", "deprecated", "constructor"];

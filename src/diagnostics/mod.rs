@@ -51,6 +51,7 @@ pub mod unused_function;
 mod unused_vararg;
 pub(crate) mod expression_type;
 mod wrong_flavor_api;
+mod callback_events;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -155,6 +156,7 @@ pub(crate) const UNKNOWN_PARAM_TYPE: DiagnosticDef      = DiagnosticDef { code: 
 pub(crate) const UNKNOWN_RETURN_TYPE: DiagnosticDef     = DiagnosticDef { code: "unknown-return-type",      severity: DiagnosticSeverity::HINT };
 pub(crate) const UNKNOWN_LOCAL_TYPE: DiagnosticDef      = DiagnosticDef { code: "unknown-local-type",       severity: DiagnosticSeverity::HINT };
 pub(crate) const UNKNOWN_FIELD_TYPE: DiagnosticDef      = DiagnosticDef { code: "unknown-field-type",       severity: DiagnosticSeverity::HINT };
+pub(crate) const UNKNOWN_CALLBACK_EVENT: DiagnosticDef  = DiagnosticDef { code: "unknown-callback-event",   severity: DiagnosticSeverity::WARNING };
 pub(crate) const REDUNDANT_CLASS_GENERIC: DiagnosticDef = DiagnosticDef { code: "redundant-class-generic",  severity: DiagnosticSeverity::WARNING };
 pub(crate) const MULTI_RETURN_PROJECTION: DiagnosticDef = DiagnosticDef { code: "multi-return-projection",  severity: DiagnosticSeverity::WARNING };
 pub(crate) const CANNOT_CALL: DiagnosticDef              = DiagnosticDef { code: "cannot-call",              severity: DiagnosticSeverity::WARNING };
@@ -184,7 +186,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
     &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SHADOWED_LOCAL,
     &MIXED_ENUM_VALUES, &INVALID_CLASS_PARENT, &INVALID_OP, &NIL_TABLE_KEY, &SAFETY_LIMIT,
-    &REDUNDANT_OR, &REDUNDANT_AND, &REDUNDANT_CONDITION,
+    &REDUNDANT_OR, &REDUNDANT_AND, &REDUNDANT_CONDITION, &UNKNOWN_CALLBACK_EVENT,
 ];
 
 pub(crate) fn append_structural_details_suffix(
@@ -295,6 +297,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &multi_return_projection::MultiReturnProjection,
         &discard_returns::DiscardReturns,
         &wrong_flavor_api::WrongFlavorApi,
+        &callback_events::CallbackEvents,
         &unknown_param_type::UnknownParamType,
         &unknown_local_type::UnknownLocalType,
         &unknown_return_type::UnknownReturnType,
@@ -420,6 +423,7 @@ pub(crate) const DEFAULT_DISABLED_CODES: &[&str] = &[
     REDUNDANT_AND.code,
     REDUNDANT_CONDITION.code,
     UNUSED_FUNCTION.code,
+    UNKNOWN_CALLBACK_EVENT.code,
 ];
 
 /// Returns true for types where we cannot determine truthiness/falsiness.

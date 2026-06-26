@@ -227,6 +227,21 @@ pub struct CreatesGlobalSpec {
     pub name_param: usize,
 }
 
+/// `@generates-events` — calling this method with a table-constructor array at the
+/// `events_param` argument synthesizes an enum-like `field_name` table on the
+/// receiver class, mapping each array entry's event name to a string value. This
+/// models WoW's `CallbackRegistryMixin:GenerateCallbackEvents({ "OnFoo", ... })`,
+/// which populates `self.Event = { OnFoo = "OnFoo", ... }`. Array entries may be
+/// string literals (`"OnFoo"`) or field references (`SomeEvents.OnFoo`, whose
+/// leaf name is used as the event key, matching the value==name convention).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GeneratesEventsSpec {
+    /// 1-based call-argument index of the events array (the table constructor).
+    pub events_param: usize,
+    /// Name of the enum table field synthesized on the receiver (e.g. `Event`).
+    pub field_name: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExternalGlobal {
     pub name: String,
@@ -289,6 +304,18 @@ pub struct ExternalGlobal {
     /// `CreateFrame(type, "Name")` creates `_G.Name`). See [`CreatesGlobalSpec`].
     #[serde(default)]
     pub creates_global: Option<CreatesGlobalSpec>,
+    /// `@generates-events` — calling this method with a table-constructor at the
+    /// `events_param` argument synthesizes an enum-like field on the receiver
+    /// class. See [`GeneratesEventsSpec`]. Models
+    /// `CallbackRegistryMixin:GenerateCallbackEvents`.
+    #[serde(default)]
+    pub generates_events: Option<GeneratesEventsSpec>,
+    /// `@callback-event-arg N` — marks a callback-registry consumer method
+    /// (`RegisterCallback`/`TriggerEvent`/…) whose 1-based argument `N` is an event
+    /// name. Powers event-name completion and the `unknown-callback-event`
+    /// diagnostic against the receiver's registered events.
+    #[serde(default)]
+    pub callback_event_arg: Option<usize>,
     /// `@requires T: Constraint` — receiver class type-param constraints for a
     /// method. Each entry is (param_name, constraint_type_string).
     #[serde(default)]
@@ -352,6 +379,8 @@ impl ExternalGlobal {
             implicit_nil_return: false,
             narrows_arg: None,
             creates_global: None,
+            generates_events: None,
+            callback_event_arg: None,
             requires: Vec::new(),
             body_derived_returns: false,
             deferred_call_type: false,
@@ -376,6 +405,111 @@ pub(crate) fn is_select_varargs(expr: &Expression<'_>) -> Option<usize> {
         }
     }
     None
+}
+
+/// Detect the addon-namespace local alias in a file's top-level statements:
+/// `local _, ADDON = ...` (second vararg) or `local ADDON = select(2, ...)`.
+/// Shared between scan-time collection and query-time canonicalization so the
+/// canonical keys agree across both. Mirrors the inline detection in
+/// `scan_file_globals_with_synth`.
+pub(crate) fn detect_addon_ns_var(root: SyntaxNode<'_>) -> Option<String> {
+    let block = Block::cast(root)?;
+    for stmt in block.statements() {
+        if let Statement::LocalAssign(assign) = &stmt
+            && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list())
+        {
+            let names = name_list.names();
+            let exprs = expr_list.expressions();
+            if names.len() >= 2 && exprs.len() == 1 && matches!(exprs[0], Expression::VarArgs(_)) {
+                return Some(names[1].clone());
+            }
+            if !names.is_empty()
+                && exprs.len() == 1
+                && let Some(n) = is_select_varargs(&exprs[0])
+                && n == 2
+            {
+                return Some(names[0].clone());
+            }
+        }
+    }
+    None
+}
+
+/// Canonicalize a dotted member name chain to a stable cross-file key. The
+/// addon-namespace local alias (e.g. `addonTable`) is rewritten to
+/// [`ADDON_NS_NAME`] so the same field referenced via different per-file alias
+/// names maps to one key. Returns `None` for an empty chain.
+pub(crate) fn canonicalize_member_path(names: &[String], addon_ns_var: Option<&str>) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = names.to_vec();
+    if let Some(ns) = addon_ns_var
+        && parts.first().map(String::as_str) == Some(ns)
+    {
+        parts[0] = ADDON_NS_NAME.to_string();
+    }
+    Some(parts.join("."))
+}
+
+/// Map a table-constructor positional value to a callback event name: a string
+/// literal contributes its quote-trimmed, non-empty value; an identifier / field
+/// reference (`SomeEvents.OnFoo`) contributes its leaf name (the value==name
+/// convention). Shared by the `.Event` synthesis (`scan_defclass`) and the
+/// callback-registry scan (`scan_callback`) so the convention lives in one place.
+pub(crate) fn event_name_from_expr(value: &Expression<'_>) -> Option<String> {
+    match value {
+        Expression::Literal(lit) => lit
+            .get_string()
+            .map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+            .filter(|s| !s.is_empty()),
+        Expression::Identifier(id) => id.names().last().cloned(),
+        _ => None,
+    }
+}
+
+/// Scope an addon-namespace canonical path by addon name so that two addons in one
+/// workspace whose namespace alias both rewrite to `__addon_ns__.CallbackRegistry`
+/// don't collide. Only paths rooted at [`ADDON_NS_NAME`] are scoped — true globals
+/// and class names are shared across the workspace by design. When `addon_scope` is
+/// `None` (single-addon or no addon identity), the path is returned unchanged.
+pub(crate) fn scope_addon_ns_path(path: String, addon_scope: Option<&str>) -> String {
+    match addon_scope {
+        Some(scope) if path.starts_with(ADDON_NS_NAME) => format!("{scope}::{path}"),
+        _ => path,
+    }
+}
+
+/// A callback registry declared by `Receiver:GenerateCallbackEvents(arg)`. Collected
+/// at workspace-scan time and keyed cross-file by the canonical `receiver_path`.
+/// Powers event-name completion and the `unknown-callback-event` diagnostic at the
+/// matching `:RegisterCallback("…")` / `:TriggerEvent("…")` call sites.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallbackRegistryDecl {
+    /// Canonical receiver path (addon-ns rewritten), e.g. `__addon_ns__.CallbackRegistry`.
+    pub receiver_path: String,
+    /// Event names from an inline `{ "A", "B" }` array argument (string literals;
+    /// field references contribute their leaf name, value==name convention).
+    pub inline_events: Vec<String>,
+    /// Canonical path of a referenced string-array constant when the argument is a
+    /// reference (`addonTable.Constants.Events`); resolved at merge time.
+    pub events_ref: Option<String>,
+    /// False when the argument held entries that couldn't be statically resolved
+    /// (non-literal/computed). Suppresses validation to avoid false positives.
+    pub complete: bool,
+}
+
+/// A `path = { "a", "b", ... }` string-array constant assignment. Used to resolve a
+/// registry's `events_ref` to its concrete event-name set at merge time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StringArrayConstDecl {
+    /// Canonical path of the assignment target.
+    pub path: String,
+    /// Positional string-literal values.
+    pub values: Vec<String>,
+    /// False when the table had non-string-literal entries (so it isn't treated as
+    /// a complete event set).
+    pub complete: bool,
 }
 
 // ── Shared helpers (used by scan_defclass + scan_method_typed_self_fields) ───
@@ -759,6 +893,8 @@ pub(crate) fn scan_method_funcall_self_fields(
                 implicit_nil_return: false,
                 narrows_arg: None,
                 creates_global: None,
+                generates_events: None,
+                callback_event_arg: None,
                 requires: Vec::new(),
                 body_derived_returns: false,
                 deferred_call_type: false,

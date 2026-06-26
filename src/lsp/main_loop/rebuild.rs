@@ -24,6 +24,8 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.number_value == y.number_value
         && x.requires == y.requires
         && x.creates_global == y.creates_global
+        && x.generates_events == y.generates_events
+        && x.callback_event_arg == y.callback_event_arg
 }
 
 pub(super) fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
@@ -448,7 +450,35 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
         had_sf || had_sfg
     };
 
-    if globals_changed || classes_changed || aliases_changed || defclasses_changed || self_fields_changed || events_changed {
+    // Re-scan callback registries + string-array event constants (annotation-driven
+    // via @generates-events). Gate on the file containing a generates-events method
+    // name OR previously contributing registries/constants (so editing a constants
+    // file with no GenerateCallbackEvents call still refreshes its array).
+    let callbacks_changed = if has_syntax_errors || ws.cached_generates_events_methods.is_empty() {
+        false
+    } else {
+        let text_has_cb = ws.cached_generates_events_methods.keys().any(|m| source.contains(m.as_str()));
+        let had_cb = ws.ws_file_callback_registries.contains_key(&file_path)
+            || ws.ws_file_string_consts.contains_key(&file_path);
+        if !text_has_cb && !had_cb {
+            false
+        } else {
+            let scope = ws.configs.addon_name_for(&file_path);
+            let (regs, consts) = crate::annotations::scan_callback_registries(
+                root, &ws.cached_generates_events_methods, scope.as_deref());
+            let r_changed = ws.ws_file_callback_registries.get(&file_path)
+                .map_or(!regs.is_empty(), |old| old != &regs);
+            let c_changed = ws.ws_file_string_consts.get(&file_path)
+                .map_or(!consts.is_empty(), |old| old != &consts);
+            if regs.is_empty() { ws.ws_file_callback_registries.remove(&file_path); }
+            else { ws.ws_file_callback_registries.insert(file_path.clone(), regs); }
+            if consts.is_empty() { ws.ws_file_string_consts.remove(&file_path); }
+            else { ws.ws_file_string_consts.insert(file_path.clone(), consts); }
+            r_changed || c_changed
+        }
+    };
+
+    if globals_changed || classes_changed || aliases_changed || defclasses_changed || self_fields_changed || events_changed || callbacks_changed {
         log::info!(
             "Workspace rebuild triggered by didOpen: {} (globals={} classes={} aliases={} defclasses={} self_fields={} events={})",
             file_path.display(),
@@ -465,7 +495,7 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
         // method bodies), so fall back to a Full warm in those cases. When only
         // class/global/alias declarations changed, the reverse-dependency closure
         // over `changed_decl_names` is sufficient and we can warm incrementally.
-        if defclasses_changed || self_fields_changed || events_changed {
+        if defclasses_changed || self_fields_changed || events_changed || callbacks_changed {
             RebuildScope::Full
         } else {
             RebuildScope::Incremental(changed_decl_names)

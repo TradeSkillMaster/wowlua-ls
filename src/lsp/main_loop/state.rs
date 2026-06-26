@@ -155,9 +155,19 @@ impl WorkspaceState {
         let mut built_name_names: HashSet<String> = std::collections::HashSet::new();
         // Track class names whose methods have @built-name, so we can find wrapper functions.
         let mut class_with_built_name_method: HashSet<String> = std::collections::HashSet::new();
+        // `@generates-events` rides the defclass scan; its method leaf names go into
+        // the defclass func-name set (for the rebuild text-contains gate) and force
+        // `cached_needs_defclass` so the scan runs.
+        let mut has_generates_events = false;
         for g in &self.cached_all_globals {
             if g.defclass.is_some() && let Some(leaf) = leaf_name(g) {
                 defclass_names.insert(leaf);
+            }
+            if g.generates_events.is_some() {
+                has_generates_events = true;
+                if let Some(leaf) = leaf_name(g) {
+                    defclass_names.insert(leaf);
+                }
             }
             if g.built_name.is_some() {
                 if matches!(&g.kind, ExternalGlobalKind::Method(_, _, _)) {
@@ -182,6 +192,13 @@ impl WorkspaceState {
                 }
             }
         }
+        if has_generates_events {
+            self.cached_needs_defclass = true;
+        }
+        // Spec map for the incremental callback-registry re-scan (avoids rebuilding
+        // it from all globals on every keystroke).
+        self.cached_generates_events_methods =
+            crate::annotations::build_generates_events_methods(&self.cached_all_globals);
         self.cached_defclass_func_names = defclass_names.into_iter().collect();
         self.cached_built_name_func_names = built_name_names.into_iter().collect();
         self.cached_callable_classes = self.ws_file_callable_classes.values().flatten().cloned().collect();
@@ -244,6 +261,13 @@ impl WorkspaceState {
             implicit_protected, &self.ws_file_addon_ns_class, &self.cached_callable_classes,
         );
         pg.merge_events(&ws_events);
+
+        let ws_callback_registries: Vec<crate::annotations::CallbackRegistryDecl> =
+            self.ws_file_callback_registries.values().flatten().cloned().collect();
+        let ws_string_consts: Vec<crate::annotations::StringArrayConstDecl> =
+            self.ws_file_string_consts.values().flatten().cloned().collect();
+        pg.merge_callback_registries(&ws_callback_registries, &ws_string_consts);
+        pg.register_callback_consumer_methods(&self.cached_all_globals);
 
         // Build per-addon namespace tables if addon roots are configured.
         let addon_roots = self.configs.addon_roots();
@@ -356,6 +380,8 @@ impl WorkspaceState {
             ws_file_aliases: HashMap::new(),
             ws_file_defclasses: HashMap::new(),
             ws_file_events: HashMap::new(),
+            ws_file_callback_registries: HashMap::new(),
+            ws_file_string_consts: HashMap::new(),
             ws_file_self_fields: HashMap::new(),
             ws_file_self_field_globals: HashMap::new(),
             pre_globals: Arc::new(PreResolvedGlobals::empty()),
@@ -365,6 +391,7 @@ impl WorkspaceState {
             cached_needs_built_name: false,
             cached_defclass_func_names: Vec::new(),
             cached_built_name_func_names: Vec::new(),
+            cached_generates_events_methods: HashMap::new(),
             ws_file_dynamic_prefixes: HashMap::new(),
             ws_file_addon_ns_class: HashMap::new(),
             ws_file_callable_classes: HashMap::new(),

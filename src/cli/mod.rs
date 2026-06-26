@@ -205,6 +205,9 @@ pub(crate) fn load_workspace(
                 implicit_protected_prefix, &scan.addon_ns_class_files, &scan.callable_classes,
             );
             pg.merge_events(&scan.events);
+            pg.merge_callback_registries(&scan.callback_registries, &scan.string_consts);
+            pg.register_callback_consumer_methods(&s.stub_globals);
+            pg.register_callback_consumer_methods(&scan.globals);
             if store_project_configs {
                 pg.set_project_configs(Arc::new(project_configs.clone()));
             }
@@ -217,6 +220,8 @@ pub(crate) fn load_workspace(
                 implicit_protected_prefix, &scan.addon_ns_class_files, &scan.callable_classes,
             );
             pg.merge_events(&scan.events);
+            pg.merge_callback_registries(&scan.callback_registries, &scan.string_consts);
+            pg.register_callback_consumer_methods(&scan.globals);
             if store_project_configs {
                 pg.set_project_configs(Arc::new(project_configs.clone()));
             }

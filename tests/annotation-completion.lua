@@ -240,7 +240,7 @@ end
 
 -- @diagnostic enable: completes codes with prefix "un"
 ---@diagnostic enable: un
---                        ^ comp: undefined-global, undefined-field, unused-local, unreachable-code, undefined-doc-param, unknown-diag-code, unbalanced-assignments, unused-function, undefined-doc-class, undefined-doc-name, unused-vararg, unknown-param-type, unknown-return-type, unknown-local-type, unknown-field-type
+--                        ^ comp: undefined-global, undefined-field, unused-local, unreachable-code, undefined-doc-param, unknown-diag-code, unbalanced-assignments, unused-function, undefined-doc-class, undefined-doc-name, unused-vararg, unknown-param-type, unknown-return-type, unknown-local-type, unknown-field-type, unknown-callback-event
 
 -- @diagnostic disable-next-line: completes codes
 ---@diagnostic disable-next-line: red

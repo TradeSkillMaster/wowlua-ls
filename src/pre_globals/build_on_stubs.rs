@@ -1643,6 +1643,8 @@ impl<'a> BuildOnStubsContext<'a> {
             stub_functions_end: self.stubs_base.stub_functions_end,
             event_types: self.stubs_base.event_types.clone(),
             event_locations: self.stubs_base.event_locations.clone(),
+            callback_registries: HashMap::new(),
+            callback_event_methods: HashMap::new(),
             declared_class_fields: self.declared_class_fields,
             deferred_returns_by_path,
             deferred_returns: self.deferred_returns,

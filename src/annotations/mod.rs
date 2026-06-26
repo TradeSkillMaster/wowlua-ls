@@ -722,6 +722,11 @@ pub(crate) struct AnnotationBlock {
     pub(crate) built_name: Option<usize>,
     /// `@creates-global N [M|TypeName]` — see [`crate::annotations::CreatesGlobalSpec`].
     pub(crate) creates_global: Option<crate::annotations::CreatesGlobalSpec>,
+    /// `@generates-events N [FieldName]` — see [`crate::annotations::GeneratesEventsSpec`].
+    pub(crate) generates_events: Option<crate::annotations::GeneratesEventsSpec>,
+    /// `@callback-event-arg N` — 1-based arg index of an event name on a callback
+    /// consumer method (`RegisterCallback`/`TriggerEvent`/…).
+    pub(crate) callback_event_arg: Option<usize>,
     pub(crate) built_extends: bool,
     pub(crate) type_narrows: Option<(usize, usize)>,
     pub(crate) type_narrows_class: Option<String>,
@@ -1687,6 +1692,29 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             {
                 block.creates_global = Some(crate::annotations::CreatesGlobalSpec { name_param });
             }
+        } else if let Some(rest) = content.strip_prefix("@generates-events") {
+            // `@generates-events N [FieldName]` — N (1-based) is the call-argument
+            // index of the events array (a table constructor); FieldName (default
+            // `Event`) is the enum table synthesized on the receiver class. Models
+            // `CallbackRegistryMixin:GenerateCallbackEvents`.
+            let mut parts = rest.split_whitespace();
+            if let Some(Ok(events_param)) = parts.next().map(|s| s.parse::<usize>())
+                && events_param >= 1
+            {
+                let field_name = parts.next().unwrap_or("Event").to_string();
+                block.generates_events = Some(crate::annotations::GeneratesEventsSpec {
+                    events_param,
+                    field_name,
+                });
+            }
+        } else if let Some(rest) = content.strip_prefix("@callback-event-arg") {
+            // `@callback-event-arg N` — N (1-based) is the argument carrying an event
+            // name on a callback-registry consumer method.
+            if let Some(Ok(idx)) = rest.split_whitespace().next().map(|s| s.parse::<usize>())
+                && idx >= 1
+            {
+                block.callback_event_arg = Some(idx);
+            }
         } else if let Some(rest) = content.strip_prefix("@type") {
             let rest = rest.trim();
             if !rest.is_empty() { block.var_type = Some(parse_type(rest)); }
@@ -1859,6 +1887,7 @@ pub mod annotation_scanning;
 pub mod scan_globals;
 pub mod scan_defclass;
 pub mod scan_built_name;
+pub mod scan_callback;
 
 pub(crate) use annotation_types::{
     format_annotation_type, substitute_alias_type_params, match_projection,
@@ -1869,11 +1898,13 @@ pub use annotation_types::OverloadSig;
 pub(crate) use annotation_types::parse_overload;
 
 pub use annotation_scanning::{
-    FieldValueKind, ExternalGlobalKind, ExternalGlobal, CreatesGlobalSpec,
+    FieldValueKind, ExternalGlobalKind, ExternalGlobal, CreatesGlobalSpec, GeneratesEventsSpec,
+    CallbackRegistryDecl, StringArrayConstDecl,
     SuppressionKind, DiagnosticSuppression, scan_diagnostic_directives,
 };
 pub(crate) use annotation_scanning::{
     ADDON_NS_NAME,
+    detect_addon_ns_var, canonicalize_member_path, scope_addon_ns_path,
     extract_inline_class,
     extract_inline_class_with_offset,
     scan_method_typed_self_fields,
@@ -1895,6 +1926,7 @@ pub use scan_defclass::scan_defclass_calls;
 pub use scan_defclass::{DefclassContext, scan_defclass_calls_with_context};
 pub use scan_built_name::scan_built_name_calls;
 pub use scan_built_name::{BuiltNameContext, scan_built_name_calls_with_context};
+pub(crate) use scan_callback::{scan_callback_registries, build_generates_events_methods, build_generates_events_methods_iter};
 
 #[cfg(test)]
 mod tests {

@@ -85,6 +85,8 @@ fn run_annotation_tests(config: &TestConfig) {
             let stub_pre = &*STUB_GLOBALS;
             let mut pg = PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
             pg.merge_events(&se);
+            pg.merge_callback_registries(&scan.callback_registries, &scan.string_consts);
+            pg.register_callback_consumer_methods(&sg);
             build_per_addon_tables_from_globals(&mut pg, &sg, &ans, &project_configs);
             // Attach project configs so the cross-file deferred harvester honors
             // per-file inference flags (mirrors the LSP server's WorkspaceState).
@@ -102,6 +104,8 @@ fn run_annotation_tests(config: &TestConfig) {
         } else {
             let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans, &ws_callable);
             pg.merge_events(&se);
+            pg.merge_callback_registries(&scan.callback_registries, &scan.string_consts);
+            pg.register_callback_consumer_methods(&sg);
             build_per_addon_tables_from_globals(&mut pg, &sg, &ans, &project_configs);
             // Attach project configs so the cross-file deferred harvester honors
             // per-file inference flags (mirrors the LSP server's WorkspaceState).
@@ -1389,6 +1393,51 @@ fn multi_definition() {
         lua_file: "tests/multi-definition/user.lua",
         with_stubs: true,
         scan_dir: Some("tests/multi-definition"),
+    });
+}
+
+#[test]
+fn callback_registry_generates_events() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/callback-events/defs.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/callback-events"),
+    });
+}
+
+#[test]
+fn callback_registry_generates_events_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/callback-events/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/callback-events"),
+    });
+}
+
+#[test]
+fn callback_registry_generates_events_workspace_synth() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/callback-events/synth.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/callback-events"),
+    });
+}
+
+#[test]
+fn callback_registry_event_validation() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/callback-registry/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/callback-registry"),
+    });
+}
+
+#[test]
+fn callback_registry_multi_addon_scoping() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/callback-multi-addon/AddonA/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/callback-multi-addon"),
     });
 }
 

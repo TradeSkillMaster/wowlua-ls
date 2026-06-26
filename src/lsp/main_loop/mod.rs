@@ -167,6 +167,11 @@ struct WorkspaceState {
     ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>>,
     ws_file_defclasses: HashMap<PathBuf, Vec<ClassDecl>>,
     ws_file_events: HashMap<PathBuf, Vec<crate::annotations::EventDecl>>,
+    /// Per-file callback registries + the string-array event-list constants they
+    /// reference (`Receiver:GenerateCallbackEvents(...)`). Merged into
+    /// `pre_globals.callback_registries` for completion + `unknown-callback-event`.
+    ws_file_callback_registries: HashMap<PathBuf, Vec<crate::annotations::CallbackRegistryDecl>>,
+    ws_file_string_consts: HashMap<PathBuf, Vec<crate::annotations::StringArrayConstDecl>>,
     /// Per-file typed + bare self-field scan results (self.field = expr in methods).
     ws_file_self_fields: HashMap<PathBuf, Vec<crate::annotations::TypedSelfField>>,
     /// Per-file funcall self-field globals (self.field = SomeCall() in methods).
@@ -186,6 +191,9 @@ struct WorkspaceState {
     cached_defclass_func_names: Vec<String>,
     /// Cached built-name function names for quick text checks.
     cached_built_name_func_names: Vec<String>,
+    /// Cached `@generates-events` method spec map (leaf method name → spec), for the
+    /// incremental callback-registry re-scan without rebuilding it from all globals.
+    cached_generates_events_methods: HashMap<String, crate::annotations::GeneratesEventsSpec>,
     /// Per-file dynamic global prefix patterns detected from `_G["PREFIX"..k] = v`.
     ws_file_dynamic_prefixes: HashMap<PathBuf, Vec<String>>,
     /// Per-file class name associated with the addon namespace variable (from @class on select(2,...)).
@@ -328,6 +336,11 @@ pub struct WorkspaceScanResult {
     pub events: Vec<crate::annotations::EventDecl>,
     pub callable_classes: HashSet<String>,
     pub dynamic_global_prefixes: Vec<String>,
+    /// Callback registries (`Receiver:GenerateCallbackEvents(...)`) and the
+    /// string-array constants their event lists reference. Drive event-name
+    /// completion + the `unknown-callback-event` diagnostic.
+    pub callback_registries: Vec<crate::annotations::CallbackRegistryDecl>,
+    pub string_consts: Vec<crate::annotations::StringArrayConstDecl>,
 }
 
 struct CachedFileScan {
@@ -353,6 +366,9 @@ struct DirectoryScanResult {
     file_self_field_globals: HashMap<PathBuf, Vec<ExternalGlobal>>,
     /// Per-file dynamic global prefix patterns from `_G["PREFIX"..k] = v` assignments.
     file_dynamic_prefixes: HashMap<PathBuf, Vec<String>>,
+    /// Per-file callback registries and string-array constants (see [`WorkspaceScanResult`]).
+    file_callback_registries: HashMap<PathBuf, Vec<crate::annotations::CallbackRegistryDecl>>,
+    file_string_consts: HashMap<PathBuf, Vec<crate::annotations::StringArrayConstDecl>>,
 }
 
 /// Intermediate result from Pass 1 of workspace scanning (no stubs dependency).
@@ -645,6 +661,8 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ws_file_aliases: scan_result.file_aliases,
         ws_file_defclasses: scan_result.file_defclasses,
         ws_file_events: scan_result.file_events,
+        ws_file_callback_registries: scan_result.file_callback_registries,
+        ws_file_string_consts: scan_result.file_string_consts,
         ws_file_self_fields: scan_result.file_self_fields,
         ws_file_self_field_globals: scan_result.file_self_field_globals,
         ws_file_dynamic_prefixes: scan_result.file_dynamic_prefixes,
@@ -655,6 +673,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         cached_needs_built_name: false,
         cached_defclass_func_names: Vec::new(),
         cached_built_name_func_names: Vec::new(),
+        cached_generates_events_methods: HashMap::new(),
         ws_file_addon_ns_class: scan_result.addon_ns_class,
         ws_file_callable_classes: scan_result.file_callable_classes,
         cached_callable_classes: HashSet::new(),
@@ -1828,6 +1847,8 @@ mod tests {
                 implicit_nil_return: false,
                 narrows_arg: None,
                 creates_global: None,
+                generates_events: None,
+                callback_event_arg: None,
                 requires: Vec::new(),
                 body_derived_returns: false,
                 deferred_call_type: false,
@@ -2284,6 +2305,8 @@ mod tests {
             implicit_nil_return: false,
             narrows_arg: None,
             creates_global: None,
+            generates_events: None,
+            callback_event_arg: None,
             requires: Vec::new(),
             body_derived_returns: false,
             deferred_call_type: false,
@@ -2449,6 +2472,32 @@ mod tests {
             RebuildScope::Full => panic!("expected Incremental scope, got Full"),
             RebuildScope::None => panic!("expected Incremental scope, got None"),
         }
+    }
+
+    #[test]
+    fn maybe_rebuild_workspace_refreshes_callback_registries() {
+        // Editing a `GenerateCallbackEvents(...)` event list must refresh the
+        // per-file callback-registry map (so completion/validation aren't stale).
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/reg.lua".parse().unwrap();
+        let file_path = PathBuf::from("/project/reg.lua");
+
+        let src1 = "---@generates-events 1 Event\nfunction Reg:GenerateCallbackEvents(events) end\nReg:GenerateCallbackEvents({ \"Foo\" })\n";
+        let tree1 = crate::syntax::parser::parse(src1);
+        let root1 = crate::syntax::SyntaxNode::new_root(&tree1);
+        let _ = maybe_rebuild_workspace(&uri, root1, &mut ws);
+        let regs = ws.ws_file_callback_registries.get(&file_path).expect("registry recorded on open");
+        assert!(regs.iter().any(|r| r.inline_events.iter().any(|e| e == "Foo")), "Foo recorded: {regs:?}");
+
+        // Change the declared event — must re-scan and trigger a Full rebuild.
+        let src2 = "---@generates-events 1 Event\nfunction Reg:GenerateCallbackEvents(events) end\nReg:GenerateCallbackEvents({ \"Bar\" })\n";
+        let tree2 = crate::syntax::parser::parse(src2);
+        let root2 = crate::syntax::SyntaxNode::new_root(&tree2);
+        let scope = maybe_rebuild_workspace(&uri, root2, &mut ws);
+        assert!(matches!(scope, RebuildScope::Full), "callback-event change must trigger Full rebuild");
+        let regs = ws.ws_file_callback_registries.get(&file_path).expect("registry still recorded");
+        assert!(regs.iter().any(|r| r.inline_events.iter().any(|e| e == "Bar")), "Bar recorded after edit: {regs:?}");
+        assert!(!regs.iter().any(|r| r.inline_events.iter().any(|e| e == "Foo")), "stale Foo cleared: {regs:?}");
     }
 
     #[test]

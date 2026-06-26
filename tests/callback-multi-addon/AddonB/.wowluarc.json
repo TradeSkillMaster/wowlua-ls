@@ -1,0 +1,4 @@
+{
+    "addon_root": true,
+    "diagnostics": { "enable": ["unknown-callback-event"] }
+}

@@ -1353,6 +1353,8 @@ pub(super) fn reload_config(
         file_self_fields,
         file_self_field_globals,
         file_dynamic_prefixes,
+        file_callback_registries,
+        file_string_consts,
     } = scan_directory_tracked(root, &mut new_configs, &ws.stub_classes, &ws.stub_globals, ws.stub_pre_globals.creates_global_specs());
     ws.configs = Arc::new(new_configs);
     ws.ws_file_globals = file_globals;
@@ -1365,6 +1367,8 @@ pub(super) fn reload_config(
     ws.ws_file_self_fields = file_self_fields;
     ws.ws_file_self_field_globals = file_self_field_globals;
     ws.ws_file_dynamic_prefixes = file_dynamic_prefixes;
+    ws.ws_file_callback_registries = file_callback_registries;
+    ws.ws_file_string_consts = file_string_consts;
     ws.rebuild_caches();
     ws.rebuild();
     reanalyze_open_documents(documents, &ws.pre_globals, &ws.configs, ws.ws_generation);

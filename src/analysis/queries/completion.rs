@@ -1002,7 +1002,8 @@ impl AnalysisResult {
         // 1. Binary expression (== / ~=): resolve the other operand's type
         // 2. Function call argument: resolve the parameter's expected type
         let expected_type = self.string_context_type_from_binary(&token, tree)
-            .or_else(|| self.string_context_type_from_call_arg(&token));
+            .or_else(|| self.string_context_type_from_call_arg(&token))
+            .or_else(|| self.string_context_callback_event_type(&token, tree));
 
         let mut literals = Self::collect_string_literals(&expected_type?);
         if literals.is_empty() {
@@ -1092,6 +1093,79 @@ impl AnalysisResult {
     }
 
     /// Resolve string literal type from a function/method call argument position.
+    /// Whether the workspace declared any callback registries — a cheap guard so the
+    /// `unknown-callback-event` diagnostic can skip token iteration entirely.
+    pub(crate) fn has_callback_registries(&self) -> bool {
+        !self.ir.ext.callback_registries.is_empty()
+    }
+
+    /// If `token` is a string literal at the event-name argument of a
+    /// callback-registry consumer method (`@callback-event-arg`), and the call's
+    /// receiver canonicalizes to a known registry, return that registry's event set.
+    /// Purely syntactic: the receiver (`addonTable.CallbackRegistry`) usually types as
+    /// bare `table`, so call resolution can't be relied on — the receiver path,
+    /// method, and argument index are read straight from the AST, and the receiver is
+    /// canonicalized with the same addon-namespace rewrite used at scan time. Shared by
+    /// event-name completion and the `unknown-callback-event` diagnostic.
+    pub(crate) fn callback_event_set_for_string<'a>(
+        &'a self,
+        token: &SyntaxToken,
+        tree: &SyntaxTree,
+    ) -> Option<&'a crate::pre_globals::CallbackEventSet> {
+        if self.ir.ext.callback_event_methods.is_empty() || self.ir.ext.callback_registries.is_empty() {
+            return None;
+        }
+        let call_node = token.ancestors()
+            .find(|n| matches!(n.kind(), SyntaxKind::FunctionCall | SyntaxKind::MethodCall))?;
+        let call = FunctionCall::cast(call_node)?;
+        let ident = call.identifier()?;
+        if !ident.is_call_to_self() {
+            return None;
+        }
+        let names = ident.names();
+        if names.len() < 2 {
+            return None;
+        }
+        let event_arg = *self.ir.ext.callback_event_methods.get(names.last().unwrap())?;
+        // Locate the string's 1-based position within the call's argument list.
+        let arg_list = call_node.children().find(|n| n.kind() == SyntaxKind::ArgumentList)?;
+        let tok_start = token.text_range().start();
+        let mut arg_index = 0usize;
+        for child in arg_list.children_with_tokens() {
+            if child.text_range().start() >= tok_start {
+                break;
+            }
+            if child.kind() == SyntaxKind::Comma {
+                arg_index += 1;
+            }
+        }
+        if arg_index + 1 != event_arg {
+            return None;
+        }
+        let ns = crate::annotations::detect_addon_ns_var(SyntaxNode::new_root(tree));
+        let path = crate::annotations::canonicalize_member_path(&names[..names.len() - 1], ns.as_deref())?;
+        // Scope addon-namespace paths by this file's addon identity, matching scan time.
+        let path = crate::annotations::scope_addon_ns_path(path, self.ir.addon_folder_name.as_deref());
+        self.ir.ext.callback_registries.get(&path)
+    }
+
+    /// Event-name completions inside a callback consumer's string argument.
+    fn string_context_callback_event_type(
+        &self,
+        token: &SyntaxToken,
+        tree: &SyntaxTree,
+    ) -> Option<ValueType> {
+        let set = self.callback_event_set_for_string(token, tree)?;
+        if set.events.is_empty() {
+            return None;
+        }
+        let mut events: Vec<&str> = set.events.iter().map(String::as_str).collect();
+        events.sort_unstable();
+        Some(ValueType::Union(
+            events.into_iter().map(|s| ValueType::String(Some(s.to_owned()))).collect(),
+        ))
+    }
+
     pub(super) fn string_context_type_from_call_arg(
         &self,
         token: &SyntaxToken,

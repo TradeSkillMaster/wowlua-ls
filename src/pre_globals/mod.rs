@@ -154,7 +154,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 28;
+pub(crate) const BLOB_VERSION: u32 = 30;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -179,6 +179,19 @@ pub struct EventPayloadParam {
 pub struct EventPayload {
     pub params: Vec<EventPayloadParam>,
     pub documentation: Option<String>,
+}
+
+/// The resolved event-name set for a callback registry (see
+/// [`PreResolvedGlobals::callback_registries`]). `complete` is false when the
+/// declaring `GenerateCallbackEvents(...)` couldn't be fully resolved (dynamic
+/// entries, an unresolved table reference, or conflicting declarations for the same
+/// receiver path) — in which case the `unknown-callback-event` diagnostic is
+/// suppressed for that receiver to avoid false positives, though completion still
+/// offers whatever names are known.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CallbackEventSet {
+    pub events: HashSet<String>,
+    pub complete: bool,
 }
 
 // ── Pre-resolved External Globals ─────────────────────────────────────────────
@@ -308,6 +321,19 @@ pub struct PreResolvedGlobals {
     /// Source locations for event definitions: event_type → event_name → location.
     #[serde(default)]
     pub(crate) event_locations: HashMap<String, HashMap<String, ExternalLocation>>,
+    /// Callback registries: canonical receiver path → its event-name set. Built from
+    /// `Receiver:GenerateCallbackEvents(...)` calls (the `@generates-events` producer)
+    /// for event-name completion and the `unknown-callback-event` diagnostic at the
+    /// matching `:RegisterCallback("…")` / `:TriggerEvent("…")` consumer sites.
+    /// Workspace-only (built from the scan, never the stub blob) — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub(crate) callback_registries: HashMap<String, CallbackEventSet>,
+    /// Callback-registry consumer methods: leaf method name → 1-based event-name
+    /// argument index, from `@callback-event-arg N` (e.g. `RegisterCallback` → 1).
+    /// Rebuilt at construction from the input globals (stub + workspace), so
+    /// `#[serde(skip)]` — no blob dependency.
+    #[serde(skip)]
+    pub(crate) callback_event_methods: HashMap<String, usize>,
     /// Field names explicitly declared via `@field` annotations per class.
     /// Used by doc generation to exclude inferred constructor self-fields.
     #[serde(default)]
@@ -2567,6 +2593,8 @@ impl BuildContext {
             stub_functions_end: 0,
             event_types: HashMap::new(),
             event_locations: HashMap::new(),
+            callback_registries: HashMap::new(),
+            callback_event_methods: HashMap::new(),
             declared_class_fields: self.declared_class_fields,
             deferred_returns_by_path,
             deferred_returns: self.deferred_returns,
@@ -2695,6 +2723,81 @@ impl PreResolvedGlobals {
         }
     }
 
+    /// Merge scanned callback registries into [`Self::callback_registries`], keyed by
+    /// canonical receiver path. A registry's event set is its inline events plus, when
+    /// the `GenerateCallbackEvents` argument was a reference, the values of the matching
+    /// string-array constant. Declarations are grouped by path: their events are unioned
+    /// (powering completion), but the path is only `complete` — i.e. eligible for the
+    /// `unknown-callback-event` diagnostic — when every declaration resolved completely
+    /// AND they all agree on the event set. An unresolved reference, or two *conflicting*
+    /// declarations colliding on one canonical path (e.g. unrelated bare-local registries),
+    /// degrades to incomplete so validation is suppressed rather than emitting a false
+    /// positive. (`self`-rooted receivers are dropped entirely at scan time, since a method
+    /// receiver is never a stable cross-file key.)
+    pub fn merge_callback_registries(
+        &mut self,
+        registries: &[crate::annotations::CallbackRegistryDecl],
+        consts: &[crate::annotations::StringArrayConstDecl],
+    ) {
+        if registries.is_empty() {
+            return;
+        }
+        let mut const_map: HashMap<&str, (&[String], bool)> = HashMap::new();
+        for c in consts {
+            const_map.entry(c.path.as_str()).or_insert((c.values.as_slice(), c.complete));
+        }
+        // Resolve each declaration to (event-set, complete), grouped by receiver path.
+        let mut by_path: HashMap<&str, Vec<(HashSet<String>, bool)>> = HashMap::new();
+        for reg in registries {
+            let mut events: HashSet<String> = reg.inline_events.iter().cloned().collect();
+            let mut complete = reg.complete;
+            if let Some(ref_path) = &reg.events_ref {
+                match const_map.get(ref_path.as_str()) {
+                    Some((values, c_complete)) => {
+                        events.extend(values.iter().cloned());
+                        complete = complete && *c_complete;
+                    }
+                    None => complete = false,
+                }
+            }
+            if events.is_empty() {
+                complete = false;
+            }
+            by_path.entry(reg.receiver_path.as_str()).or_default().push((events, complete));
+        }
+        for (path, decls) in by_path {
+            // The union powers completion; the path is `complete` (validated by the
+            // `unknown-callback-event` diagnostic) only when every declaration is
+            // itself complete AND they all agree on the event set. Conflicting
+            // declarations for one canonical path — e.g. two unrelated bare-local
+            // registries that collide — degrade to incomplete, suppressing validation.
+            let first = &decls[0].0;
+            let mut complete = decls.iter().all(|(events, c)| *c && events == first);
+            let mut union: HashSet<String> = HashSet::new();
+            for (events, _) in &decls {
+                union.extend(events.iter().cloned());
+            }
+            if union.is_empty() {
+                complete = false;
+            }
+            self.callback_registries
+                .insert(path.to_string(), CallbackEventSet { events: union, complete });
+        }
+    }
+
+    /// Register callback-registry consumer methods (`@callback-event-arg N`) into
+    /// [`Self::callback_event_methods`], keyed by leaf method name → 1-based event-arg
+    /// index. Additive across calls so stub and workspace globals can both contribute.
+    pub fn register_callback_consumer_methods(&mut self, globals: &[crate::annotations::ExternalGlobal]) {
+        for g in globals.iter().filter(|g| g.callback_event_arg.is_some()) {
+            let leaf = match &g.kind {
+                crate::annotations::ExternalGlobalKind::Method(_, method_name, _) => method_name.clone(),
+                _ => g.name.split('.').next_back().unwrap_or(&g.name).to_string(),
+            };
+            self.callback_event_methods.insert(leaf, g.callback_event_arg.unwrap());
+        }
+    }
+
     pub(crate) fn fixup_enum_tables(&mut self) {
         for table in &mut self.tables {
             if !table.enum_kind.is_enum()
@@ -2766,6 +2869,8 @@ impl PreResolvedGlobals {
             stub_functions_end: 0,
             event_types: HashMap::new(),
             event_locations: HashMap::new(),
+            callback_registries: HashMap::new(),
+            callback_event_methods: HashMap::new(),
             declared_class_fields: HashMap::new(),
             deferred_returns: HashSet::new(),
             deferred_returns_by_path: HashMap::new(),
@@ -3920,5 +4025,53 @@ mod tests {
         } else {
             panic!("__super should have Table annotation for Grandparent, got {:?}", super_field.annotation);
         }
+    }
+
+    #[test]
+    fn merge_callback_registries_collision_and_resolution() {
+        use crate::annotations::{CallbackRegistryDecl, StringArrayConstDecl};
+        let decl = |path: &str, events: &[&str]| CallbackRegistryDecl {
+            receiver_path: path.to_string(),
+            inline_events: events.iter().map(|s| s.to_string()).collect(),
+            events_ref: None,
+            complete: true,
+        };
+
+        // Single declaration → complete and validated.
+        let mut pg = PreResolvedGlobals::empty();
+        pg.merge_callback_registries(&[decl("Stable", &["A", "B"])], &[]);
+        let set = pg.callback_registries.get("Stable").expect("recorded");
+        assert!(set.complete && set.events.contains("A") && set.events.contains("B"));
+
+        // Two *conflicting* declarations for one canonical path (e.g. unrelated bare
+        // locals colliding) → incomplete, but events still unioned for completion.
+        let mut pg = PreResolvedGlobals::empty();
+        pg.merge_callback_registries(&[decl("cb", &["Alpha"]), decl("cb", &["Beta"])], &[]);
+        let set = pg.callback_registries.get("cb").expect("recorded");
+        assert!(!set.complete, "conflicting declarations must degrade to incomplete");
+        assert!(set.events.contains("Alpha") && set.events.contains("Beta"), "union for completion");
+
+        // Identical re-declarations agree → stay complete.
+        let mut pg = PreResolvedGlobals::empty();
+        pg.merge_callback_registries(&[decl("cb", &["X"]), decl("cb", &["X"])], &[]);
+        assert!(pg.callback_registries.get("cb").unwrap().complete, "agreeing declarations stay complete");
+
+        // Unresolved events reference → incomplete.
+        let mut pg = PreResolvedGlobals::empty();
+        let with_ref = CallbackRegistryDecl {
+            receiver_path: "R".into(), inline_events: vec![], events_ref: Some("Missing".into()), complete: true,
+        };
+        pg.merge_callback_registries(&[with_ref], &[]);
+        assert!(!pg.callback_registries.get("R").unwrap().complete, "unresolved reference is incomplete");
+
+        // Reference resolved against a string-array constant → complete.
+        let mut pg = PreResolvedGlobals::empty();
+        let with_ref = CallbackRegistryDecl {
+            receiver_path: "R".into(), inline_events: vec![], events_ref: Some("Consts".into()), complete: true,
+        };
+        let cst = StringArrayConstDecl { path: "Consts".into(), values: vec!["E1".into(), "E2".into()], complete: true };
+        pg.merge_callback_registries(&[with_ref], &[cst]);
+        let set = pg.callback_registries.get("R").unwrap();
+        assert!(set.complete && set.events.contains("E1") && set.events.contains("E2"), "resolved reference is complete");
     }
 }

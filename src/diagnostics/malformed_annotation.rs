@@ -95,7 +95,7 @@ const KNOWN_TAGS: &[&str] = &[
     "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
     "generic", "private", "protected", "accessor", "diagnostic",
     "builds-field", "built-name", "built-extends", "type-narrows", "narrows-arg",
-    "creates-global", "correlated", "flavor-narrows", "event", "requires",
+    "creates-global", "generates-events", "callback-event-arg", "correlated", "flavor-narrows", "event", "requires",
     "see", "vararg", "as", "cast", "operator", "module", "source",
     "version", "package", "async", "nodoc", "public",
 ];
@@ -275,6 +275,29 @@ impl DiagnosticPass for MalformedAnnotation {
                             Ok(0) => Some("@creates-global parameter index must be >= 1 (1-based)".to_string()),
                             Ok(_) => None,
                             Err(_) => Some("@creates-global requires a numeric parameter index (e.g. @creates-global 2)".to_string()),
+                        },
+                    }
+                }
+                "callback-event-arg" => {
+                    match rest.split_whitespace().next() {
+                        None => Some("@callback-event-arg requires a 1-based argument index (e.g. @callback-event-arg 1)".to_string()),
+                        Some(tok) => match tok.parse::<usize>() {
+                            Ok(0) => Some("@callback-event-arg argument index must be >= 1 (1-based)".to_string()),
+                            Ok(_) => None,
+                            Err(_) => Some("@callback-event-arg requires a numeric argument index (e.g. @callback-event-arg 1)".to_string()),
+                        },
+                    }
+                }
+                "generates-events" => {
+                    // `@generates-events N [Field]` — N (1-based) is the call argument
+                    // holding the event array; the optional Field (default `Event`) is
+                    // the synthesized table name.
+                    match rest.split_whitespace().next() {
+                        None => Some("@generates-events requires a parameter index (e.g. @generates-events 1)".to_string()),
+                        Some(tok) => match tok.parse::<usize>() {
+                            Ok(0) => Some("@generates-events parameter index must be >= 1 (1-based)".to_string()),
+                            Ok(_) => None,
+                            Err(_) => Some("@generates-events requires a numeric parameter index (e.g. @generates-events 1)".to_string()),
                         },
                     }
                 }

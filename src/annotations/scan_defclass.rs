@@ -7,7 +7,7 @@ use super::{
     default_visibility_for_name, extract_table_literal_fields,
 };
 use super::annotation_scanning::{
-    ExternalGlobal, func_path,
+    ExternalGlobal, GeneratesEventsSpec, func_path,
     extract_type_annotation_for_assign, extract_inline_type_annotation,
     collect_statements_recursive,
 };
@@ -42,6 +42,13 @@ pub struct DefclassContext {
     built_name_funcs: HashMap<String, usize>,
     /// class_name → field_name → field_type, for resolving ClassName._field:Method() patterns
     class_field_types: HashMap<String, HashMap<String, AnnotationType>>,
+    /// leaf method name (e.g. `GenerateCallbackEvents`) → spec, for `@generates-events`
+    /// detection. Keyed by leaf name so any receiver class inheriting the method matches.
+    generates_events: HashMap<String, GeneratesEventsSpec>,
+    /// All known class names (stubs + workspace). `@generates-events` synthesis is
+    /// gated on the receiver being a known class, so a bare-local receiver
+    /// (`cb:GenerateCallbackEvents(...)`) doesn't pollute the class registry.
+    class_names: HashSet<String>,
 }
 
 impl DefclassContext {
@@ -156,11 +163,22 @@ impl DefclassContext {
             }
         }
 
-        Self { defclass_funcs, constructor_names, global_returns, built_name_funcs, class_field_types }
+        // `@generates-events` methods, keyed by leaf method name so any receiver
+        // class that inherits the method (e.g. a CallbackRegistryMixin subclass)
+        // matches at the call site `Receiver:GenerateCallbackEvents({...})`.
+        let class_names: HashSet<String> = if all_globals.iter().any(|g| g.generates_events.is_some()) {
+            all_classes.iter().map(|c| c.name.clone()).collect()
+        } else {
+            HashSet::new()
+        };
+
+        let generates_events = super::scan_callback::build_generates_events_methods(all_globals);
+
+        Self { defclass_funcs, constructor_names, global_returns, built_name_funcs, class_field_types, generates_events, class_names }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.defclass_funcs.is_empty()
+        self.defclass_funcs.is_empty() && self.generates_events.is_empty()
     }
 }
 
@@ -177,7 +195,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
 /// multiple files against the same set of globals.
 pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassContext, implicit_protected_prefix: bool) -> Vec<ClassDecl> {
     let Some(block) = Block::cast(root) else { return Vec::new() };
-    if ctx.defclass_funcs.is_empty() { return Vec::new(); }
+    if ctx.defclass_funcs.is_empty() && ctx.generates_events.is_empty() { return Vec::new(); }
 
     // Result from find_defclass_in_chain: class name, parents, constraint type arg subs, and table literal fields
     struct DefclassCallResult {
@@ -599,7 +617,94 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
         }
     }
 
+    // `@generates-events`: synthesize the enum-like event table field onto the
+    // receiver class for each `Receiver:Method({...})` call.
+    if !ctx.generates_events.is_empty() {
+        results.extend(collect_generated_event_classes(block, &ctx.generates_events, &ctx.class_names));
+    }
+
     results
+}
+
+/// Scan a block for `Receiver:Method({ "EventA", SomeEvents.EventB, ... })` calls
+/// where `Method` carries `@generates-events`, and synthesize a [`ClassDecl`] for
+/// `Receiver` with an enum-like table field (e.g. `Event`). This models WoW's
+/// `CallbackRegistryMixin:GenerateCallbackEvents`, which populates
+/// `self.Event = { EventA = "EventA", ... }`. Each positional array entry becomes
+/// a `name: string` member: string literals use their value; field references
+/// (`SomeEvents.EventB`) use the leaf name, matching the value==name convention.
+///
+/// Only single-name receivers (`Receiver:Method(...)`, not `A.B:Method(...)`) that
+/// name a **known class** are handled — the receiver must resolve to a class for
+/// field registration, and the known-class gate keeps a bare-local receiver
+/// (`cb:Method(...)`) from polluting the registry with a junk class. The resulting
+/// `ClassDecl` is merged into the receiver's existing `@class` overlay by
+/// `merge_defclass_into_overlays` (field added only if absent).
+fn collect_generated_event_classes(
+    block: Block<'_>,
+    specs: &HashMap<String, GeneratesEventsSpec>,
+    class_names: &HashSet<String>,
+) -> Vec<ClassDecl> {
+    let mut out = Vec::new();
+    for node in block.syntax().descendants() {
+        let Some(call) = FunctionCall::cast(node) else { continue };
+        let Some(ident) = call.identifier() else { continue };
+        if !ident.is_call_to_self() { continue; }
+        let names = ident.names();
+        // Require a single-name receiver that names a known class: names == [Class, Method].
+        if names.len() != 2 { continue; }
+        let Some(spec) = specs.get(&names[1]) else { continue };
+        if !class_names.contains(&names[0]) { continue; }
+        let receiver = names[0].clone();
+
+        let Some(args) = call.arguments() else { continue };
+        let exprs = args.expressions();
+        let Some(Expression::TableConstructor(tc)) = exprs.get(spec.events_param.saturating_sub(1)) else { continue };
+
+        let mut event_fields: Vec<(String, AnnotationType)> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for field in tc.fields() {
+            let Some(crate::ast::FieldKind::Positional(value)) = field.kind() else { continue };
+            let Some(event_name) = super::annotation_scanning::event_name_from_expr(&value) else { continue };
+            if seen.insert(event_name.clone()) {
+                event_fields.push((event_name, AnnotationType::Simple("string".to_string())));
+            }
+        }
+        if event_fields.is_empty() { continue; }
+
+        let call_range = call.syntax().text_range();
+        out.push(ClassDecl {
+            name: receiver,
+            type_params: Vec::new(),
+            type_param_constraints: Vec::new(),
+            parents: Vec::new(),
+            fields: vec![(
+                spec.field_name.clone(),
+                AnnotationType::TableLiteral(event_fields),
+                Visibility::Public,
+            )],
+            accessors: Vec::new(),
+            overloads: Vec::new(),
+            generics: Vec::new(),
+            constructor_methods: Vec::new(),
+            constraint_type_arg_subs: Vec::new(),
+            field_built_names: HashMap::new(),
+            is_enum: false,
+            is_key_enum: false,
+            correlated_groups: Vec::new(),
+            def_range: Some((u32::from(call_range.start()), u32::from(call_range.end()))),
+            def_path: None,
+            field_ranges: HashMap::new(),
+            field_paths: HashMap::new(),
+            see: Vec::new(),
+            declared_field_names: HashSet::new(),
+            field_literals: HashMap::new(),
+            field_descriptions: HashMap::new(),
+            bare_inferred_field_names: HashSet::new(),
+            deferred_field_call_ranges: HashMap::new(),
+        });
+    }
+    out
 }
 
 /// Extract field names and inferred types from `self.X = ...` assignments in a block (recursively).

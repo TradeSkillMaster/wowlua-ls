@@ -467,8 +467,9 @@ pub fn scan_paths_with_overrides(
     // Pass 2+3: defclass + built-name scans.
     // Include stub globals/classes so the context matches what the LSP uses after
     // rebuild_caches (which includes stubs + workspace globals).
-    let needs_defclass = stub_globals.iter().any(|g| g.defclass.is_some())
-        || globals.iter().any(|g| g.defclass.is_some());
+    // `@generates-events` detection rides the defclass scan (same context/flow).
+    let needs_defclass = stub_globals.iter().any(|g| g.defclass.is_some() || g.generates_events.is_some())
+        || globals.iter().any(|g| g.defclass.is_some() || g.generates_events.is_some());
     let needs_built_name = stub_globals.iter().any(|g| g.built_name.is_some())
         || globals.iter().any(|g| g.built_name.is_some());
     if needs_defclass || needs_built_name {
@@ -666,7 +667,33 @@ pub fn scan_paths_with_overrides(
         log::debug!("workspace scan: {} dynamic global prefix patterns detected", dynamic_global_prefixes.len());
     }
     log::debug!("workspace scan: {} classes, {} aliases, {} globals, {} events", classes.len(), aliases.len(), globals.len(), events.len());
-    WorkspaceScanResult { classes, aliases, globals, addon_ns_class_files, events, callable_classes, dynamic_global_prefixes }
+
+    // Callback registries (`Receiver:GenerateCallbackEvents(...)`) + the
+    // string-array constants their event lists reference. Annotation-driven via
+    // `@generates-events` (stub + workspace), keyed by canonical receiver path.
+    let (callback_registries, string_consts) = {
+        let mut events_methods = crate::annotations::build_generates_events_methods(stub_globals);
+        events_methods.extend(crate::annotations::build_generates_events_methods(&globals));
+        if events_methods.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            let cfg = configs;
+            let scanned: Vec<_> = paths.par_iter().filter_map(|p| {
+                let text = std::fs::read_to_string(p).ok()?;
+                if crate::has_shebang(&text) { return None; }
+                let tree = crate::syntax::parser::parse(&text);
+                let root = crate::syntax::SyntaxNode::new_root(&tree);
+                let scope = cfg.and_then(|c| c.addon_name_for(p));
+                Some(crate::annotations::scan_callback_registries(root, &events_methods, scope.as_deref()))
+            }).collect();
+            let mut regs = Vec::new();
+            let mut consts = Vec::new();
+            for (r, c) in scanned { regs.extend(r); consts.extend(c); }
+            (regs, consts)
+        }
+    };
+
+    WorkspaceScanResult { classes, aliases, globals, addon_ns_class_files, events, callable_classes, dynamic_global_prefixes, callback_registries, string_consts }
 }
 
 /// Partition XML classes into direct classes and overlay classes based on whether
@@ -897,8 +924,8 @@ pub(super) fn complete_directory_scan(
     // workspace Lua globals from pass1.results, missing XML globals and stubs,
     // which could cause defclass/built-name discoveries to differ between the
     // initial scan and later incremental rebuilds.
-    let needs_defclass = stub_globals.iter().any(|g| g.defclass.is_some())
-        || out.file_globals.values().flatten().any(|g| g.defclass.is_some());
+    let needs_defclass = stub_globals.iter().any(|g| g.defclass.is_some() || g.generates_events.is_some())
+        || out.file_globals.values().flatten().any(|g| g.defclass.is_some() || g.generates_events.is_some());
     let needs_built_name = stub_globals.iter().any(|g| g.built_name.is_some())
         || out.file_globals.values().flatten().any(|g| g.built_name.is_some());
     if needs_defclass || needs_built_name {
@@ -955,6 +982,30 @@ pub(super) fn complete_directory_scan(
             let entry = out.file_globals.entry(path).or_default();
             found.append(entry);
             *entry = found;
+        }
+    }
+
+    // Callback registries (`Receiver:GenerateCallbackEvents(...)`) + the
+    // string-array event constants they reference, annotation-driven via
+    // `@generates-events`. Reuses cached parse trees; per-file maps merge into
+    // pre_globals during rebuild() for completion + `unknown-callback-event`.
+    {
+        let events_methods = crate::annotations::build_generates_events_methods_iter(
+            stub_globals.iter().chain(out.file_globals.values().flatten()),
+        );
+        if !events_methods.is_empty() {
+            let scanned: Vec<_> = pass1.results.par_iter()
+                .filter_map(|(p, cached)| {
+                    let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
+                    let scope = configs.addon_name_for(p);
+                    let (regs, consts) = crate::annotations::scan_callback_registries(root, &events_methods, scope.as_deref());
+                    if regs.is_empty() && consts.is_empty() { None } else { Some((p.clone(), regs, consts)) }
+                })
+                .collect();
+            for (path, regs, consts) in scanned {
+                if !regs.is_empty() { out.file_callback_registries.insert(path.clone(), regs); }
+                if !consts.is_empty() { out.file_string_consts.insert(path, consts); }
+            }
         }
     }
 

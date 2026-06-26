@@ -85,6 +85,8 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@constructor` | Mark a method as the class constructor. |
 | `@accessor name [visibility]` | Set visibility for methods defined through a sub-table accessor. [Guide](/guide/classes#accessor-visibility-accessor) |
 | `@creates-global N` | Calling this function with a string literal at param `N` creates a named global. The global's type is taken from the call's return type. |
+| `@generates-events N [Field]` | Calling this method with an array table at param `N` synthesizes an enum-like `Field` table (default `Event`) on the receiver class, one member per array entry. |
+| `@callback-event-arg N` | Marks a callback-registry consumer method (`RegisterCallback`/`TriggerEvent`/…) whose argument `N` is an event name — enables event-name completion and the `unknown-callback-event` diagnostic. |
 
 ### `@creates-global N`
 
@@ -122,6 +124,73 @@ Currently, only functions defined in API stubs are detected as `@creates-global`
 sources. The annotation is parsed on workspace-defined functions but their calls
 are not yet scanned for created globals.
 :::
+
+### `@generates-events N [Field]`
+
+Some methods populate an enum-like table on their receiver as a side effect of
+being called. World of Warcraft's
+`CallbackRegistryMixin:GenerateCallbackEvents({ "OnFoo", ... })` builds
+`self.Event = { OnFoo = "OnFoo", ... }`, which addons later reference as
+`Mixin.Event.OnFoo`. Mark such a method so those accesses resolve instead of
+producing a false [`undefined-field`](/reference/diagnostics):
+
+- `N` (1-based) is the call argument that holds the **array table** of event
+  names.
+- `Field` (optional, default `Event`) is the table field synthesized on the
+  receiver class.
+
+```lua
+---@generates-events 1 Event   -- arg 1 is the event array; build `self.Event`
+---@param events string[]
+function CallbackRegistryMixin:GenerateCallbackEvents(events) end
+```
+
+The receiver must be a single-name class (e.g. `ScrollBoxListMixin`, not a dotted
+chain). Each array entry contributes one `string` member: string literals use
+their value, and field references (`SomeEvents.OnFoo`) use the leaf name `OnFoo`,
+matching the value-equals-name convention. Accessing an event that isn't in the
+array still resolves leniently — the synthesized table is not closed.
+
+```lua
+ScrollBoxListMixin:GenerateCallbackEvents({
+    BaseScrollBoxEvents.OnScroll,        -- → ScrollBoxListMixin.Event.OnScroll
+    "OnDataProviderReassigned",          -- → ScrollBoxListMixin.Event.OnDataProviderReassigned
+})
+
+local e = ScrollBoxListMixin.Event.OnDataProviderReassigned  -- string, no diagnostic
+```
+
+### `@callback-event-arg N`
+
+Addons that mix in `CallbackRegistryMixin` usually register and fire events by
+string-literal name rather than through the `.Event` table:
+
+```lua
+addonTable.CallbackRegistry:RegisterCallback("SettingChanged", handler)
+addonTable.CallbackRegistry:TriggerEvent("SettingChanged", value)
+```
+
+`@callback-event-arg N` marks a consumer method whose `N`-th argument is such an
+event name. Combined with the registry's declared events (from
+`GenerateCallbackEvents`, including an `addonTable.Constants.Events`-style string
+array resolved across files), the language server then:
+
+- **completes** the registered event names inside the string argument, and
+- flags an unregistered name with
+  [`unknown-callback-event`](/reference/diagnostics) (off by default).
+
+```lua
+---@callback-event-arg 1   -- arg 1 is the event name
+---@param event string
+function CallbackRegistryMixin:RegisterCallback(event, func, owner, ...) end
+```
+
+The registry receiver is matched by name (a global, a class, or an
+`addonTable.X` namespace field — the addon-namespace alias is normalized so the
+declaration and the call sites agree across files, and scoped by addon so separate
+addons in one workspace don't share an event set). When a registry's event set
+can't be fully determined, validation is suppressed for it so no false positives
+are reported.
 
 ## Opaque aliases
 
