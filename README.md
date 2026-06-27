@@ -95,7 +95,7 @@ Hover, go-to-definition (lists every site when a global or type is defined acros
 
 ### Type system
 
-LuaLS-compatible annotations (`@param`, `@return`, `@class`, `@field`, `@generic`, `@overload`, etc.) plus WoW-specific extensions (`@event`, `@defclass`, `@builds-field`, `@type-narrows`, `@flavor-narrows`, and more). Full type system with unions, intersections, generics, parameterized classes, anonymous table shapes, optionals, lateinit, tuple-union returns, and opaque aliases.
+LuaLS-compatible annotations (`@param`, `@return`, `@class`, `@field`, `@generic`, `@overload`, etc.) plus WoW-specific extensions (`@event`, `@defclass`, `@builds-field`, `@type-narrows`, `@flavor-narrows`, `@shape`, and more). Full type system with unions, intersections, generics, parameterized classes, anonymous table shapes, optionals, lateinit, tuple-union returns, and opaque aliases.
 
 See the [annotation reference](https://tradeskillmaster.github.io/wowlua-ls/reference/annotations) and [diagnostic reference](https://tradeskillmaster.github.io/wowlua-ls/reference/diagnostics).
 

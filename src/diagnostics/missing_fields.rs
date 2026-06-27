@@ -52,6 +52,20 @@ fn check_missing_fields(
     let class_table = analysis.table(class_idx);
     let Some(class_name) = &class_table.class_name else { return };
 
+    // A constructor matching a declared `@shape` (the userdata/mixin escape) is
+    // accepted by `is_table_subtype`; shape acceptance owns it, so don't also
+    // report missing fields. Gated on the class actually declaring shapes so
+    // ordinary classes are unaffected. In practice this guard is load-bearing
+    // only for a required field *not named in any shape member*: after
+    // `apply_shape_field_nilability` a shape class's shape-named data fields are
+    // nilable (hence not required) and its methods are never required, so the
+    // fall-through path below would otherwise only flag such an un-shaped field.
+    if !class_table.accept_shapes.is_empty()
+        && analysis.is_table_subtype(&ValueType::Table(Some(ctor_idx)), &ValueType::Table(Some(class_idx)))
+    {
+        return;
+    }
+
     let Some(&(start, end)) = analysis.ir.table_ranges.iter()
         .find(|(_, idx)| **idx == ctor_idx)
         .map(|(range, _)| range) else { return };
@@ -99,6 +113,14 @@ fn check_missing_fields_union(
     for &class_idx in class_indices {
         let class_table = analysis.table(class_idx);
         let Some(class_name) = &class_table.class_name else { continue };
+
+        // A member that accepts the constructor via a declared `@shape` satisfies
+        // the union (userdata/mixin escape) — no diagnostic.
+        if !class_table.accept_shapes.is_empty()
+            && analysis.is_table_subtype(&ValueType::Table(Some(ctor_idx)), &ValueType::Table(Some(class_idx)))
+        {
+            return;
+        }
 
         let has_missing = class_table.fields.iter().any(|(field_name, fi)| {
             is_required_contract_field(analysis, class_name, field_name, fi)

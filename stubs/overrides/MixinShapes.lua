@@ -1,0 +1,25 @@
+---@meta _
+-- Additive `@shape` declarations for WoW userdata/mixin types that addons
+-- routinely fake with a plain table.
+--
+-- These mixins (ItemLocation, ColorMixin, ...) are runtime objects with data
+-- fields *and* methods. Addons very commonly skip the constructor and pass a
+-- plain table carrying only the data fields, e.g.
+--   C_Item.IsLocked({ bagID = 0, slotIndex = 1 })
+--   self:PlayFlashAnimation(texture, { r = 1, g = 0, b = 0, a = 1 })
+-- Both work at runtime. The strict structural check otherwise rejects them as
+-- `type-mismatch` for the missing mixin methods.
+--
+-- `@shape <ClassName> <type>` declares the accepted plain-table form(s) and
+-- attaches *additively* to the named class. This file intentionally declares no
+-- `@class` and is named so its stem does NOT collide with any generated/vendor
+-- stub file — otherwise the override would *replace* the real class definition
+-- (dropping its fields and methods) instead of augmenting it. A table that does
+-- not match a declared shape still mismatches, so genuine errors are preserved.
+
+-- ItemLocation: constructed from bag+slot OR an equipment slot (mutually
+-- exclusive variants), so the shape is a union of the two forms.
+---@shape ItemLocation { bagID: number, slotIndex: number } | { equipmentSlotIndex: number }
+
+-- ColorMixin: r/g/b are required, alpha is optional (defaults).
+---@shape ColorMixin { r: number, g: number, b: number, a?: number }

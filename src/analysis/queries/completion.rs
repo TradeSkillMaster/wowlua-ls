@@ -1457,6 +1457,7 @@ impl AnalysisResult {
             ("creates-global", "Call creates a named global (e.g. CreateFrame)", F,   Some("creates-global ${1:N}")),
             ("requires",       "Restrict method by receiver type-param constraint", F,  Some("requires ${1:T}: ${2:Constraint}")),
             ("correlated",     "Declare fields that are always nil/non-nil together", C, None),
+            ("shape",          "Plain-table form(s) the class accepts (mixin/userdata escape)", C, Some("shape ${1:type}")),
             ("see",            "Cross-reference link to related symbol or URL", F|C|S, None),
         ];
 

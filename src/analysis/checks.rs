@@ -105,6 +105,10 @@ impl AnalysisResult {
         let bt = self.table(expected_idx);
         // Only check table literal → @class structural matches
         if at.class_name.is_some() || bt.class_name.is_none() { return; }
+        // A shape-matched plain table is coerced to the class via `@shape`; its
+        // extra fields are tolerated at the boundary, not "injected" into the
+        // class — don't emit inject-field hints for them.
+        if !bt.accept_shapes.is_empty() { return; }
         if at.fields.is_empty() { return; }
 
         let expected_fields = self.collect_class_fields(expected_idx);

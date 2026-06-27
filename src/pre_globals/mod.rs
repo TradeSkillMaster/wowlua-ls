@@ -58,6 +58,73 @@ pub(crate) fn finalize_enum_kind_for_class(tables: &mut [TableInfo], local_idx: 
     tables[local_idx].enum_kind = classification.to_enum_kind();
 }
 
+/// Wrap a type so it admits `nil`, flattening rather than nesting unions.
+fn nil_union(ann: ValueType) -> ValueType {
+    match ann {
+        ValueType::Nil => ValueType::Nil,
+        ValueType::Union(mut members) => {
+            if !members.contains(&ValueType::Nil) { members.push(ValueType::Nil); }
+            ValueType::Union(members)
+        }
+        other => ValueType::Union(vec![other, ValueType::Nil]),
+    }
+}
+
+/// Field names that a class's `@shape` forms mark as *conditionally present*: a
+/// field named in some shape member but not required (present and non-nil) in
+/// *every* member. Such a field can be nil on a value typed as the class — e.g.
+/// an `ItemLocation` built from bag+slot has `equipmentSlotIndex == nil`. This
+/// lets the shape drive accurate read-side nilability without re-declaring the
+/// (vendor-authored) `@field`s. `base` maps a shape member's `TableIndex` into
+/// `tables` (`EXT_BASE` for the stub/workspace builds, `0` for per-file prescan).
+fn shape_optional_field_names(tables: &[TableInfo], base: usize, shapes: &[ValueType]) -> HashSet<String> {
+    fn ann_is_nilable(fi: &crate::types::FieldInfo) -> bool {
+        match &fi.annotation {
+            Some(ValueType::Nil) => true,
+            Some(ValueType::Union(t)) => t.contains(&ValueType::Nil),
+            _ => false,
+        }
+    }
+    fn collect(v: &ValueType, base: usize, n: usize, out: &mut Vec<usize>) {
+        match v {
+            ValueType::Union(members) => members.iter().for_each(|m| collect(m, base, n, out)),
+            ValueType::Table(Some(idx)) => {
+                let i = idx.val().saturating_sub(base);
+                if i < n { out.push(i); }
+            }
+            _ => {}
+        }
+    }
+    let mut members = Vec::new();
+    for s in shapes { collect(s, base, tables.len(), &mut members); }
+    if members.is_empty() { return HashSet::new(); }
+    let mut named: HashSet<String> = HashSet::new();
+    for &i in &members { named.extend(tables[i].fields.keys().cloned()); }
+    named.into_iter().filter(|f| {
+        // Optional unless required (present and non-nil) in every shape member.
+        !members.iter().all(|&i|
+            tables[i].fields.get(f).is_some_and(|fi| !ann_is_nilable(fi)))
+    }).collect()
+}
+
+/// Mark a class's fields nilable where its `@shape` forms imply conditional
+/// presence (see [`shape_optional_field_names`]). Call after `accept_shapes` is
+/// populated and fields are resolved. `local_idx` is the class's index in
+/// `tables`; `base` maps shape-member `TableIndex`es into `tables`.
+pub(crate) fn apply_shape_field_nilability(tables: &mut [TableInfo], local_idx: usize, base: usize) {
+    if tables[local_idx].accept_shapes.is_empty() { return; }
+    let shapes = tables[local_idx].accept_shapes.clone();
+    let optional = shape_optional_field_names(tables, base, &shapes);
+    for f in optional {
+        if let Some(fi) = tables[local_idx].fields.get_mut(&f) {
+            if fi.lateinit { continue; }
+            if let Some(ann) = fi.annotation.take() {
+                fi.annotation = Some(nil_union(ann));
+            }
+        }
+    }
+}
+
 /// Substitute type parameter references in an annotation type with resolved class names.
 /// `subs` maps type param name → table index; `classes` maps class name → table index (reverse lookup).
 fn substitute_annotation_type(
@@ -155,7 +222,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 30;
+pub(crate) const BLOB_VERSION: u32 = 31;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -3342,6 +3409,7 @@ mod tests {
             field_descriptions: std::collections::HashMap::new(),
             bare_inferred_field_names: std::collections::HashSet::new(),
             deferred_field_call_ranges: std::collections::HashMap::new(),
+            shape_annotations: Vec::new(),
         }
     }
 

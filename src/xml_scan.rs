@@ -808,6 +808,7 @@ fn finalize_frame(
         field_descriptions: HashMap::new(),
         bare_inferred_field_names: HashSet::new(),
         deferred_field_call_ranges: HashMap::new(),
+        shape_annotations: Vec::new(),
     };
     classes.push(class_decl);
 
@@ -854,6 +855,7 @@ fn finalize_frame(
                 field_descriptions: HashMap::new(),
                 bare_inferred_field_names: HashSet::new(),
                 deferred_field_call_ranges: HashMap::new(),
+                shape_annotations: Vec::new(),
             };
             mixin_augments.push(augment);
         }

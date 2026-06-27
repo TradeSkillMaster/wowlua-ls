@@ -57,6 +57,7 @@ pub(super) fn class_semantic_eq(x: &ClassDecl, y: &ClassDecl) -> bool {
         && x.is_enum == y.is_enum
         && x.is_key_enum == y.is_key_enum
         && x.correlated_groups == y.correlated_groups
+        && x.shape_annotations == y.shape_annotations
 }
 
 pub(super) fn classes_match(a: &[ClassDecl], b: &[ClassDecl]) -> bool {

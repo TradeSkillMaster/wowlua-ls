@@ -2415,6 +2415,24 @@ fn structural_subtype() {
 }
 
 #[test]
+fn shape_annotation() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/shape-annotation.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn shape_annotation_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/shape-annotation-crossfile/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/shape-annotation-crossfile"),
+    });
+}
+
+#[test]
 fn syntax_coverage() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/syntax-coverage.lua",
