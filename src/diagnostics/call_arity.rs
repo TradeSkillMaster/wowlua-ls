@@ -4,6 +4,24 @@ use super::{DiagnosticPass, WowDiagnostic};
 
 pub(crate) struct CallArity;
 
+/// True when `rt` is a union of 2+ distinct alternatives that each carry a table
+/// type — i.e. a genuine multi-type receiver. A `Table(Some)` counts directly;
+/// an `Intersection` carrying a table counts as one alternative (a single
+/// concrete instance like `Frame & Template`). A merely nilable type (`T | nil`)
+/// or a union mixing one table with non-table members (`Foo | string`) is NOT a
+/// multi-type union — those still resolve to a single member and are checked
+/// normally.
+fn receiver_is_multi_type_union(rt: &Option<ValueType>) -> bool {
+    let Some(ValueType::Union(members)) = rt else { return false };
+    let table_alternatives = members.iter().filter(|m| match m {
+        ValueType::Table(Some(_)) => true,
+        ValueType::Intersection(its) =>
+            its.iter().any(|it| matches!(it, ValueType::Table(Some(_)))),
+        _ => false,
+    }).count();
+    table_alternatives >= 2
+}
+
 /// Walk function calls; emit redundant-parameter or missing-parameter based on arity.
 /// Handles self_offset for method calls, varargs, overloads, optional/unannotated params,
 /// and projected arity from `params<F>`.
@@ -13,6 +31,7 @@ impl DiagnosticPass for CallArity {
             let Expr::FunctionCall { func: callee, args, arg_ranges, ret_index,
                                      call_range, is_method_call, .. } = expr else { continue };
             if *ret_index != 0 { continue; }
+
             let callee_type = analysis.resolve_expr_type(*callee);
             let mut is_call_func = false;
             let mut call_func_is_metamethod = false;
@@ -33,6 +52,32 @@ impl DiagnosticPass for CallArity {
                 }
                 _ => continue,
             };
+
+            // A field/method call whose receiver is a multi-type union (e.g. an
+            // AceGUI widget handle typed `WidgetA | WidgetB | ...`) has no
+            // statically known runtime type. The accessed function resolves to
+            // whichever union member(s) declare it; when only ONE member does,
+            // the callee collapses to that single member's function and is
+            // arity-checked against its signature — which is often an incomplete
+            // vendored stub (e.g. a trailing optional param dropped). Reporting
+            // that as redundant/missing-parameter is a false positive: the call
+            // relies on a more specific runtime type than the union expresses.
+            // Skip arity checks for such calls, matching the existing behavior
+            // when the member is present on several union members (the callee
+            // resolves to `ValueType::Union` and is skipped at the `func_idx`
+            // match above). Covers both colon (`u:M()`) and dot (`u.f()`) access
+            // — the callee is a `FieldAccess` in both cases. Placed *after* the
+            // match so the receiver type is resolved only for callees that are
+            // actually arity-checkable; a `None` / multi-member `Union` /
+            // non-callable `Table` callee already `continue`d above, so resolving
+            // its receiver up front would be pure overhead.
+            if let Expr::FieldAccess { table: receiver_expr, .. } = analysis.ir.expr(*callee) {
+                let receiver_expr = *receiver_expr;
+                if receiver_is_multi_type_union(&analysis.resolve_expr_type(receiver_expr)) {
+                    continue;
+                }
+            }
+
             let func = analysis.func(func_idx);
             let has_self = func.args.first().is_some_and(|&sym| {
                 matches!(&analysis.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")

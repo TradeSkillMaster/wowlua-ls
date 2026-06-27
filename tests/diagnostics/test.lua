@@ -2762,6 +2762,49 @@ end
 _consume(DiagCallbackOwner)
 
 -- ═══════════════════════════════════════════════════════════
+-- Regression: arity check on a multi-type union receiver
+-- A method present on only ONE union member must not be arity-checked against
+-- that member's (possibly stub-incomplete) signature — the receiver's true
+-- runtime type isn't statically known. Mirrors AceGUI widget-handle unions
+-- (`gui:Create()` returns `WidgetA | WidgetB | ...`; only the Dropdown member
+-- declares `:SetList`, whose vendored annotation drops a trailing param).
+-- ═══════════════════════════════════════════════════════════
+
+---@class _ArityUnionA
+local _ArityUnionA = {}
+---@param list table
+function _ArityUnionA:SetList(list) end
+---@param a string
+function _ArityUnionA.dotFn(a) end
+
+---@class _ArityUnionB
+local _ArityUnionB = {}
+function _ArityUnionB:Other() end
+
+---@return _ArityUnionA|_ArityUnionB
+local function _makeArityUnion() return _ArityUnionA end
+
+local _au = _makeArityUnion()
+--    ^ hover: (local) _au: _ArityUnionA | _ArityUnionB
+-- Only _ArityUnionA declares :SetList (1 param). Extra args must NOT report
+-- redundant-parameter — _au's runtime type could be either member.
+_au:SetList({}, "extra", 3)
+-- Too few args on a union receiver must NOT report missing-parameter either.
+_au:SetList()
+-- Same leniency for dot-access calls on a union receiver (only A has dotFn).
+_au.dotFn("x", "y")
+_consume(_au)
+
+-- A single (non-union) receiver of the same class is still arity-checked,
+-- for both colon and dot access.
+local _singleWidget = _ArityUnionA
+_singleWidget:SetList({}, "extra")
+--                       ^ diag: redundant-parameter
+_singleWidget.dotFn("x", "y")
+--                       ^ diag: redundant-parameter
+_consume(_singleWidget)
+
+-- ═══════════════════════════════════════════════════════════
 -- Regression: bracket-index assignment should not pollute container type
 -- (Bug 1a: tbl[k] = v was unioning value type into table variable)
 -- ═══════════════════════════════════════════════════════════
