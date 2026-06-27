@@ -584,6 +584,10 @@ pub(crate) fn resolve_inheritance(
             let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
             let child_local = child_table_idx.ext_offset();
             let mut transitive_parents: Vec<TableIndex> = tables[child_local].parent_classes.clone();
+            // Declaration order: for a plain `@class X : A, B` the first parent wins
+            // on field collisions. (CreateFromMixins classes get last-wins applied
+            // later by `apply_mixin_parent_inheritance`, scoped so plain multi-parent
+            // classes — e.g. XML FontString templates — keep this order.)
             for parent_name in &lookup_parents[idx] {
                 if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
                     if !transitive_parents.contains(&parent_idx) {

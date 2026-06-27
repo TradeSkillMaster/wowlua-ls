@@ -59,15 +59,84 @@ pub(in crate::stub_gen) fn extract_inferred_return(
         return None;
     }
 
-    let params: Vec<String> = func.args.iter().filter_map(|&arg_idx| {
+    let mut params: Vec<String> = func.args.iter().filter_map(|&arg_idx| {
         if arg_idx.is_external() { return None; }
         Some(match &ar.ir.sym(arg_idx).id {
             SymbolIdentifier::Name(n) => n.clone(),
             _ => "_".to_string(),
         })
     }).collect();
+    // `func.args` holds only the named parameters; a trailing `...` is tracked
+    // separately on `is_vararg`. Re-append it so the emitted stub keeps the
+    // vararg (e.g. `GenerateClosure(f, ...)`, `LinkUtil.FormatLink(t, d, ...)`,
+    // `DataProviderMixin:Remove(...)`) — otherwise callers passing extra args
+    // get a spurious `redundant-parameter`.
+    if func.is_vararg {
+        params.push("...".to_string());
+    }
 
-    Some(InferredReturn { params, returns: return_types })
+    // A body like `return string.match(...)` tail-calls a function whose return
+    // is itself unbounded (vararg). The per-file engine treats such a return as
+    // open-ended (no over-destructure warning), but a frozen single-slot stub
+    // loses that — so emit a matching `...T` vararg return for the generated stub.
+    let returns = match tail_call_vararg_elem(ar, func, &return_types) {
+        Some(elem) => vec![format!("...{elem}")],
+        None => return_types,
+    };
+
+    Some(InferredReturn { params, returns })
+}
+
+/// When `func`'s body is a single tail call `return f(...)` whose callee `f` has
+/// an unbounded (vararg) return, returns the vararg element type. The defining
+/// file's engine reports this function's arity as open-ended (a tail call may
+/// yield more values than the one inferred slot, see `destructure_arity`), so the
+/// generated stub must carry a `...T` vararg return to stay consistent — otherwise
+/// a cross-file `local a, b = f()` over-destructure false-positives. Returns
+/// `None` for any non-tail-call or fixed-arity-callee body (those keep their
+/// precise inferred returns).
+fn tail_call_vararg_elem(
+    ar: &crate::analysis::AnalysisResult,
+    func: &crate::types::Function,
+    return_types: &[String],
+) -> Option<String> {
+    use crate::types::{SymbolIdentifier, Expr, ValueType};
+
+    // Only the collapsed single-slot case (a multi-slot inference is already precise).
+    if return_types.len() != 1 { return None; }
+    if func.rets.is_empty() { return None; }
+
+    // Every return must be a lone slot-0 `FunctionCall(ret_index 0)` to a vararg
+    // callee. Requiring slot 0 on every `rets` entry also rejects multi-value
+    // returns (`return a, b` emits a slot-1 FunctionRet) and non-tail-call returns
+    // — each return statement contributes exactly one slot-0 symbol.
+    for &sym_idx in &func.rets {
+        let sym = ar.ir.sym(sym_idx);
+        let SymbolIdentifier::FunctionRet(_, 0) = sym.id else { return None };
+        let ver = sym.versions.first()?;
+        let Expr::FunctionCall { func: callee_expr, ret_index: 0, .. } = ar.ir.expr(ver.type_source?)
+        else { return None };
+        let callee_idx = match ar.resolved_expr_cache_get(*callee_expr)?.clone().into_strip_opaque() {
+            ValueType::Function(Some(idx)) => idx,
+            ValueType::Union(types) | ValueType::Intersection(types) => {
+                types.into_iter().find_map(|t| match t {
+                    ValueType::Function(Some(idx)) => Some(idx),
+                    _ => None,
+                })?
+            }
+            _ => return None,
+        };
+        let callee = ar.ir.func(callee_idx);
+        let unbounded = callee.has_vararg_return
+            || callee.overloads.iter().any(|o| !o.is_return_only && o.has_vararg_tail);
+        if !unbounded { return None; }
+    }
+
+    // Use the inferred slot-0 type as the vararg element (drop a trailing `?` —
+    // the vararg tail itself is optional, so per-slot nilability is redundant).
+    let elem = return_types[0].trim_end_matches('?').trim();
+    if elem.is_empty() || elem == "any" || elem == "nil" { return None; }
+    Some(elem.to_string())
 }
 
 

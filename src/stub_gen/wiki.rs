@@ -138,6 +138,26 @@ pub(in crate::stub_gen) fn manual_overrides() -> HashMap<&'static str, &'static 
          ---@param bid number\n\
          function PlaceAuctionBid(type, index, bid) end",
     );
+    // `reverse` is optional — the wiki signature `(type, column, reverse)` omits
+    // the optional bracket, so the auto-parse marks it required and addons that
+    // call `SortAuctionSetSort("list", "unitprice")` get a false missing-parameter.
+    m.insert(
+        "SortAuctionSetSort",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_SortAuctionSetSort)\n\
+         ---@param type string\n\
+         ---@param column string\n\
+         ---@param reverse? boolean\n\
+         function SortAuctionSetSort(type, column, reverse) end",
+    );
+    // Takes an optional page index (Blizzard's own FrameXML calls it both as
+    // `GetOwnerAuctionItems(page)` and `GetOwnerAuctionItems()`); the wiki
+    // apisig shows no parameters, producing a false redundant-parameter.
+    m.insert(
+        "GetOwnerAuctionItems",
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetOwnerAuctionItems)\n\
+         ---@param page? number\n\
+         function GetOwnerAuctionItems(page) end",
+    );
     // Classic craft API — wiki pages lack {{apitype}} annotations on returns
     m.insert(
         "GetCraftInfo",
@@ -284,11 +304,23 @@ pub(in crate::stub_gen) fn parse_wikitext(api_name: &str, wikitext: &str, doc_na
 
     // Track optional params
     let opt_re = regex_lite::Regex::new(r"\[\s*,?\s*(\w+)").unwrap();
+    let bracket_group_re = regex_lite::Regex::new(r"\[([^\]]+)\]").unwrap();
     let brace_re = regex_lite::Regex::new(r"\{([^}]+)\}").unwrap();
     let word_re = regex_lite::Regex::new(r"(\w+)").unwrap();
     let mut optional_params: HashSet<String> = HashSet::new();
     for c in opt_re.captures_iter(orig_args) {
         optional_params.insert(c.get(1).unwrap().as_str().to_string());
+    }
+    // Mark *every* arg inside a `[...]` optional group, not just the first word.
+    // Wiki pages frequently group several trailing optionals in one bracket
+    // (e.g. `JoinChannelByName(channelName [, password, frameID, hasVoice])`),
+    // where `opt_re` alone would only catch `password` and leave `frameID` /
+    // `hasVoice` spuriously required. Mirrors the `{...}` handling below.
+    for c in bracket_group_re.captures_iter(orig_args) {
+        let group = c.get(1).unwrap().as_str();
+        for wc in word_re.captures_iter(group) {
+            optional_params.insert(wc.get(1).unwrap().as_str().to_string());
+        }
     }
     for c in brace_re.captures_iter(orig_args) {
         let group = c.get(1).unwrap().as_str();

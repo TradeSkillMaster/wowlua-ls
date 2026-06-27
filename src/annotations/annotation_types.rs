@@ -689,8 +689,13 @@ pub(crate) fn parse_return_line(s: &str, force_tuple: bool) -> (AnnotationType, 
     let (body, description) = split_legacy_desc(s);
     let type_only = extract_type_prefix(body);
     let trailing = body[type_only.len()..].trim();
-    // LuaLS-style vararg return: `@return string ...` → VarArgs(string)
-    if trailing == "..." {
+    // LuaLS-style vararg return: a `...` token *after* the type marks the return
+    // variadic. Both the bare `@return string ...` form and the named
+    // `@return <type> ... <name>` form (used pervasively by Ketho's vendor
+    // annotations, e.g. `@return any|nil ... captured` on `string.find`,
+    // `@return number ... spellID`) collapse to `VarArgs(<type>)` so the
+    // variadic tail fills the remaining return slots instead of one fixed slot.
+    if trailing.starts_with("...") {
         return (AnnotationType::VarArgs(Box::new(parse_type(type_only))), None, description);
     }
     let name = extract_trailing_ident(trailing);
@@ -918,5 +923,27 @@ fn split_params(s: &str) -> Vec<&str> {
     }
     parts.push(&s[start..]);
     parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vararg_return_after_type_token() {
+        // A `...` token after the type marks the return variadic, whether bare
+        // (`string ...`) or named (`number ... spellID`). Ketho's vendor
+        // annotations use the named form pervasively (e.g. the `...` capture
+        // return on `string.find`, written `any|nil ... captured`); before the
+        // fix the named form fell through to a single fixed return slot.
+        for line in ["string ...", "number ... spellID", "any|nil ... captured"] {
+            let (ty, _, _) = parse_return_line(line, false);
+            assert!(matches!(ty, AnnotationType::VarArgs(_)), "{line:?} -> {ty:?}");
+        }
+        // A plain `<type> <name>` return is unaffected (not variadic).
+        let (ty, name, _) = parse_return_line("number spellID", false);
+        assert!(!matches!(ty, AnnotationType::VarArgs(_)), "plain return wrongly variadic: {ty:?}");
+        assert_eq!(name.as_deref(), Some("spellID"));
+    }
 }
 

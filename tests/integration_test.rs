@@ -937,6 +937,15 @@ fn integration_stubs() {
 }
 
 #[test]
+fn wrong_arity_stubs() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/wrong-arity-stubs.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn annotations() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/annotations.lua",

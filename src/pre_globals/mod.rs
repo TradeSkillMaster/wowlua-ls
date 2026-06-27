@@ -594,7 +594,10 @@ fn apply_mixin_parent_inheritance(
         // Done regardless of whether the bases resolve — the class is dynamic
         // either way.
         tables[child_idx.ext_offset()].open_mixin = true;
-        let parents: Vec<TableIndex> = g.mixin_parents.iter()
+        // Reverse order so the last-declared mixin wins on field collisions,
+        // matching `CreateFromMixins(A, B)` runtime semantics (B overwrites A) and
+        // the reversed parent walk in `shared::resolve_inheritance`.
+        let parents: Vec<TableIndex> = g.mixin_parents.iter().rev()
             .filter_map(|p| classes.get(p.as_str())
                 .or_else(|| non_class_tables.get(p.as_str()))
                 .copied())
@@ -629,6 +632,36 @@ fn apply_mixin_parent_inheritance(
                 }
             }
         }
+    }
+
+    // Last-wins reorder: `CreateFromMixins(A, B)` copies B's fields over A's, so B
+    // wins on collision. `get_field_direct` returns the first matching parent, and
+    // `parents` is already in reverse declaration order (last-declared mixin first),
+    // so move the direct mixin parents to the front of `parent_classes` — making the
+    // first match the last-declared mixin (e.g. ScrollBoxLinearViewMixin's 5-arg
+    // SetPadding from ScrollBoxLinearBaseViewMixin beats ScrollBoxViewMixin's 1-arg
+    // one). Ancestors and any non-mixin parents keep their order behind them. Scoped
+    // to CreateFromMixins classes (those in `links`), so a plain `@class : A, B` —
+    // e.g. an XML FontString template inheriting FontInstance/Font — keeps
+    // declaration order and its method resolution is unchanged.
+    for (child_local, parents) in &links {
+        let pc = std::mem::take(&mut tables[*child_local].parent_classes);
+        // The mixin parents first (deduped: `parents` mirrors the raw
+        // `CreateFromMixins` arg list, so `CreateFromMixins(A, A)` or two vars
+        // aliasing one class yield a repeated TableIndex — keep the dup-free
+        // invariant the fixpoint loop above maintains), then the rest in order.
+        let mut reordered: Vec<TableIndex> = Vec::with_capacity(pc.len());
+        for &p in parents {
+            if pc.contains(&p) && !reordered.contains(&p) {
+                reordered.push(p);
+            }
+        }
+        for p in pc {
+            if !reordered.contains(&p) {
+                reordered.push(p);
+            }
+        }
+        tables[*child_local].parent_classes = reordered;
     }
 }
 

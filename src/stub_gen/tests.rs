@@ -724,6 +724,34 @@ Returns true if the player is on a seasonal realm.
 }
 
 #[test]
+fn test_parse_wikitext_multi_arg_optional_bracket() {
+    // A single `[...]` group containing several args must mark *all* of them
+    // optional, not just the first. Regression: JoinChannelByName's apisig groups
+    // `[, password, frameID, hasVoice]` in one bracket; the old parser only caught
+    // `password`, leaving `hasVoice` spuriously required (which forced a 4-arg
+    // minimum and a false missing-parameter on `JoinChannelByName(name)`).
+    // The apitypes here are deliberately non-optional so the bracket is the sole
+    // source of optionality.
+    let wikitext = r#"{{wowapi}}
+Join a chat channel.
+{{apisig|type, name {{=}} JoinChannelByName(channelName [, password, frameID, hasVoice])}}
+
+==Arguments==
+:;channelName:{{apitype|string}} - Channel name.
+:;password:{{apitype|string}} - The channel password.
+:;frameID:{{apitype|number}} - Chat frame id.
+:;hasVoice:{{apitype|boolean}} - Voice flag.
+==Returns==
+:;type:{{apitype|number}} - Channel type.
+:;name:{{apitype|string}} - Channel name."#;
+    let result = parse_wikitext("JoinChannelByName", wikitext, "JoinChannelByName").unwrap();
+    assert!(result.contains("@param channelName string"), "channelName stays required: {result}");
+    assert!(result.contains("@param password? string"), "password optional: {result}");
+    assert!(result.contains("@param frameID? number"), "frameID optional: {result}");
+    assert!(result.contains("@param hasVoice? boolean"), "hasVoice optional via bracket: {result}");
+}
+
+#[test]
 fn test_widget_wiki_apitype_template() {
     // Widget method with {{apisig}} and {{apitype}} — standard well-formatted page
     let wikitext = r#"{{widgetmethod|system=SimpleScriptRegionAPI}}
