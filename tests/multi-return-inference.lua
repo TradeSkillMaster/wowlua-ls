@@ -88,3 +88,46 @@ local vg1, vg2, vg3 = vararg(1, 2)
 -- ── Tail-call pass-through: callee may yield more values → never warn ────────
 local function tailWrap() return triple() end
 local tw1, tw2, tw3, tw4 = tailWrap()
+
+-- ── Dynamic trailing return → arity is a LOWER bound, not an exact count ──────
+-- A value pulled from a dynamically-built `table<K,V>` (or any other source the
+-- inference can only type as `any`) makes the literal return count a *lower*
+-- bound on what the function effectively yields. A caller may legitimately
+-- destructure more variables than there are syntactic return slots (filling a
+-- fixed set of locals from a variable-length parse), so the exhaustive harness
+-- must see NO `unbalanced-assignments` on these over-destructures.
+
+-- Typed leading slots, dynamic (`any`) trailing slot pulled from a table<K,V>.
+local function dynTail()
+  ---@type table<number, any>
+  local t = {}
+  return 1, 2, t[3] or 0
+end
+local dt1, dt2, dt3, dt4, dt5 = dynTail()  -- 5 vars from 3 slots, trailing `any` → no warning
+local _ = dt3
+--        ^ hover: (local) dt3: any
+
+-- Mirrors the real addon repro: a nested local with a bare early `return` plus a
+-- multi-value return whose trailing values are dynamic table positions. The
+-- author over-destructures by one (a pre-declared var left nil) — not a warning.
+---@param ok boolean
+local function parseLike(ok)
+  if not ok then return end
+  ---@type table<number, any>
+  local s = {}
+  return 1, s[15], s[17], s[19] or 0
+end
+local pl1, pl2, pl3, pl4, pl5 = parseLike(true)  -- 5 vars from 4 slots, trailing `any` → no warning
+local _ = pl1
+--        ^ hover: (local) pl1: number?
+
+-- ── Precision guard: only the TRAILING slot's dynamism matters ───────────────
+-- Leading `any` values do NOT relax the check — a confidently-typed trailing
+-- slot keeps an exact arity, so over-destructuring past it still warns.
+local function dynLeadTypedTail()
+  ---@type table<number, any>
+  local t = {}
+  return t[1], t[2], 3
+end
+local lt1, lt2, lt3, lt4 = dynLeadTypedTail()
+-- ^ diag: unbalanced-assignments

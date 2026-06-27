@@ -15,6 +15,23 @@ local _ = c
 local d, e, f, g = GetTriple()
 -- ^ diag: unbalanced-assignments
 
+-- Cross-file deferred function whose trailing return is a dynamic `table<K,V>`
+-- position → harvested arity is a lower bound, so over-destructuring by one is
+-- NOT flagged (counterpart of the literal GetTriple over-destructure above,
+-- which still warns).
+local x1, x2, x3, x4 = ParseDynamic()
+local _ = x1
+--        ^ hover: (local) x1: number
+local _ = x3
+--        ^ hover: (local) x3: any
+
+-- Counterpart: an *authored* `@return` (arity 2) whose trailing slot is `any` is
+-- an authoritative contract, NOT a harvested lower bound — over-destructuring it
+-- still warns. This guards the `deferred_returns` membership gate: a refactor that
+-- relaxed on the annotation type alone would silently stop warning here.
+local y1, y2, y3 = AnnotatedAny("z")
+-- ^ diag: unbalanced-assignments
+
 -- Correlated pair-or-nil, exact arity (2) → no warning.
 local p, q = GetPairOrNil(true)
 local _ = p

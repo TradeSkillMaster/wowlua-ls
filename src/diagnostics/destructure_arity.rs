@@ -167,6 +167,22 @@ fn return_arity(
     // that many variables. We could instead warn per-overload, but that
     // requires call-site overload selection which isn't available here.
     if !func.return_annotations.is_empty() {
+        // Cross-file counterpart of the dynamic-trailing case below. A *deferred*
+        // function (no authored `@return`) has its `return_annotations` filled by
+        // the body-harvest overlay (`deferred.rs::ensure_overlay`), not by the
+        // author — so when its last harvested slot is `any`, the arity is a lower
+        // bound exactly as in the same-file body path, and over-destructure is not
+        // flagged. An *authored* `@return` (including `@return any`) is absent from
+        // `deferred_returns`, so it stays an authoritative arity that still warns.
+        // Gated on no non-return-only overloads so the arity is purely
+        // annotation-derived (correlated synthesis emits return-only overloads).
+        if func_idx.is_external()
+            && analysis.ir.ext.deferred_returns.contains(&func_idx)
+            && !func.overloads.iter().any(|o| !o.is_return_only)
+            && func.return_annotations.last().is_some_and(is_dynamic_return_type)
+        {
+            return None;
+        }
         let base = func.return_annotations.len();
         let max_overload = max_non_return_only_overload_arity(func);
         return Some(base.max(max_overload));
@@ -210,6 +226,25 @@ fn return_arity(
                 ));
             if is_open_ended {
                 return None; // arity unknown — tail call may return more values
+            }
+            // Dynamic trailing return: when the last returned value resolves to
+            // `any` — e.g. a position pulled from a dynamically-built `table<K,V>`
+            // (`return id, t[15], t[17] or 0`), or any other value the inference
+            // can't pin to a concrete type — the literal value count is only a
+            // *lower* bound on what the function effectively yields, so a caller may
+            // legitimately destructure more variables than there are syntactic slots.
+            // Treat the arity as unbounded here rather than flag `unbalanced-assignments`.
+            // Confidently-typed trailing returns (literals, classes, primitives) keep the
+            // warning. Scoped to body inference (no `@return`): an explicit annotation —
+            // including `@return any` — is an authoritative contract and still warns.
+            let last_slot_dynamic = crate::analysis::queries::return_type_at_slot(
+                &analysis.ir,
+                &func.rets,
+                max_idx,
+            )
+            .is_some_and(|t| is_dynamic_return_type(&t));
+            if last_slot_dynamic {
+                return None;
             }
             return Some(max_idx + 1);
         }
@@ -294,6 +329,22 @@ fn return_arity_with_projection(
     // Multiple return annotations where expansion isn't possible:
     // projections substitute types but don't add extra slots.
     Some(func.return_annotations.len())
+}
+
+/// Whether a body-inferred return slot's type is "dynamic" — `any` (possibly
+/// nil-unioned). `any` is the manifestation of a value the inference couldn't
+/// pin to a concrete type: a dynamically-keyed `table<K,V>` access, an
+/// untyped-receiver field, etc. A dynamic *trailing* slot makes the syntactic
+/// value count a lower bound rather than an exact arity, so the over-destructure
+/// check backs off. (`make_union` collapses `any | T` to `any` for any non-nil
+/// `T`, so in practice this is `Any` or `any?`; the recursion just keeps the
+/// predicate honest for any union shape.)
+fn is_dynamic_return_type(t: &ValueType) -> bool {
+    match t {
+        ValueType::Any => true,
+        ValueType::Union(members) => members.iter().any(is_dynamic_return_type),
+        _ => false,
+    }
 }
 
 /// Max return count across non-return-only overloads (0 if none).
