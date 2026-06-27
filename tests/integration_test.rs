@@ -4213,6 +4213,15 @@ fn self_field_scan_placeholder() {
 }
 
 #[test]
+fn mixin_self_frame() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/mixin-self-frame/mixins.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/mixin-self-frame"),
+    });
+}
+
+#[test]
 fn createframe_named() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/createframe-named/reader.lua",

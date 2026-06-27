@@ -303,6 +303,32 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
                     finalize_frame(frame_ctx, path, &mut ctx.classes, &mut ctx.globals, &mut ctx.mixin_augments);
                 }
             }
+            Ok(Event::Text(ref e)) => {
+                // A `<Script>` body is an opaque embedded Lua chunk, not frame
+                // structure: there `self` is a method receiver, not the frame, so a
+                // `Mixin(self, X)` inside one must not be attributed to the enclosing
+                // frame. Skip it exactly like the Start/Empty/End arms do. Inline
+                // `<OnLoad>…</OnLoad>` handler bodies are *not* `<Script>` elements
+                // (script_depth stays 0), so they are still scanned below.
+                if script_depth > 0 {
+                    continue;
+                }
+                // `unescape()` borrows when there are no entities, so the common
+                // whitespace-only text nodes don't allocate before the gate.
+                let text = e.unescape().unwrap_or_default();
+                if text.contains("Mixin") {
+                    record_inline_mixins(&mut ctx.stack, &mut ctx.xml_bound_names, &text);
+                }
+            }
+            Ok(Event::CData(ref e)) => {
+                if script_depth > 0 {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(e.as_ref());
+                if text.contains("Mixin") {
+                    record_inline_mixins(&mut ctx.stack, &mut ctx.xml_bound_names, &text);
+                }
+            }
             Ok(Event::Eof) => break,
             Err(e) => {
                 log::warn!("XML parse error in {}: {}", path.display(), e);
@@ -741,6 +767,150 @@ fn intersect_with(base: &AnnotationType, extra: AnnotationType) -> AnnotationTyp
     }
 }
 
+#[inline]
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+#[inline]
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// Scan inline XML script text (e.g. a frame's `<OnLoad>` body) for
+/// `Mixin(self, Foo, Bar)` calls and return the mixin names applied to `self`.
+/// This is the imperative equivalent of a `mixin="Foo"` attribute: the mixin's
+/// methods run with `self` bound to the frame, so the mixin should inherit the
+/// frame's type. Only bare global identifier arguments are returned — a dotted or
+/// call-expression argument can't reliably name a workspace mixin class, so the
+/// arg list is abandoned at the first non-identifier (a missed mixin, never a
+/// wrong one). The leading `Mixin` token is matched on a word boundary so
+/// `CreateFromMixins(...)` is not picked up.
+fn extract_mixin_self_targets(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = text[i..].find("Mixin") {
+        let m = i + rel;
+        i = m + 5;
+        if m > 0 && is_ident_byte(bytes[m - 1]) {
+            continue; // part of a longer identifier, e.g. CreateFromMixins
+        }
+        let mut j = skip_ws(bytes, m + 5);
+        if bytes.get(j) != Some(&b'(') {
+            continue;
+        }
+        j = skip_ws(bytes, j + 1);
+        if !text[j..].starts_with("self") {
+            continue;
+        }
+        j += 4;
+        if bytes.get(j).is_some_and(|&b| is_ident_byte(b)) {
+            continue; // `selfFoo`, not `self`
+        }
+        j = skip_ws(bytes, j);
+        if bytes.get(j) != Some(&b',') {
+            continue;
+        }
+        j += 1;
+        // Comma-separated simple identifiers up to the closing paren.
+        loop {
+            j = skip_ws(bytes, j);
+            let start = j;
+            while j < bytes.len() && is_ident_byte(bytes[j]) {
+                j += 1;
+            }
+            if j == start {
+                break; // complex/empty argument — stop scanning this call
+            }
+            let name = &text[start..j];
+            j = skip_ws(bytes, j);
+            let sep = bytes.get(j).copied();
+            if (sep == Some(b',') || sep == Some(b')'))
+                && is_valid_global_name(name)
+                && !out.iter().any(|n| n == name)
+            {
+                out.push(name.to_string());
+            }
+            if sep == Some(b',') {
+                j += 1;
+                continue;
+            }
+            break; // ')' or a non-identifier follows — done with this call
+        }
+    }
+    out
+}
+
+/// Attach any `Mixin(self, …)` targets found in inline script text to the nearest
+/// enclosing frame on the stack, so they are augmented with the frame's type just
+/// like a `mixin=` attribute. `<Scripts>`/`<OnLoad>` elements are not frames and
+/// are never pushed, so the top frame entry is the one whose handler this is. The
+/// targets are also recorded as XML-bound names so their Lua global declarations
+/// (`FooMixin = {}`) don't trip `create-global`, mirroring `mixin=` attributes.
+fn record_inline_mixins(stack: &mut [StackEntry], bound: &mut HashSet<String>, text: &str) {
+    let targets = extract_mixin_self_targets(text);
+    if targets.is_empty() {
+        return;
+    }
+    for name in &targets {
+        bound.insert(name.clone());
+    }
+    if let Some(frame) = stack
+        .iter_mut()
+        .rev()
+        .find(|e| e.is_frame && e.frame.is_some())
+        .and_then(|e| e.frame.as_mut())
+    {
+        for name in targets {
+            if !frame.mixins.contains(&name) {
+                frame.mixins.push(name);
+            }
+        }
+    }
+}
+
+/// Build a slim `ClassDecl` that augments a `mixin=` table with the frame's base
+/// element type as a parent (so `self:SetSize()` etc. resolve) plus any parentKey
+/// fields. The frame's *name* is irrelevant — the augment is keyed by the mixin
+/// name — so this is emitted for unnamed (parentKey-only) frames too.
+fn build_mixin_augment(mixin_name: &str, ctx: &FrameContext, path: &Path) -> ClassDecl {
+    ClassDecl {
+        name: mixin_name.to_string(),
+        type_params: Vec::new(),
+        type_param_constraints: Vec::new(),
+        parents: vec![ctx.frame_type.clone()],
+        fields: ctx.fields.clone(),
+        accessors: Vec::new(),
+        overloads: Vec::new(),
+        generics: Vec::new(),
+        constructor_methods: Vec::new(),
+        constraint_type_arg_subs: Vec::new(),
+        field_built_names: HashMap::new(),
+        is_enum: false,
+        is_key_enum: false,
+        correlated_groups: Vec::new(),
+        def_range: None,
+        def_path: None,
+        field_ranges: ctx.field_ranges.clone(),
+        field_paths: ctx
+            .field_ranges
+            .keys()
+            .map(|k| (k.clone(), path.to_path_buf()))
+            .collect(),
+        see: Vec::new(),
+        declared_field_names: HashSet::new(),
+        field_literals: HashMap::new(),
+        field_descriptions: HashMap::new(),
+        bare_inferred_field_names: HashSet::new(),
+        deferred_field_call_ranges: HashMap::new(),
+        shape_annotations: Vec::new(),
+    }
+}
+
 /// Finalize a frame context into ClassDecl and/or ExternalGlobal entries.
 fn finalize_frame(
     ctx: FrameContext,
@@ -749,6 +919,18 @@ fn finalize_frame(
     globals: &mut Vec<ExternalGlobal>,
     mixin_augments: &mut Vec<ClassDecl>,
 ) {
+    // Emit mixin augments first, before the name gate below. A mixin augment
+    // depends only on the frame's base element type and parentKey fields, not on
+    // the frame's name, so an *unnamed* `<Frame mixin="FooMixin" parentKey="…">`
+    // (a nested container) still wires its mixin's `self` to the frame type. The
+    // augment is skipped only when the mixin name equals the frame's own name.
+    for mixin_name in &ctx.mixins {
+        if ctx.name.as_deref() == Some(mixin_name.as_str()) {
+            continue;
+        }
+        mixin_augments.push(build_mixin_augment(mixin_name, &ctx, path));
+    }
+
     let Some(ref name) = ctx.name else {
         return;
     };
@@ -770,13 +952,6 @@ fn finalize_frame(
             parents.push(m.clone());
         }
     }
-
-    // Clone fields for mixin augmentation before moving them into the ClassDecl.
-    let mixin_fields = if !ctx.mixins.is_empty() {
-        Some(ctx.fields.clone())
-    } else {
-        None
-    };
 
     // Create ClassDecl
     let class_decl = ClassDecl {
@@ -811,55 +986,6 @@ fn finalize_frame(
         shape_annotations: Vec::new(),
     };
     classes.push(class_decl);
-
-    // For each mixin, emit a slim ClassDecl that augments it with the frame's
-    // base element type as a parent and any parentKey fields. This allows mixin
-    // methods to call Frame/Button/etc. methods on `self` (e.g. `self:SetSize()`)
-    // and access parentKey fields (e.g. `self.InputBox`) without false diagnostics.
-    // The frame's base element type (e.g. "Button" for `<Button mixin="...">`) is
-    // added as a parent so the mixin inherits all methods from that type.
-    // When a mixin is referenced by multiple XML elements, each element's base
-    // type is added; the overlay merge deduplicates.
-    if let Some(mixin_fields) = mixin_fields {
-        for mixin_name in &ctx.mixins {
-            // Skip if this mixin name is the same as the frame itself
-            if mixin_name == name {
-                continue;
-            }
-            let augment = ClassDecl {
-                name: mixin_name.clone(),
-                type_params: Vec::new(),
-                type_param_constraints: Vec::new(),
-                parents: vec![ctx.frame_type.clone()],
-                fields: mixin_fields.clone(),
-                accessors: Vec::new(),
-                overloads: Vec::new(),
-                generics: Vec::new(),
-                constructor_methods: Vec::new(),
-                constraint_type_arg_subs: Vec::new(),
-                field_built_names: HashMap::new(),
-                is_enum: false,
-                is_key_enum: false,
-                correlated_groups: Vec::new(),
-                def_range: None,
-                def_path: None,
-                field_ranges: ctx.field_ranges.clone(),
-                field_paths: ctx
-                    .field_ranges
-                    .keys()
-                    .map(|k| (k.clone(), path.to_path_buf()))
-                    .collect(),
-                see: Vec::new(),
-                declared_field_names: HashSet::new(),
-                field_literals: HashMap::new(),
-                field_descriptions: HashMap::new(),
-                bare_inferred_field_names: HashSet::new(),
-                deferred_field_call_ranges: HashMap::new(),
-                shape_annotations: Vec::new(),
-            };
-            mixin_augments.push(augment);
-        }
-    }
 
     // For non-virtual frames, also create an ExternalGlobal
     if !ctx.is_virtual {
@@ -1359,6 +1485,89 @@ mod tests {
         assert_eq!(aug.name, "BtnMixin");
         // The augment's parent should be Button (the element's base type), not Frame
         assert_eq!(aug.parents, vec!["Button"]);
+    }
+
+    #[test]
+    fn unnamed_frame_emits_mixin_augment() {
+        // An unnamed (parentKey-only) `<Frame mixin="...">` child must still emit
+        // a mixin augment — the augment is keyed by the mixin name, not the
+        // frame's name, so it cannot be lost to the `name`-required early return.
+        let r = scan(r#"
+            <Ui>
+                <Frame name="Container" virtual="true">
+                    <Frames>
+                        <Frame parentKey="Inner" mixin="InnerMixin" />
+                    </Frames>
+                </Frame>
+            </Ui>
+        "#);
+        let aug = r.mixin_augments.iter().find(|a| a.name == "InnerMixin")
+            .expect("unnamed-frame mixin should still get an augment");
+        assert_eq!(aug.parents, vec!["Frame"]);
+    }
+
+    #[test]
+    fn inline_mixin_self_emits_augment() {
+        // `Mixin(self, FooMixin)` inside an inline <OnLoad> script wires FooMixin
+        // to the enclosing frame, exactly like a `mixin=` attribute.
+        let r = scan(r#"
+            <Ui>
+                <Button name="InlineTemplate" virtual="true">
+                    <Scripts>
+                        <OnLoad>
+                            Mixin(self, InlineMixin)
+                            self:OnLoad()
+                        </OnLoad>
+                    </Scripts>
+                </Button>
+            </Ui>
+        "#);
+        let aug = r.mixin_augments.iter().find(|a| a.name == "InlineMixin")
+            .expect("inline Mixin(self, X) should emit an augment");
+        // Parent is the enclosing frame's base element type.
+        assert_eq!(aug.parents, vec!["Button"]);
+    }
+
+    #[test]
+    fn mixin_in_script_block_not_attributed_to_frame() {
+        // A `<Script>` body is opaque Lua where `self` is a method receiver, not
+        // the frame, so `Mixin(self, X)` inside one must NOT be attributed to the
+        // enclosing frame (unlike an inline `<OnLoad>` handler body).
+        let r = scan(r#"
+            <Ui>
+                <Frame name="Outer" virtual="true">
+                    <Script>
+                        function C:M() Mixin(self, ScriptMixin) end
+                    </Script>
+                </Frame>
+            </Ui>
+        "#);
+        assert!(r.mixin_augments.iter().all(|a| a.name != "ScriptMixin"));
+        assert!(!r.xml_bound_names.contains("ScriptMixin"));
+        let outer = r.classes.iter().find(|c| c.name == "Outer").unwrap();
+        assert!(!outer.parents.contains(&"ScriptMixin".to_string()));
+    }
+
+    #[test]
+    fn extract_mixin_self_targets_forms() {
+        // Simple single + multiple, with assorted whitespace.
+        assert_eq!(extract_mixin_self_targets("Mixin(self, FooMixin)"), vec!["FooMixin"]);
+        assert_eq!(
+            extract_mixin_self_targets("Mixin( self , A , B )"),
+            vec!["A".to_string(), "B".to_string()]
+        );
+        // Not a `self` target → ignored.
+        assert!(extract_mixin_self_targets("Mixin(other, FooMixin)").is_empty());
+        assert!(extract_mixin_self_targets("Mixin(selfish, FooMixin)").is_empty());
+        // `CreateFromMixins` must not be matched as `Mixin`.
+        assert!(extract_mixin_self_targets("CreateFromMixins(self, FooMixin)").is_empty());
+        // A complex (dotted/call) argument ends the arg list without a false name.
+        assert!(extract_mixin_self_targets("Mixin(self, ns.FooMixin)").is_empty());
+        // Realistic multi-line script body.
+        assert_eq!(
+            extract_mixin_self_targets("\n  Mixin(self, FooMixin)\n  self:OnLoad()\n"),
+            vec!["FooMixin"]
+        );
     }
 
     #[test]

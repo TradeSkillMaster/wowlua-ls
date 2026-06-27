@@ -3612,4 +3612,55 @@ impl<'a> Analysis<'a> {
         None
     }
 
+    /// Flag bare global mixin tables `open_mixin` so `self` satisfies frame checks.
+    ///
+    /// A WoW "mixin" is conventionally a plain global table (`FooMixin = {}`) with
+    /// no Lua `@class`. An XML `mixin="FooMixin"` reference (or a `@class Foo : Parent`
+    /// in another file) promotes it to a class and records the frame's base element
+    /// type (`Frame`, `Button`, …) as a parent on the *external* class. In the file
+    /// that *defines* the mixin, the local `FooMixin = {}` symbol shadows that
+    /// external class with a fresh structural table that lacks the parent, so `self`
+    /// inside the mixin's methods is just a bag of fields — not a subtype of the
+    /// frame type — and passing it to a `Frame`/`Region` parameter (e.g.
+    /// `SetOverrideBinding(self, …)`) reports a spurious `type-mismatch`.
+    ///
+    /// Flag the local table `open_mixin`, exactly like a `CreateFromMixins`-derived
+    /// class. `open_mixin` is the codebase's collapse-proof way to type a mixin
+    /// `self`: it makes the table assignable wherever a frame/table is expected (so
+    /// the `type-mismatch` goes away) and makes field access on it permissive
+    /// (mixin instances receive frame/runtime fields dynamically). Crucially it does
+    /// *not* import the frame's methods — importing the parent makes `self:GetChildren()`
+    /// resolve to a bare `Frame`, which then surfaces `undefined-field` on every
+    /// custom field the addon stores on those child frames (a large second-order
+    /// regression). The external class keeps its frame parent, so cross-file reads
+    /// still resolve frame methods; only the defining file's `self` relies on this.
+    ///
+    /// Runs after `build_ir` so the bare-global table and its `type_source` exist.
+    /// Gated on the external class carrying a parent (an XML `mixin=`/`CreateFromMixins`/
+    /// cross-file `@class : Parent` source), so plain namespace tables and
+    /// method-only globals (whose auto-created class has no parent) are untouched.
+    pub(super) fn mark_external_mixins_open(&mut self) {
+        let ext = std::sync::Arc::clone(&self.ir.ext);
+        // Scope-0 (file-global) bindings only — mixins are declared as globals.
+        let names: Vec<String> = self.ir.scopes.first()
+            .map(|s| s.symbols.keys().filter_map(|id| match id {
+                SymbolIdentifier::Name(n) => Some(n.clone()),
+                _ => None,
+            }).collect())
+            .unwrap_or_default();
+        for name in names {
+            // Only a bare global table. A local `@class` declaration carries a
+            // `class_name` and is handled by the prescan overlay import; skip those.
+            let Some(local_idx) = self.ir.find_table_for_symbol(&name, ScopeIndex(0)) else { continue };
+            if local_idx.is_external() || self.ir.table(local_idx).class_name.is_some() {
+                continue;
+            }
+            let Some(&ext_idx) = ext.classes.get(&name) else { continue };
+            if ext.table(ext_idx).parent_classes.is_empty() {
+                continue;
+            }
+            self.ir.tables[local_idx.val()].open_mixin = true;
+        }
+    }
+
 }

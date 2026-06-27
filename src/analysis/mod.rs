@@ -2569,6 +2569,7 @@ impl<'a> Analysis<'a> {
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();
         analysis.build_ir();
+        analysis.mark_external_mixins_open();
         analysis.materialize_fun_annotations();
         analysis.inject_preresolved();
         analysis

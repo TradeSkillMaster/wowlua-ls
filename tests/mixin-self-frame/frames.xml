@@ -1,0 +1,30 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <!-- Named frame wired to a mixin via the `mixin=` attribute. -->
+    <Frame name="NamedTemplate" virtual="true" mixin="NamedMixin">
+        <Frames>
+            <Frame parentKey="Child" />
+        </Frames>
+    </Frame>
+
+    <!-- Unnamed (parentKey-only) child frame wired via the `mixin=` attribute.
+         finalize_frame returns early for unnamed frames, so the mixin augment
+         must be emitted before that gate (regression: the augment used to be
+         skipped, leaving UnnamedMixin with no frame parent). -->
+    <Frame name="ContainerTemplate" virtual="true">
+        <Frames>
+            <Frame parentKey="Inner" mixin="UnnamedMixin" />
+        </Frames>
+    </Frame>
+
+    <!-- Mixin applied imperatively inside an inline <OnLoad> script. The XML
+         scanner must read `Mixin(self, InlineMixin)` out of the script text and
+         treat InlineMixin like a `mixin=` attribute on this frame. -->
+    <Frame name="InlineTemplate" virtual="true">
+        <Scripts>
+            <OnLoad>
+                Mixin(self, InlineMixin)
+                self:Setup()
+            </OnLoad>
+        </Scripts>
+    </Frame>
+</Ui>
