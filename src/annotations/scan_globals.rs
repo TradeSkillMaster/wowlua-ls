@@ -12,6 +12,7 @@ use super::annotation_types::{parse_overload, OverloadSig};
 use super::annotation_scanning::{
     ADDON_NS_NAME, ExternalGlobal, ExternalGlobalKind, FieldValueKind, InferredTypeCategory,
     is_select_varargs, collect_statements_recursive, infer_type_category, receiver_name,
+    build_var_to_class,
 };
 
 /// Unwrap `and`/`or` chains to the effective operand for type inference.
@@ -1238,6 +1239,10 @@ pub(crate) fn scan_file_globals_with_synth(
     // a reassignment of a function-scoped local. Computed lazily on the first
     // candidate so files without any in-function/multi-target writes pay nothing.
     let mut all_local_names: Option<HashSet<String>> = None;
+    // Per-file variable/last-segment → `@class` map, mirroring what the
+    // typed/bare self-field scanners use to gate a colon method's receiver.
+    // Built lazily only when a deeply-nested `self.field = ...` needs it.
+    let mut self_field_var_to_class: Option<HashMap<String, String>> = None;
     for node in root.descendants() {
         let Some(Statement::Assign(assign)) = Statement::cast(node) else { continue };
         let Some(var_list) = assign.variable_list() else { continue };
@@ -1365,11 +1370,38 @@ pub(crate) fn scan_file_globals_with_synth(
                     // emitting here would be a filtered no-op, so skip.
                     continue;
                 } else {
-                    // A function-scoped local can't be a cross-file mixin table;
-                    // emitting an ExternalGlobal for it fabricates a phantom global.
+                    // Mixin path. `self` is keyed by the receiver's single (leaf)
+                    // name, so the field lands on whichever class/table later
+                    // resolves to that name. That is only safe when the leaf
+                    // unambiguously identifies the table `self` refers to:
+                    //   • a *single-name* receiver (`function Mixin:M()`) is the
+                    //     method's own root, so the leaf *is* that table — the
+                    //     plain-global mixin pattern (`DataProviderMixin = {}`
+                    //     promoted to a class only via an XML `mixin=` / `Mixin()`
+                    //     reference), which is invisible to the typed/bare scanners
+                    //     and the whole reason this path exists; or
+                    //   • a *deeply-nested* receiver (`function A.B.C:M()`) whose
+                    //     leaf names a recognized `@class` — matching the
+                    //     typed/bare self-field scanners, which key cross-file
+                    //     classes by their single name via `var_to_class`.
+                    // A deeply-nested receiver whose leaf is *not* a known class
+                    // would key by a bare name that can collide with an unrelated
+                    // same-named global (the field would land on the wrong table),
+                    // so skip it rather than misattribute. A function-scoped local
+                    // can't be a cross-file mixin table either.
                     let locals = all_local_names.get_or_insert_with(|| collect_all_local_names(&root));
                     if locals.contains(&receiver) { continue; }
-                    receiver
+                    if func_names.len() == 2 {
+                        receiver
+                    } else if let Some(class_name) = self_field_var_to_class
+                        .get_or_insert_with(|| build_var_to_class(&all_stmts))
+                        .get(&receiver)
+                        .cloned()
+                    {
+                        class_name
+                    } else {
+                        continue;
+                    }
                 }
             } else {
                 // Not a known namespace/class root (e.g. a function-local table):

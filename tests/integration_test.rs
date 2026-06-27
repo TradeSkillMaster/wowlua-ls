@@ -4057,6 +4057,15 @@ fn self_field_mixin() {
 }
 
 #[test]
+fn self_field_mixin_collision() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/self-field-mixin-collision/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/self-field-mixin-collision"),
+    });
+}
+
+#[test]
 fn createframe_named() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/createframe-named/reader.lua",
