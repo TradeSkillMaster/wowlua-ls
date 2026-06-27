@@ -2230,6 +2230,24 @@ fn luals_annotations() {
 }
 
 #[test]
+fn multi_return_inference() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-return-inference.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn multi_return_inference_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-return-inference-crossfile/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/multi-return-inference-crossfile"),
+    });
+}
+
+#[test]
 fn luals_diag_codes() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/luals-diag-codes.lua",
