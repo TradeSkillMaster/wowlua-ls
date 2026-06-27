@@ -8,6 +8,22 @@ pub(super) struct CallSiteInfo {
     pub(super) is_method_call: bool,
 }
 
+/// Outcome of resolving a call's callee expression (see `resolve_callee`).
+enum CalleeResolution {
+    /// The call result is already determined without an arena function: an inline
+    /// `FunctionSig`'s return at this slot, a union of sigs, or a non-callable type.
+    Done(Option<ValueType>),
+    /// The callee is an arena function; carries the resolution context that the
+    /// rest of `resolve_function_call` consumes.
+    Func {
+        func_idx: FunctionIndex,
+        constructor_table_idx: Option<TableIndex>,
+        call_func_table_idx: Option<TableIndex>,
+        call_func_is_metamethod: bool,
+        union_alt_func_indices: Vec<FunctionIndex>,
+    },
+}
+
 // ── Function call resolution ──────────────────────────────────────────────────
 
 impl<'a> Analysis<'a> {
@@ -102,21 +118,12 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    pub(super) fn resolve_function_call(
-        &mut self,
-        expr_id: ExprId,
-        func: &ExprId,
-        args: &[ExprId],
-        arg_ranges: &[(u32, u32)],
-        ret_index: &usize,
-        call_site: CallSiteInfo,
-    ) -> Option<ValueType> {
-        let func_expr_id = *func;
-        let CallSiteInfo { is_method_call, .. } = call_site;
-        // Resolve the function expression to get its type
-        let func_type = self.resolve_expr(func_expr_id)?;
-        // Unwrap opaque aliases — calling an opaque-wrapped function works on the inner type
-        let func_type = func_type.into_strip_opaque();
+    /// Resolve the callee expression's type to an arena function plus its call
+    /// context (constructor / `__call` table, union alternatives). Returns
+    /// `CalleeResolution::Done` when the result is already determined without an
+    /// arena function: an inline `FunctionSig`'s return, a union of sigs, or a
+    /// non-callable type.
+    fn resolve_callee(&mut self, func_type: ValueType, ret_index: &usize) -> CalleeResolution {
         let mut constructor_table_idx: Option<TableIndex> = None;
         let mut call_func_table_idx: Option<TableIndex> = None;
         let mut call_func_is_metamethod = false;
@@ -134,7 +141,7 @@ impl<'a> Analysis<'a> {
             ValueType::FunctionSig(ref shape) => {
                 // Inline cross-file function signature — no arena entry, so bypass
                 // the full machinery and return the return type directly from the shape.
-                return shape.returns.get(*ret_index).cloned();
+                return CalleeResolution::Done(shape.returns.get(*ret_index).cloned());
             }
             ValueType::Table(Some(table_idx)) => {
                 if let Some(fi) = self.table(table_idx).call_func {
@@ -146,7 +153,7 @@ impl<'a> Analysis<'a> {
                     constructor_table_idx = Some(table_idx);
                     fi
                 } else {
-                    return None;
+                    return CalleeResolution::Done(None);
                 }
             }
             ValueType::Union(ref types) | ValueType::Intersection(ref types) => {
@@ -161,19 +168,54 @@ impl<'a> Analysis<'a> {
                         ValueType::FunctionSig(shape) => shape.returns.get(*ret_index).cloned(),
                         _ => None,
                     }).collect();
-                    return match sig_rets.len() {
+                    return CalleeResolution::Done(match sig_rets.len() {
                         0 => None,
                         1 => Some(sig_rets.into_iter().next().unwrap()),
                         _ => Some(ValueType::Union(sig_rets)),
-                    };
+                    });
                 }
                 if all_funcs.len() > 1 {
                     union_alt_func_indices = all_funcs[1..].to_vec();
                 }
                 all_funcs[0]
             }
-            _ => return None,
+            _ => return CalleeResolution::Done(None),
         };
+        CalleeResolution::Func {
+            func_idx,
+            constructor_table_idx,
+            call_func_table_idx,
+            call_func_is_metamethod,
+            union_alt_func_indices,
+        }
+    }
+
+    pub(super) fn resolve_function_call(
+        &mut self,
+        expr_id: ExprId,
+        func: &ExprId,
+        args: &[ExprId],
+        arg_ranges: &[(u32, u32)],
+        ret_index: &usize,
+        call_site: CallSiteInfo,
+    ) -> Option<ValueType> {
+        let func_expr_id = *func;
+        let CallSiteInfo { is_method_call, .. } = call_site;
+        // Resolve the function expression to get its type
+        let func_type = self.resolve_expr(func_expr_id)?;
+        // Unwrap opaque aliases — calling an opaque-wrapped function works on the inner type
+        let func_type = func_type.into_strip_opaque();
+        let (func_idx, constructor_table_idx, call_func_table_idx, call_func_is_metamethod, union_alt_func_indices) =
+            match self.resolve_callee(func_type, ret_index) {
+                CalleeResolution::Done(v) => return v,
+                CalleeResolution::Func {
+                    func_idx,
+                    constructor_table_idx,
+                    call_func_table_idx,
+                    call_func_is_metamethod,
+                    union_alt_func_indices,
+                } => (func_idx, constructor_table_idx, call_func_table_idx, call_func_is_metamethod, union_alt_func_indices),
+            };
 
 
         // setmetatable / getmetatable: metatable type inference
@@ -228,205 +270,21 @@ impl<'a> Analysis<'a> {
         // and class_type_param_subs (for class-level generics like Box<T>).
         // Both need the receiver expression and type_args, so they share a single
         // receiver-analysis block to avoid redundant expression cloning/resolution.
-        let mut projected_f_idx: Option<FunctionIndex> = None;
-        let mut class_type_param_subs: HashMap<String, ValueType> = HashMap::new();
         // Extract field_range once for use by both class type-param subs (below)
         // and method-level generic subs (after call resolution).
         let field_range = match self.expr(func_expr_id) {
             Expr::FieldAccess { field_range, .. } => *field_range,
             _ => None,
         };
-        if is_method_call
-            && let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone()
-        {
-            let receiver_type_args = self.get_expr_type_args(receiver_expr);
-
-            // params<F> projection: bind F from receiver's @type X<fun(...)>
-            let proj_name: Option<String> = match &self.func(func_idx).vararg_projection {
-                Some(crate::types::ProjectionKind::Params(n)) => Some(n.clone()),
-                _ => None,
-            };
-            if let Some(proj_name) = proj_name {
-                let param0 = param_annotations.first().cloned();
-                if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = param0
-                    && receiver_type_args.len() == type_arg_anns.len()
-                {
-                    for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
-                        if let crate::annotations::AnnotationType::Simple(gname) = type_arg_ann
-                            && *gname == proj_name
-                                && let Some(ValueType::Function(Some(f_idx))) = receiver_type_args.get(pos) {
-                                    projected_f_idx = Some(*f_idx);
-                                    break;
-                                }
-                    }
-                }
-            }
-
-            // Class-level type param substitution for inline callback resolution.
-            // When calling a method on a parameterized class (e.g. Box<boolean>:Apply(fun(value: T))),
-            // we need to resolve T → boolean from the receiver's type_args.
-            let receiver_type = self.resolve_expr(receiver_expr);
-            let ctp = match &receiver_type {
-                Some(ValueType::Table(Some(tidx))) => self.table(*tidx).class_type_params.clone(),
-                _ => Vec::new(),
-            };
-            if !ctp.is_empty() {
-                for (pos, name) in ctp.iter().enumerate() {
-                    if let Some(vt) = receiver_type_args.get(pos) {
-                        class_type_param_subs.insert(name.clone(), vt.clone());
-                    }
-                }
-            }
-            // Translate ancestor class type-param names through parameterized-parent
-            // bindings (e.g. `Child<TCur,TShared> : Parent<TCur>` makes Parent's `T`
-            // resolve to TCur's concrete binding). Walk `parent_type_bindings`
-            // transitively so an inherited method's `@requires`/param/return
-            // annotations — which reference the ANCESTOR's param names — resolve to
-            // the receiver's concrete types. Child bindings win on name collision
-            // (`or_insert`), and `visited` guards against cyclic inheritance.
-            //
-            // Uses DFS (work.pop) which is fine: `or_insert` means the child's own
-            // bindings always win regardless of visit order, and sibling parents with
-            // the same param name are not a real-world pattern. The `.clone()` calls
-            // on `parent_type_bindings` and `class_type_params` are borrow-checker
-            // workarounds — `self` is borrowed mutably by `substitute_generics_deep`,
-            // so we can't hold shared refs into `self.table()` across that call.
-            if let Some(ValueType::Table(Some(recv_tidx))) = &receiver_type {
-                let mut work: Vec<(TableIndex, HashMap<String, ValueType>)> =
-                    vec![(*recv_tidx, class_type_param_subs.clone())];
-                let mut visited: HashSet<TableIndex> = HashSet::new();
-                while let Some((tidx, cur_subs)) = work.pop() {
-                    if !visited.insert(tidx) { continue; }
-                    let parent_bindings = self.table(tidx).parent_type_bindings.clone();
-                    for (parent_idx, bindings) in parent_bindings {
-                        let parent_params = self.table(parent_idx).class_type_params.clone();
-                        let mut parent_subs: HashMap<String, ValueType> = HashMap::new();
-                        for (i, p_name) in parent_params.iter().enumerate() {
-                            if let Some(b) = bindings.get(i) {
-                                let concrete = self.substitute_generics_deep(b, &cur_subs);
-                                class_type_param_subs.entry(p_name.clone())
-                                    .or_insert_with(|| concrete.clone());
-                                parent_subs.insert(p_name.clone(), concrete);
-                            }
-                        }
-                        work.push((parent_idx, parent_subs));
-                    }
-                }
-            }
-            // Record the substitution keyed by the method-name token range so
-            // hover can display the bound concrete types (e.g. `T → string`) in
-            // the method signature. Only stored when at least one type param
-            // resolved to a non-type-variable concrete type.
-            if let Some(range) = field_range
-                && !class_type_param_subs.is_empty()
-                && class_type_param_subs.values()
-                    .any(|vt| !matches!(vt, ValueType::TypeVariable(_)))
-            {
-                // Overwrite each fixpoint iteration so the converged (most
-                // concrete) substitution wins over earlier partial ones.
-                self.method_decl_subs.insert(range, class_type_param_subs.clone());
-            }
-        }
+        let (projected_f_idx, class_type_param_subs) =
+            self.resolve_receiver_type_param_subs(is_method_call, func, func_idx, &param_annotations, field_range);
         // Order doesn't matter here: resolve_annotation_type_gen only uses the names
         // for TypeVariable recognition, not positional binding.
         let class_gen_context: Vec<(String, Option<String>)> = class_type_param_subs.keys()
             .map(|k| (k.clone(), None)).collect();
 
         // Propagate callee's fun() param annotation types into inline function params
-        for (i, arg_expr_id) in args.iter().enumerate() {
-            // Check if this argument is an inline function definition
-            let inline_func_idx = match self.ir.expr(*arg_expr_id) {
-                Expr::FunctionDef(idx) => *idx,
-                _ => continue,
-            };
-            if inline_func_idx.is_external() { continue; }
-            // Get the callee's param annotation for this position
-            let Some(ann) = param_annotations.get(i + self_offset) else { continue };
-            if let Some(sig) = crate::annotations::extract_fun_sig(
-                ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
-            ) {
-                // Annotation is directly a fun() type or alias — propagate params
-                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
-                for (j, param_info) in sig.params.iter().enumerate() {
-                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
-                    if inline_sym_idx.is_external() { continue; }
-                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
-                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
-                    if let Some(vt) = self.resolve_annotation_with_class_generics(
-                        &param_info.typ, &class_gen_context, &class_type_param_subs,
-                    ) {
-                        let vt = if param_info.optional {
-                            ValueType::union(vt, ValueType::Nil)
-                        } else {
-                            vt
-                        };
-                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
-                    }
-                }
-                // Propagate return types from fun() signature into inline function
-                if self.ir.functions[inline_func_idx.val()].return_annotations.is_empty() {
-                    if sig.returns.is_empty() {
-                        // fun() with no return type — mark as explicitly void
-                        self.ir.functions[inline_func_idx.val()].explicit_void_return = true;
-                    } else {
-                        let mut return_vts = Vec::new();
-                        for ret_annotation in &sig.returns {
-                            if let Some(vt) = self.resolve_annotation_with_class_generics(
-                                ret_annotation, &class_gen_context, &class_type_param_subs,
-                            ) {
-                                return_vts.push(vt);
-                            }
-                        }
-                        if !return_vts.is_empty() {
-                            self.ir.functions[inline_func_idx.val()].return_annotations = return_vts;
-                        }
-                    }
-                }
-            } else if !class_type_param_subs.is_empty() {
-                // Annotation is a type variable (e.g. `@param callback T` where T is a
-                // class type param bound to a fun() type). Resolve through class generics
-                // and propagate the resolved function's params into the inline callback.
-                let resolved = self.resolve_annotation_with_class_generics(
-                    ann, &class_gen_context, &class_type_param_subs,
-                );
-                let expected_fn_idx = match &resolved {
-                    Some(ValueType::Function(Some(idx))) => *idx,
-                    // Pick first function member from union (e.g. fun(...)? → fun(...) | nil)
-                    Some(ValueType::Union(members)) => {
-                        match members.iter().find_map(|m| match m {
-                            ValueType::Function(Some(idx)) => Some(*idx),
-                            _ => None,
-                        }) {
-                            Some(idx) => idx,
-                            None => continue,
-                        }
-                    }
-                    _ => continue,
-                };
-                let expected_args = self.func(expected_fn_idx).args.clone();
-                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
-                for (j, &expected_sym) in expected_args.iter().enumerate() {
-                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
-                    if inline_sym_idx.is_external() { continue; }
-                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
-                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
-                    let vt = self.sym(expected_sym).versions.first()
-                        .and_then(|v| v.resolved_type.clone());
-                    if let Some(vt) = vt {
-                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
-                    }
-                }
-                // Propagate return types
-                if self.ir.functions[inline_func_idx.val()].return_annotations.is_empty() {
-                    let ret_anns = self.func(expected_fn_idx).return_annotations.clone();
-                    if ret_anns.is_empty() {
-                        self.ir.functions[inline_func_idx.val()].explicit_void_return = true;
-                    } else {
-                        self.ir.functions[inline_func_idx.val()].return_annotations = ret_anns;
-                    }
-                }
-            }
-        }
+        self.propagate_inline_callback_params(args, &param_annotations, self_offset, &class_gen_context, &class_type_param_subs);
 
         // Build generic substitution map from call-site arg types
         let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
@@ -680,68 +538,7 @@ impl<'a> Analysis<'a> {
         // callback param is `fun(...params<E>)` and E's constraint names a registered
         // event type, project that event's payload onto the inline callback's varargs
         // (reusing the same `event_vararg_types` mechanism as in-body event narrowing).
-        if !generics.is_empty() {
-            let generic_constraints_raw = self.func(func_idx).generic_constraints_raw.clone();
-            for (i, arg_expr_id) in args.iter().enumerate() {
-                let inline_func_idx = match self.ir.expr(*arg_expr_id) {
-                    Expr::FunctionDef(idx) => *idx,
-                    _ => continue,
-                };
-                if inline_func_idx.is_external() { continue; }
-                // Reduce the callee's param annotation to the callback's fun() params.
-                let Some(sig) = param_annotations.get(i + self_offset)
-                    .and_then(|ann| crate::annotations::extract_fun_sig(
-                        ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
-                    )) else { continue };
-                let params = sig.params;
-                // Find the `...params<G>` vararg projection's generic name and its
-                // position within the annotation's param list (e.g. for
-                // `fun(label: string, ...params<E>)`, vararg_pos=1). The inline
-                // callback's params at and after that index are typed from the payload.
-                let Some((vararg_pos, gen_name)) = params.iter().enumerate().find_map(|(pos, p)| {
-                    if p.name != "..." { return None; }
-                    if let crate::annotations::AnnotationType::Parameterized(base, targs) = &p.typ
-                        && base == "params" && targs.len() == 1
-                        && let crate::annotations::AnnotationType::Simple(g) = &targs[0]
-                    {
-                        Some((pos, g.clone()))
-                    } else {
-                        None
-                    }
-                }) else { continue };
-                // G must have been bound from a concrete event-name string literal arg.
-                let Some(&bind_arg_i) = generic_arg_indices.get(&gen_name) else { continue };
-                let Some(event_name) = args.get(bind_arg_i)
-                    .and_then(|e| self.ir.string_literals.get(e)).cloned() else { continue };
-                // G's constraint must name a registered event type (e.g. FrameEvent).
-                let Some(Some(event_type_name)) = generic_constraints_raw.iter()
-                    .find(|(n, _)| *n == gen_name).map(|(_, c)| c.clone()) else { continue };
-                let Some(payload_params) = self.ir.ext.event_types.get(&event_type_name)
-                    .and_then(|m| m.get(&event_name))
-                    .map(|payload| payload.params.clone()) else { continue };
-                let vararg_types: Vec<ValueType> = payload_params.iter()
-                    .filter_map(|p| Self::resolve_event_param_type_static(&self.ir, p))
-                    .collect();
-                if !vararg_types.is_empty() {
-                    let scope = self.ir.functions[inline_func_idx.val()].scope;
-                    // Type the inline callback's named params positionally from the
-                    // payload: a callback written as `function(foo)` (rather than
-                    // `function(...)`) consumes the varargs through named params, so
-                    // map payload[j] onto the j-th param after the vararg position.
-                    let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
-                    for (j, vt) in vararg_types.iter().enumerate() {
-                        let Some(&param_sym) = inline_args.get(vararg_pos + j) else { break };
-                        if param_sym.is_external() { continue; }
-                        if let Some(v) = self.ir.symbols[param_sym.val()].versions.first_mut()
-                            && v.resolved_type.is_none()
-                        {
-                            v.resolved_type = Some(vt.clone());
-                        }
-                    }
-                    self.event_vararg_types.insert(scope, vararg_types);
-                }
-            }
-        }
+        self.type_inline_event_callback_varargs(&generics, func_idx, args, &param_annotations, self_offset, &generic_arg_indices);
 
         // Extend projected_f_idx for non-method calls: if the vararg has a
         // projection (Params or Return) and the generic is now bound via
@@ -760,208 +557,8 @@ impl<'a> Analysis<'a> {
             }
         });
 
-        // When multiple overloads tie at zero mismatches (no single best match),
-        // we union their return types at this ret_index. Computed lazily below.
-        let mut ambiguous_overload_ret_type: Option<ValueType> = None;
-
-        // Find the matching overload (if any) — used for both diagnostics and return type.
-        // Skip return-only overloads (from tuple-union `@return` cases) which only affect narrowing.
-        // Overload params may include an explicit `self` first param; subtract it
-        // when comparing against call-site arg count.
-        // Uses range-based matching (accounting for optional params) and type-based
-        // discrimination to prefer overloads whose parameter types are compatible.
-        let (matching_overload, overload_self_offset) = if !overloads.is_empty() {
-            let n_args = args.len();
-            let ovl_self_off = |o: &&ResolvedOverload| -> usize {
-                if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 }
-            };
-            // Range-match: min_required <= n_args <= max_params (accounting for optional)
-            let range_matched: Vec<&ResolvedOverload> = overloads.iter()
-                .filter(|o| !o.is_return_only)
-                .filter(|o| {
-                    let off = ovl_self_off(o);
-                    let non_self_params = &o.params[off..];
-                    let required = non_self_params.iter().filter(|p| !p.optional).count();
-                    let total = non_self_params.len();
-                    n_args >= required && (o.is_vararg || n_args <= total)
-                })
-                .collect();
-            // When multiple overloads match by range, discriminate by
-            // string literal parameter values at the call site.
-            let string_filtered: Vec<&ResolvedOverload> = if range_matched.len() > 1 {
-                let filtered: Vec<&ResolvedOverload> = range_matched.iter().copied().filter(|o| {
-                    let off = ovl_self_off(o);
-                    o.params.iter().skip(off).take(n_args).enumerate().all(|(i, p)| {
-                        match &p.typ {
-                            Some(ValueType::String(Some(expected))) => {
-                                args.get(i)
-                                    .and_then(|id| self.ir.string_literals.get(id))
-                                    .is_some_and(|actual| actual == expected)
-                            }
-                            Some(ValueType::Union(types)) => {
-                                let lits: Vec<&str> = types.iter().filter_map(|t| {
-                                    if let ValueType::String(Some(s)) = t { Some(s.as_str()) } else { None }
-                                }).collect();
-                                if lits.is_empty() { return true; }
-                                args.get(i)
-                                    .and_then(|id| self.ir.string_literals.get(id))
-                                    .is_some_and(|actual| lits.contains(&actual.as_str()))
-                            }
-                            _ => true,
-                        }
-                    })
-                }).collect();
-                if filtered.is_empty() { range_matched } else { filtered }
-            } else {
-                range_matched
-            };
-            // When multiple overloads remain, prefer one with compatible arg types.
-            let found = if string_filtered.len() > 1 {
-                // Resolve arg types for type-based discrimination
-                let arg_types: Vec<Option<ValueType>> = args.iter()
-                    .map(|id| self.resolve_expr(*id))
-                    .collect();
-                // Score: count type mismatches per overload
-                let scored: Vec<(&ResolvedOverload, usize)> = string_filtered.iter().map(|o| {
-                    let off = ovl_self_off(o);
-                    let mismatches = arg_types.iter().enumerate().filter(|(i, arg_t)| {
-                        if let Some(arg_t) = arg_t {
-                            if let Some(param) = o.params.get(i + off) {
-                                if let Some(param_t) = &param.typ {
-                                    // Nil against a non-optional param is always a mismatch
-                                    if !param.optional && matches!(arg_t, ValueType::Nil) {
-                                        return true;
-                                    }
-                                    // Skip mismatch check for params with unresolved type variables
-                                    if let Some(result) = self.type_var_param_mismatch(param_t, arg_t) {
-                                        return result;
-                                    }
-                                    // Optional params accept nil
-                                    if param.optional && matches!(arg_t, ValueType::Nil) {
-                                        return false;
-                                    }
-                                    !arg_t.is_assignable_to(param_t)
-                                        && !self.is_table_subtype(arg_t, param_t)
-                                } else {
-                                    false // no param type → no mismatch
-                                }
-                            } else {
-                                false
-                            }
-                        } else {
-                            false // unresolved arg → no mismatch
-                        }
-                    }).count();
-                    (*o, mismatches)
-                }).collect();
-                let best_score = scored.iter().map(|(_, m)| *m).min();
-                if let Some(0) = best_score {
-                    let zero_mismatch: Vec<&ResolvedOverload> = scored.iter()
-                        .filter(|(_, m)| *m == 0)
-                        .map(|(o, _)| *o)
-                        .collect();
-                    if zero_mismatch.len() == 1 {
-                        Some(zero_mismatch[0])
-                    } else {
-                        // Multiple overloads with 0 mismatches — prefer the one whose
-                        // non-self param count best matches the arg count (tightest arity).
-                        // Vararg overloads get a slight penalty so a non-vararg exact
-                        // match is preferred over a vararg with fewer declared params.
-                        let with_arity: Vec<(&ResolvedOverload, usize)> = zero_mismatch.iter()
-                            .map(|&o| {
-                                let off = ovl_self_off(&o);
-                                let non_self = o.params.len() - off;
-                                let distance = (non_self as isize - n_args as isize).unsigned_abs();
-                                let score = if o.is_vararg && non_self <= n_args { distance + 1 } else { distance };
-                                (o, score)
-                            })
-                            .collect();
-                        let best_score = with_arity.iter().map(|(_, s)| *s).min()
-                            .expect("zero_mismatch has >= 2 elements");
-                        let best_count = with_arity.iter().filter(|(_, s)| *s == best_score).count();
-                        if best_count == 1 {
-                            let (best, _) = with_arity.into_iter().find(|(_, s)| *s == best_score).unwrap();
-                            Some(best)
-                        } else {
-                            // Still ambiguous: union their returns at ret_index.
-                            let types: Vec<ValueType> = zero_mismatch.iter()
-                                .map(|o| o.return_type_at(ret_index))
-                                .collect();
-                            ambiguous_overload_ret_type = Some(ValueType::make_union(types));
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else if let Some(&only) = string_filtered.first() {
-                // Single candidate: verify type compatibility before committing
-                let off = ovl_self_off(&only);
-                let has_mismatch = args.iter().enumerate().any(|(i, arg_id)| {
-                    // Bare string-literal param (e.g. select's "#"): reject
-                    // unless the arg is that exact literal in source. This check
-                    // is independent of type resolution (string_literals is
-                    // populated in Phase 1) and must run even when resolve_expr
-                    // returns None — preventing unresolved or Any-typed args from
-                    // falsely matching a discriminator overload.
-                    //
-                    // We intentionally handle only `String(Some(...))`, not
-                    // `Union` of literals. Union-typed params (e.g. CreateFrame's
-                    // template param resolved as a union of known class names)
-                    // can legitimately receive user-defined strings not present
-                    // in the union. The multi-overload string filter (lines
-                    // 752–778) already handles unions with a fallback when no
-                    // overload matches; replicating that rejection here without
-                    // the fallback would break valid calls.
-                    if let Some(param) = only.params.get(i + off)
-                        && let Some(ValueType::String(Some(expected))) = &param.typ
-                    {
-                        let matches_literal = self.ir.string_literals.get(arg_id)
-                            .is_some_and(|actual| actual == expected);
-                        if !matches_literal {
-                            return true;
-                        }
-                    }
-                    if let Some(arg_t) = self.resolve_expr(*arg_id) {
-                        if let Some(param) = only.params.get(i + off) {
-                            if let Some(param_t) = &param.typ {
-                                // Nil against a non-optional param is always a mismatch
-                                if !param.optional && matches!(arg_t, ValueType::Nil) {
-                                    return true;
-                                }
-                                // Skip mismatch check for params with unresolved type variables
-                                if let Some(result) = self.type_var_param_mismatch(param_t, &arg_t) {
-                                    return result;
-                                }
-                                // Optional params accept nil
-                                if param.optional && matches!(arg_t, ValueType::Nil) {
-                                    return false;
-                                }
-                                !arg_t.is_assignable_to(param_t)
-                                    && !self.is_table_subtype(&arg_t, param_t)
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                });
-                if has_mismatch { None } else { Some(only) }
-            } else {
-                None
-            };
-            if let Some(o) = found {
-                let off = if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
-                (Some(o), off)
-            } else {
-                (None, 0)
-            }
-        } else {
-            (None, 0)
-        };
+        let (matching_overload, overload_self_offset, ambiguous_overload_ret_type) =
+            self.select_matching_overload(&overloads, args, ret_index);
 
         // When a generic overload is matched, re-infer generics from the
         // overload's param types. The initial inference used the primary
@@ -1058,95 +655,7 @@ impl<'a> Analysis<'a> {
         // This enables contextual typing for patterns like:
         //   obj:SetScript("OnEvent", function(self, event, ...) end)
         // where the overload specifies the handler signature.
-        if let Some(overload) = matching_overload {
-            let receiver_type: Option<ValueType> = if is_method_call {
-                if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func_expr_id).clone() {
-                    self.resolve_expr(receiver_expr)
-                } else { None }
-            } else { None };
-            for (i, arg_expr_id) in args.iter().enumerate() {
-                let inline_func_idx = match self.ir.expr(*arg_expr_id) {
-                    Expr::FunctionDef(idx) => *idx,
-                    _ => continue,
-                };
-                if inline_func_idx.is_external() { continue; }
-                let param_idx = i + overload_self_offset;
-                let Some(param) = overload.params.get(param_idx) else { continue };
-                // Apply generic substitution so TypeVariable("F") → Function(idx)
-                let param_type = param.typ.as_ref().map(|t| {
-                    if generic_subs.is_empty() { t.clone() }
-                    else { self.substitute_generics_deep(t, &generic_subs) }
-                });
-                let expected_fn_idx = match &param_type {
-                    Some(ValueType::Function(Some(idx))) => *idx,
-                    // Unwrap optional fun types: fun(...)? → Union([Fun(...), nil])
-                    Some(ValueType::Union(members)) => {
-                        match members.iter().find_map(|m| match m {
-                            ValueType::Function(Some(idx)) => Some(*idx),
-                            _ => None,
-                        }) {
-                            Some(idx) => idx,
-                            None => continue,
-                        }
-                    }
-                    _ => continue,
-                };
-                let expected_args = self.func(expected_fn_idx).args.clone();
-                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
-                for (j, &expected_sym) in expected_args.iter().enumerate() {
-                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
-                    if inline_sym_idx.is_external() { continue; }
-                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
-                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
-                    let vt = self.sym(expected_sym).versions.first()
-                        .and_then(|v| v.resolved_type.clone());
-                    if let Some(mut vt) = vt {
-                        // Self-substitution: first param named "self" gets the receiver's type
-                        if j == 0
-                            && matches!(&self.ir.symbols[inline_sym_idx.val()].id, SymbolIdentifier::Name(n) if n == "self")
-                            && let Some(ref recv_type) = receiver_type
-                        {
-                            vt = recv_type.clone();
-                        }
-                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
-                    }
-                }
-                // Propagate event_params from the expected function to the inline callback
-                if let Some(ref ep) = self.func(expected_fn_idx).event_params.clone() {
-                    self.ir.functions[inline_func_idx.val()].event_params = Some(ep.clone());
-                    // Two mechanisms preserve the event type name for hover display:
-                    //  1. event_type_display — propagates through SymbolRef so
-                    //     `local e = event` also shows the alias (resolve.rs).
-                    //  2. param_annotations — makes the param declaration hover
-                    //     use the annotation-text path (queries.rs).
-                    let event_param_idx = ep.1;
-                    if let Some(&inline_sym_idx) = inline_args.get(event_param_idx)
-                        && !inline_sym_idx.is_external()
-                    {
-                        self.ir.event_type_display.insert((inline_sym_idx, 0), ep.0.clone());
-                        let inline_func = &mut self.ir.functions[inline_func_idx.val()];
-                        // Skip if the user already wrote a @param annotation (Simple("") is
-                        // the empty placeholder used when no annotation exists).
-                        let needs_annotation = inline_func.param_annotations
-                            .get(event_param_idx)
-                            .is_none_or(|a| matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
-                        if needs_annotation {
-                            while inline_func.param_annotations.len() <= event_param_idx {
-                                inline_func.param_annotations.push(crate::annotations::AnnotationType::Simple(String::new()));
-                            }
-                            inline_func.param_annotations[event_param_idx] =
-                                crate::annotations::AnnotationType::Simple(ep.0.clone());
-                        }
-                    }
-                }
-                // Propagate vararg_annotation for inlay hints
-                if self.ir.functions[inline_func_idx.val()].vararg_annotation.is_none()
-                    && let Some(ann) = self.func(expected_fn_idx).vararg_annotation.clone()
-                {
-                    self.ir.functions[inline_func_idx.val()].vararg_annotation = Some(ann);
-                }
-            }
-        }
+        self.propagate_overload_callback_params(matching_overload, is_method_call, func_expr_id, args, overload_self_offset, &generic_subs);
 
         // Defer type-mismatch / need-check-nil diagnostics to post-resolution.
         // Resolve each arg so side effects (e.g. undefined-field checks on
@@ -2056,6 +1565,611 @@ impl<'a> Analysis<'a> {
             }
         } else {
             ret_type
+        }
+    }
+
+
+    /// Resolve method-call receiver info: the `params<F>` projected function index
+    /// and the class-level type-parameter substitutions (e.g. `Box<T>` binding `T`),
+    /// recording the bound concrete types under the method-name range for hover.
+    fn resolve_receiver_type_param_subs(
+        &mut self,
+        is_method_call: bool,
+        func: &ExprId,
+        func_idx: FunctionIndex,
+        param_annotations: &[crate::annotations::AnnotationType],
+        field_range: Option<(u32, u32)>,
+    ) -> (Option<FunctionIndex>, HashMap<String, ValueType>) {
+        let mut projected_f_idx: Option<FunctionIndex> = None;
+        let mut class_type_param_subs: HashMap<String, ValueType> = HashMap::new();
+        if is_method_call
+            && let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone()
+        {
+            let receiver_type_args = self.get_expr_type_args(receiver_expr);
+
+            // params<F> projection: bind F from receiver's @type X<fun(...)>
+            let proj_name: Option<String> = match &self.func(func_idx).vararg_projection {
+                Some(crate::types::ProjectionKind::Params(n)) => Some(n.clone()),
+                _ => None,
+            };
+            if let Some(proj_name) = proj_name {
+                let param0 = param_annotations.first().cloned();
+                if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = param0
+                    && receiver_type_args.len() == type_arg_anns.len()
+                {
+                    for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
+                        if let crate::annotations::AnnotationType::Simple(gname) = type_arg_ann
+                            && *gname == proj_name
+                                && let Some(ValueType::Function(Some(f_idx))) = receiver_type_args.get(pos) {
+                                    projected_f_idx = Some(*f_idx);
+                                    break;
+                                }
+                    }
+                }
+            }
+
+            // Class-level type param substitution for inline callback resolution.
+            // When calling a method on a parameterized class (e.g. Box<boolean>:Apply(fun(value: T))),
+            // we need to resolve T → boolean from the receiver's type_args.
+            let receiver_type = self.resolve_expr(receiver_expr);
+            let ctp = match &receiver_type {
+                Some(ValueType::Table(Some(tidx))) => self.table(*tidx).class_type_params.clone(),
+                _ => Vec::new(),
+            };
+            if !ctp.is_empty() {
+                for (pos, name) in ctp.iter().enumerate() {
+                    if let Some(vt) = receiver_type_args.get(pos) {
+                        class_type_param_subs.insert(name.clone(), vt.clone());
+                    }
+                }
+            }
+            // Translate ancestor class type-param names through parameterized-parent
+            // bindings (e.g. `Child<TCur,TShared> : Parent<TCur>` makes Parent's `T`
+            // resolve to TCur's concrete binding). Walk `parent_type_bindings`
+            // transitively so an inherited method's `@requires`/param/return
+            // annotations — which reference the ANCESTOR's param names — resolve to
+            // the receiver's concrete types. Child bindings win on name collision
+            // (`or_insert`), and `visited` guards against cyclic inheritance.
+            //
+            // Uses DFS (work.pop) which is fine: `or_insert` means the child's own
+            // bindings always win regardless of visit order, and sibling parents with
+            // the same param name are not a real-world pattern. The `.clone()` calls
+            // on `parent_type_bindings` and `class_type_params` are borrow-checker
+            // workarounds — `self` is borrowed mutably by `substitute_generics_deep`,
+            // so we can't hold shared refs into `self.table()` across that call.
+            if let Some(ValueType::Table(Some(recv_tidx))) = &receiver_type {
+                let mut work: Vec<(TableIndex, HashMap<String, ValueType>)> =
+                    vec![(*recv_tidx, class_type_param_subs.clone())];
+                let mut visited: HashSet<TableIndex> = HashSet::new();
+                while let Some((tidx, cur_subs)) = work.pop() {
+                    if !visited.insert(tidx) { continue; }
+                    let parent_bindings = self.table(tidx).parent_type_bindings.clone();
+                    for (parent_idx, bindings) in parent_bindings {
+                        let parent_params = self.table(parent_idx).class_type_params.clone();
+                        let mut parent_subs: HashMap<String, ValueType> = HashMap::new();
+                        for (i, p_name) in parent_params.iter().enumerate() {
+                            if let Some(b) = bindings.get(i) {
+                                let concrete = self.substitute_generics_deep(b, &cur_subs);
+                                class_type_param_subs.entry(p_name.clone())
+                                    .or_insert_with(|| concrete.clone());
+                                parent_subs.insert(p_name.clone(), concrete);
+                            }
+                        }
+                        work.push((parent_idx, parent_subs));
+                    }
+                }
+            }
+            // Record the substitution keyed by the method-name token range so
+            // hover can display the bound concrete types (e.g. `T → string`) in
+            // the method signature. Only stored when at least one type param
+            // resolved to a non-type-variable concrete type.
+            if let Some(range) = field_range
+                && !class_type_param_subs.is_empty()
+                && class_type_param_subs.values()
+                    .any(|vt| !matches!(vt, ValueType::TypeVariable(_)))
+            {
+                // Overwrite each fixpoint iteration so the converged (most
+                // concrete) substitution wins over earlier partial ones.
+                self.method_decl_subs.insert(range, class_type_param_subs.clone());
+            }
+        }
+        (projected_f_idx, class_type_param_subs)
+    }
+
+    /// Propagate the callee's `fun()` parameter annotation types into inline
+    /// function-literal arguments, enabling contextual typing of callbacks.
+    fn propagate_inline_callback_params(
+        &mut self,
+        args: &[ExprId],
+        param_annotations: &[crate::annotations::AnnotationType],
+        self_offset: usize,
+        class_gen_context: &[(String, Option<String>)],
+        class_type_param_subs: &HashMap<String, ValueType>,
+    ) {
+        for (i, arg_expr_id) in args.iter().enumerate() {
+            // Check if this argument is an inline function definition
+            let inline_func_idx = match self.ir.expr(*arg_expr_id) {
+                Expr::FunctionDef(idx) => *idx,
+                _ => continue,
+            };
+            if inline_func_idx.is_external() { continue; }
+            // Get the callee's param annotation for this position
+            let Some(ann) = param_annotations.get(i + self_offset) else { continue };
+            if let Some(sig) = crate::annotations::extract_fun_sig(
+                ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
+            ) {
+                // Annotation is directly a fun() type or alias — propagate params
+                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
+                for (j, param_info) in sig.params.iter().enumerate() {
+                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
+                    if inline_sym_idx.is_external() { continue; }
+                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
+                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                    if let Some(vt) = self.resolve_annotation_with_class_generics(
+                        &param_info.typ, class_gen_context, class_type_param_subs,
+                    ) {
+                        let vt = if param_info.optional {
+                            ValueType::union(vt, ValueType::Nil)
+                        } else {
+                            vt
+                        };
+                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+                    }
+                }
+                // Propagate return types from fun() signature into inline function
+                if self.ir.functions[inline_func_idx.val()].return_annotations.is_empty() {
+                    if sig.returns.is_empty() {
+                        // fun() with no return type — mark as explicitly void
+                        self.ir.functions[inline_func_idx.val()].explicit_void_return = true;
+                    } else {
+                        let mut return_vts = Vec::new();
+                        for ret_annotation in &sig.returns {
+                            if let Some(vt) = self.resolve_annotation_with_class_generics(
+                                ret_annotation, class_gen_context, class_type_param_subs,
+                            ) {
+                                return_vts.push(vt);
+                            }
+                        }
+                        if !return_vts.is_empty() {
+                            self.ir.functions[inline_func_idx.val()].return_annotations = return_vts;
+                        }
+                    }
+                }
+            } else if !class_type_param_subs.is_empty() {
+                // Annotation is a type variable (e.g. `@param callback T` where T is a
+                // class type param bound to a fun() type). Resolve through class generics
+                // and propagate the resolved function's params into the inline callback.
+                let resolved = self.resolve_annotation_with_class_generics(
+                    ann, class_gen_context, class_type_param_subs,
+                );
+                let expected_fn_idx = match &resolved {
+                    Some(ValueType::Function(Some(idx))) => *idx,
+                    // Pick first function member from union (e.g. fun(...)? → fun(...) | nil)
+                    Some(ValueType::Union(members)) => {
+                        match members.iter().find_map(|m| match m {
+                            ValueType::Function(Some(idx)) => Some(*idx),
+                            _ => None,
+                        }) {
+                            Some(idx) => idx,
+                            None => continue,
+                        }
+                    }
+                    _ => continue,
+                };
+                let expected_args = self.func(expected_fn_idx).args.clone();
+                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
+                for (j, &expected_sym) in expected_args.iter().enumerate() {
+                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
+                    if inline_sym_idx.is_external() { continue; }
+                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
+                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                    let vt = self.sym(expected_sym).versions.first()
+                        .and_then(|v| v.resolved_type.clone());
+                    if let Some(vt) = vt {
+                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+                    }
+                }
+                // Propagate return types
+                if self.ir.functions[inline_func_idx.val()].return_annotations.is_empty() {
+                    let ret_anns = self.func(expected_fn_idx).return_annotations.clone();
+                    if ret_anns.is_empty() {
+                        self.ir.functions[inline_func_idx.val()].explicit_void_return = true;
+                    } else {
+                        self.ir.functions[inline_func_idx.val()].return_annotations = ret_anns;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Type inline event-callback varargs from a literal event name bound to a
+    /// `@generic E: SomeEvent` parameter with a `fun(...params<E>)` callback.
+    fn type_inline_event_callback_varargs(
+        &mut self,
+        generics: &[(String, Option<ValueType>)],
+        func_idx: FunctionIndex,
+        args: &[ExprId],
+        param_annotations: &[crate::annotations::AnnotationType],
+        self_offset: usize,
+        generic_arg_indices: &HashMap<String, usize>,
+    ) {
+        if !generics.is_empty() {
+            let generic_constraints_raw = self.func(func_idx).generic_constraints_raw.clone();
+            for (i, arg_expr_id) in args.iter().enumerate() {
+                let inline_func_idx = match self.ir.expr(*arg_expr_id) {
+                    Expr::FunctionDef(idx) => *idx,
+                    _ => continue,
+                };
+                if inline_func_idx.is_external() { continue; }
+                // Reduce the callee's param annotation to the callback's fun() params.
+                let Some(sig) = param_annotations.get(i + self_offset)
+                    .and_then(|ann| crate::annotations::extract_fun_sig(
+                        ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
+                    )) else { continue };
+                let params = sig.params;
+                // Find the `...params<G>` vararg projection's generic name and its
+                // position within the annotation's param list (e.g. for
+                // `fun(label: string, ...params<E>)`, vararg_pos=1). The inline
+                // callback's params at and after that index are typed from the payload.
+                let Some((vararg_pos, gen_name)) = params.iter().enumerate().find_map(|(pos, p)| {
+                    if p.name != "..." { return None; }
+                    if let crate::annotations::AnnotationType::Parameterized(base, targs) = &p.typ
+                        && base == "params" && targs.len() == 1
+                        && let crate::annotations::AnnotationType::Simple(g) = &targs[0]
+                    {
+                        Some((pos, g.clone()))
+                    } else {
+                        None
+                    }
+                }) else { continue };
+                // G must have been bound from a concrete event-name string literal arg.
+                let Some(&bind_arg_i) = generic_arg_indices.get(&gen_name) else { continue };
+                let Some(event_name) = args.get(bind_arg_i)
+                    .and_then(|e| self.ir.string_literals.get(e)).cloned() else { continue };
+                // G's constraint must name a registered event type (e.g. FrameEvent).
+                let Some(Some(event_type_name)) = generic_constraints_raw.iter()
+                    .find(|(n, _)| *n == gen_name).map(|(_, c)| c.clone()) else { continue };
+                let Some(payload_params) = self.ir.ext.event_types.get(&event_type_name)
+                    .and_then(|m| m.get(&event_name))
+                    .map(|payload| payload.params.clone()) else { continue };
+                let vararg_types: Vec<ValueType> = payload_params.iter()
+                    .filter_map(|p| Self::resolve_event_param_type_static(&self.ir, p))
+                    .collect();
+                if !vararg_types.is_empty() {
+                    let scope = self.ir.functions[inline_func_idx.val()].scope;
+                    // Type the inline callback's named params positionally from the
+                    // payload: a callback written as `function(foo)` (rather than
+                    // `function(...)`) consumes the varargs through named params, so
+                    // map payload[j] onto the j-th param after the vararg position.
+                    let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
+                    for (j, vt) in vararg_types.iter().enumerate() {
+                        let Some(&param_sym) = inline_args.get(vararg_pos + j) else { break };
+                        if param_sym.is_external() { continue; }
+                        if let Some(v) = self.ir.symbols[param_sym.val()].versions.first_mut()
+                            && v.resolved_type.is_none()
+                        {
+                            v.resolved_type = Some(vt.clone());
+                        }
+                    }
+                    self.event_vararg_types.insert(scope, vararg_types);
+                }
+            }
+        }
+    }
+
+    /// Select the overload matching the call-site argument count and types,
+    /// returning a reference to it, the overload's self-offset, and (when several
+    /// overloads tie at zero mismatches) their unioned return type.
+    fn select_matching_overload<'o>(
+        &mut self,
+        overloads: &'o [ResolvedOverload],
+        args: &[ExprId],
+        ret_index: usize,
+    ) -> (Option<&'o ResolvedOverload>, usize, Option<ValueType>) {
+        // When multiple overloads tie at zero mismatches (no single best match),
+        // we union their return types at this ret_index. Computed lazily below.
+        let mut ambiguous_overload_ret_type: Option<ValueType> = None;
+
+        // Find the matching overload (if any) — used for both diagnostics and return type.
+        // Skip return-only overloads (from tuple-union `@return` cases) which only affect narrowing.
+        // Overload params may include an explicit `self` first param; subtract it
+        // when comparing against call-site arg count.
+        // Uses range-based matching (accounting for optional params) and type-based
+        // discrimination to prefer overloads whose parameter types are compatible.
+        let (matching_overload, overload_self_offset) = if !overloads.is_empty() {
+            let n_args = args.len();
+            let ovl_self_off = |o: &&ResolvedOverload| -> usize {
+                if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 }
+            };
+            // Range-match: min_required <= n_args <= max_params (accounting for optional)
+            let range_matched: Vec<&ResolvedOverload> = overloads.iter()
+                .filter(|o| !o.is_return_only)
+                .filter(|o| {
+                    let off = ovl_self_off(o);
+                    let non_self_params = &o.params[off..];
+                    let required = non_self_params.iter().filter(|p| !p.optional).count();
+                    let total = non_self_params.len();
+                    n_args >= required && (o.is_vararg || n_args <= total)
+                })
+                .collect();
+            // When multiple overloads match by range, discriminate by
+            // string literal parameter values at the call site.
+            let string_filtered: Vec<&ResolvedOverload> = if range_matched.len() > 1 {
+                let filtered: Vec<&ResolvedOverload> = range_matched.iter().copied().filter(|o| {
+                    let off = ovl_self_off(o);
+                    o.params.iter().skip(off).take(n_args).enumerate().all(|(i, p)| {
+                        match &p.typ {
+                            Some(ValueType::String(Some(expected))) => {
+                                args.get(i)
+                                    .and_then(|id| self.ir.string_literals.get(id))
+                                    .is_some_and(|actual| actual == expected)
+                            }
+                            Some(ValueType::Union(types)) => {
+                                let lits: Vec<&str> = types.iter().filter_map(|t| {
+                                    if let ValueType::String(Some(s)) = t { Some(s.as_str()) } else { None }
+                                }).collect();
+                                if lits.is_empty() { return true; }
+                                args.get(i)
+                                    .and_then(|id| self.ir.string_literals.get(id))
+                                    .is_some_and(|actual| lits.contains(&actual.as_str()))
+                            }
+                            _ => true,
+                        }
+                    })
+                }).collect();
+                if filtered.is_empty() { range_matched } else { filtered }
+            } else {
+                range_matched
+            };
+            // When multiple overloads remain, prefer one with compatible arg types.
+            let found = if string_filtered.len() > 1 {
+                // Resolve arg types for type-based discrimination
+                let arg_types: Vec<Option<ValueType>> = args.iter()
+                    .map(|id| self.resolve_expr(*id))
+                    .collect();
+                // Score: count type mismatches per overload
+                let scored: Vec<(&ResolvedOverload, usize)> = string_filtered.iter().map(|o| {
+                    let off = ovl_self_off(o);
+                    let mismatches = arg_types.iter().enumerate().filter(|(i, arg_t)| {
+                        if let Some(arg_t) = arg_t {
+                            if let Some(param) = o.params.get(i + off) {
+                                if let Some(param_t) = &param.typ {
+                                    // Nil against a non-optional param is always a mismatch
+                                    if !param.optional && matches!(arg_t, ValueType::Nil) {
+                                        return true;
+                                    }
+                                    // Skip mismatch check for params with unresolved type variables
+                                    if let Some(result) = self.type_var_param_mismatch(param_t, arg_t) {
+                                        return result;
+                                    }
+                                    // Optional params accept nil
+                                    if param.optional && matches!(arg_t, ValueType::Nil) {
+                                        return false;
+                                    }
+                                    !arg_t.is_assignable_to(param_t)
+                                        && !self.is_table_subtype(arg_t, param_t)
+                                } else {
+                                    false // no param type → no mismatch
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false // unresolved arg → no mismatch
+                        }
+                    }).count();
+                    (*o, mismatches)
+                }).collect();
+                let best_score = scored.iter().map(|(_, m)| *m).min();
+                if let Some(0) = best_score {
+                    let zero_mismatch: Vec<&ResolvedOverload> = scored.iter()
+                        .filter(|(_, m)| *m == 0)
+                        .map(|(o, _)| *o)
+                        .collect();
+                    if zero_mismatch.len() == 1 {
+                        Some(zero_mismatch[0])
+                    } else {
+                        // Multiple overloads with 0 mismatches — prefer the one whose
+                        // non-self param count best matches the arg count (tightest arity).
+                        // Vararg overloads get a slight penalty so a non-vararg exact
+                        // match is preferred over a vararg with fewer declared params.
+                        let with_arity: Vec<(&ResolvedOverload, usize)> = zero_mismatch.iter()
+                            .map(|&o| {
+                                let off = ovl_self_off(&o);
+                                let non_self = o.params.len() - off;
+                                let distance = (non_self as isize - n_args as isize).unsigned_abs();
+                                let score = if o.is_vararg && non_self <= n_args { distance + 1 } else { distance };
+                                (o, score)
+                            })
+                            .collect();
+                        let best_score = with_arity.iter().map(|(_, s)| *s).min()
+                            .expect("zero_mismatch has >= 2 elements");
+                        let best_count = with_arity.iter().filter(|(_, s)| *s == best_score).count();
+                        if best_count == 1 {
+                            let (best, _) = with_arity.into_iter().find(|(_, s)| *s == best_score).unwrap();
+                            Some(best)
+                        } else {
+                            // Still ambiguous: union their returns at ret_index.
+                            let types: Vec<ValueType> = zero_mismatch.iter()
+                                .map(|o| o.return_type_at(ret_index))
+                                .collect();
+                            ambiguous_overload_ret_type = Some(ValueType::make_union(types));
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else if let Some(&only) = string_filtered.first() {
+                // Single candidate: verify type compatibility before committing
+                let off = ovl_self_off(&only);
+                let has_mismatch = args.iter().enumerate().any(|(i, arg_id)| {
+                    // Bare string-literal param (e.g. select's "#"): reject
+                    // unless the arg is that exact literal in source. This check
+                    // is independent of type resolution (string_literals is
+                    // populated in Phase 1) and must run even when resolve_expr
+                    // returns None — preventing unresolved or Any-typed args from
+                    // falsely matching a discriminator overload.
+                    //
+                    // We intentionally handle only `String(Some(...))`, not
+                    // `Union` of literals. Union-typed params (e.g. CreateFrame's
+                    // template param resolved as a union of known class names)
+                    // can legitimately receive user-defined strings not present
+                    // in the union. The multi-overload string filter (lines
+                    // 752–778) already handles unions with a fallback when no
+                    // overload matches; replicating that rejection here without
+                    // the fallback would break valid calls.
+                    if let Some(param) = only.params.get(i + off)
+                        && let Some(ValueType::String(Some(expected))) = &param.typ
+                    {
+                        let matches_literal = self.ir.string_literals.get(arg_id)
+                            .is_some_and(|actual| actual == expected);
+                        if !matches_literal {
+                            return true;
+                        }
+                    }
+                    if let Some(arg_t) = self.resolve_expr(*arg_id) {
+                        if let Some(param) = only.params.get(i + off) {
+                            if let Some(param_t) = &param.typ {
+                                // Nil against a non-optional param is always a mismatch
+                                if !param.optional && matches!(arg_t, ValueType::Nil) {
+                                    return true;
+                                }
+                                // Skip mismatch check for params with unresolved type variables
+                                if let Some(result) = self.type_var_param_mismatch(param_t, &arg_t) {
+                                    return result;
+                                }
+                                // Optional params accept nil
+                                if param.optional && matches!(arg_t, ValueType::Nil) {
+                                    return false;
+                                }
+                                !arg_t.is_assignable_to(param_t)
+                                    && !self.is_table_subtype(&arg_t, param_t)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                });
+                if has_mismatch { None } else { Some(only) }
+            } else {
+                None
+            };
+            if let Some(o) = found {
+                let off = if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
+                (Some(o), off)
+            } else {
+                (None, 0)
+            }
+        } else {
+            (None, 0)
+        };
+        (matching_overload, overload_self_offset, ambiguous_overload_ret_type)
+    }
+
+    /// Propagate a matched overload's `fun()` callback parameter types (and event
+    /// params / vararg annotations) into inline function-literal arguments.
+    fn propagate_overload_callback_params(
+        &mut self,
+        matching_overload: Option<&ResolvedOverload>,
+        is_method_call: bool,
+        func_expr_id: ExprId,
+        args: &[ExprId],
+        overload_self_offset: usize,
+        generic_subs: &HashMap<String, ValueType>,
+    ) {
+        if let Some(overload) = matching_overload {
+            let receiver_type: Option<ValueType> = if is_method_call {
+                if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func_expr_id).clone() {
+                    self.resolve_expr(receiver_expr)
+                } else { None }
+            } else { None };
+            for (i, arg_expr_id) in args.iter().enumerate() {
+                let inline_func_idx = match self.ir.expr(*arg_expr_id) {
+                    Expr::FunctionDef(idx) => *idx,
+                    _ => continue,
+                };
+                if inline_func_idx.is_external() { continue; }
+                let param_idx = i + overload_self_offset;
+                let Some(param) = overload.params.get(param_idx) else { continue };
+                // Apply generic substitution so TypeVariable("F") → Function(idx)
+                let param_type = param.typ.as_ref().map(|t| {
+                    if generic_subs.is_empty() { t.clone() }
+                    else { self.substitute_generics_deep(t, generic_subs) }
+                });
+                let expected_fn_idx = match &param_type {
+                    Some(ValueType::Function(Some(idx))) => *idx,
+                    // Unwrap optional fun types: fun(...)? → Union([Fun(...), nil])
+                    Some(ValueType::Union(members)) => {
+                        match members.iter().find_map(|m| match m {
+                            ValueType::Function(Some(idx)) => Some(*idx),
+                            _ => None,
+                        }) {
+                            Some(idx) => idx,
+                            None => continue,
+                        }
+                    }
+                    _ => continue,
+                };
+                let expected_args = self.func(expected_fn_idx).args.clone();
+                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
+                for (j, &expected_sym) in expected_args.iter().enumerate() {
+                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
+                    if inline_sym_idx.is_external() { continue; }
+                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
+                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                    let vt = self.sym(expected_sym).versions.first()
+                        .and_then(|v| v.resolved_type.clone());
+                    if let Some(mut vt) = vt {
+                        // Self-substitution: first param named "self" gets the receiver's type
+                        if j == 0
+                            && matches!(&self.ir.symbols[inline_sym_idx.val()].id, SymbolIdentifier::Name(n) if n == "self")
+                            && let Some(ref recv_type) = receiver_type
+                        {
+                            vt = recv_type.clone();
+                        }
+                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+                    }
+                }
+                // Propagate event_params from the expected function to the inline callback
+                if let Some(ref ep) = self.func(expected_fn_idx).event_params.clone() {
+                    self.ir.functions[inline_func_idx.val()].event_params = Some(ep.clone());
+                    // Two mechanisms preserve the event type name for hover display:
+                    //  1. event_type_display — propagates through SymbolRef so
+                    //     `local e = event` also shows the alias (resolve.rs).
+                    //  2. param_annotations — makes the param declaration hover
+                    //     use the annotation-text path (queries.rs).
+                    let event_param_idx = ep.1;
+                    if let Some(&inline_sym_idx) = inline_args.get(event_param_idx)
+                        && !inline_sym_idx.is_external()
+                    {
+                        self.ir.event_type_display.insert((inline_sym_idx, 0), ep.0.clone());
+                        let inline_func = &mut self.ir.functions[inline_func_idx.val()];
+                        // Skip if the user already wrote a @param annotation (Simple("") is
+                        // the empty placeholder used when no annotation exists).
+                        let needs_annotation = inline_func.param_annotations
+                            .get(event_param_idx)
+                            .is_none_or(|a| matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
+                        if needs_annotation {
+                            while inline_func.param_annotations.len() <= event_param_idx {
+                                inline_func.param_annotations.push(crate::annotations::AnnotationType::Simple(String::new()));
+                            }
+                            inline_func.param_annotations[event_param_idx] =
+                                crate::annotations::AnnotationType::Simple(ep.0.clone());
+                        }
+                    }
+                }
+                // Propagate vararg_annotation for inlay hints
+                if self.ir.functions[inline_func_idx.val()].vararg_annotation.is_none()
+                    && let Some(ann) = self.func(expected_fn_idx).vararg_annotation.clone()
+                {
+                    self.ir.functions[inline_func_idx.val()].vararg_annotation = Some(ann);
+                }
+            }
         }
     }
 
