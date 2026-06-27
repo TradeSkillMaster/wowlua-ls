@@ -26,6 +26,9 @@ end
 -- `!in_function && idents.len() >= 2` branch of the existence-only scan
 addonTable.MinX, addonTable.MaxX = 0, 100
 
+-- A source table whose `.func` field holds a callable, forwarded below.
+local source = { func = getName }
+
 function addonTable.Setup()
     -- single-target field write inside a function
     addonTable.Title = getName()
@@ -38,4 +41,24 @@ function addonTable.Setup()
     -- complex value assigned inside a function: must NOT be typed precisely
     -- (otherwise its mixin'd `:Ping` would wrongly report undefined-field)
     addonTable.InFuncWidget = makeWidget()
+end
+
+-- Forwarded-value fields: a namespace field assigned from another *field* or a
+-- *parameter* inside a function body. The coarse scan can't see the forwarded
+-- value's type, but it may be a callable, so these register callable-or-unknown
+-- (`function & table`) rather than a bare non-callable `table` — calling them
+-- cross-file must not false-positive as `cannot-call`. (A function *call* RHS
+-- like `makeWidget()` above instead stays a bare `table`: its result is more
+-- often a frame/table than a callable, and the bare type lets a competing
+-- concrete type subsume it in a union.)
+function addonTable.Wire(handler)
+    -- forwarded from a parameter
+    addonTable.OnClick = handler
+    -- forwarded from another field
+    addonTable.GetValue = source.func
+    -- forwarded from a parameter onto a deep namespace path
+    addonTable.Sub.Run = handler
+    -- a function *literal* is callable too (typed `function`, not the
+    -- forwarded callable-or-unknown intersection)
+    addonTable.Render = function() end
 end

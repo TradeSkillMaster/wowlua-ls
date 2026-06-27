@@ -1411,12 +1411,26 @@ pub(crate) fn scan_file_globals_with_synth(
             let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
             let field_name = names[names.len()-1].clone();
             // A function-literal RHS registers callable so calls on the field
-            // (`self.cb()`) don't false-positive as `cannot-call`; everything else
-            // stays existence-only (bare `table`, no fabricated type).
-            let field_value_kind = if matches!(rhs_exprs.get(target_idx), Some(Expression::Function(_))) {
-                FieldValueKind::Function
-            } else {
-                FieldValueKind::Unknown
+            // (`self.cb()`) don't false-positive as `cannot-call`. A *forwarded*
+            // value — another field or a parameter (`ns.Foo = current.func`,
+            // `ns.Cb = callback`), i.e. an `Identifier` RHS — may also hold a
+            // callable, so on a *namespace/`@class` field* it registers
+            // callable-or-unknown (`MaybeCallable`). Everything else (a function
+            // *call* like `CreateFrame(...)`, a table constructor, a literal) stays
+            // existence-only as a bare `table`.
+            //
+            // Scoped to non-`self` roots: that is exactly the reported case
+            // (namespace/`@class` fields, which commonly hold callbacks). A `self.`
+            // field is excluded — those usually hold data, not callbacks, and they
+            // also collect a per-file overlay / self-field-scanner type; forcing
+            // them callable would union `function & table` with that real type and
+            // turn clean reads into `type-mismatch`. Self-field function *literals*
+            // are still made callable by the `Function` arm above.
+            let root_is_self = root_name.as_str() == "self";
+            let field_value_kind = match rhs_exprs.get(target_idx) {
+                Some(Expression::Function(_)) => FieldValueKind::Function,
+                Some(Expression::Identifier(_)) if !root_is_self => FieldValueKind::MaybeCallable,
+                _ => FieldValueKind::Unknown,
             };
             let range = assign.syntax().text_range();
             let (ns, ne) = last_name_range

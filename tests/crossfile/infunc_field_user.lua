@@ -23,6 +23,19 @@ addonTable.InFuncWidget:Ping()
 local mx = addonTable.MinX
 local mxx = addonTable.MaxX
 
+-- forwarded-value fields are callable-or-unknown (`function & table`): calling
+-- them must NOT false-positive as `cannot-call` (the exhaustive harness fails on
+-- any unexpected diagnostic, so the absence of `cannot-call` on these calls is
+-- itself the assertion).
+addonTable.OnClick("click")          -- forwarded from a parameter
+--         ^ hover: (field) OnClick: function & table
+local gv = addonTable.GetValue()     -- forwarded from another field
+--                    ^ hover: (field) GetValue: function & table
+addonTable.Sub.Run()                 -- forwarded onto a deep path
+-- a function-literal field stays plain `function` (not the forwarded intersection)
+addonTable.Render()
+--         ^ hover: (field) Render: function
+
 -- negative control: a field assigned nowhere still reports undefined-field
 local bad = addonTable.NeverAssigned
 --                     ^ diag: undefined-field

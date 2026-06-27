@@ -530,7 +530,7 @@ fn populate_table_fields(
                 ValueType::Table(Some(sub_idx))
             }
             // Create field with Any type so it exists for field-chain resolution
-            FieldValueKind::Unknown | FieldValueKind::FunctionCall(..) | FieldValueKind::FieldRef(_) => ValueType::Any,
+            FieldValueKind::Unknown | FieldValueKind::MaybeCallable | FieldValueKind::FunctionCall(..) | FieldValueKind::FieldRef(_) => ValueType::Any,
         };
         let expr_idx = ExprId(EXT_BASE + exprs.len());
         exprs.push(Expr::Literal(vt.clone()));
@@ -1561,7 +1561,7 @@ impl BuildContext {
         // Two passes: typed first (sub-table creation), then Unknown (reuse of sub-tables).
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
-                if matches!(value_kind, FieldValueKind::Unknown) && g.returns.is_empty() { continue; }
+                if matches!(value_kind, FieldValueKind::Unknown | FieldValueKind::MaybeCallable) && g.returns.is_empty() { continue; }
                 if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
@@ -1606,7 +1606,8 @@ impl BuildContext {
                         FieldValueKind::Function => Some(ValueType::Function(None)),
                         FieldValueKind::FunctionCall(..) => None, // deferred below
                         FieldValueKind::FieldRef(_) => None, // deferred below
-                        FieldValueKind::Unknown => unreachable!(), // handled in second pass
+                        // Both handled in the second pass (gated out above when returns is empty).
+                        FieldValueKind::Unknown | FieldValueKind::MaybeCallable => unreachable!(),
                     }
                 };
                 if let Some(vt) = value_type {
@@ -1622,10 +1623,10 @@ impl BuildContext {
                 }
             }
         }
-        // Second pass: resolve Unknown fields now that all sub-tables exist
+        // Second pass: resolve Unknown / MaybeCallable fields now that all sub-tables exist
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
-                if !matches!(value_kind, FieldValueKind::Unknown) || !g.returns.is_empty() { continue; }
+                if !matches!(value_kind, FieldValueKind::Unknown | FieldValueKind::MaybeCallable) || !g.returns.is_empty() { continue; }
                 if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, _leaf_parent_name)) = walk_deep_path(
@@ -1641,8 +1642,16 @@ impl BuildContext {
                 } else if let Some(&sub_idx) = self.sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), field_name.clone())) {
                     // Reuse addon sub-table (e.g. LibTSMApp.Locale shares ns.Locale's sub-table)
                     ValueType::Table(Some(sub_idx))
+                } else if matches!(value_kind, FieldValueKind::MaybeCallable) {
+                    // RHS was a forwarded field/param that may hold a callable —
+                    // register callable-or-unknown so a later call through the field
+                    // isn't flagged `cannot-call`, while reads stay as permissive as
+                    // a bare table.
+                    ValueType::callable_or_unknown()
                 } else {
-                    // Register as untyped table so the field is at least visible
+                    // Register as untyped table so the field is at least visible. A
+                    // bare `table` (not the callable intersection) so a competing
+                    // concrete type can still subsume it in a union.
                     ValueType::Table(None)
                 };
                 let expr_idx = ExprId(EXT_BASE + self.exprs.len());

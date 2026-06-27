@@ -489,7 +489,7 @@ impl<'a> BuildOnStubsContext<'a> {
         // Build workspace table field entries (unified — see `build` for semantics).
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
-                if matches!(value_kind, FieldValueKind::Unknown) && g.returns.is_empty() { continue; }
+                if matches!(value_kind, FieldValueKind::Unknown | FieldValueKind::MaybeCallable) && g.returns.is_empty() { continue; }
                 if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
@@ -531,7 +531,8 @@ impl<'a> BuildOnStubsContext<'a> {
                         FieldValueKind::Function => Some(ValueType::Function(None)),
                         FieldValueKind::FunctionCall(..) => None,
                         FieldValueKind::FieldRef(_) => None,
-                        FieldValueKind::Unknown => unreachable!(),
+                        // Both handled in the second pass (gated out above when returns is empty).
+                        FieldValueKind::Unknown | FieldValueKind::MaybeCallable => unreachable!(),
                     }
                 };
                 if let Some(vt) = value_type {
@@ -569,10 +570,10 @@ impl<'a> BuildOnStubsContext<'a> {
                 }
             }
         }
-        // Second pass: resolve Unknown fields
+        // Second pass: resolve Unknown / MaybeCallable fields
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
-                if !matches!(value_kind, FieldValueKind::Unknown) || !g.returns.is_empty() { continue; }
+                if !matches!(value_kind, FieldValueKind::Unknown | FieldValueKind::MaybeCallable) || !g.returns.is_empty() { continue; }
                 if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, _)) = walk_deep_path(
@@ -591,7 +592,16 @@ impl<'a> BuildOnStubsContext<'a> {
                     ValueType::Table(Some(idx))
                 } else if let Some(&sub_idx) = self.sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), field_name.clone())) {
                     ValueType::Table(Some(sub_idx))
+                } else if matches!(value_kind, FieldValueKind::MaybeCallable) {
+                    // RHS was a forwarded field/param that may hold a callable —
+                    // register callable-or-unknown so a later call through the field
+                    // isn't flagged `cannot-call`, while reads stay as permissive as
+                    // a bare table.
+                    ValueType::callable_or_unknown()
                 } else {
+                    // Register as untyped table so the field is at least visible. A
+                    // bare `table` (not the callable intersection) so a competing
+                    // concrete type can still subsume it in a union.
                     ValueType::Table(None)
                 };
                 let expr_idx = ExprId(EXT_BASE + self.exprs.len());

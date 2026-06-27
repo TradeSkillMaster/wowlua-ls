@@ -170,8 +170,44 @@ pub(crate) fn infer_type_category(expr: &Expression<'_>) -> Option<InferredTypeC
     }
 }
 
+/// **Serialized into the precomputed-stub blob** (via
+/// `ExternalGlobalKind::TableField` → `ExternalGlobal.kind` →
+/// `PrecomputedStubs.stub_globals`), so variants must stay **append-only**:
+/// reordering or inserting shifts serde discriminants and breaks deserialization
+/// of existing blobs (same hazard as the "kept last" note on
+/// `ValueType::NumberLiteral`). Adding an *appended* variant that can appear in
+/// stub-scan output requires bumping `BLOB_VERSION` (`pre_globals/mod.rs`) and
+/// regenerating, per the convention there.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum FieldValueKind { String(Option<std::string::String>), Number(Option<std::string::String>), Boolean, Nil, Table(Vec<(std::string::String, FieldValueKind)>), Function, FunctionCall(Vec<std::string::String>, Option<std::string::String>), FieldRef(Vec<std::string::String>), Unknown }
+pub enum FieldValueKind {
+    String(Option<std::string::String>),
+    Number(Option<std::string::String>),
+    Boolean,
+    Nil,
+    Table(Vec<(std::string::String, FieldValueKind)>),
+    Function,
+    FunctionCall(Vec<std::string::String>, Option<std::string::String>),
+    FieldRef(Vec<std::string::String>),
+    /// Existence-only field the coarse scan couldn't type — registered as a bare
+    /// (non-callable) `table` so reads stay clean without fabricating a type.
+    Unknown,
+    /// Like `Unknown`, but the right-hand side was a *forwarded* value — another
+    /// field or a parameter (`ns.Foo = current.func`, `ns.Cb = callback`) — which
+    /// may hold a callable. Materialized as [`ValueType::callable_or_unknown`] so a
+    /// later call through the field isn't flagged `cannot-call`, while reads stay
+    /// as permissive as a bare table. Distinct from `Unknown` (a function-*call*
+    /// RHS like `CreateFrame(...)`), which keeps the bare-`table` placeholder so it
+    /// can still be subsumed by a competing concrete type in a union.
+    ///
+    /// Emitted only by the per-file/workspace descendants scan for an in-function
+    /// `ns.field = identifier` write; the declaration-only stub sources contain no
+    /// such writes, so this variant does **not** reach the serialized blob (the
+    /// same practical status as the runtime-only `ValueType::FunctionSig`/
+    /// `TableShape`) — hence `BLOB_VERSION` was *not* bumped. It is *appended*
+    /// (last discriminant) so existing blobs still deserialize unchanged; if a
+    /// stub source ever emits it, bump `BLOB_VERSION` and regenerate.
+    MaybeCallable,
+}
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExternalGlobalKind {

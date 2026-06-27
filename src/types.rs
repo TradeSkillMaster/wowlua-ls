@@ -708,6 +708,31 @@ impl ValueType {
     pub(crate) fn union(a: ValueType, b: ValueType) -> ValueType {
         ValueType::make_union(vec![a, b])
     }
+
+    /// The placeholder type for an **existence-only** field whose right-hand side
+    /// the coarse cross-file scan couldn't type — a field forwarded from another
+    /// field or a parameter (`ns.Foo = current.func`, `ns.Cb = callback`), which
+    /// may hold a plain table OR a callable.
+    ///
+    /// Modeled as `function & table` (an intersection) rather than a bare `table`
+    /// or a `function | table` union:
+    /// - **callable** — the `function` member makes `is_callable` true, so calling
+    ///   the field (`ns.Foo()`) doesn't false-positive as `cannot-call`.
+    /// - **permissive reads** — `undefined-field` skips top-level intersections
+    ///   (concrete instances that commonly receive untracked runtime fields), so
+    ///   sub-field reads stay clean, exactly as the bare `table` did.
+    /// - **lenient assignability** — an intersection is assignable to X if *any*
+    ///   member is, so the field still flows into table-expecting params
+    ///   (`pairs(ns.Foo)`); a `function | table` union would break that, since a
+    ///   union's members must *all* be assignable.
+    /// - **truthy** — both members are truthy, so `ns.Foo and ns.Foo()` short-
+    ///   circuits to the RHS as before.
+    ///
+    /// Deliberately not `any`, which would propagate into surrounding expressions
+    /// and cause spurious downstream diagnostics.
+    pub(crate) fn callable_or_unknown() -> ValueType {
+        ValueType::Intersection(vec![ValueType::Function(None), ValueType::Table(None)])
+    }
 }
 
 // ── Symbol and Scope structures ────────────────────────────────────────────────
