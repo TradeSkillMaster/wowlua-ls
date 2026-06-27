@@ -138,6 +138,35 @@ fn closed_record_base(
     }
 }
 
+/// True when the field-access base `expr`, or any table in its base chain,
+/// resolves to an `open_mixin` class (a `CreateFromMixins`-derived mixin) or a
+/// class that inherits one. Walks `FieldAccess`/`Grouped` bases to the root so a
+/// nested access like `self.Foo.Bar` is permissive whenever `self` is an open
+/// mixin — the whole nested-frame chain is dynamic. Stops at non-field bases
+/// (e.g. a `GetParent()` call result), which are checked on their own merits.
+fn base_chain_is_open_mixin(analysis: &AnalysisResult, mut expr: ExprId) -> bool {
+    // Depth guard against pathological/cyclic IR.
+    for _ in 0..64 {
+        if let Some(vt) = analysis.resolve_expr_type(expr) {
+            let mut idxs: Vec<TableIndex> = Vec::new();
+            super::collect_class_indices(&vt, &mut idxs);
+            if idxs.iter().any(|&i| {
+                analysis.table(i).open_mixin
+                    || analysis.table(i).parent_classes.iter()
+                        .any(|&pi| analysis.table(pi).open_mixin)
+            }) {
+                return true;
+            }
+        }
+        match analysis.ir.expr(expr) {
+            Expr::FieldAccess { table, .. } => expr = *table,
+            Expr::Grouped(inner) | Expr::StripNil(inner) | Expr::StripFalsy(inner) => expr = *inner,
+            _ => return false,
+        }
+    }
+    false
+}
+
 pub(crate) struct UndefinedField;
 
 impl DiagnosticPass for UndefinedField {
@@ -159,6 +188,15 @@ impl DiagnosticPass for UndefinedField {
                 _ => continue,
             }
             if table_indices.is_empty() { continue; }
+            // `Derived = CreateFromMixins(Base)` mixin classes are dynamic
+            // runtime-field-receiving instances (parentKey children attached at
+            // frame creation, fields set on `self` in inherited methods). Treat
+            // any access rooted at such a mixin permissively, like a top-level
+            // `Frame & Template` intersection — including chains (`self.A.B.C`),
+            // since the nested frame children are equally dynamic. Walks the
+            // base chain to its root so `self.Foo.Bar:Method()` is skipped when
+            // `self` is an open mixin.
+            if base_chain_is_open_mixin(analysis, *table) { continue; }
             if table_indices.iter().any(|&idx| analysis.ir.has_field(idx, field)) { continue; }
             // Inherited field?
             if table_indices.iter().any(|&idx| {

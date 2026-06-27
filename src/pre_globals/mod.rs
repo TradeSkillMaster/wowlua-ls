@@ -498,6 +498,72 @@ fn populate_table_fields(
 /// it is one).
 ///
 /// Each newly created sub-table is registered as a field on its parent and in
+/// Link `Derived = CreateFromMixins(Base, …)` globals into the class inheritance
+/// graph. Shared by both build paths — `BuildContext::build` (from-scratch stub
+/// compile) and `BuildOnStubsContext::build_on_stubs` (workspace-incremental) —
+/// which hold the same `tables`/`classes`/`non_class_tables` shape; taking them
+/// by reference keeps the two paths from drifting.
+///
+/// Runs *after* `resolve_inheritance` so each class parent's transitive closure
+/// is already computed. Unlike `@class` inheritance, a mixin parent may be a
+/// **non-class table** (`Base = {}` with methods, never used as an XML `mixin=`),
+/// so parent names resolve via both `classes` and `non_class_tables`. Every
+/// derived class is flagged `open_mixin`. The fixpoint loop propagates ancestors
+/// across mixin chains (`Derived → Mid → Base`).
+fn apply_mixin_parent_inheritance(
+    tables: &mut [TableInfo],
+    classes: &HashMap<String, TableIndex>,
+    non_class_tables: &HashMap<String, TableIndex>,
+    globals: &[crate::annotations::ExternalGlobal],
+) {
+    let mut links: Vec<(usize, Vec<TableIndex>)> = Vec::new();
+    for g in globals {
+        if g.mixin_parents.is_empty() { continue; }
+        let Some(&child_idx) = classes.get(&g.name) else { continue };
+        // Mark every CreateFromMixins-derived class as an open mixin so
+        // `undefined-field` stays permissive about untracked runtime fields
+        // (matches the intersection policy for `Frame & Template` instances).
+        // Done regardless of whether the bases resolve — the class is dynamic
+        // either way.
+        tables[child_idx.ext_offset()].open_mixin = true;
+        let parents: Vec<TableIndex> = g.mixin_parents.iter()
+            .filter_map(|p| classes.get(p.as_str())
+                .or_else(|| non_class_tables.get(p.as_str()))
+                .copied())
+            // A class is never its own parent.
+            .filter(|&pidx| pidx != child_idx)
+            .collect();
+        if parents.is_empty() { continue; }
+        links.push((child_idx.ext_offset(), parents));
+    }
+    if links.is_empty() { return; }
+    // Iterate to a fixpoint so derived-of-derived chains accumulate the full
+    // transitive closure regardless of `links` order. Bounded by chain depth.
+    let mut guard = 0;
+    let max_iters = links.len() + 2;
+    let mut changed = true;
+    while changed && guard < max_iters {
+        changed = false;
+        guard += 1;
+        for (child_local, parents) in &links {
+            for &parent_idx in parents {
+                if !tables[*child_local].parent_classes.contains(&parent_idx) {
+                    tables[*child_local].parent_classes.push(parent_idx);
+                    changed = true;
+                }
+                let ancestors = tables[parent_idx.ext_offset()].parent_classes.clone();
+                for anc in ancestors {
+                    if anc.ext_offset() != *child_local
+                        && !tables[*child_local].parent_classes.contains(&anc) {
+                        tables[*child_local].parent_classes.push(anc);
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// `sub_tables`. First-time intermediate creations record a field_locations
 /// entry so that go-to-definition on an intermediate resolves to the originating
 /// assignment.
@@ -2923,6 +2989,7 @@ impl PreResolvedGlobals {
         ctx.populate_class_fields(external_classes);
         ctx.build_methods_and_table_fields(globals, external_classes);
         ctx.resolve_inheritance(external_classes);
+        apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, globals);
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(globals);
         let mut pg = ctx.finish();

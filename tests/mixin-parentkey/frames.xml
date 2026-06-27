@@ -1,0 +1,9 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+  <!-- Template binds the derived mixin via mixin=; its parentKey child
+       `Container` must land on DerivedViewMixin (the mixin), not the base. -->
+  <Frame name="DerivedViewTemplate" virtual="true" mixin="DerivedViewMixin">
+    <Frames>
+      <Frame parentKey="Container"/>
+    </Frames>
+  </Frame>
+</Ui>

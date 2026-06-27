@@ -689,6 +689,34 @@ impl Ir {
             .or_else(|| self.ext.scope0_symbols.get(id).copied())
     }
 
+    /// Look up the external (cross-file) class table for a global `name`, returning
+    /// its `TableIndex` only when `name` resolves to a `Table` whose `class_name`
+    /// matches. Used to re-anchor a `Derived = CreateFromMixins(Base)` global to its
+    /// own class table (which inherits the mixin parents) instead of the bare
+    /// CreateFromMixins return type. Returns `None` for non-class globals.
+    pub(crate) fn external_class_table_for(&self, name: &str) -> Option<TableIndex> {
+        let class_idx = self.external_table_for(name)?;
+        if self.ext.table(class_idx).class_name.as_deref() == Some(name) {
+            return Some(class_idx);
+        }
+        None
+    }
+
+    /// Look up the external `Table` index a global `name` resolves to, whether or
+    /// not the table carries a matching `class_name`. This is the class_name-agnostic
+    /// core that backs `external_class_table_for` (which adds the `class_name == name`
+    /// check on top); split out so the lookup can be reused without that constraint.
+    pub(crate) fn external_table_for(&self, name: &str) -> Option<TableIndex> {
+        let sym_idx = self.ext.scope0_symbols
+            .get(&SymbolIdentifier::Name(name.to_string()))
+            .copied()?;
+        let ver = self.ext.sym(sym_idx).versions.last()?;
+        match &ver.resolved_type {
+            Some(ValueType::Table(Some(idx))) => Some(*idx),
+            _ => None,
+        }
+    }
+
     /// Two-tier scope lookup. Routes EXT_BASE indices to `ext.scopes` exactly like
     /// `sym()`/`func()`/`table()` route their arenas.
     #[inline]
@@ -2822,6 +2850,13 @@ pub(crate) fn is_table_subtype_impl(
             // arise when a function call return type couldn't be resolved during
             // cross-file scanning (e.g. variadic generics on CreateFromMixins).
             if bt.placeholder {
+                return true;
+            }
+            // A `Derived = CreateFromMixins(Base)` open mixin is a dynamic
+            // runtime-field-receiving instance — accept it wherever a table is
+            // expected (e.g. `Base.Init(self)` passing the derived to the base's
+            // inferred-self shape), mirroring the `undefined-field` permissiveness.
+            if at.open_mixin {
                 return true;
             }
             // Enum-like value-type compatibility: when the expected type is a class

@@ -2388,6 +2388,28 @@ impl<'a> Analysis<'a> {
                                                     self.ir.class_def_symbols.insert(symbol_idx);
                                                 }
                                         }
+
+                                        // `Derived = CreateFromMixins(Base, …)` for a global that is
+                                        // a known external class: re-anchor the symbol to its own
+                                        // class table (which inherits the mixin parents via the
+                                        // cross-file build) so `self` in Derived's methods resolves
+                                        // to Derived — seeing its own fields and the XML parentKey
+                                        // fields landed on the mixin class — not the bare
+                                        // CreateFromMixins return type (the base). The class is
+                                        // flagged `open_mixin`, so `undefined-field` stays permissive
+                                        // about untracked runtime fields. Skipped when an explicit
+                                        // @class/@type already drives the type.
+                                        if index == 0
+                                            && assign_annotations.class.is_none()
+                                            && assign_annotations.var_type.is_none()
+                                            && expression.is_some_and(Self::is_create_from_mixins_call)
+                                            && let Some(ext_class_idx) = self.ir.external_class_table_for(root_name)
+                                        {
+                                            let expr_id = self.ir.push_expr(Expr::Literal(
+                                                ValueType::Table(Some(ext_class_idx))
+                                            ));
+                                            self.ir.set_type_source(symbol_idx, expr_id);
+                                        }
                                     }
                                 }
                             } else if ident.is_indexed_expression() {
@@ -3455,6 +3477,18 @@ impl<'a> Analysis<'a> {
     /// Delegates to the shared implementation in `annotation_scanning`.
     pub(crate) fn extract_inline_type(field_node: SyntaxNode<'_>) -> Option<AnnotationType> {
         crate::annotations::annotation_scanning::extract_inline_type_from_node(field_node)
+    }
+
+    /// True when `expr` is a bare `CreateFromMixins(...)` call (the WoW idiom for
+    /// `Derived = CreateFromMixins(...)`). Marks the assignment for re-anchoring
+    /// the derived global to its own class table; the mixin base names themselves
+    /// are recovered cross-file via `ExternalGlobal.mixin_parents`, so only the
+    /// callee identity matters here.
+    fn is_create_from_mixins_call(expr: &Expression<'_>) -> bool {
+        let Expression::FunctionCall(call) = expr else { return false };
+        let Some(ident) = call.identifier() else { return false };
+        let names = ident.names();
+        names.len() == 1 && names[0] == "CreateFromMixins"
     }
 
     /// Extract a trailing `---@type X` from a forward-declared `local` statement

@@ -901,6 +901,7 @@ fn finalize_frame(
             deferred_call_type: false,
             name_start: ctx.def_start,
             name_end: ctx.def_end,
+            mixin_parents: Vec::new(),
         });
     }
 
@@ -946,6 +947,7 @@ fn finalize_frame(
             deferred_call_type: false,
             name_start: ctx.def_start,
             name_end: ctx.def_end,
+            mixin_parents: Vec::new(),
         });
     }
 }

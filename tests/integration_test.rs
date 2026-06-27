@@ -4066,6 +4066,24 @@ fn createframe_named() {
 }
 
 #[test]
+fn mixin_parentkey() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/mixin-parentkey/derived.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/mixin-parentkey"),
+    });
+}
+
+#[test]
+fn mixin_parentkey_reader() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/mixin-parentkey/reader.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/mixin-parentkey"),
+    });
+}
+
+#[test]
 fn branch_local_version() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/branch-local-version.lua",

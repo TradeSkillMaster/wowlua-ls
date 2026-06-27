@@ -9,6 +9,7 @@ use super::{
     substitute_annotation_type, record_field_location, walk_deep_path,
     resolve_funcall_chain, GlobalLookupCtx, populate_table_fields,
     FnBuildCtx, FnMeta, DeepPathCtx,
+    apply_mixin_parent_inheritance,
 };
 
 struct BuildOnStubsContext<'a> {
@@ -525,6 +526,25 @@ impl<'a> BuildOnStubsContext<'a> {
                 ..Default::default()
             });
             self.classes.insert(target_name.clone(), table_idx);
+        }
+
+        // Re-check variable globals against the now-populated class map.
+        // The first pass (above) only catches names that were already in self.classes
+        // from @class declarations or stubs. This pass catches names whose class tables
+        // were auto-created from method/field definitions (e.g. `Derived =
+        // CreateFromMixins(Base)` followed by `function Derived:Method()`).
+        for g in ws_globals {
+            if let ExternalGlobalKind::Variable(_) = &g.kind
+                && self.classes.contains_key(&g.name)
+                && !self.class_globals.contains(&g.name)
+            {
+                self.class_globals.insert(g.name.clone());
+                if let Some(path) = &g.source_path {
+                    self.table_source_locations.entry(g.name.clone()).or_insert_with(|| ExternalLocation {
+                        path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
+                    });
+                }
+            }
         }
 
         // Build workspace method entries (unified — see `build` for semantics).
@@ -1693,6 +1713,7 @@ impl PreResolvedGlobals {
         ctx.populate_class_fields(ws_classes);
         ctx.build_methods_and_table_fields(ws_globals, ws_classes);
         ctx.resolve_inheritance(ws_classes);
+        apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, ws_globals);
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(ws_globals);
         let mut pg = ctx.finish(ws_classes);

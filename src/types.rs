@@ -1128,6 +1128,15 @@ pub(crate) struct TableInfo {
     /// avoiding false `field-type-mismatch` diagnostics.
     #[serde(skip)]
     pub(crate) placeholder: bool,
+    /// True for a `Derived = CreateFromMixins(Base, …)` class. Such a mixin is a
+    /// dynamic, runtime-field-receiving instance (it gets fields/children attached
+    /// at runtime — e.g. via an XML template's `parentKey` children or `Mixin()`
+    /// at frame creation), so `undefined-field` treats it permissively, exactly
+    /// like a top-level `Frame & Template` intersection. Set during the
+    /// cross-file mixin-parent inheritance pass; runtime-only (`#[serde(skip)]`),
+    /// so no blob version bump.
+    #[serde(skip)]
+    pub(crate) open_mixin: bool,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────

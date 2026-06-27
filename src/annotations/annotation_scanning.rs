@@ -341,6 +341,11 @@ pub struct ExternalGlobal {
     pub name_start: u32,
     #[serde(default)]
     pub name_end: u32,
+    /// Parent class names from `CreateFromMixins(Base1, Base2, …)` calls.
+    /// When non-empty, the global's auto-created class inherits from these.
+    /// Workspace-only (not stubs) — `#[serde(skip)]`, no `BLOB_VERSION` bump.
+    #[serde(skip)]
+    pub mixin_parents: Vec<String>,
 }
 
 impl ExternalGlobal {
@@ -386,6 +391,7 @@ impl ExternalGlobal {
             deferred_call_type: false,
             name_start: 0,
             name_end: 0,
+            mixin_parents: Vec::new(),
         }
     }
 }
@@ -916,6 +922,7 @@ pub(crate) fn scan_method_funcall_self_fields(
                 deferred_call_type: false,
                 name_start: range.0,
                 name_end: range.1,
+                mixin_parents: Vec::new(),
             });
         }
     }

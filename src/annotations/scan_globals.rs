@@ -148,6 +148,33 @@ fn classify_expression_value_kind(expr: &Expression<'_>) -> FieldValueKind {
     FieldValueKind::Unknown
 }
 
+/// Extract parent class names from a `CreateFromMixins(Base1, Base2, …)` call.
+/// Returns an empty vec for any other callee. Each identifier argument whose
+/// name resolves to a known class variable contributes a parent name.
+fn extract_mixin_parents(
+    call: &FunctionCall<'_>,
+    callee_names: &[String],
+    class_vars: &HashMap<String, String>,
+) -> Vec<String> {
+    if callee_names.len() != 1 || callee_names[0] != "CreateFromMixins" {
+        return Vec::new();
+    }
+    let Some(arg_list) = call.arguments() else { return Vec::new() };
+    let mut parents = Vec::new();
+    for arg in arg_list.expressions() {
+        if let Expression::Identifier(ident) = &arg {
+            let arg_names = ident.names();
+            if arg_names.len() == 1 {
+                let resolved = class_vars.get(&arg_names[0])
+                    .cloned()
+                    .unwrap_or_else(|| arg_names[0].clone());
+                parents.push(resolved);
+            }
+        }
+    }
+    parents
+}
+
 /// Emit an `ExternalGlobal` as a Method on the namespace/class, resolving
 /// visibility from the function's own annotation or the field name convention.
 /// When `addon_assigned_fields` is Some, also tracks the field for local-table-
@@ -349,6 +376,7 @@ fn build_func_external(
         deferred_call_type: false,
         name_start,
         name_end,
+        mixin_parents: Vec::new(),
     }
 }
 
@@ -812,21 +840,21 @@ pub(crate) fn scan_file_globals_with_synth(
                         if names.len() == 1 {
                             let range = assign.syntax().text_range();
                             let effective = unwrap_logical_chain(exprs[0]);
-                            let (kind, string_value, number_value) = if let Some(vk) = classify_literal_value_kind(&effective) {
+                            let (kind, string_value, number_value, mixin_parents) = if let Some(vk) = classify_literal_value_kind(&effective) {
                                 let sv = if let Expression::Literal(lit) = &effective {
                                     lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
                                 } else { None };
                                 let nv = super::annotation_scanning::extract_number_from_expr(&effective);
-                                (ExternalGlobalKind::Variable(vk), sv, nv)
+                                (ExternalGlobalKind::Variable(vk), sv, nv, Vec::new())
                             } else { match &effective {
-                                Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None, None),
-                                Expression::Function(_) => (ExternalGlobalKind::Variable(FieldValueKind::Function), None, None),
+                                Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None, None, Vec::new()),
+                                Expression::Function(_) => (ExternalGlobalKind::Variable(FieldValueKind::Function), None, None, Vec::new()),
                                 Expression::Identifier(ident) => {
                                     let mut rhs_names = ident.names();
                                     if rhs_names.len() == 2 {
                                         let table_name = local_aliases.get(&rhs_names[0])
                                             .cloned().unwrap_or_else(|| rhs_names[0].clone());
-                                        (ExternalGlobalKind::FieldRef(table_name, rhs_names[1].clone()), None, None)
+                                        (ExternalGlobalKind::FieldRef(table_name, rhs_names[1].clone()), None, None, Vec::new())
                                     } else if rhs_names.len() >= 2 {
                                         // Multi-part reference (e.g. Enum.BagIndex.Backpack)
                                         if addon_ns_var.as_deref() == Some(rhs_names[0].as_str()) {
@@ -836,11 +864,11 @@ pub(crate) fn scan_file_globals_with_synth(
                                         } else if let Some(type_name) = local_type_vars.get(&rhs_names[0]) {
                                             rhs_names[0] = type_name.clone();
                                         }
-                                        (ExternalGlobalKind::Variable(FieldValueKind::FieldRef(rhs_names)), None, None)
+                                        (ExternalGlobalKind::Variable(FieldValueKind::FieldRef(rhs_names)), None, None, Vec::new())
                                     } else if rhs_names.len() == 1 {
-                                        (ExternalGlobalKind::Variable(FieldValueKind::FieldRef(rhs_names)), None, None)
+                                        (ExternalGlobalKind::Variable(FieldValueKind::FieldRef(rhs_names)), None, None, Vec::new())
                                     } else {
-                                        (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None)
+                                        (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None, Vec::new())
                                     }
                                 }
                                 Expression::FunctionCall(call) => {
@@ -863,9 +891,10 @@ pub(crate) fn scan_file_globals_with_synth(
                                                 None
                                             }
                                         });
-                                        (ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee_names, first_string_arg)), None, None)
+                                        let mp = extract_mixin_parents(call, &callee_names, &class_vars);
+                                        (ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee_names, first_string_arg)), None, None, mp)
                                     } else {
-                                        (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None)
+                                        (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None, Vec::new())
                                     }
                                 }
                                 Expression::BinaryExpression(bin) => {
@@ -875,7 +904,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                         op if op.is_comparison() => FieldValueKind::Boolean,
                                         _ => FieldValueKind::Unknown,
                                     };
-                                    (ExternalGlobalKind::Variable(vk), None, None)
+                                    (ExternalGlobalKind::Variable(vk), None, None, Vec::new())
                                 }
                                 Expression::UnaryExpression(un) => {
                                     let vk = match un.kind() {
@@ -883,9 +912,9 @@ pub(crate) fn scan_file_globals_with_synth(
                                         Operator::Not => FieldValueKind::Boolean,
                                         _ => FieldValueKind::Unknown,
                                     };
-                                    (ExternalGlobalKind::Variable(vk), None, None)
+                                    (ExternalGlobalKind::Variable(vk), None, None, Vec::new())
                                 }
-                                _ => (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None),
+                                _ => (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None, Vec::new()),
                             }};
                             // Extract @type or @class annotation for the variable
                             let annotations = extract_annotations(assign.syntax());
@@ -924,6 +953,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 body_derived_returns: false,
                                 deferred_call_type: false,
                                 name_start: ns, name_end: ne,
+                                mixin_parents,
                             });
                         } else if names.len() >= 2 {
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
@@ -1141,6 +1171,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 deferred_call_type: false,
                                 name_start: u32::from(range.start()),
                                 name_end: u32::from(range.end()),
+                                mixin_parents: Vec::new(),
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.
@@ -1285,6 +1316,7 @@ pub(crate) fn scan_file_globals_with_synth(
                     deferred_call_type: false,
                     name_start: ns,
                     name_end: ne,
+                    mixin_parents: Vec::new(),
                 });
                 continue;
             }
@@ -1381,6 +1413,7 @@ pub(crate) fn scan_file_globals_with_synth(
                 deferred_call_type: false,
                 name_start: ns,
                 name_end: ne,
+                mixin_parents: Vec::new(),
             });
         }
     }
@@ -1528,6 +1561,7 @@ pub(crate) fn scan_created_globals(
                 deferred_call_type: true,
                 name_start: u32::from(range.start()),
                 name_end: u32::from(range.end()),
+                mixin_parents: Vec::new(),
             });
         }
     }

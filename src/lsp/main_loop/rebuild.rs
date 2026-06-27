@@ -26,6 +26,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.creates_global == y.creates_global
         && x.generates_events == y.generates_events
         && x.callback_event_arg == y.callback_event_arg
+        && x.mixin_parents == y.mixin_parents
 }
 
 pub(super) fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {

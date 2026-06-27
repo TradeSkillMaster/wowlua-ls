@@ -1867,6 +1867,7 @@ mod tests {
                 deferred_call_type: false,
                 name_start: 0,
                 name_end: 0,
+                mixin_parents: Vec::new(),
             }
         }
 
@@ -2325,6 +2326,7 @@ mod tests {
             deferred_call_type: false,
             name_start: 0,
             name_end: 0,
+            mixin_parents: Vec::new(),
         }
     }
 
