@@ -239,6 +239,28 @@ impl<'a> Identifier<'a> {
             && extract_bracket_string_key(self.node).is_none()
     }
 
+    /// Returns true when this access node's base — the prefix before the final
+    /// `.field` / `[key]` — is a prefix *expression* (parenthesized group, call
+    /// result, table/string literal, …) rather than a plain name chain, e.g.
+    /// `(A or B).field`, `(getFrame())[k]`. A write through such a target
+    /// mutates a member of the evaluated prefix, never a bare global, even
+    /// though [`names`](Self::names) collapses to just the trailing field/key
+    /// name and would otherwise be mistaken for a single-name assignment.
+    ///
+    /// Only the immediate base is inspected: a deeper chain like
+    /// `(A or B).c.field` has an identifier base (`(A or B).c`) and yields
+    /// `names().len() >= 2`, so it is already routed through the dotted path.
+    pub(crate) fn has_prefix_expr_base(&self) -> bool {
+        matches!(
+            self.node.kind(),
+            SyntaxKind::DotAccess | SyntaxKind::BracketAccess | SyntaxKind::MethodCall
+        ) && self
+            .node
+            .children()
+            .next()
+            .is_some_and(|c| !c.kind().is_identifier())
+    }
+
     pub(crate) fn is_call_to_self(&self) -> bool {
         // Check this node and any nested identifier nodes for a Colon token
         self.node.children_with_tokens().any(|n|

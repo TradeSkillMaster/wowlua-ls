@@ -816,6 +816,12 @@ pub(crate) fn scan_file_globals_with_synth(
                     let idents = var_list.identifiers();
                     let exprs = expr_list.expressions();
                     if idents.len() == 1 && exprs.len() == 1 {
+                        // A field/index write through a parenthesized/prefix-expression
+                        // base (e.g. `(A or B).field = v`) collapses `names()` to the
+                        // trailing field/key name; it mutates a member of the evaluated
+                        // prefix, not a bare global, so never register it as one
+                        // (matches build_ir.rs's skip of the same shape).
+                        if idents[0].has_prefix_expr_base() { continue; }
                         let mut names = idents[0].names();
                         // Redirect _G.field to a top-level global (matches build_ir.rs behavior)
                         let mut was_g_redirect = false;
@@ -1261,6 +1267,10 @@ pub(crate) fn scan_file_globals_with_synth(
             // Skip bracket-element writes (`ns.field[123] = ...`): those write to
             // an element of the field, not to the field itself.
             if ident.has_non_string_bracket_tail() { continue; }
+            // Skip field/index writes through a parenthesized/prefix-expression base
+            // (`(A or B).field = ...`): they target a member of the evaluated prefix,
+            // not a bare global, even though `names()` collapses to the trailing name.
+            if ident.has_prefix_expr_base() { continue; }
             let mut names = ident.names();
             // Redirect `_G.field` to a top-level global (matches build_ir.rs).
             let mut was_g_redirect = false;

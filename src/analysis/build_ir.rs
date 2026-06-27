@@ -1361,11 +1361,15 @@ impl<'a> Analysis<'a> {
                     self.explicit_globals.insert(names[0].clone());
                 }
                 // When names is empty (complex LHS with nested Identifiers
-                // e.g. info[part].width, settings.profs[name].link) or the
-                // LHS contains a call (e.g. obj:Method().field = val), lower
-                // the RHS expression directly and skip the normal handler.
+                // e.g. info[part].width, settings.profs[name].link), the LHS
+                // contains a call (e.g. obj:Method().field = val), or the LHS
+                // writes a field/index through a parenthesized/prefix-expression
+                // base (e.g. `(A or B).field = v`, which collapses to the bare
+                // trailing name and would otherwise be mistaken for a global),
+                // lower the RHS expression directly and skip the normal handler.
                 if (names.is_empty() && ident.syntax().children().any(|c| c.kind().is_identifier()))
                     || ident.contains_call()
+                    || ident.has_prefix_expr_base()
                 {
                     if let Some(expr) = expressions.get(index) {
                         self.lower_expression(expr, scope_idx);

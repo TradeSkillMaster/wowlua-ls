@@ -60,6 +60,22 @@ local data = {}
 local function getKey() return "k" end
 data[getKey()].value = 1
 
+-- Should NOT warn: field/index write through a parenthesized prefix
+-- expression. The collected name collapses to the trailing field/key, but
+-- the write mutates a member of the evaluated prefix — it is not a bare
+-- global assignment, so `create-global` must not fire on the field name.
+local panelA = {}
+local panelB = {}
+local runtimeKey = "k"
+(panelA or panelB).selectedField = 1
+(panelA or panelB)["selectedKey"] = 2
+(panelA or panelB)[runtimeKey] = 3
+(getObj()).parenCallField = 4
+({}).parenTableField = 5
+-- Deeper chain on a prefix base routes through the dotted path (root "sub"),
+-- never the single-name path, so it also creates no global.
+(panelA or panelB).sub.deepField = 6
+
 -- Slash commands: auto-detected as allowed globals (default allow_slash_commands=true)
 
 -- Should NOT warn: SLASH_ prefix globals are auto-allowed for writing

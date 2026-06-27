@@ -1915,6 +1915,23 @@ fn allowed_globals() {
     });
 }
 
+// A field write through a parenthesized prefix base (`(A or B).field = v`)
+// must not register the trailing field name as a phantom cross-file global.
+// This exercises the scan_globals.rs *descendants-pass* guard specifically:
+// defs.lua's writes are inside a function body and a multi-target assignment,
+// which the main statement loop never scans, so only the descendants-pass
+// guard prevents the leak. user.lua reads the names bare and asserts they
+// stay `undefined-global` (the top-level single-target cases are covered
+// by allowed_globals above + build_ir.rs).
+#[test]
+fn create_global_prefix_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/create-global-prefix-crossfile/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/create-global-prefix-crossfile"),
+    });
+}
+
 #[test]
 fn slash_commands_disabled() {
     run_annotation_tests(&TestConfig {
