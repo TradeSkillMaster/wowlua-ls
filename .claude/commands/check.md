@@ -33,6 +33,6 @@ Steps:
 8. Present a summary table showing counts by category and classification
 
 Rules:
-- If the user asks to spawn workspaces for any of the findings, use the `/spawn` skill — do NOT manually call MCP tools like `create_issue` or `start_workspace`
-- Do NOT create issues in the kanban board unless the user explicitly asks for issues to be created
+- If the user asks to spawn workspaces for any of the findings, use the `/spawn` skill — do NOT manually call MCP tools like `start_workspace`
+- Do NOT spawn workspaces or take other action on the findings unless the user explicitly asks
 - This repo uses a local-only main branch (no remote tracking). Do NOT try to push, pull, fetch, or rebase against origin/main.
