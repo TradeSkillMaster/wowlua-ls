@@ -4,6 +4,26 @@ use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
 pub(crate) struct FieldTypeMismatch;
 
+/// A scan-fabricated bare `table` placeholder that is never an authoritative
+/// field type: either `Table(None)` (a parked bare `table` with no `TableInfo`
+/// to flag), or a `Table(Some(idx))` whose table carries [`TableInfo::placeholder`]
+/// — the existing "workspace-scan placeholder, parked because a call's return
+/// type couldn't be resolved" marker, set at the addon-namespace parking sites
+/// and consumed symmetrically by `is_table_subtype_impl`. The self-field/global
+/// scan parks one of these on a field whose only writer it couldn't type (a
+/// chained/builder call, a `select(...)` with an arg-nested call, etc.), so it
+/// carries no shape and no author annotation and must never override an actual
+/// write type. A scan-inferred table that *does* carry a shape (an unflagged
+/// table with real fields) is not a placeholder and is handled by the
+/// structural-table path below.
+fn is_bare_scan_placeholder(analysis: &AnalysisResult, vt: &ValueType) -> bool {
+    match vt {
+        ValueType::Table(None) => true,
+        ValueType::Table(Some(idx)) => analysis.table(*idx).placeholder,
+        _ => false,
+    }
+}
+
 /// Build related info pointing to a field declaration if it has a source range
 /// and belongs to a local (non-external) table.
 fn field_declared_here(table_idx: TableIndex, field_info: &FieldInfo) -> Vec<RelatedInfo> {
@@ -24,19 +44,33 @@ impl DiagnosticPass for FieldTypeMismatch {
             let Some(field_info) = analysis.get_field(fa.table_idx, &fa.field_name) else { continue };
             let Some(ref expected) = field_info.annotation else { continue };
             let Some(actual) = analysis.resolve_expr_type(fa.actual_expr) else { continue };
-            // Skip when the expected type is an inferred structural table from
-            // workspace scanning and the actual value is also a table.  These
-            // annotations capture the constructor's initial shape, but later
-            // field additions can grow the underlying table, making the
-            // constructor appear to have fewer fields than expected — a false
-            // positive.  We only skip when the actual is a table (the
-            // incremental-build scenario); genuinely wrong types (e.g. a string
-            // where a table was expected) still fire the diagnostic.
-            if field_info.from_scan
-                && matches!(expected, ValueType::Table(Some(idx)) if analysis.table(*idx).class_name.is_none())
-                && matches!(actual, ValueType::Table(_))
-            {
-                continue;
+            // A `from_scan` field carries an inferred type from the workspace
+            // self-field/global scan, not an author annotation — so a `table` it
+            // fabricated is never authoritative for an actual write type.
+            if field_info.from_scan {
+                // Bare `table` placeholder (see `is_bare_scan_placeholder`). The
+                // scan couldn't type the field's only writer — a chained/builder
+                // call, or `self.x = select(3, UnitClass("player"))` whose
+                // arg-nested call makes the scan treat the assignment as
+                // unresolvable — and parked a bare `table`. It is a "type unknown"
+                // marker with no shape, so it must never override the actual write
+                // type: skip for ANY actual, including the very scalar/nil write
+                // that produced the placeholder.
+                if is_bare_scan_placeholder(analysis, expected) {
+                    continue;
+                }
+                // Scan-inferred *structural* table (a constructor shape captured
+                // from the field's initial assignment). Later field additions can
+                // grow the underlying table, making the constructor appear to have
+                // fewer fields than expected — a false positive. Skip only when the
+                // actual is also a table (the incremental-build scenario);
+                // genuinely wrong types (e.g. a string where a table shape was
+                // expected) still fire the diagnostic.
+                if matches!(expected, ValueType::Table(Some(idx)) if analysis.table(*idx).class_name.is_none())
+                    && matches!(actual, ValueType::Table(_))
+                {
+                    continue;
+                }
             }
             if fa.lateinit {
                 if matches!(actual, ValueType::Nil) { continue; }

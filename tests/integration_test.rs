@@ -4102,6 +4102,15 @@ fn self_field_mixin_collision() {
 }
 
 #[test]
+fn self_field_scan_placeholder() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/self-field-scan-placeholder/mod.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/self-field-scan-placeholder"),
+    });
+}
+
+#[test]
 fn createframe_named() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/createframe-named/reader.lua",
