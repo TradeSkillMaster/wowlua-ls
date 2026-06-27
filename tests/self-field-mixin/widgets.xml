@@ -1,0 +1,13 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+    <!-- `mixin="DataProviderMixin"` promotes the plain Lua global table
+         `DataProviderMixin = {}` to a @class, so reads of its self-fields are
+         checked for `undefined-field`. The mixin itself carries no Lua @class
+         annotation, so it is invisible to the typed/funcall/bare self-field
+         scanners (which gate on known Lua @class names) — the coarse global
+         scan's descendants pass is what registers its self-fields. -->
+    <Frame name="DataFrame" virtual="true" mixin="DataProviderMixin">
+        <Frames>
+            <Frame parentKey="Root" />
+        </Frames>
+    </Frame>
+</Ui>

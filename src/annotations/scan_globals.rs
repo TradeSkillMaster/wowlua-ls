@@ -11,7 +11,7 @@ use super::{
 use super::annotation_types::{parse_overload, OverloadSig};
 use super::annotation_scanning::{
     ADDON_NS_NAME, ExternalGlobal, ExternalGlobalKind, FieldValueKind, InferredTypeCategory,
-    is_select_varargs, collect_statements_recursive, infer_type_category,
+    is_select_varargs, collect_statements_recursive, infer_type_category, receiver_name,
 };
 
 /// Unwrap `and`/`or` chains to the effective operand for type inference.
@@ -1217,7 +1217,11 @@ pub(crate) fn scan_file_globals_with_synth(
         // (`a.x, a.y = ...`), which it does not scan at all.
         let in_function = node.ancestors().any(|a| a.kind() == SyntaxKind::FunctionDefinition);
         if !in_function && idents.len() < 2 { continue; }
-        for ident in &idents {
+        // Per-target RHS, so a field assigned a function literal can be registered
+        // callable (`FieldValueKind::Function`) rather than as a bare `table` —
+        // otherwise a later `self.cb()` call would false-positive as `cannot-call`.
+        let rhs_exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
+        for (target_idx, ident) in idents.iter().enumerate() {
             // Skip bracket-element writes (`ns.field[123] = ...`): those write to
             // an element of the field, not to the field itself.
             if ident.has_non_string_bracket_tail() { continue; }
@@ -1292,20 +1296,71 @@ pub(crate) fn scan_file_globals_with_synth(
                 class_name.clone()
             } else if let Some(type_name) = local_type_vars.get(root_name) {
                 type_name.clone()
+            } else if root_name == "self" {
+                // `self.field = ...` inside a colon method. Resolve `self` to the
+                // enclosing colon method's receiver so the field is registered
+                // (existence-only) on that table. This fills the gap left by the
+                // typed/funcall/bare self-field scanners (annotation_scanning.rs),
+                // which only fire when the receiver is a recognized local @class —
+                // they miss mixin tables (`Foo = {}` promoted to a class only via an
+                // XML `mixin=` / `Mixin()` reference), whose self-field writes would
+                // otherwise read as `undefined-field` cross-file. Walk outward to the
+                // nearest *colon method*, skipping any anonymous or named non-colon
+                // wrapper functions in between — `self` closes over the enclosing
+                // colon method's `self` through both (e.g.
+                // `self:On("x", function() self.y = 1 end)` and
+                // `function Helpers.run() self.y = 1 end` nested in a method).
+                let Some(func_ident) = node.ancestors()
+                    .filter_map(FunctionDefinition::cast)
+                    .filter_map(|fd| fd.identifier())
+                    .find(|id| id.is_call_to_self())
+                else { continue };
+                let func_names = func_ident.names();
+                if func_names.len() < 2 { continue; }
+                let receiver = receiver_name(&func_names).to_string();
+                if addon_ns_var.as_deref() == Some(receiver.as_str()) {
+                    // `self` is the addon namespace (typed via its `@class`).
+                    // Register on the namespace table; `merge_addon_ns_into_classes`
+                    // forwards it to the class table where reads resolve. The
+                    // typed/funcall/bare self-field scanners miss this because
+                    // `build_var_to_class` only maps single-name `@class` assigns,
+                    // not the `local _, ns = ... ---@class Foo` namespace pattern.
+                    ADDON_NS_NAME.to_string()
+                } else if class_vars.contains_key(&receiver)
+                    || local_type_vars.contains_key(&receiver)
+                {
+                    // Covered by the self-field scanners via ClassDecl.fields;
+                    // emitting here would be a filtered no-op, so skip.
+                    continue;
+                } else {
+                    // A function-scoped local can't be a cross-file mixin table;
+                    // emitting an ExternalGlobal for it fabricates a phantom global.
+                    let locals = all_local_names.get_or_insert_with(|| collect_all_local_names(&root));
+                    if locals.contains(&receiver) { continue; }
+                    receiver
+                }
             } else {
-                // Not a known namespace/class root (e.g. a function-local table or
-                // `self`): the coarse scan can't attribute the field, so skip.
+                // Not a known namespace/class root (e.g. a function-local table):
+                // the coarse scan can't attribute the field, so skip.
                 continue;
             };
             let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
             let field_name = names[names.len()-1].clone();
+            // A function-literal RHS registers callable so calls on the field
+            // (`self.cb()`) don't false-positive as `cannot-call`; everything else
+            // stays existence-only (bare `table`, no fabricated type).
+            let field_value_kind = if matches!(rhs_exprs.get(target_idx), Some(Expression::Function(_))) {
+                FieldValueKind::Function
+            } else {
+                FieldValueKind::Unknown
+            };
             let range = assign.syntax().text_range();
             let (ns, ne) = last_name_range
                 .map(|r| (u32::from(r.start()), u32::from(r.end())))
                 .unwrap_or((u32::from(range.start()), u32::from(range.end())));
             globals.push(ExternalGlobal {
                 name: canonical_name,
-                kind: ExternalGlobalKind::TableField(intermediates, field_name, FieldValueKind::Unknown),
+                kind: ExternalGlobalKind::TableField(intermediates, field_name, field_value_kind),
                 params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(), overloads: Vec::new(),
                 doc: None, deprecated: false, nodiscard: false, constructor: false,
                 visibility: Visibility::Public, generics: Vec::new(),

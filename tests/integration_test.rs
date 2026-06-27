@@ -1544,6 +1544,15 @@ fn crossfile_self_field_deep() {
 }
 
 #[test]
+fn crossfile_self_field_chain() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/self_field_chain_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_class_field_gets() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/class_field_gets_user.lua",
@@ -4017,6 +4026,15 @@ fn xml_frames() {
         lua_file: "tests/xml-frames/user.lua",
         with_stubs: true,
         scan_dir: Some("tests/xml-frames"),
+    });
+}
+
+#[test]
+fn self_field_mixin() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/self-field-mixin/consumer.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/self-field-mixin"),
     });
 }
 

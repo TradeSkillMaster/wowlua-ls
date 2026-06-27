@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use crate::ast::{AstNode, Block, Expression, Statement};
+use crate::ast::{AstNode, Block, Expression, FunctionCall, Statement};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::{TableIndex, ValueType};
@@ -666,7 +666,7 @@ pub(super) fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<Ann
 /// just before the method name (i.e. the table that `self` refers to).
 /// For `function Parent.Sub:Method()` (names = ["Parent","Sub","Method"]),
 /// returns "Sub", not "Parent".
-fn receiver_name(names: &[String]) -> &str {
+pub(super) fn receiver_name(names: &[String]) -> &str {
     &names[names.len() - 2]
 }
 
@@ -834,6 +834,22 @@ fn scan_typed_self_fields_inner(
     }
 }
 
+/// Whether a call's callee/receiver chain contains a nested call —
+/// e.g. `LibStub("X"):New(...)` (receiver `LibStub("X")` is a call) or
+/// `Foo():Bar()`. The funcall self-field scanner can only resolve callees rooted
+/// at a plain name chain (`Foo()`, `a.b.c()`, `self:M()`), so a chained receiver
+/// makes the return type unrecoverable by the coarse scan. Such fields are
+/// registered existence-only (bare `table`) by the bare scanner instead, so the
+/// funcall scanner skips them — keeping the two scanners' coverage disjoint (no
+/// dedup races). The argument list is excluded because args may legitimately
+/// contain calls (`Foo(Bar())` is *not* chained — `Foo` is still resolvable).
+fn funcall_has_chained_receiver(call: &FunctionCall<'_>) -> bool {
+    call.syntax().children().any(|child| {
+        child.kind() != SyntaxKind::ExpressionList
+            && child.descendants().any(|d| matches!(d.kind(), SyntaxKind::FunctionCall | SyntaxKind::MethodCall))
+    })
+}
+
 /// Scan method bodies for `self.field = funcall()` without explicit `---@type`.
 /// Returns ExternalGlobal entries with FieldValueKind::FunctionCall so that
 /// build_on_stubs can resolve the return type through the normal funcall chain.
@@ -934,6 +950,10 @@ fn scan_funcall_self_fields_inner(
                             }
                             // Only handle function call expressions
                             let Some(Expression::FunctionCall(call)) = exprs.get(i) else { continue };
+                            // A chained-receiver call (`LibStub("X"):New(...)`) has no
+                            // resolvable named callee — leave it to the bare scanner,
+                            // which registers it existence-only as a bare `table`.
+                            if funcall_has_chained_receiver(call) { continue; }
                             let Some(call_ident) = call.identifier() else { continue };
                             let mut callee_names = call_ident.names();
                             if callee_names.is_empty() { continue; }
@@ -1084,8 +1104,27 @@ fn scan_bare_self_fields_inner(
                             }
                             // Infer type from RHS expression
                             let ann_type = match exprs.get(i) {
-                                // Skip funcall RHS (handled by funcall scan)
-                                Some(Expression::FunctionCall(_)) => continue,
+                                // A funcall RHS with a resolvable named callee
+                                // (`self.x = Foo()` / `self.x = a.b.c()`) is handled by
+                                // the funcall scan, which recovers the real return type
+                                // — skip it here. A *chained* funcall
+                                // (`self.x = Foo():Bar()`, `self.x = LibStub("X"):New()`)
+                                // has a call as its receiver, so the coarse scan can't
+                                // resolve the chain; the funcall scan skips it and we
+                                // register the field existence-only as a bare `table`
+                                // (chained builder/factory calls return objects) so
+                                // cross-file reads don't false-positive as undefined.
+                                // Deliberately not `any`: `any` propagates through
+                                // `self.x.y and z` as `boolean?`, causing spurious
+                                // `return-mismatch`; a truthy `table` short-circuits to
+                                // the RHS type.
+                                Some(Expression::FunctionCall(call)) => {
+                                    if funcall_has_chained_receiver(call) {
+                                        AnnotationType::Simple("table".into())
+                                    } else {
+                                        continue;
+                                    }
+                                }
                                 // Skip function literals (not useful cross-file)
                                 Some(Expression::Function(_)) => continue,
                                 Some(Expression::Literal(lit)) => {
