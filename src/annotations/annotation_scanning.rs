@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use crate::ast::{AstNode, Block, Expression, FunctionCall, Statement};
+use crate::ast::{AstNode, Block, Expression, ExpressionList, FunctionCall, Statement};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::{TableIndex, ValueType};
@@ -884,10 +884,14 @@ fn scan_typed_self_fields_inner(
 /// registered existence-only (bare `table`) by the bare scanner instead, so the
 /// funcall scanner skips them — keeping the two scanners' coverage disjoint (no
 /// dedup races). The argument list is excluded because args may legitimately
-/// contain calls (`Foo(Bar())` is *not* chained — `Foo` is still resolvable).
+/// contain calls (`Foo(Bar())` and `select(3, UnitClass(...))` are *not* chained
+/// — the callee `Foo`/`select` is still resolvable). Call arguments parse as an
+/// `ArgumentList` (the old `!= ExpressionList` check never matched it — hence the
+/// bug); `ExpressionList::cast` accepts both `ExpressionList` and `ArgumentList`,
+/// so it robustly excludes the argument container.
 fn funcall_has_chained_receiver(call: &FunctionCall<'_>) -> bool {
     call.syntax().children().any(|child| {
-        child.kind() != SyntaxKind::ExpressionList
+        ExpressionList::cast(child).is_none()
             && child.descendants().any(|d| matches!(d.kind(), SyntaxKind::FunctionCall | SyntaxKind::MethodCall))
     })
 }

@@ -1587,6 +1587,19 @@ fn crossfile_self_field_chain() {
 }
 
 #[test]
+fn self_field_argnested() {
+    // Regression: a `self.x = select(3, UnitClass(...))` write whose argument
+    // nests a call must route to the funcall scanner (precise scalar type), not
+    // be misclassified as a chained receiver and parked as a bare `table`. A
+    // genuinely-chained receiver still parks as `table`.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/self-field-argnested/mod.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/self-field-argnested"),
+    });
+}
+
+#[test]
 fn crossfile_class_field_gets() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/class_field_gets_user.lua",
