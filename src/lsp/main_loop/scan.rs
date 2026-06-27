@@ -693,7 +693,7 @@ pub fn scan_paths_with_overrides(
         }
     };
 
-    WorkspaceScanResult { classes, aliases, globals, addon_ns_class_files, events, callable_classes, dynamic_global_prefixes, callback_registries, string_consts }
+    WorkspaceScanResult { classes, aliases, globals, addon_ns_class_files, events, callable_classes, dynamic_global_prefixes, callback_registries, string_consts, xml_bound_names: HashSet::new() }
 }
 
 /// Partition XML classes into direct classes and overlay classes based on whether
@@ -760,6 +760,7 @@ pub(super) fn scan_xml_paths_into(xml_paths: &[PathBuf], result: &mut WorkspaceS
         all_xml_classes.extend(xml_result.classes);
         result.globals.extend(xml_result.globals);
         all_overlays.extend(xml_result.mixin_augments);
+        result.xml_bound_names.extend(xml_result.xml_bound_names);
     }
     let (direct, overlay) = partition_xml_classes(all_xml_classes, &lua_class_names);
     result.classes.extend(direct);
@@ -804,6 +805,11 @@ pub fn scan_workspace_with_stubs(
     // PREFIX<anything> across the workspace don't false-positive.
     if !result.dynamic_global_prefixes.is_empty() {
         configs.set_dynamic_global_prefixes(result.dynamic_global_prefixes.clone());
+    }
+    // Apply XML-bound global names (mixin table names, handler function names)
+    // so their Lua declarations don't trip create-global/undefined-global.
+    if !result.xml_bound_names.is_empty() {
+        configs.set_xml_bound_globals(result.xml_bound_names.clone());
     }
     result
 }
@@ -916,6 +922,7 @@ pub(super) fn complete_directory_scan(
         if !xml_result.globals.is_empty() {
             out.file_globals.entry(path).or_default().extend(xml_result.globals);
         }
+        out.xml_bound_names.extend(xml_result.xml_bound_names);
     }
 
     // Pass 2: defclass + built-name scan reusing cached parse trees (no re-read/re-parse).
@@ -1076,6 +1083,9 @@ pub(super) fn scan_directory_tracked(
     let all_prefixes: Vec<String> = collect_all_dynamic_prefixes(&result.file_dynamic_prefixes);
     if !all_prefixes.is_empty() {
         configs.set_dynamic_global_prefixes(all_prefixes);
+    }
+    if !result.xml_bound_names.is_empty() {
+        configs.set_xml_bound_globals(result.xml_bound_names.clone());
     }
     result
 }

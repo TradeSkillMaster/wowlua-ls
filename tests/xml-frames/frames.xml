@@ -153,6 +153,15 @@
          (Button, not just Frame) is used as the mixin's parent. -->
     <Button name="BtnMixVirtual" virtual="true" mixin="BtnMix" />
 
+    <!-- Script handler function references: names bound via function= attribute
+         on On* elements should be auto-allowed as globals -->
+    <Frame name="HandlerTestFrame" virtual="true">
+        <Scripts>
+            <OnClick function="HandlerFrame_OnClick"/>
+            <OnLoad function="HandlerFrame_OnLoad"/>
+        </Scripts>
+    </Frame>
+
     <!-- Names that should be filtered out (invalid Lua identifiers) -->
     <Frame name="!InvalidFrame" parent="UIParent" />
     <Texture name="Wood-Tile" virtual="true" />

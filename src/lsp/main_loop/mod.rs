@@ -341,6 +341,7 @@ pub struct WorkspaceScanResult {
     /// completion + the `unknown-callback-event` diagnostic.
     pub callback_registries: Vec<crate::annotations::CallbackRegistryDecl>,
     pub string_consts: Vec<crate::annotations::StringArrayConstDecl>,
+    pub xml_bound_names: HashSet<String>,
 }
 
 struct CachedFileScan {
@@ -369,6 +370,8 @@ struct DirectoryScanResult {
     /// Per-file callback registries and string-array constants (see [`WorkspaceScanResult`]).
     file_callback_registries: HashMap<PathBuf, Vec<crate::annotations::CallbackRegistryDecl>>,
     file_string_consts: HashMap<PathBuf, Vec<crate::annotations::StringArrayConstDecl>>,
+    /// Global names bound by XML (mixin table names, handler function names).
+    xml_bound_names: HashSet<String>,
 }
 
 /// Intermediate result from Pass 1 of workspace scanning (no stubs dependency).
@@ -644,6 +647,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     if !scan_result.file_dynamic_prefixes.is_empty() {
         let all_prefixes = scan::collect_all_dynamic_prefixes(&scan_result.file_dynamic_prefixes);
         configs.set_dynamic_global_prefixes(all_prefixes);
+    }
+    if !scan_result.xml_bound_names.is_empty() {
+        configs.set_xml_bound_globals(scan_result.xml_bound_names.clone());
     }
     let scan_files = scan_result.file_globals.len();
     log::debug!("Scanned workspace in {:.1?} ({} files)", scan_start.elapsed(), scan_files);

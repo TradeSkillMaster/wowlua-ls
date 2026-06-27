@@ -259,6 +259,10 @@ pub struct ProjectConfigs {
     /// that reads of `PREFIX<anything>` across the workspace don't
     /// false-positive as `undefined-global`.
     dynamic_global_prefixes: AllowedGlobals,
+    /// Global names that XML binds: mixin table names from `mixin=`/`secureMixin=`
+    /// attributes and handler function names from `<On* function="...">` attributes.
+    /// Merged into both `allowed_read_globals_for` and `allowed_write_globals_for`.
+    xml_bound_globals: AllowedGlobals,
 }
 
 
@@ -313,6 +317,13 @@ impl ProjectConfigs {
     pub fn set_dynamic_global_prefixes(&mut self, prefixes: Vec<String>) {
         self.dynamic_global_prefixes = AllowedGlobals::default();
         self.dynamic_global_prefixes.extend_from_strings(prefixes);
+    }
+
+    /// Register global names bound by XML: mixin table names from `mixin=`/
+    /// `secureMixin=` and handler function names from `<On* function="...">`.
+    pub fn set_xml_bound_globals(&mut self, names: impl IntoIterator<Item = String>) {
+        self.xml_bound_globals = AllowedGlobals::default();
+        self.xml_bound_globals.extend_from_strings(names);
     }
 
     /// Check if a path is ignored. Isolated: only the nearest ancestor config's
@@ -433,6 +444,7 @@ impl ProjectConfigs {
             .map(|c| c.allowed_read_globals.clone())
             .unwrap_or_default();
         result.extend(&self.dynamic_global_prefixes);
+        result.extend(&self.xml_bound_globals);
         result
     }
 
@@ -443,6 +455,7 @@ impl ProjectConfigs {
             .map(|c| c.allowed_write_globals.clone())
             .unwrap_or_default();
         result.extend(&self.dynamic_global_prefixes);
+        result.extend(&self.xml_bound_globals);
         result
     }
 

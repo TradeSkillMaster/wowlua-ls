@@ -14,6 +14,11 @@ pub struct XmlScanResult {
     /// via the defclass overlay mechanism so they add to (not replace) the
     /// mixin's own Lua-declared fields.
     pub mixin_augments: Vec<ClassDecl>,
+    /// Global names that XML binds: mixin table names from `mixin=`/`secureMixin=`
+    /// attributes and handler function names from `<On* function="...">` attributes.
+    /// These should be auto-allowed so their Lua-side declarations don't trip
+    /// `create-global` and reads don't trip `undefined-global`.
+    pub xml_bound_names: HashSet<String>,
 }
 
 /// Mutable scanning context threaded through parsing helpers.
@@ -23,6 +28,7 @@ struct ScanContext {
     globals: Vec<ExternalGlobal>,
     mixin_augments: Vec<ClassDecl>,
     intrinsics: HashMap<String, String>,
+    xml_bound_names: HashSet<String>,
 }
 
 /// Map an XML element name to the corresponding WoW Lua frame type.
@@ -224,6 +230,7 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
         globals: Vec::new(),
         mixin_augments: Vec::new(),
         intrinsics: HashMap::new(),
+        xml_bound_names: HashSet::new(),
     };
     let mut script_depth: usize = 0;
 
@@ -309,6 +316,7 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
         classes: ctx.classes,
         globals: ctx.globals,
         mixin_augments: ctx.mixin_augments,
+        xml_bound_names: ctx.xml_bound_names,
     }
 }
 
@@ -327,6 +335,14 @@ fn process_open_tag(
         return;
     }
 
+    // Extract handler function names from <On* function="..."> script handler elements
+    if tag_name.starts_with("On")
+        && let Some(handler) = get_attr(e, b"function")
+        && is_valid_global_name(&handler)
+    {
+        ctx.xml_bound_names.insert(handler);
+    }
+
     // Determine if this is a frame-like element
     let is_intrinsic_usage = ctx.intrinsics.contains_key(tag_name);
     let frame_type = xml_element_to_frame_type(tag_name)
@@ -337,7 +353,7 @@ fn process_open_tag(
         // For intrinsic usages, the parent class is the intrinsic name itself
         // (e.g. <ItemButton name="Foo"> → parents: ["ItemButton"], not ["Button"])
         let effective_type = if is_intrinsic_usage { tag_name } else { &frame_type };
-        handle_frame_element(e, tag_name, effective_type, tag_start, &mut ctx.stack, &mut ctx.intrinsics);
+        handle_frame_element(e, tag_name, effective_type, tag_start, &mut ctx.stack, &mut ctx.intrinsics, &mut ctx.xml_bound_names);
         if is_empty {
             // Self-closing: immediately finalize
             if let Some(entry) = ctx.stack.pop()
@@ -368,6 +384,7 @@ fn handle_frame_element(
     tag_start: u32,
     stack: &mut Vec<StackEntry>,
     intrinsics: &mut HashMap<String, String>,
+    xml_bound_names: &mut HashSet<String>,
 ) {
     let raw_name = get_attr(e, b"name");
     let is_virtual = get_attr(e, b"virtual")
@@ -391,6 +408,15 @@ fn handle_frame_element(
             if !mixins.contains(&m) {
                 mixins.push(m);
             }
+        }
+    }
+
+    // Register mixin names as XML-bound globals (filter through the same
+    // identifier validation as handler names so malformed/glob-bearing
+    // attribute values can't leak into the allowed-globals set).
+    for m in &mixins {
+        if is_valid_global_name(m) {
+            xml_bound_names.insert(m.clone());
         }
     }
 
@@ -1345,5 +1371,69 @@ mod tests {
         assert_eq!(aug.name, "EmptyMixin");
         assert!(aug.fields.is_empty());
         assert_eq!(aug.parents, vec!["Frame"]);
+    }
+
+    #[test]
+    fn xml_bound_names_collects_mixins() {
+        let r = scan(r#"
+            <Ui>
+                <Frame name="F1" virtual="true" mixin="MixA" secureMixin="SecMix" />
+                <Button name="F2" virtual="true" mixin="MixB" />
+            </Ui>
+        "#);
+        assert!(r.xml_bound_names.contains("MixA"));
+        assert!(r.xml_bound_names.contains("SecMix"));
+        assert!(r.xml_bound_names.contains("MixB"));
+    }
+
+    #[test]
+    fn xml_bound_names_skips_invalid_mixin_names() {
+        // Malformed or glob-bearing mixin attribute values must not leak into
+        // the allowed-globals set — a value like "*" would otherwise become a
+        // pattern matching every global and suppress all diagnostics.
+        let r = scan(r#"
+            <Ui>
+                <Frame name="F1" virtual="true" mixin="ValidMixin" />
+                <Frame name="F2" virtual="true" mixin="*" />
+                <Frame name="F3" virtual="true" mixin="Bad-Name" />
+                <Frame name="F4" virtual="true" secureMixin="Has?Glob" />
+            </Ui>
+        "#);
+        assert!(r.xml_bound_names.contains("ValidMixin"));
+        assert!(!r.xml_bound_names.contains("*"));
+        assert!(!r.xml_bound_names.contains("Bad-Name"));
+        assert!(!r.xml_bound_names.contains("Has?Glob"));
+    }
+
+    #[test]
+    fn xml_bound_names_collects_handler_functions() {
+        let r = scan(r#"
+            <Ui>
+                <Frame name="TestFrame" virtual="true">
+                    <Scripts>
+                        <OnClick function="TestFrame_OnClick"/>
+                        <OnLoad function="TestFrame_OnLoad"/>
+                    </Scripts>
+                </Frame>
+            </Ui>
+        "#);
+        assert!(r.xml_bound_names.contains("TestFrame_OnClick"));
+        assert!(r.xml_bound_names.contains("TestFrame_OnLoad"));
+    }
+
+    #[test]
+    fn xml_bound_names_skips_invalid_handler_names() {
+        let r = scan(r#"
+            <Ui>
+                <Frame name="F" virtual="true">
+                    <Scripts>
+                        <OnClick function="Valid_Handler"/>
+                        <OnLoad function="!invalid"/>
+                    </Scripts>
+                </Frame>
+            </Ui>
+        "#);
+        assert!(r.xml_bound_names.contains("Valid_Handler"));
+        assert!(!r.xml_bound_names.contains("!invalid"));
     }
 }

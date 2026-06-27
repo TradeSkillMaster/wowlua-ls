@@ -123,7 +123,6 @@ end
 ---@class MyPanel : Frame
 ---@field Header MyPanelHeader
 MyPanelMixin = {}
--- ^ diag: create-global
 
 function MyPanelMixin:DoSomething()
     -- self.Header should resolve to MyPanelHeader (user annotation), not
@@ -149,7 +148,6 @@ local sico = styled.Icon
 -- self without false undefined-field or type-mismatch diagnostics.
 ---@class FrameMix
 FrameMix = {}
--- ^ diag: create-global
 
 ---@param f Frame
 local function takeFrame(f) end
@@ -166,7 +164,6 @@ end
 -- (Button, not just Frame) is used as the mixin's parent.
 ---@class BtnMix
 BtnMix = {}
--- ^ diag: create-global
 
 function BtnMix:Init()
     -- Button-specific method accessible (proves Button parent, not just Frame)
@@ -180,3 +177,17 @@ end
 -- Hyphenated names should not create globals (invalid Lua identifier)
 local x = InvalidFrame
 --        ^ diag: undefined-global
+
+-- XML-bound globals: mixin names referenced by mixin= in XML should not
+-- trigger create-global when declared in Lua
+UnreferencedMixin = {}
+-- ^ diag: create-global
+
+-- XML-bound globals: handler function names referenced by <On* function="...">
+-- in XML should not trigger create-global when declared in Lua
+function HandlerFrame_OnClick(self) end
+function HandlerFrame_OnLoad(self) end
+
+-- Handler functions NOT referenced in XML should still trigger create-global
+function UnreferencedHandler_OnClick(self) end
+-- ^ diag: create-global
