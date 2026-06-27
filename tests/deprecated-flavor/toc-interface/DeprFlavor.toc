@@ -1,0 +1,4 @@
+## Interface: 11508
+## Title: DeprFlavor
+## Notes: TOC-only flavor declaration (Classic Era), no .wowluarc.json
+test.lua

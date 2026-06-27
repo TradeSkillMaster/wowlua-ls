@@ -288,6 +288,12 @@ pub struct ProjectConfigs {
     /// Directories that contain at least one `.toc` file. Used to infer the
     /// addon folder name for file-level `...` vararg typing.
     toc_directories: HashSet<PathBuf>,
+    /// Per-addon-directory flavor mask derived from `.toc` `## Interface:`
+    /// version numbers (union across the dir's TOCs). Unlike `toc_file_flavors`
+    /// this keeps `FLAVOR_ALL` entries and is keyed by directory, since it is
+    /// the addon's *declared* flavor breadth — used only by `addon_flavors_for`
+    /// (flavor-aware `deprecated`), never by `wrong-flavor-api`.
+    toc_interface_flavors: HashMap<PathBuf, u8>,
     /// Workspace-wide dynamic global prefix patterns detected from
     /// `_G["PREFIX"..k] = v` assignments in scanned files. Merged into
     /// both `allowed_read_globals_for` and `allowed_write_globals_for` so
@@ -323,6 +329,10 @@ impl ProjectConfigs {
 
         if toc_data.has_toc {
             self.toc_directories.insert(dir.to_path_buf());
+        }
+
+        if toc_data.interface_flavor != 0 {
+            self.toc_interface_flavors.insert(dir.to_path_buf(), toc_data.interface_flavor);
         }
 
         if !toc_data.saved_variables.is_empty() {
@@ -525,6 +535,34 @@ impl ProjectConfigs {
         } else {
             project_flavors
         }
+    }
+
+    /// The addon's full *declared* flavor breadth for a file, used only by the
+    /// flavor-aware `deprecated` diagnostic (not `wrong-flavor-api`).
+    ///
+    /// Prefers an explicit declaration — `flavors_for` (`.wowluarc.json`
+    /// `flavors` intersected with a flavor-specific TOC) — and otherwise falls
+    /// back to the `## Interface:` versions of the nearest ancestor `.toc`. That
+    /// fallback is what lets a config-less multi-flavor addon (e.g. one whose
+    /// only flavor signal is `## Interface: 120005, 11508`) be recognized as
+    /// targeting Classic so a retail-only deprecation isn't flagged there.
+    /// Returns 0 when there is no flavor signal at all (no config, no `.toc`).
+    pub fn addon_flavors_for(&self, file_path: &Path) -> u8 {
+        let declared = self.flavors_for(file_path);
+        if declared != 0 {
+            return declared;
+        }
+        // Walk up to the nearest ancestor directory with a TOC `## Interface:`
+        // mask. Keyed by directory (not by listed file) so files pulled in via
+        // XML includes or nested loaders still resolve to their addon's breadth.
+        let mut dir = file_path.parent();
+        while let Some(d) = dir {
+            if let Some(&mask) = self.toc_interface_flavors.get(d) {
+                return mask;
+            }
+            dir = d.parent();
+        }
+        0
     }
 
     pub fn backward_param_types_for(&self, file_path: &Path) -> bool {
@@ -793,6 +831,10 @@ struct TocParseResult {
     saved_variables: HashSet<String>,
     file_flavors: HashMap<PathBuf, u8>,
     has_toc: bool,
+    /// Union of the dir's TOC `## Interface:` version flavors. Kept even when
+    /// `FLAVOR_ALL` (a multi-version addon imposes no restriction for flavor
+    /// filtering, but its breadth still matters for flavor-aware `deprecated`).
+    interface_flavor: u8,
 }
 
 /// Extract the flavor suffix from a TOC filename stem. Returns `(base_name, flavor_mask)`
@@ -812,10 +854,11 @@ fn extract_toc_suffix(stem: &str) -> Option<(&str, u8)> {
 ///   `## AllowLoadGameType:` headers, and `[AllowLoadGameType]` per-line directives
 fn parse_toc_files(dir: &Path) -> TocParseResult {
     let mut saved_variables = HashSet::new();
+    let mut interface_flavor = 0u8;
 
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return TocParseResult { saved_variables, file_flavors: HashMap::new(), has_toc: false },
+        Err(_) => return TocParseResult { saved_variables, file_flavors: HashMap::new(), has_toc: false, interface_flavor: 0 },
     };
 
     // Collect all TOC files, classifying them by base addon name and suffix.
@@ -863,6 +906,12 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
                             saved_variables.insert(name.to_string());
                         }
                     }
+                }
+                // `## Interface:` (or flavor-specific `## Interface-Classic:` etc.) —
+                // union the version numbers' flavors. Parsing the numbers makes
+                // this header-variant-agnostic.
+                if let Some((_, value)) = rest.strip_prefix("Interface").and_then(|s| s.split_once(':')) {
+                    interface_flavor |= crate::flavor::parse_interface_flavors(value);
                 }
             }
         }
@@ -964,7 +1013,7 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
     // Don't store entries where the effective flavor is FLAVOR_ALL — no restriction
     file_flavors.retain(|_, v| *v != crate::flavor::FLAVOR_ALL);
 
-    TocParseResult { saved_variables, file_flavors, has_toc: !toc_entries.is_empty() }
+    TocParseResult { saved_variables, file_flavors, has_toc: !toc_entries.is_empty(), interface_flavor }
 }
 
 /// Expand `[Family]` and `[Game]` variables in a TOC file path. Each expansion
@@ -1961,6 +2010,49 @@ mod tests {
         assert!(!configs.implicit_protected_prefix_for(&sub.join("main.lua")));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_addon_flavors_from_toc_interface() {
+        use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA};
+        let root = std::env::temp_dir().join("wowlua_ls_test_addon_flavors");
+        let sub = root.join("Source/Sub");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // Multi-version TOC, no `.wowluarc.json` — the `## Interface:` line is the
+        // only flavor signal (the real Auctionator / UtilityHub shape).
+        std::fs::write(root.join("MyAddon.toc"), "\
+## Interface: 120005, 50503, 11508
+## Title: MyAddon
+").unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load_toc(&root);
+
+        // A deeply-nested file with no closer flavor signal resolves to the
+        // addon's TOC breadth by walking up to the nearest ancestor TOC dir.
+        assert_eq!(
+            configs.addon_flavors_for(&sub.join("File.lua")),
+            FLAVOR_RETAIL | FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA,
+        );
+
+        // An explicit `.wowluarc.json` `flavors` wins over the Interface fallback.
+        std::fs::write(root.join(".wowluarc.json"), r#"{ "flavors": ["classic_era"] }"#).unwrap();
+        let mut configs2 = ProjectConfigs::default();
+        configs2.try_load(&root);
+        configs2.try_load_toc(&root);
+        assert_eq!(configs2.addon_flavors_for(&sub.join("File.lua")), FLAVOR_CLASSIC_ERA);
+
+        // No TOC and no config anywhere → no flavor signal at all.
+        let bare = std::env::temp_dir().join("wowlua_ls_test_addon_flavors_bare");
+        let _ = std::fs::remove_dir_all(&bare);
+        std::fs::create_dir_all(&bare).unwrap();
+        let configs3 = ProjectConfigs::default();
+        assert_eq!(configs3.addon_flavors_for(&bare.join("File.lua")), 0);
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&bare);
     }
 
     #[test]

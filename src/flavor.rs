@@ -80,6 +80,62 @@ pub(crate) fn unsupported_flavors(active: u8, call: u8) -> u8 {
     active & !call
 }
 
+/// The flavor(s) in which WoW API deprecations originate. `@deprecated` marks
+/// flow from the retail/mainline API surface (Ketho's `Annotations/Core`
+/// stubs); the same bare API frequently remains the live, non-deprecated form
+/// on Classic / Classic Era (e.g. `GetMerchantItemInfo` is the current API on
+/// Classic, replaced only on retail by `C_MerchantFrame.GetItemInfo`). So a
+/// deprecation is treated as applying to retail only. If per-flavor deprecation
+/// data ever becomes available, narrow this per function instead.
+pub(crate) const DEPRECATION_ORIGIN_FLAVORS: u8 = FLAVOR_RETAIL;
+
+/// Decide whether a `@deprecated` warning should be suppressed for a call,
+/// given the addon's declared flavor set (`addon_flavors`) and the function's
+/// availability mask (`fn_flavors`).
+///
+/// Returns true when the function is still **live** — available, and outside
+/// the deprecation-origin flavor (retail) — in at least one flavor the addon
+/// targets. There the bare API is the correct, non-deprecated form, so flagging
+/// it as deprecated is a false positive.
+///
+/// `addon_flavors == 0` means the addon declares no flavors at all (no config
+/// and no `.toc`); suppression is disabled so existing behavior is preserved.
+pub(crate) fn deprecation_suppressed(addon_flavors: u8, fn_flavors: u8) -> bool {
+    if addon_flavors == 0 {
+        return false;
+    }
+    let available = effective_mask(fn_flavors);
+    addon_flavors & available & !DEPRECATION_ORIGIN_FLAVORS != 0
+}
+
+/// Map a TOC `## Interface:` version number (e.g. `120005`, `50503`, `11508`)
+/// to a flavor mask by its major version. WoW interface numbers are
+/// `MAJOR*10000 + MINOR*100 + PATCH`, and the major version distinguishes the
+/// game flavor: `1.x` is Classic Era (vanilla); the `2.x`–`5.x` re-releases
+/// (TBC / Wrath / Cata / MoP Classic) are the rolling Classic; `6.x` and above
+/// is retail (currently `11.x` / `12.x`).
+pub(crate) fn interface_number_flavor(n: u32) -> u8 {
+    match n / 10000 {
+        1 => FLAVOR_CLASSIC_ERA,
+        2..=5 => FLAVOR_CLASSIC,
+        _ => FLAVOR_RETAIL,
+    }
+}
+
+/// Parse a TOC `## Interface:` header value — one or more comma-separated
+/// version numbers — into a unioned flavor mask. A multi-version line like
+/// `120005, 50503, 11508` yields Retail | Classic | Classic Era. Returns 0 if
+/// no number parses.
+pub(crate) fn parse_interface_flavors(value: &str) -> u8 {
+    let mut mask = 0u8;
+    for part in value.split(',') {
+        if let Ok(n) = part.trim().parse::<u32>() {
+            mask |= interface_number_flavor(n);
+        }
+    }
+    mask
+}
+
 /// Map a TOC filename suffix (without the leading `_`) to a flavor mask.
 /// Returns `None` for unrecognized suffixes (e.g. `_Options`).
 pub(crate) fn parse_toc_suffix(suffix: &str) -> Option<u8> {
@@ -247,5 +303,62 @@ mod tests {
         assert_eq!(parse_game_type_list("classic"), FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA);
         assert_eq!(parse_game_type_list("bogus"), 0);
         assert_eq!(parse_game_type_list("mainline, bogus"), FLAVOR_RETAIL);
+    }
+
+    #[test]
+    fn interface_number_to_flavor() {
+        // Classic Era is 1.x; the 2.x–5.x re-releases are rolling Classic.
+        assert_eq!(interface_number_flavor(11508), FLAVOR_CLASSIC_ERA); // 1.15.8
+        assert_eq!(interface_number_flavor(20505), FLAVOR_CLASSIC);     // 2.5.5 (TBC)
+        assert_eq!(interface_number_flavor(30403), FLAVOR_CLASSIC);     // 3.x (Wrath)
+        assert_eq!(interface_number_flavor(40400), FLAVOR_CLASSIC);     // 4.x (Cata)
+        assert_eq!(interface_number_flavor(50503), FLAVOR_CLASSIC);     // 5.5.3 (MoP)
+        // Retail is 6.x and above (currently 11.x / 12.x).
+        assert_eq!(interface_number_flavor(110005), FLAVOR_RETAIL);     // 11.0.5
+        assert_eq!(interface_number_flavor(120005), FLAVOR_RETAIL);     // 12.0.5
+    }
+
+    #[test]
+    fn interface_header_flavor_union() {
+        assert_eq!(parse_interface_flavors("11508"), FLAVOR_CLASSIC_ERA);
+        assert_eq!(parse_interface_flavors("120005"), FLAVOR_RETAIL);
+        // A multi-version line (the Auctionator / UtilityHub shape).
+        assert_eq!(
+            parse_interface_flavors("120005, 50503, 11508"),
+            FLAVOR_RETAIL | FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA,
+        );
+        assert_eq!(parse_interface_flavors("20505, 11508"), FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA);
+        // Whitespace and garbage tolerated; no number → 0.
+        assert_eq!(parse_interface_flavors("  120005  "), FLAVOR_RETAIL);
+        assert_eq!(parse_interface_flavors(""), 0);
+        assert_eq!(parse_interface_flavors("abc"), 0);
+    }
+
+    #[test]
+    fn deprecation_suppression_logic() {
+        // A function deprecated on retail but live on Classic / Classic Era
+        // (e.g. GetMerchantItemInfo, available = Classic | Classic Era).
+        let classic_only = FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA;
+        // Addon targets only retail → not live anywhere else it targets → warn.
+        assert!(!deprecation_suppressed(FLAVOR_RETAIL, classic_only));
+        // Addon targets Classic Era → live there → suppress.
+        assert!(deprecation_suppressed(FLAVOR_CLASSIC_ERA, classic_only));
+        // Multi-flavor addon (retail + era) → still live on era → suppress.
+        assert!(deprecation_suppressed(FLAVOR_RETAIL | FLAVOR_CLASSIC_ERA, classic_only));
+
+        // A function available everywhere (mask 0 / FLAVOR_ALL), deprecated on
+        // retail (e.g. GetItemInfo).
+        assert!(!deprecation_suppressed(FLAVOR_RETAIL, 0));            // retail addon → warn
+        assert!(deprecation_suppressed(FLAVOR_CLASSIC_ERA, 0));        // classic addon → suppress
+        assert!(deprecation_suppressed(FLAVOR_RETAIL | FLAVOR_CLASSIC, FLAVOR_ALL)); // multi → suppress
+
+        // No declared flavors at all → suppression disabled (prior behavior).
+        assert!(!deprecation_suppressed(0, classic_only));
+        assert!(!deprecation_suppressed(0, 0));
+
+        // A genuinely retail-only deprecated function is always flagged (it is
+        // not live outside retail anywhere).
+        assert!(!deprecation_suppressed(FLAVOR_CLASSIC_ERA, FLAVOR_RETAIL));
+        assert!(!deprecation_suppressed(FLAVOR_RETAIL, FLAVOR_RETAIL));
     }
 }

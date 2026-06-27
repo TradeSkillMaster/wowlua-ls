@@ -6,7 +6,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 
 | Code | Description |
 |---|---|
-| `deprecated` | Usage of `@deprecated` symbols |
+| `deprecated` | Usage of `@deprecated` symbols (flavor-aware — suppressed when the API is still live in a flavor the addon targets; see [Flavor Filtering](/guide/flavor-filtering#flavor-aware-deprecation)) |
 | `discard-returns` | Ignoring `@nodiscard` return values |
 | `type-mismatch` | Argument type vs `@param` mismatch (including generic type arguments, e.g. `Container<number>` vs `Container<boolean>`, and string-literal unions, e.g. `"x"` against `"A"\|"B"\|"C"`) |
 | `return-mismatch` | Return type vs `@return` mismatch |

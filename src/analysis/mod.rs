@@ -2046,6 +2046,12 @@ pub struct AnalysisResult {
     pub(crate) explicit_globals: HashSet<String>,
     pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
     pub(crate) project_flavors: u8,
+    /// The addon's full *declared* flavor breadth (`config.addon_flavors_for`):
+    /// `project_flavors` when set, else the nearest `.toc` `## Interface:`
+    /// versions. Unlike `project_flavors` this is **not** used for
+    /// `wrong-flavor-api`; it only gates flavor-aware `deprecated` suppression.
+    /// 0 = no flavor signal at all.
+    pub(crate) addon_flavors: u8,
     pub(crate) event_vararg_types: HashMap<ScopeIndex, Vec<ValueType>>,
     pub(crate) vararg_user_annotated_fns: HashSet<FunctionIndex>,
     /// Diagnostic codes declared by loaded plugins (suppresses `unknown-diag-code`).
@@ -2350,6 +2356,8 @@ pub struct Analysis<'a> {
     /// Declared target flavors for the project (see `crate::flavor`). Zero
     /// means flavor filtering is disabled (backward-compat).
     pub(crate) project_flavors: u8,
+    /// The addon's full declared flavor breadth (see `AnalysisResult::addon_flavors`).
+    pub(crate) addon_flavors: u8,
     /// Per-scope override of the active flavor set. Scopes without an entry
     /// inherit from their parent (walked at lookup time).
     pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
@@ -2388,6 +2396,8 @@ pub struct AnalysisConfig {
     pub allow_slash_commands: bool,
     pub allow_binding_globals: bool,
     pub project_flavors: u8,
+    /// Addon's full declared flavor breadth (see `AnalysisResult::addon_flavors`).
+    pub addon_flavors: u8,
     pub backward_param_types: bool,
     pub correlated_return_overloads: bool,
     pub implicit_protected_prefix: bool,
@@ -2409,6 +2419,7 @@ impl Default for AnalysisConfig {
             allow_slash_commands: true,
             allow_binding_globals: true,
             project_flavors: 0,
+            addon_flavors: 0,
             backward_param_types: true,
             correlated_return_overloads: true,
             implicit_protected_prefix: false,
@@ -2432,6 +2443,7 @@ impl<'a> Analysis<'a> {
             allow_slash_commands,
             allow_binding_globals,
             project_flavors,
+            addon_flavors,
             backward_param_types,
             correlated_return_overloads,
             implicit_protected_prefix,
@@ -2541,6 +2553,7 @@ impl<'a> Analysis<'a> {
             allow_slash_commands,
             allow_binding_globals,
             project_flavors,
+            addon_flavors,
             scope_flavors: HashMap::new(),
             backward_param_types,
             correlated_return_overloads,
@@ -2732,6 +2745,7 @@ impl<'a> Analysis<'a> {
             explicit_globals: self.explicit_globals,
             scope_flavors: self.scope_flavors,
             project_flavors: self.project_flavors,
+            addon_flavors: self.addon_flavors,
             event_vararg_types: self.event_vararg_types,
             vararg_user_annotated_fns: self.vararg_user_annotated_fns,
             plugin_diag_codes: Vec::new(),

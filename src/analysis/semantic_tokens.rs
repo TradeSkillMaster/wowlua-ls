@@ -312,9 +312,18 @@ impl AnalysisResult {
             mods |= MOD_DEFAULT_LIBRARY;
         }
         if let Some(f) = fidx_opt
-            && self.func(*f).deprecated {
+            && self.func(*f).deprecated
+        {
+            // Flavor-aware: don't strike through a WoW-stub `@deprecated` that is
+            // still the live, correct API on a flavor the addon targets. Mirrors
+            // the `deprecated` diagnostic gate (annotation_metadata.rs Part 3) so
+            // the token and the (now absent) warning agree at the same position.
+            let flavor_suppressed = self.ir.is_stub_function(*f)
+                && crate::flavor::deprecation_suppressed(self.addon_flavors, self.func(*f).flavors);
+            if !flavor_suppressed {
                 mods |= MOD_DEPRECATED;
             }
+        }
         Some((TT_FUNCTION, mods))
     }
 }

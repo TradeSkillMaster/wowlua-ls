@@ -1,0 +1,4 @@
+## Interface: 120005
+## Title: DeprFlavor
+## Notes: Retail-only TOC Interface, no .wowluarc.json
+test.lua

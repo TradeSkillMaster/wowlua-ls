@@ -1,0 +1,4 @@
+## Interface: 120005, 50503, 11508
+## Title: DeprFlavor
+## Notes: Multi-version TOC (Retail + Classic + Classic Era), no .wowluarc.json
+test.lua

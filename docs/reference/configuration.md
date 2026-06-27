@@ -141,6 +141,8 @@ WoW flavor names the project targets. Enables `wrong-flavor-api` diagnostic when
 
 > **Note:** Flavor filtering can also be derived automatically from `.toc` file listings — see the [Flavor Filtering guide](/guide/flavor-filtering). When both sources are present, the effective flavor for each file is the intersection of the project-level `flavors` and the TOC-derived per-file flavor.
 
+> **Note:** The `deprecated` diagnostic is also flavor-aware — a retail-only deprecation (e.g. `GetMerchantItemInfo`) isn't flagged in an addon that targets Classic, where the API is still live. It derives the addon's targeted flavors from this setting, else a flavor-specific `.toc`, else the `.toc` `## Interface:` versions (so it works even without a `flavors` config). See [Flavor-aware deprecation](/guide/flavor-filtering#flavor-aware-deprecation).
+
 ### `globals.read`
 
 - **Type:** `string[]`

@@ -239,6 +239,19 @@ impl DiagnosticPass for AnnotationMetadata {
             _ => continue,
         };
         if !analysis.func(func_idx).deprecated { continue; }
+        // Flavor-aware deprecation, WoW-stub-only: a `@deprecated` mark on a WoW
+        // API stub flows from the retail/mainline surface, but the same bare API
+        // is frequently the live, correct form on Classic / Classic Era. If the
+        // addon targets a flavor where this stub is still available outside
+        // retail, the call isn't deprecated there — don't flag it. A
+        // workspace-authored `@deprecated` (not a stub) is author intent,
+        // unrelated to flavor, so it always warns. (`addon_flavors == 0` — no
+        // declared flavors — also disables suppression, preserving prior behavior.)
+        if analysis.ir.is_stub_function(func_idx)
+            && crate::flavor::deprecation_suppressed(analysis.addon_flavors, analysis.func(func_idx).flavors)
+        {
+            continue;
+        }
         let name = analysis.function_name(func_idx).unwrap_or_else(|| {
             if let Expr::FieldAccess { table, field, .. } = analysis.expr(callee) {
                 let table = *table;

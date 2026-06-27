@@ -129,6 +129,7 @@ fn run_annotation_tests(config: &TestConfig) {
             allow_slash_commands: project_configs.allow_slash_commands_for(&file_path),
             allow_binding_globals: project_configs.allow_binding_globals_for(&file_path),
             project_flavors: project_configs.flavors_for(&file_path),
+            addon_flavors: project_configs.addon_flavors_for(&file_path),
             backward_param_types: project_configs.backward_param_types_for(&file_path),
             correlated_return_overloads: project_configs.correlated_return_overloads_for(&file_path),
             implicit_protected_prefix: project_configs.implicit_protected_prefix_for(&file_path),
@@ -2139,6 +2140,89 @@ fn flavor_filter_toc_header_restrict() {
     });
 }
 
+// Flavor-aware `deprecated`: a retail-sourced `@deprecated` API that is still
+// live on a flavor the addon targets must not be flagged there.
+#[test]
+fn deprecated_flavor_retail_config() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deprecated-flavor/retail-config/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn deprecated_flavor_classic_config() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deprecated-flavor/classic-config/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn deprecated_flavor_multi_flavor() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deprecated-flavor/multi-flavor/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn deprecated_flavor_toc_interface() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deprecated-flavor/toc-interface/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn deprecated_flavor_toc_multi_version() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deprecated-flavor/toc-multi-version/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn deprecated_flavor_toc_retail() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deprecated-flavor/toc-retail/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn deprecated_flavor_no_flavor() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deprecated-flavor/no-flavor/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn deprecated_flavor_workspace_deprecated() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deprecated-flavor/workspace-deprecated/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn deprecated_flavor_workspace_deprecated_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deprecated-flavor/workspace-deprecated-crossfile/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/deprecated-flavor/workspace-deprecated-crossfile"),
+    });
+}
+
 #[test]
 fn circle_doc_class() {
     run_annotation_tests(&TestConfig {
@@ -3332,6 +3416,7 @@ fn analyze_source_with_tree(source: &str) -> (wowlua_ls::syntax::tree::SyntaxTre
             allow_slash_commands: true,
             allow_binding_globals: true,
             project_flavors: 0,
+            addon_flavors: 0,
             backward_param_types: true,
             correlated_return_overloads: true,
             implicit_protected_prefix: false,

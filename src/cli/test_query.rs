@@ -58,6 +58,7 @@ pub fn run(location: &str, with_stubs: bool, scan_dir: Option<PathBuf>) -> CliRe
             allow_slash_commands: project_configs.allow_slash_commands_for(&file_path),
             allow_binding_globals: project_configs.allow_binding_globals_for(&file_path),
             project_flavors: project_configs.flavors_for(&file_path),
+            addon_flavors: project_configs.addon_flavors_for(&file_path),
             backward_param_types: project_configs.backward_param_types_for(&file_path),
             correlated_return_overloads: project_configs.correlated_return_overloads_for(&file_path),
             implicit_protected_prefix: project_configs.implicit_protected_prefix_for(&file_path),

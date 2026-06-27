@@ -114,6 +114,7 @@ fn analyze_one_file(
                 allow_slash_commands: project_configs.allow_slash_commands_for(path),
                 allow_binding_globals: project_configs.allow_binding_globals_for(path),
                 project_flavors: project_configs.flavors_for(path),
+                addon_flavors: project_configs.addon_flavors_for(path),
                 backward_param_types: project_configs.backward_param_types_for(path),
                 correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
                 implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),

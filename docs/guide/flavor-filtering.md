@@ -97,6 +97,31 @@ AbbreviateLargeNumbers(100)
 
 Hovering over a WoW API function shows its availability: `Flavors: Retail, Classic`.
 
+## Flavor-aware deprecation
+
+WoW API deprecations are retail-side: many functions Blizzard marks `@deprecated`
+(e.g. `GetMerchantItemInfo`, replaced on retail by `C_MerchantFrame.GetItemInfo`)
+remain the live, correct API on Classic and Classic Era. The `deprecated`
+diagnostic accounts for this — it won't flag a call when the API is still live in
+a flavor your addon targets (and the editor won't strike the call through
+either — the semantic-token "deprecated" styling follows the same rule):
+
+```lua
+-- In a Classic Era addon (or a multi-flavor addon that includes Classic):
+local _, _, price = GetMerchantItemInfo(index)  -- no `deprecated` warning here
+
+-- In a retail-only addon, the same call IS flagged:
+-- warning: deprecated — 'GetMerchantItemInfo' is deprecated
+```
+
+The addon's targeted flavors are taken from your `.wowluarc.json` `flavors`, else
+a flavor-specific `.toc` (suffix / `AllowLoadGameType`), else the `.toc`
+`## Interface:` version line — so a config-less multi-version addon
+(`## Interface: 120005, 50503, 11508`) is still recognized as targeting Classic.
+If there is no flavor signal at all, the warning fires as before. Unlike
+`wrong-flavor-api`, this never requires a `flavors` config and the `## Interface:`
+fallback applies only to `deprecated`.
+
 ## Conditional narrowing
 
 The LS understands flavor-conditional code:
