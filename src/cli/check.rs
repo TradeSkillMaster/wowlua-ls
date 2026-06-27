@@ -1,6 +1,7 @@
 //! `check` subcommand: run all diagnostics across an addon directory and print
 //! a summary. Exits non-zero when errors or warnings are present.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -63,14 +64,14 @@ struct FileResult {
 /// Analyze a single file: parse, resolve types, run diagnostics (+ plugins),
 /// and format every emitted diagnostic into an output line. Pure with respect
 /// to the shared `pre_globals`/`project_configs` (read-only), so this runs in
-/// parallel across files; `plugin_engine` is a per-worker-thread VM supplied by
-/// rayon's `map_init`.
+/// parallel across files; `plugin_engine` is a per-worker-thread VM (an mlua VM
+/// isn't shareable across threads) cached by the caller.
 fn analyze_one_file(
     path: &Path,
     dir: &Path,
     pre_globals: &Arc<PreResolvedGlobals>,
     project_configs: &config::ProjectConfigs,
-    plugin_engine: &mut Option<PluginEngine>,
+    mut plugin_engine: Option<&mut PluginEngine>,
     include_hints: bool,
 ) -> FileResult {
     let mut fr = FileResult::default();
@@ -122,7 +123,7 @@ fn analyze_one_file(
         );
         analysis.resolve_types();
         let mut ar = analysis.into_result();
-        if let Some(engine) = plugin_engine.as_ref() {
+        if let Some(engine) = plugin_engine.as_deref() {
             ar.plugin_diag_codes = engine.plugin_codes().iter().map(|s| s.to_string()).collect();
         }
 
@@ -165,7 +166,7 @@ fn analyze_one_file(
             emit_diag(d.code, d.severity, d.start, &d.message);
         }
         // Plugin diagnostics
-        if let Some(engine) = plugin_engine.as_mut() {
+        if let Some(engine) = plugin_engine.as_deref_mut() {
             let uri_str = format!("file://{}", path.display());
             let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
             let allowed = project_configs.plugins_for(path);
@@ -203,6 +204,18 @@ fn format_number(n: usize) -> String {
     result.chars().rev().collect()
 }
 
+thread_local! {
+    /// Per-worker-thread plugin engine for the parallel `check` run, built lazily
+    /// and silently (via `PluginEngine::new_quiet`) and reused across every file
+    /// that thread handles. An mlua VM isn't `Send`, and rebuilding it per rayon
+    /// job — which `map_init` does, once per work-split leaf, many per thread —
+    /// both wastes work and re-emits every plugin's load log, so cache it here and
+    /// emit the load logs once up front in `run` instead. A `check` invocation is
+    /// one-shot per process, so the cached engine never needs invalidating for a
+    /// different plugin set.
+    static CHECK_PLUGIN_ENGINE: RefCell<Option<PluginEngine>> = const { RefCell::new(None) };
+}
+
 pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
     if !dir.is_dir() {
         error!("Not a directory: {}", dir.display());
@@ -228,23 +241,43 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
     // Each file is analyzed independently against the shared, immutable
     // `pre_globals`, so the heavy per-file work (parse + resolve_types +
     // run_diagnostics + plugins) is fanned out across rayon's thread pool —
-    // this is ~96% of the wall-clock and the loop was previously serial. Each
-    // worker thread gets its own `PluginEngine` (an mlua VM, not shareable)
-    // via `map_init`; per-file results are returned owned and merged below.
-    // `par_iter().collect()` preserves file order, so output is identical to a
-    // serial run (files in sorted order, diagnostics in per-file order).
+    // this is ~96% of the wall-clock and the loop was previously serial. Per-file
+    // results are returned owned and merged below; `par_iter().collect()`
+    // preserves file order, so output is identical to a serial run (files in
+    // sorted order, diagnostics in per-file order).
+    //
+    // Plugins need a `PluginEngine` (an mlua VM, not shareable across threads).
+    // `map_init` would rebuild one per rayon job (many per thread), re-creating
+    // the VM and re-emitting every plugin's load log — the cause of earlier log
+    // spam — so each worker thread caches a single engine in a thread-local and
+    // reuses it (built quietly), and the load logs are emitted once up front.
     let started = std::time::Instant::now();
     let plugin_paths = project_configs.all_plugins();
     let has_plugins = !plugin_paths.is_empty();
 
+    // Emit the per-plugin load logs exactly once, up front (identical to a serial
+    // run): load the plugin set once here, on a single thread, purely for `new`'s
+    // logging side effect — successes at info, failures at warn — then drop it.
+    // The per-thread worker engines below are built with `new_quiet` (fully
+    // silent), so neither a successful load nor a failure is re-logged once per
+    // rayon worker thread. The engine can't be reused across threads (an mlua VM
+    // isn't `Send`), but building it once is cheap.
+    if has_plugins {
+        drop(PluginEngine::new(&plugin_paths));
+    }
+
     let results: Vec<FileResult> = lua_files
         .par_iter()
-        .map_init(
-            || if has_plugins { Some(PluginEngine::new(&plugin_paths)) } else { None },
-            |plugin_engine, path| {
-                analyze_one_file(path, &dir, &pre_globals, &project_configs, plugin_engine, include_hints)
-            },
-        )
+        .map(|path| {
+            if !has_plugins {
+                return analyze_one_file(path, &dir, &pre_globals, &project_configs, None, include_hints);
+            }
+            CHECK_PLUGIN_ENGINE.with(|cell| {
+                let mut slot = cell.borrow_mut();
+                let engine = slot.get_or_insert_with(|| PluginEngine::new_quiet(&plugin_paths));
+                analyze_one_file(path, &dir, &pre_globals, &project_configs, Some(engine), include_hints)
+            })
+        })
         .collect();
 
     // Emit every diagnostic and accumulate the run-wide stats. Both the per-file

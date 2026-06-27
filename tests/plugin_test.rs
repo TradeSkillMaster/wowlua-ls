@@ -100,6 +100,37 @@ fn plugin_invalid_return() {
 }
 
 #[test]
+fn plugin_new_quiet_loads_and_runs_like_new() {
+    // The parallel `check` command builds engines via `new_quiet` (one per worker
+    // thread, fully silent — the load logs are emitted once up front) to avoid the
+    // log spam of `map_init` rebuilding an engine per rayon job. `new_quiet` must
+    // load and run plugins exactly like `new` — only the per-plugin logging is
+    // suppressed — so this guards against the refactor silently dropping plugin
+    // loading on the check path.
+    let path = plugin_path("basic_plugin.lua");
+
+    let loud = PluginEngine::new(std::slice::from_ref(&path));
+    let mut quiet = PluginEngine::new_quiet(std::slice::from_ref(&path));
+
+    // Same plugins registered, regardless of logging.
+    assert_eq!(loud.plugin_codes(), quiet.plugin_codes(),
+        "new_quiet must register the same plugin codes as new");
+    assert_eq!(quiet.plugin_codes(), vec!["test-field-tracker"],
+        "new_quiet should load the basic plugin");
+
+    // A quietly-built engine still actually runs plugins.
+    let src = "local s = { used = nil }\nlocal a = s.missing\n";
+    let tree = wowlua_ls::syntax::parser::parse(src);
+    let mut analysis = Analysis::new_with_tree(
+        &tree, Arc::new(PreResolvedGlobals::empty()), AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+    let diags = quiet.run_plugins(&result, src, "test://file.lua", "file.lua", std::slice::from_ref(&path));
+    assert!(diags.iter().any(|d| d.code == "test-field-tracker"),
+        "new_quiet engine should run plugins, got: {diags:?}");
+}
+
+#[test]
 fn plugin_method_call_args() {
     // Test that method_calls() and args() work for the DBM-style pattern
     let diags = analyze_with_plugins(

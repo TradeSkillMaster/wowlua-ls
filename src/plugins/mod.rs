@@ -39,19 +39,40 @@ pub struct PluginEngine {
 
 impl PluginEngine {
     /// Create a new plugin engine, loading plugin files from the given paths.
-    /// Paths that fail to load are logged and skipped.
+    /// Each successfully loaded plugin is logged at info level and each load
+    /// failure at warn level.
     pub fn new(plugin_paths: &[PathBuf]) -> Self {
+        Self::build(plugin_paths, true)
+    }
+
+    /// Like [`new`](Self::new) but **fully silent** — neither successful loads
+    /// nor load failures are logged. The parallel `check` command builds one
+    /// engine per rayon worker thread, so it logs the plugin set exactly once up
+    /// front via [`new`](Self::new) (see `cli/check.rs`) and builds the per-thread
+    /// engines with this; otherwise a load *failure* would be re-warned — and each
+    /// success re-logged — once per worker thread, re-introducing log spam.
+    pub fn new_quiet(plugin_paths: &[PathBuf]) -> Self {
+        Self::build(plugin_paths, false)
+    }
+
+    /// `log_messages` gates *all* per-plugin logging (both the success info line
+    /// and the failure warning) so a quiet build is symmetric — see `new_quiet`.
+    fn build(plugin_paths: &[PathBuf], log_messages: bool) -> Self {
         let lua = sandbox::create_sandbox();
         let mut plugins = Vec::new();
 
         for path in plugin_paths {
             match Self::load_plugin(&lua, path) {
                 Ok(plugin) => {
-                    log::info!("loaded plugin '{}' from {}", plugin.code, path.display());
+                    if log_messages {
+                        log::info!("loaded plugin '{}' from {}", plugin.code, path.display());
+                    }
                     plugins.push(plugin);
                 }
                 Err(e) => {
-                    log::warn!("failed to load plugin {}: {}", path.display(), e);
+                    if log_messages {
+                        log::warn!("failed to load plugin {}: {}", path.display(), e);
+                    }
                 }
             }
         }
