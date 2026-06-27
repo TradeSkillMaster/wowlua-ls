@@ -646,6 +646,28 @@ impl<'a> Analysis<'a> {
                         constraint_fallback_names.insert(name.clone());
                     }
             }
+
+            // Narrows-arg intersection preservation (`Mixin(x, M)` → `T & ...M`):
+            // the narrowed param's generic `T` is the *original* type of `x`. When
+            // that type is statically unknown (e.g. `x` is an unannotated param),
+            // neither the per-arg loop nor the constraint fallback above can bind
+            // `T`, so the intersection return would collapse to just the mixins
+            // (`...M`) — wrongly restricting field access on the combined value to
+            // the mixin's own fields and producing false `undefined-field` on the
+            // object's pre-existing methods. As a last resort, bind a still-unbound
+            // narrowed generic to `any` so the result stays a top-level intersection
+            // (which `undefined-field` treats as a concrete instance carrying
+            // untracked runtime fields). Runs *after* the constraint fallback so a
+            // constrained narrowed generic (`@generic T: Frame`) keeps its more
+            // precise bound (`Frame & ...M`) rather than degrading to `any & ...M`.
+            if let Some(narrow_idx) = self.func(func_idx).narrows_arg
+                && let Some(&narrow_sym_idx) = func_args.get((narrow_idx - 1) + self_offset)
+                && let Some(ValueType::TypeVariable(name)) = self.sym(narrow_sym_idx)
+                    .versions.first().and_then(|v| v.resolved_type.clone())
+                && !generic_subs.contains_key(&name)
+            {
+                generic_subs.insert(name, ValueType::Any);
+            }
         }
 
         // Type inline event-callback varargs from a literal event name. For:

@@ -910,6 +910,55 @@ local _baseObj = {}
 local _mixed = Mixin(_baseObj, {})
 --    ^ hover: (local) _mixed: table
 
+-- ── Mixin(x, M) keeps x's original type in an intersection ────────────────────
+-- Regression: a bare `Mixin(x, M)` narrows x to `typeof(x) & M`, not `M` alone.
+-- When x's original type is statically unknown (an unannotated param), the
+-- result must stay a top-level intersection (`any & M`) so x's pre-existing
+-- runtime members (e.g. base Frame methods) are not wrongly flagged
+-- `undefined-field`. (Mirrors Baganator's StyleButton/BackdropTemplateMixin.)
+---@class StyleHookMixin
+---@field ApplyStyle fun(self: StyleHookMixin)
+local StyleHookMixin = {}
+
+local function styleUnknownWidget(widget)
+  Mixin(widget, StyleHookMixin)
+  widget:ApplyStyle()      -- mixin method resolves
+  widget:GetParent()       -- pre-existing (Frame) method: not undefined-field
+  widget:IsEnabled()       -- another base method (Baganator's HookScript/IsEnabled case)
+  return widget
+  --     ^ hover: (param) widget: any & StyleHookMixin
+end
+
+-- Typed receiver: the original class type is preserved alongside the mixin.
+---@param f Frame
+local function styleFrameWidget(f)
+  Mixin(f, StyleHookMixin)
+  f:ApplyStyle()           -- mixin method
+  f:GetParent()            -- Frame method, still resolves
+  return f
+  --     ^ hover: (param) f: Frame & StyleHookMixin
+end
+
+-- `@narrows-arg` is general: when the narrowed param's generic is *constrained*
+-- (`@generic T: Frame`) and the original arg type is unknown, the constraint —
+-- not bare `any` — is the precise stand-in, so the intersection keeps the
+-- constrained class's methods. (Mixin's own `T` is unconstrained → `any`; this
+-- exercises the constrained branch via a custom narrows-arg helper.)
+---@generic T: Frame, M
+---@narrows-arg 1
+---@param object T
+---@param mixin M
+---@return T & M
+local function MixConstrained(object, mixin)
+  return Mixin(object, mixin)
+end
+
+local function useConstrainedMixin(widget)
+  local cr = MixConstrained(widget, StyleHookMixin)
+  return cr
+  --     ^ hover: (local) cr: Frame & StyleHookMixin
+end
+
 -- ── Deep chained overlay on deferred runtime field ──────────────────────────
 -- Regression: self.sub.field = CreateFrame(...) where `sub` is a runtime
 -- field injected by a deferred field assignment. The deep field injection
