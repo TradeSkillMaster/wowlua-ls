@@ -191,7 +191,23 @@ impl<'a> BuildOnStubsContext<'a> {
     }
 
     fn register_classes_and_aliases(&mut self, ws_classes: &[ClassDecl], ws_aliases: &[AliasDecl]) {
-        // Register new class names (skip duplicates already in stubs)
+        // Register new class names (skip duplicates already in stubs).
+        //
+        // A workspace `@class` that collides with a *stub* class name is left
+        // ADDITIVE: its fields merge onto the existing slot via
+        // `populate_class_fields`, exactly as a workspace-to-workspace partial
+        // `@class` augmentation does. We deliberately do NOT replace the stub
+        // table, because reuse of a stub name is frequently a legitimate
+        // *augmentation* (e.g. `@class ScrollBoxListMixin : CallbackRegistryMixin`
+        // that adds a synthesized `.Event` enum via `@generates-events`, or a
+        // library adding a field) — replacing would strip the stub's (and any
+        // synthesized) fields workspace-wide. The "fresh record reused a builtin
+        // name" case (the motivating `missing-fields` false positive) is handled
+        // without touching the stub table: per-file `prescan` skips importing stub
+        // fields into a local `@class` that declares its own `@field` contract, and
+        // `diagnostics::missing_fields` scopes the required-field set to the
+        // workspace's declared fields for such classes. `class-shadows-builtin`
+        // warns at the declaration.
         for class in ws_classes {
             if self.classes.contains_key(&class.name) { continue; }
             let table_idx = TableIndex(EXT_BASE + self.tables.len());
@@ -1641,6 +1657,7 @@ impl<'a> BuildOnStubsContext<'a> {
             getmetatable_func_idx: self.stubs_base.getmetatable_func_idx,
             stub_symbols_end: self.stubs_base.stub_symbols_end,
             stub_functions_end: self.stubs_base.stub_functions_end,
+            stub_class_names: self.stubs_base.stub_class_names.clone(),
             event_types: self.stubs_base.event_types.clone(),
             event_locations: self.stubs_base.event_locations.clone(),
             callback_registries: HashMap::new(),

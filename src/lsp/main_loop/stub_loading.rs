@@ -57,6 +57,7 @@ pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> 
     // modifier, which should only apply to actual WoW API stubs.
     stubs.pre_globals.stub_symbols_end = stubs.pre_globals.symbols_len();
     stubs.pre_globals.stub_functions_end = stubs.pre_globals.functions_len();
+    stubs.pre_globals.stub_class_names = stubs.stub_classes.iter().map(|c| c.name.clone()).collect();
     stubs.pre_globals.fixup_enum_tables();
     stubs.pre_globals.creates_global_specs =
         crate::annotations::build_creates_global_map(&stubs.stub_globals);

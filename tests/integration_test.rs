@@ -5701,3 +5701,45 @@ fn test_unused_function_cross_file() {
         "Dispatched:UnusedDynamicMethod should be flagged as unused, got: {:?}", unused_names,
     );
 }
+
+#[test]
+fn class_shadows_builtin() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-shadows-builtin.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn class_shadows_builtin_crossfile() {
+    // Cross-file record collision: a workspace @class reusing a stub class name with
+    // its own @field contract, used as a `@type table<K, CVarInfo>` field on a @class
+    // table (resolved against the external class set). missing-fields must scope the
+    // required set to the workspace's declared fields — no false positive — and the
+    // warning fires. Two files declare the class to exercise additive partial-class
+    // merging. Needs --with-stubs + scan_dir (the build_on_stubs path).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-shadows-crossfile/defs.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/class-shadows-crossfile"),
+    });
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-shadows-crossfile/partial.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/class-shadows-crossfile"),
+    });
+}
+
+#[test]
+fn class_shadows_builtin_library_additive() {
+    // A `library` file reusing a stub class name merges ADDITIVELY onto the built-in
+    // (the stub table is never replaced), so the stub Frame keeps SetPoint (no
+    // undefined-field) and the library's field is visible on top. This guarantees a
+    // suppressed-origin file can't silently strip a built-in type from other files.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-shadows-library/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/class-shadows-library"),
+    });
+}

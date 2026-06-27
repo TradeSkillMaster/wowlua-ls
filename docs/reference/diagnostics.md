@@ -55,6 +55,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `invalid-class-parent` | Inheriting from a non-table type (`number`, `string`, literals, etc.) |
 | `mixed-enum-values` | `@enum` with mixed number/string values or unsupported value types |
 | `unknown-callback-event` | Event name passed to a callback registry that was never declared via `GenerateCallbackEvents` **(off by default)** |
+| `class-shadows-builtin` | A workspace `@class` with its own `@field`s reuses a built-in WoW API class name |
 
 ## Hint severity
 

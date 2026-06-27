@@ -18,6 +18,28 @@ fn is_required_field(fi: &FieldInfo) -> bool {
     true
 }
 
+/// Required-field test that also honors built-in-stub-shadow scoping. When a
+/// workspace `@class` reuses a built-in stub class name, its OWN `@field`
+/// declarations form the construction contract — the stub's fields (additively
+/// merged onto the same table) are not part of it, so requiring them would
+/// false-positive on the workspace's own constructors. For such a class we
+/// require only the workspace-declared fields; for a plain stub class with no
+/// workspace `@field` contract, or any non-stub class, behavior is unchanged.
+fn is_required_contract_field(
+    analysis: &AnalysisResult,
+    class_name: &str,
+    field_name: &str,
+    fi: &FieldInfo,
+) -> bool {
+    if !is_required_field(fi) { return false; }
+    if analysis.ir.ext.stub_class_names.contains(class_name)
+        && let Some(declared) = analysis.ir.ext.declared_class_fields.get(class_name)
+    {
+        return declared.contains(field_name);
+    }
+    true
+}
+
 fn check_missing_fields(
     analysis: &AnalysisResult,
     ctor_idx: TableIndex,
@@ -36,7 +58,7 @@ fn check_missing_fields(
 
     let mut missing: Vec<&str> = Vec::new();
     for (field_name, fi) in &class_table.fields {
-        if !is_required_field(fi) { continue; }
+        if !is_required_contract_field(analysis, class_name, field_name, fi) { continue; }
         if !rhs_table.fields.contains_key(field_name.as_str()) {
             missing.push(field_name);
         }
@@ -76,10 +98,11 @@ fn check_missing_fields_union(
     // Check each union member: if any member is fully satisfied, no diagnostic
     for &class_idx in class_indices {
         let class_table = analysis.table(class_idx);
-        if class_table.class_name.is_none() { continue; }
+        let Some(class_name) = &class_table.class_name else { continue };
 
         let has_missing = class_table.fields.iter().any(|(field_name, fi)| {
-            is_required_field(fi) && !rhs_table.fields.contains_key(field_name.as_str())
+            is_required_contract_field(analysis, class_name, field_name, fi)
+                && !rhs_table.fields.contains_key(field_name.as_str())
         });
 
         if !has_missing {
@@ -94,8 +117,10 @@ fn check_missing_fields_union(
         .filter(|&idx| analysis.table(idx).class_name.is_some())
         .min_by_key(|&class_idx| {
             let class_table = analysis.table(class_idx);
+            let class_name = class_table.class_name.as_deref().unwrap_or_default();
             class_table.fields.iter().filter(|(field_name, fi)| {
-                is_required_field(fi) && !rhs_table.fields.contains_key(field_name.as_str())
+                is_required_contract_field(analysis, class_name, field_name, fi)
+                    && !rhs_table.fields.contains_key(field_name.as_str())
             }).count()
         });
 

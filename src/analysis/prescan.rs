@@ -386,9 +386,24 @@ impl<'a> Analysis<'a> {
         // When a local @class re-declares a name that exists externally (e.g. from
         // @built-name), merge in the external fields not overridden by local @field,
         // and import parent_classes (e.g. BaseState from @return built : BaseState).
+        //
+        // Exception: when a local @class reuses a built-in STUB class name AND
+        // declares its own explicit `@field` contract, it is a fresh record type
+        // that happens to collide with a built-in — do not import the stub's
+        // fields, so its constructors are checked against the local shape only
+        // (avoids false `missing-fields`). A stub-name reuse with NO explicit
+        // `@field`s is instead an *augmentation* (e.g. `@class ScrollBoxListMixin :
+        // CallbackRegistryMixin` whose `.Event` enum is synthesized onto the stub
+        // overlay, or a namespace table whose members are inferred from its
+        // constructor) and must still import the external fields.
         for (class_i, class) in scan.classes.iter().enumerate() {
             let local_idx = class_table_indices[class_i];
             if local_idx.is_external() { continue; }
+            if ext.stub_class_names.contains(&class.name)
+                && !class.declared_field_names.is_empty()
+            {
+                continue;
+            }
             if let Some(&ext_idx) = ext.classes.get(&class.name) {
                 let ext_fields: Vec<(String, FieldInfo)> = self.ir.table(ext_idx).fields.iter()
                     .map(|(k, v)| (k.clone(), v.clone()))

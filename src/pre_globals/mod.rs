@@ -314,6 +314,12 @@ pub struct PreResolvedGlobals {
     /// the (non-self-describing) bincode blob to avoid forcing a regeneration.
     #[serde(skip)]
     pub(crate) stub_functions_end: usize,
+    /// Class names that originated from precomputed WoW API stubs (not workspace).
+    /// Used by the `class-shadows-builtin` diagnostic to detect workspace `@class`
+    /// declarations that collide with built-in WoW API class names. Runtime only —
+    /// populated from `PrecomputedStubs.stub_classes` at load time.
+    #[serde(skip)]
+    pub(crate) stub_class_names: HashSet<String>,
     /// Event types: event_type_name → event_name → payload.
     /// Populated from `@event TypeName "EVENT_NAME"` annotations.
     #[serde(default)]
@@ -2591,6 +2597,7 @@ impl BuildContext {
             getmetatable_func_idx: self.getmetatable_func_idx,
             stub_symbols_end: 0,
             stub_functions_end: 0,
+            stub_class_names: HashSet::new(),
             event_types: HashMap::new(),
             event_locations: HashMap::new(),
             callback_registries: HashMap::new(),
@@ -2867,6 +2874,7 @@ impl PreResolvedGlobals {
             getmetatable_func_idx: None,
             stub_symbols_end: 0,
             stub_functions_end: 0,
+            stub_class_names: HashSet::new(),
             event_types: HashMap::new(),
             event_locations: HashMap::new(),
             callback_registries: HashMap::new(),

@@ -4,6 +4,7 @@ mod assign_type_mismatch;
 mod ast_checks;
 mod call_arity;
 mod cannot_call;
+mod class_shadows_builtin;
 mod create_global;
 mod destructure_arity;
 mod discard_returns;
@@ -165,6 +166,7 @@ pub(crate) const MIXED_ENUM_VALUES: DiagnosticDef       = DiagnosticDef { code: 
 pub(crate) const INVALID_CLASS_PARENT: DiagnosticDef     = DiagnosticDef { code: "invalid-class-parent",     severity: DiagnosticSeverity::WARNING };
 pub(crate) const INVALID_OP: DiagnosticDef               = DiagnosticDef { code: "invalid-op",               severity: DiagnosticSeverity::WARNING };
 pub(crate) const NIL_TABLE_KEY: DiagnosticDef            = DiagnosticDef { code: "nil-table-key",            severity: DiagnosticSeverity::WARNING };
+pub(crate) const CLASS_SHADOWS_BUILTIN: DiagnosticDef    = DiagnosticDef { code: "class-shadows-builtin",    severity: DiagnosticSeverity::WARNING };
 pub(crate) const SAFETY_LIMIT: DiagnosticDef            = DiagnosticDef { code: "safety-limit",             severity: DiagnosticSeverity::ERROR };
 
 const CATALOG: &[&DiagnosticDef] = &[
@@ -187,6 +189,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SHADOWED_LOCAL,
     &MIXED_ENUM_VALUES, &INVALID_CLASS_PARENT, &INVALID_OP, &NIL_TABLE_KEY, &SAFETY_LIMIT,
     &REDUNDANT_OR, &REDUNDANT_AND, &REDUNDANT_CONDITION, &UNKNOWN_CALLBACK_EVENT,
+    &CLASS_SHADOWS_BUILTIN,
 ];
 
 pub(crate) fn append_structural_details_suffix(
@@ -326,6 +329,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &expression_type::ExpressionType,
         &mixed_enum_values::MixedEnumValues,
         &destructure_arity::DestructureArity,
+        &class_shadows_builtin::ClassShadowsBuiltin,
     ];
     for pass in run_passes { pass.run(analysis, tree, &mut diags); }
 
