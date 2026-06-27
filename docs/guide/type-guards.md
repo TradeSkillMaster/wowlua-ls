@@ -110,6 +110,21 @@ frame:StartDragging() -- no warning
 
 The index is 1-based and refers to call-site argument position (not counting `self`). Only bare function call statements trigger the narrowing — assignments like `local x = Mixin(f, M)` use the return type instead.
 
+The narrowed argument can be a **field** as well as a local. A common pattern is creating a frame, storing it on a field, and mixing it in:
+
+```lua
+function MyPanelMixin:OnLoad()
+  self.Splitter = CreateFrame("Frame", nil, self)
+  Mixin(self.Splitter, SplitterMixin)
+end
+
+function MyPanelMixin:Refresh()
+  self.Splitter:Cancel() -- SplitterMixin's method resolves here, in another method
+end
+```
+
+The field's type becomes `Frame & SplitterMixin`, so the mixin's methods resolve on every read of `self.Splitter` — including from other methods of the same table. The same works for a field on a plain local table (`obj.x = ...; Mixin(obj.x, M)`).
+
 ## Literal boolean discrimination
 
 A related feature that doesn't need `@type-narrows`: when union member types have methods returning literal `true` or `false`, the LS discriminates automatically:

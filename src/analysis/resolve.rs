@@ -404,9 +404,13 @@ impl<'a> Analysis<'a> {
         // when deep field injections walk intermediate chains
         // (e.g. `self.display.wrapped = ...`).
         let had_deferred = !self.deferred_field_assignments.is_empty()
-            || !self.deep_field_injections.is_empty();
+            || !self.deep_field_injections.is_empty()
+            || !self.deferred_field_mixins.is_empty();
         self.resolve_deferred_field_assignments();
         self.resolve_deep_field_injections();
+        // Augment field types with `@narrows-arg` mixins (`Mixin(self.Child, M)`).
+        // Runs after the field-assignment pass so the base field type exists.
+        self.resolve_deferred_field_mixins();
         // The two passes above can add fields that didn't exist during the
         // fixpoint. Any local that read such a field (e.g. `local Thing =
         // Enum.Thing`, where `Enum` aliases a namespace sub-table via
@@ -2411,6 +2415,169 @@ impl<'a> Analysis<'a> {
                     description: None,
                     from_scan: false,
                 });
+            }
+        }
+    }
+
+    /// After the fixpoint, augment field types with `@narrows-arg` mixins recorded
+    /// for *field* targets (`Mixin(self.Child, M)`). The plain-local form pushes a
+    /// symbol version inline during build_ir, but a field has no symbol versions
+    /// and its receiver table (`self`) is only known after resolution — so the
+    /// field's resolved base type is intersected with each resolved mixin here
+    /// (`Frame & M`) and stored as the field's annotation, making the mixin's
+    /// members resolve on every read of the field, including from sibling methods.
+    /// Runs after `resolve_deferred_field_assignments` so the base field exists.
+    fn resolve_deferred_field_mixins(&mut self) {
+        let mixins = std::mem::take(&mut self.deferred_field_mixins);
+        if mixins.is_empty() {
+            return;
+        }
+        // (receiver table, field name) pairs actually augmented, so cache/symbol
+        // invalidation can be keyed on the table — not just the field name.
+        let mut augmented: std::collections::HashSet<(TableIndex, String)> = std::collections::HashSet::new();
+        for m in mixins {
+            // Resolve the root variable to its table (mirrors the field-assignment pass).
+            let Some(sym_idx) = self.ir.get_symbol(&SymbolIdentifier::Name(m.root_name.clone()), m.scope_idx) else { continue };
+            let ver_idx = self.ir.version_for_scope(sym_idx, m.scope_idx);
+            let type_source = self.ir.sym(sym_idx).versions[ver_idx].type_source;
+            let table_idx = type_source
+                .and_then(|ts| self.ir.find_table_index(ts))
+                .or_else(|| match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
+                    Some(ValueType::Table(Some(idx))) => Some(*idx),
+                    Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
+                        ValueType::Table(Some(idx)) => Some(*idx),
+                        _ => None,
+                    }),
+                    _ => None,
+                });
+            let Some(table_idx) = table_idx else { continue };
+
+            // Locate the field *directly* on this table (a local field or per-file
+            // overlay) — not an inherited one — and capture its current annotation
+            // and primary expr so we can resolve the base type without holding the
+            // borrow across `resolve_expr`.
+            let is_external = table_idx.is_external();
+            let base_src = if !is_external {
+                self.ir.table(table_idx).fields.get(&m.field_name)
+                    .map(|fi| (fi.annotation.clone(), fi.expr))
+            } else {
+                self.ir.get_overlay_field_mut(table_idx, &m.field_name)
+                    .map(|fi| (fi.annotation.clone(), fi.expr))
+            };
+            let Some((base_ann, base_expr)) = base_src else { continue };
+            let Some(base) = base_ann.or_else(|| self.resolve_expr(base_expr)) else { continue };
+
+            // Flatten the base into intersection members and append each resolved
+            // mixin (deduped). Only table / intersection mixins contribute.
+            let mut members: Vec<ValueType> = match base {
+                ValueType::Intersection(ms) => ms,
+                other => vec![other],
+            };
+            let start_len = members.len();
+            for me in &m.mixin_exprs {
+                match self.resolve_expr(*me) {
+                    Some(ValueType::Intersection(ms)) => {
+                        for x in ms {
+                            if !members.contains(&x) { members.push(x); }
+                        }
+                    }
+                    Some(mt @ ValueType::Table(_)) => {
+                        if !members.contains(&mt) { members.push(mt); }
+                    }
+                    _ => {}
+                }
+            }
+            if members.len() == start_len { continue; } // no mixin resolved/added
+            let combined = ValueType::Intersection(members);
+
+            // Store as the field's annotation so every read resolves to the
+            // combined type. `had_annotation_at_build` is false for the base
+            // (deferred) assignment, so this does not trigger `field-type-mismatch`.
+            let target = if !is_external {
+                self.ir.tables[table_idx.val()].fields.get_mut(&m.field_name)
+            } else {
+                self.ir.get_overlay_field_mut(table_idx, &m.field_name)
+            };
+            if let Some(fi) = target {
+                fi.annotation = Some(combined);
+                augmented.insert((table_idx, m.field_name));
+            }
+        }
+
+        if augmented.is_empty() {
+            return;
+        }
+        // Invalidate everything whose cached type was derived from an augmented
+        // field during the fixpoint, so it recomputes against the new
+        // intersection. Targeted (not a full cache wipe) so builder-chain results
+        // the read-only resolver can't recompute are left intact.
+        let augmented_names: std::collections::HashSet<&str> =
+            augmented.iter().map(|(_, f)| f.as_str()).collect();
+        // Seed: reads of an augmented field, matched on the *resolved receiver
+        // table* (not just the field name) so a same-named field on an unrelated
+        // table is untouched. The augmentation only adds intersection members, so
+        // the receiver's table identity is unchanged and safe to read here.
+        let field_reads: Vec<(usize, ExprId, String)> = self.ir.exprs.iter().enumerate()
+            .filter_map(|(i, e)| match e {
+                Expr::FieldAccess { table, field, .. } if augmented_names.contains(field.as_str()) =>
+                    Some((i, *table, field.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut stale: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (i, table_expr, field) in field_reads {
+            let on_augmented = match self.resolve_expr(table_expr) {
+                Some(ValueType::Table(Some(tidx))) => augmented.contains(&(tidx, field.clone())),
+                Some(ValueType::Intersection(ms)) | Some(ValueType::Union(ms)) => ms.iter().any(|t|
+                    matches!(t, ValueType::Table(Some(tidx)) if augmented.contains(&(*tidx, field.clone())))),
+                _ => false,
+            };
+            if on_augmented {
+                stale.insert(i);
+            }
+        }
+        // Expand the stale set: wrapper exprs that build on a stale read
+        // (`AssignNarrow` after the base assignment, narrowing strips, casts), and
+        // `SymbolRef` reads of locals whose `type_source` is itself stale — e.g.
+        // `local c = self.Child`, whose `resolved_type` was set to the pre-mixin
+        // base during the fixpoint.
+        loop {
+            let mut grew = false;
+            for i in 0..self.ir.exprs.len() {
+                if stale.contains(&i) { continue; }
+                let is_stale = match self.ir.expr(ExprId(i)) {
+                    Expr::Grouped(x) | Expr::StripNil(x) | Expr::StripFalsy(x)
+                    | Expr::StripTruthy(x) | Expr::CastAdd(x, _) | Expr::CastRemove(x, _)
+                    | Expr::TypeFilter(x, _) => stale.contains(&x.val()),
+                    Expr::AssignNarrow { inner, .. } => stale.contains(&inner.val()),
+                    Expr::SymbolRef(sym, ver) => self.ir.sym(*sym).versions.get(*ver)
+                        .and_then(|v| v.type_source)
+                        .is_some_and(|ts| stale.contains(&ts.val())),
+                    _ => false,
+                };
+                if is_stale {
+                    stale.insert(i);
+                    grew = true;
+                }
+            }
+            if !grew { break; }
+        }
+        for &idx in &stale {
+            if let Some(slot) = self.resolved_expr_cache.get_mut(idx) {
+                *slot = None;
+            }
+        }
+        // A local that copied an augmented field already has a stale `resolved_type`
+        // (the pre-mixin base). `reresolve_unresolved_after_deferred` only revisits
+        // symbols whose type stayed unknown, so clear those here so it recomputes
+        // them against the intersection.
+        for sym in &mut self.ir.symbols {
+            for ver in &mut sym.versions {
+                if ver.resolved_type.is_some()
+                    && ver.type_source.is_some_and(|ts| stale.contains(&ts.val()))
+                {
+                    ver.resolved_type = None;
+                }
             }
         }
     }

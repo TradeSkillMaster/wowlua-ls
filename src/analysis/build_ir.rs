@@ -3390,25 +3390,46 @@ impl<'a> Analysis<'a> {
         let Some(ast_args) = call.arguments() else { return };
         let arg_exprs = ast_args.expressions();
         let Some(arg_expr) = arg_exprs.get(narrows_param - 1) else { return };
-        // Only narrow simple identifiers (not field chains)
         let crate::ast::Expression::Identifier(arg_ident) = arg_expr else { return };
         let arg_names = arg_ident.names();
-        if arg_names.len() != 1 { return; }
-        let Some(arg_sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].to_string()), scope_idx) else { return };
-        if arg_sym_idx.is_external() { return; }
-        // Create a new symbol version whose type will resolve to the call's return type
-        let prev_ver = self.ir.version_for_scope(arg_sym_idx, scope_idx);
-        let node = self.ir.symbols[arg_sym_idx.val()].versions[prev_ver].def_node;
-        let order = self.ir.next_order();
-        self.ir.symbols[arg_sym_idx.val()].versions.push(SymbolVersion {
-            def_node: node,
-            type_source: Some(call_expr_id),
-            resolved_type: None,
-            type_args: Vec::new(),
-            created_in_scope: scope_idx,
-            creation_order: order,
-            original_type_source: None,
-        });
+        if arg_names.len() == 1 {
+            // Plain-local target (`Mixin(f, M)`): push a new symbol version whose
+            // type resolves to the call's return type (`f` becomes `T & M`).
+            let Some(arg_sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].to_string()), scope_idx) else { return };
+            if arg_sym_idx.is_external() { return; }
+            let prev_ver = self.ir.version_for_scope(arg_sym_idx, scope_idx);
+            let node = self.ir.symbols[arg_sym_idx.val()].versions[prev_ver].def_node;
+            let order = self.ir.next_order();
+            self.ir.symbols[arg_sym_idx.val()].versions.push(SymbolVersion {
+                def_node: node,
+                type_source: Some(call_expr_id),
+                resolved_type: None,
+                type_args: Vec::new(),
+                created_in_scope: scope_idx,
+                creation_order: order,
+                original_type_source: None,
+            });
+        } else if arg_names.len() == 2 {
+            // Field target (`Mixin(self.Child, M)`): a field has no symbol versions,
+            // so record a deferred mixin to augment the field's type after the
+            // Phase 2 fixpoint (its base type intersected with each mixin). The
+            // mixin arguments are every lowered call argument except the narrowed
+            // field target at `narrows_param`.
+            let mixin_exprs: Vec<ExprId> = match self.ir.expr(call_expr_id) {
+                Expr::FunctionCall { args, .. } => args.iter().enumerate()
+                    .filter(|(i, _)| *i != narrows_param - 1)
+                    .map(|(_, &e)| e)
+                    .collect(),
+                _ => return,
+            };
+            if mixin_exprs.is_empty() { return; }
+            self.deferred_field_mixins.push(crate::types::DeferredFieldMixin {
+                root_name: arg_names[0].to_string(),
+                field_name: arg_names[1].to_string(),
+                scope_idx,
+                mixin_exprs,
+            });
+        }
     }
 
     /// Extract an inline `--[[@as Type]]` annotation from tokens following an expression node.

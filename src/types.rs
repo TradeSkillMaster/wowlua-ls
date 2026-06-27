@@ -1210,6 +1210,26 @@ pub(crate) struct DeepFieldInjection {
     pub(crate) scope_idx: ScopeIndex,
 }
 
+/// Records a `@narrows-arg` mixin applied to a *field* target (e.g.
+/// `Mixin(self.Child, M)` after `self.Child = CreateFrame(...)`). The plain-local
+/// form of `@narrows-arg` is handled inline by pushing a symbol version (see
+/// `build_ir::try_narrows_arg`), but a field has no symbol versions, so its type
+/// is augmented after the Phase 2 fixpoint: the field's resolved base type is
+/// intersected with each resolved mixin (`Frame & M`) and stored as the field's
+/// annotation, so the mixin's methods resolve on every read of the field —
+/// including from sibling methods, which a scope-local flow narrowing can't reach.
+#[derive(Debug)]
+pub(crate) struct DeferredFieldMixin {
+    /// Root variable of the field target (`self` in `self.Child`, or a local table).
+    pub(crate) root_name: String,
+    /// The single field name being augmented (`Child` in `self.Child`).
+    pub(crate) field_name: String,
+    pub(crate) scope_idx: ScopeIndex,
+    /// Lowered expressions of the mixin arguments (every call argument except the
+    /// narrowed field target), each resolved to a table type and intersected in.
+    pub(crate) mixin_exprs: Vec<ExprId>,
+}
+
 /// Records a field assignment on a variable whose class table isn't known during Phase 1
 /// (e.g. `obj.field = expr` where obj's type comes from a function return). Resolved
 /// after the Phase 2 fixpoint when the symbol's type is available.

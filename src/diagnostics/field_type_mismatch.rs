@@ -72,6 +72,19 @@ impl DiagnosticPass for FieldTypeMismatch {
                     continue;
                 }
             }
+            // A scanned self-field whose type was augmented by a `@narrows-arg`
+            // mixin (`self.X = CreateFrame(...); Mixin(self.X, M)` → field type
+            // `Frame & M`) is intentionally assigned only its base value at the
+            // assignment site — the following `Mixin` call completes the type.
+            // Don't flag that base assignment against the fuller intersection
+            // when the assigned value matches one of the intersection members.
+            // (Gated on `from_scan` so an explicit `@field T & U` stays strict.)
+            if field_info.from_scan
+                && let ValueType::Intersection(members) = expected
+                && members.iter().any(|m| actual.is_assignable_to(m) || analysis.is_table_subtype(&actual, m))
+            {
+                continue;
+            }
             if fa.lateinit {
                 if matches!(actual, ValueType::Nil) { continue; }
                 let stripped = actual.strip_nil();

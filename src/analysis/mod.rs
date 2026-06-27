@@ -2230,6 +2230,9 @@ pub struct Analysis<'a> {
     pub(crate) ir: Ir,
     pub(crate) deep_field_injections: Vec<DeepFieldInjection>,
     pub(crate) deferred_field_assignments: Vec<DeferredFieldAssignment>,
+    /// `@narrows-arg` mixins applied to field targets (`Mixin(self.Child, M)`);
+    /// resolved after the fixpoint by `resolve_deferred_field_mixins`.
+    pub(crate) deferred_field_mixins: Vec<crate::types::DeferredFieldMixin>,
     // Metadata (written during build_ir, read during resolve+checks)
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
     /// Type-narrowing facts from control-flow guards (see `NarrowingState`).
@@ -2517,6 +2520,7 @@ impl<'a> Analysis<'a> {
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),
+            deferred_field_mixins: Vec::new(),
             referenced_symbols: HashSet::new(),
             functions_with_returns: HashSet::new(),
             resolving_exprs: Vec::new(),

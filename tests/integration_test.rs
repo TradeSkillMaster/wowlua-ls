@@ -4194,6 +4194,40 @@ fn self_field_mixin() {
     });
 }
 
+// `Mixin(self.field, M)` augments a field's type with the mixin (`Frame & M`) so
+// the mixin's methods resolve on every read of the field (same-method and from
+// sibling methods), the same outcome the plain-local `Mixin(f, M)` form gives.
+// Three cases:
+//   host.lua      — addon-ns mixin table (no `@class`), same-file cross-method
+//   classhost.lua — `@class` mixin, same-file cross-method
+//   reader.lua    — `Mixin(tbl.field, M)` on a function-local table
+#[test]
+fn mixin_self_field_addon_ns() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/mixin-self-field/host.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/mixin-self-field"),
+    });
+}
+
+#[test]
+fn mixin_self_field_class() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/mixin-self-field/classhost.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/mixin-self-field"),
+    });
+}
+
+#[test]
+fn mixin_self_field_local_table() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/mixin-self-field/reader.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/mixin-self-field"),
+    });
+}
+
 #[test]
 fn self_field_mixin_collision() {
     run_annotation_tests(&TestConfig {
