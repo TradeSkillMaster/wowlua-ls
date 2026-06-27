@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::types::*;
-use crate::annotations::{AnnotationType, ClassDecl, AliasDecl, parse_overload};
+use crate::annotations::{AnnotationType, ClassDecl, AliasDecl};
 
 use super::{
-    PreResolvedGlobals, annotation_type_references_type_params,
-    substitute_annotation_type, record_field_location, walk_deep_path,
+    PreResolvedGlobals,
+    record_field_location, walk_deep_path,
     resolve_funcall_chain, GlobalLookupCtx, populate_table_fields,
     FnBuildCtx, FnMeta, DeepPathCtx,
     apply_mixin_parent_inheritance,
@@ -122,24 +122,7 @@ impl<'a> BuildOnStubsContext<'a> {
     }
 
     fn register_global(&mut self, name: &str, resolved_type: Option<ValueType>) -> SymbolIndex {
-        let sym_idx = SymbolIndex(EXT_BASE + self.symbols.len());
-        self.symbols.push(Symbol {
-            id: SymbolIdentifier::Name(name.to_string()),
-            scope_idx: ScopeIndex(0),
-            versions: vec![SymbolVersion {
-                def_node: DefNode::DUMMY,
-                type_source: None,
-                resolved_type,
-                type_args: Vec::new(),
-                created_in_scope: ScopeIndex(0),
-                creation_order: 0,
-                original_type_source: None,
-            }],
-            flavor_guard: 0,
-            flavors: 0,
-        });
-        self.scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);
-        sym_idx
+        super::shared::register_global(&mut self.symbols, &mut self.scope0_symbols, name, resolved_type)
     }
 
     /// Returns true if this global entry has a deep path rooted at a class global,
@@ -192,269 +175,64 @@ impl<'a> BuildOnStubsContext<'a> {
     }
 
     fn register_classes_and_aliases(&mut self, ws_classes: &[ClassDecl], ws_aliases: &[AliasDecl]) {
-        // Register new class names (skip duplicates already in stubs).
-        //
-        // A workspace `@class` that collides with a *stub* class name is left
-        // ADDITIVE: its fields merge onto the existing slot via
-        // `populate_class_fields`, exactly as a workspace-to-workspace partial
-        // `@class` augmentation does. We deliberately do NOT replace the stub
-        // table, because reuse of a stub name is frequently a legitimate
-        // *augmentation* (e.g. `@class ScrollBoxListMixin : CallbackRegistryMixin`
-        // that adds a synthesized `.Event` enum via `@generates-events`, or a
-        // library adding a field) — replacing would strip the stub's (and any
-        // synthesized) fields workspace-wide. The "fresh record reused a builtin
-        // name" case (the motivating `missing-fields` false positive) is handled
-        // without touching the stub table: per-file `prescan` skips importing stub
-        // fields into a local `@class` that declares its own `@field` contract, and
+        // Register new class names with `skip_existing = true`, leaving any
+        // collision with a *stub* class name ADDITIVE: its fields merge onto the
+        // existing slot via `populate_class_fields`, exactly as a
+        // workspace-to-workspace partial `@class` augmentation does. We
+        // deliberately do NOT replace the stub table, because reuse of a stub name
+        // is frequently a legitimate *augmentation* (e.g.
+        // `@class ScrollBoxListMixin : CallbackRegistryMixin` that adds a
+        // synthesized `.Event` enum via `@generates-events`, or a library adding a
+        // field) — replacing would strip the stub's (and any synthesized) fields
+        // workspace-wide. The "fresh record reused a builtin name" case (the
+        // motivating `missing-fields` false positive) is handled without touching
+        // the stub table: per-file `prescan` skips importing stub fields into a
+        // local `@class` that declares its own `@field` contract, and
         // `diagnostics::missing_fields` scopes the required-field set to the
         // workspace's declared fields for such classes. `class-shadows-builtin`
         // warns at the declaration.
-        for class in ws_classes {
-            if self.classes.contains_key(&class.name) { continue; }
-            let table_idx = TableIndex(EXT_BASE + self.tables.len());
-            let accessors = class.accessors.iter().cloned().collect();
-            self.tables.push(TableInfo {
-                class_name: Some(class.name.clone()),
-                class_type_params: class.type_params.clone(),
-                class_type_param_constraints: class.type_param_constraints.clone(),
-                accessors,
-                constructors: class.constructor_methods.iter().cloned().collect(),
-                enum_kind: class.initial_enum_kind(),
-                is_key_enum: class.is_key_enum,
-                see: class.see.clone(),
-                ..Default::default()
-            });
-            self.classes.insert(class.name.clone(), table_idx);
-        }
-
-        // Register workspace aliases before populating fields so alias types
-        // are available during field type resolution.
-        for alias in ws_aliases {
-            if !alias.type_params.is_empty() {
-                self.parameterized_aliases.insert(alias.name.clone(), (alias.type_params.clone(), alias.typ.clone()));
-                if alias.type_param_constraints.iter().any(Option::is_some) {
-                    let parsed: Vec<Option<(String, crate::annotations::AnnotationType)>> = alias.type_param_constraints.iter().map(|c| {
-                        c.as_ref().map(|s| (s.clone(), crate::annotations::parse_type(s)))
-                    }).collect();
-                    self.parameterized_alias_constraints.insert(alias.name.clone(), parsed);
-                }
-            } else if crate::annotations::annotation_is_tuple_form(&alias.typ) {
-                self.tuple_form_aliases.insert(alias.name.clone(), alias.typ.clone());
-            } else if let Some(vt) = PreResolvedGlobals::resolve_annotation(&alias.typ, &self.classes, &self.aliases, &self.parameterized_aliases) {
-                if matches!(&vt, ValueType::Function(None)) {
-                    self.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
-                }
-                let vt = if alias.is_opaque {
-                    ValueType::OpaqueAlias(alias.name.clone(), Box::new(vt))
-                } else {
-                    vt
-                };
-                self.aliases.insert(alias.name.clone(), vt);
-            }
-            if let Some((start, end)) = alias.def_range
-                && let Some(ref path) = alias.def_path {
-                    self.alias_locations.insert(alias.name.clone(), ExternalLocation {
-                        path: path.clone(),
-                        start,
-                        end, ..Default::default()
-                    });
-                }
-        }
+        //
+        // The cold-path-only class_locations/constructor_method_names side maps
+        // are not kept here (the warm path derives them from stubs_base in
+        // finish()).
+        super::shared::register_classes_and_aliases(
+            ws_classes, ws_aliases,
+            &mut super::shared::ClassAliasRegistry {
+                classes: &mut self.classes,
+                tables: &mut self.tables,
+                aliases: &mut self.aliases,
+                alias_fun_types: &mut self.alias_fun_types,
+                parameterized_aliases: &mut self.parameterized_aliases,
+                parameterized_alias_constraints: &mut self.parameterized_alias_constraints,
+                tuple_form_aliases: &mut self.tuple_form_aliases,
+                alias_locations: &mut self.alias_locations,
+            },
+            true,
+        );
     }
 
     fn populate_class_fields(&mut self, ws_classes: &[ClassDecl]) {
-        let dummy_node = DefNode::DUMMY;
-
-        // Populate @field entries for workspace classes
-        for class in ws_classes {
-            let table_idx = self.classes[&class.name];
-            let local_idx = table_idx.ext_offset();
-            // Record per-field locations from ClassDecl.field_ranges
-            for (field_name, &(start, end)) in &class.field_ranges {
-                let path = class.field_paths.get(field_name).or(class.def_path.as_ref());
-                if let Some(path) = path {
-                    self.field_locations.entry(table_idx).or_default()
-                        .insert(field_name.clone(), ExternalLocation {
-                            path: path.clone(),
-                            start,
-                            end, ..Default::default()
-                        });
-                }
-            }
-            // Propagate declared_field_names for doc generation filtering
-            if !class.declared_field_names.is_empty() {
-                self.declared_class_fields.entry(class.name.clone())
-                    .or_default()
-                    .extend(class.declared_field_names.iter().cloned());
-            }
-            for (field_name, annotation_type, visibility) in &class.fields {
-                if field_name.starts_with('[') && field_name.ends_with(']') {
-                    let inner = &field_name[1..field_name.len()-1];
-                    let is_string = inner == "string";
-                    let is_number = inner == "number";
-                    let is_type_param = self.tables[local_idx].class_type_params.iter().any(|tp| tp == inner);
-                    if is_string || is_number || is_type_param {
-                        let gen_context: Vec<(String, Option<String>)> = self.tables[local_idx].class_type_params.iter()
-                            .map(|tp| (tp.clone(), None)).collect();
-                        let vt = PreResolvedGlobals::resolve_annotation_gen(annotation_type, &self.classes, &self.aliases, &self.parameterized_aliases, &gen_context, &mut self.tables, &mut self.exprs)
-                            .or_else(|| self.resolve_annotation(annotation_type));
-                        if let Some(vt) = vt {
-                            if is_string {
-                                self.tables[local_idx].key_type = Some(ValueType::String(None));
-                            } else if is_number {
-                                self.tables[local_idx].key_type = Some(ValueType::Number);
-                            } else {
-                                self.tables[local_idx].key_type = Some(ValueType::TypeVariable(inner.to_string()));
-                            }
-                            self.tables[local_idx].value_type = Some(vt);
-                        }
-                        continue;
-                    }
-                }
-                // Use resolve_annotation_gen (like BuildContext) to materialize
-                // structured types (table<K,V>, T[], fun()) into proper entries.
-                // Previously only resolve_annotation was called here, which returned
-                // Table(None) for Parameterized("table", ...) — losing key/value types.
-                let vt = if let AnnotationType::Simple(name) = annotation_type {
-                    if let Some(sig) = parse_overload(name) {
-                        let func_idx = PreResolvedGlobals::build_function(
-                            FnMeta::minimal(&sig.params, &sig.returns, dummy_node),
-                            &mut self.fn_build_ctx(),
-                        );
-                        Some(ValueType::Function(Some(func_idx)))
-                    } else {
-                        let gen_context: Vec<(String, Option<String>)> = self.tables[local_idx].class_type_params.iter()
-                            .map(|tp| (tp.clone(), None)).collect();
-                        PreResolvedGlobals::resolve_annotation_gen(annotation_type, &self.classes, &self.aliases, &self.parameterized_aliases, &gen_context, &mut self.tables, &mut self.exprs)
-                            .or_else(|| self.resolve_annotation(annotation_type))
-                    }
-                } else {
-                    let gen_context: Vec<(String, Option<String>)> = self.tables[local_idx].class_type_params.iter()
-                        .map(|tp| (tp.clone(), None)).collect();
-                    self.resolve_field_annotation(annotation_type, &gen_context, dummy_node)
-                };
-                let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
-                let bare_inferred = class.bare_inferred_field_names.contains(field_name);
-                if let Some(vt) = vt {
-                    let expr_idx = ExprId(EXT_BASE + self.exprs.len());
-                    self.exprs.push(Expr::Literal(vt.clone()));
-                    self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
-                        expr: expr_idx,
-                        visibility: *visibility,
-                        annotation: Some(vt),
-                        annotation_text: None,
-                        annotation_type_raw: Some(annotation_type.clone()),
-                        lateinit: is_lateinit,
-                        def_range: None,
-                        extra_exprs: Vec::new(),
-                        flavor_guard: 0,
-                        description: class.field_descriptions.get(field_name).cloned(),
-                        from_scan: bare_inferred,
-                    });
-                } else if annotation_type_references_type_params(annotation_type, &self.tables[local_idx].class_type_params) {
-                    let expr_idx = ExprId(EXT_BASE + self.exprs.len());
-                    self.exprs.push(Expr::Literal(ValueType::Nil));
-                    self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
-                        expr: expr_idx,
-                        visibility: *visibility,
-                        annotation: None,
-                        annotation_text: None,
-                        annotation_type_raw: Some(annotation_type.clone()),
-                        lateinit: is_lateinit,
-                        def_range: None,
-                        extra_exprs: Vec::new(),
-                        flavor_guard: 0,
-                        description: class.field_descriptions.get(field_name).cloned(),
-                        from_scan: bare_inferred,
-                    });
-                }
-            }
-
-            if class.is_enum && !class.is_key_enum {
-                super::finalize_enum_kind_for_class(&mut self.tables, local_idx);
-            }
-        }
-
-        // Build call functions from @overload on workspace @class declarations
-        for class in ws_classes {
-            if class.overloads.is_empty() { continue; }
-            let table_idx = self.classes[&class.name];
-            let local_idx = table_idx.ext_offset();
-            let overload = &class.overloads[0];
-            let func_idx = PreResolvedGlobals::build_function(
-                FnMeta {
-                    generic_annotations: &class.generics,
-                    owner_class_name: Some(&class.name),
-                    class_type_params: &class.type_params,
-                    ..FnMeta::minimal(&overload.params, &overload.returns, dummy_node)
-                },
-                &mut self.fn_build_ctx(),
-            );
-            self.tables[local_idx].call_func = Some(func_idx);
-        }
+        super::shared::populate_class_fields(
+            ws_classes,
+            &mut FnBuildCtx {
+                scopes: &mut self.scopes,
+                symbols: &mut self.symbols,
+                functions: &mut self.functions,
+                tables: &mut self.tables,
+                exprs: &mut self.exprs,
+                classes: &self.classes,
+                aliases: &self.aliases,
+                parameterized_aliases: &self.parameterized_aliases,
+                alias_fun_types: &self.alias_fun_types,
+            },
+            &mut self.declared_class_fields,
+            &mut self.field_locations,
+            &mut self.string_literals,
+            &mut self.number_literals,
+        );
 
     }
 
-    /// Resolve a field annotation type, materializing `Fun(...)` types into proper
-    /// Function entries with parameter symbols. Without this, `@field name fun(...)`
-    /// from workspace-scanned classes would resolve to `Function(None)`, preventing
-    /// call resolution, string literal completions, and diagnostics.
-    fn resolve_field_annotation(
-        &mut self,
-        annotation_type: &AnnotationType,
-        gen_context: &[(String, Option<String>)],
-        dummy_node: DefNode,
-    ) -> Option<ValueType> {
-        match annotation_type {
-            AnnotationType::Fun(params, returns, is_vararg) => {
-                Some(PreResolvedGlobals::materialize_fun_type(
-                    params, returns, *is_vararg, gen_context, dummy_node, &mut self.fn_build_ctx(),
-                ))
-            }
-            AnnotationType::Union(members) => {
-                let converted: Vec<ValueType> = members.iter()
-                    .filter_map(|m| self.resolve_field_annotation(m, gen_context, dummy_node))
-                    .collect();
-                if converted.is_empty() {
-                    None
-                } else if converted.len() == 1 {
-                    converted.into_iter().next()
-                } else {
-                    Some(ValueType::Union(converted))
-                }
-            }
-            AnnotationType::NonNil(inner) => {
-                self.resolve_field_annotation(inner, gen_context, dummy_node)
-            }
-            AnnotationType::Intersection(parts) => {
-                let converted: Vec<ValueType> = parts.iter()
-                    .filter_map(|p| self.resolve_field_annotation(p, gen_context, dummy_node))
-                    .collect();
-                match converted.len() {
-                    0 => None,
-                    1 => converted.into_iter().next(),
-                    _ => Some(ValueType::Intersection(converted)),
-                }
-            }
-            AnnotationType::Array(inner) => {
-                if let Some(elem_vt) = self.resolve_field_annotation(inner, gen_context, dummy_node) {
-                    let table_idx = TableIndex(EXT_BASE + self.tables.len());
-                    self.tables.push(TableInfo {
-                        key_type: Some(ValueType::Number),
-                        value_type: Some(elem_vt),
-                        ..Default::default()
-                    });
-                    Some(ValueType::Table(Some(table_idx)))
-                } else {
-                    Some(ValueType::Table(None))
-                }
-            }
-            _ => {
-                PreResolvedGlobals::resolve_annotation_gen(annotation_type, &self.classes, &self.aliases, &self.parameterized_aliases, gen_context, &mut self.tables, &mut self.exprs)
-                    .or_else(|| self.resolve_annotation(annotation_type))
-            }
-        }
-    }
 
     fn build_methods_and_table_fields(&mut self, ws_globals: &[crate::annotations::ExternalGlobal], ws_classes: &[ClassDecl]) {
         use crate::annotations::{ExternalGlobalKind, FieldValueKind};
@@ -785,19 +563,8 @@ impl<'a> BuildOnStubsContext<'a> {
                         self.number_literals.insert(expr_idx, val.clone());
                     }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
-                    self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
-                        expr: expr_idx,
-                        visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
-                        annotation,
-                        annotation_text: None,
-                        annotation_type_raw: None,
-                        lateinit: false,
-                        def_range: None,
-                        extra_exprs: Vec::new(),
-                        flavor_guard: g.flavor_guard,
-                        description: None,
-                        from_scan: true,
-                    });
+                    self.tables[local_idx].fields.insert(field_name.clone(),
+                        super::shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix));
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                 }
             }
@@ -829,352 +596,21 @@ impl<'a> BuildOnStubsContext<'a> {
                 };
                 let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::Literal(value_type.clone()));
-                self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
-                    expr: expr_idx,
-                    visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
-                    annotation: None,
-                    annotation_text: None,
-                    annotation_type_raw: None,
-                    lateinit: false,
-                    def_range: None,
-                    extra_exprs: Vec::new(),
-                    flavor_guard: g.flavor_guard,
-                    description: None,
-                    from_scan: true,
-                });
+                self.tables[local_idx].fields.insert(field_name.clone(),
+                    super::shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix));
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
             }
         }
     }
 
     fn mark_callable_classes(&mut self, callable_classes: &HashSet<String>) {
-        let dummy_node = DefNode::DUMMY;
-        let vararg_param = crate::annotations::ParamInfo {
-            name: "...".to_string(),
-            typ: AnnotationType::Simple("any".to_string()),
-            optional: false,
-            description: None,
-        };
-        for name in callable_classes {
-            let Some(&table_idx) = self.classes.get(name.as_str()) else { continue };
-            let local_idx = table_idx.ext_offset();
-            if self.tables[local_idx].call_func.is_some() { continue; }
-            let func_idx = PreResolvedGlobals::build_function(
-                FnMeta::minimal(std::slice::from_ref(&vararg_param), &[], dummy_node),
-                &mut self.fn_build_ctx(),
-            );
-            self.tables[local_idx].call_func = Some(func_idx);
-            self.tables[local_idx].call_func_is_metamethod = true;
-        }
+        super::shared::mark_callable_classes(callable_classes, &mut self.fn_build_ctx());
     }
 
     fn resolve_inheritance(&mut self, ws_classes: &[ClassDecl]) {
-        // Resolve direct `table<K,V>` parents before the topo sort so
-        // transitive inheritance can propagate key_type/value_type to children.
-        for class in ws_classes.iter() {
-            let Some(&child_table_idx) = self.classes.get(class.name.as_str()) else { continue };
-            let child_local = child_table_idx.ext_offset();
-            for parent_name in &class.parents {
-                if !parent_name.contains('<') { continue; }
-                let at = crate::annotations::parse_type(parent_name);
-                if let crate::annotations::AnnotationType::Parameterized(base, args) = &at
-                    && base == "table" && args.len() == 2
-                    && let Some(key_vt) = crate::annotations::resolve_annotation_type(&args[0], &[], &self.classes, &self.aliases)
-                    && let Some(value_vt) = crate::annotations::resolve_annotation_type(&args[1], &[], &self.classes, &self.aliases) {
-                        self.tables[child_local].key_type = Some(key_vt);
-                        self.tables[child_local].value_type = Some(value_vt);
-                    }
-            }
-        }
-
-        // Resolve inheritance for workspace classes via topological sort.
-        // Without topo sort, a child processed before its parent would miss
-        // transitive ancestors (e.g. DestroyingScrollTable → ScrollTable → List → Element).
-        {
-            // Resolve each class's parent names to the base class to link, handling
-            // identity-forwarding parameterized parents (`Child<T> : Parent<T>`).
-            // Indexed parallel to `ws_classes`.
-            let lookup_parents: Vec<Vec<String>> = ws_classes.iter()
-                .map(|c| c.parents.iter()
-                    .filter_map(|p| crate::annotations::parent_link_with_bindings(p).map(|(b, _)| b))
-                    .collect())
-                .collect();
-            let mut ws_class_index: HashMap<&str, usize> = HashMap::new();
-            for (i, class) in ws_classes.iter().enumerate() {
-                ws_class_index.insert(&class.name, i);
-            }
-            let mut children_of: HashMap<&str, Vec<usize>> = HashMap::new();
-            let mut in_degree: Vec<usize> = vec![0; ws_classes.len()];
-            for (i, parents) in lookup_parents.iter().enumerate() {
-                for parent_name in parents {
-                    // Only count in-degree for parents that are also workspace classes
-                    if ws_class_index.contains_key(parent_name.as_str()) {
-                        children_of.entry(parent_name.as_str()).or_default().push(i);
-                        in_degree[i] += 1;
-                    }
-                }
-            }
-            // Kahn's algorithm
-            let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
-            for (i, &deg) in in_degree.iter().enumerate() {
-                if deg == 0 { queue.push_back(i); }
-            }
-            let mut order: Vec<usize> = Vec::with_capacity(ws_classes.len());
-            let mut processed_names: HashSet<&str> = HashSet::new();
-            while let Some(idx) = queue.pop_front() {
-                let name = ws_classes[idx].name.as_str();
-                if !processed_names.insert(name) { continue; }
-                order.push(idx);
-                if let Some(kids) = children_of.get(name) {
-                    for &kid in kids {
-                        in_degree[kid] = in_degree[kid].saturating_sub(1);
-                        if in_degree[kid] == 0 { queue.push_back(kid); }
-                    }
-                }
-            }
-            // Append any remaining (cycles)
-            for i in 0..ws_classes.len() {
-                if in_degree[i] > 0 && processed_names.insert(ws_classes[i].name.as_str()) {
-                    order.push(i);
-                }
-            }
-            // Compute transitive parent_classes in topo order
-            for &idx in &order {
-                let class = &ws_classes[idx];
-                if class.parents.is_empty() { continue; }
-                let Some(&child_table_idx) = self.classes.get(class.name.as_str()) else { continue };
-                let child_local = child_table_idx.ext_offset();
-                let mut transitive_parents: Vec<TableIndex> = self.tables[child_local].parent_classes.clone();
-                for parent_name in &lookup_parents[idx] {
-                    if let Some(&parent_idx) = self.classes.get(parent_name.as_str()) {
-                        if !transitive_parents.contains(&parent_idx) {
-                            transitive_parents.push(parent_idx);
-                        }
-                        let parent_local = parent_idx.ext_offset();
-                        for &ancestor in &self.tables[parent_local].parent_classes {
-                            if !transitive_parents.contains(&ancestor) {
-                                transitive_parents.push(ancestor);
-                            }
-                        }
-                    }
-                }
-                self.tables[child_local].parent_classes = transitive_parents;
-                // Inherit key_type/value_type from parent class chain
-                if self.tables[child_local].key_type.is_none() {
-                    for parent_name in &lookup_parents[idx] {
-                        if let Some(&parent_idx) = self.classes.get(parent_name.as_str()) {
-                            let parent_local = parent_idx.ext_offset();
-                            if let (Some(kt), Some(vt)) = (
-                                self.tables[parent_local].key_type.clone(),
-                                self.tables[parent_local].value_type.clone(),
-                            ) {
-                                self.tables[child_local].key_type = Some(kt);
-                                self.tables[child_local].value_type = Some(vt);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            // Accumulate parents from duplicate ClassDecl entries (same name, different parents).
-            // The topo sort only processed one entry per name, but duplicates may have
-            // additional parents (e.g. defclass scan adds specific parent while built-name
-            // scan adds an empty-parent entry for the same class).
-            // Note: iterates in insertion order, not topo order. This is safe because
-            // duplicates are typically leaf classes (from @built-name), not parents.
-            for (ci, class) in ws_classes.iter().enumerate() {
-                if class.parents.is_empty() { continue; }
-                let Some(&child_table_idx) = self.classes.get(class.name.as_str()) else { continue };
-                let child_local = child_table_idx.ext_offset();
-                let mut accum = self.tables[child_local].parent_classes.clone();
-                let mut changed = false;
-                for parent_name in &lookup_parents[ci] {
-                    if let Some(&parent_idx) = self.classes.get(parent_name.as_str())
-                        && !accum.contains(&parent_idx) {
-                            accum.push(parent_idx);
-                            changed = true;
-                            let parent_local = parent_idx.ext_offset();
-                            for &ancestor in &self.tables[parent_local].parent_classes {
-                                if !accum.contains(&ancestor) {
-                                    accum.push(ancestor);
-                                }
-                            }
-                        }
-                }
-                if changed {
-                    self.tables[child_local].parent_classes = accum;
-                }
-            }
-        }
-
-        // Record direct-parent type-arg bindings for ANY parameterized parent
-        // (including renamed/non-identity ones like `Child<TCur,TShared> :
-        // Parent<TCur>`). Independent of `parent_classes` linkage — this only
-        // drives ancestor type-param translation at call resolution.
-        for class in ws_classes.iter() {
-            if class.parents.is_empty() { continue; }
-            let Some(&child_table_idx) = self.classes.get(class.name.as_str()) else { continue };
-            let child_local = child_table_idx.ext_offset();
-            let bindings_to_record = crate::annotations::collect_parent_type_bindings(
-                &class.parents, &class.type_params, &self.classes,
-                |a, g| crate::annotations::resolve_annotation_type(a, g, &self.classes, &self.aliases),
-            );
-            for (parent_idx, b) in bindings_to_record {
-                if !self.tables[child_local].parent_type_bindings.iter().any(|(pi, _)| *pi == parent_idx) {
-                    self.tables[child_local].parent_type_bindings.push((parent_idx, b));
-                }
-            }
-        }
-
-        // Pass 3b: constraint type param substitutions for workspace classes
-        for class in ws_classes.iter() {
-            if class.constraint_type_arg_subs.is_empty() { continue; }
-            let child_local = self.classes[&class.name].ext_offset();
-            for (constraint_base, resolved_args) in &class.constraint_type_arg_subs {
-                let Some(&parent_idx) = self.classes.get(constraint_base.as_str()) else { continue };
-                let parent_local = parent_idx.ext_offset();
-                let parent_type_params = self.tables[parent_local].class_type_params.clone();
-                if parent_type_params.is_empty() || parent_type_params.len() != resolved_args.len() {
-                    continue;
-                }
-                let mut subs: HashMap<String, TableIndex> = HashMap::new();
-                for (tp, resolved_name) in parent_type_params.iter().zip(resolved_args.iter()) {
-                    if let Some(&tidx) = self.classes.get(resolved_name.as_str()) {
-                        subs.insert(tp.clone(), tidx);
-                    }
-                }
-                if subs.is_empty() { continue; }
-                let parents = self.tables[child_local].parent_classes.clone();
-                for &pi in &parents {
-                    let pi_local = pi.ext_offset();
-                    let parent_fields: Vec<(String, FieldInfo)> = self.tables[pi_local].fields.iter()
-                        .filter(|(_, fi)| fi.annotation_type_raw.as_ref()
-                            .is_some_and(|raw| annotation_type_references_type_params(raw, &parent_type_params)))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    for (fname, fi) in parent_fields {
-                        if self.tables[child_local].fields.contains_key(&fname) { continue; }
-                        let raw = fi.annotation_type_raw.as_ref().unwrap().clone();
-                        let substituted = substitute_annotation_type(&raw, &subs, &self.classes);
-                        if let Some(resolved) = crate::annotations::resolve_annotation_type(
-                            &substituted, &[], &self.classes, &self.aliases,
-                        ) {
-                            let mut child_fi = fi;
-                            child_fi.annotation = Some(resolved);
-                            self.tables[child_local].fields.insert(fname, child_fi);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Pass 3c: Substitute inherited field types based on field_built_names overrides.
-        // (Mirrors the same pass in build().)
-        {
-            let mut built_extends_parents: Vec<(TableIndex, TableIndex)> = Vec::new();
-            let mut class_decls_by_name: HashMap<&str, Vec<usize>> = HashMap::new();
-            for (i, c) in ws_classes.iter().enumerate() {
-                class_decls_by_name.entry(c.name.as_str()).or_default().push(i);
-            }
-            for class in ws_classes.iter() {
-                if class.field_built_names.is_empty() { continue; }
-                let Some(&child_table_idx) = self.classes.get(class.name.as_str()) else { continue };
-                let child_local = child_table_idx.ext_offset();
-                let mut type_subs: HashMap<String, TableIndex> = HashMap::new();
-                let mut ancestor_names: HashSet<String> = HashSet::new();
-                let mut queue: Vec<String> = class.parents.clone();
-                while let Some(parent_name) = queue.pop() {
-                    if !ancestor_names.insert(parent_name.clone()) { continue; }
-                    if let Some(&pidx) = self.classes.get(parent_name.as_str()) {
-                        if let Some(cn) = self.tables[pidx.ext_offset()].class_name.as_ref()
-                            && ancestor_names.insert(cn.clone()) {
-                                queue.push(cn.clone());
-                            }
-                        for &gp_idx in &self.tables[pidx.ext_offset()].parent_classes {
-                            if let Some(gp_cn) = self.tables[gp_idx.ext_offset()].class_name.as_ref()
-                                && !ancestor_names.contains(gp_cn) {
-                                    queue.push(gp_cn.clone());
-                                }
-                        }
-                    }
-                    if let Some(indices) = class_decls_by_name.get(parent_name.as_str()) {
-                        for &idx in indices {
-                            for p in &ws_classes[idx].parents {
-                                if !ancestor_names.contains(p) {
-                                    queue.push(p.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-                for (field_name, child_built) in &class.field_built_names {
-                    for ancestor_name in &ancestor_names {
-                        if let Some(indices) = class_decls_by_name.get(ancestor_name.as_str()) {
-                            for &idx in indices {
-                                if let Some(ancestor_built) = ws_classes[idx].field_built_names.get(field_name)
-                                    && ancestor_built != child_built
-                                        && let Some(&new_idx) = self.classes.get(child_built.as_str()) {
-                                            type_subs.insert(ancestor_built.clone(), new_idx);
-                                        }
-                            }
-                        }
-                    }
-                }
-                if type_subs.is_empty() { continue; }
-                for (old_class_name, &new_idx) in &type_subs {
-                    if let Some(&old_idx) = self.classes.get(old_class_name.as_str()) {
-                        built_extends_parents.push((new_idx, old_idx));
-                    }
-                }
-                let mut fields_to_sub: Vec<(String, FieldInfo)> = Vec::new();
-                for (fname, fi) in &self.tables[child_local].fields {
-                    if let Some(ValueType::Table(Some(tidx))) = &fi.annotation
-                        && tidx.is_external() {
-                            let tidx_local = tidx.ext_offset();
-                            if let Some(old_class_name) = self.tables[tidx_local].class_name.as_ref()
-                                && type_subs.contains_key(old_class_name) {
-                                    fields_to_sub.push((fname.clone(), fi.clone()));
-                                }
-                        }
-                }
-                let parents = self.tables[child_local].parent_classes.clone();
-                for &pi in &parents {
-                    let pi_local = pi.ext_offset();
-                    for (fname, fi) in &self.tables[pi_local].fields {
-                        if self.tables[child_local].fields.contains_key(fname) { continue; }
-                        if let Some(ValueType::Table(Some(tidx))) = &fi.annotation
-                            && tidx.is_external() {
-                                let tidx_local = tidx.ext_offset();
-                                if let Some(old_class_name) = self.tables[tidx_local].class_name.as_ref()
-                                    && type_subs.contains_key(old_class_name) {
-                                        fields_to_sub.push((fname.clone(), fi.clone()));
-                                    }
-                            }
-                    }
-                }
-                for (fname, fi) in fields_to_sub {
-                    if let Some(ValueType::Table(Some(tidx))) = &fi.annotation {
-                        let tidx_local = tidx.ext_offset();
-                        if let Some(old_class_name) = self.tables[tidx_local].class_name.as_ref()
-                            && let Some(&new_idx) = type_subs.get(old_class_name) {
-                                let new_vt = ValueType::Table(Some(new_idx));
-                                let new_expr_idx = ExprId(EXT_BASE + self.exprs.len());
-                                self.exprs.push(Expr::Literal(new_vt.clone()));
-                                let mut child_fi = fi.clone();
-                                child_fi.annotation = Some(new_vt);
-                                child_fi.expr = new_expr_idx;
-                                self.tables[child_local].fields.insert(fname, child_fi);
-                            }
-                    }
-                }
-            }
-            for (new_idx, old_idx) in built_extends_parents {
-                let new_local = new_idx.ext_offset();
-                if !self.tables[new_local].parent_classes.contains(&old_idx) {
-                    self.tables[new_local].parent_classes.push(old_idx);
-                }
-            }
-        }
+        super::shared::resolve_inheritance(
+            ws_classes, &self.classes, &self.aliases, &mut self.tables, &mut self.exprs,
+        );
     }
 
     fn build_global_entries(&mut self, ws_globals: &[crate::annotations::ExternalGlobal]) {
@@ -1311,19 +747,8 @@ impl<'a> BuildOnStubsContext<'a> {
                     if let Some(vt) = resolved {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
-                        self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
-                            expr: expr_idx,
-                            visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
-                            annotation: Some(vt),
-                            annotation_text: None,
-                            annotation_type_raw: None,
-                            lateinit: false,
-                            def_range: None,
-                            extra_exprs: Vec::new(),
-                            flavor_guard: 0,
-                            description: None,
-                            from_scan: true,
-                        });
+                        self.tables[local_idx].fields.insert(field_name.clone(),
+                            super::shared::scan_literal_field(expr_idx, field_name, Some(vt), 0, self.implicit_protected_prefix));
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                     continue;
@@ -1355,19 +780,8 @@ impl<'a> BuildOnStubsContext<'a> {
                         ValueType::Table(Some(_)) => Some(vt.clone()),
                         _ => None,
                     };
-                    self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
-                        expr: expr_idx,
-                        visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
-                        annotation,
-                        annotation_text: None,
-                        annotation_type_raw: None,
-                        lateinit: false,
-                        def_range: None,
-                        extra_exprs: Vec::new(),
-                        flavor_guard: 0,
-                        description: None,
-                        from_scan: true,
-                    });
+                    self.tables[local_idx].fields.insert(field_name.clone(),
+                        super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix));
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
             }
@@ -1405,19 +819,8 @@ impl<'a> BuildOnStubsContext<'a> {
                     if let Some(vt) = resolved {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt));
-                        self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
-                            expr: expr_idx,
-                            visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
-                            annotation: None,
-                            annotation_text: None,
-                            annotation_type_raw: None,
-                            lateinit: false,
-                            def_range: None,
-                            extra_exprs: Vec::new(),
-                            flavor_guard: 0,
-                            description: None,
-                            from_scan: true,
-                        });
+                        self.tables[local_idx].fields.insert(field_name.clone(),
+                            super::shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix));
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                     continue;
@@ -1474,19 +877,8 @@ impl<'a> BuildOnStubsContext<'a> {
                     if let Some(vt) = resolved {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
-                        self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
-                            expr: expr_idx,
-                            visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
-                            annotation: None,
-                            annotation_text: None,
-                            annotation_type_raw: None,
-                            lateinit: false,
-                            def_range: None,
-                            extra_exprs: Vec::new(),
-                            flavor_guard: 0,
-                            description: None,
-                            from_scan: true,
-                        });
+                        self.tables[local_idx].fields.insert(field_name.clone(),
+                            super::shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix));
                     }
                 }
             }
@@ -1545,19 +937,8 @@ impl<'a> BuildOnStubsContext<'a> {
                         self.number_literals.insert(expr_idx, val.clone());
                     }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
-                    self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
-                        expr: expr_idx,
-                        visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
-                        annotation,
-                        annotation_text: None,
-                        annotation_type_raw: None,
-                        lateinit: false,
-                        def_range: None,
-                        extra_exprs: Vec::new(),
-                        flavor_guard: 0,
-                        description: None,
-                        from_scan: true,
-                    });
+                    self.tables[local_idx].fields.insert(field_name.clone(),
+                        super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix));
                 }
             }
         }
@@ -1619,23 +1000,8 @@ impl<'a> BuildOnStubsContext<'a> {
                 }
         }
 
-        let deferred_returns_by_path = {
-            let mut by_path: HashMap<PathBuf, Vec<FunctionIndex>> = HashMap::new();
-            for &fidx in &self.deferred_returns {
-                if let Some(loc) = self.function_locations.get(&fidx) {
-                    by_path.entry(loc.path.clone()).or_default().push(fidx);
-                }
-            }
-            by_path
-        };
-
-        let deferred_call_globals_by_path = {
-            let mut by_path: HashMap<PathBuf, Vec<SymbolIndex>> = HashMap::new();
-            for (sym_idx, dcg) in &self.deferred_call_globals {
-                by_path.entry(dcg.path.clone()).or_default().push(*sym_idx);
-            }
-            by_path
-        };
+        let deferred_returns_by_path = super::shared::deferred_returns_by_path(&self.deferred_returns, &self.function_locations);
+        let deferred_call_globals_by_path = super::shared::deferred_call_globals_by_path(&self.deferred_call_globals);
 
         // Constructor self-fields whose coarse type is `any` — record where their
         // RHS call lives so the precise generic type args can be harvested lazily.
