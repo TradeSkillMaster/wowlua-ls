@@ -174,6 +174,33 @@ function BtnMix:Init()
     takeFrame(self)
 end
 
+-- Built-in intrinsic element mixins: <ItemButton>/<EventFrame> are Blizzard
+-- intrinsics not declared in this addon's XML. They must still be recognized as
+-- frame elements so their mixin= names are auto-allowed (no create-global below)
+-- and self inherits the element's own widget type (ItemButton / EventFrame).
+---@class ItemBtnMix
+ItemBtnMix = {}
+
+function ItemBtnMix:Setup()
+    -- ItemButton-specific method resolves: proves self is typed as the element's
+    -- own <ItemButton> class, not a collapsed Button base — under Button this
+    -- would be a false undefined-field.
+    local id = self:GetItemID()
+    -- inherited Button/Frame methods are accessible too
+    self:Enable()
+    self:SetSize(37, 37)
+    takeFrame(self)
+end
+
+---@class EventFrameMix
+EventFrameMix = {}
+
+function EventFrameMix:OnLoad()
+    -- Frame method accessible (EventFrame inherits Frame)
+    self:SetSize(100, 100)
+    takeFrame(self)
+end
+
 -- Hyphenated names should not create globals (invalid Lua identifier)
 local x = InvalidFrame
 --        ^ diag: undefined-global

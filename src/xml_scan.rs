@@ -45,6 +45,7 @@ fn xml_element_to_frame_type(element: &str) -> Option<&'static str> {
         "Cooldown" => Some("Cooldown"),
         "GameTooltip" => Some("GameTooltip"),
         "MessageFrame" => Some("MessageFrame"),
+        "ScrollingMessageFrame" => Some("ScrollingMessageFrame"),
         "Minimap" => Some("Minimap"),
         "ColorSelect" => Some("ColorSelect"),
         "SimpleHTML" => Some("SimpleHTML"),
@@ -63,6 +64,22 @@ fn xml_element_to_frame_type(element: &str) -> Option<&'static str> {
         }
         "AnimationGroup" => Some("AnimationGroup"),
         "DropdownButton" => Some("DropdownButton"),
+        // Modern Blizzard intrinsic widget element types (defined `intrinsic="true"`
+        // in SharedXML and friends). Addons use these as element tags even though the
+        // intrinsic isn't declared in the addon's own XML, so they must be recognized
+        // as frame elements — otherwise their `mixin=` names leak `create-global` and
+        // no template `@class` is generated. Each has its own stub class of the same
+        // name (carrying the intrinsic-specific methods, e.g. ItemButton:GetItemID),
+        // so map to self like the native widget arms above rather than collapsing to a
+        // base type, which would lose those methods and cause false `undefined-field`.
+        "ItemButton" => Some("ItemButton"),
+        "EventFrame" => Some("EventFrame"),
+        "EventButton" => Some("EventButton"),
+        "EventEditBox" => Some("EventEditBox"),
+        "EventScrollFrame" => Some("EventScrollFrame"),
+        "UIThemeContainerFrame" => Some("UIThemeContainerFrame"),
+        "ContainedAlertFrame" => Some("ContainedAlertFrame"),
+        "DropDownToggleButton" => Some("DropDownToggleButton"),
         "Alpha" | "Scale" | "Translation" | "Rotation" | "LineScale" | "LineTranslation"
         | "Path" | "TextureCoordTranslation" => Some("Animation"),
         "FontFamily" => Some("Font"),
@@ -1274,6 +1291,95 @@ mod tests {
         assert_eq!(r.classes[1].name, "FooButton");
         assert!(r.classes[1].parents.contains(&"ItemButton".to_string()));
         assert!(!r.classes[1].parents.contains(&"Button".to_string()));
+    }
+
+    #[test]
+    fn builtin_intrinsic_item_button_recognized_as_frame() {
+        // Regression: <ItemButton> is a built-in Blizzard intrinsic (defined
+        // `intrinsic="true"` in SharedXML, not in the addon's own XML). Before the
+        // fix it wasn't recognized as a frame element, so its `mixin=` name leaked
+        // `create-global` and no template class was generated. It must now behave
+        // exactly like the <Button>/<Frame> elements next to it.
+        let r = scan(r#"
+            <Ui>
+                <ItemButton name="MyBagSlotButtonTemplate" virtual="true"
+                            mixin="MyBagSlotButtonMixin">
+                    <Frames>
+                        <Button parentKey="ExtraButton" />
+                    </Frames>
+                </ItemButton>
+            </Ui>
+        "#);
+        // The mixin name is auto-allowed (no create-global / undefined-global).
+        assert!(r.xml_bound_names.contains("MyBagSlotButtonMixin"));
+        // A navigable template class is generated, parented on the element's own
+        // widget type so ItemButton-specific methods (GetItemID, etc.) resolve.
+        assert_eq!(r.classes.len(), 1);
+        assert_eq!(r.classes[0].name, "MyBagSlotButtonTemplate");
+        assert!(r.classes[0].parents.contains(&"ItemButton".to_string()));
+        assert!(r.classes[0].parents.contains(&"MyBagSlotButtonMixin".to_string()));
+        // parentKey fields are collected on the template like any other frame.
+        assert!(r.classes[0].fields.iter().any(|(n, _, _)| n == "ExtraButton"));
+        // virtual → class only, no global.
+        assert!(r.globals.is_empty());
+        // The mixin gets a slim augment parented on the element's widget type so its
+        // methods can call ItemButton methods (and inherited Button/Frame ones) on self.
+        assert_eq!(r.mixin_augments.len(), 1);
+        assert_eq!(r.mixin_augments[0].name, "MyBagSlotButtonMixin");
+        assert_eq!(r.mixin_augments[0].parents, vec!["ItemButton"]);
+    }
+
+    #[test]
+    fn builtin_intrinsic_non_virtual_event_frame_creates_global() {
+        // A non-virtual <EventFrame> with a name creates both a class and a global,
+        // mirroring a non-virtual <Frame>.
+        let r = scan(r#"
+            <Ui>
+                <EventFrame name="MyEventFrame" parent="UIParent" mixin="MyEventMixin" />
+            </Ui>
+        "#);
+        assert!(r.xml_bound_names.contains("MyEventMixin"));
+        assert_eq!(r.classes.len(), 1);
+        assert_eq!(r.classes[0].name, "MyEventFrame");
+        assert!(r.classes[0].parents.contains(&"EventFrame".to_string()));
+        assert_eq!(r.globals.len(), 1);
+        assert_eq!(r.globals[0].name, "MyEventFrame");
+    }
+
+    #[test]
+    fn builtin_intrinsic_element_self_types() {
+        // Each modern Blizzard intrinsic / native widget element type maps to its
+        // own same-named stub class (which carries the type-specific methods), not a
+        // collapsed base type. A `<X name="T" virtual="true">` template must produce
+        // a class parented on `X` itself.
+        let elements = [
+            "ItemButton",
+            "EventButton",
+            "ContainedAlertFrame",
+            "DropDownToggleButton",
+            "EventFrame",
+            "ScrollingMessageFrame",
+            "UIThemeContainerFrame",
+            "EventEditBox",
+            "EventScrollFrame",
+        ];
+        for element in elements {
+            let xml = format!(
+                r#"<Ui><{element} name="Tpl_{element}" virtual="true" /></Ui>"#
+            );
+            let r = scan(&xml);
+            assert_eq!(
+                r.classes.len(),
+                1,
+                "<{element}> should be recognized as a frame element"
+            );
+            assert_eq!(r.classes[0].name, format!("Tpl_{element}"));
+            assert!(
+                r.classes[0].parents.contains(&element.to_string()),
+                "<{element}> template should inherit its own widget type {element}, got {:?}",
+                r.classes[0].parents
+            );
+        }
     }
 
     #[test]

@@ -153,6 +153,14 @@
          (Button, not just Frame) is used as the mixin's parent. -->
     <Button name="BtnMixVirtual" virtual="true" mixin="BtnMix" />
 
+    <!-- Built-in Blizzard intrinsic element types (ItemButton, EventFrame, ...)
+         must be recognized as frame elements just like <Button>/<Frame>, so their
+         mixin= names are auto-allowed and a template class with the right base
+         widget type is generated. ItemButton is built on Button, EventFrame on
+         Frame. -->
+    <ItemButton name="ItemBtnVirtual" virtual="true" mixin="ItemBtnMix" />
+    <EventFrame name="EventFrameVirtual" virtual="true" mixin="EventFrameMix" />
+
     <!-- Script handler function references: names bound via function= attribute
          on On* elements should be auto-allowed as globals -->
     <Frame name="HandlerTestFrame" virtual="true">
