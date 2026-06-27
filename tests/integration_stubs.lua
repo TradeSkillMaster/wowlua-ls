@@ -723,10 +723,16 @@ end
 -- ── or-chained function with unresolved LHS resolves to RHS type ──────
 -- Regression: `local f = UnknownGlobal or C_AddOns.GetAddOnMetadata` was typed `?`
 do
-    local GetMetadata = GetAddOnMetadata or C_AddOns.GetAddOnMetadata
+    local GetMetadata = UnknownMetadataGlobal or C_AddOns.GetAddOnMetadata
     --    ^ hover: (local) function GetMetadata(name: uiAddon, variable: string)
     local ver = GetMetadata("addon", "Version")
     --    ^ hover: (local) ver: string?
+
+    -- Regression (stub discovery): a wiki-documented bare global that has a C_*
+    -- namespaced twin (GetAddOnMetadata vs C_AddOns.GetAddOnMetadata) must be
+    -- recovered as a real global, not dropped as a namespace-only alias.
+    local _bareMeta = GetAddOnMetadata
+    --                ^ def: external
 
     -- Truthy LHS with unresolved RHS: use LHS type
     local f2 = C_AddOns.GetAddOnMetadata or UNKNOWN_FUNC

@@ -429,23 +429,26 @@ pub fn regenerate_stubs() {
     }
 
     // Step 5a: Generate wiki-documented global stubs, skipping functions already in vendor stubs.
-    // Also skip bare names that match a Blizzard API namespace function (e.g. GetAddOnMetadata
-    // → C_AddOns.GetAddOnMetadata) UNLESS the bare name is still a real global in GlobalAPI.lua.
-    // Functions like InCombatLockdown exist both as bare globals and under C_* namespaces.
+    //
+    // `wiki_names` are the members of the wiki's API-function categories — every entry has its
+    // own `API <Name>` page, which means the bare global is real even when Blizzard has since
+    // moved the canonical form under a C_* namespace. Two large families land here:
+    //   * deprecated-but-present retail aliases (e.g. IsAddOnLoaded, GetItemInfo) that still
+    //     resolve at runtime alongside their C_AddOns.* / C_Item.* replacements, and
+    //   * legacy bare globals that remain the live API on Classic/Era while retail exposes only
+    //     the namespaced form (e.g. GetContainerItemInfo vs C_Container.GetContainerItemInfo).
+    // We previously dropped any wiki name whose bare form was absent from retail's GlobalAPI.lua
+    // but had a C_* twin in the API docs. That regex-free heuristic mistook both families for
+    // dead aliases and silently deleted ~200 real globals, producing false `undefined-global`
+    // across addons that call the bare forms. Since a wiki API page is itself the evidence the
+    // bare global exists, dedup against vendor stubs is the only filter applied here. The stubs
+    // default to FLAVOR_ALL (none of these bare names appear in any branch's GlobalAPI.lua, so
+    // `apply_flavor_data` adds no mask) — i.e. available on every flavor, never a false
+    // `wrong-flavor-api`, while remaining usable under the Classic/Era mask where they're current.
     log::info!("Generating wiki-documented global stubs...");
-    let api_doc_base_names: HashSet<String> = blizzard_docs.functions.iter()
-        .filter(|f| f.namespace.is_some())
-        .map(|f| f.name.clone())
-        .collect();
     let wiki_names_filtered: Vec<String> = wiki_names
         .into_iter()
-        .filter(|name| {
-            if existing_for_dedup.contains(name) { return false; }
-            // Skip namespace function aliases that no longer exist as bare globals
-            if api_doc_base_names.contains(name)
-                && !branch_data.retail_api_names.contains(name) { return false; }
-            true
-        })
+        .filter(|name| !existing_for_dedup.contains(name))
         .collect();
     log::info!("  Wiki names after dedup: {} (filtered from vendor stubs)", wiki_names_filtered.len());
     let wiki_globals_lua = generate_wiki_stubs(&wiki_names_filtered, &wiki_pages, &wiki_redirects);

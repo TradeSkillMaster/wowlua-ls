@@ -78,3 +78,35 @@ LE_ITEM_BIND_ON_ACQUIRE = 1
 LE_ITEM_BIND_QUEST = 4
 -- Pet journal filter not present in current LuaEnum.lua but referenced by addons.
 LE_PET_JOURNAL_FILTER_FAVORITES = 0
+
+-- Legacy bare-global API functions that are absent from EVERY machine-readable
+-- discovery source the stub generator scans:
+--   * not in BlizzardInterfaceResources GlobalAPI.lua / FrameXML.lua (those list
+--     only the modern C_* namespaced forms, in all branches),
+--   * not in Blizzard's APIDocumentationGenerated, and
+--   * with no standalone `API <Name>` page in the wiki function categories.
+-- Wiki-documented legacy bare globals (GetContainerItemInfo, IsAddOnLoaded, the
+-- rest of the GetContainerItem*/AddOn families, …) ARE recovered automatically by
+-- the wiki-category discovery; only these undiscoverable stragglers need listing.
+-- They default to FLAVOR_ALL, so addons that branch between the bare and C_* forms
+-- per flavor never see a false `undefined-global` or `wrong-flavor-api`.
+
+-- Deprecated alias of C_ChatInfo.RegisterAddonMessagePrefix. The wiki keeps only a
+-- redirect for the bare name (it is not a category member), so the category-member
+-- scan never surfaces it. Addons select it on the non-retail path (e.g. AceComm-3.0
+-- calls C_ChatInfo.RegisterAddonMessagePrefix on retail and the bare form otherwise).
+---@param prefix string
+---@return Enum.RegisterAddonMessagePrefixResult result
+function RegisterAddonMessagePrefix(prefix) end
+
+-- Reagent-bank API (added in Warlords of Draenor, removed from retail in 11.2.0):
+-- bare C globals that were never present in APIDocumentationGenerated and have no
+-- wiki API page. Bank/inventory addons still reference them on the code paths where
+-- the reagent bank exists (guarded by a per-flavor / feature check at the call site).
+---@return number cost
+function GetReagentBankCost() end
+
+function BuyReagentBank() end
+
+---@return boolean
+function IsReagentBankUnlocked() end
