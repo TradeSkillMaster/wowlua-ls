@@ -1442,6 +1442,24 @@ fn callback_registry_multi_addon_scoping() {
 }
 
 #[test]
+fn ace3_addon_inherits_instance_methods() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace3/addon.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ace3"),
+    });
+}
+
+#[test]
+fn ace3_locale_default_newlocale_non_nil() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace3/locale.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ace3"),
+    });
+}
+
+#[test]
 fn crossfile_addon_table() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/file_b.lua",

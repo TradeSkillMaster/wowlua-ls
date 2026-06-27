@@ -65,37 +65,49 @@ Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments 
 
 ### 6. Local overrides
 
-Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). Currently 27 files:
+Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (39 files, alphabetical — keep in sync with `ls stubs/overrides/*.lua`):
 
 | File | Purpose |
 |------|---------|
-| `AceAddon-3.0.lua` | AceAddon library stubs |
+| `AceAddon-3.0.lua` | AceAddon library stubs; the library class inherits the embeddable `AceAddon` prototype so `---@class Foo : AceAddon-3.0` resolves `NewModule`/`GetModule`/… |
 | `AceGUI-3.0.lua` | AceGUI library stubs |
-| `CreateFrame.lua` | Intersection types (`CreateFrame(..., template) → T & Tp`) and `@creates-global` for the named-frame side effect |
+| `AceLocale-3.0.lua` | AceLocale library stubs; default-locale `NewLocale(app, locale, true)` returns a non-nil table so the `L[key] = true` idiom doesn't trip `need-check-nil` |
+| `BattlePetTooltip.lua` | Runtime-injected `AddLine` method that Ketho's vendor annotation omits |
+| `CallbackRegistryMixin.lua` | `@generates-events` on `GenerateCallbackEvents` so the synthesized `.Event` enum table resolves |
+| `ClassicLegacyEnums.lua` | `LE_*` constants used by addons but not referenced by FrameXML (so not auto-discovered) |
+| `coroutine.lua` | Coroutine yield/resume types |
 | `CreateFont.lua` | `@creates-global` for `CreateFont`/`CreateFontFamily` named-font side effect |
+| `CreateFrame.lua` | Intersection types (`CreateFrame(..., template) → T & Tp`) and `@creates-global` for the named-frame side effect |
+| `debugstack.lua` | Debug stack trace function |
+| `EventRegistry.lua` | `@class EventRegistry : CallbackRegistryMixin` with `FrameEvent`-typed callback params |
+| `GameTooltip.lua` | `GameTooltip` frame class + script-handler (`GetScript`/`SetScript`) typing |
 | `GetCursorInfo.lua` | Cursor info return type overloads |
 | `HookScript.lua` | Event handler hook typing |
-| `IsObjectType.lua` | `@type-narrows` for `IsObjectType()` → frame subclass narrowing |
-| `LibStub.lua` | Library version management |
-| `Mixin.lua` | Variadic generics: `Mixin(T, ...M) → T & ...M` |
-| `NamePlateBaseMixin.lua` | Base mixin for name plates |
-| `RuntimeMissingGlobals.lua` | Globals used by addons but not in BlizzardInterfaceResources |
-| `SetScript.lua` | Contextual callback typing with event-param narrowing |
-| `WorldFrame.lua` | Global frame instance |
-| `coroutine.lua` | Coroutine yield/resume types |
-| `debugstack.lua` | Debug stack trace function |
+| `hooksecurefunc.lua` | Backtick-generic `@overload` for the table-less `hooksecurefunc(name, hook)` form |
 | `ipairs.lua` | Generic iterator with `K!, V!` (non-nil keys/values) |
+| `IsObjectType.lua` | `@type-narrows` for `IsObjectType()` → frame subclass narrowing |
+| `LibDBIcon-1.0.lua` | LibDBIcon stubs with the `db` options table fields optional (no false `missing-fields` on `Register`) |
+| `LibStub.lua` | Library version management |
+| `loadstring.lua` | `loadstring` return tuple (compiled chunk, or nil + error message) |
+| `Mixin.lua` | Variadic generics: `Mixin(T, ...M) → T & ...M` |
+| `MixinShapes.lua` | Additive `@shape` plain-table forms for userdata/mixins (`ItemLocation`, `ColorMixin`, …) |
+| `NamePlateBaseMixin.lua` | Base mixin for name plates |
 | `newproxy.lua` | Userdata proxy creation |
 | `next.lua` | Generic next iterator with `K!, V!` |
 | `pairs.lua` | Generic iterator with `K!, V!` (non-nil keys/values) |
-| `PlaySound.lua` | String channel override for `uiSoundSubType` (Blizzard docs say enum, Lua takes strings) |
 | `pcall.lua` | Generic success/error tuple returns |
 | `pcallwithenv.lua` | Generic pcall variant with environment |
+| `PlaySound.lua` | String channel override for `uiSoundSubType` (Blizzard docs say enum, Lua takes strings) |
 | `plugin_api.lua` | Plugin diagnostic API types |
+| `Pools.lua` | Generic `ObjectPool<T>`/`FramePool`/`FramePoolCollection` types (FrameXML-defined, no upstream source) |
+| `RuntimeMissingGlobals.lua` | Globals used by addons but not in BlizzardInterfaceResources |
 | `select.lua` | `returns<F>` projection for variadic return truncation |
+| `SetScript.lua` | Contextual callback typing with event-param narrowing |
 | `string_match.lua` | Pattern matching return types |
 | `table.lua` | Generic overloads for `insert`, `remove`, etc. |
+| `tonumber.lua` | `tonumber` base-argument overload + `@nodiscard` |
 | `unpack.lua` | Variadic unpacking with `...T` syntax |
+| `WorldFrame.lua` | Global frame instance |
 
 ## Generated stub files
 

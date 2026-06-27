@@ -1,7 +1,12 @@
 ---@meta _
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-addon-3-0)
 
----@class AceAddon-3.0
+--- The library object returned by `LibStub("AceAddon-3.0")`. It carries the
+--- addon-creation methods (`NewAddon`/`GetAddon`/…) directly, and inherits the
+--- embeddable prototype (`NewModule`, `GetModule`, `Enable`, …) from `AceAddon`
+--- so the common convention `---@class MyAddon : AceAddon-3.0` resolves those
+--- methods on the addon object.
+---@class AceAddon-3.0 : AceAddon
 local AceAddonLib = {}
 
 ---@generic T: AceAddon
