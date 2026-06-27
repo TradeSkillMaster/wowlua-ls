@@ -1500,6 +1500,21 @@ fn crossfile_infunc_field() {
 }
 
 #[test]
+fn crossfile_bare_local_field() {
+    // A top-level `@class` field assigned a bare local that can't be typed
+    // cross-file (`Util.Library = lib` where `lib = LibStub("Name-1.0")`, or a
+    // plain `FieldRef` to a local) must still register existence-only (typed
+    // `any`) so cross-file reads don't false-positive as undefined-field — and
+    // `any`, not bare `table`, so downstream call/string uses don't trip
+    // cannot-call/type-mismatch. Needs stubs for the LibStub heuristic-misfire case.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/bare_local_field_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_select_field_access() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/file_d.lua",

@@ -949,6 +949,36 @@ impl<'a> BuildOnStubsContext<'a> {
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(),
                         super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix));
+                } else if !self.tables[local_idx].fields.contains_key(field_name) {
+                    // Existence-only fallback. The field's value couldn't be typed
+                    // cross-file: its RHS is a bare local that doesn't resolve to a
+                    // global/known type (`FieldRef` to a local), or its inferred
+                    // class/`@type` annotation names no real class — a defclass-style
+                    // string-arg heuristic synthesizes such a name from
+                    // `local x = LibStub("Lib-1.0")`-shaped calls, so `t.field = x`
+                    // ends up with a bogus `returns` that resolves to nothing. The
+                    // field is nonetheless genuinely assigned in source, so register
+                    // its *existence* so cross-file reads don't false-positive as
+                    // `undefined-field`. Guarded on the field being absent so a
+                    // concrete type from an earlier pass is never downgraded.
+                    //
+                    // Typed `Any`, deliberately diverging from the bare `table` the
+                    // Unknown and FunctionCall fallbacks above use. The two are a
+                    // genuine tradeoff for a value we can't type: `table` is truthy
+                    // (so `field and field.x` stays clean) but flags a *callable*
+                    // field as `cannot-call` and a *string* field as `type-mismatch`;
+                    // `any` is clean for those but `any and x` resolving to `x?` can
+                    // over-report `return-mismatch` in the guarded-access idiom. The
+                    // bare-local case empirically favors `any`: across 18 real addons
+                    // `any` added zero new diagnostics, whereas `table` added
+                    // `cannot-call`/`type-mismatch` on shipping code — the guarded
+                    // idiom never lands on a bare-local field in practice (the
+                    // tradeoff is locked in by `tests/crossfile/bare_local_field_*`).
+                    let expr_idx = ExprId(EXT_BASE + self.exprs.len());
+                    self.exprs.push(Expr::Literal(ValueType::Any));
+                    self.tables[local_idx].fields.insert(field_name.clone(),
+                        super::shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix));
+                    record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
             }
         }
