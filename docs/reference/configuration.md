@@ -103,6 +103,10 @@ Path prefixes to exclude from scanning. Relative to the config file's directory.
 { "ignore": ["Libs/", "External/*.lua", "Generated/**/*.lua"] }
 ```
 
+::: tip Built-in default
+`.github/` directories are **always** skipped, no configuration needed. They hold GitHub repository metadata and CI/build tooling (build scripts run by the standalone Lua interpreter, where `io`/`os`/etc. are real standard-library globals), never addon code that ships in-game — so analyzing them as WoW Lua would only produce spurious diagnostics. Anything you add to `ignore` is excluded *in addition* to this default.
+:::
+
 ### `library`
 
 - **Type:** `string[]`

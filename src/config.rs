@@ -214,6 +214,41 @@ fn matches_path_patterns(patterns: &[String], path: &Path) -> bool {
     false
 }
 
+/// Directory names that are ignored by default, with or without any
+/// `.wowluarc.json` configuration. These never hold WoW addon code that ships
+/// in-game, so the scanner prunes them everywhere.
+///
+/// `.github/` holds GitHub repository metadata and CI/build tooling — build
+/// scripts run by the *standalone* Lua interpreter, where `io`/`os`/etc. are
+/// real standard-library globals rather than the WoW sandbox. Analyzing them as
+/// WoW Lua produces false `undefined-global` diagnostics, so they are skipped by
+/// default.
+const DEFAULT_IGNORED_DIRS: &[&str] = &[".github"];
+
+/// True if `name` is the name of a directory ignored by default
+/// (see [`DEFAULT_IGNORED_DIRS`]). Used to prune a directory *entry* during the
+/// scan walk by its own name — which can't false-match a default-ignored
+/// segment that sits *above* the scanned workspace.
+fn is_default_ignored_component(name: &std::ffi::OsStr) -> bool {
+    DEFAULT_IGNORED_DIRS.iter().any(|d| name == std::ffi::OsStr::new(d))
+}
+
+/// True if any component of `path` is a built-in default-ignored directory
+/// (see [`DEFAULT_IGNORED_DIRS`]).
+///
+/// Callers MUST pass a path already anchored to the workspace (e.g. the
+/// config-relative remainder from `strip_prefix(config_dir)`), never a raw
+/// absolute path: a default-ignored segment *above* the workspace (say a
+/// project living under `…/.github/AddOns/MyAddon/`) would otherwise match on
+/// every file and silently prune the entire workspace. For the unanchored
+/// (no-config) walk, match a directory entry by its own name via
+/// [`is_default_ignored_component`] instead.
+fn is_default_ignored(path: &Path) -> bool {
+    use std::path::Component;
+    path.components()
+        .any(|c| matches!(c, Component::Normal(seg) if is_default_ignored_component(seg)))
+}
+
 impl ProjectConfig {
     /// Check if a relative path should be ignored based on this config's ignore patterns.
     pub fn is_ignored(&self, relative_path: &Path) -> bool {
@@ -326,12 +361,21 @@ impl ProjectConfigs {
         self.xml_bound_globals.extend_from_strings(names);
     }
 
-    /// Check if a path is ignored. Isolated: only the nearest ancestor config's
-    /// `ignore` patterns apply (checked relative to that config's directory).
-    /// Files listed in the nearest config's `plugins` are never ignored.
+    /// Check if a path is ignored. Built-in default-ignored directories (e.g.
+    /// `.github/`, see [`is_default_ignored`]) are skipped with or without a
+    /// config. Otherwise isolated: only the nearest ancestor config's `ignore`
+    /// patterns apply (checked relative to that config's directory). Files listed
+    /// in the nearest config's `plugins` are never ignored.
     pub fn is_ignored(&self, absolute_path: &Path) -> bool {
         let Some((config_dir, config)) = self.nearest_entry(absolute_path) else {
-            return false;
+            // No nearest config: best-effort. Match a built-in default-ignored
+            // directory by its own name only, so the walk prunes e.g. a `.github`
+            // entry when it reaches it, without a `.github` segment *above* the
+            // scan root (which is present in every entry's absolute path)
+            // silently pruning the whole workspace.
+            return absolute_path
+                .file_name()
+                .is_some_and(is_default_ignored_component);
         };
         // Never ignore files that are configured as plugins in the nearest config
         for p in &config.plugins {
@@ -339,8 +383,11 @@ impl ProjectConfigs {
                 return false;
             }
         }
+        // Built-in default-ignored dirs and the config's own `ignore` patterns
+        // are both checked on the config-relative remainder, so a default-ignored
+        // segment above the workspace can never prune real addon code.
         absolute_path.strip_prefix(config_dir)
-            .map(|relative| config.is_ignored(relative))
+            .map(|relative| is_default_ignored(relative) || config.is_ignored(relative))
             .unwrap_or(false)
     }
 
@@ -1176,6 +1223,100 @@ mod tests {
     fn test_empty_ignore() {
         let config = config_with_ignore(&[]);
         assert!(!config.is_ignored(Path::new("anything.lua")));
+    }
+
+    #[test]
+    fn test_default_ignore_github_helper() {
+        // `is_default_ignored` matches `.github` as any component of an
+        // already-anchored (workspace-relative) path.
+        assert!(is_default_ignored(Path::new(".github")));
+        assert!(is_default_ignored(Path::new(".github/scripts/build-tool.lua")));
+        // Nested anywhere in the tree, not just at the workspace root.
+        assert!(is_default_ignored(Path::new("Sub/.github/x.lua")));
+
+        // Ordinary addon files are never pruned.
+        assert!(!is_default_ignored(Path::new("Core.lua")));
+        assert!(!is_default_ignored(Path::new("Modules/Foo.lua")));
+
+        // `.github` must be a whole path *component* — substring or look-alike
+        // names must NOT match, or we'd wrongly exclude real addon code.
+        assert!(!is_default_ignored(Path::new("github/foo.lua")));
+        assert!(!is_default_ignored(Path::new(".githubextra/foo.lua")));
+        assert!(!is_default_ignored(Path::new("my.github.lua")));
+        assert!(!is_default_ignored(Path::new(".github-backup/Core.lua")));
+
+        // The directory-name helper used by the no-config walk prune.
+        use std::ffi::OsStr;
+        assert!(is_default_ignored_component(OsStr::new(".github")));
+        assert!(!is_default_ignored_component(OsStr::new("Core.lua")));
+        assert!(!is_default_ignored_component(OsStr::new(".githubextra")));
+    }
+
+    #[test]
+    fn test_default_ignore_github_no_config() {
+        // With no `.wowluarc.json` anywhere (the common case for addons), the
+        // walk prunes a `.github` *directory entry* by its own name when it
+        // reaches it. This is the path the corpus `check` runs exercise.
+        let configs = ProjectConfigs::default();
+        assert!(configs.is_ignored(Path::new("/addons/MyAddon/.github")));
+        assert!(configs.is_ignored(Path::new("/addons/MyAddon/Sub/.github")));
+        // Ordinary entries are scanned.
+        assert!(!configs.is_ignored(Path::new("/addons/MyAddon/Core.lua")));
+        assert!(!configs.is_ignored(Path::new("/addons/MyAddon/Modules")));
+
+        // Regression: a `.github` segment *above* the scan root must NOT prune
+        // real addon files below it. A project living under a directory named
+        // `.github` would otherwise be silently zeroed out (no diagnostics).
+        assert!(!configs.is_ignored(Path::new("/work/.github/AddOns/MyAddon/Core.lua")));
+        assert!(!configs.is_ignored(Path::new("/work/.github/AddOns/MyAddon/Modules")));
+    }
+
+    #[test]
+    fn test_default_ignore_github_with_config() {
+        // The built-in default coexists with a project config: `.github` is
+        // ignored by default, the config's own `ignore` patterns still apply,
+        // and ordinary files remain scanned.
+        let root = std::env::temp_dir().join("wowlua_ls_test_github_default");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".wowluarc.json"), r#"{"ignore": ["Vendor/"]}"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&root);
+
+        assert!(configs.is_ignored(&root.join(".github/scripts/build-tool.lua")));
+        assert!(configs.is_ignored(&root.join("Sub/.github/x.lua")));
+        assert!(configs.is_ignored(&root.join("Vendor/lib.lua")));
+        assert!(!configs.is_ignored(&root.join("Core/init.lua")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_default_ignore_github_config_under_github_ancestor() {
+        // A configured project whose root itself lives under a `.github`
+        // ancestor: the default-ignore is checked on the config-relative
+        // remainder, so the ancestor `.github` does not leak in and prune the
+        // workspace. Only the project's own `.github` subtree is ignored.
+        let root = std::env::temp_dir()
+            .join("wowlua_ls_test_gh_ancestor")
+            .join(".github")
+            .join("MyAddon");
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("wowlua_ls_test_gh_ancestor"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".wowluarc.json"), "{}").unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&root);
+
+        // Real files under the project are scanned despite the `.github`
+        // ancestor in their absolute path.
+        assert!(!configs.is_ignored(&root.join("Core.lua")));
+        assert!(!configs.is_ignored(&root.join("Modules/Foo.lua")));
+        // The project's own `.github` subtree is still ignored.
+        assert!(configs.is_ignored(&root.join(".github/build-tool.lua")));
+
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("wowlua_ls_test_gh_ancestor"));
     }
 
     fn config_with_library(patterns: &[&str]) -> ProjectConfig {
