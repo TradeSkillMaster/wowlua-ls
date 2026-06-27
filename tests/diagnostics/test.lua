@@ -520,6 +520,99 @@ _consume(ov_optional(1))
 local function ov_vararg(x) return x end
 _consume(ov_vararg(1, 2, 3))
 
+-- ── Placeholder function() end must not mask a real callback ────────────────
+-- A field/local seeded with a 0-arg `function() end` placeholder and also
+-- assigned an unresolvable callback (a wider param, an undefined global's
+-- result, ...) must decay to an unconstrained `function`, not lock to the
+-- placeholder's arity — otherwise a later call with arguments is wrongly
+-- flagged `redundant-parameter`.
+
+-- (1) Table field: placeholder in one method, reassigned to an unresolvable
+--     param in another, called with an argument in a third.
+PlaceholderSelectorMixin = {}
+
+function PlaceholderSelectorMixin:OnLoad()
+  self.onChosen = function() end
+end
+
+function PlaceholderSelectorMixin:SetOnChosen(cb)
+  self.onChosen = cb
+end
+
+function PlaceholderSelectorMixin:Choose(value)
+  self.onChosen(value)
+  -- no redundant-parameter: the real callback could take an argument
+end
+
+-- (2) Forward-declared local: placeholder in one branch, unresolvable in the
+--     other (branch merge must not lock to the placeholder arity).
+local function pick_handler(flag)
+  local handler
+  if flag then
+    handler = UndefinedHelper()
+  else
+    handler = function() end
+  end
+  handler("arg")
+  --    ^ hover: (local) handler: function
+  return handler
+end
+_consume(pick_handler)
+
+-- (3) `param or function() end`: an unresolved LHS could be a callback of any
+--     arity, so the placeholder fallback must not lock the result's arity.
+local function with_default_cb(cb)
+  local effective = cb or function() end
+  --      ^ hover: (local) effective: function
+  effective("arg")
+  return effective
+end
+_consume(with_default_cb)
+
+-- Guard against over-suppression: a lone `function() end` with no masking
+-- sibling still flags when called with extra arguments.
+local lone_cb = function() end
+_consume(lone_cb(1))
+--               ^ diag: redundant-parameter
+
+-- Opposite guarantee (guards `is_noop_placeholder_function`): a MEANINGFUL
+-- function used as the masking sibling/fallback is NOT a placeholder, so it
+-- keeps its signature and genuine arity errors still fire. If the placeholder
+-- allowlist were ever broadened to misclassify a real callback, these calls
+-- would silently stop flagging with no other failing test.
+---@param a number
+---@param b string
+local function real_cb(a, b) return a end
+
+-- (a) `or`-fallback to an annotated 2-param function (the direct
+--     is_noop_placeholder_function check): keep the 2-arg signature.
+local function with_real_fallback(maybe)
+  local eff = maybe or real_cb
+  --    ^ hover: (local) function eff(a: number, b: string)
+  eff(1, "x", 3)
+  --         ^ diag: redundant-parameter
+  return eff
+end
+_consume(with_real_fallback)
+
+-- (b) Field whose resolvable assignment is an annotated 2-param function plus an
+--     unresolvable sibling (the decay_placeholder_functions path): the real
+--     function is kept (not decayed), so the over-arity call still flags.
+PlaceholderGuardMixin = {}
+
+function PlaceholderGuardMixin:Init()
+  self.handler = real_cb
+end
+
+function PlaceholderGuardMixin:Rebind(fn)
+  self.handler = fn
+end
+
+function PlaceholderGuardMixin:Fire()
+  self.handler(1, "x", 3)
+  --                   ^ diag: redundant-parameter
+end
+
 -- ── Redefined local ──────────────────────────────────────────────────────
 
 local redef_a = 1

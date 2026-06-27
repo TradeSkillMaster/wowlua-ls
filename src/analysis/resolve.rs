@@ -2653,6 +2653,47 @@ impl<'a> Analysis<'a> {
         result
     }
 
+    /// True when `vt` is a zero-arg, return-less `function() end` literal — the
+    /// no-op placeholder a field/local is commonly seeded with before a real
+    /// callback is assigned. A function carrying parameters or a return value is
+    /// a meaningful signature and is *not* a placeholder (e.g. an `a or b`
+    /// fallback to a real 2-arg API function keeps its signature).
+    fn is_noop_placeholder_function(&self, vt: &ValueType) -> bool {
+        let ValueType::Function(Some(idx)) = vt else { return false };
+        let f = self.func(*idx);
+        f.args.is_empty()
+            && !f.is_vararg
+            && f.rets.is_empty()
+            && f.return_annotations.is_empty()
+            && f.overloads.is_empty()
+            && !f.returns_self
+            && !f.returns_built
+            && !f.has_vararg_return
+    }
+
+    /// Decay any no-op `function() end` placeholder in `types` to an
+    /// unconstrained `function`.
+    ///
+    /// Called when a field/local has multiple assignments and at least one
+    /// couldn't be resolved (a wider callback, an undefined global's result, an
+    /// unannotated parameter, ...). The common pattern seeds the slot with a
+    /// zero-arg placeholder and later reassigns a real callback whose type the
+    /// coarse/per-file analysis can't recover. The placeholder's `fun()` arity
+    /// must not become the slot's callable type, or a later call with arguments
+    /// is false-flagged `redundant-parameter`. Since the unknown sibling could
+    /// take any number of arguments, the safe merge drops the placeholder
+    /// signature and keeps a bare `function`. No-op when `types` carries no
+    /// placeholder (a concrete signature with params/returns is preserved).
+    fn decay_placeholder_functions(&self, types: &mut Vec<ValueType>) {
+        if !types.iter().any(|t| self.is_noop_placeholder_function(t)) {
+            return;
+        }
+        types.retain(|t| !self.is_noop_placeholder_function(t));
+        if !types.contains(&ValueType::Function(None)) {
+            types.push(ValueType::Function(None));
+        }
+    }
+
     fn resolve_expr_inner(&mut self, expr_id: ExprId) -> Option<ValueType> {
         // Fast path: leaf variants that don't need &mut self (avoids cloning heap data)
         match self.expr(expr_id) {
@@ -2761,6 +2802,13 @@ impl<'a> Analysis<'a> {
                     // since Boolean is not always-truthy or always-falsy.
                     Some(ValueType::Any)
                 } else {
+                    // A branch couldn't be resolved (e.g. assigned an undefined
+                    // global's result) while another branch is a `function() end`
+                    // placeholder. Decay the placeholder so its arity doesn't mask
+                    // the unknown branch, which could be a callback of any arity.
+                    if has_none {
+                        self.decay_placeholder_functions(&mut types);
+                    }
                     Some(self.ir.dedupe_union_tables(ValueType::make_union(types)))
                 };
             }
@@ -2790,7 +2838,20 @@ impl<'a> Analysis<'a> {
                     // When RHS is guaranteed falsy, returning it alone ignores
                     // the unknown LHS and causes false-positive redundant-and
                     // downstream (e.g. `local info = ctx.f and ctx.f() or nil`).
-                    (None, Some(r)) if op == Operator::Or && !r.is_guaranteed_falsy() => Some(r),
+                    (None, Some(r)) if op == Operator::Or && !r.is_guaranteed_falsy() => {
+                        // `unknownX or function() end`: the unresolved LHS could be
+                        // a callback of any arity, so a no-op placeholder fallback
+                        // must not lock the result's callable type — decay it to
+                        // bare `function` so a later call with arguments isn't
+                        // false-flagged `redundant-parameter`. A meaningful function
+                        // fallback (params/returns, e.g. `f or RealApiFn`) keeps its
+                        // signature.
+                        Some(if self.is_noop_placeholder_function(&r) {
+                            ValueType::Function(None)
+                        } else {
+                            r
+                        })
+                    }
                     (Some(ref l), None) if op == Operator::Or && l.is_guaranteed_truthy() => Some(l.clone()),
                     (Some(ValueType::Number | ValueType::NumberLiteral(_)), None) | (None, Some(ValueType::Number | ValueType::NumberLiteral(_)))
                         if op.is_arithmetic() => Some(ValueType::Number),
@@ -2984,6 +3045,16 @@ impl<'a> Analysis<'a> {
                         && !field_types.contains(&ValueType::Any)
                     {
                         field_types.push(ValueType::Any);
+                    } else if has_unresolvable && has_extras {
+                        // The primary resolved (e.g. a `function() end`
+                        // placeholder) but a reassignment couldn't. Don't let a
+                        // placeholder function lock the field's callable type to
+                        // arity 0 — the unknown sibling could be a callback of any
+                        // arity. Decay this field's placeholder contributions
+                        // (from pre_len onward) to bare `function`.
+                        let mut tail: Vec<ValueType> = field_types.split_off(pre_len);
+                        self.decay_placeholder_functions(&mut tail);
+                        field_types.extend(tail);
                     }
                 }
             }
