@@ -268,6 +268,84 @@ local function testNilNoNarrow(state)
 end
 _consume(testNilNoNarrow)
 
+-- ── Assignment narrows field for indexed-WRITE targets ──────────────────
+-- `recv.field = recv.field or {}` must narrow the field non-nil for a
+-- subsequent indexed *write* (`recv.field[k] = v`), not just for reads.
+-- Regression: the write-target base bypassed the read path's AssignNarrow,
+-- so it kept reporting the just-coalesced field as possibly-nil.
+
+---@class NilCheckColl
+---@field arr number[]|nil
+---@field map table<string, number>|nil
+---@field sub NilCheckColl|nil
+
+---@type fun(): NilCheckColl
+local makeColl
+
+-- Bracket write, read, and length all see the coalesced (non-nil) field.
+---@param coll NilCheckColl
+local function testIndexedWriteNarrow(coll)
+    coll.arr = coll.arr or {}
+    coll.arr[#coll.arr + 1] = 5
+    local _ = coll.arr[1]
+    local _ = #coll.arr
+end
+_consume(testIndexedWriteNarrow)
+
+-- String-literal bracket key after coalesce.
+---@param coll NilCheckColl
+local function testStringKeyWriteNarrow(coll)
+    coll.map = coll.map or {}
+    coll.map["k"] = 1
+end
+_consume(testStringKeyWriteNarrow)
+
+-- Root from a function return (not a typed param) still narrows.
+local function testReturnRootWriteNarrow()
+    local coll = makeColl()
+    coll.arr = coll.arr or {}
+    coll.arr[1] = 9
+end
+_consume(testReturnRootWriteNarrow)
+
+-- `cond and field or {}` (Lua ternary) RHS also resolves non-nil → narrows.
+---@param coll NilCheckColl
+---@param flag boolean
+local function testAndOrWriteNarrow(coll, flag)
+    coll.arr = flag and coll.arr or {}
+    coll.arr[1] = 3
+end
+_consume(testAndOrWriteNarrow)
+
+-- Nested chain: deeper field coalesce narrows the indexed write.
+---@param coll NilCheckColl
+local function testNestedChainWriteNarrow(coll)
+    coll.sub = coll.sub or makeColl()
+    coll.sub.arr = coll.sub.arr or {}
+    coll.sub.arr[1] = 7
+end
+_consume(testNestedChainWriteNarrow)
+
+-- Discipline: nil assignment does NOT narrow the indexed write.
+---@param coll NilCheckColl
+local function testNilAssignWriteNoNarrow(coll)
+    coll.arr = nil
+    coll.arr[1] = 5
+    --  ^ diag: need-check-nil
+end
+_consume(testNilAssignWriteNoNarrow)
+
+-- Discipline: a nilable RHS does NOT narrow the indexed write.
+---@type fun(): number[]?
+local maybeArr
+---@param coll NilCheckColl
+local function testNilableRhsWriteNoNarrow(coll)
+    coll.arr = maybeArr()
+    coll.arr[1] = 5
+    --  ^ diag: need-check-nil
+end
+_consume(testNilableRhsWriteNoNarrow)
+
 -- ── Nilable-return assignment does NOT narrow ───────────────────────────
 -- A field assigned from a function whose return type includes nil must not
 -- be treated as non-nil afterwards — the runtime value could still be nil,

@@ -1441,7 +1441,18 @@ impl<'a> Analysis<'a> {
                                     && let Some(base_node) = ident.syntax().children().next()
                                 {
                                     let has_string_key = crate::ast::extract_bracket_string_key(ident.syntax()).is_some();
-                                    let table_base = if has_string_key { pre_bracket_base } else { base };
+                                    let mut table_base = if has_string_key { pre_bracket_base } else { base };
+                                    // Apply assignment-based field narrowing to the indexed
+                                    // base, mirroring the read path in `lower_bracket_access`.
+                                    // After `foo.arr = foo.arr or {}`, indexing `foo.arr[k] = v`
+                                    // on a later statement must see the coalesced (non-nil)
+                                    // field, not the declared-nilable type. AssignNarrow strips
+                                    // nil only when the recorded RHS resolves to non-nil.
+                                    if let Some((chain_sym, chain)) = self.ir.extract_field_chain(table_base)
+                                        && let Some(rhs_id) = self.get_field_assignment_narrow_rhs(chain_sym, &chain, scope_idx)
+                                    {
+                                        table_base = self.ir.push_expr(Expr::AssignNarrow { inner: table_base, rhs: rhs_id });
+                                    }
                                     let r = base_node.text_range();
                                     let dummy_key = self.ir.push_expr(Expr::Unknown);
                                     let bracket_expr = self.ir.push_expr(Expr::BracketIndex { table: table_base, key: dummy_key, literal_key: None });
