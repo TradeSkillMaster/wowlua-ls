@@ -209,3 +209,33 @@ function Button:strupper()
 --       ^ tok: class
 --              ^ tok: method
 end
+
+-- ── Table-constructor keys (the motivating case) ────────────────────────────
+-- A bare key in a table constructor is a field *definition*, not a reference.
+-- `time`/`strupper` are stub global functions, but as keys they must NOT inherit
+-- the `function` color — they are left to the grammar (a plain property/key).
+local tbl = {
+    time = 1,
+--  ^ tok: none
+    strupper = 2,
+--  ^ tok: none
+    value = 3,
+--  ^ tok: none
+}
+
+-- Contrast: the SAME name used as a positional value or RHS *is* a real
+-- reference to the global function and must still be classified.
+local refs = {
+    strupper,
+--  ^ tok: function defaultLibrary
+    handler = strupper,
+--  ^ tok: none
+--            ^ tok: function defaultLibrary
+}
+
+-- Contrast: a bracket-keyed entry evaluates the expression as the key, so a
+-- global function used there is a genuine reference and stays classified.
+local keyed = {
+    [strupper] = 4,
+--   ^ tok: function defaultLibrary
+}

@@ -106,6 +106,15 @@ impl AnalysisResult {
             if self.resolve_field_chain_at(tree, start).is_some() {
                 continue;
             }
+            // A bare key in a table constructor (`{ time = ... }`) is a field
+            // *definition*, not a reference: its `Name` token sits directly under
+            // the `Field` node (a positional value is wrapped in `NameRef`).
+            // `find_symbol_at` is name-only and would resolve the key to a
+            // same-named global, so without this guard a key like `time` would be
+            // mis-colored as the global `time` function.
+            if tok.parent().is_some_and(|p| p.kind() == SyntaxKind::Field) {
+                continue;
+            }
             let Some((sym_idx, _, _)) = self.find_symbol_at(tree, start) else { continue };
             if let Some((token_type, modifiers)) = self.classify_function_symbol(sym_idx) {
                 out.push(RawSemanticToken {
