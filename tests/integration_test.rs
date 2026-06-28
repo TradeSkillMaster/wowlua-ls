@@ -1513,6 +1513,15 @@ fn ace3_addon_inherits_instance_methods() {
 }
 
 #[test]
+fn ace3_module_inherits_addon_methods() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace3/module.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ace3"),
+    });
+}
+
+#[test]
 fn ace3_locale_default_newlocale_non_nil() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/ace3/locale.lua",

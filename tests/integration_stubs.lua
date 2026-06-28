@@ -1030,7 +1030,7 @@ for modName, mod in myAddon:IterateModules() do
     local _mn = modName
     --    ^ hover: (local) _mn: string
     local _m = mod
-    --    ^ hover: (local) _m: AceAddon {
+    --    ^ hover: (local) _m: AceModule {
 end
 
 -- IterateAddons on the library object

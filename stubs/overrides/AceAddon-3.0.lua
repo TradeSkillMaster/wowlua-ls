@@ -39,22 +39,22 @@ function AceAddonLib:IterateAddonStatus() end
 function AceAddonLib:IterateEmbedsOnAddon(addon) end
 
 ---@param addon AceAddon
----@return fun(): string, AceAddon
+---@return fun(): string, AceModule
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-addon-3-0#title-7)
 function AceAddonLib:IterateModulesOfAddon(addon) end
 
 ---@class AceAddon
 ---@field name string
 ---@field moduleName? string
----@field modules table<string, AceAddon>
----@field orderedModules AceAddon[]
+---@field modules table<string, AceModule>
+---@field orderedModules AceModule[]
 ---@field defaultModuleLibraries string[]
 ---@field enabledState boolean
 ---@field baseName? string
 local AceAddon = {}
 
----@generic T: AceAddon
----@defclass T : AceAddon
+---@generic T: AceModule
+---@defclass T : AceModule
 ---@param name `T`
 ---@param prototype? table
 ---@param ... string @ Ace library names to embed
@@ -62,14 +62,14 @@ local AceAddon = {}
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-addon-3-0#title-8)
 function AceAddon:NewModule(name, prototype, ...) end
 
----@generic T: AceAddon
+---@generic T: AceModule
 ---@overload fun(self, name: `T`, silent: boolean): T?
 ---@param name `T`
 ---@return T
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-addon-3-0#title-9)
 function AceAddon:GetModule(name) end
 
----@return fun(): string, AceAddon
+---@return fun(): string, AceModule
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-addon-3-0#title-10)
 function AceAddon:IterateModules() end
 
@@ -105,3 +105,14 @@ function AceAddon:SetDefaultModulePrototype(prototype) end
 
 ---@param ... string @ Ace library names
 function AceAddon:SetDefaultModuleLibraries(...) end
+
+--- The object returned by `Addon:NewModule(name)` / `Addon:GetModule(name)`.
+--- A module is itself an addon (it inherits the embeddable `AceAddon` prototype:
+--- `Enable`/`Disable`/`GetName`/`NewModule`/…), so the common convention
+--- `---@class MyModule : AceModule` resolves those methods on the module object.
+--- Lifecycle callbacks (`OnInitialize`/`OnEnable`/`OnDisable`) are intentionally
+--- not declared here so that an addon defining them doesn't trip
+--- `duplicate-set-field`.
+---@class AceModule : AceAddon
+---@field moduleName string
+local AceModule = {}
