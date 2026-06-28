@@ -279,6 +279,22 @@ local p = {}
 print(p.level) -- undefined-field
 ```
 
+A field read used as a **defensive existence check** is not flagged — it is
+probing whether the field exists, not assuming it does. This covers the left
+operand of `and`/`or`, the condition of an `if`/`while`, and the access that such
+a guard protects:
+
+```lua
+local nodeID = button.GetNodeID and button:GetNodeID() -- no undefined-field
+if frame.SetBackdrop then
+    frame:SetBackdrop(nil) -- guarded by the condition — no undefined-field
+end
+local cache = obj.Custom or obj.Fallback -- the `or` fallback idiom
+```
+
+A deeper access on a now-known field is still checked, so genuine typos are not
+hidden: `if obj.cfg then obj.cfg.typo end` still flags `typo`.
+
 ### `inject-field` <Badge type="tip" text="Hint" />
 
 Setting a field not declared on a `@class`:

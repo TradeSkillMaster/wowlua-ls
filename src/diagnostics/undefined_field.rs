@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use crate::analysis::AnalysisResult;
-use crate::ast::{AstNode, Expression, Identifier, LocalAssign};
+use crate::ast::{AstNode, BinaryExpression, Expression, Identifier, IfBranch, LocalAssign, Operator, RepeatUntilLoop, UnaryExpression, WhileLoop};
+use crate::syntax::NodeOrToken;
 use crate::syntax::syntax_kind::SyntaxKind;
 use crate::syntax::tree::{SyntaxNode, SyntaxTree};
 use crate::types::{Expr, ExprId, ScopeIndex, SymbolIdentifier, SymbolIndex, TableIndex, ValueType};
@@ -167,11 +168,311 @@ fn base_chain_is_open_mixin(analysis: &AnalysisResult, mut expr: ExprId) -> bool
     false
 }
 
+/// Collect field-name-token start offsets that sit in a defensive
+/// "membership-test" position — a field read whose purpose is to probe whether
+/// the field *exists* before using it — so `undefined-field` is suppressed there.
+/// This is the idiom WoW addons use to guard optional / version-specific API:
+///   `obj.Method and obj:Method()`, `if obj.Field then ... obj:Field ... end`,
+///   `frame.Custom or frame.Fallback`, `not cache.X or cache.X.y`.
+///
+/// Two shapes are recognized:
+///   1. **Probe reads** — a field-read chain consumed purely as a boolean: an
+///      `if`/`while`/`repeat` condition, an operand of `not`, an operand of
+///      `and`/`or`, or a field compared with `==`/`~=`. The whole chain is being
+///      probed, so every field token in it is suppressed.
+///   2. **Guarded accesses** — an access protected by such a probe: the right
+///      operand of `and` (`obj.M and obj:M()`), the right operand of `or` after
+///      `not` (`not c.X or c.X.y`), or the body of an `if`/`while` whose
+///      condition probed the same path. Only accesses whose dotted path *exactly*
+///      matches a probed path are suppressed, so a *deeper* access on a
+///      now-known field (`if o.cfg then o.cfg.typo end`) is still checked.
+fn collect_membership_suppressions(tree: &SyntaxTree) -> HashSet<u32> {
+    let mut suppress = HashSet::new();
+    for node in SyntaxNode::new_root(tree).descendants() {
+        match node.kind() {
+            SyntaxKind::IfBranch => {
+                let Some(branch) = IfBranch::cast(node) else { continue };
+                let mut guards = Vec::new();
+                if let Some(cond) = branch.expression() {
+                    analyze_bool(&cond, true, &mut suppress, &mut guards);
+                }
+                if let Some(block) = branch.block() {
+                    suppress_guarded_exact(block.syntax(), &guards, &mut suppress);
+                }
+            }
+            SyntaxKind::WhileLoop => {
+                let Some(wl) = WhileLoop::cast(node) else { continue };
+                let mut guards = Vec::new();
+                if let Some(cond) = wl.condition() {
+                    analyze_bool(&cond, true, &mut suppress, &mut guards);
+                }
+                if let Some(block) = wl.block() {
+                    suppress_guarded_exact(block.syntax(), &guards, &mut suppress);
+                }
+            }
+            SyntaxKind::RepeatUntilLoop => {
+                // The `until` condition runs *after* the body, so it cannot guard
+                // the body — only suppress the probe reads in the condition.
+                let Some(rl) = RepeatUntilLoop::cast(node) else { continue };
+                if let Some(cond) = rl.condition() {
+                    analyze_bool(&cond, true, &mut suppress, &mut Vec::new());
+                }
+            }
+            SyntaxKind::BinaryExpression | SyntaxKind::UnaryExpression => {
+                // Boolean / probe expressions in *value* context, e.g.
+                // `local x = a or b.c` or `local h = obj.field ~= nil`. Process each
+                // only from its outermost boolean node (so chains aren't analyzed
+                // twice) and skip condition positions (handled above). `==`/`~=`
+                // comparisons are dispatched here too so the assignment form of an
+                // existence check is suppressed exactly like the `if` form.
+                if (is_bool_op_node(&node) || is_eq_comparison_node(&node))
+                    && is_bool_root(&node)
+                    && !is_condition_position(&node)
+                    && let Some(expr) = Expression::cast(node)
+                {
+                    analyze_bool(&expr, false, &mut suppress, &mut Vec::new());
+                }
+            }
+            _ => {}
+        }
+    }
+    suppress
+}
+
+/// Recursively walk a boolean/value expression, suppressing field reads in
+/// membership-test position and collecting the dotted paths proven to exist when
+/// the expression evaluates truthy (`out_guards`, used to guard `and`-RHS and
+/// `if`/`while` bodies).
+///
+/// `boolean_ctx` is true when the expression's *value* is consumed purely as a
+/// boolean (a condition, a `not` operand, or a non-final `and`/`or` operand). In
+/// that case a bare field-read chain is itself a probe; in value context only the
+/// short-circuiting / guarded operands are.
+fn analyze_bool(
+    expr: &Expression<'_>,
+    boolean_ctx: bool,
+    suppress: &mut HashSet<u32>,
+    out_guards: &mut Vec<Vec<String>>,
+) {
+    match unwrap_grouped(expr) {
+        Expression::BinaryExpression(bin) => {
+            let terms = bin.get_terms();
+            match bin.kind() {
+                Operator::And => {
+                    let mut lg = Vec::new();
+                    if let Some(l) = terms.first() {
+                        analyze_bool(l, true, suppress, &mut lg);
+                    }
+                    if let Some(r) = terms.get(1) {
+                        // The RHS only runs when the LHS was truthy, so any access
+                        // re-reading a path the LHS proved present is guarded.
+                        suppress_guarded_exact(r.syntax(), &lg, suppress);
+                        let mut rg = Vec::new();
+                        analyze_bool(r, boolean_ctx, suppress, &mut rg);
+                        out_guards.append(&mut rg);
+                    }
+                    out_guards.append(&mut lg);
+                }
+                Operator::Or => {
+                    // `or` is the fallback idiom: every operand is an optional
+                    // read. A `not X` operand additionally proves `X` exists in
+                    // the operands that follow (`not c.X or c.X.y`).
+                    let neg = terms.first().and_then(negation_guard_path);
+                    if let Some(l) = terms.first() {
+                        analyze_bool(l, true, suppress, &mut Vec::new());
+                    }
+                    if let Some(r) = terms.get(1) {
+                        if let Some(g) = &neg {
+                            suppress_guarded_exact(r.syntax(), std::slice::from_ref(g), suppress);
+                        }
+                        analyze_bool(r, true, suppress, &mut Vec::new());
+                    }
+                    // `a or b` being truthy proves nothing specific about either.
+                }
+                Operator::Equals | Operator::NotEquals => {
+                    // Comparing a field chain with `==`/`~=` (commonly against
+                    // `nil`) probes the field's presence — in both condition and
+                    // value context (`if x.f ~= nil then` and `local h = x.f ~= nil`
+                    // are the same existence check), so this is not gated on
+                    // `boolean_ctx`.
+                    for t in &terms {
+                        mark_membership(t, suppress, out_guards);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Expression::UnaryExpression(un) if un.kind() == Operator::Not => {
+            if let Some(inner) = un.get_terms().first() {
+                analyze_bool(inner, true, suppress, &mut Vec::new());
+            }
+            // `not X` truthy → X falsy, so it proves no positive guard here.
+        }
+        Expression::Identifier(ident) => {
+            if boolean_ctx {
+                mark_membership_ident(&ident, suppress, out_guards);
+            }
+        }
+        // Method/function calls in boolean position are *not* membership reads
+        // (calling a missing method errors at runtime), so they are left to warn.
+        _ => {}
+    }
+}
+
+/// Suppress a field-read chain operand and record its prefixes as guard paths.
+fn mark_membership(expr: &Expression<'_>, suppress: &mut HashSet<u32>, out_guards: &mut Vec<Vec<String>>) {
+    if let Expression::Identifier(ident) = unwrap_grouped(expr) {
+        mark_membership_ident(&ident, suppress, out_guards);
+    }
+}
+
+fn mark_membership_ident(ident: &Identifier<'_>, suppress: &mut HashSet<u32>, out_guards: &mut Vec<Vec<String>>) {
+    // A chain containing a call isn't a pure field-read probe.
+    if ident.contains_call() {
+        return;
+    }
+    let path = ident.names();
+    if path.len() < 2 {
+        return; // a bare name is `undefined-global`, not `undefined-field`
+    }
+    suppress_chain_tokens(ident.syntax(), suppress);
+    // Every prefix (length >= 2) is proven present when the chain is truthy.
+    for k in 2..=path.len() {
+        out_guards.push(path[..k].to_vec());
+    }
+}
+
+/// Suppress the trailing field token of every field access within `node`'s chain
+/// (a probe reads every level of the chain it dereferences).
+fn suppress_chain_tokens(node: SyntaxNode<'_>, suppress: &mut HashSet<u32>) {
+    for d in node.descendants() {
+        if matches!(d.kind(), SyntaxKind::DotAccess | SyntaxKind::MethodCall)
+            && let Some(s) = trailing_field_token_start(&d)
+        {
+            suppress.insert(s);
+        }
+    }
+}
+
+/// Within `region`, suppress field accesses whose dotted path exactly matches one
+/// of `guards` (a path proven present by a preceding probe).
+fn suppress_guarded_exact(region: SyntaxNode<'_>, guards: &[Vec<String>], suppress: &mut HashSet<u32>) {
+    if guards.is_empty() {
+        return;
+    }
+    for d in region.descendants() {
+        if matches!(d.kind(), SyntaxKind::DotAccess | SyntaxKind::MethodCall)
+            && let Some(ident) = Identifier::cast(d)
+        {
+            let path = ident.names();
+            if path.len() >= 2
+                && guards.contains(&path)
+                && let Some(s) = trailing_field_token_start(&d)
+            {
+                suppress.insert(s);
+            }
+        }
+    }
+}
+
+/// Start offset of the field name token directly owned by an access node — the
+/// `Name` after the chain's final `.`/`:` (matches the IR's `field_range`).
+fn trailing_field_token_start(node: &SyntaxNode<'_>) -> Option<u32> {
+    let mut seen_sep = false;
+    for c in node.children_with_tokens() {
+        match c {
+            NodeOrToken::Token(t) if matches!(t.kind(), SyntaxKind::Dot | SyntaxKind::Colon) => {
+                seen_sep = true;
+            }
+            NodeOrToken::Token(t) if seen_sep && t.kind() == SyntaxKind::Name => {
+                return Some(u32::from(t.text_range().start()));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// If `expr` is `not <field-read chain>`, return that chain's dotted path.
+fn negation_guard_path(expr: &Expression<'_>) -> Option<Vec<String>> {
+    if let Expression::UnaryExpression(un) = unwrap_grouped(expr)
+        && un.kind() == Operator::Not
+        && let Some(inner) = un.get_terms().first()
+        && let Expression::Identifier(ident) = unwrap_grouped(inner)
+        && !ident.contains_call()
+    {
+        let path = ident.names();
+        if path.len() >= 2 {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Peel `GroupedExpression` wrappers (`(expr)`) to the inner expression.
+fn unwrap_grouped<'a>(expr: &Expression<'a>) -> Expression<'a> {
+    let mut e = *expr;
+    while let Expression::GroupedExpression(g) = e {
+        match g.get_expression() {
+            Some(inner) => e = inner,
+            None => break,
+        }
+    }
+    e
+}
+
+/// True for an `and`/`or` binary expression or a `not` unary expression.
+fn is_bool_op_node(node: &SyntaxNode<'_>) -> bool {
+    match node.kind() {
+        SyntaxKind::BinaryExpression =>
+            BinaryExpression::cast(*node).is_some_and(|b| matches!(b.kind(), Operator::And | Operator::Or)),
+        SyntaxKind::UnaryExpression =>
+            UnaryExpression::cast(*node).is_some_and(|u| u.kind() == Operator::Not),
+        _ => false,
+    }
+}
+
+/// True for an `==`/`~=` comparison.
+fn is_eq_comparison_node(node: &SyntaxNode<'_>) -> bool {
+    node.kind() == SyntaxKind::BinaryExpression
+        && BinaryExpression::cast(*node)
+            .is_some_and(|b| matches!(b.kind(), Operator::Equals | Operator::NotEquals))
+}
+
+/// The nearest ancestor that isn't a `GroupedExpression`.
+fn skip_grouping_parent<'a>(node: &SyntaxNode<'a>) -> Option<SyntaxNode<'a>> {
+    let mut p = node.parent();
+    while let Some(pp) = p {
+        if pp.kind() == SyntaxKind::GroupedExpression {
+            p = pp.parent();
+        } else {
+            return Some(pp);
+        }
+    }
+    None
+}
+
+/// True when `node` is the outermost boolean node of its chain (its non-grouping
+/// parent is not itself a boolean node), so the chain is analyzed exactly once.
+fn is_bool_root(node: &SyntaxNode<'_>) -> bool {
+    skip_grouping_parent(node).is_none_or(|p| !is_bool_op_node(&p))
+}
+
+/// True when `node` is (the root of) an `if`/`while`/`repeat` condition — those
+/// are handled by their statement nodes (which also guard the body).
+fn is_condition_position(node: &SyntaxNode<'_>) -> bool {
+    matches!(
+        skip_grouping_parent(node).map(|p| p.kind()),
+        Some(SyntaxKind::Condition | SyntaxKind::RepeatUntilLoop)
+    )
+}
+
 pub(crate) struct UndefinedField;
 
 impl DiagnosticPass for UndefinedField {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let pure_records = collect_pure_record_symbols(analysis, tree);
+        let membership_suppressed = collect_membership_suppressions(tree);
         for (_, expr) in analysis.local_exprs() {
             let Expr::FieldAccess { table, field, field_range } = expr else { continue };
             let Some((start, end)) = field_range else { continue };
@@ -226,6 +527,13 @@ impl DiagnosticPass for UndefinedField {
                 }
                 continue;
             };
+            // A field read used as a defensive existence check (`obj.M and
+            // obj:M()`, `if obj.F then ... obj:F ... end`) is probing whether the
+            // field exists — not a typo — so don't report it as undefined. This is
+            // applied only on the `@class` path: a closed module-private record
+            // has a fully-known field set that can't grow at runtime, so an unknown
+            // field there is always a typo, even inside a condition.
+            if membership_suppressed.contains(start) { continue; }
             // Related info: point to the @class declaration if it's in the current file.
             let related = analysis.ir.class_def_ranges.get(&class_name)
                 .map(|&(cs, ce)| vec![RelatedInfo {

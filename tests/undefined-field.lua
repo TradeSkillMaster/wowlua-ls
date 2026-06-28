@@ -351,3 +351,95 @@ _consume(inlineRec.sum)
 -- Typo on a field: flagged
 _consume(inlineRec.z)
 --                 ^ diag: undefined-field
+
+-- ═══════════════════════════════════════════════════════════
+-- Membership-test suppression: a field read used as a defensive
+-- existence check ("does this field exist?") — and the access it
+-- guards — must NOT be flagged undefined-field. Optional and
+-- version-specific WoW API is probed exactly this way.
+-- ═══════════════════════════════════════════════════════════
+
+---@class GuardInner
+---@field real number
+
+---@class GuardHost
+---@field known number
+---@field cfg GuardInner
+local gh = {} ---@type GuardHost
+
+-- `obj.Method and obj:Method()` — the probe read and the guarded call.
+_consume(gh.Maybe and gh:Maybe())
+
+-- `obj.field and obj.field.sub` — the and-RHS re-read of the guarded path.
+_consume(gh.handle and gh.handle.value)
+
+-- `if obj.Field then ... obj:Field ... end` — condition + guarded body.
+if gh.Setup then
+    gh:Setup()
+end
+
+-- `or` fallback idiom: every operand is an optional read.
+local _f = gh.customField or gh.fallbackField
+
+-- `not X or X.y` — the or-after-not guard.
+local _n = not gh.cache or gh.cache.ready
+
+-- A multi-level condition probes every level it dereferences.
+if gh.opt.deep.flag then
+    _consume(gh.opt.deep.flag)
+end
+
+-- `~= nil` existence probe (condition + guarded body re-read).
+if gh.handler ~= nil then
+    gh.handler()
+end
+
+-- The *value* form of an existence check is suppressed exactly like the `if`
+-- form (`local has = x.f ~= nil` is the same probe as `if x.f ~= nil then`).
+local _has = gh.probed ~= nil
+local _eq = gh.compared == nil
+
+-- Chained `field and field.M and field:M()` (the `parent:GetNodeID` idiom).
+_consume(gh.region and gh.region.Probe and gh.region:Probe())
+
+-- NEGATIVE: a genuine typo outside any membership position still warns.
+_consume(gh.realTypo)
+--          ^ diag: undefined-field
+
+-- NEGATIVE: a guard on one field does not suppress a *different* undefined
+-- field accessed in the guarded body (the guard path is matched exactly).
+if gh.present then
+    _consume(gh.absent)
+    --          ^ diag: undefined-field
+end
+
+-- NEGATIVE: the guard proves `gh.cfg` exists, but a *deeper* unknown field on
+-- the now-known value is a real typo and is still checked.
+if gh.cfg then
+    _consume(gh.cfg.deepTypo)
+    --              ^ diag: undefined-field
+end
+
+-- NEGATIVE: a method *call* in a condition (no `obj.M and` field guard) is not
+-- a membership read — a missing method would error — so it still warns.
+if gh:DoMissing() then
+--     ^ diag: undefined-field
+    _consume(1)
+end
+
+-- NEGATIVE: membership suppression does NOT apply to closed module-private
+-- records. Their field set is fully known and cannot grow at runtime, so an
+-- unknown field is a typo even when probed in a condition or compared with
+-- `~=`/`==` (unlike an optional field on a @class).
+local cfgRec = { enabled = true }
+function cfgRec.use()
+    return cfgRec.enabled
+end
+
+if cfgRec.enbaled then
+    --        ^ diag: undefined-field
+    _consume(1)
+end
+
+local _ce = cfgRec.missingField ~= nil
+--                 ^ diag: undefined-field
