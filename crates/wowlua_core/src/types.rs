@@ -1132,15 +1132,6 @@ pub struct TableInfo {
     /// `@see <target>` entries attached to the declaring `@class`.
     #[serde(default)]
     pub see: Vec<String>,
-    /// `@shape <type>` — structural plain-table forms accepted where this `@class`
-    /// is expected (the userdata/mixin escape hatch). A table value assignable to
-    /// any shape is accepted by `is_table_subtype_impl` even though it lacks the
-    /// mixin's methods — e.g. `ItemLocation` accepts `{bagID, slotIndex}` and
-    /// `ColorMixin` accepts `{r, g, b, a?}`. Each entry is a resolved shape type
-    /// (typically a `Table` or a `Union` of `Table`s for alternative forms).
-    /// Rides the precomputed stub blob, so bump `BLOB_VERSION` when changing.
-    #[serde(default)]
-    pub accept_shapes: Vec<ValueType>,
     /// True when created from explicit `table<K, V>` annotation syntax (not `V[]`).
     /// Controls hover display: explicit maps show `table<K, V>`, arrays show `V[]`.
     /// Skipped in serde: set at runtime during per-file prescan and build_on_stubs,

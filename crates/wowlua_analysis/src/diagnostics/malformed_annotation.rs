@@ -41,7 +41,7 @@ const KNOWN_TAGS: &[&str] = &[
     "generic", "private", "protected", "accessor", "diagnostic",
     "builds-field", "built-name", "built-extends", "type-narrows", "returns-class-name", "narrows-arg",
     "creates-global", "generates-events", "callback-event-arg", "correlated", "flavor-narrows", "event", "requires",
-    "see", "shape", "vararg", "as", "cast", "operator", "module", "source",
+    "see", "vararg", "as", "cast", "operator", "module", "source",
     "version", "package", "async", "nodoc", "public",
 ];
 
@@ -157,8 +157,6 @@ impl DiagnosticPass for MalformedAnnotation {
                     Some("@cast requires a type after the variable name".to_string()),
                 "type" if rest.is_empty() =>
                     Some("@type requires a type".to_string()),
-                "shape" if rest.is_empty() =>
-                    Some("@shape requires a type".to_string()),
                 "return" if rest.is_empty() => {
                     if next_token_is_continuation(&tok) { None }
                     else { Some("@return requires a type".to_string()) }

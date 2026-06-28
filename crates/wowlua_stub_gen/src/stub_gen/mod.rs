@@ -21,6 +21,7 @@ mod framexml;
 mod xml_frames;
 mod classic;
 mod util;
+mod data_params;
 mod orchestrate;
 #[cfg(test)]
 mod tests;
@@ -33,6 +34,7 @@ pub(in crate::stub_gen) use framexml::*;
 pub(in crate::stub_gen) use xml_frames::*;
 pub(in crate::stub_gen) use classic::*;
 pub(in crate::stub_gen) use util::*;
+pub(in crate::stub_gen) use data_params::*;
 pub use orchestrate::regenerate_stubs;
 
 /// Files we generate from wago.tools DB2 data — excluded from dedup scans so that

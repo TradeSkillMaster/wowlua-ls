@@ -4033,6 +4033,10 @@ impl<'a> Analysis<'a> {
                 if arg.arg_expr.is_external() { continue; }
                 if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(arg.arg_expr) {
                     if ctor_idx.is_external() { continue; }
+                    // Argument context: a plain literal here must be a real instance
+                    // of the expected class (methods required), not just match its
+                    // data fields. See `Ir::tc_arg_constructors`.
+                    self.ir.tc_arg_constructors.insert(ctor_idx);
                     for &class_idx in &class_indices {
                         tc_pairs.push((class_idx, ctor_idx));
                     }

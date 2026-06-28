@@ -317,12 +317,6 @@
           "patterns": [{"include": "#emmydoc.type"}]
         },
         {
-          "begin": "(?<=---)[ \\t]*@shape\\b",
-          "beginCaptures": {"0": {"name": "storage.type.annotation.lua"}},
-          "end": "(?=[\\n@#])",
-          "patterns": [{"include": "#emmydoc.type"}]
-        },
-        {
           "begin": "(?<=---)[ \\t]*@alias",
           "beginCaptures": {"0": {"name": "storage.type.annotation.lua"}},
           "end": "(?=[\\n@#])",

@@ -448,6 +448,13 @@ pub struct Ir {
     /// Populated during type resolution from `@type`, function call arguments,
     /// and bracket assignments on `table<K, V>` typed tables.
     pub tc_expected_class: HashMap<TableIndex, Vec<TableIndex>>,
+    /// Subset of `tc_expected_class` keys whose constructor flows in as a *function
+    /// argument* (Case 2). A plain table literal passed where a class with methods
+    /// is expected cannot be a real instance (it lacks the methods that would be
+    /// called on it), so `missing_fields` requires the class's methods for these —
+    /// the strict counterpart of the lenient `@type`/assignment contexts, which
+    /// keep the construct-then-Mixin idiom working.
+    pub tc_arg_constructors: std::collections::HashSet<TableIndex>,
     /// Bracket assignments where the target table couldn't be resolved in Phase 1
     /// (e.g. `local NPCs = private.Data.NPCs; NPCs[1] = { ... }`). Deferred to
     /// Phase 2 where resolved_type is available. (root_name, scope_idx, val_expr)
@@ -2538,6 +2545,7 @@ impl<'a> Analysis<'a> {
                 expression_args: HashMap::new(),
                 synthesized_overload_funcs: HashSet::new(),
                 tc_expected_class: HashMap::new(),
+                tc_arg_constructors: std::collections::HashSet::new(),
                 pending_bracket_assigns: Vec::new(),
                 overlay: HashMap::new(),
                 symbol_overlay: HashMap::new(),
@@ -2924,12 +2932,9 @@ pub fn is_table_subtype_impl(
                     return true;
                 }
             }
-            // A class that declares `@shape` is matched against plain tables
-            // *only* by its shapes (handled below), never by the generic
-            // structural-field / key-coverage paths. Otherwise, once its fields
-            // are marked conditionally-present (nilable) by the shape, an
-            // all-optional class would vacuously accept any non-empty table.
-            if at.class_name.is_none() && bt.class_name.is_some() && bt.accept_shapes.is_empty()
+            // A plain table literal structurally matches a `@class` when it
+            // provides all the class's required fields.
+            if at.class_name.is_none() && bt.class_name.is_some()
                 && !at.fields.is_empty()
                 && fields_structurally_match_impl(ir, resolved_expr_cache, *a, *b) {
                     return true;
@@ -2940,7 +2945,6 @@ pub fn is_table_subtype_impl(
             // covered by those literal key names and whose types are compatible
             // with the dictionary's value type.
             if at.class_name.is_none() && at.fields.is_empty() && bt.class_name.is_some()
-                && bt.accept_shapes.is_empty()
                 && let (Some(key_type), Some(val_type)) = (&at.key_type, &at.value_type)
                 && let Some(keys) = extract_string_literal_keys(key_type)
             {
@@ -2950,8 +2954,12 @@ pub fn is_table_subtype_impl(
                         val_type.is_assignable_to(field_type)
                             || is_table_subtype_impl(ir, resolved_expr_cache, val_type, field_type)
                     } else {
-                        *lateinit || matches!(field_type,
-                            ValueType::Union(types) if types.contains(&ValueType::Nil))
+                        // A string-keyed dict is a data form, never a methods-bearing
+                        // instance, so the class's methods are not required to be
+                        // "covered" by the dict's keys — only its data fields.
+                        *lateinit
+                            || matches!(field_type, ValueType::Union(types) if types.contains(&ValueType::Nil))
+                            || matches!(field_type, ValueType::Function(_) | ValueType::FunctionSig(_))
                     }
                 });
                 if all_match {
@@ -3033,20 +3041,6 @@ pub fn is_table_subtype_impl(
                         return true;
                     }
             }
-            // `@shape` escape hatch: a `@class` (typically a WoW userdata/mixin
-            // such as ItemLocation or ColorMixin) may declare accepted plain-table
-            // forms via `@shape`. A plain table value — a literal `{bagID, slotIndex}`
-            // or a `table<"r"|"g"|"b", number>` dict — that matches any declared
-            // shape is assignable to the class even though it lacks the mixin's
-            // methods. Gated on a non-class actual so a genuine unrelated class
-            // instance still mismatches, and on a matching shape so an unrelated
-            // table (`{foo}`) is still rejected (no blanket hole).
-            if at.class_name.is_none() && bt.class_name.is_some() && !bt.accept_shapes.is_empty()
-                && bt.accept_shapes.iter()
-                    .any(|shape| table_matches_shape_impl(ir, resolved_expr_cache, *a, shape))
-            {
-                return true;
-            }
             false
         }
         // Union decomposition: String(_) and NumberLiteral(_) need this to reach the
@@ -3106,67 +3100,6 @@ pub fn fields_structurally_match_impl(
     check_fields_impl(ir, resolved_expr_cache, actual_idx, expected_idx).is_empty()
 }
 
-/// Whether a plain table value (`actual_idx`, a literal or a `table<keys, V>`
-/// dict) is accepted by a single `@shape` form declared on a `@class`. A `Union`
-/// shape matches if any member does (alternative construction forms, e.g.
-/// ItemLocation's `{bagID, slotIndex} | {equipmentSlotIndex}`). A table-literal
-/// shape matches either via the normal structural field walk (table-literal
-/// actual) or via string-literal key coverage (a `table<keys, V>` actual carries
-/// no named fields for the walk) — mirroring the `table<keys, V>` → `@class`
-/// rule in `is_table_subtype_impl`. Methods on the shape are not required because
-/// shapes only ever list data fields.
-fn table_matches_shape_impl(
-    ir: &Ir,
-    resolved_expr_cache: &[Option<ValueType>],
-    actual_idx: TableIndex,
-    shape: &ValueType,
-) -> bool {
-    match shape {
-        ValueType::Union(members) => members.iter()
-            .any(|m| table_matches_shape_impl(ir, resolved_expr_cache, actual_idx, m)),
-        ValueType::Table(Some(shape_idx)) => {
-            // A `@shape` describes a *plain-table* form. A shape that resolves to a
-            // class table (the misuse `@shape SomeClass`) is not a plain-table form,
-            // so it matches nothing here. This also guarantees termination: a plain
-            // shape never re-enters the shape-acceptance block in
-            // `is_table_subtype_impl` (which fires only for a *class* expected),
-            // whereas a class shape would — and a cyclic `@shape` pair (A shapes B,
-            // B shapes A) would recurse without bound and overflow the stack, since
-            // `is_table_subtype_impl` has no recursion guard.
-            if ir.table(*shape_idx).class_name.is_some() {
-                return false;
-            }
-            let actual = ValueType::Table(Some(actual_idx));
-            // Table-literal actual → shape via the normal structural field match.
-            if is_table_subtype_impl(ir, resolved_expr_cache, &actual, shape) {
-                return true;
-            }
-            // `table<string_literal_keys, V>` actual → named-field shape via key
-            // coverage (the actual has no named fields for the structural walk).
-            let at = ir.table(actual_idx);
-            let st = ir.table(*shape_idx);
-            if at.class_name.is_none() && at.fields.is_empty() && !st.fields.is_empty()
-                && let (Some(key_type), Some(val_type)) = (&at.key_type, &at.value_type)
-                && let Some(keys) = extract_string_literal_keys(key_type)
-            {
-                let shape_fields = collect_class_fields_impl(ir, resolved_expr_cache, *shape_idx);
-                return shape_fields.iter().all(|(field_name, field_type, lateinit)| {
-                    if keys.contains(field_name.as_str()) {
-                        val_type.is_assignable_to(field_type)
-                            || is_table_subtype_impl(ir, resolved_expr_cache, val_type, field_type)
-                    } else {
-                        *lateinit || matches!(field_type,
-                            ValueType::Union(types) if types.contains(&ValueType::Nil))
-                    }
-                });
-            }
-            false
-        }
-        // A non-table shape (unusual) — defer to general assignability.
-        _ => is_table_subtype_impl(ir, resolved_expr_cache, &ValueType::Table(Some(actual_idx)), shape),
-    }
-}
-
 pub fn structural_mismatch_details_impl(
     ir: &Ir,
     resolved_expr_cache: &[Option<ValueType>],
@@ -3188,9 +3121,6 @@ pub fn structural_mismatch_details_impl(
             for t in types {
                 let ValueType::Table(Some(b)) = t else { continue };
                 if ir.table(*a).class_name.is_some() || ir.table(*b).class_name.is_none() { continue; }
-                // Shape-governed members are matched by their shapes, not the
-                // generic field walk — skip describing a field mismatch for them.
-                if !ir.table(*b).accept_shapes.is_empty() { continue; }
                 let details = check_fields_impl(ir, resolved_expr_cache, *a, *b);
                 // A fully-satisfied member means the literal is assignable to the
                 // union — no mismatch to describe.
@@ -3206,13 +3136,6 @@ pub fn structural_mismatch_details_impl(
     let at = ir.table(actual_idx);
     let bt = ir.table(expected_idx);
     if at.class_name.is_some() || bt.class_name.is_none() {
-        return None;
-    }
-    // A class that declares `@shape` is matched by its shapes, not the generic
-    // structural-field walk (its fields may be conditionally-present/nilable,
-    // which would make the walk vacuously pass). Defer the accept/reject decision
-    // to `is_table_subtype_impl`; don't describe a generic field mismatch.
-    if !bt.accept_shapes.is_empty() {
         return None;
     }
     let details = check_fields_impl(ir, resolved_expr_cache, actual_idx, expected_idx);

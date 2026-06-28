@@ -41,7 +41,7 @@ use crate::annotations::{AnnotationType, AliasDecl, ClassDecl, parse_overload};
 
 use super::{
     annotation_type_references_type_params, substitute_annotation_type,
-    apply_shape_field_nilability, finalize_enum_kind_for_class, FnBuildCtx, FnMeta, PreResolvedGlobals,
+    finalize_enum_kind_for_class, FnBuildCtx, FnMeta, PreResolvedGlobals,
 };
 
 /// The class/alias registries `register_classes_and_aliases` writes into — a
@@ -443,21 +443,6 @@ pub fn populate_class_fields(
                 });
             }
         }
-
-        // Resolve `@shape` forms into `accept_shapes` (the userdata/mixin escape
-        // hatch — a plain table matching any shape is assignable to this class
-        // even though it lacks the class's methods). Iterating all ClassDecls
-        // means a standalone/override `@shape` merges onto the class by name.
-        let shape_gen_context: Vec<(String, Option<String>)> = ctx.tables[local_idx].class_type_params.iter()
-            .map(|tp| (tp.clone(), None)).collect();
-        for shape in &class.shape_annotations {
-            if let Some(vt) = resolve_field_annotation(shape, &shape_gen_context, DefNode::DUMMY, ctx) {
-                ctx.tables[local_idx].accept_shapes.push(vt);
-            }
-        }
-        // The shape is the source of truth for which fields are conditionally
-        // present, so mark those fields nilable for accurate reads.
-        apply_shape_field_nilability(ctx.tables, local_idx, EXT_BASE);
 
         if class.is_enum && !class.is_key_enum {
             finalize_enum_kind_for_class(ctx.tables, local_idx);

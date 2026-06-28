@@ -300,21 +300,6 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
-            // Resolve `@shape` forms into `accept_shapes` (the userdata/mixin
-            // escape hatch — a plain table matching any shape is assignable to
-            // this class even though it lacks the class's methods).
-            if !class.shape_annotations.is_empty() {
-                let gen_context: Vec<(String, Option<String>)> = self.ir.tables[table_idx.val()].class_type_params.iter()
-                    .map(|tp: &String| (tp.clone(), None)).collect();
-                for shape in &class.shape_annotations {
-                    if let Some(vt) = self.resolve_annotation_type_mut_gen(shape, &gen_context) {
-                        self.ir.tables[table_idx.val()].accept_shapes.push(vt);
-                    }
-                }
-                // The shape is the source of truth for which fields are
-                // conditionally present, so mark those fields nilable for reads.
-                crate::pre_globals::apply_shape_field_nilability(&mut self.ir.tables, table_idx.val(), 0);
-            }
         }
 
         // Mark classes that have explicit @field annotations in the source file.

@@ -967,6 +967,15 @@ fn overlay_param_reassign() {
 }
 
 #[test]
+fn mixin_data_params() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/mixin-data-params.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn multi_flavor_arity() {
     // A flavor-split addon defines the same namespaced function / colon method
     // with different arities in mutually-exclusive `Source_*` dirs. The merged
@@ -2667,23 +2676,6 @@ fn structural_subtype() {
     });
 }
 
-#[test]
-fn shape_annotation() {
-    run_annotation_tests(&TestConfig {
-        lua_file: "tests/shape-annotation.lua",
-        with_stubs: false,
-        scan_dir: None,
-    });
-}
-
-#[test]
-fn shape_annotation_crossfile() {
-    run_annotation_tests(&TestConfig {
-        lua_file: "tests/shape-annotation-crossfile/user.lua",
-        with_stubs: true,
-        scan_dir: Some("tests/shape-annotation-crossfile"),
-    });
-}
 
 #[test]
 fn syntax_coverage() {

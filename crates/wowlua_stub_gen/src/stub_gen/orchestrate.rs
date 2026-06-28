@@ -600,6 +600,9 @@ pub fn regenerate_stubs() {
     let scan_result = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[], &crate::annotations::CreatesGlobalMap::new());
     let (mut classes, mut aliases, mut globals, stub_events) =
         (scan_result.classes, scan_result.aliases, scan_result.globals, scan_result.events);
+    // Retype mixin-object parameters (colorRGB, ItemLocation, …) to their data type
+    // so data-reading C APIs accept plain tables while methods-typed params stay strict.
+    remap_mixin_data_params(&mut globals, &mut classes);
     phase!("scan_paths_with_overrides (pass 1)");
 
     // Step 6b: Apply flavor bitmask data derived from BlizzardInterfaceResources branch diffs
@@ -701,6 +704,7 @@ pub fn regenerate_stubs() {
         // Replace globals/classes/aliases with the enriched Pass 2 versions.
         classes = classes2;
         globals = globals2;
+        remap_mixin_data_params(&mut globals, &mut classes);
         apply_flavor_data(&mut globals, &branch_data.flavor_map);
         globals.retain(|g| g.name != crate::annotations::ADDON_NS_NAME);
         aliases = aliases2;

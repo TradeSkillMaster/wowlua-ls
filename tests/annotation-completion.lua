@@ -5,7 +5,7 @@
 
 -- All tags after ---@ (no context: shows everything)
 ---@
---  ^ comp: param, return, type, class, field, alias, enum, event, overload, defclass, generic, cast, as, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, accessor, meta, diagnostic, type-narrows, returns-class-name, flavor-narrows, narrows-arg, creates-global, requires, correlated, shape, see
+--  ^ comp: param, return, type, class, field, alias, enum, event, overload, defclass, generic, cast, as, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, accessor, meta, diagnostic, type-narrows, returns-class-name, flavor-narrows, narrows-arg, creates-global, requires, correlated, see
 
 -- Partial prefix: "re" → return, requires, returns-class-name
 ---@diagnostic disable-next-line: malformed-annotation
@@ -42,10 +42,10 @@
 ---@cr
 --    ^ comp: creates-global
 
--- Partial prefix: "sh" → shape
+-- Partial prefix: "cor" → correlated
 ---@diagnostic disable-next-line: malformed-annotation
----@sh
---    ^ comp: shape
+---@cor
+--     ^ comp: correlated
 
 -- Non-matching prefix: no tag starts with "xyz" → empty, no fallback to globals
 ---@diagnostic disable-next-line: malformed-annotation
@@ -63,7 +63,7 @@ function ctxFuncTest(x) end
 -- Class context: after @class, only class-applicable tags appear
 ---@class CtxClassTest
 ---@
---  ^ comp: field, accessor, correlated, shape, overload, constructor, deprecated, nodiscard, private, protected, diagnostic, see
+--  ^ comp: field, accessor, correlated, overload, constructor, deprecated, nodiscard, private, protected, diagnostic, see
 
 -- Function context inferred from function below (no prior tags)
 ---@

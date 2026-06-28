@@ -165,14 +165,6 @@ goto myLabel
 --            ^ keyword.operator.lua
 --              ^^^^^^ support.type.lua
 
--- Annotation: @shape (mixin plain-table escape) — block-tied form
----@shape { r: number, g: number, b: number }
--- ^^^^^^ storage.type.annotation.lua
-
--- Annotation: @shape standalone (named target class)
----@shape ItemLocation { bagID: number, slotIndex: number }
--- ^^^^^^ storage.type.annotation.lua
-
 -- Annotation: @param with simple type
 ---@param x number
 -- ^^^^^^ storage.type.annotation.lua

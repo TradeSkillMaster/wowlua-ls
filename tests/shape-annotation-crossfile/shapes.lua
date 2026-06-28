@@ -1,4 +1,0 @@
----@meta _
--- Standalone `@shape <ClassName> <type>` attaches additively to the named class
--- (declared in defs.lua). No `@class` here, so the class definition is preserved.
----@shape Item { bagID: number, slotIndex: number } | { equipmentSlotIndex: number }

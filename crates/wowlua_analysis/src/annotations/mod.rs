@@ -446,11 +446,6 @@ pub struct ClassDecl {
     /// `@see <target>` — cross-reference link(s) attached to this `@class`. Doc-only.
     #[serde(default)]
     pub see: Vec<String>,
-    /// `@shape <type>` — raw structural plain-table forms a value may take where
-    /// this `@class` is expected (userdata/mixin escape hatch). Resolved to
-    /// `TableInfo.accept_shapes` during prescan / stub build. Rides the blob.
-    #[serde(default)]
-    pub shape_annotations: Vec<AnnotationType>,
     /// Field names from explicit `@field` annotations (not inferred from constructor self-fields).
     /// Used by doc generation to distinguish documented API fields from internal implementation fields.
     #[serde(default)]
@@ -505,18 +500,7 @@ impl ClassDecl {
             field_descriptions: HashMap::new(),
             bare_inferred_field_names: HashSet::new(),
             deferred_field_call_ranges: HashMap::new(),
-            shape_annotations: Vec::new(),
         }
-    }
-
-    /// Construct a ClassDecl that carries only `@shape` forms for an existing
-    /// class (targeted by name). Merged onto the real class in the build, so a
-    /// stub override can add a shape without redeclaring (and thereby replacing)
-    /// the generated class.
-    pub fn shape_only(name: String, shapes: Vec<AnnotationType>) -> Self {
-        let mut c = Self::empty_named(name);
-        c.shape_annotations = shapes;
-        c
     }
 
     /// Construct a minimal `ClassDecl` with only its name set. Used by unit tests
@@ -714,11 +698,6 @@ pub struct AnnotationBlock {
     /// `@requires T: Constraint` — receiver class type-param constraints for a
     /// method. Each entry is (param_name, constraint_type_string).
     pub requires: Vec<(String, String)>,
-    /// `@shape` — raw text after the tag. Parsed late (in `process_annotation_block`)
-    /// because the meaning depends on block context: inside a `@class` block the
-    /// whole string is a type (attaches to that class); standalone it is
-    /// `<ClassName> <type>` (attaches to the named class additively).
-    pub shape_annotations: Vec<String>,
     /// Byte offset of the `---@class` comment token (for positional disambiguation
     /// when multiple `@class` declarations share the same name in one file).
     pub class_comment_start: Option<u32>,
@@ -1227,17 +1206,6 @@ fn flush_group(
     let line_strs: Vec<String> = lines.iter().map(|(s, _, _)| s.clone()).collect();
     let block = parse_annotation_lines(&line_strs);
     if block.meta { result.has_meta = true; }
-    // Standalone `@shape <ClassName> <type>` (no `@class` in this block): emit a
-    // shape-only ClassDecl that merges its `@shape` onto the named class by name
-    // in the build. This keeps stub overrides additive — they declare no `@class`,
-    // so the stub generator does not skip the real (generated) class.
-    if block.class.is_none() {
-        for raw in &block.shape_annotations {
-            if let Some((cls, typ)) = parse_named_shape(raw) {
-                result.classes.push(ClassDecl::shape_only(cls, vec![typ]));
-            }
-        }
-    }
     if let Some(class_name) = block.class {
         let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::new();
         for (text, start, end) in lines {
@@ -1252,7 +1220,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::new(), deferred_field_call_ranges: HashMap::new(), shape_annotations: block.shape_annotations.iter().map(|s| parse_type(s)).collect() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::new(), deferred_field_call_ranges: HashMap::new() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -1385,23 +1353,6 @@ fn parse_field_header(after_field: &str) -> Option<(Visibility, &str, bool, &str
     Some((vis, name, is_optional, type_str))
 }
 
-/// Parse a standalone `@shape <ClassName> <type>` payload into its target class
-/// name and the shape type. The class name is the leading identifier (`Foo`,
-/// `Foo.Bar`); everything after it is the type expression (commonly a table
-/// literal, or a union of table literals for alternative construction forms).
-/// Returns None if there's no leading class name or no type.
-fn parse_named_shape(raw: &str) -> Option<(String, AnnotationType)> {
-    let raw = raw.trim();
-    let name_end = raw
-        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
-        .unwrap_or(raw.len());
-    if name_end == 0 { return None; }
-    let name = &raw[..name_end];
-    let rest = raw[name_end..].trim();
-    if rest.is_empty() { return None; }
-    Some((name.to_string(), parse_type(rest)))
-}
-
 // ── Line parsing ─────────────────────────────────────────────────────────────
 
 fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
@@ -1503,18 +1454,6 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     typ
                 };
                 block.fields.push((name.to_string(), typ, vis));
-            }
-        } else if let Some(rest) = content.strip_prefix("@shape") {
-            // `@shape` declares a structural plain-table form accepted where a
-            // `@class` is expected (the userdata/mixin escape hatch). Two forms:
-            //   • Inside a `@class` block: `@shape <type>` (attaches to that class).
-            //   • Standalone: `@shape <ClassName> <type>` (attaches additively to
-            //     the named class — used by stub overrides so the override doesn't
-            //     replace the generated class).
-            // The form is disambiguated later, where `block.class` is known.
-            let rest = rest.trim();
-            if !rest.is_empty() {
-                block.shape_annotations.push(rest.to_string());
             }
         } else if let Some(rest) = content.strip_prefix("@alias") {
             let rest = rest.trim();

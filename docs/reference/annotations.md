@@ -34,59 +34,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@field [K] V` | Bracket-index field. | [Generics](/guide/generics) |
 | `@field private name type` | Private field. | [Classes](/guide/classes) |
 | `@field protected name type` | Protected field. | [Classes](/guide/classes) |
-| `@shape {fields}` | Plain-table form(s) accepted where this class is expected (userdata/mixin escape). | [#shape](#shape-accept-plain-table-forms) |
 | `@correlated f1, f2, ...` | Fields or locals that are always nil/non-nil together. | [Nil Safety](/guide/nil-safety) |
-
-### `@shape` — accept plain-table forms
-
-Some classes are runtime objects (userdata, mixins) with both data fields **and**
-methods, yet are routinely created by passing a plain table that carries only the
-data fields. World of Warcraft's `ItemLocation` is constructed with
-`ItemLocation:CreateFromBagAndSlot(bag, slot)`, but addons just pass
-`C_Item.IsLocked({ bagID = 0, slotIndex = 1 })`; likewise a `ColorMixin` parameter
-commonly receives `{ r = 1, g = 0, b = 0, a = 1 }`. The strict structural check
-would reject these for the missing mixin methods.
-
-`@shape` declares the plain-table form(s) a class accepts. A table matching any
-declared shape is assignable to the class even though it lacks the methods:
-
-```lua
----@class ItemLocation
----@shape { bagID: number, slotIndex: number } | { equipmentSlotIndex: number }
----@field bagID number
----@field slotIndex number
----@field IsValid fun(self: ItemLocation): boolean
-```
-
-- The shape is a normal [type expression](#type-syntax). Use a **union of table
-  literals** for mutually-exclusive construction variants (bag+slot *or* equipment
-  slot, above). Optional fields use `field?: type`.
-- Methods on the class are **not** required by the shape — that's the point.
-- Once a class declares `@shape`, the shapes are the **complete** plain-table
-  input spec: it is matched against plain tables *only* by its shapes, never by
-  the generic structural-field check. A table that matches **no** shape still
-  mismatches, so unrelated tables and wrong-typed fields are caught (no hole).
-- A string-keyed dict (`table<"r"|"g"|"b", number>`) is accepted when its keys
-  cover the shape's required fields — handy for config-derived colors.
-
-The class keeps its full field/method set for member access, hover, and
-completion; `@shape` only widens what is *assignable* to it.
-
-**The shape drives read-side nilability.** A field named in the shape but not
-required in *every* member is conditionally present, so it reads as nilable on a
-value typed as the class — e.g. an `ItemLocation` built from bag+slot has
-`equipmentSlotIndex == nil`, so `loc.equipmentSlotIndex` is `number?`. This keeps
-the field types honest without re-declaring the (often vendor-authored) `@field`s.
-
-**Standalone form (additive).** `@shape <ClassName> <type>` attaches a shape to an
-existing class by name, without re-declaring `@class`. This is how API stubs add a
-shape to a generated class without replacing it:
-
-```lua
----@meta _
----@shape ItemLocation { bagID: number, slotIndex: number } | { equipmentSlotIndex: number }
----@shape ColorMixin   { r: number, g: number, b: number, a?: number }
-```
 
 ## Generic annotations
 

@@ -90,7 +90,6 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `LibStub.lua` | Library version management |
 | `loadstring.lua` | `loadstring` return tuple (compiled chunk, or nil + error message) |
 | `Mixin.lua` | Variadic generics: `Mixin(T, ...M) → T & ...M` |
-| `MixinShapes.lua` | Additive `@shape` plain-table forms for userdata/mixins (`ItemLocation`, `ColorMixin`, …) |
 | `NamePlateBaseMixin.lua` | Base mixin for name plates |
 | `newproxy.lua` | Userdata proxy creation |
 | `next.lua` | Generic next iterator with `K!, V!` |

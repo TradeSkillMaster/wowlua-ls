@@ -408,7 +408,6 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                             field_descriptions: HashMap::new(),
                             bare_inferred_field_names: HashSet::new(),
                             deferred_field_call_ranges: HashMap::new(),
-                            shape_annotations: Vec::new(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name, implicit_protected_prefix)));
                     } else {
@@ -450,7 +449,6 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                 field_descriptions: HashMap::new(),
                 bare_inferred_field_names: HashSet::new(),
                 deferred_field_call_ranges: HashMap::new(),
-                shape_annotations: Vec::new(),
             });
         }
     }
@@ -704,7 +702,6 @@ fn collect_generated_event_classes(
             field_descriptions: HashMap::new(),
             bare_inferred_field_names: HashSet::new(),
             deferred_field_call_ranges: HashMap::new(),
-            shape_annotations: Vec::new(),
         });
     }
     out

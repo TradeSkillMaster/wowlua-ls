@@ -47,28 +47,47 @@ fn check_missing_fields(
     diags: &mut Vec<WowDiagnostic>,
 ) {
     let rhs_table = analysis.ir.table(ctor_idx);
-    if rhs_table.fields.is_empty() { return; }
 
     let class_table = analysis.table(class_idx);
     let Some(class_name) = &class_table.class_name else { return };
 
-    // A constructor matching a declared `@shape` (the userdata/mixin escape) is
-    // accepted by `is_table_subtype`; shape acceptance owns it, so don't also
-    // report missing fields. Gated on the class actually declaring shapes so
-    // ordinary classes are unaffected. In practice this guard is load-bearing
-    // only for a required field *not named in any shape member*: after
-    // `apply_shape_field_nilability` a shape class's shape-named data fields are
-    // nilable (hence not required) and its methods are never required, so the
-    // fall-through path below would otherwise only flag such an un-shaped field.
-    if !class_table.accept_shapes.is_empty()
-        && analysis.is_table_subtype(&ValueType::Table(Some(ctor_idx)), &ValueType::Table(Some(class_idx)))
-    {
-        return;
-    }
-
     let Some(&(start, end)) = analysis.ir.table_ranges.iter()
         .find(|(_, idx)| **idx == ctor_idx)
         .map(|(range, _)| range) else { return };
+
+    // Argument context (strict): a plain table literal passed where a class with
+    // methods is expected cannot be a real instance — it lacks the methods that
+    // would be called on it. Require the class's (possibly inherited) methods.
+    // The lenient `@type` / assignment / bracket contexts are not in
+    // `tc_arg_constructors`, so explicit casts and the construct-then-Mixin idiom
+    // still type-check. A function-typed param accepts the *data* type instead.
+    if analysis.ir.tc_arg_constructors.contains(&ctor_idx) {
+        let mut missing_methods: Vec<String> = analysis.collect_class_fields(class_idx)
+            .into_iter()
+            .filter(|(name, ty, lateinit)| {
+                !*lateinit
+                    && matches!(ty, ValueType::Function(_) | ValueType::FunctionSig(_))
+                    && !rhs_table.fields.contains_key(name.as_str())
+            })
+            .map(|(name, _, _)| name)
+            .collect();
+        if !missing_methods.is_empty() {
+            missing_methods.sort();
+            super::MISSING_FIELDS.emit(
+                diags,
+                format!(
+                    "table literal cannot satisfy class '{class_name}': it requires methods \
+                     (e.g. '{}') that only an instance provides",
+                    missing_methods[0]
+                ),
+                start as usize,
+                end as usize,
+            );
+            return;
+        }
+    }
+
+    if rhs_table.fields.is_empty() { return; }
 
     let mut missing: Vec<&str> = Vec::new();
     for (field_name, fi) in &class_table.fields {
@@ -89,9 +108,43 @@ fn check_missing_fields(
     }
 }
 
-/// Emits a diagnostic only when no union member is fully satisfied by the constructor.
-/// For single-class expectations, delegates directly to `check_missing_fields`.
-/// For multi-class unions, reports against the best-matching member (fewest missing fields).
+/// Whether a *collected* (possibly inherited) class field — `(name, resolved_type,
+/// lateinit)` from [`AnalysisResult::collect_class_fields`] — is required in a
+/// constructor: non-lateinit, non-nullable, and not a method (methods come from the
+/// mixin, never from a data literal). Honors the same built-in-stub-shadow scoping
+/// as [`is_required_contract_field`]; the inherited counterpart of `is_required_field`.
+fn is_required_collected_field(
+    analysis: &AnalysisResult,
+    class_name: &str,
+    field_name: &str,
+    ty: &ValueType,
+    lateinit: bool,
+) -> bool {
+    if lateinit { return false; }
+    let nullable = matches!(ty, ValueType::Nil)
+        || matches!(ty, ValueType::Union(types) if types.contains(&ValueType::Nil));
+    if nullable { return false; }
+    if matches!(ty, ValueType::Function(_) | ValueType::FunctionSig(_)) { return false; }
+    if analysis.ir.ext.stub_class_names.contains(class_name)
+        && let Some(declared) = analysis.ir.ext.declared_class_fields.get(class_name)
+    {
+        return declared.contains(field_name);
+    }
+    true
+}
+
+/// Emits a diagnostic only when no union member is satisfied by the constructor.
+/// For single-class expectations, delegates to `check_missing_fields`.
+///
+/// A member is satisfied only when the literal provides all of the member's required
+/// fields **and** shares at least one of its (inherited) field names. The share guard
+/// is load-bearing for the `Data | Object` mixin-parameter unions the stub-gen remap
+/// produces: the object member (`colorRGB : ColorRGBData, ColorMixin`) declares no
+/// fields of its own and the data member can be all-optional (`ItemLocationData`), so
+/// without it a typo'd / foreign literal (`{red,green,blue}`, `{foo}`) would vacuously
+/// satisfy a member and slip through. Fields are collected with inheritance
+/// (`collect_class_fields`), matching the single-class and `@type` (`check_fields_impl`)
+/// paths.
 fn check_missing_fields_union(
     analysis: &AnalysisResult,
     ctor_idx: TableIndex,
@@ -109,46 +162,51 @@ fn check_missing_fields_union(
     let rhs_table = analysis.ir.table(ctor_idx);
     if rhs_table.fields.is_empty() { return; }
 
-    // Check each union member: if any member is fully satisfied, no diagnostic
+    let mut any_shared = false;
+    let mut best: Option<(usize, TableIndex)> = None; // (missing_required_count, class_idx)
     for &class_idx in class_indices {
-        let class_table = analysis.table(class_idx);
-        let Some(class_name) = &class_table.class_name else { continue };
-
-        // A member that accepts the constructor via a declared `@shape` satisfies
-        // the union (userdata/mixin escape) — no diagnostic.
-        if !class_table.accept_shapes.is_empty()
-            && analysis.is_table_subtype(&ValueType::Table(Some(ctor_idx)), &ValueType::Table(Some(class_idx)))
-        {
+        let Some(class_name) = analysis.table(class_idx).class_name.clone() else { continue };
+        let fields = analysis.collect_class_fields(class_idx);
+        let shares = fields.iter().any(|(n, _, _)| rhs_table.fields.contains_key(n.as_str()));
+        any_shared |= shares;
+        let missing_required = fields.iter().filter(|(n, ty, lateinit)| {
+            is_required_collected_field(analysis, &class_name, n, ty, *lateinit)
+                && !rhs_table.fields.contains_key(n.as_str())
+        }).count();
+        if shares && missing_required == 0 {
+            // The literal overlaps this member and supplies all its required fields.
             return;
         }
-
-        let has_missing = class_table.fields.iter().any(|(field_name, fi)| {
-            is_required_contract_field(analysis, class_name, field_name, fi)
-                && !rhs_table.fields.contains_key(field_name.as_str())
-        });
-
-        if !has_missing {
-            // Constructor satisfies this union member — no diagnostic
-            return;
+        if best.is_none_or(|(count, _)| missing_required < count) {
+            best = Some((missing_required, class_idx));
         }
     }
 
-    // No union member is fully satisfied. Report against the member with
-    // the fewest missing fields to give the most helpful message.
-    let best = class_indices.iter().copied()
-        .filter(|&idx| analysis.table(idx).class_name.is_some())
-        .min_by_key(|&class_idx| {
-            let class_table = analysis.table(class_idx);
-            let class_name = class_table.class_name.as_deref().unwrap_or_default();
-            class_table.fields.iter().filter(|(field_name, fi)| {
-                is_required_contract_field(analysis, class_name, field_name, fi)
-                    && !rhs_table.fields.contains_key(field_name.as_str())
-            }).count()
-        });
+    let Some(&(start, end)) = analysis.ir.table_ranges.iter()
+        .find(|(_, idx)| **idx == ctor_idx)
+        .map(|(range, _)| range) else { return };
+    let Some((_, best_idx)) = best else { return };
 
-    if let Some(best_idx) = best {
-        check_missing_fields(analysis, ctor_idx, best_idx, diags);
+    if !any_shared {
+        // The literal shares no field with any member — a typo'd or foreign table.
+        // The best member may have no *required* fields to report (all-optional
+        // data), so emit a dedicated message naming a stray key rather than relying
+        // on the missing-required path.
+        let class_name = analysis.table(best_idx).class_name.clone().unwrap_or_default();
+        let mut keys: Vec<&str> = rhs_table.fields.keys().map(|s| s.as_str()).collect();
+        keys.sort();
+        let stray = keys.first().copied().unwrap_or_default();
+        super::MISSING_FIELDS.emit(
+            diags,
+            format!("table literal cannot satisfy class '{class_name}': '{stray}' is not a field of it"),
+            start as usize,
+            end as usize,
+        );
+        return;
     }
+
+    // Shares a member but is missing required fields — report against the best member.
+    check_missing_fields(analysis, ctor_idx, best_idx, diags);
 }
 
 impl DiagnosticPass for MissingFields {
