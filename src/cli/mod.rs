@@ -109,23 +109,59 @@ enum Commands {
     },
 }
 
-/// Dispatch the parsed CLI. With no subcommand, starts the LSP server.
-pub fn run(cli: Cli) -> CliResult {
-    match cli.command {
-        Some(Commands::Doc { project_root, out_dir, class }) => doc::run(project_root, out_dir, class),
-        Some(Commands::TestQuery { location, with_stubs, scan_dir }) => {
+/// Process entry point invoked by `main`. Editor LSP clients launch the binary
+/// with a transport flag (e.g. `--stdio`) and no subcommand; detect that and
+/// start the language server directly, bypassing `clap` so the flag isn't
+/// rejected as an unknown argument. Anything else is parsed and dispatched as a
+/// subcommand.
+pub fn dispatch() -> CliResult {
+    if is_lsp_launch(std::env::args().nth(1).as_deref()) {
+        return lsp::start_ls();
+    }
+    // `is_lsp_launch` was false, so the first argument is neither absent nor a
+    // leading flag: `clap` resolves it to a subcommand or exits the process (an
+    // unknown subcommand errors; `--help`/`-h` prints usage). `command` is thus
+    // always `Some` here, so the LSP server is started only above — never here.
+    match Cli::parse().command {
+        Some(command) => run(command),
+        None => unreachable!("bare and transport-flag launches are handled by is_lsp_launch"),
+    }
+}
+
+/// True when the process should run as an LSP server rather than dispatch a
+/// subcommand.
+///
+/// Restores the pre-`clap` behavior where any invocation that wasn't a
+/// recognized subcommand started the server: an empty arg list (e.g. Neovim's
+/// bare `cmd = { "wowlua_ls" }`) or a leading transport flag such as `--stdio`,
+/// `--node-ipc`, `--pipe=…`, or `--socket=…`. Subcommands never begin with `-`,
+/// so a leading flag unambiguously means "no subcommand." `--help`/`-h` are
+/// excluded so `clap` can still print usage. (`--version` is handled in `main`
+/// before this is reached.)
+fn is_lsp_launch(first_arg: Option<&str>) -> bool {
+    match first_arg {
+        None => true,
+        Some(arg) => arg.starts_with('-') && arg != "--help" && arg != "-h",
+    }
+}
+
+/// Dispatch a parsed subcommand. LSP launches never reach here — they're
+/// handled by `dispatch`/`is_lsp_launch` before parsing.
+fn run(command: Commands) -> CliResult {
+    match command {
+        Commands::Doc { project_root, out_dir, class } => doc::run(project_root, out_dir, class),
+        Commands::TestQuery { location, with_stubs, scan_dir } => {
             test_query::run(&location, with_stubs, scan_dir)
         }
-        Some(Commands::Profile { directory }) => profile::run(directory),
-        Some(Commands::RegenerateStubs) => {
+        Commands::Profile { directory } => profile::run(directory),
+        Commands::RegenerateStubs => {
             wowlua_ls::stub_gen::regenerate_stubs();
             Ok(())
         }
-        Some(Commands::DumpTypes { directory, with_stubs }) => dump_types::run(directory, with_stubs),
-        Some(Commands::DumpStubs) => dump_stubs::run(),
-        Some(Commands::Check { directory, severity }) => check::run(directory, severity),
-        Some(Commands::Evaluate { file, with_stubs, rest }) => evaluate::run(file, with_stubs, &rest),
-        None => wowlua_ls::lsp::start_ls(),
+        Commands::DumpTypes { directory, with_stubs } => dump_types::run(directory, with_stubs),
+        Commands::DumpStubs => dump_stubs::run(),
+        Commands::Check { directory, severity } => check::run(directory, severity),
+        Commands::Evaluate { file, with_stubs, rest } => evaluate::run(file, with_stubs, &rest),
     }
 }
 
@@ -229,4 +265,38 @@ pub(crate) fn load_workspace(
         }
     };
     WorkspaceData { pre_globals, scan }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_lsp_launch;
+
+    #[test]
+    fn detects_lsp_launches() {
+        // Bare launch (e.g. Neovim's `cmd = { "wowlua_ls" }`).
+        assert!(is_lsp_launch(None));
+        // VS Code's `TransportKind.stdio` appends `--stdio` — the reported crash.
+        assert!(is_lsp_launch(Some("--stdio")));
+        // Robust to other LSP transport flags without enumerating them.
+        assert!(is_lsp_launch(Some("--node-ipc")));
+        assert!(is_lsp_launch(Some("--pipe=/tmp/sock")));
+        assert!(is_lsp_launch(Some("--socket=1234")));
+    }
+
+    #[test]
+    fn subcommands_are_not_lsp_launches() {
+        for cmd in [
+            "doc", "test-query", "profile", "regenerate-stubs", "dump-types", "dump-stubs",
+            "check", "evaluate",
+        ] {
+            assert!(!is_lsp_launch(Some(cmd)), "{cmd} should dispatch as a subcommand");
+        }
+    }
+
+    #[test]
+    fn help_flags_reach_clap() {
+        // Excluded so `clap` still prints usage instead of starting the server.
+        assert!(!is_lsp_launch(Some("--help")));
+        assert!(!is_lsp_launch(Some("-h")));
+    }
 }

@@ -4,8 +4,6 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::error::Error;
 use std::env;
 
-use clap::Parser;
-
 mod cli;
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -21,5 +19,5 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         return Ok(());
     }
 
-    cli::run(cli::Cli::parse())
+    cli::dispatch()
 }
