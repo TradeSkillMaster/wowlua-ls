@@ -339,6 +339,15 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
     // global assignments to prevent shadowing of precomputed stub class types.
     let global_assign_re = regex_lite::Regex::new(r"^[A-Z]\w+\s*=\s").unwrap();
 
+    // Authoritative runtime-field writes onto a class-typed global, e.g.
+    // `EncounterJournal.instanceID = ...`. The receiver is itself a known
+    // @class by name, so (unlike the structural heuristic below) the field can
+    // be registered directly. Matches a single-level `Name.field = ` write at
+    // line start; `=[^=]` rejects `==`/`>=`/`<=` comparisons; a nested
+    // `a.b.c = ` write doesn't match (no `=` follows `field`).
+    let class_field_write_re =
+        regex_lite::Regex::new(r"^\s*([A-Z][A-Za-z0-9_]*)\.([A-Za-z_]\w*)\s*=[^=]").unwrap();
+
     let per_file: Vec<HashMap<String, HashSet<String>>> = lua_files.par_iter().map(|path| {
         let Ok(raw_content) = std::fs::read_to_string(path) else { return HashMap::new() };
 
@@ -427,6 +436,19 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
                     }
                 }
             }
+        }
+
+        // ── Authoritative field writes onto class-typed globals ──
+        // `EncounterJournal.instanceID = ...` — the receiver name is itself a
+        // registered @class, so register the written field directly (as `any?`),
+        // skipping fields the class (or its direct parents) already declare.
+        for line in raw_content.lines() {
+            let Some(caps) = class_field_write_re.captures(line) else { continue };
+            let class = caps.get(1).unwrap().as_str();
+            let field = caps.get(2).unwrap().as_str();
+            let Some(declared) = class_field_map.get(class) else { continue };
+            if declared.contains(field) { continue; }
+            discovered.entry(class.to_string()).or_default().insert(field.to_string());
         }
 
         discovered

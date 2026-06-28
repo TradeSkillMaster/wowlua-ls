@@ -84,7 +84,7 @@ local extra = host.Extra
 ---@type ListFrame
 local lf
 local items = lf.Items
---    ^ hover: (local) items: MyBaseTemplate[]
+--    ^ hover: (local) items: (Frame & MyBaseTemplate)[]
 
 -- parentKey fields are visible on mixin classes: SearchMixin methods can
 -- access self.InputBox / self.SearchButton without undefined-field.

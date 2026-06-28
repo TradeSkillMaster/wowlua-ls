@@ -847,6 +847,20 @@ pub(crate) fn scan_file_globals_with_synth(
                         if names.len() == 1 {
                             let range = assign.syntax().text_range();
                             let effective = unwrap_logical_chain(exprs[0]);
+                            // A bare global assigned a function literal
+                            // (`X = function() ... end`) is a global function.
+                            // Emit it as a real Function (with params/returns
+                            // harvested from the literal) so it routes through
+                            // the function-registration pass, which runs before
+                            // the variable pass and therefore wins over a
+                            // same-named `X = nil` — the FrameXML idiom
+                            // `X = nil; do X = function() end end` that otherwise
+                            // leaves the global typed `nil` (false `cannot-call`).
+                            if let Expression::Function(fd) = &effective {
+                                let base = build_func_external(fd, assign.syntax(), false, owned_path.as_deref());
+                                globals.push(ExternalGlobal { name: names[0].clone(), ..base });
+                                continue;
+                            }
                             let (kind, string_value, number_value, mixin_parents) = if let Some(vk) = classify_literal_value_kind(&effective) {
                                 let sv = if let Expression::Literal(lit) = &effective {
                                     lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
@@ -855,7 +869,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 (ExternalGlobalKind::Variable(vk), sv, nv, Vec::new())
                             } else { match &effective {
                                 Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None, None, Vec::new()),
-                                Expression::Function(_) => (ExternalGlobalKind::Variable(FieldValueKind::Function), None, None, Vec::new()),
+                                // (`Expression::Function` is handled by the early branch above.)
                                 Expression::Identifier(ident) => {
                                     let mut rhs_names = ident.names();
                                     if rhs_names.len() == 2 {

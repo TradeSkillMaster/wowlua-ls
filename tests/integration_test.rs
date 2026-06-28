@@ -946,6 +946,15 @@ fn wrong_arity_stubs() {
 }
 
 #[test]
+fn framexml_missing_globals() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/framexml-missing-globals.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn annotations() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/annotations.lua",

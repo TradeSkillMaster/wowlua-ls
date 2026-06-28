@@ -428,8 +428,25 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
         // Scan FrameXML Lua for fields/methods on missing frame globals
         let missing_names: HashSet<String> =
             missing_frames.iter().map(|(n, _)| n.clone()).collect();
-        let frame_fields =
+        let mut frame_fields =
             scan_framexml_lua_fields(all_ui_dirs, &missing_names, &mixin_to_frames);
+        // Merge structural parentKey/parentArray child fields from XML (`frame.Child`)
+        // — the flat regex frame scan and the Lua field scan both miss them. Scoped to
+        // emitted frames; Lua-derived fields take precedence (they reflect actual
+        // assignments, which may be more specific than the XML child's base type).
+        for dir in all_ui_dirs {
+            for (frame, fields) in extract_xml_parentkey_fields(dir) {
+                if !missing_names.contains(&frame) {
+                    continue;
+                }
+                let entry = frame_fields.entry(frame).or_default();
+                for (fname, ftype) in fields {
+                    if !entry.iter().any(|(n, _)| n == &fname) {
+                        entry.push((fname, ftype));
+                    }
+                }
+            }
+        }
         let frames_with_fields = frame_fields.len();
         if frames_with_fields > 0 {
             log::info!("  Inferred fields/methods on {} frame globals from FrameXML Lua",

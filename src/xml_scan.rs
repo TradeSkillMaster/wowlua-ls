@@ -590,17 +590,20 @@ fn is_leaf_region_type(frame_type: &str) -> bool {
 
 /// Build the annotation type for a child element, incorporating inherits/mixins.
 ///
-/// When `inherits` templates are specified, the base element type (e.g. `Button`)
-/// is omitted because the template's own ClassDecl already lists it as a parent.
-/// This avoids a redundant intersection member and lets the class inheritance
-/// mechanism resolve base-type fields naturally.  For leaf region elements
-/// (FontString, Texture, etc.) the base type is always kept because `inherits`
-/// names a styling object, not a sub-template.
+/// The base element type (e.g. `Button`) is always kept as the first intersection
+/// member. When an `inherits` template resolves it already lists the base as a
+/// parent, so the member is redundant and intersection simplification drops it
+/// (e.g. `Button & Tpl` displays as `Tpl`); when the template is unavailable (a
+/// retail-only template referenced by a Classic frame in the generated stubs, or a
+/// missing template dependency in a user workspace) the field still resolves to the
+/// base widget instead of an unresolved type.  For leaf region elements (FontString,
+/// Texture, etc.) `inherits` names a styling object, not a sub-template, so the base
+/// is likewise kept.
 ///
 /// Examples:
 /// - `<Frame parentKey="P" />` → `Frame`
-/// - `<Button parentKey="P" inherits="Tpl" />` → `Tpl`
-/// - `<Button parentKey="P" inherits="TplA, TplB" mixin="Mix" />` → `TplA & TplB & Mix`
+/// - `<Button parentKey="P" inherits="Tpl" />` → `Button & Tpl`
+/// - `<Button parentKey="P" inherits="TplA, TplB" mixin="Mix" />` → `Button & TplA & TplB & Mix`
 /// - `<Button parentKey="P" mixin="Mix" />` → `Button & Mix`
 /// - `<FontString parentKey="P" inherits="GameFont" />` → `FontString & GameFont`
 fn child_element_type(
@@ -626,7 +629,15 @@ fn child_element_type(
         }
         v
     } else {
-        inherits.iter().map(|n| AnnotationType::Simple(n.clone())).collect()
+        // Keep the base element type as the first member so the field still
+        // resolves to a widget when a template is unavailable (e.g. a retail-only
+        // template referenced by a Classic frame in the generated stubs, or a
+        // missing template dependency in a user workspace). When the template
+        // does resolve it already inherits the base, so the extra member is
+        // redundant, never contradictory.
+        let mut v = vec![AnnotationType::Simple(frame_type.to_string())];
+        v.extend(inherits.iter().map(|n| AnnotationType::Simple(n.clone())));
+        v
     };
     for name in mixins {
         let t = AnnotationType::Simple(name.clone());

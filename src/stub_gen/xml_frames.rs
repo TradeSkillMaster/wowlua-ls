@@ -66,6 +66,66 @@ pub(in crate::stub_gen) fn extract_xml_frames_and_mixins(
 }
 
 
+/// Harvest `parentKey`/`parentArray` child fields for named frames from XML
+/// structure, using the structural `xml_scan` parser. The regex frame scan above
+/// (`accumulate_xml_frames_and_mixins`) is flat — it can't associate a nested
+/// `parentKey` child with its enclosing named frame — so `frame.Child` field
+/// access reports a false `undefined-field`. Returns `frame_name → [(field, type)]`.
+///
+/// Field types are the child's composed widget type. `xml_scan::child_element_type`
+/// keeps the base element type as the first intersection member, so a field still
+/// resolves to a widget (and its base methods) even when an `inherits=` template is
+/// unavailable in the generated stubs (e.g. retail-only) — avoiding a *new*
+/// `frame.Child:method()` false positive in place of the old one.
+pub(in crate::stub_gen) fn extract_xml_parentkey_fields(
+    ui_source_dir: &Path,
+) -> HashMap<String, Vec<(String, String)>> {
+    use rayon::prelude::*;
+    use crate::annotations::annotation_types::format_annotation_type;
+
+    let interface_dir = ui_source_dir.join("Interface");
+    if !interface_dir.is_dir() {
+        return HashMap::new();
+    }
+    let mut xml_files = Vec::new();
+    collect_xml_paths(&interface_dir, &mut xml_files);
+
+    let partials: Vec<HashMap<String, Vec<(String, String)>>> = xml_files
+        .par_iter()
+        .map(|path| {
+            let mut out: HashMap<String, Vec<(String, String)>> = HashMap::new();
+            if let Some(result) = crate::xml_scan::scan_xml_file(path) {
+                // xml_scan emits a ClassDecl per named frame (and per virtual
+                // template) carrying its parentKey/parentArray child fields.
+                for class in &result.classes {
+                    if class.fields.is_empty() {
+                        continue;
+                    }
+                    let entry = out.entry(class.name.clone()).or_default();
+                    for (fname, at, _vis) in &class.fields {
+                        entry.push((fname.clone(), format_annotation_type(at)));
+                    }
+                }
+            }
+            out
+        })
+        .collect();
+
+    let mut merged: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    for p in partials {
+        for (frame, fields) in p {
+            let entry = merged.entry(frame).or_default();
+            for (fname, ftype) in fields {
+                if !entry.iter().any(|(n, _)| n == &fname) {
+                    entry.push((fname, ftype));
+                }
+            }
+        }
+    }
+    merged
+}
+
+
 /// In-memory worker for `extract_xml_frames_and_mixins`. Pulled out so unit
 /// tests can feed synthetic XML strings without touching the filesystem.
 /// Caller is responsible for stripping XML comments before calling.

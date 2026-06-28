@@ -666,6 +666,28 @@ pub fn regenerate_stubs() {
         // declarations that must MERGE with the existing class definition.
         // Override-set membership would cause them to replace the class instead.
 
+        // Removed-from-retail widget methods (wiki {{widgetmethod removed=10.0.0+}}):
+        // still on the Classic clients but missing from Ketho/WidgetAPI.lua, so a false
+        // `undefined-field` on Classic addons (e.g. Frame:SetMinResize/SetMaxResize).
+        // Emit vararg method stubs (merge onto the existing widget class) and tag them
+        // Classic-only so apply_flavor_data (pass 2, below) restricts them off retail.
+        let removed_widget_methods = collect_removed_widget_methods(&wiki_pages);
+        if !removed_widget_methods.is_empty() {
+            let mut rwm = String::from(
+                "---@meta _\n-- Removed-from-retail widget methods (still on Classic clients),\n-- recovered from wiki {{widgetmethod removed=}} pages.\n\n");
+            for (type_name, method) in &removed_widget_methods {
+                rwm.push_str(&format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{type_name}_{method})\n"));
+                rwm.push_str(&format!("function {type_name}:{method}(...) end\n\n"));
+                branch_data.flavor_map.insert(
+                    format!("{type_name}.{method}"),
+                    crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA,
+                );
+            }
+            // NOT in override_set — these methods merge onto existing widget classes.
+            std::fs::write(gen_dir.join("RemovedWidgetMethods.lua"), &rwm).unwrap();
+            log::info!("  RemovedWidgetMethods: {} methods", removed_widget_methods.len());
+        }
+
         // Pass 2: re-scan all stubs (including InferredReturns/InferredFields) and rebuild.
         log::info!("Re-scanning stubs with inferred returns (pass 2)...");
         paths = collect_stub_scan_paths(&vendor_dirs, &gen_dir, &overrides_dir, &override_stems, &mut override_set);

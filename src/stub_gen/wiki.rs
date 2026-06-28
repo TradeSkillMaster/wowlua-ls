@@ -654,6 +654,48 @@ pub(in crate::stub_gen) fn parse_widget_wiki_annotations(wikitext: &str, param_n
 }
 
 
+/// Collect widget methods removed from retail (wiki `{{widgetmethod|removed=X.Y.Z}}`)
+/// in patch 10.0.0 or later — they still exist on the Classic clients but are absent
+/// from Ketho's widget stubs and BlizzardInterfaceResources `WidgetAPI.lua` (which is
+/// regenerated from current clients), so addons that call them on Classic see a false
+/// `undefined-field` (e.g. `Frame:SetMinResize`/`SetMaxResize`). Returns `(type, method)`
+/// pairs keyed off the already-fetched wiki page set; the caller emits Classic-flavored
+/// method stubs. Gated to `removed >= 10.0.0` so only methods still live on a current
+/// Classic flavor are surfaced (older removals predate the Classic clients too).
+pub(in crate::stub_gen) fn collect_removed_widget_methods(
+    wiki_pages: &HashMap<String, String>,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (key, content) in wiki_pages {
+        let Some(tmpl_start) = content.find("{{widgetmethod") else { continue };
+        // The `{{widgetmethod|removed=…|…}}` template sits at the top of the page;
+        // scan a window past its start for the `removed=` parameter. Floor the window
+        // end to a char boundary: `tmpl_start + 200` can land mid-multibyte-char (wiki
+        // prose has em-dashes, curly quotes, accented names), which would panic a raw
+        // slice — and `removed=` sits near the template start, well inside the window.
+        let mut head_end = (tmpl_start + 200).min(content.len());
+        while !content.is_char_boundary(head_end) {
+            head_end -= 1;
+        }
+        let head = &content[tmpl_start..head_end];
+        let Some(removed_at) = head.find("removed=") else { continue };
+        // Parse the major version of `removed=X.Y.Z` and keep only 10.0.0+ removals.
+        let ver: String = head[removed_at + "removed=".len()..]
+            .chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let major: u32 = ver.split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        if major < 10 { continue; }
+        // Page key is `Type_Method` (from `API Type Method`); the type and method
+        // are each single words, so split on the first underscore.
+        let Some((type_name, method)) = key.split_once('_') else { continue };
+        if type_name.is_empty() || method.is_empty() { continue; }
+        out.push((type_name.to_string(), method.to_string()));
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+
 /// Scan vendor widget stubs for methods that have a `---[Documentation]` link
 /// but no `@param`/`@return` annotations. Returns the list of methods whose
 /// wiki pages should be fetched.

@@ -381,7 +381,13 @@ impl MixinScanRegexes {
         Self {
             comment: regex_lite::Regex::new(r"(?s)<!--.*?-->").unwrap(),
             opener: regex_lite::Regex::new(
-                r#"<\s*(Frame|Button|CheckButton|EditBox|ScrollFrame|StatusBar|Slider|GameTooltip|Model|ModelScene|ColorSelect|Cooldown|MessageFrame|Minimap|SimpleHTML|Browser|MovieFrame|FogOfWarFrame|ModelFFX|CinematicModel|DressUpModel|PlayerModel|TabardModel|WorldFrame|POIFrame|Font)\b([^>]*)>"#
+                // Named leaf-region elements (FontString/Texture/Line/MaskTexture) are also
+                // matched: a `<FontString name="TradeSkillDescription" ...>` nested inside a
+                // frame is a real global region object in-game, yet was never emitted (false
+                // `undefined-global`). `is_valid_frame_global_name` still excludes
+                // `$parent`-anchored anonymous regions, and the per-branch flavor map tags
+                // classic-only regions automatically.
+                r#"<\s*(Frame|Button|CheckButton|EditBox|ScrollFrame|StatusBar|Slider|GameTooltip|Model|ModelScene|ColorSelect|Cooldown|MessageFrame|Minimap|SimpleHTML|Browser|MovieFrame|FogOfWarFrame|ModelFFX|CinematicModel|DressUpModel|PlayerModel|TabardModel|WorldFrame|POIFrame|Font|FontString|Texture|Line|MaskTexture)\b([^>]*)>"#
             ).unwrap(),
             name: regex_lite::Regex::new(r#"\bname\s*=\s*"([^"]+)""#).unwrap(),
             mixin: regex_lite::Regex::new(r#"\bmixin\s*=\s*"([^"]+)""#).unwrap(),
