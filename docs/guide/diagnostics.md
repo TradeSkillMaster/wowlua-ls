@@ -21,6 +21,13 @@ Suppress a diagnostic on the same line by appending `disable-line` at the end:
 local unused = computeSomething() ---@diagnostic disable-line: unused-local
 ```
 
+When the diagnostic lands on an annotation line itself (for example `class-shadows-builtin` on a `---@class`), append the directive to that same comment line:
+
+```lua
+---@class Frame ---@diagnostic disable-line: class-shadows-builtin
+---@field extra string
+```
+
 ### Previous line
 
 ```lua

@@ -1501,6 +1501,50 @@ pub fn resolve_annotation_type(
 
 // ── Diagnostic suppression scanning ─────────────────────────────────────────
 
+/// The marker that introduces a `---@diagnostic` suppression directive.
+///
+/// A single Lua line-comment may carry such a directive *after* other annotation
+/// content (`---@class Foo ---@diagnostic disable-line: code`) — the natural way
+/// to suppress a diagnostic that lands on an annotation-only line. Both the
+/// directive scanner (which must find it) and the annotation parsers (which must
+/// ignore it) locate the trailing directive with this marker.
+pub const DIAGNOSTIC_DIRECTIVE_MARKER: &str = "---@diagnostic";
+
+/// Locate a `---@diagnostic` directive within a comment's `text` — whether it is
+/// the entire comment (`---@diagnostic disable: foo`) or trails other annotation
+/// content (`---@class Foo ---@diagnostic disable-line: foo`). Returns the byte
+/// offset of the marker within `text` and the (untrimmed) directive body that
+/// follows it.
+///
+/// Shared by `scan_diagnostic_directives` (which attributes the directive to the
+/// marker's own line) and the `unknown-diag-code` validator (which searches the
+/// body — not the whole comment — for code spans, so an identical substring
+/// earlier in the comment can't capture the emitted range), keeping the two
+/// scanners in lockstep on what counts as a directive and where it begins.
+pub fn find_diagnostic_directive(text: &str) -> Option<(usize, &str)> {
+    let marker = text.find(DIAGNOSTIC_DIRECTIVE_MARKER)?;
+    Some((marker, &text[marker + DIAGNOSTIC_DIRECTIVE_MARKER.len()..]))
+}
+
+/// The annotation-content portion of a comment, with any *trailing*
+/// `---@diagnostic` directive removed so annotation parsers don't mis-parse it
+/// (e.g. as a `@class` parent or a `@field` description). Called by
+/// `parse_annotation_lines` and the `malformed-annotation` pass.
+///
+/// A comment that *is* the directive (marker at offset 0) is returned unchanged:
+/// those callers recognize and skip a pure `---@diagnostic` comment themselves
+/// (`malformed_annotation` via its `starts_with("diagnostic")` check after
+/// stripping; `parse_annotation_lines` never matches an annotation tag on it).
+/// The directive's own validity is handled separately by the marker-finding
+/// scanners (`scan_diagnostic_directives` / the `unknown-diag-code` validator),
+/// which do not call this helper.
+pub fn strip_trailing_diagnostic_directive(text: &str) -> &str {
+    match text.find(DIAGNOSTIC_DIRECTIVE_MARKER) {
+        Some(pos) if pos > 0 => text[..pos].trim_end(),
+        _ => text,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SuppressionKind { Disable, Enable, DisableLine, DisableNextLine }
 
@@ -1522,9 +1566,14 @@ pub fn scan_diagnostic_directives(root: SyntaxNode<'_>) -> Vec<DiagnosticSuppres
         let NodeOrToken::Token(tok) = element else { continue };
         if tok.kind() != SyntaxKind::Comment { continue; }
         let text = tok.text();
-        if let Some(rest) = text.strip_prefix("---@diagnostic") {
-            let rest = rest.trim();
-            let offset = u32::from(tok.text_range().start()) as usize;
+        // Recognize the directive both as the whole comment (`---@diagnostic
+        // disable: foo`) and when it trails other annotation content in the same
+        // single-line comment (`---@class Foo ---@diagnostic disable-line: bar`).
+        if let Some((marker, body)) = find_diagnostic_directive(text) {
+            let rest = body.trim();
+            // Compute the line from the marker's own offset (not the comment
+            // start) so an embedded directive is attributed to its real line.
+            let offset = u32::from(tok.text_range().start()) as usize + marker;
             let line_num = line_starts.partition_point(|&start| start <= offset) as u32 - 1;
             if let Some(directive) = parse_diagnostic_directive(rest, line_num) {
                 suppressions.push(directive);

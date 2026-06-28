@@ -60,7 +60,10 @@ impl DiagnosticPass for MalformedAnnotation {
                 }
                 continue;
             }
-            let text = tok.text();
+            // Drop any trailing `---@diagnostic disable-line: …` directive so it
+            // isn't mis-parsed as this annotation's content (e.g. a `@class`
+            // parent without a `:` separator).
+            let text = crate::annotations::strip_trailing_diagnostic_directive(tok.text());
             let Some(after_at) = text.strip_prefix("---@") else { continue };
             // Skip @diagnostic — handled by unknown_diag_code::run
             if after_at.starts_with("diagnostic") { continue; }

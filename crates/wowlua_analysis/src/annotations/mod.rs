@@ -1415,6 +1415,10 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
     for (line_idx, line) in lines.iter().enumerate() {
         let content = line.trim_start_matches('-');
         let content = content.trim();
+        // A trailing `---@diagnostic disable-line: …` on the same comment line is
+        // a suppression directive (handled by scan_diagnostic_directives), not
+        // part of this annotation's type/parent/description — drop it.
+        let content = strip_trailing_diagnostic_directive(content);
         // Break the `@return → ---|` continuation chain at any unrelated annotation
         if !content.starts_with("@return") && !content.starts_with('|') {
             last_tuple_return_idx = None;
@@ -1940,6 +1944,7 @@ pub use annotation_scanning::{
     FieldValueKind, ExternalGlobalKind, ExternalGlobal, CreatesGlobalSpec, GeneratesEventsSpec,
     CallbackRegistryDecl, StringArrayConstDecl,
     SuppressionKind, DiagnosticSuppression, scan_diagnostic_directives,
+    DIAGNOSTIC_DIRECTIVE_MARKER, find_diagnostic_directive, strip_trailing_diagnostic_directive,
 };
 pub use annotation_scanning::{
     ADDON_NS_NAME,
