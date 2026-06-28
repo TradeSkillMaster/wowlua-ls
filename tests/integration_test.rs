@@ -959,6 +959,15 @@ fn wrong_arity_stubs() {
 }
 
 #[test]
+fn or_polyfill() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/or-polyfill.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn overlay_param_reassign() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/overlay-param-reassign.lua",

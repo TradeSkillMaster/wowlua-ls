@@ -310,6 +310,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/integration_stubs.lua` — Stubs hover/def: external globals, Frame type
 - `tests/annotations.lua` — Annotation features: @param, @return, @type, @class, @field, @alias
 - `tests/overloads.lua` — Overload resolution (--with-stubs)
+- `tests/or-polyfill.lua` — Version-polyfill idiom `local f = _G.SomeAPI or function(...) end`: a `function or function` `or` decays to bare `function` (callable but arity/param unchecked) so calls written for the broader/different-arity fallback don't false-flag `type-mismatch`/`redundant-parameter`/`missing-parameter`; negative controls verify a direct stub call and a `function or <non-function>` stay checked (--with-stubs)
 - `tests/deep-inheritance.lua` — 5-level class hierarchy (--with-stubs)
 - `tests/signature-help.lua` — Signature help with `sig:` assertions (--with-stubs)
 - `tests/diagnostics/` — Semantic diagnostics with `diag:` assertions and @diagnostic suppression; `.wowluarc.json` enables `need-check-nil` + `implicit-nil-return`. Includes `invalid_op.lua` for `invalid-op` (arithmetic/concatenation on incompatible types) and `nil_table_key.lua` for `nil-table-key` (nil in table key type annotations)

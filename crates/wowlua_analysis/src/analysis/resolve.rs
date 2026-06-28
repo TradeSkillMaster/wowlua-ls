@@ -3963,6 +3963,27 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
                         Some(lhs_type)
                     }
                 },
+                // Version-polyfill idiom: `_G.SomeAPI or function(...) end`. Under
+                // plain `or` semantics the statically-truthy LHS (a stub function)
+                // would decide the type, but the runtime value can be EITHER
+                // function — the global may be absent on a different game flavor,
+                // and the fallback frequently has a broader/different arity. Locking
+                // the result to the LHS signature false-flags later calls written
+                // for the fallback (`type-mismatch`/`redundant-parameter`). When
+                // both operands are callable, decay to bare `function` so the value
+                // is treated as callable but arity/param-unchecked.
+                //
+                // The decay here is INTENTIONALLY UNCONDITIONAL — do NOT gate it on
+                // `is_noop_placeholder_function` like the `(None, Some(r))` branch in
+                // `Analysis::resolve_expr` does. That branch has an *unresolved* LHS
+                // (no signature to reconcile), so it preserves a meaningful RHS
+                // fallback's signature and decays only empty `function() end`
+                // placeholders. Here BOTH operands are concrete functions of
+                // potentially-different arity, so neither signature can be trusted —
+                // the motivating fallback (`function(index, spellBank, unit) ... end`)
+                // is NOT a placeholder, and guarding on it would re-introduce the
+                // exact false positives this arm fixes.
+                (ValueType::Function(_) | ValueType::FunctionSig(_), ValueType::Function(_) | ValueType::FunctionSig(_)) => Some(ValueType::Function(None)),
                 // OpaqueAlias is already unwrapped at the top of this function
                 (ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::Intersection(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => Some(lhs_type),
                 _ => Some(lhs_type), // unreachable after unwrap, but satisfies exhaustiveness
