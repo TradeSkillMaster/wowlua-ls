@@ -776,22 +776,21 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
                 doc_lines.push(content.to_string());
                 tok = token.prev_token();
                 continue;
-            } else {
-                // Non-doc comment (e.g. `-- regular comment`, `-- TODO`, or
-                // bare separators like `--`) — skip without collecting so
-                // annotations above it are still reachable.
-                //
-                // Note: newlines_since_comment was already reset to 0 at
-                // line 729. This means non-doc comments defeat the blank-line
-                // barrier: `---@type A / -- comment / \n / ---@type B / local x`
-                // would attach both annotations to x. In practice this is rare
-                // (annotation blocks are separated by statements, not bare
-                // comments), and the alternative (leaving the counter >= 1)
-                // would break annotation linkage through comments entirely
-                // since every comment line has a preceding newline.
-                tok = token.prev_token();
-                continue;
             }
+            // Non-doc comment (e.g. `-- regular comment`, `-- TODO`, or
+            // bare separators like `--`) — skip without collecting so
+            // annotations above it are still reachable.
+            //
+            // Note: newlines_since_comment was already reset to 0 at
+            // line 729. This means non-doc comments defeat the blank-line
+            // barrier: `---@type A / -- comment / \n / ---@type B / local x`
+            // would attach both annotations to x. In practice this is rare
+            // (annotation blocks are separated by statements, not bare
+            // comments), and the alternative (leaving the counter >= 1)
+            // would break annotation linkage through comments entirely
+            // since every comment line has a preceding newline.
+            tok = token.prev_token();
+            continue;
         }
         // Non-trivia, non-annotation token — stop
         break;
@@ -1931,7 +1930,7 @@ mod tests {
     #[test]
     fn field_description_absent() {
         let block = parse(&["---@class Foo", "---@field count number"]);
-        assert!(block.field_descriptions.get("count").is_none());
+        assert!(!block.field_descriptions.contains_key("count"));
     }
 
     #[test]

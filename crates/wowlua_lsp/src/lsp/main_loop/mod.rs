@@ -2172,6 +2172,9 @@ mod tests {
     }
 
     #[test]
+    // `WorkspaceEdit.changes` is keyed by `lsp_types::Uri`, whose interior hash
+    // cache trips `mutable_key_type`; the key is never mutated here.
+    #[allow(clippy::mutable_key_type)]
     fn extract_variable_action_produced_for_subexpression() {
         let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
         let text = "local z = 1 + 2\n";
@@ -2300,6 +2303,9 @@ mod tests {
     }
 
     #[test]
+    // `WorkspaceEdit.changes` is keyed by `lsp_types::Uri`, whose interior hash
+    // cache trips `mutable_key_type`; the key is never mutated here.
+    #[allow(clippy::mutable_key_type)]
     fn extract_function_produces_edits_for_simple_statements() {
         let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
         // Simple two-statement snippet at file scope (no enclosing function).
@@ -2636,9 +2642,7 @@ mod tests {
     }
 
     fn setup_unused_function_fixture() -> (Vec<PathBuf>, Arc<PreResolvedGlobals>, Arc<crate::config::ProjectConfigs>) {
-        let scan_dir = std::path::PathBuf::from(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/unused-function"),
-        );
+        let scan_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/unused-function");
         let mut configs = crate::config::ProjectConfigs::default();
         configs.try_load(&scan_dir);
         let scan = crate::lsp::scan_workspace(std::slice::from_ref(&scan_dir), &mut configs);
@@ -3038,7 +3042,7 @@ mod tests {
                 .filter(|r| r.kind == Some(lsp_types::FoldingRangeKind::Region))
                 .map(|r| (r.start_line, r.end_line))
                 .collect();
-            v.sort();
+            v.sort_unstable();
             v
         }
 

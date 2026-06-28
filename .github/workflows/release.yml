@@ -33,7 +33,12 @@ jobs:
           lfs: true
 
       - name: Install Rust toolchain
-        run: rustup target add ${{ matrix.target }}
+        # The version is pinned in rust-toolchain.toml for reproducible,
+        # warning-stable builds (see the zero-warnings policy in Cargo.toml).
+        # Install that exact toolchain, then add this matrix entry's target.
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
 
       - name: Build standalone binary (embedded stubs)
         run: cargo build --release --target ${{ matrix.target }}

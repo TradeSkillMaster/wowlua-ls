@@ -212,7 +212,7 @@ pub fn append_structural_details_suffix(
         }
     }
     if !missing.is_empty() {
-        missing.sort();
+        missing.sort_unstable();
         message.push_str(&format!("; missing field{}: {}",
             if missing.len() > 1 { "s" } else { "" },
             missing.iter().map(|f| format!("'{}'", f)).collect::<Vec<_>>().join(", "),

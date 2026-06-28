@@ -66,7 +66,7 @@ SomeLocal.field = 1
     frame_names.insert("TestFrame".to_string());
     frame_names.insert("OtherFrame".to_string());
 
-    let result = scan_framexml_lua_fields(&[tmp.clone()], &frame_names, &HashMap::new());
+    let result = scan_framexml_lua_fields(std::slice::from_ref(&tmp), &frame_names, &HashMap::new());
 
     // Check TestFrame fields
     let test_fields = result.get("TestFrame").expect("TestFrame should have fields");
@@ -101,14 +101,18 @@ SomeLocal.field = 1
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// (fields, resolved mixins post-inheritance, direct mixins pre-inheritance,
+/// inherits chain) — the result of [`run_xml_scan`].
+type XmlScanResult = (
+    HashMap<String, String>,
+    HashMap<String, Vec<String>>,
+    HashMap<String, Vec<String>>,
+    HashMap<String, Vec<String>>,
+);
+
 /// Run the XML scan over an in-memory string and resolve inheritance,
 /// matching the production pipeline (comment strip → accumulate → resolve).
-fn run_xml_scan(xml: &str) -> (
-    HashMap<String, String>,
-    HashMap<String, Vec<String>>, // resolved mixins (post-inheritance)
-    HashMap<String, Vec<String>>, // direct mixins (pre-inheritance)
-    HashMap<String, Vec<String>>, // inherits chain
-) {
+fn run_xml_scan(xml: &str) -> XmlScanResult {
     let regs = MixinScanRegexes::new();
     let stripped = regs.comment.replace_all(xml, "");
     let mut frames = HashMap::new();
@@ -218,7 +222,7 @@ fn test_extract_xml_mixins_via_inherits() {
     "#;
     let (_, resolved, direct, _) = run_xml_scan(xml);
     // ConcreteFrame has no direct mixin, only an inherited one.
-    assert!(direct.get("ConcreteFrame").is_none());
+    assert!(!direct.contains_key("ConcreteFrame"));
     assert_eq!(resolved.get("ConcreteFrame"),
         Some(&vec!["BaseMixin".to_string()]));
     assert_eq!(resolved.get("BaseTemplate"),
@@ -308,7 +312,7 @@ SpellBookFrameMixin.numTabs = 5
         vec!["SpellBookFrame".to_string(), "AltSpellBookFrame".to_string()],
     );
 
-    let result = scan_framexml_lua_fields(&[tmp.clone()], &frame_names, &mixin_to_frames);
+    let result = scan_framexml_lua_fields(std::slice::from_ref(&tmp), &frame_names, &mixin_to_frames);
 
     for frame in &["SpellBookFrame", "AltSpellBookFrame"] {
         let fields = result
@@ -350,7 +354,7 @@ function TooltipMixin:ShowTooltip() end
     mixin_to_frames.insert("ButtonMixin".to_string(),  vec!["MultiButton".to_string()]);
     mixin_to_frames.insert("TooltipMixin".to_string(), vec!["MultiButton".to_string()]);
 
-    let result = scan_framexml_lua_fields(&[tmp.clone()], &frame_names, &mixin_to_frames);
+    let result = scan_framexml_lua_fields(std::slice::from_ref(&tmp), &frame_names, &mixin_to_frames);
 
     let fields = result.get("MultiButton").expect("expected fields on MultiButton");
     let map: HashMap<&str, &str> = fields

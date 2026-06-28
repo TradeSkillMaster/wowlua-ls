@@ -1056,17 +1056,16 @@ impl<'a> Analysis<'a> {
                         .map(|kn| u32::from(kn.text_range().start()))
                         .unwrap_or(0);
                     return self.resolve_global_ref(&key_str, token_start, scope_idx);
-                } else {
-                    // Dynamic key — lower key expression for reference tracking, return Unknown
-                    if let Some(kn) = key_node
-                        && let Some(expr) = Expression::cast(kn) {
-                            self.lower_expression(&expr, scope_idx);
-                        }
-                    if let Some(g_sym) = self.get_symbol(&SymbolIdentifier::Name("_G".to_string()), scope_idx) {
-                        self.referenced_symbols.insert(g_sym);
-                    }
-                    return self.ir.push_expr(Expr::Unknown);
                 }
+                // Dynamic key — lower key expression for reference tracking, return Unknown
+                if let Some(kn) = key_node
+                    && let Some(expr) = Expression::cast(kn) {
+                        self.lower_expression(&expr, scope_idx);
+                    }
+                if let Some(g_sym) = self.get_symbol(&SymbolIdentifier::Name("_G".to_string()), scope_idx) {
+                    self.referenced_symbols.insert(g_sym);
+                }
+                return self.ir.push_expr(Expr::Unknown);
             }
 
         // base_range is captured from base_node before it is consumed by lower_expression below.

@@ -3461,12 +3461,11 @@ impl<'a> Analysis<'a> {
                     return Some(*func_idx);
                 }
                 return None;
-            } else {
-                match field_expr {
-                    Expr::TableConstructor(ti) => current_table = *ti,
-                    Expr::Literal(ValueType::Table(Some(ti))) => current_table = *ti,
-                    _ => return None,
-                }
+            }
+            match field_expr {
+                Expr::TableConstructor(ti) => current_table = *ti,
+                Expr::Literal(ValueType::Table(Some(ti))) => current_table = *ti,
+                _ => return None,
             }
         }
         None

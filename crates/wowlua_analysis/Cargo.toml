@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [features]
 # Exposes `#[cfg(test)]` construction helpers (ClassDecl/ExternalGlobal::for_test,
 # PreResolvedGlobals::push_ext_*) to *other* crates' test builds, since plain

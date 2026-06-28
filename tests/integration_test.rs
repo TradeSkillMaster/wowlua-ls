@@ -1,3 +1,9 @@
+// Several tests inspect `WorkspaceEdit.changes`, a `HashMap` keyed by
+// `lsp_types::Uri`. `Uri` carries an interior-mutability hash cache (a `Cell`)
+// but is never mutated while used as a key, so clippy's `mutable_key_type`
+// warning is a false positive here.
+#![allow(clippy::mutable_key_type)]
+
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
@@ -243,7 +249,8 @@ fn run_annotation_tests(config: &TestConfig) {
         test_count += 1;
 
         // For diag-only annotations, we don't need to query at a specific offset
-        if expected_diag.is_some() && expected_hover.is_none()
+        if let Some(expected_diag) = &expected_diag
+            && expected_hover.is_none()
             && expected_def.is_none() && expected_typedef.is_none() && expected_sig.is_none()
             && expected_refs.is_none() && expected_linked.is_none()
             && expected_comp.is_none() && expected_highlight.is_none()
@@ -252,7 +259,7 @@ fn run_annotation_tests(config: &TestConfig) {
             collect_asserted_lines(code_line_1based, &lines, &mut diag_asserted_lines);
             check_diagnostic(
                 config.lua_file, i, code_line_1based,
-                &expected_diag.unwrap(), &diag_lines, &mut failures, &lines,
+                expected_diag, &diag_lines, &mut failures, &lines,
             );
             continue;
         }
@@ -624,8 +631,8 @@ fn run_annotation_tests(config: &TestConfig) {
         // Check completions
         if let Some(expected) = &expected_comp {
             if *expected == "none" {
-                if let Some(completions) = result.completions_at(&tree, offset, &contents, Snippets::Disabled, CallSnippets::Disabled) {
-                    if !completions.is_empty() {
+                if let Some(completions) = result.completions_at(&tree, offset, &contents, Snippets::Disabled, CallSnippets::Disabled)
+                    && !completions.is_empty() {
                         let actual_items: Vec<&str> = completions.iter()
                             .take(10)
                             .map(|c| c.label.as_str())
@@ -636,7 +643,6 @@ fn run_annotation_tests(config: &TestConfig) {
                             actual_items.join(", ")
                         ));
                     }
-                }
             } else {
                 match result.completions_at(&tree, offset, &contents, Snippets::Disabled, CallSnippets::Disabled) {
                     Some(completions) => {
@@ -645,12 +651,12 @@ fn run_annotation_tests(config: &TestConfig) {
                             .map(|c| c.label.as_str())
                             .filter(|s| *s != "...")
                             .collect();
-                        actual_items.sort();
+                        actual_items.sort_unstable();
                         let mut expected_items: Vec<&str> = expected.split(',')
                             .map(|s| s.trim())
                             .filter(|s| !s.is_empty())
                             .collect();
-                        expected_items.sort();
+                        expected_items.sort_unstable();
                         if actual_items != expected_items {
                             failures.push(format!(
                                 "  {}:{} (queried at {})\n    comp expected: {}\n    comp actual:   {}",
@@ -897,7 +903,7 @@ fn check_diagnostic(
                 if codes_on_line.is_empty() { vec!["<none>"] } else { codes_on_line }
             ));
         }
-    } else if !codes_on_line.iter().any(|c| *c == expected_code) {
+    } else if !codes_on_line.contains(&expected_code) {
         failures.push(format!(
             "  {}:{}\n    diag expected: {}\n    diag actual:   {:?}",
             lua_file, annotation_line + 1, expected_code,
@@ -3430,7 +3436,7 @@ fn workspace_scan_is_sorted_regardless_of_fs_order() {
     }
 
     let mut configs = ProjectConfigs::default();
-    let scan = lsp::scan_workspace(&[tmp_root.clone()], &mut configs);
+    let scan = lsp::scan_workspace(std::slice::from_ref(&tmp_root), &mut configs);
     let globals = scan.globals;
 
     let seen_paths: Vec<PathBuf> = globals
@@ -3460,14 +3466,14 @@ fn shebang_file_skipped_by_workspace_scan() {
     let (classes, globals) = (scan.classes, scan.globals);
     for g in &globals {
         assert!(
-            g.source_path.as_ref().map_or(true, |p| !p.ends_with("shebang.lua")),
+            g.source_path.as_ref().is_none_or(|p| !p.ends_with("shebang.lua")),
             "shebang.lua should be skipped by workspace scan, but found global '{}'",
             g.name
         );
     }
     for c in &classes {
         assert!(
-            c.def_path.as_ref().map_or(true, |p| !p.ends_with("shebang.lua")),
+            c.def_path.as_ref().is_none_or(|p| !p.ends_with("shebang.lua")),
             "shebang.lua should be skipped by workspace scan, but found class '{}'",
             c.name
         );
@@ -3546,11 +3552,10 @@ fn build_per_addon_tables_from_globals(
     if addon_roots.is_empty() { return; }
     let mut file_addon_roots: HashMap<std::path::PathBuf, std::path::PathBuf> = HashMap::new();
     for g in globals {
-        if let Some(ref path) = g.source_path {
-            if let Some(root) = configs.addon_root_for(path) {
+        if let Some(ref path) = g.source_path
+            && let Some(root) = configs.addon_root_for(path) {
                 file_addon_roots.insert(path.clone(), root.to_path_buf());
             }
-        }
     }
     let per_addon_class_names = configs.group_addon_ns_classes_by_root(addon_ns_class_files);
     pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names);
@@ -3607,7 +3612,7 @@ function UseCage(thecage) end
     let diag = analysis.run_diagnostics(&tree).into_iter()
         .find(|d| d.code == "generic-constraint-mismatch")
         .expect("expected a generic-constraint-mismatch diagnostic");
-    let span = &src[diag.start as usize..diag.end as usize];
+    let span = &src[diag.start..diag.end];
     assert_eq!(
         span, "thecage",
         "diagnostic should underline just the parameter token, got {:?}", span
@@ -3815,7 +3820,7 @@ end
     // Symbols should be sorted by position
     let positions: Vec<u32> = symbols.iter().map(|s| s.range_start()).collect();
     let mut sorted = positions.clone();
-    sorted.sort();
+    sorted.sort_unstable();
     assert_eq!(positions, sorted, "symbols should be sorted by file position");
 
     // Function detail should include signature info with return type
@@ -4027,7 +4032,7 @@ fn workspace_symbol_search() {
     // Results are sorted by name
     let names: Vec<&str> = results.iter().map(|s| s.name.as_str()).collect();
     let mut sorted = names.clone();
-    sorted.sort();
+    sorted.sort_unstable();
     assert_eq!(names, sorted, "results should be sorted by name");
 
     // Verify no duplicate class entries (class-typed globals vs @class declarations)
@@ -4828,9 +4833,8 @@ fn combine_returns_edit_at(
     };
     let actions = lsp::compute_code_actions(&uri, src, range, &[], Some((tree, analysis)));
     let action = actions.into_iter().find_map(|a| {
-        if let CodeActionOrCommand::CodeAction(ca) = a {
-            if ca.title == "Combine into single-line tuple return" { return Some(ca); }
-        }
+        if let CodeActionOrCommand::CodeAction(ca) = a
+            && ca.title == "Combine into single-line tuple return" { return Some(ca); }
         None
     })?;
     let changes = action.edit?.changes?;
@@ -5302,7 +5306,7 @@ fn snippet_suppressed_when_parens_follow() {
     let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
     // insert_text should be plain label (no parens/params snippet)
     assert!(
-        greet.insert_text.as_ref().map_or(true, |t| !t.contains('(')),
+        greet.insert_text.as_ref().is_none_or(|t| !t.contains('(')),
         "snippet should be suppressed when '(' follows cursor, got: {:?}",
         greet.insert_text
     );
@@ -5359,7 +5363,7 @@ fn call_snippets_disabled_inserts_plain_name() {
     let items = result.completions_at(&tree, cursor, source, Snippets::Enabled, CallSnippets::Disabled).unwrap();
     let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
     assert!(
-        greet.insert_text.as_ref().map_or(true, |t| !t.contains('(')),
+        greet.insert_text.as_ref().is_none_or(|t| !t.contains('(')),
         "call snippet should be suppressed when callSnippets is disabled, got: {:?}",
         greet.insert_text
     );
@@ -5577,12 +5581,11 @@ fn find_action_edit<'a>(
     title_contains: &str,
 ) -> Option<&'a lsp_types::TextEdit> {
     actions.iter().find_map(|a| {
-        if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a {
-            if ca.title.contains(title_contains) {
+        if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a
+            && ca.title.contains(title_contains) {
                 let changes = ca.edit.as_ref()?.changes.as_ref()?;
                 return changes.values().next()?.first();
             }
-        }
         None
     })
 }

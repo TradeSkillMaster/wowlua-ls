@@ -662,8 +662,10 @@ mod tests {
     /// Helper: register a class on `pg` with the given fields.
     /// `declared` lists field names from explicit `@field` annotations.
     fn register_class(pg: &mut PreResolvedGlobals, class_name: &str, fields: Vec<(&str, FieldInfo)>, root: &Path, declared: &[&str]) {
-        let mut table = TableInfo::default();
-        table.class_name = Some(class_name.to_string());
+        let mut table = TableInfo {
+            class_name: Some(class_name.to_string()),
+            ..Default::default()
+        };
         for (name, field) in fields {
             table.fields.insert(name.to_string(), field);
         }

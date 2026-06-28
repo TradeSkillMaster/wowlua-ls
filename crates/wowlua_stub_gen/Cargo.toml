@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [features]
 # Pure pass-through to wowlua_lsp's embedded-stubs (stub_gen has no embed logic
 # of its own). Default-on so standalone tests match wowlua_lsp; combined with the

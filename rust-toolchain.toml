@@ -1,0 +1,15 @@
+# Pins the toolchain so the zero-warnings policy is deterministic.
+#
+# The root `[workspace.lints.rust] warnings = "deny"` gates ordinary `cargo
+# build`/`cargo test`, not just `cargo clippy`. On a floating/unpinned stable, a
+# compiler update can introduce a new default-on warning (a fresh deprecation, a
+# new `unused` variant, …) on pre-existing, unrelated code — which would then
+# break the build, including the CI release build that compiles on the runner's
+# default toolchain. Pinning an exact stable makes rustc diagnostics reproducible.
+#
+# Bump deliberately (and re-run `cargo clippy --workspace --all-targets`) rather
+# than letting the version float.
+[toolchain]
+channel = "1.91.0"
+components = ["clippy"]
+profile = "minimal"

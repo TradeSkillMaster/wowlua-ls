@@ -17,12 +17,40 @@ edition = "2024"
 license = "GPL-3.0"
 repository = "https://github.com/TradeSkillMaster/wowlua_ls"
 
+# Single source of truth for the zero-warnings policy that was previously only a
+# convention (see CLAUDE.md). Every member crate opts in with `lints.workspace =
+# true`, so the policy lives here and applies workspace-wide. The `fuzz/` crate is
+# excluded from the workspace and so does not (and cannot) inherit these.
+[workspace.lints.rust]
+# Deny the `warnings` group: every rustc warning is a hard error for member
+# crates, so `cargo build`/`cargo test` enforce the policy, not just clippy.
+# Because this also gates ordinary builds, the compiler is pinned in
+# `rust-toolchain.toml` — otherwise a floating-stable update could surface a new
+# default-on warning and break a build (including the CI release build).
+warnings = "deny"
+
+[workspace.lints.clippy]
+# Baseline posture the tree already satisfied: the full `clippy::all` group
+# (correctness + suspicious + style + complexity + perf). `priority = -1` applies
+# the group first, so any narrower per-lint setting (e.g. a future deliberate
+# `allow` of one `clippy::all` member) still wins over it.
+all = { level = "deny", priority = -1 }
+# A few pedantic lints promoted on top of the baseline. Each is mechanical and
+# behavior-preserving, the tree is already clean under it, and a documented
+# `#[allow]` can still opt out a justified site.
+redundant_else = "deny"            # drop the `else` after a diverging `if` branch
+stable_sort_primitive = "deny"     # `sort_unstable` on primitive slices: same result, faster
+cloned_instead_of_copied = "deny"  # `.copied()` over `.cloned()` for `Copy` items
+
 [package]
 name = "wowlua_ls"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 # The bin is a thin facade + CLI on top of the library crates.

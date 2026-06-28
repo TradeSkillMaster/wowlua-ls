@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 wowlua_syntax = { path = "../wowlua_syntax" }
 serde = { version = "1.0.219", features = ["derive"] }

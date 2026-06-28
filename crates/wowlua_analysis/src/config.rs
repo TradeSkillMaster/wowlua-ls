@@ -2267,7 +2267,7 @@ Shared.lua
         let result = parse_toc_files(&dir);
         // classic covers classic+classic_era, mainline covers retail → union = ALL
         // FLAVOR_ALL entries are pruned (no restriction needed)
-        assert!(result.file_flavors.get(&dir.join("Everywhere.lua")).is_none());
+        assert!(!result.file_flavors.contains_key(&dir.join("Everywhere.lua")));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2307,7 +2307,7 @@ NormalFile.lua
 
         let result = parse_toc_files(&dir);
         // NormalFile: all flavors → not stored (FLAVOR_ALL pruned)
-        assert!(result.file_flavors.get(&dir.join("NormalFile.lua")).is_none());
+        assert!(!result.file_flavors.contains_key(&dir.join("NormalFile.lua")));
         // RetailOnly: mainline only
         assert_eq!(*result.file_flavors.get(&dir.join("RetailOnly.lua")).unwrap(),
                    crate::flavor::FLAVOR_RETAIL);

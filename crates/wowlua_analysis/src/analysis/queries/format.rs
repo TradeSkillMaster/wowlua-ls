@@ -100,7 +100,7 @@ pub fn dedup_return_types(ir: &Ir, rets: &[SymbolIndex]) -> Vec<Option<ValueType
             by_index.entry(*index).or_insert(None);
         }
     }
-    for slot in by_index.keys().cloned().collect::<Vec<_>>() {
+    for slot in by_index.keys().copied().collect::<Vec<_>>() {
         let vt = return_type_at_slot(ir, rets, slot);
         by_index.insert(slot, vt);
     }

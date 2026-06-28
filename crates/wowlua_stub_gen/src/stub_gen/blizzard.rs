@@ -326,7 +326,7 @@ pub(in crate::stub_gen) fn generate_blizzard_api_stubs(
 
     // Emit namespace declarations
     let mut ns_sorted: Vec<&str> = namespaces.into_iter().collect();
-    ns_sorted.sort();
+    ns_sorted.sort_unstable();
     for ns in &ns_sorted {
         // Only emit the table assignment if this namespace isn't already defined
         if !existing_names.contains(*ns) {

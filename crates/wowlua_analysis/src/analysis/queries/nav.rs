@@ -841,75 +841,73 @@ impl AnalysisResult {
                     return None;
                 };
                 return self.resolve_method_call_return_table(receiver_table, &method_name, node);
+            }
+            // Dot-call or simple call: func(args) or obj.func(args)
+            // Resolve the identifier as a dot chain to find the function
+            let func_name = names.last()?.text().to_string();
+            // Check for nested child nodes (parser2 DotAccess has child NameRef + single Name)
+            let is_call2 = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
+            let child_funcall_node = ident_node.children().find(|c| is_call2(c.kind()));
+            let child_ident_node = if child_funcall_node.is_none() {
+                ident_node.children().find(|c| c.kind().is_identifier())
             } else {
-                // Dot-call or simple call: func(args) or obj.func(args)
-                // Resolve the identifier as a dot chain to find the function
-                let func_name = names.last()?.text().to_string();
-                // Check for nested child nodes (parser2 DotAccess has child NameRef + single Name)
-                let is_call2 = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
-                let child_funcall_node = ident_node.children().find(|c| is_call2(c.kind()));
-                let child_ident_node = if child_funcall_node.is_none() {
-                    ident_node.children().find(|c| c.kind().is_identifier())
+                None
+            };
+            let has_child = child_funcall_node.is_some() || child_ident_node.is_some();
+            if names.len() >= 2 || has_child {
+                // Dot chain or parser2 DotAccess: resolve base → function field
+                let base_table = if let Some(cf) = child_funcall_node {
+                    self.resolve_funcall_node_to_table(&cf, scope_offset)?
+                } else if let Some(ci) = child_ident_node {
+                    self.resolve_identifier_to_table(&ci, scope_offset)?
                 } else {
-                    None
-                };
-                let has_child = child_funcall_node.is_some() || child_ident_node.is_some();
-                if names.len() >= 2 || has_child {
-                    // Dot chain or parser2 DotAccess: resolve base → function field
-                    let base_table = if let Some(cf) = child_funcall_node {
-                        self.resolve_funcall_node_to_table(&cf, scope_offset)?
-                    } else if let Some(ci) = child_ident_node {
-                        self.resolve_identifier_to_table(&ci, scope_offset)?
-                    } else {
-                        // Simple dot chain with no nested nodes (old parser)
-                        let root_name = names[0].text().to_string();
-                        let scope_idx = self.scope_at_offset(scope_offset)?;
-                        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
-                        let ver = self.sym(symbol_idx).versions.last()?;
-                        let resolved = ver.resolved_type.as_ref()?;
-                        let mut idx = Self::extract_table_idx(resolved)?;
-                        for name_token in &names[1..names.len() - 1] {
-                            let name = name_token.text().to_string();
-                            let fi = self.get_field(idx, &name)?;
-                            let ft = self.resolve_field_type(fi)?;
-                            idx = Self::extract_table_idx(&ft)?;
-                        }
-                        idx
-                    };
-                    let fi = self.get_field(base_table, &func_name)
-                        .or_else(|| self.table(base_table).parent_classes.clone().iter()
-                            .find_map(|&p| self.get_field(p, &func_name)))?;
-                    let func_type = self.resolve_expr_type(fi.expr)?;
-                    let func_idx = match func_type {
-                        ValueType::Function(Some(idx)) => idx,
-                        _ => return None,
-                    };
-                    return self.resolve_func_return_table(func_idx, node);
-                } else {
-                    // Simple function call: func(args)
+                    // Simple dot chain with no nested nodes (old parser)
                     let root_name = names[0].text().to_string();
                     let scope_idx = self.scope_at_offset(scope_offset)?;
                     let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
                     let ver = self.sym(symbol_idx).versions.last()?;
                     let resolved = ver.resolved_type.as_ref()?;
-                    match resolved {
-                        ValueType::Function(Some(func_idx)) => {
-                            return self.resolve_func_return_table(*func_idx, node);
-                        }
-                        ValueType::Table(Some(table_idx)) => {
-                            // Constructor call: class table called as function
-                            if let Some(call_func_idx) = self.table(*table_idx).call_func {
-                                return self.resolve_func_return_table(call_func_idx, node);
-                            }
-                            // @constructor: class table is callable, returns the class type
-                            if self.has_constructor(*table_idx) {
-                                return Some(*table_idx);
-                            }
-                            return None;
-                        }
-                        _ => return None,
+                    let mut idx = Self::extract_table_idx(resolved)?;
+                    for name_token in &names[1..names.len() - 1] {
+                        let name = name_token.text().to_string();
+                        let fi = self.get_field(idx, &name)?;
+                        let ft = self.resolve_field_type(fi)?;
+                        idx = Self::extract_table_idx(&ft)?;
                     }
+                    idx
+                };
+                let fi = self.get_field(base_table, &func_name)
+                    .or_else(|| self.table(base_table).parent_classes.clone().iter()
+                        .find_map(|&p| self.get_field(p, &func_name)))?;
+                let func_type = self.resolve_expr_type(fi.expr)?;
+                let func_idx = match func_type {
+                    ValueType::Function(Some(idx)) => idx,
+                    _ => return None,
+                };
+                return self.resolve_func_return_table(func_idx, node);
+            }
+            // Simple function call: func(args)
+            let root_name = names[0].text().to_string();
+            let scope_idx = self.scope_at_offset(scope_offset)?;
+            let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+            let ver = self.sym(symbol_idx).versions.last()?;
+            let resolved = ver.resolved_type.as_ref()?;
+            match resolved {
+                ValueType::Function(Some(func_idx)) => {
+                    return self.resolve_func_return_table(*func_idx, node);
                 }
+                ValueType::Table(Some(table_idx)) => {
+                    // Constructor call: class table called as function
+                    if let Some(call_func_idx) = self.table(*table_idx).call_func {
+                        return self.resolve_func_return_table(call_func_idx, node);
+                    }
+                    // @constructor: class table is callable, returns the class type
+                    if self.has_constructor(*table_idx) {
+                        return Some(*table_idx);
+                    }
+                    return None;
+                }
+                _ => return None,
             }
         }
 

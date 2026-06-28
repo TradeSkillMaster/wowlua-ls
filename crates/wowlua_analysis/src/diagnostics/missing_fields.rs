@@ -97,7 +97,7 @@ fn check_missing_fields(
         }
     }
     if !missing.is_empty() {
-        missing.sort();
+        missing.sort_unstable();
         let fields_str = missing.join("', '");
         let message = if missing.len() == 1 {
             format!("missing required field '{}' in class '{}'", fields_str, class_name)
@@ -194,7 +194,7 @@ fn check_missing_fields_union(
         // on the missing-required path.
         let class_name = analysis.table(best_idx).class_name.clone().unwrap_or_default();
         let mut keys: Vec<&str> = rhs_table.fields.keys().map(|s| s.as_str()).collect();
-        keys.sort();
+        keys.sort_unstable();
         let stray = keys.first().copied().unwrap_or_default();
         super::MISSING_FIELDS.emit(
             diags,
