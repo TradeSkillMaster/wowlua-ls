@@ -423,6 +423,19 @@ pub struct PreResolvedGlobals {
     /// Avoids O(total_deferred) scan per harvest — each file only visits its own.
     #[serde(skip)]
     pub(crate) deferred_returns_by_path: HashMap<PathBuf, Vec<FunctionIndex>>,
+    /// Workspace function indices that have *multiple* cross-file definitions
+    /// disagreeing on arity — e.g. a namespaced function (`ns.A.B`) or class
+    /// method defined with different parameter counts in mutually-exclusive
+    /// flavor source dirs (`Source_Classic/...` vs `Source_Mainline/...`), all
+    /// merged into one workspace. The merge keeps only the first definition's
+    /// signature (unannotated duplicates are dropped), so the `call_arity`
+    /// diagnostic would otherwise check every call against one arbitrary
+    /// definition's arity and flag the other flavor's call sites. Membership
+    /// here tells `call_arity` to skip arity checks for the function (its valid
+    /// arity is genuinely ambiguous without per-flavor file-set isolation).
+    /// Recomputed per-workspace at build time — `#[serde(skip)]`, no blob impact.
+    #[serde(skip)]
+    pub(crate) conflicting_arity_funcs: HashSet<FunctionIndex>,
     /// Memoized precise signature bundle (returns + correlated overloads, in
     /// ext-index space) for deferred functions. One whole-file harvest warms
     /// every body-derived datum at once. Filled lazily on first read; lives
@@ -1113,6 +1126,37 @@ fn overload_from_duplicate_def(
     }
 }
 
+/// True when an unannotated duplicate method definition (`dup_params`)
+/// disagrees on arity with the already-registered `existing` function — a
+/// different count of non-self, non-vararg parameters, or a mismatch in
+/// vararg-ness. This is the signature of a flavor-split function (`ns.A.B`
+/// defined with different param counts in mutually-exclusive `Source_*` dirs,
+/// all merged into one workspace). The duplicate carries no type info and is
+/// dropped, so the caller records the function in `conflicting_arity_funcs`;
+/// `call_arity` then skips arity checks for it rather than flagging the other
+/// flavor's call sites against the one surviving definition.
+///
+/// Both sides exclude a leading `self` so the comparison is apples-to-apples.
+/// The scanner only strips `self` from a *colon* method's param list
+/// (`scan_globals.rs`), so a dot-defined method with an explicit `self`
+/// (`function ns.Foo.Bar(self, x)`) keeps it in `dup_params` — strip it here
+/// too (a no-op when self was already stripped or absent), else two identical
+/// dot-with-self definitions would look like an arity conflict.
+fn duplicate_def_arity_conflicts(
+    existing: &Function,
+    symbols: &[Symbol],
+    dup_params: &[crate::annotations::ParamInfo],
+) -> bool {
+    let existing_self = existing.args.first().copied().is_some_and(|s| {
+        matches!(&symbols[s.ext_offset()].id, SymbolIdentifier::Name(n) if n == "self")
+    });
+    let existing_arity = existing.args.len() - existing_self as usize;
+    let dup_self = dup_params.first().is_some_and(|p| p.name == "self");
+    let dup_arity = dup_params.iter().filter(|p| p.name != "...").count() - dup_self as usize;
+    let dup_vararg = dup_params.iter().any(|p| p.name == "...");
+    dup_arity != existing_arity || dup_vararg != existing.is_vararg
+}
+
 struct BuildContext {
     // Core IR (becomes PreResolvedGlobals fields)
     scopes: Vec<Scope>,
@@ -1158,6 +1202,9 @@ struct BuildContext {
     // Lazy cross-file return resolution: workspace functions whose returns were
     // inferred from the body (coarse) and should be resolved precisely on demand.
     deferred_returns: HashSet<FunctionIndex>,
+    // Functions with multiple cross-file definitions disagreeing on arity (e.g.
+    // flavor-split namespaced functions). `call_arity` skips arity checks for these.
+    conflicting_arity_funcs: HashSet<FunctionIndex>,
     // `@creates-global` side-effect globals: scope0 symbol → creating-call location.
     // Their type is harvested lazily from the call's resolved return type.
     deferred_call_globals: HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
@@ -1203,6 +1250,7 @@ impl BuildContext {
             constructor_method_names: HashSet::new(),
             declared_class_fields: HashMap::new(),
             deferred_returns: HashSet::new(),
+            conflicting_arity_funcs: HashSet::new(),
             deferred_call_globals: HashMap::new(),
             implicit_protected_prefix: false,
         }
@@ -1476,14 +1524,26 @@ impl BuildContext {
                         AnnotationType::VarArgs(inner) => !matches!(inner.as_ref(), AnnotationType::Simple(s) if s == "any" || s == "nil"),
                         _ => true,
                     });
-                    if !has_typed_params && !has_typed_returns {
-                        continue;
-                    }
                     let local_idx = target_idx.ext_offset();
                     let existing_func_idx = self.tables[local_idx].fields.get(method_name)
                         .and_then(|field| {
                             if let Expr::FunctionDef(fi) = self.exprs[field.expr.ext_offset()] { Some(fi) } else { None }
                         });
+                    if !has_typed_params && !has_typed_returns {
+                        // Unannotated duplicate — dropped (no extra type info). Before
+                        // dropping it, record an arity disagreement so `call_arity`
+                        // doesn't flag the other flavor's call sites against the one
+                        // surviving definition (see `conflicting_arity_funcs`).
+                        if let Some(existing_func_idx) = existing_func_idx {
+                            let existing_local = existing_func_idx.ext_offset();
+                            if duplicate_def_arity_conflicts(
+                                &self.functions[existing_local], &self.symbols, &g.params,
+                            ) {
+                                self.conflicting_arity_funcs.insert(existing_func_idx);
+                            }
+                        }
+                        continue;
+                    }
                     if let Some(existing_func_idx) = existing_func_idx {
                         let ovl = overload_from_duplicate_def(
                             &g.params, &g.returns, *is_colon,
@@ -2150,6 +2210,7 @@ impl BuildContext {
             declared_class_fields: self.declared_class_fields,
             deferred_returns_by_path,
             deferred_returns: self.deferred_returns,
+            conflicting_arity_funcs: self.conflicting_arity_funcs,
             deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,
@@ -2427,6 +2488,7 @@ impl PreResolvedGlobals {
             declared_class_fields: HashMap::new(),
             deferred_returns: HashSet::new(),
             deferred_returns_by_path: HashMap::new(),
+            conflicting_arity_funcs: HashSet::new(),
             deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
             deferred_call_globals: HashMap::new(),
             deferred_call_globals_by_path: HashMap::new(),

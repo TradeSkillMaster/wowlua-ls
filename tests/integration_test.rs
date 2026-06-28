@@ -955,6 +955,22 @@ fn overlay_param_reassign() {
 }
 
 #[test]
+fn multi_flavor_arity() {
+    // A flavor-split addon defines the same namespaced function / colon method
+    // with different arities in mutually-exclusive `Source_*` dirs. The merged
+    // workspace keeps one definition and drops the unannotated duplicate, so
+    // `call_arity` must skip arity checks for the function rather than flag the
+    // other flavor's call sites (the reported Auctionator `GetInfoText` bug).
+    // Negative controls assert single-definition and same-arity-duplicate
+    // functions are still arity-checked.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-flavor-arity/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/multi-flavor-arity"),
+    });
+}
+
+#[test]
 fn framexml_missing_globals() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/framexml-missing-globals.lua",

@@ -57,6 +57,9 @@ struct BuildOnStubsContext<'a> {
     // Lazy cross-file return resolution: workspace functions whose returns were
     // inferred from the body (coarse) and should be resolved precisely on demand.
     deferred_returns: HashSet<FunctionIndex>,
+    // Functions with multiple cross-file definitions disagreeing on arity (e.g.
+    // flavor-split namespaced functions). `call_arity` skips arity checks for these.
+    conflicting_arity_funcs: HashSet<FunctionIndex>,
     // `@creates-global` side-effect globals: scope0 symbol → creating-call location.
     deferred_call_globals: HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
 
@@ -116,6 +119,7 @@ impl<'a> BuildOnStubsContext<'a> {
             sub_tables: HashMap::new(),
             declared_class_fields: HashMap::new(),
             deferred_returns: HashSet::new(),
+            conflicting_arity_funcs: HashSet::new(),
             deferred_call_globals: HashMap::new(),
             implicit_protected_prefix,
         }
@@ -380,14 +384,26 @@ impl<'a> BuildOnStubsContext<'a> {
                         AnnotationType::VarArgs(inner) => !matches!(inner.as_ref(), AnnotationType::Simple(s) if s == "any" || s == "nil"),
                         _ => true,
                     });
-                    if !has_typed_params && !has_typed_returns {
-                        continue;
-                    }
                     let local_idx = target_idx.ext_offset();
                     let existing_func_idx = self.tables[local_idx].fields.get(method_name)
                         .and_then(|field| {
                             if let Expr::FunctionDef(fi) = self.exprs[field.expr.ext_offset()] { Some(fi) } else { None }
                         });
+                    if !has_typed_params && !has_typed_returns {
+                        // Unannotated duplicate — dropped (no extra type info). Before
+                        // dropping it, record an arity disagreement so `call_arity`
+                        // doesn't flag the other flavor's call sites against the one
+                        // surviving definition (see `conflicting_arity_funcs`).
+                        if let Some(existing_func_idx) = existing_func_idx {
+                            let existing_local = existing_func_idx.ext_offset();
+                            if super::duplicate_def_arity_conflicts(
+                                &self.functions[existing_local], &self.symbols, &g.params,
+                            ) {
+                                self.conflicting_arity_funcs.insert(existing_func_idx);
+                            }
+                        }
+                        continue;
+                    }
                     if let Some(existing_func_idx) = existing_func_idx {
                         let ovl = super::overload_from_duplicate_def(
                             &g.params, &g.returns, *is_colon,
@@ -1091,6 +1107,7 @@ impl<'a> BuildOnStubsContext<'a> {
             declared_class_fields: self.declared_class_fields,
             deferred_returns_by_path,
             deferred_returns: self.deferred_returns,
+            conflicting_arity_funcs: self.conflicting_arity_funcs,
             deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,

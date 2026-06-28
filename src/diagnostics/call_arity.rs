@@ -78,6 +78,19 @@ impl DiagnosticPass for CallArity {
                 }
             }
 
+            // A function merged from multiple cross-file definitions that
+            // disagree on arity (e.g. a flavor-split `ns.A.B` defined with
+            // different parameter counts in mutually-exclusive `Source_*` dirs,
+            // all merged into one workspace) has no single authoritative arity:
+            // the merge kept only the first definition's signature. Arity-checking
+            // a call against that one definition flags every call site written for
+            // the *other* flavor's signature (the reported false positive). Skip
+            // arity checks for such functions — their valid arity is genuinely
+            // ambiguous without per-flavor file-set isolation.
+            if analysis.ir.ext.conflicting_arity_funcs.contains(&func_idx) {
+                continue;
+            }
+
             let func = analysis.func(func_idx);
             let has_self = func.args.first().is_some_and(|&sym| {
                 matches!(&analysis.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
