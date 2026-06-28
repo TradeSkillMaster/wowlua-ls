@@ -8,6 +8,16 @@ pub(super) struct CallSiteInfo {
     pub(super) is_method_call: bool,
 }
 
+/// Outcome of resolving a generic, non-overload return type (`try_generic_return_type`).
+enum GenericReturn {
+    /// The call result is this value.
+    Value(ValueType),
+    /// A projection could not be bound yet; the call returns `None` to defer.
+    Deferred,
+    /// No generic return applies; fall through to the inferred-return path.
+    Fallthrough,
+}
+
 /// Outcome of resolving a call's callee expression (see `resolve_callee`).
 enum CalleeResolution {
     /// The call result is already determined without an arena function: an inline
@@ -296,15 +306,175 @@ impl<'a> Analysis<'a> {
         let mut substitutable_generic_names: HashSet<String> = HashSet::new();
         // Track generics set by constraint fallback so overload re-inference can
         // override them. Lifecycle:
-        //  1. Populated at constraint fallback (~line 400): unbound generics get
-        //     their constraint type and their name is recorded here.
-        //  2. Consumed at overload re-inference (~line 600): when the matched
-        //     overload maps args to different positions than the primary, bindings
-        //     from phase 1 can be overridden with actual call-site arg types.
-        //  3. After string→function resolution (~line 630): if a function-
-        //     constrained generic was re-bound to a string but couldn't resolve
-        //     to a global function, it is restored to the constraint type.
+        //  1. Populated by the constraint fallback in `infer_call_generic_subs`:
+        //     unbound generics get their constraint type and name recorded here.
+        //  2. Consumed by `reinfer_overload_generics`: when the matched overload
+        //     maps args to different positions than the primary, bindings from
+        //     phase 1 can be overridden with actual call-site arg types.
+        //  3. In `resolve_string_bound_fn_generics`: if a function-constrained
+        //     generic was re-bound to a string but couldn't resolve to a global
+        //     function, it is restored to the constraint type.
         let mut constraint_fallback_names: HashSet<String> = HashSet::new();
+        self.infer_call_generic_subs(func_idx, func, func_expr_id, args, &func_args, &param_annotations, &generics, &defclass, self_offset, is_method_call, call_func_table_idx, &mut generic_subs, &mut generic_arg_indices, &mut substitutable_generic_names, &mut constraint_fallback_names);
+
+        // Type inline event-callback varargs from a literal event name. For:
+        //   ---@generic E: FrameEvent
+        //   ---@param event E
+        //   ---@param callback fun(...params<E>)
+        //   function Event.Register(event, callback) end
+        //   Event.Register("BAG_UPDATE", function(...) local id = ... end)
+        // the generic E was bound to the string literal "BAG_UPDATE" above. When the
+        // callback param is `fun(...params<E>)` and E's constraint names a registered
+        // event type, project that event's payload onto the inline callback's varargs
+        // (reusing the same `event_vararg_types` mechanism as in-body event narrowing).
+        self.type_inline_event_callback_varargs(&generics, func_idx, args, &param_annotations, self_offset, &generic_arg_indices);
+
+        // Extend projected_f_idx for non-method calls: if the vararg has a
+        // projection (Params or Return) and the generic is now bound via
+        // argument inference, use it. Skip method calls — those are handled
+        // by the receiver-type-args path above.
+        let projected_f_idx = projected_f_idx.or_else(|| {
+            if is_method_call { return None; }
+            let proj_name = match &self.func(func_idx).vararg_projection {
+                Some(crate::types::ProjectionKind::Params(n)) => Some(n),
+                Some(crate::types::ProjectionKind::Return(n, _)) => Some(n),
+                _ => None,
+            }?;
+            match generic_subs.get(proj_name)? {
+                ValueType::Function(Some(idx)) => Some(*idx),
+                _ => None,
+            }
+        });
+
+        let (matching_overload, overload_self_offset, ambiguous_overload_ret_type) =
+            self.select_matching_overload(&overloads, args, ret_index);
+
+        // When a generic overload is matched, re-infer generics from the
+        // overload's param types. The initial inference used the primary
+        // function's param layout which may map args to different positions
+        // (e.g. 2-arg overload vs 3-arg primary for tinsert).
+        if has_generics && let Some(overload) = matching_overload {
+            self.reinfer_overload_generics(overload, args, &generics, overload_self_offset, &mut generic_subs, &mut generic_arg_indices, &mut substitutable_generic_names, &mut constraint_fallback_names);
+        }
+
+        // Resolve string-bound function-constrained generics to global function types.
+        // When a generic with constraint `function` is bound to a string literal
+        // (e.g. via `@overload fun(name: `F`, hook: F)` matching a call like
+        // hooksecurefunc("FuncName", callback)), look up the string as a global
+        // function name and re-bind the generic to the actual function type.
+        // If the lookup fails (unknown function name), restore the constraint
+        // type to avoid false-positive type-mismatch / generic-constraint-mismatch.
+        if has_generics {
+            self.resolve_string_bound_fn_generics(&generics, args, &generic_arg_indices, &mut generic_subs);
+        }
+
+        // Propagate matched overload's fun() callback types into inline function params.
+        // This enables contextual typing for patterns like:
+        //   obj:SetScript("OnEvent", function(self, event, ...) end)
+        // where the overload specifies the handler signature.
+        self.propagate_overload_callback_params(matching_overload, is_method_call, func_expr_id, args, overload_self_offset, &generic_subs);
+
+        // Defer type-mismatch / need-check-nil diagnostics to post-resolution.
+        // Resolve each arg so side effects (e.g. undefined-field checks on
+        // FieldAccess expressions) are triggered during the fixpoint loop.
+        let resolved_call_args = self.build_resolved_call_args(
+            args, arg_ranges, func_idx, &func_args, &param_annotations, self_offset,
+            matching_overload, overload_self_offset, &ambiguous_overload_ret_type,
+            projected_f_idx, &generic_subs, &generic_arg_indices, &substitutable_generic_names,
+        );
+
+        // Build per-call generic bindings with arg source ranges
+        if ret_index == 0 {
+            self.record_call_resolution(
+                expr_id, func_expr_id, func_idx, args, arg_ranges, &param_annotations, self_offset,
+                is_method_call, field_range, &generics, &class_type_param_subs, resolved_call_args,
+                &mut generic_subs, &generic_arg_indices, &mut substitutable_generic_names,
+            );
+        }
+
+        // Extract receiver expression once for both overload self<R> and primary @return self.
+        let receiver_expr_id = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
+            Some(receiver_expr)
+        } else {
+            None
+        };
+
+        // `@overload fun(...): self` / `self<R>` — re-parameterize the receiver type.
+        if let Some(rt) = self.try_overload_self_return(matching_overload, ret_index, func_idx, &generic_subs, receiver_expr_id, expr_id) {
+            return Some(rt);
+        }
+
+        // @constructor: return the class table type
+        if let Some(ctor_table_idx) = constructor_table_idx {
+            return if ret_index == 0 {
+                Some(ValueType::Table(Some(ctor_table_idx)))
+            } else {
+                None
+            };
+        }
+
+        // @return self: resolve the receiver type (handles @builds-field / @built-name / self<X>).
+        if returns_self
+            && ret_index == 0
+            && let Some(rt) = self.try_returns_self_return(func_idx, args, receiver_expr_id, &generic_subs, expr_id)
+        {
+            return Some(rt);
+        }
+
+        // @return built: return the accumulated built_table.
+        if let Some(rt) = self.try_returns_built_return(func_idx, func, ret_index) {
+            return Some(rt);
+        }
+
+        // returns<F> projection for this return slot.
+        if let Some(vt) = self.try_returns_projection(func_idx, ret_index, matching_overload, &generic_subs, &func_args, self_offset, args, func, expr_id) {
+            return Some(vt);
+        }
+
+        // Check if any return-only overload implies nil at this return position.
+        // If so, the primary return type should be unioned with nil (the function
+        // can return nothing/nil via the return-only overload path).
+        let return_overloads_may_nil = self.func(func_idx).return_overload_may_nil(ret_index);
+
+        if let Some(rt) = self.try_overload_return_types(matching_overload, ret_index, &union_alt_func_indices, ambiguous_overload_ret_type, return_overloads_may_nil, &generic_subs) {
+            return Some(rt);
+        }
+
+        // Generic substitution for non-overload return types.
+        if !generic_subs.is_empty() {
+            match self.try_generic_return_type(func_idx, ret_index, &generic_subs, &return_annotations, expr_id, return_overloads_may_nil) {
+                GenericReturn::Value(vt) => return Some(vt),
+                GenericReturn::Deferred => return None,
+                GenericReturn::Fallthrough => {}
+            }
+        }
+
+        self.finalize_call_return_type(func_idx, func, ret_index, expr_id, args, &generics, &generic_subs, return_overloads_may_nil, &union_alt_func_indices)
+    }
+
+
+    /// Build the call-site generic substitution maps (`generic_subs` plus the
+    /// companion arg-index / substitutable / constraint-fallback sets) from the
+    /// receiver and argument types. Runs only when the callee declares `@generic`s.
+    #[allow(clippy::too_many_arguments)] // threads call-resolution state from resolve_function_call; bundling adds indirection
+    fn infer_call_generic_subs(
+        &mut self,
+        func_idx: FunctionIndex,
+        func: &ExprId,
+        func_expr_id: ExprId,
+        args: &[ExprId],
+        func_args: &[SymbolIndex],
+        param_annotations: &[crate::annotations::AnnotationType],
+        generics: &[(String, Option<ValueType>)],
+        defclass: &Option<String>,
+        self_offset: usize,
+        is_method_call: bool,
+        call_func_table_idx: Option<TableIndex>,
+        generic_subs: &mut HashMap<String, ValueType>,
+        generic_arg_indices: &mut HashMap<String, usize>,
+        substitutable_generic_names: &mut HashSet<String>,
+        constraint_fallback_names: &mut HashSet<String>,
+    ) {
         if !generics.is_empty() {
             let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
             // Receiver binding runs FIRST so that class-generic parameters
@@ -394,7 +564,7 @@ impl<'a> Analysis<'a> {
                         if has_fun_member
                             && let Some(annotation) = param_annotations.get(i + self_offset).cloned() {
                                 let prev_len = generic_subs.len();
-                                self.infer_generics_from_annotation(&annotation, &generic_names, &generics, &defclass, *arg_expr_id, &mut generic_subs);
+                                self.infer_generics_from_annotation(&annotation, &generic_names, generics, defclass, *arg_expr_id, generic_subs);
                                 if generic_subs.len() > prev_len {
                                     for name in generic_subs.keys() {
                                         if !generic_arg_indices.contains_key(name) {
@@ -432,7 +602,7 @@ impl<'a> Analysis<'a> {
                     // Infer generics from structured param annotations (T[], table<K,V>)
                     let prev_len = generic_subs.len();
                     if let Some(annotation) = param_annotations.get(i + self_offset) {
-                        self.infer_generics_from_annotation(annotation, &generic_names, &generics, &defclass, *arg_expr_id, &mut generic_subs);
+                        self.infer_generics_from_annotation(annotation, &generic_names, generics, defclass, *arg_expr_id, generic_subs);
                     }
                     // Record arg index for any newly inferred generics
                     if generic_subs.len() > prev_len {
@@ -497,7 +667,7 @@ impl<'a> Analysis<'a> {
             // Fallback: for any generic not inferred, use its constraint type.
             // Track which generics were set by this fallback so overload
             // re-inference can override them with actual call-site bindings.
-            for (name, constraint) in &generics {
+            for (name, constraint) in generics {
                 if !generic_subs.contains_key(name)
                     && let Some(ct) = constraint {
                         generic_subs.insert(name.clone(), ct.clone());
@@ -527,139 +697,131 @@ impl<'a> Analysis<'a> {
                 generic_subs.insert(name, ValueType::Any);
             }
         }
+    }
 
-        // Type inline event-callback varargs from a literal event name. For:
-        //   ---@generic E: FrameEvent
-        //   ---@param event E
-        //   ---@param callback fun(...params<E>)
-        //   function Event.Register(event, callback) end
-        //   Event.Register("BAG_UPDATE", function(...) local id = ... end)
-        // the generic E was bound to the string literal "BAG_UPDATE" above. When the
-        // callback param is `fun(...params<E>)` and E's constraint names a registered
-        // event type, project that event's payload onto the inline callback's varargs
-        // (reusing the same `event_vararg_types` mechanism as in-body event narrowing).
-        self.type_inline_event_callback_varargs(&generics, func_idx, args, &param_annotations, self_offset, &generic_arg_indices);
-
-        // Extend projected_f_idx for non-method calls: if the vararg has a
-        // projection (Params or Return) and the generic is now bound via
-        // argument inference, use it. Skip method calls — those are handled
-        // by the receiver-type-args path above.
-        let projected_f_idx = projected_f_idx.or_else(|| {
-            if is_method_call { return None; }
-            let proj_name = match &self.func(func_idx).vararg_projection {
-                Some(crate::types::ProjectionKind::Params(n)) => Some(n),
-                Some(crate::types::ProjectionKind::Return(n, _)) => Some(n),
-                _ => None,
-            }?;
-            match generic_subs.get(proj_name)? {
-                ValueType::Function(Some(idx)) => Some(*idx),
-                _ => None,
+    /// Re-infer generic bindings from a matched `@overload`'s parameter layout.
+    /// The initial inference used the primary signature, which may map arguments
+    /// to different positions than the overload (e.g. a 2-arg overload vs 3-arg primary).
+    #[allow(clippy::too_many_arguments)] // threads call-resolution state from resolve_function_call; bundling adds indirection
+    fn reinfer_overload_generics(
+        &mut self,
+        overload: &ResolvedOverload,
+        args: &[ExprId],
+        generics: &[(String, Option<ValueType>)],
+        overload_self_offset: usize,
+        generic_subs: &mut HashMap<String, ValueType>,
+        generic_arg_indices: &mut HashMap<String, usize>,
+        substitutable_generic_names: &mut HashSet<String>,
+        constraint_fallback_names: &mut HashSet<String>,
+    ) {
+        let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
+        for (i, arg_expr_id) in args.iter().enumerate() {
+            let Some(arg_type) = self.resolve_expr(*arg_expr_id) else { continue };
+            let param_type = overload.params.get(i + overload_self_offset)
+                .and_then(|p| p.typ.as_ref());
+            let Some(param_type) = param_type else { continue };
+            // Direct TypeVariable: T → infer T = arg_type.
+            // Allow overriding constraint-fallback bindings since
+            // the overload may map args to different positions than
+            // the primary (e.g. 2-arg overload vs 3-arg primary).
+            if let ValueType::TypeVariable(name) = param_type
+                && generic_names.contains(name)
+                && (!generic_subs.contains_key(name) || constraint_fallback_names.contains(name))
+            {
+                    generic_subs.insert(name.clone(), arg_type.clone());
+                    constraint_fallback_names.remove(name);
+                    generic_arg_indices.insert(name.clone(), i);
+                    substitutable_generic_names.insert(name.clone());
+                }
+            // Table with TypeVariable value_type: T[] → infer T from array elements
+            if let ValueType::Table(Some(idx)) = param_type {
+                let vt_name = self.table(*idx).value_type.clone();
+                if let Some(ValueType::TypeVariable(name)) = &vt_name
+                    && generic_names.contains(name) && !generic_subs.contains_key(name)
+                        && let Some(elem_type) = self.infer_array_element_type(*arg_expr_id) {
+                            generic_subs.insert(name.clone(), elem_type);
+                            generic_arg_indices.entry(name.clone()).or_insert(i);
+                            substitutable_generic_names.insert(name.clone());
+                        }
             }
-        });
-
-        let (matching_overload, overload_self_offset, ambiguous_overload_ret_type) =
-            self.select_matching_overload(&overloads, args, ret_index);
-
-        // When a generic overload is matched, re-infer generics from the
-        // overload's param types. The initial inference used the primary
-        // function's param layout which may map args to different positions
-        // (e.g. 2-arg overload vs 3-arg primary for tinsert).
-        if has_generics
-            && let Some(overload) = matching_overload {
-                let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
-                for (i, arg_expr_id) in args.iter().enumerate() {
-                    let Some(arg_type) = self.resolve_expr(*arg_expr_id) else { continue };
-                    let param_type = overload.params.get(i + overload_self_offset)
-                        .and_then(|p| p.typ.as_ref());
-                    let Some(param_type) = param_type else { continue };
-                    // Direct TypeVariable: T → infer T = arg_type.
-                    // Allow overriding constraint-fallback bindings since
-                    // the overload may map args to different positions than
-                    // the primary (e.g. 2-arg overload vs 3-arg primary).
-                    if let ValueType::TypeVariable(name) = param_type
+            // Function with TypeVariable return: fun(...): R → infer R
+            // from the argument function's return type.
+            if let ValueType::Function(Some(fn_idx)) = param_type {
+                let fn_ret_anns = self.func(*fn_idx).return_annotations.clone();
+                // Hoist outside the loop: the result depends only on
+                // arg_expr_id, not on the loop variable.
+                let mut type_info = None;
+                for ret_vt in &fn_ret_anns {
+                    if let ValueType::TypeVariable(name) = ret_vt
                         && generic_names.contains(name)
                         && (!generic_subs.contains_key(name) || constraint_fallback_names.contains(name))
                     {
-                            generic_subs.insert(name.clone(), arg_type.clone());
+                        let info = type_info.get_or_insert_with(|| self.arg_function_type_info(*arg_expr_id));
+                        if let Some(ref arg_ret) = info.ret {
+                            generic_subs.insert(name.clone(), arg_ret.clone());
                             constraint_fallback_names.remove(name);
-                            generic_arg_indices.insert(name.clone(), i);
                             substitutable_generic_names.insert(name.clone());
                         }
-                    // Table with TypeVariable value_type: T[] → infer T from array elements
-                    if let ValueType::Table(Some(idx)) = param_type {
-                        let vt_name = self.table(*idx).value_type.clone();
-                        if let Some(ValueType::TypeVariable(name)) = &vt_name
-                            && generic_names.contains(name) && !generic_subs.contains_key(name)
-                                && let Some(elem_type) = self.infer_array_element_type(*arg_expr_id) {
-                                    generic_subs.insert(name.clone(), elem_type);
-                                    generic_arg_indices.entry(name.clone()).or_insert(i);
-                                    substitutable_generic_names.insert(name.clone());
-                                }
-                    }
-                    // Function with TypeVariable return: fun(...): R → infer R
-                    // from the argument function's return type.
-                    if let ValueType::Function(Some(fn_idx)) = param_type {
-                        let fn_ret_anns = self.func(*fn_idx).return_annotations.clone();
-                        // Hoist outside the loop: the result depends only on
-                        // arg_expr_id, not on the loop variable.
-                        let mut type_info = None;
-                        for ret_vt in &fn_ret_anns {
-                            if let ValueType::TypeVariable(name) = ret_vt
-                                && generic_names.contains(name)
-                                && (!generic_subs.contains_key(name) || constraint_fallback_names.contains(name))
-                            {
-                                let info = type_info.get_or_insert_with(|| self.arg_function_type_info(*arg_expr_id));
-                                if let Some(ref arg_ret) = info.ret {
-                                    generic_subs.insert(name.clone(), arg_ret.clone());
-                                    constraint_fallback_names.remove(name);
-                                    substitutable_generic_names.insert(name.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-        // Resolve string-bound function-constrained generics to global function types.
-        // When a generic with constraint `function` is bound to a string literal
-        // (e.g. via `@overload fun(name: `F`, hook: F)` matching a call like
-        // hooksecurefunc("FuncName", callback)), look up the string as a global
-        // function name and re-bind the generic to the actual function type.
-        // If the lookup fails (unknown function name), restore the constraint
-        // type to avoid false-positive type-mismatch / generic-constraint-mismatch.
-        if has_generics {
-            for (name, constraint) in &generics {
-                if matches!(constraint, Some(ValueType::Function(None)))
-                    && matches!(generic_subs.get(name), Some(ValueType::String(_)))
-                    && let Some(&arg_idx) = generic_arg_indices.get(name)
-                    && let Some(&arg_expr) = args.get(arg_idx)
-                {
-                    let fn_name = self.ir.string_literals.get(&arg_expr)
-                        .cloned()
-                        .or_else(|| self.resolve_string_literal_through_expr(&arg_expr));
-                    if let Some(fn_name) = fn_name
-                        && let Some(func_type) = self.resolve_global_function_type(&fn_name)
-                    {
-                        generic_subs.insert(name.clone(), func_type);
-                    } else {
-                        // Unknown function name — restore the constraint type
-                        // so F stays as `function` (not `string`), preventing
-                        // generic-constraint-mismatch and type-mismatch false positives.
-                        generic_subs.insert(name.clone(), constraint.clone().unwrap());
                     }
                 }
             }
         }
+    }
 
-        // Propagate matched overload's fun() callback types into inline function params.
-        // This enables contextual typing for patterns like:
-        //   obj:SetScript("OnEvent", function(self, event, ...) end)
-        // where the overload specifies the handler signature.
-        self.propagate_overload_callback_params(matching_overload, is_method_call, func_expr_id, args, overload_self_offset, &generic_subs);
+    /// Re-bind generics whose `function` constraint was matched to a string literal
+    /// (e.g. `hooksecurefunc("Name", cb)`): look the name up as a global function and
+    /// rebind to its type, or restore the constraint type when the lookup fails.
+    fn resolve_string_bound_fn_generics(
+        &mut self,
+        generics: &[(String, Option<ValueType>)],
+        args: &[ExprId],
+        generic_arg_indices: &HashMap<String, usize>,
+        generic_subs: &mut HashMap<String, ValueType>,
+    ) {
+        for (name, constraint) in generics {
+            if matches!(constraint, Some(ValueType::Function(None)))
+                && matches!(generic_subs.get(name), Some(ValueType::String(_)))
+                && let Some(&arg_idx) = generic_arg_indices.get(name)
+                && let Some(&arg_expr) = args.get(arg_idx)
+            {
+                let fn_name = self.ir.string_literals.get(&arg_expr)
+                    .cloned()
+                    .or_else(|| self.resolve_string_literal_through_expr(&arg_expr));
+                if let Some(fn_name) = fn_name
+                    && let Some(func_type) = self.resolve_global_function_type(&fn_name)
+                {
+                    generic_subs.insert(name.clone(), func_type);
+                } else {
+                    // Unknown function name — restore the constraint type
+                    // so F stays as `function` (not `string`), preventing
+                    // generic-constraint-mismatch and type-mismatch false positives.
+                    generic_subs.insert(name.clone(), constraint.clone().unwrap());
+                }
+            }
+        }
+    }
 
-        // Defer type-mismatch / need-check-nil diagnostics to post-resolution.
-        // Resolve each arg so side effects (e.g. undefined-field checks on
-        // FieldAccess expressions) are triggered during the fixpoint loop.
+    /// Resolve each call argument and build its `ResolvedCallArg` (expected type with
+    /// generic substitutions applied, param name, ranges, type-args) for the deferred
+    /// type-mismatch / need-check-nil diagnostics. Resolving each arg also drives the
+    /// fixpoint side effects (e.g. undefined-field checks on field-access args).
+    #[allow(clippy::too_many_arguments)] // threads call-resolution state from resolve_function_call; bundling adds indirection
+    fn build_resolved_call_args(
+        &mut self,
+        args: &[ExprId],
+        arg_ranges: &[(u32, u32)],
+        func_idx: FunctionIndex,
+        func_args: &[SymbolIndex],
+        param_annotations: &[crate::annotations::AnnotationType],
+        self_offset: usize,
+        matching_overload: Option<&ResolvedOverload>,
+        overload_self_offset: usize,
+        ambiguous_overload_ret_type: &Option<ValueType>,
+        projected_f_idx: Option<FunctionIndex>,
+        generic_subs: &HashMap<String, ValueType>,
+        generic_arg_indices: &HashMap<String, usize>,
+        substitutable_generic_names: &HashSet<String>,
+    ) -> Vec<ResolvedCallArg> {
         let mut resolved_call_args: Vec<ResolvedCallArg> = Vec::new();
         for (i, arg_expr_id) in args.iter().enumerate() {
             self.resolve_expr(*arg_expr_id);
@@ -791,7 +953,7 @@ impl<'a> Analysis<'a> {
                     Vec::new()
                 } else {
                     param_annotations.get(i + self_offset)
-                        .map(|ann| self.param_parameterized_constraints(ann, &generic_subs))
+                        .map(|ann| self.param_parameterized_constraints(ann, generic_subs))
                         .unwrap_or_default()
                 };
                 resolved_call_args.push(ResolvedCallArg {
@@ -801,139 +963,156 @@ impl<'a> Analysis<'a> {
                 });
             }
         }
+        resolved_call_args
+    }
 
-        // Build per-call generic bindings with arg source ranges
-        if ret_index == 0 {
-            let generic_subs_ir: Vec<GenericBinding> = generic_subs.iter()
-                .map(|(name, vt)| {
-                    let arg_range = generic_arg_indices.get(name)
-                        .and_then(|&idx| arg_ranges.get(idx).copied());
-                    (name.clone(), vt.clone(), arg_range)
-                })
-                .collect();
+    /// Record the `CallResolution` for this call (when resolving the first return
+    /// slot): the per-call generic bindings, method-decl subs for hover, the receiver
+    /// class table, and any `expression<C, R>` argument metadata — inferring a generic
+    /// `R` from the expression body where the method declares it.
+    #[allow(clippy::too_many_arguments)] // threads call-resolution state from resolve_function_call; bundling adds indirection
+    fn record_call_resolution(
+        &mut self,
+        expr_id: ExprId,
+        func_expr_id: ExprId,
+        func_idx: FunctionIndex,
+        args: &[ExprId],
+        arg_ranges: &[(u32, u32)],
+        param_annotations: &[crate::annotations::AnnotationType],
+        self_offset: usize,
+        is_method_call: bool,
+        field_range: Option<(u32, u32)>,
+        generics: &[(String, Option<ValueType>)],
+        class_type_param_subs: &HashMap<String, ValueType>,
+        resolved_call_args: Vec<ResolvedCallArg>,
+        generic_subs: &mut HashMap<String, ValueType>,
+        generic_arg_indices: &HashMap<String, usize>,
+        substitutable_generic_names: &mut HashSet<String>,
+    ) {
+        let generic_subs_ir: Vec<GenericBinding> = generic_subs.iter()
+            .map(|(name, vt)| {
+                let arg_range = generic_arg_indices.get(name)
+                    .and_then(|&idx| arg_ranges.get(idx).copied());
+                (name.clone(), vt.clone(), arg_range)
+            })
+            .collect();
 
-            // Record method-level generic bindings (A, R, etc.) alongside class
-            // type-param subs so hover shows bound concrete types in the signature.
-            // Done before inserting CallResolution so generic_subs_ir can be moved
-            // into it without cloning.
-            if is_method_call && !generic_subs_ir.is_empty()
-                && let Some(range) = field_range
-            {
-                let entry = self.method_decl_subs.entry(range).or_default();
-                for (name, vt, _) in &generic_subs_ir {
-                    if !matches!(vt, ValueType::TypeVariable(_)) {
-                        entry.insert(name.clone(), vt.clone());
-                    }
-                }
-            }
-
-            // Resolve the receiver's class table for method calls. Reused for
-            // `keyof self` constraint validation (stored on CallResolution) and
-            // for `expression<C, R>` parameter detection below.
-            let receiver_table_idx = if is_method_call {
-                let receiver_expr = match self.expr(func_expr_id) {
-                    Expr::FieldAccess { table, .. } => Some(*table),
-                    _ => None,
-                };
-                receiver_expr.and_then(|re| match self.resolve_expr(re) {
-                    Some(ValueType::Table(Some(idx))) => Some(idx),
-                    _ => None,
-                })
-            } else { None };
-
-            self.ir.call_resolutions.insert(expr_id, CallResolution {
-                func_idx,
-                expected_args: resolved_call_args,
-                generic_subs: generic_subs_ir,
-                projected_f_idx: None,
-                is_expansion: false,
-                first_arg_range: arg_ranges.first().copied(),
-                receiver_param_subs: class_type_param_subs.clone(),
-                receiver_table_idx,
-            });
-
-            // Detect expression<C, R> parameters and record them for diagnostics/queries
-            for (i, arg_expr_id) in args.iter().enumerate() {
-                if let Some(crate::annotations::AnnotationType::Parameterized(base, type_args)) =
-                    param_annotations.get(i + self_offset)
-                    && base == "expression" && !type_args.is_empty()
-                    && let Some(&(start, end)) = arg_ranges.get(i)
-                {
-                    let (table_idxs, context_incomplete) = self.resolve_expression_tables(&type_args[0], receiver_table_idx, &class_type_param_subs);
-                    if !table_idxs.is_empty() {
-                        // When the result type `R` is one of the method's generic
-                        // type parameters, infer it from the expression body and
-                        // bind it (so `@return Schema<R>` becomes `Schema<number>`
-                        // etc.). Otherwise R is a fixed constraint to check against.
-                        let r_generic = match type_args.get(1) {
-                            Some(crate::annotations::AnnotationType::Simple(name))
-                                if generics.iter().any(|(g, _)| g == name) => Some(name.clone()),
-                            _ => None,
-                        };
-                        let return_type = if r_generic.is_some() {
-                            None
-                        } else {
-                            type_args.get(1).and_then(|rt| self.resolve_annotation_type(rt))
-                        };
-                        if let Some(rname) = r_generic
-                            && !generic_subs.contains_key(&rname)
-                            && let Some(content) = self.ir.string_literals.get(arg_expr_id).cloned()
-                        {
-                            let wrapped = format!("return {content}");
-                            let expr_tree = crate::syntax::parser::Parser::new(&wrapped).parse();
-                            let inferred = crate::diagnostics::expression_type::infer_expression_type(
-                                &expr_tree,
-                                &|word: &str| table_idxs.iter()
-                                    .find_map(|&idx| self.get_field(idx, word)
-                                        .and_then(|fi| {
-                                            let ty = fi.annotation.clone()?;
-                                            // Lateinit (T!) fields strip nil for static access
-                                            // (no need-check-nil), but in expression<> strings
-                                            // the expression evaluates at runtime when the field
-                                            // may still be unset, so include nil to avoid a false
-                                            // positive type-mismatch on the generic R binding.
-                                            if fi.lateinit {
-                                                Some(ValueType::make_union(vec![ty, ValueType::Nil]))
-                                            } else {
-                                                Some(ty)
-                                            }
-                                        })),
-                            );
-                            if let Some(t) = inferred
-                                && !matches!(t, ValueType::Any)
-                            {
-                                substitutable_generic_names.insert(rname.clone());
-                                generic_subs.insert(rname, t);
-                            }
-                        }
-                        self.ir.expression_args.insert(*arg_expr_id, crate::analysis::ExpressionArg {
-                            table_idxs,
-                            return_type,
-                            str_range: (start, end),
-                            context_incomplete,
-                        });
-                    }
+        // Record method-level generic bindings (A, R, etc.) alongside class
+        // type-param subs so hover shows bound concrete types in the signature.
+        // Done before inserting CallResolution so generic_subs_ir can be moved
+        // into it without cloning.
+        if is_method_call && !generic_subs_ir.is_empty()
+            && let Some(range) = field_range
+        {
+            let entry = self.method_decl_subs.entry(range).or_default();
+            for (name, vt, _) in &generic_subs_ir {
+                if !matches!(vt, ValueType::TypeVariable(_)) {
+                    entry.insert(name.clone(), vt.clone());
                 }
             }
         }
 
-        // Extract receiver expression once for both overload self<R> and primary @return self.
-        let receiver_expr_id = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
-            Some(receiver_expr)
-        } else {
-            None
-        };
+        // Resolve the receiver's class table for method calls. Reused for
+        // `keyof self` constraint validation (stored on CallResolution) and
+        // for `expression<C, R>` parameter detection below.
+        let receiver_table_idx = if is_method_call {
+            let receiver_expr = match self.expr(func_expr_id) {
+                Expr::FieldAccess { table, .. } => Some(*table),
+                _ => None,
+            };
+            receiver_expr.and_then(|re| match self.resolve_expr(re) {
+                Some(ValueType::Table(Some(idx))) => Some(idx),
+                _ => None,
+            })
+        } else { None };
 
-        // @overload ... : self / self<R> — re-parameterize the receiver type.
-        // Must run before the primary returns_self check since both may be set
-        // (e.g. @overload fun(...): self<R> with a primary @return self fallback).
-        //
-        // Limitation: only handles ret_index == 0.  If an overload declares
-        // additional return values alongside self (e.g. `@overload fun(): self<R>, number`),
-        // the `self` return is filtered out in build_ir.rs so `returns[0]` becomes
-        // `number`, but this block returns the receiver type first and the extra
-        // returns are silently dropped.  Multi-return overloads with self<R> are
-        // not a real-world pattern, so this is acceptable for now.
+        self.ir.call_resolutions.insert(expr_id, CallResolution {
+            func_idx,
+            expected_args: resolved_call_args,
+            generic_subs: generic_subs_ir,
+            projected_f_idx: None,
+            is_expansion: false,
+            first_arg_range: arg_ranges.first().copied(),
+            receiver_param_subs: class_type_param_subs.clone(),
+            receiver_table_idx,
+        });
+
+        // Detect expression<C, R> parameters and record them for diagnostics/queries
+        for (i, arg_expr_id) in args.iter().enumerate() {
+            if let Some(crate::annotations::AnnotationType::Parameterized(base, type_args)) =
+                param_annotations.get(i + self_offset)
+                && base == "expression" && !type_args.is_empty()
+                && let Some(&(start, end)) = arg_ranges.get(i)
+            {
+                let (table_idxs, context_incomplete) = self.resolve_expression_tables(&type_args[0], receiver_table_idx, class_type_param_subs);
+                if !table_idxs.is_empty() {
+                    // When the result type `R` is one of the method's generic
+                    // type parameters, infer it from the expression body and
+                    // bind it (so `@return Schema<R>` becomes `Schema<number>`
+                    // etc.). Otherwise R is a fixed constraint to check against.
+                    let r_generic = match type_args.get(1) {
+                        Some(crate::annotations::AnnotationType::Simple(name))
+                            if generics.iter().any(|(g, _)| g == name) => Some(name.clone()),
+                        _ => None,
+                    };
+                    let return_type = if r_generic.is_some() {
+                        None
+                    } else {
+                        type_args.get(1).and_then(|rt| self.resolve_annotation_type(rt))
+                    };
+                    if let Some(rname) = r_generic
+                        && !generic_subs.contains_key(&rname)
+                        && let Some(content) = self.ir.string_literals.get(arg_expr_id).cloned()
+                    {
+                        let wrapped = format!("return {content}");
+                        let expr_tree = crate::syntax::parser::Parser::new(&wrapped).parse();
+                        let inferred = crate::diagnostics::expression_type::infer_expression_type(
+                            &expr_tree,
+                            &|word: &str| table_idxs.iter()
+                                .find_map(|&idx| self.get_field(idx, word)
+                                    .and_then(|fi| {
+                                        let ty = fi.annotation.clone()?;
+                                        // Lateinit (T!) fields strip nil for static access
+                                        // (no need-check-nil), but in expression<> strings
+                                        // the expression evaluates at runtime when the field
+                                        // may still be unset, so include nil to avoid a false
+                                        // positive type-mismatch on the generic R binding.
+                                        if fi.lateinit {
+                                            Some(ValueType::make_union(vec![ty, ValueType::Nil]))
+                                        } else {
+                                            Some(ty)
+                                        }
+                                    })),
+                        );
+                        if let Some(t) = inferred
+                            && !matches!(t, ValueType::Any)
+                        {
+                            substitutable_generic_names.insert(rname.clone());
+                            generic_subs.insert(rname, t);
+                        }
+                    }
+                    self.ir.expression_args.insert(*arg_expr_id, crate::analysis::ExpressionArg {
+                        table_idxs,
+                        return_type,
+                        str_range: (start, end),
+                        context_incomplete,
+                    });
+                }
+            }
+        }
+    }
+
+    /// `@overload fun(...): self` / `self<R>`: re-parameterize the receiver type.
+    /// Runs before the primary `@return self` check since both may be set.
+    fn try_overload_self_return(
+        &mut self,
+        matching_overload: Option<&ResolvedOverload>,
+        ret_index: usize,
+        func_idx: FunctionIndex,
+        generic_subs: &HashMap<String, ValueType>,
+        receiver_expr_id: Option<ExprId>,
+        expr_id: ExprId,
+    ) -> Option<ValueType> {
         if let Some(overload) = matching_overload
             && let Some(ref self_args) = overload.returns_self_type_args
             && ret_index == 0
@@ -942,7 +1121,7 @@ impl<'a> Analysis<'a> {
             if let Some(rt) = receiver_type {
                 if !self_args.is_empty() {
                     self.resolve_self_return_type_args(
-                        self_args, func_idx, &generic_subs, receiver_expr_id, expr_id,
+                        self_args, func_idx, generic_subs, receiver_expr_id, expr_id,
                     );
                 } else {
                     // Plain self: propagate receiver's type args
@@ -956,84 +1135,94 @@ impl<'a> Analysis<'a> {
                 return Some(rt);
             }
         }
+        None
+    }
 
-        // @constructor: return the class table type
-        if let Some(ctor_table_idx) = constructor_table_idx {
-            return if ret_index == 0 {
-                Some(ValueType::Table(Some(ctor_table_idx)))
-            } else {
-                None
-            };
-        }
-
-        // @return self: resolve receiver type for method calls
-        if returns_self && ret_index == 0 {
-            let builds_field_info = self.func(func_idx).builds_field.clone();
-            let built_name_param = self.func(func_idx).built_name;
-            let built_extends = self.func(func_idx).built_extends;
-            let receiver_type = receiver_expr_id.and_then(|re| self.resolve_expr(re));
-            if let Some(rt) = receiver_type {
-                // If this method has @builds-field, create a new table with the added field
-                if let (Some((param_idx, field_vt, field_lateinit)), ValueType::Table(Some(recv_idx))) = (builds_field_info, &rt) {
-                    let field_name = args.get(param_idx - 1) // 1-based to 0-based
-                        .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
-                        .cloned();
-                    if let Some(name) = field_name {
-                        let new_idx = if let Some(&memo) = self.builder_call_memo.get(&expr_id) {
-                            memo
+    /// `@return self`: resolve the receiver type, applying `@builds-field` /
+    /// `@built-name` / `self<X>` re-parameterization. Caller gates on
+    /// `returns_self && ret_index == 0`.
+    fn try_returns_self_return(
+        &mut self,
+        func_idx: FunctionIndex,
+        args: &[ExprId],
+        receiver_expr_id: Option<ExprId>,
+        generic_subs: &HashMap<String, ValueType>,
+        expr_id: ExprId,
+    ) -> Option<ValueType> {
+        let builds_field_info = self.func(func_idx).builds_field.clone();
+        let built_name_param = self.func(func_idx).built_name;
+        let built_extends = self.func(func_idx).built_extends;
+        let receiver_type = receiver_expr_id.and_then(|re| self.resolve_expr(re));
+        if let Some(rt) = receiver_type {
+            // If this method has @builds-field, create a new table with the added field
+            if let (Some((param_idx, field_vt, field_lateinit)), ValueType::Table(Some(recv_idx))) = (builds_field_info, &rt) {
+                let field_name = args.get(param_idx - 1) // 1-based to 0-based
+                    .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
+                    .cloned();
+                if let Some(name) = field_name {
+                    let new_idx = if let Some(&memo) = self.builder_call_memo.get(&expr_id) {
+                        memo
+                    } else {
+                        let resolved_field_vt = if !generic_subs.is_empty() {
+                            self.substitute_generics_deep(&field_vt, generic_subs)
                         } else {
-                            let resolved_field_vt = if !generic_subs.is_empty() {
-                                self.substitute_generics_deep(&field_vt, &generic_subs)
-                            } else {
-                                field_vt
-                            };
-                            let new_idx = self.clone_table_with_built_field(*recv_idx, &name, resolved_field_vt, field_lateinit);
-                            self.builder_call_memo.insert(expr_id, new_idx);
-                            new_idx
+                            field_vt
                         };
-                        return Some(ValueType::Table(Some(new_idx)));
-                    }
+                        let new_idx = self.clone_table_with_built_field(*recv_idx, &name, resolved_field_vt, field_lateinit);
+                        self.builder_call_memo.insert(expr_id, new_idx);
+                        new_idx
+                    };
+                    return Some(ValueType::Table(Some(new_idx)));
                 }
-                // @built-name: set the built_table's class_name from a string literal argument
-                if let (Some(param_idx), ValueType::Table(Some(recv_idx))) = (built_name_param, &rt) {
-                    let class_name = args.get(param_idx - 1)
-                        .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
-                        .cloned();
-                    if let Some(name) = class_name {
-                        let new_idx = if let Some(&memo) = self.builder_call_memo.get(&expr_id) {
-                            memo
-                        } else {
-                            let new_idx = self.clone_table_with_built_name(*recv_idx, &name, built_extends);
-                            self.builder_call_memo.insert(expr_id, new_idx);
-                            new_idx
-                        };
-                        return Some(ValueType::Table(Some(new_idx)));
-                    }
-                }
-                // @return self<X>: re-parameterize the receiver with the given
-                // class type args. Resolve them (substituting any of the method's
-                // own generics) and cache under this call's ExprId so display and
-                // downstream resolution reconstruct `Class<X>`.
-                if let Some(self_args) = self.func(func_idx).returns_self_type_args.clone() {
-                    self.resolve_self_return_type_args(
-                        &self_args, func_idx, &generic_subs, receiver_expr_id, expr_id,
-                    );
-                } else {
-                    // Plain @return self: propagate receiver's type args so that
-                    // chained calls (e.g. pub:Filter():IgnoreNil()) can resolve
-                    // the class type params from the intermediate call result.
-                    // This is a general chaining fix — without it, any @return self
-                    // method in a chain loses its receiver's type parameterization.
-                    let receiver_args = self.get_expr_type_args(receiver_expr_id.unwrap());
-                    if !receiver_args.is_empty() {
-                        self.call_type_args.insert(expr_id, receiver_args);
-                    }
-                }
-                return Some(rt);
             }
+            // @built-name: set the built_table's class_name from a string literal argument
+            if let (Some(param_idx), ValueType::Table(Some(recv_idx))) = (built_name_param, &rt) {
+                let class_name = args.get(param_idx - 1)
+                    .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
+                    .cloned();
+                if let Some(name) = class_name {
+                    let new_idx = if let Some(&memo) = self.builder_call_memo.get(&expr_id) {
+                        memo
+                    } else {
+                        let new_idx = self.clone_table_with_built_name(*recv_idx, &name, built_extends);
+                        self.builder_call_memo.insert(expr_id, new_idx);
+                        new_idx
+                    };
+                    return Some(ValueType::Table(Some(new_idx)));
+                }
+            }
+            // @return self<X>: re-parameterize the receiver with the given
+            // class type args. Resolve them (substituting any of the method's
+            // own generics) and cache under this call's ExprId so display and
+            // downstream resolution reconstruct `Class<X>`.
+            if let Some(self_args) = self.func(func_idx).returns_self_type_args.clone() {
+                self.resolve_self_return_type_args(
+                    &self_args, func_idx, generic_subs, receiver_expr_id, expr_id,
+                );
+            } else {
+                // Plain @return self: propagate receiver's type args so that
+                // chained calls (e.g. pub:Filter():IgnoreNil()) can resolve
+                // the class type params from the intermediate call result.
+                // This is a general chaining fix — without it, any @return self
+                // method in a chain loses its receiver's type parameterization.
+                let receiver_args = self.get_expr_type_args(receiver_expr_id.unwrap());
+                if !receiver_args.is_empty() {
+                    self.call_type_args.insert(expr_id, receiver_args);
+                }
+            }
+            return Some(rt);
         }
+        None
+    }
 
-        // @return built: return the accumulated built_table
+    /// `@return built`: return the receiver's accumulated `built_table`
+    /// (optionally grafting a `@return built : Parent` class).
+    fn try_returns_built_return(
+        &mut self,
+        func_idx: FunctionIndex,
+        func: &ExprId,
+        ret_index: usize,
+    ) -> Option<ValueType> {
         if self.func(func_idx).returns_built && ret_index == 0 {
             let returns_built_parent = self.func(func_idx).returns_built_parent.clone();
             let receiver_type = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
@@ -1056,16 +1245,25 @@ impl<'a> Analysis<'a> {
                 return Some(ValueType::Table(None));
             }
         }
+        None
+    }
 
-        // Pick the matching overload signature for return types
-
-        // Gap 4: if this return slot carries a `returns<F>` projection
-        // and F is bound to a concrete `Function(Some(f_idx))`, the
-        // resolved return type is F's return at this ret_index.
-        // When the last `returns<F>` projection is at or beyond the last
-        // return annotation, higher ret_indices expand into F's returns
-        // (e.g. `@return returns<F>` alone, or `@return boolean` followed
-        // by `@return returns<F>` as in pcall).
+    /// `returns<F>` projection: when this return slot carries a `returns<F>`
+    /// projection and F is bound to a concrete function, the resolved type is
+    /// F's return at this slot (with expansion / static-annotation unioning).
+    #[allow(clippy::too_many_arguments)] // threads call-resolution state from resolve_function_call; bundling adds indirection
+    fn try_returns_projection(
+        &mut self,
+        func_idx: FunctionIndex,
+        ret_index: usize,
+        matching_overload: Option<&ResolvedOverload>,
+        generic_subs: &HashMap<String, ValueType>,
+        func_args: &[SymbolIndex],
+        self_offset: usize,
+        args: &[ExprId],
+        func: &ExprId,
+        expr_id: ExprId,
+    ) -> Option<ValueType> {
         let last_proj_index = self.func(func_idx).return_projections.keys().max().copied();
         let is_expansion = last_proj_index.is_some_and(|lpi|
             ret_index > lpi
@@ -1181,24 +1379,32 @@ impl<'a> Analysis<'a> {
                         }
                         return Some(vt);
                     }
+        None
+    }
 
-        // Check if any return-only overload implies nil at this return position.
-        // If so, the primary return type should be unioned with nil (the function
-        // can return nothing/nil via the return-only overload path).
-        let return_overloads_may_nil = self.func(func_idx).return_overload_may_nil(ret_index);
-
+    /// Return type from a matched / ambiguous overload, merging union-alternative
+    /// returns and unioning nil when a return-only overload implies it.
+    fn try_overload_return_types(
+        &mut self,
+        matching_overload: Option<&ResolvedOverload>,
+        ret_index: usize,
+        union_alt_func_indices: &[FunctionIndex],
+        ambiguous_overload_ret_type: Option<ValueType>,
+        return_overloads_may_nil: bool,
+        generic_subs: &HashMap<String, ValueType>,
+    ) -> Option<ValueType> {
         let return_type = matching_overload
             .and_then(|o| o.returns.get(ret_index))
             .map(|vt| {
                 if generic_subs.is_empty() {
                     vt.clone()
                 } else {
-                    self.substitute_generics_deep(vt, &generic_subs)
+                    self.substitute_generics_deep(vt, generic_subs)
                 }
             });
         if let Some(rt) = return_type {
             if !union_alt_func_indices.is_empty() {
-                return Some(self.merge_union_alt_returns(rt, &union_alt_func_indices, ret_index));
+                return Some(self.merge_union_alt_returns(rt, union_alt_func_indices, ret_index));
             }
             return Some(rt);
         }
@@ -1207,7 +1413,7 @@ impl<'a> Analysis<'a> {
         // Also apply return_overloads_may_nil so return-only overloads can contribute nil.
         if let Some(rt) = ambiguous_overload_ret_type {
             let rt = if !generic_subs.is_empty() {
-                self.substitute_generics_deep(&rt, &generic_subs)
+                self.substitute_generics_deep(&rt, generic_subs)
             } else {
                 rt
             };
@@ -1216,79 +1422,110 @@ impl<'a> Analysis<'a> {
             }
             return Some(rt);
         }
+        None
+    }
 
-        // Generic substitution for non-overload return types
-        if !generic_subs.is_empty() {
-            // Special return-type resolutions for generic raw annotations
 
-            // Backtick return: `@return \`K\`` returns the type name as a string literal
-            if let Some(raw_ret) = self.func(func_idx).return_annotations_raw.get(ret_index)
-                && let crate::annotations::AnnotationType::Backtick(inner) = raw_ret
-                    && let crate::annotations::AnnotationType::Simple(name) = inner.as_ref()
-                        && let Some(bound_type) = generic_subs.get(name)
-                            && let Some(type_name) = crate::annotations::value_type_to_name(bound_type, &self.ir) {
-                                return Some(ValueType::String(Some(type_name)));
-                            }
+    /// Resolve a generic, non-overload `@return` type by substituting bound generics:
+    /// backtick (type-name), `T[K]` indexed access, or the directly substituted
+    /// annotation. Returns `Deferred` when a projection's binding isn't available yet.
+    fn try_generic_return_type(
+        &mut self,
+        func_idx: FunctionIndex,
+        ret_index: usize,
+        generic_subs: &HashMap<String, ValueType>,
+        return_annotations: &[ValueType],
+        expr_id: ExprId,
+        return_overloads_may_nil: bool,
+    ) -> GenericReturn {
+        // Special return-type resolutions for generic raw annotations
 
-            // IndexedAccess return: `@return T[K]` — resolve the field type on T using bound K
-            let fn_generics = self.func(func_idx).generic_constraints_raw.clone();
-            if let Some(raw_ret) = self.func(func_idx).return_annotations_raw.get(ret_index)
-                && let crate::annotations::AnnotationType::IndexedAccess(table_name, key_ann) = raw_ret.clone()
-                && let Some(table_vt) = generic_subs.get(&table_name)
-                    && let ValueType::Table(Some(table_idx)) = table_vt {
-                        let table_idx = *table_idx;
-                        let key_vt = self.resolve_annotation_type_mut_gen(&key_ann, &fn_generics)
-                            .map(|v| self.substitute_generics_deep(&v, &generic_subs))
-                            .unwrap_or(ValueType::Any);
-                        if let Some(ft) = self.resolve_indexed_access_field(table_idx, &key_vt) {
-                            return Some(ft);
+        // Backtick return: `@return \`K\`` returns the type name as a string literal
+        if let Some(raw_ret) = self.func(func_idx).return_annotations_raw.get(ret_index)
+            && let crate::annotations::AnnotationType::Backtick(inner) = raw_ret
+                && let crate::annotations::AnnotationType::Simple(name) = inner.as_ref()
+                    && let Some(bound_type) = generic_subs.get(name)
+                        && let Some(type_name) = crate::annotations::value_type_to_name(bound_type, &self.ir) {
+                            return GenericReturn::Value(ValueType::String(Some(type_name)));
                         }
+
+        // IndexedAccess return: `@return T[K]` — resolve the field type on T using bound K
+        let fn_generics = self.func(func_idx).generic_constraints_raw.clone();
+        if let Some(raw_ret) = self.func(func_idx).return_annotations_raw.get(ret_index)
+            && let crate::annotations::AnnotationType::IndexedAccess(table_name, key_ann) = raw_ret.clone()
+            && let Some(table_vt) = generic_subs.get(&table_name)
+                && let ValueType::Table(Some(table_idx)) = table_vt {
+                    let table_idx = *table_idx;
+                    let key_vt = self.resolve_annotation_type_mut_gen(&key_ann, &fn_generics)
+                        .map(|v| self.substitute_generics_deep(&v, generic_subs))
+                        .unwrap_or(ValueType::Any);
+                    if let Some(ft) = self.resolve_indexed_access_field(table_idx, &key_vt) {
+                        return GenericReturn::Value(ft);
                     }
-            if let Some(ret_vt) = return_annotations.get(ret_index) {
+                }
+        if let Some(ret_vt) = return_annotations.get(ret_index) {
+            self.projection_deferred = false;
+            let substituted = self.substitute_generics_deep(ret_vt, generic_subs);
+            if self.projection_deferred {
+                // A projection (returns<F>/params<F>) couldn't be resolved
+                // because the bound F's type isn't available yet. Defer
+                // resolution so the fixpoint loop retries on the next iteration.
                 self.projection_deferred = false;
-                let substituted = self.substitute_generics_deep(ret_vt, &generic_subs);
-                if self.projection_deferred {
-                    // A projection (returns<F>/params<F>) couldn't be resolved
-                    // because the bound F's type isn't available yet. Defer
-                    // resolution so the fixpoint loop retries on the next iteration.
-                    self.projection_deferred = false;
-                    return None;
-                }
-                if !matches!(substituted, ValueType::TypeVariable(_)) {
-                    // If the raw return annotation is `Parameterized("C", [..])`,
-                    // compute the substituted type_args and cache them under this
-                    // call's ExprId. This lets `get_expr_type_args` return the
-                    // concrete type arguments so subsequent method calls on the
-                    // receiver can re-substitute T via the receiver-type_args path.
-                    if ret_index == 0 {
-                        let raw_ret = self.func(func_idx).return_annotations_raw
-                            .get(ret_index).cloned();
-                        if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = raw_ret {
-                            // Pass the function's own generic names so that
-                            // `Simple("T")` resolves to `TypeVariable("T")`,
-                            // which `substitute_generics_deep` can then replace.
-                            let mut substituted_args: Vec<ValueType> = type_arg_anns.iter()
-                                .map(|ta| {
-                                    self.resolve_annotation_type_mut_gen(ta, &fn_generics)
-                                        .unwrap_or(ValueType::Any)
-                                })
-                                .collect();
-                            for arg in &mut substituted_args {
-                                *arg = self.substitute_generics_deep(arg, &generic_subs);
-                            }
-                            if !substituted_args.is_empty() {
-                                self.call_type_args.insert(expr_id, substituted_args);
-                            }
+                return GenericReturn::Deferred;
+            }
+            if !matches!(substituted, ValueType::TypeVariable(_)) {
+                // If the raw return annotation is `Parameterized("C", [..])`,
+                // compute the substituted type_args and cache them under this
+                // call's ExprId. This lets `get_expr_type_args` return the
+                // concrete type arguments so subsequent method calls on the
+                // receiver can re-substitute T via the receiver-type_args path.
+                if ret_index == 0 {
+                    let raw_ret = self.func(func_idx).return_annotations_raw
+                        .get(ret_index).cloned();
+                    if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = raw_ret {
+                        // Pass the function's own generic names so that
+                        // `Simple("T")` resolves to `TypeVariable("T")`,
+                        // which `substitute_generics_deep` can then replace.
+                        let mut substituted_args: Vec<ValueType> = type_arg_anns.iter()
+                            .map(|ta| {
+                                self.resolve_annotation_type_mut_gen(ta, &fn_generics)
+                                    .unwrap_or(ValueType::Any)
+                            })
+                            .collect();
+                        for arg in &mut substituted_args {
+                            *arg = self.substitute_generics_deep(arg, generic_subs);
+                        }
+                        if !substituted_args.is_empty() {
+                            self.call_type_args.insert(expr_id, substituted_args);
                         }
                     }
-                    if return_overloads_may_nil && !substituted.contains_nil() && !matches!(substituted, ValueType::Any) {
-                        return Some(ValueType::make_union(vec![substituted, ValueType::Nil]));
-                    }
-                    return Some(substituted);
                 }
+                if return_overloads_may_nil && !substituted.contains_nil() && !matches!(substituted, ValueType::Any) {
+                    return GenericReturn::Value(ValueType::make_union(vec![substituted, ValueType::Nil]));
+                }
+                return GenericReturn::Value(substituted);
             }
         }
+        GenericReturn::Fallthrough
+    }
 
+    /// Compute the final call return type from `@return` annotations, synthesized
+    /// return-only overloads, or body-inferred returns — then apply implicit-nil,
+    /// inferred-return type-arg propagation, `@built-name`, return-only-overload nil,
+    /// and union-of-alternatives merging.
+    #[allow(clippy::too_many_arguments)] // threads call-resolution state from resolve_function_call; bundling adds indirection
+    fn finalize_call_return_type(
+        &mut self,
+        func_idx: FunctionIndex,
+        func: &ExprId,
+        ret_index: usize,
+        expr_id: ExprId,
+        args: &[ExprId],
+        generics: &[(String, Option<ValueType>)],
+        generic_subs: &HashMap<String, ValueType>,
+        return_overloads_may_nil: bool,
+        union_alt_func_indices: &[FunctionIndex],
+    ) -> Option<ValueType> {
         // For non-generic functions returning parameterized types (e.g.
         // `@return IteratorObject<fun(): number, string>`), populate
         // call_type_args so downstream ForInVar / method-call resolution
@@ -1318,8 +1555,8 @@ impl<'a> Analysis<'a> {
         // carry across-slot correlation that a per-slot scan can't reproduce.
         //
         // (Use `self.func(func_idx).return_annotations` directly because the
-        // local `return_annotations` is only cloned when the function has
-        // generics — see line ~1249.)
+        // caller's cloned `return_annotations` local is only populated when the
+        // function has generics, and is deliberately not threaded into this helper.)
 
         // When `@return` annotations exist and no overload matched, use the
         // annotation directly. The body's `FunctionRet` symbols may also exist
@@ -1367,7 +1604,7 @@ impl<'a> Analysis<'a> {
             } else {
                 self.call_site_generic_subs.insert(*func, generic_subs.clone());
                 return_only_types.into_iter()
-                    .map(|t| self.substitute_generics_deep(&t, &generic_subs))
+                    .map(|t| self.substitute_generics_deep(&t, generic_subs))
                     .collect()
             };
             Some(self.ir.dedupe_union_tables(ValueType::make_union(return_only_types)))
@@ -1413,7 +1650,7 @@ impl<'a> Analysis<'a> {
                 if generic_subs.is_empty() {
                     t
                 } else {
-                    let substituted = self.substitute_generics_deep(&t, &generic_subs);
+                    let substituted = self.substitute_generics_deep(&t, generic_subs);
                     self.ir.dedupe_union_tables(substituted)
                 }
             })
@@ -1559,7 +1796,7 @@ impl<'a> Analysis<'a> {
         // types from the alternative functions.
         if !union_alt_func_indices.is_empty() {
             if let Some(primary) = ret_type {
-                Some(self.merge_union_alt_returns(primary, &union_alt_func_indices, ret_index))
+                Some(self.merge_union_alt_returns(primary, union_alt_func_indices, ret_index))
             } else {
                 ret_type
             }
@@ -1567,8 +1804,6 @@ impl<'a> Analysis<'a> {
             ret_type
         }
     }
-
-
     /// Resolve method-call receiver info: the `params<F>` projected function index
     /// and the class-level type-parameter substitutions (e.g. `Box<T>` binding `T`),
     /// recording the bound concrete types under the method-name range for hover.

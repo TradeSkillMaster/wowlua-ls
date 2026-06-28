@@ -85,6 +85,32 @@ struct Frame<'a> {
     is_conditional: bool,
 }
 
+/// Loop-invariant context for one assignment statement, shared across every LHS
+/// target and threaded to the per-target-shape handlers (`build_assign_*`).
+#[derive(Clone, Copy)]
+struct AssignCtx<'a, 'b> {
+    assign: &'b Assign<'a>,
+    scope_idx: ScopeIndex,
+    func_id: Option<FunctionIndex>,
+    constructor_of: Option<TableIndex>,
+    stmt_index: usize,
+    node: DefNode,
+    annotations: &'b crate::annotations::AnnotationBlock,
+    flavor_guard: u8,
+}
+
+/// A single assignment target (one LHS identifier) plus the RHS context needed to
+/// lower it. Rebuilt per loop iteration in `build_stmt_assign`.
+#[derive(Clone, Copy)]
+struct AssignTarget<'a, 'c> {
+    ident: Identifier<'a>,
+    names: &'c [String],
+    index: usize,
+    expression: Option<&'c Expression<'a>>,
+    expressions: &'c [Expression<'a>],
+    identifiers_len: usize,
+}
+
 impl<'a> Analysis<'a> {
     pub(super) fn build_ir(&mut self) {
         let root_order = self.ir.next_order();
@@ -1260,6 +1286,16 @@ impl<'a> Analysis<'a> {
         let node = DefNode::from_node(assign.syntax());
         let assign_annotations = extract_annotations(assign.syntax());
         let assign_flavor_guard = assign_annotations.flavor_guard;
+        let ctx = AssignCtx {
+            assign,
+            scope_idx,
+            func_id,
+            constructor_of,
+            stmt_index,
+            node,
+            annotations: &assign_annotations,
+            flavor_guard: assign_flavor_guard,
+        };
         if let Some(var_list) = assign.variable_list() {
             let identifiers = var_list.identifiers();
             let expressions = assign
@@ -1376,784 +1412,23 @@ impl<'a> Analysis<'a> {
                     }
                     continue;
                 }
-                if let Some(root_name) = names.first() {
+                if !names.is_empty() {
                     let expression = expressions.get(index);
+                    let target = AssignTarget {
+                        ident: *ident,
+                        names: &names,
+                        index,
+                        expression,
+                        expressions: &expressions,
+                        identifiers_len: identifiers.len(),
+                    };
 
                     if names.len() > 1 {
-                        // Dotted assignment: t.x = expr
-                        let field_name = &names[names.len() - 1];
-
-                        // Record nil-check site for the root symbol
-                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
-                            self.referenced_symbols.insert(sym_idx);
-                            let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.ir.version_for_scope(sym_idx, scope_idx)));
-                            // Use the field name token's range for the diagnostic.
-                            // For parser2's DotAccess, the field Name token comes after Dot;
-                            // for old flat Identifier, it's the second Name token.
-                            let field_token = {
-                                let mut seen_dot = false;
-                                ident.syntax().children_with_tokens().find_map(|c| {
-                                    match &c {
-                                        NodeOrToken::Token(t) if t.kind() == SyntaxKind::Dot => { seen_dot = true; None }
-                                        NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(*t),
-                                        _ => None,
-                                    }
-                                })
-                            };
-                            if let Some(field_token) = field_token {
-                                let r = field_token.text_range();
-                                self.ir.assign_nil_check_bases.push((sym_ref, u32::from(r.start()), u32::from(r.end())));
-                            }
-                        }
-
-                        // Bracket-indexed field assignment (e.g. self._data[idx] = val):
-                        // the assignment targets an element of the field, not the field
-                        // itself. Lower the RHS for side effects but skip field type
-                        // modification, inject-field checks, and field_assignment_sites.
-                        if ident.is_indexed_expression()
-                            || ident.has_non_string_bracket_in_chain()
-                        {
-                            if let Some(expr) = expressions.get(index) {
-                                let expr_id = self.lower_expression(expr, scope_idx);
-                                // Cache for multi-return if applicable
-                                if index == expressions.len() - 1 && identifiers.len() > expressions.len()
-                                    && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
-                                        cached_multi_ret_call = Some(expr_id);
-                                    }
-                            }
-                            // Record intermediate field accesses so the plugin query layer
-                            // can see that e.g. `state.names[k] = v` reads `state.names`.
-                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
-                                let mut base = self.ir.push_expr(Expr::SymbolRef(sym_idx, 0));
-                                let mut pre_bracket_base = base;
-                                for field_name in names.iter().skip(1) {
-                                    pre_bracket_base = base;
-                                    base = self.ir.push_expr(Expr::FieldAccess {
-                                        table: base,
-                                        field: field_name.clone(),
-                                        field_range: None,
-                                    });
-                                }
-                                // Record bracket table site for need-check-nil on the
-                                // chain base (e.g. `self._data` in `self._data[k] = v`).
-                                // When the bracket has a string literal key (e.g.
-                                // `tbl["key"]`), names() includes it so the last
-                                // FieldAccess is the key lookup, not the table — use the
-                                // penultimate base. For non-string keys (variable index),
-                                // names() excludes the key and `base` IS the table.
-                                if ident.is_indexed_expression()
-                                    && let Some(base_node) = ident.syntax().children().next()
-                                {
-                                    let has_string_key = crate::ast::extract_bracket_string_key(ident.syntax()).is_some();
-                                    let mut table_base = if has_string_key { pre_bracket_base } else { base };
-                                    // Apply assignment-based field narrowing to the indexed
-                                    // base, mirroring the read path in `lower_bracket_access`.
-                                    // After `foo.arr = foo.arr or {}`, indexing `foo.arr[k] = v`
-                                    // on a later statement must see the coalesced (non-nil)
-                                    // field, not the declared-nilable type. AssignNarrow strips
-                                    // nil only when the recorded RHS resolves to non-nil.
-                                    if let Some((chain_sym, chain)) = self.ir.extract_field_chain(table_base)
-                                        && let Some(rhs_id) = self.get_field_assignment_narrow_rhs(chain_sym, &chain, scope_idx)
-                                    {
-                                        table_base = self.ir.push_expr(Expr::AssignNarrow { inner: table_base, rhs: rhs_id });
-                                    }
-                                    let r = base_node.text_range();
-                                    let dummy_key = self.ir.push_expr(Expr::Unknown);
-                                    let bracket_expr = self.ir.push_expr(Expr::BracketIndex { table: table_base, key: dummy_key, literal_key: None });
-                                    self.ir.bracket_table_sites.push((bracket_expr, table_base, u32::from(r.start()), u32::from(r.end())));
-                                }
-                            }
-                            continue;
-                        }
-
-                        // RHS expression id for assignment-based field narrowing
-                        // (recorded after the branches below). Each branch sets this
-                        // when it produces a value-bearing IR expression.
-                        let mut narrow_rhs_expr_id: Option<crate::types::ExprId> = None;
-                        if let Some(Expression::Function(func)) = expression {
-                            let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
-                            let func_idx = FunctionIndex(self.ir.functions.len() - 1);
-                            self.apply_annotations(func_idx, scope_idx, assign.syntax());
-                            let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
-                            narrow_rhs_expr_id = Some(func_def_expr);
-                            if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
-                                if names.len() > 2 {
-                                    // Deep chain (e.g. self._plot.method = function ...):
-                                    // defer to post-fixpoint resolution
-                                    self.deep_field_injections.push(DeepFieldInjection {
-                                        root_name: root_name.clone(),
-                                        intermediates: names[1..names.len()-1].to_vec(),
-                                        field_name: field_name.clone(),
-                                        expr_id: func_def_expr,
-                                        scope_idx,
-                                    });
-                                } else {
-                                    let existing_field = self.ir.get_field(table_idx, field_name);
-                                    let field_existed = existing_field.is_some();
-                                    let had_annotation = existing_field.is_some_and(|f| f.annotation.is_some());
-                                    let field_lateinit = existing_field.is_some_and(|f| f.lateinit);
-                                    let method_def_range = ident.syntax().text_range();
-                                    let fi = FieldInfo {
-                                        expr: func_def_expr,
-                                        visibility: Visibility::Public,
-                                        annotation: None,
-                                        annotation_text: None,
-                                        annotation_type_raw: None,
-                                        lateinit: false,
-                                        extra_exprs: Vec::new(),
-                                        def_range: Some((u32::from(method_def_range.start()), u32::from(method_def_range.end()))),
-                                        flavor_guard: 0,
-                                        description: None,
-                                        from_scan: false,
-                                    };
-                                    if !table_idx.is_external() {
-                                        self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), fi);
-                                    } else {
-                                        self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
-                                    }
-                                    let ident_r = ident.syntax().text_range();
-                                    let func_r = func.syntax().text_range();
-                                    let root_sym = self.ir.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx);
-                                    self.ir.field_assignments.push(FieldAssignment {
-                                        table_idx, root_name: root_name.clone(), root_symbol: root_sym,
-                                        field_name: field_name.clone(),
-                                        actual_expr: func_def_expr,
-                                        scope_idx, block_stmt_index: stmt_index as u32,
-                                        ident_start: u32::from(ident_r.start()), ident_end: u32::from(ident_r.end()),
-                                        expr_start: u32::from(func_r.start()), expr_end: u32::from(func_r.end()),
-                                        field_existed_at_build: field_existed,
-                                        had_annotation_at_build: had_annotation,
-                                        lateinit: field_lateinit,
-                                        in_constructor: constructor_of == Some(table_idx),
-                                        in_function: func_id.is_some(),
-                                        is_method_def: true,
-                                    });
-                                }
-                            } else if names.len() > 2 {
-                                // Deep chain with unresolved root (e.g. self.sub.method
-                                // where self's type comes from a method parameter) —
-                                // defer to post-fixpoint deep injection resolution.
-                                self.deep_field_injections.push(DeepFieldInjection {
-                                    root_name: root_name.clone(),
-                                    intermediates: names[1..names.len()-1].to_vec(),
-                                    field_name: field_name.clone(),
-                                    expr_id: func_def_expr,
-                                    scope_idx,
-                                });
-                            } else if names.len() == 2 {
-                                // Table not found during Phase 1 (e.g. type comes from
-                                // function return) — defer to post-fixpoint resolution.
-                                let r = ident.syntax().text_range();
-                                let func_r = func.syntax().text_range();
-                                self.deferred_field_assignments.push(DeferredFieldAssignment {
-                                    root_name: root_name.clone(),
-                                    field_name: field_name.clone(),
-                                    expr_id: func_def_expr,
-                                    scope_idx,
-                                    block_stmt_index: stmt_index as u32,
-                                    ident_start: u32::from(r.start()),
-                                    ident_end: u32::from(r.end()),
-                                    inline_annotation: None,
-                                    inline_annotation_text: None,
-                                    inline_type_raw: None,
-                                    inline_is_lateinit: false,
-                                    expr_start: u32::from(func_r.start()),
-                                    expr_end: u32::from(func_r.end()),
-                                    is_method_def: true,
-                                });
-                            }
-                            if let Some(inner_block) = func.block() {
-                                stack.push(Frame {
-                                    block: inner_block,
-                                    next_stmt: 0,
-                                    scope_idx: new_scope_idx,
-                                    func_id: Some(func_idx),
-                                    constructor_of: None,
-                                    is_conditional: false,
-                                });
-                            }
-                        } else if let Some(expr) = expression {
-                            let mut expr_id = self.lower_expression(expr, scope_idx);
-                            narrow_rhs_expr_id = Some(expr_id);
-                            // Cache for multi-return if this is the last RHS and
-                            // there are more LHS identifiers (e.g. self._h, self._s = func())
-                            if index == expressions.len() - 1 && identifiers.len() > expressions.len()
-                                && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
-                                    cached_multi_ret_call = Some(expr_id);
-                                }
-                            // Apply @class annotation on field assignments
-                            // (e.g. `---@class Foo\nt.mixin = {}`)
-                            // Links the class table to the RHS so that methods
-                            // defined later on `t.mixin:Method()` populate the
-                            // class table, not a disconnected table literal.
-                            if index == 0
-                                && let Some((_, class_table_idx)) = self.ir.resolve_class_annotation(
-                                    &assign_annotations.class, assign_annotations.class_comment_start, assign.syntax(),
-                                ).filter(|(_, idx)| !idx.is_external()) {
-                                    if let Some(rhs_table_idx) = self.ir.find_table_index(expr_id)
-                                        && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external()
-                                    {
-                                        let runtime_fields: Vec<(String, FieldInfo)> =
-                                            self.ir.tables[rhs_table_idx.val()].fields.iter()
-                                                .map(|(k, v)| (k.clone(), v.clone()))
-                                                .collect();
-                                        for (name, field_info) in runtime_fields {
-                                            self.ir.tables[class_table_idx.val()].fields
-                                                .entry(name).or_insert(field_info);
-                                        }
-                                    }
-                                    expr_id = self.ir.push_expr(Expr::Literal(
-                                        ValueType::Table(Some(class_table_idx))
-                                    ));
-                            }
-                            // Check for inline ---@type annotation after the expression
-                            // Also checks inside table constructor opening: `{ ---@type Foo ... }`
-                            // Falls back to preceding-line ---@type for the first target.
-                            let inline_type = Self::extract_inline_type(expr.syntax())
-                                .or_else(|| {
-                                    if let Expression::TableConstructor(tc) = expr {
-                                        Self::extract_table_constructor_type(tc.syntax())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .or_else(|| {
-                                    if index == 0 { assign_annotations.var_type.clone() } else { None }
-                                });
-                            let inline_is_lateinit = inline_type.as_ref().is_some_and(|at| matches!(at, AnnotationType::NonNil(_)));
-                            let inline_annotation_text = inline_type.as_ref()
-                                .map(crate::annotations::format_annotation_type);
-                            let inline_annotation = inline_type.as_ref()
-                                .and_then(|at| self.resolve_annotation_type_mut_gen(at, &[]));
-                            // Only keep annotation_text when annotation resolved successfully;
-                            // otherwise hover would show an unresolved type while the type checker
-                            // falls back to the expression type, creating a misleading display.
-                            let inline_annotation_text = if inline_annotation.is_some() { inline_annotation_text } else { None };
-                            if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
-                              if names.len() > 2 {
-                                // Deep chain (e.g. ns.sub.field = expr): try to
-                                // walk intermediates eagerly so the field is
-                                // available for subsequent method definitions in
-                                // the same file (e.g. function ns.sub.field:M()).
-                                // Fall back to deferred resolution if any
-                                // intermediate can't be resolved yet.
-                                let mut target = table_idx;
-                                let mut resolved = true;
-                                for intermediate in &names[1..names.len()-1] {
-                                    if let Some(field) = self.ir.get_field(target, intermediate) {
-                                        let field_expr = field.expr;
-                                        if let Some(sub_idx) = self.ir.find_table_index(field_expr) {
-                                            target = sub_idx;
-                                        } else {
-                                            resolved = false;
-                                            break;
-                                        }
-                                    } else {
-                                        resolved = false;
-                                        break;
-                                    }
-                                }
-
-                                if resolved {
-                                    // Insert field directly (matching the deferred
-                                    // resolve_deep_field_injections path).
-                                    if !self.ir.has_field(target, field_name) {
-                                        let assign_range = ident.syntax().text_range();
-                                        let fi = FieldInfo {
-                                            expr: expr_id,
-                                            extra_exprs: Vec::new(),
-                                            visibility: Visibility::Public,
-                                            annotation: None,
-                                            annotation_text: None,
-                                            annotation_type_raw: None,
-                                            lateinit: false,
-                                            def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
-                                            flavor_guard: 0,
-                                            description: None,
-                                            from_scan: false,
-                                        };
-                                        if !target.is_external() {
-                                            self.ir.tables[target.val()].fields.insert(field_name.clone(), fi);
-                                        } else {
-                                            self.ir.insert_overlay_field(target, field_name.clone(), fi);
-                                        }
-                                    } else if !target.is_external()
-                                        && let Some(fi) = self.ir.tables[target.val()].fields.get_mut(field_name)
-                                    {
-                                        fi.extra_exprs.push(expr_id);
-                                    }
-                                } else {
-                                    self.deep_field_injections.push(DeepFieldInjection {
-                                        root_name: root_name.clone(),
-                                        intermediates: names[1..names.len()-1].to_vec(),
-                                        field_name: field_name.clone(),
-                                        expr_id,
-                                        scope_idx,
-                                    });
-                                }
-                              } else {
-                                let existing_field = self.ir.get_field(table_idx, field_name);
-                                let field_existed = existing_field.is_some();
-                                // When the assignment itself has an @type annotation, it acts
-                                // as a cast — don't check the RHS against the field's own
-                                // annotation (which may originate from the same @type via
-                                // workspace scan).
-                                let had_annotation = inline_annotation.is_none()
-                                    && existing_field.is_some_and(|f| f.annotation.is_some());
-                                let field_lateinit = existing_field.is_some_and(|f| f.lateinit);
-                                if !table_idx.is_external() {
-                                    let existing_vis = self.ir.tables[table_idx.val()].fields.get(field_name).map(|f| f.visibility).unwrap_or_else(|| {
-                                        // Ad-hoc injected fields (from outside the class) default to Public;
-                                        // self._foo inside a method keeps implicit protected from _ prefix.
-                                        if root_name == "self" {
-                                            crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
-                                        } else {
-                                            Visibility::Public
-                                        }
-                                    });
-                                    if let Some(field_info) = self.ir.tables[table_idx.val()].fields.get_mut(field_name) {
-                                        field_info.extra_exprs.push(expr_id);
-                                        field_info.visibility = existing_vis;
-                                        if field_info.annotation.is_none() {
-                                            if let Some(ref ann) = inline_annotation {
-                                                field_info.annotation = Some(ann.clone());
-                                            }
-                                            if inline_annotation_text.is_some() {
-                                                field_info.annotation_text = inline_annotation_text.clone();
-                                            }
-                                            if field_info.annotation_type_raw.is_none() {
-                                                field_info.annotation_type_raw = inline_type.clone();
-                                            }
-                                        }
-                                        if inline_is_lateinit { field_info.lateinit = true; }
-                                        if assign_flavor_guard != 0 { field_info.flavor_guard = assign_flavor_guard; }
-                                    } else {
-                                        let assign_range = ident.syntax().text_range();
-                                        self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
-                                            expr: expr_id,
-                                            extra_exprs: Vec::new(),
-                                            visibility: existing_vis,
-                                            annotation: inline_annotation.clone(),
-                                            annotation_text: inline_annotation_text.clone(),
-                                            annotation_type_raw: inline_type.clone(),
-                                            lateinit: inline_is_lateinit,
-                                            def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
-                                            flavor_guard: assign_flavor_guard,
-                                            description: None,
-                                            from_scan: false,
-                                        });
-                                    }
-                                } else {
-                                    // External table: store in per-file overlay.
-                                    // Pre-fetch external field annotations so overlays
-                                    // created before deferred constructors aren't bare.
-                                    let ext_ann = if inline_annotation.is_none() {
-                                        self.ir.table(table_idx).fields.get(field_name).and_then(|f| {
-                                            // Skip inherited Any annotations — let the
-                                            // expression-based path resolve the concrete
-                                            // type from the child's assignment RHS.
-                                            if matches!(f.annotation, Some(ValueType::Any)) {
-                                                None
-                                            } else {
-                                                Some((f.annotation.clone(), f.annotation_text.clone(), f.annotation_type_raw.clone(), f.lateinit))
-                                            }
-                                        })
-                                    } else { None };
-
-                                    if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
-                                        overlay_fi.extra_exprs.push(expr_id);
-                                        if overlay_fi.annotation.is_none() {
-                                            if let Some(ref ann) = inline_annotation {
-                                                overlay_fi.annotation = Some(ann.clone());
-                                            } else if let Some((ref ann, ref ann_text, _, li)) = ext_ann {
-                                                overlay_fi.annotation.clone_from(ann);
-                                                overlay_fi.annotation_text.clone_from(ann_text);
-                                                overlay_fi.lateinit = overlay_fi.lateinit || li;
-                                            }
-                                            if inline_annotation_text.is_some() {
-                                                overlay_fi.annotation_text = inline_annotation_text.clone();
-                                            }
-                                            if overlay_fi.annotation_type_raw.is_none() {
-                                                overlay_fi.annotation_type_raw = inline_type.clone()
-                                                    .or_else(|| ext_ann.as_ref().and_then(|(_, _, raw, _)| raw.clone()));
-                                            }
-                                        }
-                                        if inline_is_lateinit { overlay_fi.lateinit = true; }
-                                        if assign_flavor_guard != 0 { overlay_fi.flavor_guard = assign_flavor_guard; }
-                                    } else {
-                                        let assign_range = ident.syntax().text_range();
-                                        let overlay_vis = if root_name == "self" {
-                                            crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
-                                        } else {
-                                            Visibility::Public
-                                        };
-                                        let (ann, ann_text, ann_raw, li) = if inline_annotation.is_some() {
-                                            (inline_annotation.clone(), inline_annotation_text.clone(), inline_type.clone(), inline_is_lateinit)
-                                        } else if let Some(ext) = ext_ann {
-                                            (ext.0, ext.1, ext.2, ext.3)
-                                        } else {
-                                            (None, None, None, false)
-                                        };
-                                        self.ir.insert_overlay_field(table_idx, field_name.clone(), FieldInfo {
-                                            expr: expr_id,
-                                            extra_exprs: Vec::new(),
-                                            visibility: overlay_vis,
-                                            annotation: ann,
-                                            annotation_text: ann_text,
-                                            annotation_type_raw: ann_raw,
-                                            lateinit: li || inline_is_lateinit,
-                                            def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
-                                            flavor_guard: assign_flavor_guard,
-                                            description: None,
-                                            from_scan: false,
-                                        });
-                                    }
-                                }
-                                let ident_r = ident.syntax().text_range();
-                                let expr_r = expr.syntax().text_range();
-                                let is_in_constructor = constructor_of == Some(table_idx);
-                                if is_in_constructor && !table_idx.is_external() {
-                                    self.ir.tables[table_idx.val()].has_source_fields = true;
-                                }
-                                let root_sym = self.ir.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx);
-                                self.ir.field_assignments.push(FieldAssignment {
-                                    table_idx, root_name: root_name.clone(), root_symbol: root_sym,
-                                    field_name: field_name.clone(),
-                                    actual_expr: expr_id,
-                                    scope_idx, block_stmt_index: stmt_index as u32,
-                                    ident_start: u32::from(ident_r.start()), ident_end: u32::from(ident_r.end()),
-                                    expr_start: u32::from(expr_r.start()), expr_end: trimmed_node_end(expr.syntax()),
-                                    field_existed_at_build: field_existed,
-                                    had_annotation_at_build: had_annotation,
-                                    lateinit: field_lateinit,
-                                    in_constructor: is_in_constructor,
-                                    in_function: func_id.is_some(),
-                                    is_method_def: false,
-                                });
-                              }
-                            } else if names.len() > 2 {
-                                // Deep chain with unresolved root (e.g. self.sub.field = expr
-                                // where self's type comes from a method parameter) —
-                                // defer to post-fixpoint deep injection resolution.
-                                self.deep_field_injections.push(DeepFieldInjection {
-                                    root_name: root_name.clone(),
-                                    intermediates: names[1..names.len()-1].to_vec(),
-                                    field_name: field_name.clone(),
-                                    expr_id,
-                                    scope_idx,
-                                });
-                            } else if names.len() == 2 {
-                                // Table not found during Phase 1 (e.g. type comes from
-                                // function return) — defer to post-fixpoint resolution.
-                                let r = ident.syntax().text_range();
-                                let expr_r = expr.syntax().text_range();
-                                self.deferred_field_assignments.push(DeferredFieldAssignment {
-                                    root_name: root_name.clone(),
-                                    field_name: field_name.clone(),
-                                    expr_id,
-                                    scope_idx,
-                                    block_stmt_index: stmt_index as u32,
-                                    ident_start: u32::from(r.start()),
-                                    ident_end: u32::from(r.end()),
-                                    inline_annotation: inline_annotation.clone(),
-                                    inline_annotation_text: inline_annotation_text.clone(),
-                                    inline_type_raw: inline_type.clone(),
-                                    inline_is_lateinit,
-                                    expr_start: u32::from(expr_r.start()),
-                                    expr_end: trimmed_node_end(expr.syntax()),
-                                    is_method_def: false,
-                                });
-                            }
-                        } else if index >= expressions.len() {
-                            // Multi-return field assignment (e.g. self._h, self._s, self._l = func())
-                            // Create a FunctionCall expr with the appropriate ret_index and
-                            // update the field type so it reflects the function's @return types.
-                            if let Some(Expression::FunctionCall(_)) = expressions.last() {
-                                let ret_index = index - (expressions.len() - 1);
-                                if let Some(cached_id) = cached_multi_ret_call
-                                    && let Expr::FunctionCall { func: f, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
-                                        let expr_id = self.ir.push_expr(Expr::FunctionCall { func: f, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
-                                        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
-                                            && names.len() <= 2 {
-                                                if !table_idx.is_external() {
-                                                    if let Some(field_info) = self.ir.tables[table_idx.val()].fields.get_mut(field_name) {
-                                                        field_info.extra_exprs.push(expr_id);
-                                                    } else {
-                                                        let vis = if root_name == "self" {
-                                                            crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
-                                                        } else {
-                                                            Visibility::Public
-                                                        };
-                                                        let assign_range = ident.syntax().text_range();
-                                                        self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
-                                                            expr: expr_id,
-                                                            extra_exprs: Vec::new(),
-                                                            visibility: vis,
-                                                            annotation: None,
-                                                            annotation_text: None,
-                                                            annotation_type_raw: None,
-                                                            lateinit: false,
-                                                            def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
-                                                            flavor_guard: 0,
-                                                            description: None,
-                                                            from_scan: false,
-                                                        });
-                                                    }
-                                                } else if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
-                                                    overlay_fi.extra_exprs.push(expr_id);
-                                                }
-                                            }
-                                    }
-                            }
-                        }
-                        // Narrow the field after assignment so subsequent
-                        // accesses don't warn about nil (skip literal nil). The
-                        // narrowing is conditional on the RHS resolving to non-nil
-                        // — `Expr::AssignNarrow` strips nil only when the recorded
-                        // RHS resolves to a non-nil type. Without the RHS expr id
-                        // (rare branches with no produced IR), no narrowing.
-                        let is_nil_literal = matches!(expression, Some(Expression::Literal(lit)) if lit.is_nil());
-                        if !is_nil_literal && let Some(rhs_id) = narrow_rhs_expr_id {
-                            self.record_field_assignment_narrow_rhs(&names, scope_idx, rhs_id);
-                        }
+                        self.build_assign_field_write(ctx, target, stack, &mut cached_multi_ret_call);
                     } else if ident.is_indexed_expression() && !g_redirected {
-                        // Bracket-indexed assignment on a single-name variable
-                        // (e.g. tbl[1] = "hello"): lower the RHS for side effects
-                        // but do NOT create a new symbol version — the assignment
-                        // targets an element, not the table variable itself.
-                        if let Some(expr) = expressions.get(index) {
-                            let expr_id = self.lower_expression(expr, scope_idx);
-                            // Cache for multi-return if applicable
-                            if index == expressions.len() - 1 && identifiers.len() > expressions.len()
-                                && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
-                                    cached_multi_ret_call = Some(expr_id);
-                                }
-                            // Record bracket table site for need-check-nil on
-                            // single-name bases (e.g. `tbl[k] = v` where tbl is nullable).
-                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx)
-                                && let Some(base_node) = ident.syntax().children().next()
-                            {
-                                let r = base_node.text_range();
-                                let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.ir.version_for_scope(sym_idx, scope_idx)));
-                                let dummy_key = self.ir.push_expr(Expr::Unknown);
-                                let bracket_expr = self.ir.push_expr(Expr::BracketIndex { table: sym_ref, key: dummy_key, literal_key: None });
-                                self.ir.bracket_table_sites.push((bracket_expr, sym_ref, u32::from(r.start()), u32::from(r.end())));
-                            }
-                            // Track bracket assignment for table value_type inference.
-                            // Extract the key expression from the BracketAccess node
-                            // and register (key, value) in bracket_key_fields so
-                            // Phase 2 infer_bracket_field_types() can resolve the
-                            // table's key_type/value_type.
-                            {
-                                let syntax = ident.syntax();
-                                let mut children = syntax.children();
-                                let base = children.next();
-                                // Only attribute the RHS to the root table's value_type
-                                // when the bracket base is the root name itself (a single
-                                // level index `name[key] = value`). For a nested write like
-                                // `name[a][b] = value` or `name.f[b] = value`, the value is
-                                // an element of the *inner* table, not of `name`, so
-                                // registering it here would pollute `name`'s element type.
-                                let base_is_root_name = base
-                                    .as_ref()
-                                    .is_some_and(|b| b.kind() == SyntaxKind::NameRef);
-                                if base_is_root_name
-                                    && let Some(key_node) = children.next()
-                                    && let Some(key_expr) = Expression::cast(key_node) {
-                                        let key_id = self.lower_expression(&key_expr, scope_idx);
-                                        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
-                                            && !table_idx.is_external() {
-                                                self.ir.bracket_key_fields
-                                                    .entry(table_idx)
-                                                    .or_default()
-                                                    .push((key_id, expr_id));
-                                        } else {
-                                            // Table not resolvable in Phase 1 (e.g. field-chain-derived
-                                            // local like `local NPCs = private.Data.NPCs`). Defer to
-                                            // Phase 2 where resolved_type is available.
-                                            self.ir.pending_bracket_assigns.push((
-                                                root_name.clone(), scope_idx, expr_id,
-                                            ));
-                                        }
-                                    }
-                            }
-                        }
+                        self.build_assign_bracket_index(ctx, target, &mut cached_multi_ret_call);
                     } else {
-                        // Simple assignment: x = expr
-                        if let Some(Expression::Function(func)) = expression {
-                            let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
-                            // Mark narrowing as overridden if this symbol has active narrowing
-                            if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
-                                || self.get_type_filtering(symbol_idx, scope_idx).is_some()
-                                || self.is_symbol_narrowed(symbol_idx, scope_idx)
-                                || self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
-                                self.narrowing.narrowing_overridden.entry(scope_idx).or_default()
-                                    .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
-                            }
-                            // Reassignment breaks any correlated-local group for this symbol.
-                            self.invalidate_correlated_locals(symbol_idx);
-                            self.invalidate_guard_implications(symbol_idx);
-                            let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
-                            let func_idx = FunctionIndex(self.ir.functions.len() - 1);
-                            self.apply_annotations(func_idx, scope_idx, assign.syntax());
-                            let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
-                            self.ir.set_type_source(symbol_idx, expr_id);
-                            if let Some(inner_block) = func.block() {
-                                stack.push(Frame {
-                                    block: inner_block,
-                                    next_stmt: 0,
-                                    scope_idx: new_scope_idx,
-                                    func_id: Some(func_idx),
-                                    constructor_of: None,
-                                    is_conditional: false,
-                                });
-                            }
-                        } else {
-                            let type_source = if let Some(expr) = expression {
-                                let lowered = Some(self.lower_expression(expr, scope_idx));
-                                // Cache the FunctionCall expr if this is the last
-                                // RHS expression and there are more LHS identifiers
-                                // (multi-return). This avoids re-lowering arguments
-                                // with post-assignment symbol versions.
-                                if index == expressions.len() - 1 && identifiers.len() > expressions.len()
-                                    && let Some(expr_id) = lowered
-                                        && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
-                                            cached_multi_ret_call = Some(expr_id);
-                                        }
-                                lowered
-                            } else if let Some(Expression::FunctionCall(_)) = expressions.last() {
-                                if index >= expressions.len() {
-                                    let ret_index = index - (expressions.len() - 1);
-                                    // Reuse the cached call's args instead of re-lowering
-                                    if let Some(cached_id) = cached_multi_ret_call {
-                                        if let Expr::FunctionCall { func, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
-                                            let expr_id = self.ir.push_expr(Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
-                                            Some(expr_id)
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            } else if matches!(expressions.last(), Some(Expression::VarArgs(_))) {
-                                if index >= expressions.len() {
-                                    let ret_index = index - (expressions.len() - 1);
-                                    if func_id.is_none() && ret_index == 1 {
-                                        // WoW passes (addonName, addonTable) at file scope
-                                        let table_idx = self.ir.tables.len();
-                                        let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
-                                            self.ir.ext.table(addon_idx).fields.clone()
-                                        } else {
-                                            HashMap::new()
-                                        };
-                                        self.ir.tables.push(TableInfo { fields, ..Default::default() });
-                                        Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
-                                    } else {
-                                        let eid = self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none()));
-                                        self.ir.varargs_scope.insert(eid, scope_idx);
-                                        Some(eid)
-                                    }
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            };
-                            let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
-                            if assign_flavor_guard != 0 {
-                                self.ir.symbols[symbol_idx.val()].flavor_guard = assign_flavor_guard;
-                            }
-                            // Mark narrowing as overridden if this symbol has active narrowing
-                            if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
-                                || self.get_type_filtering(symbol_idx, scope_idx).is_some()
-                                || self.is_symbol_narrowed(symbol_idx, scope_idx)
-                                || self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
-                                self.narrowing.narrowing_overridden.entry(scope_idx).or_default()
-                                    .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
-                            }
-                            // Register / invalidate `or`-coalesce derivations.
-                            self.maybe_register_or_coalesce(symbol_idx, root_name, expression, scope_idx, false);
-                            // Reassignment breaks any correlated-local group for this symbol.
-                            self.invalidate_correlated_locals(symbol_idx);
-                            self.invalidate_guard_implications(symbol_idx);
-                            if let Some(expr_id) = type_source {
-                                self.ir.set_type_source(symbol_idx, expr_id);
-                                // Track multi-return siblings from function calls
-                                if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
-                                    multi_return_group.push((*ret_index, symbol_idx));
-                                }
-                                if self.ir.symbol_type_annotations.contains_key(&symbol_idx) {
-                                    // Reassignment path for @type-annotated variables:
-                                    // record the original RHS for assign-type-mismatch
-                                    // and backward inference, but don't override type_source.
-                                    // The actual RHS type flows through so narrowing,
-                                    // branch merges, and type guards see real types.
-                                    // (The initial declaration at ~line 708 still masks
-                                    // via set_type_source; only reassignments preserve RHS.)
-                                    let ver = self.ir.symbols[symbol_idx.val()].versions.last_mut().unwrap();
-                                    if ver.original_type_source.is_none() {
-                                        ver.original_type_source = ver.type_source;
-                                    }
-                                }
-                            }
-                            // Apply @class annotation on global assignments
-                            // (e.g. `---@class Foo\nMyMixin = {}`)
-                            if index == 0
-                                && let Some((_, class_table_idx)) = self.ir.resolve_class_annotation(
-                                    &assign_annotations.class, assign_annotations.class_comment_start, assign.syntax(),
-                                ) {
-                                    if !class_table_idx.is_external()
-                                        && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
-                                            .versions.last()
-                                            .and_then(|v| v.type_source)
-                                            && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
-                                                && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external() {
-                                                    let runtime_fields: Vec<(String, FieldInfo)> =
-                                                        self.ir.tables[rhs_table_idx.val()].fields.iter()
-                                                            .map(|(k, v)| (k.clone(), v.clone()))
-                                                            .collect();
-                                                    for (name, field_info) in runtime_fields {
-                                                        self.ir.tables[class_table_idx.val()].fields
-                                                            .entry(name).or_insert(field_info);
-                                                    }
-                                                }
-                                    let expr_id = self.ir.push_expr(Expr::Literal(
-                                        ValueType::Table(Some(class_table_idx))
-                                    ));
-                                    self.ir.set_type_source(symbol_idx, expr_id);
-                                    let has_type_ann = assign_annotations.var_type.is_some()
-                                        || expression.is_some_and(|e|
-                                            Self::extract_inline_type(e.syntax()).is_some());
-                                    if !has_type_ann {
-                                        self.ir.class_def_symbols.insert(symbol_idx);
-                                    }
-                            }
-
-                            // `Derived = CreateFromMixins(Base, …)` for a global that is
-                            // a known external class: re-anchor the symbol to its own
-                            // class table (which inherits the mixin parents via the
-                            // cross-file build) so `self` in Derived's methods resolves
-                            // to Derived — seeing its own fields and the XML parentKey
-                            // fields landed on the mixin class — not the bare
-                            // CreateFromMixins return type (the base). The class is
-                            // flagged `open_mixin`, so `undefined-field` stays permissive
-                            // about untracked runtime fields. Skipped when an explicit
-                            // @class/@type already drives the type.
-                            if index == 0
-                                && assign_annotations.class.is_none()
-                                && assign_annotations.var_type.is_none()
-                                && expression.is_some_and(Self::is_create_from_mixins_call)
-                                && let Some(ext_class_idx) = self.ir.external_class_table_for(root_name)
-                            {
-                                let expr_id = self.ir.push_expr(Expr::Literal(
-                                    ValueType::Table(Some(ext_class_idx))
-                                ));
-                                self.ir.set_type_source(symbol_idx, expr_id);
-                            }
-                        }
+                        self.build_assign_simple(ctx, target, stack, &mut multi_return_group, &mut cached_multi_ret_call);
                     }
                 } else if ident.is_indexed_expression() {
                     // Bracket-indexed assignment with no direct name tokens
@@ -2173,6 +1448,897 @@ impl<'a> Analysis<'a> {
             }
         }
     }
+
+    /// Handle a dotted/field-or-index assignment target (`t.x = expr`,
+    /// `self._data[k] = v`, `ns.sub.field = expr`): records nil-check sites,
+    /// dispatches by RHS kind (method def / value / multi-return), and applies
+    /// post-assignment field narrowing.
+    fn build_assign_field_write(
+        &mut self,
+        ctx: AssignCtx<'a, '_>,
+        target: AssignTarget<'a, '_>,
+        stack: &mut Vec<Frame<'a>>,
+        cached_multi_ret_call: &mut Option<ExprId>,
+    ) {
+        let AssignCtx { scope_idx, .. } = ctx;
+        let AssignTarget { ident, names, index, expression, expressions, .. } = target;
+        let root_name = &names[0];
+
+        // Record nil-check site for the root symbol
+        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+            self.referenced_symbols.insert(sym_idx);
+            let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.ir.version_for_scope(sym_idx, scope_idx)));
+            // Use the field name token's range for the diagnostic.
+            // For parser2's DotAccess, the field Name token comes after Dot;
+            // for old flat Identifier, it's the second Name token.
+            let field_token = {
+                let mut seen_dot = false;
+                ident.syntax().children_with_tokens().find_map(|c| {
+                    match &c {
+                        NodeOrToken::Token(t) if t.kind() == SyntaxKind::Dot => { seen_dot = true; None }
+                        NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(*t),
+                        _ => None,
+                    }
+                })
+            };
+            if let Some(field_token) = field_token {
+                let r = field_token.text_range();
+                self.ir.assign_nil_check_bases.push((sym_ref, u32::from(r.start()), u32::from(r.end())));
+            }
+        }
+
+        // Bracket-indexed field assignment (e.g. self._data[idx] = val):
+        // the assignment targets an element of the field, not the field
+        // itself. Lower the RHS for side effects but skip field type
+        // modification, inject-field checks, and field_assignment_sites.
+        if ident.is_indexed_expression()
+            || ident.has_non_string_bracket_in_chain()
+        {
+            self.build_field_indexed_write(ctx, target, cached_multi_ret_call);
+            return;
+        }
+
+        // RHS expression id for assignment-based field narrowing
+        // (recorded after the branches below). Each branch sets this
+        // when it produces a value-bearing IR expression.
+        let mut narrow_rhs_expr_id: Option<crate::types::ExprId> = None;
+        if let Some(Expression::Function(func)) = expression {
+            self.build_field_method_def(ctx, target, func, stack, &mut narrow_rhs_expr_id);
+        } else if let Some(expr) = expression {
+            self.build_field_value(ctx, target, expr, cached_multi_ret_call, &mut narrow_rhs_expr_id);
+        } else if index >= expressions.len() {
+            self.build_field_multi_return(ctx, target, cached_multi_ret_call);
+        }
+        // Narrow the field after assignment so subsequent
+        // accesses don't warn about nil (skip literal nil). The
+        // narrowing is conditional on the RHS resolving to non-nil
+        // — `Expr::AssignNarrow` strips nil only when the recorded
+        // RHS resolves to a non-nil type. Without the RHS expr id
+        // (rare branches with no produced IR), no narrowing.
+        let is_nil_literal = matches!(expression, Some(Expression::Literal(lit)) if lit.is_nil());
+        if !is_nil_literal && let Some(rhs_id) = narrow_rhs_expr_id {
+            self.record_field_assignment_narrow_rhs(names, scope_idx, rhs_id);
+        }
+    }
+
+    /// Lower a bracket-indexed field assignment (`self._data[k] = v`): the write
+    /// targets an element of the field, so the RHS is lowered for side effects and
+    /// bracket table/key sites are recorded, without modifying the field's type.
+    fn build_field_indexed_write(
+        &mut self,
+        ctx: AssignCtx<'a, '_>,
+        target: AssignTarget<'a, '_>,
+        cached_multi_ret_call: &mut Option<ExprId>,
+    ) {
+        let AssignCtx { scope_idx, .. } = ctx;
+        let AssignTarget { ident, index, expressions, identifiers_len, names, .. } = target;
+        let root_name = &names[0];
+        if let Some(expr) = expressions.get(index) {
+            let expr_id = self.lower_expression(expr, scope_idx);
+            // Cache for multi-return if applicable
+            if index == expressions.len() - 1 && identifiers_len > expressions.len()
+                && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                    *cached_multi_ret_call = Some(expr_id);
+                }
+        }
+        // Record intermediate field accesses so the plugin query layer
+        // can see that e.g. `state.names[k] = v` reads `state.names`.
+        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+            let mut base = self.ir.push_expr(Expr::SymbolRef(sym_idx, 0));
+            let mut pre_bracket_base = base;
+            for field_name in names.iter().skip(1) {
+                pre_bracket_base = base;
+                base = self.ir.push_expr(Expr::FieldAccess {
+                    table: base,
+                    field: field_name.clone(),
+                    field_range: None,
+                });
+            }
+            // Record bracket table site for need-check-nil on the
+            // chain base (e.g. `self._data` in `self._data[k] = v`).
+            // When the bracket has a string literal key (e.g.
+            // `tbl["key"]`), names() includes it so the last
+            // FieldAccess is the key lookup, not the table — use the
+            // penultimate base. For non-string keys (variable index),
+            // names() excludes the key and `base` IS the table.
+            if ident.is_indexed_expression()
+                && let Some(base_node) = ident.syntax().children().next()
+            {
+                let has_string_key = crate::ast::extract_bracket_string_key(ident.syntax()).is_some();
+                let mut table_base = if has_string_key { pre_bracket_base } else { base };
+                // Apply assignment-based field narrowing to the indexed
+                // base, mirroring the read path in `lower_bracket_access`.
+                // After `foo.arr = foo.arr or {}`, indexing `foo.arr[k] = v`
+                // on a later statement must see the coalesced (non-nil)
+                // field, not the declared-nilable type. AssignNarrow strips
+                // nil only when the recorded RHS resolves to non-nil.
+                if let Some((chain_sym, chain)) = self.ir.extract_field_chain(table_base)
+                    && let Some(rhs_id) = self.get_field_assignment_narrow_rhs(chain_sym, &chain, scope_idx)
+                {
+                    table_base = self.ir.push_expr(Expr::AssignNarrow { inner: table_base, rhs: rhs_id });
+                }
+                let r = base_node.text_range();
+                let dummy_key = self.ir.push_expr(Expr::Unknown);
+                let bracket_expr = self.ir.push_expr(Expr::BracketIndex { table: table_base, key: dummy_key, literal_key: None });
+                self.ir.bracket_table_sites.push((bracket_expr, table_base, u32::from(r.start()), u32::from(r.end())));
+            }
+        }
+    }
+
+    /// Register a method/function-literal assigned to a field (`function t.x() ...`
+    /// / `t.x = function() ... end`): inserts the method on the resolved table or
+    /// defers it. Sets `narrow_rhs_expr_id` to the function-def expr for narrowing.
+    fn build_field_method_def(
+        &mut self,
+        ctx: AssignCtx<'a, '_>,
+        target: AssignTarget<'a, '_>,
+        func: &FunctionDefinition<'a>,
+        stack: &mut Vec<Frame<'a>>,
+        narrow_rhs_expr_id: &mut Option<ExprId>,
+    ) {
+        let AssignCtx { assign, scope_idx, func_id, constructor_of, stmt_index, .. } = ctx;
+        let AssignTarget { ident, names, .. } = target;
+        let root_name = &names[0];
+        let field_name = &names[names.len() - 1];
+        let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
+        let func_idx = FunctionIndex(self.ir.functions.len() - 1);
+        self.apply_annotations(func_idx, scope_idx, assign.syntax());
+        let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
+        *narrow_rhs_expr_id = Some(func_def_expr);
+        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+            if names.len() > 2 {
+                // Deep chain (e.g. self._plot.method = function ...):
+                // defer to post-fixpoint resolution
+                self.deep_field_injections.push(DeepFieldInjection {
+                    root_name: root_name.clone(),
+                    intermediates: names[1..names.len()-1].to_vec(),
+                    field_name: field_name.clone(),
+                    expr_id: func_def_expr,
+                    scope_idx,
+                });
+            } else {
+                let existing_field = self.ir.get_field(table_idx, field_name);
+                let field_existed = existing_field.is_some();
+                let had_annotation = existing_field.is_some_and(|f| f.annotation.is_some());
+                let field_lateinit = existing_field.is_some_and(|f| f.lateinit);
+                let method_def_range = ident.syntax().text_range();
+                let fi = FieldInfo {
+                    expr: func_def_expr,
+                    visibility: Visibility::Public,
+                    annotation: None,
+                    annotation_text: None,
+                    annotation_type_raw: None,
+                    lateinit: false,
+                    extra_exprs: Vec::new(),
+                    def_range: Some((u32::from(method_def_range.start()), u32::from(method_def_range.end()))),
+                    flavor_guard: 0,
+                    description: None,
+                    from_scan: false,
+                };
+                if !table_idx.is_external() {
+                    self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), fi);
+                } else {
+                    self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
+                }
+                let ident_r = ident.syntax().text_range();
+                let func_r = func.syntax().text_range();
+                let root_sym = self.ir.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx);
+                self.ir.field_assignments.push(FieldAssignment {
+                    table_idx, root_name: root_name.clone(), root_symbol: root_sym,
+                    field_name: field_name.clone(),
+                    actual_expr: func_def_expr,
+                    scope_idx, block_stmt_index: stmt_index as u32,
+                    ident_start: u32::from(ident_r.start()), ident_end: u32::from(ident_r.end()),
+                    expr_start: u32::from(func_r.start()), expr_end: u32::from(func_r.end()),
+                    field_existed_at_build: field_existed,
+                    had_annotation_at_build: had_annotation,
+                    lateinit: field_lateinit,
+                    in_constructor: constructor_of == Some(table_idx),
+                    in_function: func_id.is_some(),
+                    is_method_def: true,
+                });
+            }
+        } else if names.len() > 2 {
+            // Deep chain with unresolved root (e.g. self.sub.method
+            // where self's type comes from a method parameter) —
+            // defer to post-fixpoint deep injection resolution.
+            self.deep_field_injections.push(DeepFieldInjection {
+                root_name: root_name.clone(),
+                intermediates: names[1..names.len()-1].to_vec(),
+                field_name: field_name.clone(),
+                expr_id: func_def_expr,
+                scope_idx,
+            });
+        } else if names.len() == 2 {
+            // Table not found during Phase 1 (e.g. type comes from
+            // function return) — defer to post-fixpoint resolution.
+            let r = ident.syntax().text_range();
+            let func_r = func.syntax().text_range();
+            self.deferred_field_assignments.push(DeferredFieldAssignment {
+                root_name: root_name.clone(),
+                field_name: field_name.clone(),
+                expr_id: func_def_expr,
+                scope_idx,
+                block_stmt_index: stmt_index as u32,
+                ident_start: u32::from(r.start()),
+                ident_end: u32::from(r.end()),
+                inline_annotation: None,
+                inline_annotation_text: None,
+                inline_type_raw: None,
+                inline_is_lateinit: false,
+                expr_start: u32::from(func_r.start()),
+                expr_end: u32::from(func_r.end()),
+                is_method_def: true,
+            });
+        }
+        if let Some(inner_block) = func.block() {
+            stack.push(Frame {
+                block: inner_block,
+                next_stmt: 0,
+                scope_idx: new_scope_idx,
+                func_id: Some(func_idx),
+                constructor_of: None,
+                is_conditional: false,
+            });
+        }
+    }
+
+    /// Lower a value expression assigned to a field (`t.x = expr`): applies inline
+    /// @type/@class annotations, walks deep chains, and records or defers the field
+    /// assignment. Sets `narrow_rhs_expr_id` to the lowered RHS for narrowing.
+    fn build_field_value(
+        &mut self,
+        ctx: AssignCtx<'a, '_>,
+        target: AssignTarget<'a, '_>,
+        expr: &Expression<'a>,
+        cached_multi_ret_call: &mut Option<ExprId>,
+        narrow_rhs_expr_id: &mut Option<ExprId>,
+    ) {
+        let AssignCtx {
+            assign, scope_idx, func_id, constructor_of, stmt_index,
+            annotations: assign_annotations, flavor_guard: assign_flavor_guard, ..
+        } = ctx;
+        let AssignTarget { ident, index, expressions, identifiers_len, names, .. } = target;
+        let root_name = &names[0];
+        let field_name = &names[names.len() - 1];
+        let mut expr_id = self.lower_expression(expr, scope_idx);
+        *narrow_rhs_expr_id = Some(expr_id);
+        // Cache for multi-return if this is the last RHS and
+        // there are more LHS identifiers (e.g. self._h, self._s = func())
+        if index == expressions.len() - 1 && identifiers_len > expressions.len()
+            && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                *cached_multi_ret_call = Some(expr_id);
+            }
+        // Apply @class annotation on field assignments
+        // (e.g. `---@class Foo\nt.mixin = {}`)
+        // Links the class table to the RHS so that methods
+        // defined later on `t.mixin:Method()` populate the
+        // class table, not a disconnected table literal.
+        if index == 0
+            && let Some((_, class_table_idx)) = self.ir.resolve_class_annotation(
+                &assign_annotations.class, assign_annotations.class_comment_start, assign.syntax(),
+            ).filter(|(_, idx)| !idx.is_external()) {
+                if let Some(rhs_table_idx) = self.ir.find_table_index(expr_id)
+                    && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external()
+                {
+                    let runtime_fields: Vec<(String, FieldInfo)> =
+                        self.ir.tables[rhs_table_idx.val()].fields.iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                    for (name, field_info) in runtime_fields {
+                        self.ir.tables[class_table_idx.val()].fields
+                            .entry(name).or_insert(field_info);
+                    }
+                }
+                expr_id = self.ir.push_expr(Expr::Literal(
+                    ValueType::Table(Some(class_table_idx))
+                ));
+        }
+        // Check for inline ---@type annotation after the expression
+        // Also checks inside table constructor opening: `{ ---@type Foo ... }`
+        // Falls back to preceding-line ---@type for the first target.
+        let inline_type = Self::extract_inline_type(expr.syntax())
+            .or_else(|| {
+                if let Expression::TableConstructor(tc) = expr {
+                    Self::extract_table_constructor_type(tc.syntax())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if index == 0 { assign_annotations.var_type.clone() } else { None }
+            });
+        let inline_is_lateinit = inline_type.as_ref().is_some_and(|at| matches!(at, AnnotationType::NonNil(_)));
+        let inline_annotation_text = inline_type.as_ref()
+            .map(crate::annotations::format_annotation_type);
+        let inline_annotation = inline_type.as_ref()
+            .and_then(|at| self.resolve_annotation_type_mut_gen(at, &[]));
+        // Only keep annotation_text when annotation resolved successfully;
+        // otherwise hover would show an unresolved type while the type checker
+        // falls back to the expression type, creating a misleading display.
+        let inline_annotation_text = if inline_annotation.is_some() { inline_annotation_text } else { None };
+        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+          if names.len() > 2 {
+            // Deep chain (e.g. ns.sub.field = expr): try to
+            // walk intermediates eagerly so the field is
+            // available for subsequent method definitions in
+            // the same file (e.g. function ns.sub.field:M()).
+            // Fall back to deferred resolution if any
+            // intermediate can't be resolved yet.
+            let mut cur_table = table_idx;
+            let mut resolved = true;
+            for intermediate in &names[1..names.len()-1] {
+                if let Some(field) = self.ir.get_field(cur_table, intermediate) {
+                    let field_expr = field.expr;
+                    if let Some(sub_idx) = self.ir.find_table_index(field_expr) {
+                        cur_table = sub_idx;
+                    } else {
+                        resolved = false;
+                        break;
+                    }
+                } else {
+                    resolved = false;
+                    break;
+                }
+            }
+
+            if resolved {
+                // Insert field directly (matching the deferred
+                // resolve_deep_field_injections path).
+                if !self.ir.has_field(cur_table, field_name) {
+                    let assign_range = ident.syntax().text_range();
+                    let fi = FieldInfo {
+                        expr: expr_id,
+                        extra_exprs: Vec::new(),
+                        visibility: Visibility::Public,
+                        annotation: None,
+                        annotation_text: None,
+                        annotation_type_raw: None,
+                        lateinit: false,
+                        def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
+                        flavor_guard: 0,
+                        description: None,
+                        from_scan: false,
+                    };
+                    if !cur_table.is_external() {
+                        self.ir.tables[cur_table.val()].fields.insert(field_name.clone(), fi);
+                    } else {
+                        self.ir.insert_overlay_field(cur_table, field_name.clone(), fi);
+                    }
+                } else if !cur_table.is_external()
+                    && let Some(fi) = self.ir.tables[cur_table.val()].fields.get_mut(field_name)
+                {
+                    fi.extra_exprs.push(expr_id);
+                }
+            } else {
+                self.deep_field_injections.push(DeepFieldInjection {
+                    root_name: root_name.clone(),
+                    intermediates: names[1..names.len()-1].to_vec(),
+                    field_name: field_name.clone(),
+                    expr_id,
+                    scope_idx,
+                });
+            }
+          } else {
+            let existing_field = self.ir.get_field(table_idx, field_name);
+            let field_existed = existing_field.is_some();
+            // When the assignment itself has an @type annotation, it acts
+            // as a cast — don't check the RHS against the field's own
+            // annotation (which may originate from the same @type via
+            // workspace scan).
+            let had_annotation = inline_annotation.is_none()
+                && existing_field.is_some_and(|f| f.annotation.is_some());
+            let field_lateinit = existing_field.is_some_and(|f| f.lateinit);
+            if !table_idx.is_external() {
+                let existing_vis = self.ir.tables[table_idx.val()].fields.get(field_name).map(|f| f.visibility).unwrap_or_else(|| {
+                    // Ad-hoc injected fields (from outside the class) default to Public;
+                    // self._foo inside a method keeps implicit protected from _ prefix.
+                    if root_name == "self" {
+                        crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
+                    } else {
+                        Visibility::Public
+                    }
+                });
+                if let Some(field_info) = self.ir.tables[table_idx.val()].fields.get_mut(field_name) {
+                    field_info.extra_exprs.push(expr_id);
+                    field_info.visibility = existing_vis;
+                    if field_info.annotation.is_none() {
+                        if let Some(ref ann) = inline_annotation {
+                            field_info.annotation = Some(ann.clone());
+                        }
+                        if inline_annotation_text.is_some() {
+                            field_info.annotation_text = inline_annotation_text.clone();
+                        }
+                        if field_info.annotation_type_raw.is_none() {
+                            field_info.annotation_type_raw = inline_type.clone();
+                        }
+                    }
+                    if inline_is_lateinit { field_info.lateinit = true; }
+                    if assign_flavor_guard != 0 { field_info.flavor_guard = assign_flavor_guard; }
+                } else {
+                    let assign_range = ident.syntax().text_range();
+                    self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
+                        expr: expr_id,
+                        extra_exprs: Vec::new(),
+                        visibility: existing_vis,
+                        annotation: inline_annotation.clone(),
+                        annotation_text: inline_annotation_text.clone(),
+                        annotation_type_raw: inline_type.clone(),
+                        lateinit: inline_is_lateinit,
+                        def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
+                        flavor_guard: assign_flavor_guard,
+                        description: None,
+                        from_scan: false,
+                    });
+                }
+            } else {
+                // External table: store in per-file overlay.
+                // Pre-fetch external field annotations so overlays
+                // created before deferred constructors aren't bare.
+                let ext_ann = if inline_annotation.is_none() {
+                    self.ir.table(table_idx).fields.get(field_name).and_then(|f| {
+                        // Skip inherited Any annotations — let the
+                        // expression-based path resolve the concrete
+                        // type from the child's assignment RHS.
+                        if matches!(f.annotation, Some(ValueType::Any)) {
+                            None
+                        } else {
+                            Some((f.annotation.clone(), f.annotation_text.clone(), f.annotation_type_raw.clone(), f.lateinit))
+                        }
+                    })
+                } else { None };
+
+                if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
+                    overlay_fi.extra_exprs.push(expr_id);
+                    if overlay_fi.annotation.is_none() {
+                        if let Some(ref ann) = inline_annotation {
+                            overlay_fi.annotation = Some(ann.clone());
+                        } else if let Some((ref ann, ref ann_text, _, li)) = ext_ann {
+                            overlay_fi.annotation.clone_from(ann);
+                            overlay_fi.annotation_text.clone_from(ann_text);
+                            overlay_fi.lateinit = overlay_fi.lateinit || li;
+                        }
+                        if inline_annotation_text.is_some() {
+                            overlay_fi.annotation_text = inline_annotation_text.clone();
+                        }
+                        if overlay_fi.annotation_type_raw.is_none() {
+                            overlay_fi.annotation_type_raw = inline_type.clone()
+                                .or_else(|| ext_ann.as_ref().and_then(|(_, _, raw, _)| raw.clone()));
+                        }
+                    }
+                    if inline_is_lateinit { overlay_fi.lateinit = true; }
+                    if assign_flavor_guard != 0 { overlay_fi.flavor_guard = assign_flavor_guard; }
+                } else {
+                    let assign_range = ident.syntax().text_range();
+                    let overlay_vis = if root_name == "self" {
+                        crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
+                    } else {
+                        Visibility::Public
+                    };
+                    let (ann, ann_text, ann_raw, li) = if inline_annotation.is_some() {
+                        (inline_annotation.clone(), inline_annotation_text.clone(), inline_type.clone(), inline_is_lateinit)
+                    } else if let Some(ext) = ext_ann {
+                        (ext.0, ext.1, ext.2, ext.3)
+                    } else {
+                        (None, None, None, false)
+                    };
+                    self.ir.insert_overlay_field(table_idx, field_name.clone(), FieldInfo {
+                        expr: expr_id,
+                        extra_exprs: Vec::new(),
+                        visibility: overlay_vis,
+                        annotation: ann,
+                        annotation_text: ann_text,
+                        annotation_type_raw: ann_raw,
+                        lateinit: li || inline_is_lateinit,
+                        def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
+                        flavor_guard: assign_flavor_guard,
+                        description: None,
+                        from_scan: false,
+                    });
+                }
+            }
+            let ident_r = ident.syntax().text_range();
+            let expr_r = expr.syntax().text_range();
+            let is_in_constructor = constructor_of == Some(table_idx);
+            if is_in_constructor && !table_idx.is_external() {
+                self.ir.tables[table_idx.val()].has_source_fields = true;
+            }
+            let root_sym = self.ir.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx);
+            self.ir.field_assignments.push(FieldAssignment {
+                table_idx, root_name: root_name.clone(), root_symbol: root_sym,
+                field_name: field_name.clone(),
+                actual_expr: expr_id,
+                scope_idx, block_stmt_index: stmt_index as u32,
+                ident_start: u32::from(ident_r.start()), ident_end: u32::from(ident_r.end()),
+                expr_start: u32::from(expr_r.start()), expr_end: trimmed_node_end(expr.syntax()),
+                field_existed_at_build: field_existed,
+                had_annotation_at_build: had_annotation,
+                lateinit: field_lateinit,
+                in_constructor: is_in_constructor,
+                in_function: func_id.is_some(),
+                is_method_def: false,
+            });
+          }
+        } else if names.len() > 2 {
+            // Deep chain with unresolved root (e.g. self.sub.field = expr
+            // where self's type comes from a method parameter) —
+            // defer to post-fixpoint deep injection resolution.
+            self.deep_field_injections.push(DeepFieldInjection {
+                root_name: root_name.clone(),
+                intermediates: names[1..names.len()-1].to_vec(),
+                field_name: field_name.clone(),
+                expr_id,
+                scope_idx,
+            });
+        } else if names.len() == 2 {
+            // Table not found during Phase 1 (e.g. type comes from
+            // function return) — defer to post-fixpoint resolution.
+            let r = ident.syntax().text_range();
+            let expr_r = expr.syntax().text_range();
+            self.deferred_field_assignments.push(DeferredFieldAssignment {
+                root_name: root_name.clone(),
+                field_name: field_name.clone(),
+                expr_id,
+                scope_idx,
+                block_stmt_index: stmt_index as u32,
+                ident_start: u32::from(r.start()),
+                ident_end: u32::from(r.end()),
+                inline_annotation: inline_annotation.clone(),
+                inline_annotation_text: inline_annotation_text.clone(),
+                inline_type_raw: inline_type.clone(),
+                inline_is_lateinit,
+                expr_start: u32::from(expr_r.start()),
+                expr_end: trimmed_node_end(expr.syntax()),
+                is_method_def: false,
+            });
+        }
+    }
+
+    /// Lower a multi-return field assignment (`t.a, t.b = f()`): reuses the cached
+    /// call's args at the appropriate return index and registers the field.
+    fn build_field_multi_return(
+        &mut self,
+        ctx: AssignCtx<'a, '_>,
+        target: AssignTarget<'a, '_>,
+        cached_multi_ret_call: &mut Option<ExprId>,
+    ) {
+        let AssignCtx { scope_idx, .. } = ctx;
+        let AssignTarget { ident, index, expressions, names, .. } = target;
+        let root_name = &names[0];
+        let field_name = &names[names.len() - 1];
+        // Multi-return field assignment (e.g. self._h, self._s, self._l = func())
+        // Create a FunctionCall expr with the appropriate ret_index and
+        // update the field type so it reflects the function's @return types.
+        if let Some(Expression::FunctionCall(_)) = expressions.last() {
+            let ret_index = index - (expressions.len() - 1);
+            if let Some(cached_id) = *cached_multi_ret_call
+                && let Expr::FunctionCall { func: f, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
+                    let expr_id = self.ir.push_expr(Expr::FunctionCall { func: f, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
+                    if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
+                        && names.len() <= 2 {
+                            if !table_idx.is_external() {
+                                if let Some(field_info) = self.ir.tables[table_idx.val()].fields.get_mut(field_name) {
+                                    field_info.extra_exprs.push(expr_id);
+                                } else {
+                                    let vis = if root_name == "self" {
+                                        crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
+                                    } else {
+                                        Visibility::Public
+                                    };
+                                    let assign_range = ident.syntax().text_range();
+                                    self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
+                                        expr: expr_id,
+                                        extra_exprs: Vec::new(),
+                                        visibility: vis,
+                                        annotation: None,
+                                        annotation_text: None,
+                                        annotation_type_raw: None,
+                                        lateinit: false,
+                                        def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
+                                        flavor_guard: 0,
+                                        description: None,
+                                        from_scan: false,
+                                    });
+                                }
+                            } else if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
+                                overlay_fi.extra_exprs.push(expr_id);
+                            }
+                        }
+                }
+        }
+    }
+
+
+    /// Handle a bracket-indexed assignment on a single-name variable
+    /// (`tbl[1] = expr`): lowers the RHS for side effects and records bracket
+    /// table/key sites, without creating a new symbol version for the table.
+    fn build_assign_bracket_index(
+        &mut self,
+        ctx: AssignCtx<'a, '_>,
+        target: AssignTarget<'a, '_>,
+        cached_multi_ret_call: &mut Option<ExprId>,
+    ) {
+        let AssignCtx { scope_idx, .. } = ctx;
+        let AssignTarget { ident, names, index, expressions, identifiers_len, .. } = target;
+        let root_name = &names[0];
+        // Bracket-indexed assignment on a single-name variable
+        // (e.g. tbl[1] = "hello"): lower the RHS for side effects
+        // but do NOT create a new symbol version — the assignment
+        // targets an element, not the table variable itself.
+        if let Some(expr) = expressions.get(index) {
+            let expr_id = self.lower_expression(expr, scope_idx);
+            // Cache for multi-return if applicable
+            if index == expressions.len() - 1 && identifiers_len > expressions.len()
+                && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                    *cached_multi_ret_call = Some(expr_id);
+                }
+            // Record bracket table site for need-check-nil on
+            // single-name bases (e.g. `tbl[k] = v` where tbl is nullable).
+            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx)
+                && let Some(base_node) = ident.syntax().children().next()
+            {
+                let r = base_node.text_range();
+                let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.ir.version_for_scope(sym_idx, scope_idx)));
+                let dummy_key = self.ir.push_expr(Expr::Unknown);
+                let bracket_expr = self.ir.push_expr(Expr::BracketIndex { table: sym_ref, key: dummy_key, literal_key: None });
+                self.ir.bracket_table_sites.push((bracket_expr, sym_ref, u32::from(r.start()), u32::from(r.end())));
+            }
+            // Track bracket assignment for table value_type inference.
+            // Extract the key expression from the BracketAccess node
+            // and register (key, value) in bracket_key_fields so
+            // Phase 2 infer_bracket_field_types() can resolve the
+            // table's key_type/value_type.
+            {
+                let syntax = ident.syntax();
+                let mut children = syntax.children();
+                let base = children.next();
+                // Only attribute the RHS to the root table's value_type
+                // when the bracket base is the root name itself (a single
+                // level index `name[key] = value`). For a nested write like
+                // `name[a][b] = value` or `name.f[b] = value`, the value is
+                // an element of the *inner* table, not of `name`, so
+                // registering it here would pollute `name`'s element type.
+                let base_is_root_name = base
+                    .as_ref()
+                    .is_some_and(|b| b.kind() == SyntaxKind::NameRef);
+                if base_is_root_name
+                    && let Some(key_node) = children.next()
+                    && let Some(key_expr) = Expression::cast(key_node) {
+                        let key_id = self.lower_expression(&key_expr, scope_idx);
+                        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
+                            && !table_idx.is_external() {
+                                self.ir.bracket_key_fields
+                                    .entry(table_idx)
+                                    .or_default()
+                                    .push((key_id, expr_id));
+                        } else {
+                            // Table not resolvable in Phase 1 (e.g. field-chain-derived
+                            // local like `local NPCs = private.Data.NPCs`). Defer to
+                            // Phase 2 where resolved_type is available.
+                            self.ir.pending_bracket_assigns.push((
+                                root_name.clone(), scope_idx, expr_id,
+                            ));
+                        }
+                    }
+            }
+        }
+    }
+
+
+    /// Handle a simple single-name assignment (`x = expr`): creates/versions the
+    /// symbol, applies @class / CreateFromMixins re-anchoring, and tracks
+    /// multi-return sibling groups.
+    fn build_assign_simple(
+        &mut self,
+        ctx: AssignCtx<'a, '_>,
+        target: AssignTarget<'a, '_>,
+        stack: &mut Vec<Frame<'a>>,
+        multi_return_group: &mut Vec<(usize, SymbolIndex)>,
+        cached_multi_ret_call: &mut Option<ExprId>,
+    ) {
+        let AssignCtx {
+            assign, scope_idx, func_id, node,
+            annotations: assign_annotations, flavor_guard: assign_flavor_guard, ..
+        } = ctx;
+        let AssignTarget { names, index, expression, expressions, identifiers_len, .. } = target;
+        let root_name = &names[0];
+        // Simple assignment: x = expr
+        if let Some(Expression::Function(func)) = expression {
+            let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
+            // Mark narrowing as overridden if this symbol has active narrowing
+            if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
+                || self.get_type_filtering(symbol_idx, scope_idx).is_some()
+                || self.is_symbol_narrowed(symbol_idx, scope_idx)
+                || self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
+                self.narrowing.narrowing_overridden.entry(scope_idx).or_default()
+                    .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
+            }
+            // Reassignment breaks any correlated-local group for this symbol.
+            self.invalidate_correlated_locals(symbol_idx);
+            self.invalidate_guard_implications(symbol_idx);
+            let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
+            let func_idx = FunctionIndex(self.ir.functions.len() - 1);
+            self.apply_annotations(func_idx, scope_idx, assign.syntax());
+            let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
+            self.ir.set_type_source(symbol_idx, expr_id);
+            if let Some(inner_block) = func.block() {
+                stack.push(Frame {
+                    block: inner_block,
+                    next_stmt: 0,
+                    scope_idx: new_scope_idx,
+                    func_id: Some(func_idx),
+                    constructor_of: None,
+                    is_conditional: false,
+                });
+            }
+        } else {
+            let type_source = if let Some(expr) = expression {
+                let lowered = Some(self.lower_expression(expr, scope_idx));
+                // Cache the FunctionCall expr if this is the last
+                // RHS expression and there are more LHS identifiers
+                // (multi-return). This avoids re-lowering arguments
+                // with post-assignment symbol versions.
+                if index == expressions.len() - 1 && identifiers_len > expressions.len()
+                    && let Some(expr_id) = lowered
+                        && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                            *cached_multi_ret_call = Some(expr_id);
+                        }
+                lowered
+            } else if let Some(Expression::FunctionCall(_)) = expressions.last() {
+                if index >= expressions.len() {
+                    let ret_index = index - (expressions.len() - 1);
+                    // Reuse the cached call's args instead of re-lowering
+                    if let Some(cached_id) = *cached_multi_ret_call {
+                        if let Expr::FunctionCall { func, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
+                            let expr_id = self.ir.push_expr(Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
+                            Some(expr_id)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else if matches!(expressions.last(), Some(Expression::VarArgs(_))) {
+                if index >= expressions.len() {
+                    let ret_index = index - (expressions.len() - 1);
+                    if func_id.is_none() && ret_index == 1 {
+                        // WoW passes (addonName, addonTable) at file scope
+                        let table_idx = self.ir.tables.len();
+                        let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
+                            self.ir.ext.table(addon_idx).fields.clone()
+                        } else {
+                            HashMap::new()
+                        };
+                        self.ir.tables.push(TableInfo { fields, ..Default::default() });
+                        Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
+                    } else {
+                        let eid = self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none()));
+                        self.ir.varargs_scope.insert(eid, scope_idx);
+                        Some(eid)
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
+            if assign_flavor_guard != 0 {
+                self.ir.symbols[symbol_idx.val()].flavor_guard = assign_flavor_guard;
+            }
+            // Mark narrowing as overridden if this symbol has active narrowing
+            if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
+                || self.get_type_filtering(symbol_idx, scope_idx).is_some()
+                || self.is_symbol_narrowed(symbol_idx, scope_idx)
+                || self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
+                self.narrowing.narrowing_overridden.entry(scope_idx).or_default()
+                    .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
+            }
+            // Register / invalidate `or`-coalesce derivations.
+            self.maybe_register_or_coalesce(symbol_idx, root_name, expression, scope_idx, false);
+            // Reassignment breaks any correlated-local group for this symbol.
+            self.invalidate_correlated_locals(symbol_idx);
+            self.invalidate_guard_implications(symbol_idx);
+            if let Some(expr_id) = type_source {
+                self.ir.set_type_source(symbol_idx, expr_id);
+                // Track multi-return siblings from function calls
+                if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
+                    multi_return_group.push((*ret_index, symbol_idx));
+                }
+                if self.ir.symbol_type_annotations.contains_key(&symbol_idx) {
+                    // Reassignment path for @type-annotated variables:
+                    // record the original RHS for assign-type-mismatch
+                    // and backward inference, but don't override type_source.
+                    // The actual RHS type flows through so narrowing,
+                    // branch merges, and type guards see real types.
+                    // (The initial declaration at ~line 708 still masks
+                    // via set_type_source; only reassignments preserve RHS.)
+                    let ver = self.ir.symbols[symbol_idx.val()].versions.last_mut().unwrap();
+                    if ver.original_type_source.is_none() {
+                        ver.original_type_source = ver.type_source;
+                    }
+                }
+            }
+            // Apply @class annotation on global assignments
+            // (e.g. `---@class Foo\nMyMixin = {}`)
+            if index == 0
+                && let Some((_, class_table_idx)) = self.ir.resolve_class_annotation(
+                    &assign_annotations.class, assign_annotations.class_comment_start, assign.syntax(),
+                ) {
+                    if !class_table_idx.is_external()
+                        && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
+                            .versions.last()
+                            .and_then(|v| v.type_source)
+                            && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
+                                && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external() {
+                                    let runtime_fields: Vec<(String, FieldInfo)> =
+                                        self.ir.tables[rhs_table_idx.val()].fields.iter()
+                                            .map(|(k, v)| (k.clone(), v.clone()))
+                                            .collect();
+                                    for (name, field_info) in runtime_fields {
+                                        self.ir.tables[class_table_idx.val()].fields
+                                            .entry(name).or_insert(field_info);
+                                    }
+                                }
+                    let expr_id = self.ir.push_expr(Expr::Literal(
+                        ValueType::Table(Some(class_table_idx))
+                    ));
+                    self.ir.set_type_source(symbol_idx, expr_id);
+                    let has_type_ann = assign_annotations.var_type.is_some()
+                        || expression.is_some_and(|e|
+                            Self::extract_inline_type(e.syntax()).is_some());
+                    if !has_type_ann {
+                        self.ir.class_def_symbols.insert(symbol_idx);
+                    }
+            }
+
+            // `Derived = CreateFromMixins(Base, …)` for a global that is
+            // a known external class: re-anchor the symbol to its own
+            // class table (which inherits the mixin parents via the
+            // cross-file build) so `self` in Derived's methods resolves
+            // to Derived — seeing its own fields and the XML parentKey
+            // fields landed on the mixin class — not the bare
+            // CreateFromMixins return type (the base). The class is
+            // flagged `open_mixin`, so `undefined-field` stays permissive
+            // about untracked runtime fields. Skipped when an explicit
+            // @class/@type already drives the type.
+            if index == 0
+                && assign_annotations.class.is_none()
+                && assign_annotations.var_type.is_none()
+                && expression.is_some_and(Self::is_create_from_mixins_call)
+                && let Some(ext_class_idx) = self.ir.external_class_table_for(root_name)
+            {
+                let expr_id = self.ir.push_expr(Expr::Literal(
+                    ValueType::Table(Some(ext_class_idx))
+                ));
+                self.ir.set_type_source(symbol_idx, expr_id);
+            }
+        }
+    }
+
 
     fn build_stmt_function_call(&mut self, call: &FunctionCall<'a>, scope_idx: ScopeIndex) {
         let call_expr_id = self.lower_function_call(call, scope_idx, 0, true);
