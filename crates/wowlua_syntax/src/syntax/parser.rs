@@ -113,6 +113,22 @@ impl<'a> Parser<'a> {
         self.peek().map_or(self.text.len() as u32, |t| t.start)
     }
 
+    /// Peek the kind of the next non-trivia token *after* the currently-peeked
+    /// token, without consuming anything. Relies on the invariant that, when
+    /// `self.peek` holds the current token, `self.lexer` is positioned just past
+    /// it — so a throwaway clone of the lexer yields the following token. Used to
+    /// disambiguate `function (` (an anonymous-function field value) from
+    /// `function name(` (a statement) in `at_field_continuation`.
+    fn peek_after_current(&self) -> Option<SK> {
+        let mut probe = self.lexer.clone();
+        loop {
+            let tok = probe.next_token()?;
+            if !tok.kind.is_trivia() {
+                return Some(tok.kind);
+            }
+        }
+    }
+
     fn error(&mut self, start: u32, end: u32, msg: String) {
         self.builder.error(start, end, msg);
     }
@@ -889,6 +905,11 @@ impl<'a> Parser<'a> {
         loop {
             self.skip_trivia();
             if self.at(SK::RightCurlyBracket) { break; }
+            if self.peek().is_none() { break; }
+
+            // Position before this field, so missing-separator recovery below can
+            // require forward progress and never loop on the same token.
+            let field_start = self.current_pos();
 
             self.builder.start_node(SK::Field);
             let Some(tok) = self.peek() else { self.builder.finish_node(); break };
@@ -940,8 +961,58 @@ impl<'a> Parser<'a> {
             self.builder.finish_node();
 
             self.skip_trivia();
-            if self.at(SK::Comma) || self.at(SK::Semicolon) { self.bump(); }
-            else { break; }
+            if self.at(SK::Comma) || self.at(SK::Semicolon) { self.bump(); continue; }
+            // A field with no trailing separator legitimately ends the table only
+            // at `}` or EOF. Otherwise a separator is missing. Rather than abandon
+            // the table constructor here — which makes the parser reinterpret the
+            // remaining `Name = expr` fields as top-level statements, producing a
+            // cascade of spurious `create-global` / `undefined-global` diagnostics
+            // on the lower half of the table — recover by reporting the missing
+            // separator and continuing the field list, as long as the next token
+            // plausibly begins another field (not a statement keyword / block
+            // terminator that signals an unterminated table) and we made progress.
+            if self.at(SK::RightCurlyBracket) || self.peek().is_none() { break; }
+            if self.current_pos() > field_start && self.at_field_continuation() {
+                self.error_here("expected `,` or `}`".to_string());
+                continue;
+            }
+            break;
+        }
+    }
+
+    /// After a table field with no trailing separator, decide whether the next
+    /// token continues the table (another field — recover) or belongs to an
+    /// enclosing context (the table is unterminated — bail so the outer block
+    /// reparses the rest). Block terminators and statement keywords that cannot
+    /// begin a field expression indicate the latter; names, `[`, literals, `{`,
+    /// `(`, unary ops, and `...` plausibly start a field.
+    ///
+    /// `function` is the one ambiguous keyword: `function() ... end` is a valid
+    /// anonymous-function field value (recover), while `function name() ... end`
+    /// is a statement that signals an unterminated table (bail). It is
+    /// disambiguated by the token following `function` — `(` (after optional
+    /// trivia) means an anonymous-function value.
+    fn at_field_continuation(&mut self) -> bool {
+        self.skip_trivia();
+        let Some(tok) = self.peek() else { return false };
+        match tok.kind {
+            SK::FunctionKeyword => self.peek_after_current() == Some(SK::LeftBracket),
+            SK::RightCurlyBracket
+            | SK::LocalKeyword
+            | SK::IfKeyword
+            | SK::WhileKeyword
+            | SK::ForKeyword
+            | SK::RepeatKeyword
+            | SK::DoKeyword
+            | SK::ReturnKeyword
+            | SK::BreakKeyword
+            | SK::ThenKeyword
+            | SK::InKeyword
+            | SK::EndKeyword
+            | SK::ElseKeyword
+            | SK::ElseIfKeyword
+            | SK::UntilKeyword => false,
+            _ => true,
         }
     }
 
@@ -1140,6 +1211,77 @@ mod tests {
         let dump = dump_tree(&tree);
         assert!(dump.contains("TableConstructor"), "tree:\n{}", dump);
         assert!(dump.contains("Field"), "tree:\n{}", dump);
+    }
+
+    #[test]
+    fn test_table_missing_separator_recovers() {
+        // A missing separator after a field (here, after the `}` closing the
+        // nested table) must NOT abandon the table constructor and reinterpret
+        // the remaining `Name = {}` entries as top-level statements. Doing so
+        // surfaced as a cascade of spurious create-global / undefined-global
+        // diagnostics on the lower half of the table (reported bug).
+        let src = "local t = {\n  First = {},\n  Nested = {\n    1, 2, 3,\n  }\n  AfterNested = {},\n  Another = {},\n}\n";
+        let tree = parse(src);
+        let dump = dump_tree(&tree);
+        // Exactly one recovery error — the missing separator — nothing cascades.
+        assert_eq!(tree.errors.len(), 1, "expected one recovery error, got {:?}\n{}", tree.errors, dump);
+        // The entries after the missing separator stay inside the table as
+        // Fields; none leak out as a top-level (non-`local`) AssignStatement.
+        // `LocalAssignStatement` (the whole `local t = {...}`) is expected, so
+        // match the node kind at line start rather than as a substring.
+        let leaked = dump.lines().any(|l| l.trim_start().starts_with("AssignStatement"));
+        assert!(!leaked, "fields leaked out of the table as top-level statements:\n{}", dump);
+        assert!(dump.contains("AfterNested") && dump.contains("Another"), "tree:\n{}", dump);
+        // All four outer entries plus the three nested positional values.
+        assert_eq!(dump.matches("Field ").count(), 7, "tree:\n{}", dump);
+    }
+
+    #[test]
+    fn test_table_unterminated_does_not_swallow_statements() {
+        // A genuinely unterminated table must still bail at a statement keyword
+        // rather than recover into it (no runaway consumption of the rest of
+        // the file as table fields).
+        let src = "local t = {\n  a = 1,\n  b = 2,\nlocal x = 1\n";
+        let tree = parse(src);
+        let dump = dump_tree(&tree);
+        // `local x = 1` is parsed as a real statement, not swallowed as a field.
+        assert!(dump.contains("LocalAssignStatement"), "tree:\n{}", dump);
+    }
+
+    #[test]
+    fn test_table_anon_function_value_recovers() {
+        // A positional anonymous-function field value must NOT defeat
+        // missing-separator recovery: `function(` here begins a field
+        // expression, not a statement. With the separator after `1` dropped,
+        // the table must stay intact (recover with one error), not bail and
+        // reparse `function() ... end` as an (invalid) nameless statement.
+        let src = "local t = {\n  1\n  function() return 2 end,\n  Next = {},\n}\n";
+        let tree = parse(src);
+        let dump = dump_tree(&tree);
+        assert_eq!(tree.errors.len(), 1, "expected one recovery error, got {:?}\n{}", tree.errors, dump);
+        // No field leaks out as a top-level (non-`local`) AssignStatement, and
+        // the anonymous function parses as a field value inside the table.
+        let leaked = dump.lines().any(|l| l.trim_start().starts_with("AssignStatement"));
+        assert!(!leaked, "fields leaked out of the table:\n{}", dump);
+        assert!(dump.contains("FunctionDefinition") && dump.contains("Next"), "tree:\n{}", dump);
+    }
+
+    #[test]
+    fn test_table_function_statement_still_bails() {
+        // A `function name()` STATEMENT after a missing separator must still
+        // bail (the table is unterminated), so the function is parsed as a
+        // top-level statement rather than swallowed as an anonymous-function
+        // field value (which `function(` would be — see the test above).
+        let src = "local t = {\n  a = 1\nfunction Foo() return 1 end\n";
+        let tree = parse(src);
+        let dump = dump_tree(&tree);
+        // The function definition is a direct child of the root Block (indent
+        // 2) — a statement — not nested inside the TableConstructor.
+        let fn_is_top_level = dump.lines().any(|l| {
+            let indent = l.len() - l.trim_start().len();
+            indent == 2 && l.trim_start().starts_with("FunctionDefinition")
+        });
+        assert!(fn_is_top_level, "function statement was swallowed into the table:\n{}", dump);
     }
 
     #[test]

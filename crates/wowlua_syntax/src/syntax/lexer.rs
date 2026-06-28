@@ -31,6 +31,10 @@ impl Token {
 
 /// Byte-based lexer for Lua source code.
 /// Produces `SyntaxKind` tokens directly (including keyword resolution).
+///
+/// `Clone` is derived so the parser can take a throwaway snapshot to look one
+/// token ahead without consuming (see `Parser::peek_after_current`).
+#[derive(Clone)]
 pub struct Lexer<'a> {
     source: &'a [u8],
     pos: u32,

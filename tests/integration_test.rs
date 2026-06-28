@@ -937,6 +937,18 @@ fn integration_stubs() {
 }
 
 #[test]
+fn table_missing_separator() {
+    // A table with a deliberately missing separator must not emit spurious
+    // create-global/undefined-global on the fields after it (exhaustive
+    // checking enforces the absence; the syntax error itself is exempt).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/table-missing-separator.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn wrong_arity_stubs() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/wrong-arity-stubs.lua",
