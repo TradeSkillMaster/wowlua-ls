@@ -295,6 +295,10 @@
           "name": "storage.type.annotation.lua"
         },
         {
+          "match": "(?<=---)[ \\t]*@returns-class-name\\b.*",
+          "name": "storage.type.annotation.lua"
+        },
+        {
           "match": "(?<=---)[ \\t]*@flavor-narrows\\b.*",
           "name": "storage.type.annotation.lua"
         },

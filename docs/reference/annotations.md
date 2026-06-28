@@ -121,6 +121,7 @@ shape to a generated class without replacing it:
 |---|---|---|
 | `@type-narrows target class` | Type guard function (index-based). | [Type Guards](/guide/type-guards) |
 | `@type-narrows ClassName` | Type guard method (narrows self). | [Type Guards](/guide/type-guards) |
+| `@returns-class-name` | Method whose string return value names the receiver's class; `recv:m() == "Class"` narrows `recv` to `Class`. | [Type Guards](/guide/type-guards#returns-class-name) |
 | `@narrows-arg N` | Bare call narrows the Nth argument's type to the return type. | [Type Guards](/guide/type-guards#narrows-arg) |
 | `@flavor-narrows flavor` | Flavor guard function or boolean. | [Flavor Filtering](/guide/flavor-filtering) |
 

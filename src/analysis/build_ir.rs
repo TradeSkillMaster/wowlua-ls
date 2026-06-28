@@ -2814,6 +2814,7 @@ impl<'a> Analysis<'a> {
             returns_built_parent: None,
             type_narrows: None,
             type_narrows_class: None,
+            returns_class_name: false,
             has_vararg_return: false,
             see: Vec::new(),
             flavors: 0,
@@ -3212,6 +3213,11 @@ impl<'a> Analysis<'a> {
         }
         if let Some(ref class_name) = annotations.type_narrows_class {
             self.ir.functions[func_idx.val()].type_narrows_class = Some(class_name.clone());
+        }
+
+        // Apply @returns-class-name annotation (return value names receiver's class).
+        if annotations.returns_class_name {
+            self.ir.functions[func_idx.val()].returns_class_name = true;
         }
 
         // Apply @narrows-arg annotation

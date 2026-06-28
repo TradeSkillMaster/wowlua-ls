@@ -378,6 +378,7 @@ fn build_func_external(
         name_start,
         name_end,
         mixin_parents: Vec::new(),
+        returns_class_name: annotations.returns_class_name,
     }
 }
 
@@ -975,6 +976,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 deferred_call_type: false,
                                 name_start: ns, name_end: ne,
                                 mixin_parents,
+                                returns_class_name: false,
                             });
                         } else if names.len() >= 2 {
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
@@ -1193,6 +1195,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 name_start: u32::from(range.start()),
                                 name_end: u32::from(range.end()),
                                 mixin_parents: Vec::new(),
+                                returns_class_name: false,
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.
@@ -1346,6 +1349,7 @@ pub(crate) fn scan_file_globals_with_synth(
                     name_start: ns,
                     name_end: ne,
                     mixin_parents: Vec::new(),
+                    returns_class_name: false,
                 });
                 continue;
             }
@@ -1484,6 +1488,7 @@ pub(crate) fn scan_file_globals_with_synth(
                 name_start: ns,
                 name_end: ne,
                 mixin_parents: Vec::new(),
+                returns_class_name: false,
             });
         }
     }
@@ -1632,6 +1637,7 @@ pub(crate) fn scan_created_globals(
                 name_start: u32::from(range.start()),
                 name_end: u32::from(range.end()),
                 mixin_parents: Vec::new(),
+                returns_class_name: false,
             });
         }
     }

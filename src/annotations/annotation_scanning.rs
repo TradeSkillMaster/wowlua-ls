@@ -382,6 +382,12 @@ pub struct ExternalGlobal {
     /// Workspace-only (not stubs) — `#[serde(skip)]`, no `BLOB_VERSION` bump.
     #[serde(skip)]
     pub mixin_parents: Vec<String>,
+    /// `@returns-class-name` — this method returns the string name of its
+    /// receiver's runtime class; comparing the result to a class-name literal
+    /// narrows the receiver. Rides the stub blob (the WoW `GetObjectType`
+    /// override is the canonical source), so adding it bumped `BLOB_VERSION`.
+    #[serde(default)]
+    pub returns_class_name: bool,
 }
 
 impl ExternalGlobal {
@@ -428,6 +434,7 @@ impl ExternalGlobal {
             name_start: 0,
             name_end: 0,
             mixin_parents: Vec::new(),
+            returns_class_name: false,
         }
     }
 }
@@ -963,6 +970,7 @@ pub(crate) fn scan_method_funcall_self_fields(
                 name_start: range.0,
                 name_end: range.1,
                 mixin_parents: Vec::new(),
+                returns_class_name: false,
             });
         }
     }

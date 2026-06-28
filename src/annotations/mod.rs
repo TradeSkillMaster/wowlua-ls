@@ -750,6 +750,10 @@ pub(crate) struct AnnotationBlock {
     pub(crate) built_extends: bool,
     pub(crate) type_narrows: Option<(usize, usize)>,
     pub(crate) type_narrows_class: Option<String>,
+    /// `@returns-class-name` — method whose string return value names the
+    /// receiver's class (e.g. `GetObjectType`), used for equality-comparison
+    /// type narrowing.
+    pub(crate) returns_class_name: bool,
     pub(crate) is_enum: bool,
     pub(crate) is_key_enum: bool,
     pub(crate) correlated_groups: Vec<Vec<String>>,
@@ -1703,6 +1707,18 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     description: None,
                 });
             }
+        } else if content.strip_prefix("@returns-class-name")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
+            // `@returns-class-name` — the method's string return value names the
+            // receiver's class; `recv:m() == "Class"` narrows recv to Class.
+            // Match on a word boundary (empty or whitespace remainder), NOT just an
+            // exact-empty remainder: this arm MUST precede the `@return` arm, which
+            // would otherwise greedily strip-prefix-match a trailing-token form like
+            // `@returns-class-name foo` as `@return s-class-name foo` and emit a
+            // bogus `undefined-doc-name` for the `s-class-name` fragment. The tag
+            // takes no arguments, so any trailing text is ignored.
+            block.returns_class_name = true;
         } else if let Some(rest) = content.strip_prefix("@return") {
             let rest = rest.trim();
             if !rest.is_empty() {

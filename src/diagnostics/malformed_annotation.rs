@@ -39,7 +39,7 @@ const KNOWN_TAGS: &[&str] = &[
     "class", "field", "alias", "param", "return", "type", "enum",
     "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
     "generic", "private", "protected", "accessor", "diagnostic",
-    "builds-field", "built-name", "built-extends", "type-narrows", "narrows-arg",
+    "builds-field", "built-name", "built-extends", "type-narrows", "returns-class-name", "narrows-arg",
     "creates-global", "generates-events", "callback-event-arg", "correlated", "flavor-narrows", "event", "requires",
     "see", "shape", "vararg", "as", "cast", "operator", "module", "source",
     "version", "package", "async", "nodoc", "public",

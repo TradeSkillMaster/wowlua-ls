@@ -3404,6 +3404,7 @@ impl<'a> Analysis<'a> {
                     returns_built_parent: None,
                     type_narrows: None,
                     type_narrows_class: None,
+                    returns_class_name: false,
                     has_vararg_return: has_vararg_return_clone,
                     see: Vec::new(),
                     flavors: 0,

@@ -992,6 +992,15 @@ pub(crate) struct Function {
     /// `Class<X>`.
     #[serde(default)]
     pub(crate) returns_self_type_args: Option<Vec<crate::annotations::AnnotationType>>,
+    /// `@returns-class-name` — this method returns the string name of its
+    /// receiver's runtime class (e.g. WoW's `FrameScriptObject:GetObjectType`).
+    /// Comparing the result to a class-name literal narrows the receiver to that
+    /// class: `recv:GetObjectType() == "FontString"` narrows `recv` to
+    /// `FontString` in the then-branch (and the `~=` / early-exit complements).
+    /// Powers the same narrowing as `@type-narrows` but via return-value equality
+    /// rather than a boolean guard call.
+    #[serde(default)]
+    pub(crate) returns_class_name: bool,
 }
 
 /// Utility-type projection referencing a bound generic's function shape.

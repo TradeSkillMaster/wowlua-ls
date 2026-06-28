@@ -638,6 +638,15 @@ impl<'a> Analysis<'a> {
                     if is_positive_class_eq {
                         self.try_event_param_narrowing(lhs, rhs, parent_scope, target_scope);
                     }
+                    // Return-value class guard: `recv:GetObjectType() == "Class"` narrows
+                    // recv to Class (then-branch `==` / else-branch `~=`). The inverse
+                    // can't cleanly subtract a class, so only the positive direction.
+                    if is_positive_class_eq
+                        && let Some((sym_idx, class_name)) =
+                            self.extract_returns_class_name_guard(lhs, rhs, parent_scope)
+                    {
+                        self.apply_type_narrows(sym_idx, &class_name, target_scope);
+                    }
                 }
     }
 
@@ -1006,6 +1015,15 @@ impl<'a> Analysis<'a> {
                                     .insert(NarrowTarget::Field(sym_idx, chain), lit_vt);
                             }
                         }
+                    }
+                    // Return-value class guard early exit:
+                    // `if recv:GetObjectType() ~= "Class" then return end` → recv IS Class
+                    // after the guard. (`==` would mean recv is NOT Class, no clean narrowing.)
+                    if is_neq
+                        && let Some((sym_idx, class_name)) =
+                            self.extract_returns_class_name_guard(lhs, rhs, scope_idx)
+                    {
+                        self.apply_type_narrows(sym_idx, &class_name, scope_idx);
                     }
                 }
             }
@@ -1406,6 +1424,13 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                             }
+                    // assert(recv:GetObjectType() == "Class") → recv IS Class.
+                    if is_eq
+                        && let Some((sym_idx, class_name)) =
+                            self.extract_returns_class_name_guard(lhs, rhs, scope_idx)
+                    {
+                        self.apply_type_narrows(sym_idx, &class_name, scope_idx);
+                    }
                 }
             }
             Expression::FunctionCall(call) => {
@@ -3393,7 +3418,7 @@ impl<'a> Analysis<'a> {
                 if let Some(fi) = self.ir.table(table_idx).fields.get(method.as_str())
                     && let Expr::FunctionDef(func_idx) | Expr::Literal(ValueType::Function(Some(func_idx))) = self.expr(fi.expr) {
                     let func = self.func(*func_idx);
-                    if func.type_narrows.is_some() || func.type_narrows_class.is_some() {
+                    if func.type_narrows.is_some() || func.type_narrows_class.is_some() || func.returns_class_name {
                         if let Some(prev) = found
                             && prev != *func_idx {
                             return None;
@@ -3445,6 +3470,40 @@ impl<'a> Analysis<'a> {
             }
         }
         None
+    }
+
+    /// Extract a return-value class guard: `recv:GetObjectType() == "ClassName"`.
+    /// When one side of an equality comparison is a method call whose callee is
+    /// annotated `@returns-class-name` (the method returns its receiver's runtime
+    /// class name) and the other side is a class-name string literal, return
+    /// `(receiver_symbol, class_name)`. Order-independent.
+    ///
+    /// The receiver must be a plain single-name method call (`recv:m()`); deeper
+    /// field-chain receivers (`a.b:m()`) are not narrowed here. The class-existence
+    /// check is deferred to `apply_type_narrows`, which no-ops on an unknown class
+    /// (graceful degradation, matching the `@type-narrows` path).
+    fn extract_returns_class_name_guard(
+        &self,
+        lhs: &Expression<'_>,
+        rhs: &Expression<'_>,
+        scope: ScopeIndex,
+    ) -> Option<(SymbolIndex, String)> {
+        let (call, other) = match (lhs, rhs) {
+            (Expression::FunctionCall(c), o) => (c, o),
+            (o, Expression::FunctionCall(c)) => (c, o),
+            _ => return None,
+        };
+        // The non-call side must be a (non-empty) string literal naming the class.
+        let class_name = Self::extract_string_literal(other)?;
+        if class_name.is_empty() { return None; }
+        // The callee method must carry `@returns-class-name`.
+        let func_idx = self.try_resolve_call_function(call, scope)?;
+        if !self.func(func_idx).returns_class_name { return None; }
+        // Receiver is the first name of a `recv:method()` call (exactly receiver + method).
+        let names = call.identifier()?.names();
+        if names.len() != 2 { return None; }
+        let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?;
+        Some((sym_idx, class_name))
     }
 
     /// Extract type guard info from a function call with `@type-narrows`.

@@ -222,7 +222,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 31;
+pub(crate) const BLOB_VERSION: u32 = 32;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -831,6 +831,7 @@ pub(crate) struct FnMeta<'a> {
     pub(crate) built_extends: bool,
     pub(crate) type_narrows_raw: Option<(usize, usize)>,
     pub(crate) type_narrows_class_raw: Option<String>,
+    pub(crate) returns_class_name_raw: bool,
     pub(crate) narrows_arg_raw: Option<usize>,
     pub(crate) requires_raw: Vec<(String, String)>,
     pub(crate) is_colon: bool,
@@ -869,6 +870,7 @@ impl<'a> FnMeta<'a> {
             built_extends: false,
             type_narrows_raw: None,
             type_narrows_class_raw: None,
+            returns_class_name_raw: false,
             narrows_arg_raw: None,
             requires_raw: Vec::new(),
             is_colon: false,
@@ -907,6 +909,7 @@ impl<'a> FnMeta<'a> {
             built_extends: g.built_extends,
             type_narrows_raw: g.type_narrows,
             type_narrows_class_raw: g.type_narrows_class.clone(),
+            returns_class_name_raw: g.returns_class_name,
             narrows_arg_raw: g.narrows_arg,
             requires_raw: g.requires.clone(),
             is_colon,
@@ -3005,6 +3008,7 @@ impl PreResolvedGlobals {
             returns_built_parent: None,
             type_narrows: None,
             type_narrows_class: None,
+            returns_class_name: false,
             has_vararg_return,
             see: Vec::new(),
             flavors: 0,
@@ -3042,6 +3046,7 @@ impl PreResolvedGlobals {
             built_extends,
             type_narrows_raw,
             type_narrows_class_raw,
+            returns_class_name_raw,
             narrows_arg_raw,
             requires_raw,
             is_colon,
@@ -3463,6 +3468,7 @@ impl PreResolvedGlobals {
             returns_built_parent,
             type_narrows: type_narrows_raw,
             type_narrows_class: type_narrows_class_raw,
+            returns_class_name: returns_class_name_raw,
             has_vararg_return: non_self_returns.last().is_some_and(|r| matches!(r, AnnotationType::VarArgs(_)))
                 || tuple_ret.has_vararg_tail,
             see,

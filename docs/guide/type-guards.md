@@ -73,6 +73,27 @@ function example(row)
 end
 ```
 
+## Return-value class guard (`@returns-class-name`) {#returns-class-name}
+
+Some methods return a *string naming the receiver's runtime class* rather than a boolean. WoW's `FrameScriptObject:GetObjectType()` is the canonical example — it returns `"Button"`, `"FontString"`, etc. Mark such a method with `@returns-class-name` and comparing its result to a class-name literal narrows the receiver:
+
+```lua
+---@returns-class-name
+---@return string
+function FrameScriptObject:GetObjectType() end
+```
+
+```lua
+---@param region Region
+function example(region)
+    if region:GetObjectType() == "FontString" then
+        region:GetText() -- region is FontString here (GetText resolves)
+    end
+end
+```
+
+The receiver is narrowed in the then-branch of `==` (and the `~=` early-exit / `assert` complements), in either operand order (`"FontString" == region:GetObjectType()` works too). Comparing against a non-literal or an unknown class name narrows nothing. This is the equality-comparison counterpart to `@type-narrows` on a boolean guard like `IsObjectType`.
+
 ## Where narrowing applies
 
 Custom type guards work in all the same places as built-in narrowing:
