@@ -477,7 +477,20 @@ pub(in crate::stub_gen) fn generate_scriptobject_method_stubs(
                 }
             }
             let params: Vec<&str> = func.arguments.iter().map(|a| a.name.as_str()).collect();
-            writeln!(out, "function {class_name}:{}({}) end", func.name, params.join(", ")).unwrap();
+            if params.is_empty() {
+                // Blizzard's APIDocumentationGenerated frequently lists widget/script-object
+                // methods with an empty (or absent) Arguments array even when the method
+                // takes parameters — its auto-generated docs are notoriously incomplete for
+                // inherited widget methods. This path only fires for methods MISSING from
+                // Ketho's curated vendor stubs, so an empty arguments list here means "no
+                // documented param data", not "genuinely nullary". Emit an open vararg
+                // signature (`fun(self, ...)`) so real call sites with arguments aren't
+                // false-flagged as `redundant-parameter`; methods that DO carry documented
+                // arguments keep their precise arity check via the branch below.
+                writeln!(out, "function {class_name}:{}(...) end", func.name).unwrap();
+            } else {
+                writeln!(out, "function {class_name}:{}({}) end", func.name, params.join(", ")).unwrap();
+            }
             writeln!(out).unwrap();
             total += 1;
         }

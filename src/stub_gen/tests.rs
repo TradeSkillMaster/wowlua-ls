@@ -1001,6 +1001,24 @@ fn test_generate_scriptobject_method_stubs() {
                         returns: Vec::new(),
                         may_return_nothing: false,
                     },
+                    // A method Blizzard documents with NO Arguments array (its auto-docs
+                    // are incomplete for inherited widget methods). It is missing from
+                    // Ketho's stubs, so it reaches the emission path — and must become an
+                    // open vararg signature so real call sites passing args aren't flagged
+                    // `redundant-parameter`. Carries a return to confirm returns still emit.
+                    BlizzardFunction {
+                        name: "SetBreakpoints".to_string(),
+                        namespace: None,
+                        arguments: Vec::new(),
+                        returns: vec![BlizzardParam {
+                            name: "applied".to_string(),
+                            type_name: "bool".to_string(),
+                            nilable: false,
+                            inner_type: None,
+                            mixin: None,
+                        }],
+                        may_return_nothing: false,
+                    },
                     // This one simulates a method already in Ketho's stubs (e.g. GetText)
                     BlizzardFunction {
                         name: "GetText".to_string(),
@@ -1032,9 +1050,17 @@ fn test_generate_scriptobject_method_stubs() {
 
     let out = generate_scriptobject_method_stubs(&docs, &known_enums, &existing);
 
-    // SetSmoothScaling should appear (not in existing)
+    // SetSmoothScaling should appear (not in existing). It has a documented
+    // argument, so it keeps its precise arity — NOT a vararg signature.
     assert!(out.contains("function FontString:SetSmoothScaling(smoothScaling) end"), "missing SetSmoothScaling: {out}");
     assert!(out.contains("---@param smoothScaling boolean"), "missing @param: {out}");
+    // SetBreakpoints has no documented arguments, so it must be emitted as an open
+    // vararg signature `(...)`, never a fixed zero-arity `()` — otherwise a call like
+    // `formatter:SetBreakpoints({...})` false-flags `redundant-parameter`.
+    assert!(out.contains("function FontString:SetBreakpoints(...) end"), "no-arg method must be vararg: {out}");
+    assert!(!out.contains("function FontString:SetBreakpoints() end"), "no-arg method must NOT be fixed zero-arity: {out}");
+    // The return annotation is still emitted alongside the vararg signature.
+    assert!(out.contains("---@return boolean applied"), "missing @return on vararg method: {out}");
     // GetText should NOT appear (already in existing)
     assert!(!out.contains("GetText"), "GetText should be filtered out: {out}");
     // Unknown API should not appear
