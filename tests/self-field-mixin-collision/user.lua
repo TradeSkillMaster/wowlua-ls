@@ -5,10 +5,12 @@
 local leaked = Collision.deep
 --                       ^ hover: <missing>
 local ok = PlainMixin.shallow
---                    ^ hover: (field) shallow: table
+--                    ^ hover: (field) shallow: any
 -- The deeply-nested @class `Outer.Sub.Widget`'s control-flow-nested `self.nested`
 -- write must resolve on a NestedClass-typed value (re-keyed via var_to_class).
+-- Existence-only fields register as `any` (the honest "unknown"), not a bare
+-- `table` that would leak into reads as a false `type-mismatch`/`cannot-call`.
 ---@type NestedClass
 local widget = nil
 local n = widget.nested
---               ^ hover: (field) nested: table
+--               ^ hover: (field) nested: any

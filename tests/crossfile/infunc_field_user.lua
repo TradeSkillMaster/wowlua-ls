@@ -8,9 +8,10 @@
 ---@class InFuncNS
 local addonTable = select(2, ...)
 
--- single-target in-function field (existence-only: typed as a bare `table`)
+-- single-target in-function field (existence-only: the honest "unknown" `any`,
+-- not a bare `table` that would leak into reads as a false type-mismatch)
 local t = addonTable.Title
---                   ^ hover: (field) Title: table
+--                   ^ hover: (field) Title: any
 -- multi-target in-function fields
 local w = addonTable.Width
 local h = addonTable.Height

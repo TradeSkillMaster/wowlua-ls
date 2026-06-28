@@ -1657,11 +1657,26 @@ fn crossfile_self_field_chain() {
 }
 
 #[test]
+fn self_field_chain_scalar() {
+    // Regression: a chained-funcall self-field whose chain returns a scalar
+    // (`self.x = GetFrame():GetHeight()` -> number) must be parked existence-only
+    // as `any`, not a guessed `table`. Cross-file, the `table` placeholder leaked
+    // into reads and false-positived as `type-mismatch` when the field's value
+    // was passed to a `number` parameter. Needs stubs (Frame:GetHeight,
+    // C_NamePlate.SetNamePlateSize).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/self-field-chain-scalar/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/self-field-chain-scalar"),
+    });
+}
+
+#[test]
 fn self_field_argnested() {
     // Regression: a `self.x = select(3, UnitClass(...))` write whose argument
     // nests a call must route to the funcall scanner (precise scalar type), not
-    // be misclassified as a chained receiver and parked as a bare `table`. A
-    // genuinely-chained receiver still parks as `table`.
+    // be misclassified as a chained receiver and parked existence-only as `any`.
+    // A genuinely-chained receiver still parks as `any`.
     run_annotation_tests(&TestConfig {
         lua_file: "tests/self-field-argnested/mod.lua",
         with_stubs: true,

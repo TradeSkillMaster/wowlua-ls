@@ -1745,10 +1745,15 @@ impl BuildContext {
                     // a bare table.
                     ValueType::callable_or_unknown()
                 } else {
-                    // Register as untyped table so the field is at least visible. A
-                    // bare `table` (not the callable intersection) so a competing
-                    // concrete type can still subsume it in a union.
-                    ValueType::Table(None)
+                    // Register existence-only as `any` (the honest "unknown") so the
+                    // field is at least visible without asserting a shape. NOT a bare
+                    // `table`: that concrete type leaks into reads — a non-table value
+                    // (a number from a chained call, a string) passed to a typed
+                    // parameter then false-positives as `type-mismatch` (`got table`),
+                    // and calling the field false-positives as `cannot-call`. The skip
+                    // guard above already lets a concretely-typed definition win, so
+                    // this placeholder only fires when no better type exists.
+                    ValueType::Any
                 };
                 let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::Literal(value_type.clone()));
@@ -2025,6 +2030,12 @@ impl BuildContext {
                         self.sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
                     } else {
+                        // Assume-table *heuristic* for an unresolvable named call (not a
+                        // known table — can fire for a scalar-returning call). Kept as an
+                        // overridable `Table(None)` placeholder, NOT `any`: per-file/
+                        // deferred re-resolution refines it to the precise type, which
+                        // `any` (authoritative) would block. See the matching branch in
+                        // `build_on_stubs.rs` for the full rationale.
                         Some(ValueType::Table(None))
                     }
                 });

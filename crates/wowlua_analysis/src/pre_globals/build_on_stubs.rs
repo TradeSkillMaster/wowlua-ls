@@ -615,10 +615,15 @@ impl<'a> BuildOnStubsContext<'a> {
                     // a bare table.
                     ValueType::callable_or_unknown()
                 } else {
-                    // Register as untyped table so the field is at least visible. A
-                    // bare `table` (not the callable intersection) so a competing
-                    // concrete type can still subsume it in a union.
-                    ValueType::Table(None)
+                    // Register existence-only as `any` (the honest "unknown") so the
+                    // field is at least visible without asserting a shape. NOT a bare
+                    // `table`: that concrete type leaks into reads — a non-table value
+                    // (a number from a chained call, a string) passed to a typed
+                    // parameter then false-positives as `type-mismatch` (`got table`),
+                    // and calling the field false-positives as `cannot-call`. The skip
+                    // guard above already lets a concretely-typed definition win, so
+                    // this placeholder only fires when no better type exists.
+                    ValueType::Any
                 };
                 let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::Literal(value_type.clone()));
@@ -794,6 +799,22 @@ impl<'a> BuildOnStubsContext<'a> {
                         self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
                     } else {
+                        // Last resort: the named call resolved to nothing — an
+                        // unresolvable callee (a file-local factory the cross-file scan
+                        // can't follow, a generic whose return was filtered out) with no
+                        // string-arg / field-name class match. This is the assume-table
+                        // *heuristic*, NOT a value known to be a table: it can fire for a
+                        // scalar-returning call too. It is deliberately a bare `Table(None)`
+                        // placeholder, NOT `any`: a same-file or deferred re-resolution of
+                        // the assignment refines `Table(None)` to the precise type where the
+                        // coarse scan couldn't (e.g. `select(3, UnitClass(...))` -> number,
+                        // a defclass static field), whereas `any` is authoritative and would
+                        // block that refinement — empirically regressing those reads to `any`
+                        // (`tests/self-field-argnested`, `tests/crossfile/defclass_static_field`).
+                        // The residual cost is a genuinely-unresolvable non-table call read
+                        // *cross-file* off a known-table root, which mis-displays as `table`
+                        // — a narrow, accepted limitation (the self-field/Unknown placeholders
+                        // this commit moved to `any` had no such refinement to preserve).
                         Some(ValueType::Table(None))
                     }
                 });
@@ -978,18 +999,24 @@ impl<'a> BuildOnStubsContext<'a> {
                     // `undefined-field`. Guarded on the field being absent so a
                     // concrete type from an earlier pass is never downgraded.
                     //
-                    // Typed `Any`, deliberately diverging from the bare `table` the
-                    // Unknown and FunctionCall fallbacks above use. The two are a
-                    // genuine tradeoff for a value we can't type: `table` is truthy
-                    // (so `field and field.x` stays clean) but flags a *callable*
-                    // field as `cannot-call` and a *string* field as `type-mismatch`;
-                    // `any` is clean for those but `any and x` resolving to `x?` can
-                    // over-report `return-mismatch` in the guarded-access idiom. The
-                    // bare-local case empirically favors `any`: across 18 real addons
-                    // `any` added zero new diagnostics, whereas `table` added
-                    // `cannot-call`/`type-mismatch` on shipping code — the guarded
-                    // idiom never lands on a bare-local field in practice (the
-                    // tradeoff is locked in by `tests/crossfile/bare_local_field_*`).
+                    // Typed `Any`, consistent with the Unknown fallback above.
+                    // (The FunctionCall fallback's unresolvable-callee branch keeps a
+                    // bare `Table(None)` instead — but that is an *overridable*
+                    // placeholder that per-file/deferred re-resolution refines to the
+                    // precise type; `Any` is authoritative and would block that, so the
+                    // two paths legitimately differ.) This bare-local case has no such
+                    // refinement to preserve, so `any` is correct: a value we can't type
+                    // must NOT be guessed as a concrete `table` that leaks into reads.
+                    // The `any`-vs-`table` choice is a genuine tradeoff: `table` is
+                    // truthy (so `field and field.x` stays clean) but flags a *callable*
+                    // field as `cannot-call` and a *string*/*number* field as
+                    // `type-mismatch`; `any` is clean for those but `any and x` resolving
+                    // to `x?` could in principle over-report `return-mismatch` in the
+                    // guarded-access idiom. Empirically `any` wins: across 18 real addons
+                    // it added zero new diagnostics, whereas `table` added
+                    // `cannot-call`/`type-mismatch` on shipping code — the guarded idiom
+                    // never lands on these existence-only fields in practice (the tradeoff
+                    // is locked in by `tests/crossfile/bare_local_field_*`).
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(ValueType::Any));
                     self.tables[local_idx].fields.insert(field_name.clone(),

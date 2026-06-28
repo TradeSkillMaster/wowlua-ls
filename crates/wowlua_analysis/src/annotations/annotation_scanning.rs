@@ -188,16 +188,18 @@ pub enum FieldValueKind {
     Function,
     FunctionCall(Vec<std::string::String>, Option<std::string::String>),
     FieldRef(Vec<std::string::String>),
-    /// Existence-only field the coarse scan couldn't type — registered as a bare
-    /// (non-callable) `table` so reads stay clean without fabricating a type.
+    /// Existence-only field the coarse scan couldn't type — registered as `any`
+    /// (the honest "unknown") so reads stay clean without fabricating a shape. NOT
+    /// a bare `table`: that concrete type leaks into reads and false-positives a
+    /// non-table value (a number/string) passed to a typed parameter as
+    /// `type-mismatch`, or a call as `cannot-call`.
     Unknown,
     /// Like `Unknown`, but the right-hand side was a *forwarded* value — another
     /// field or a parameter (`ns.Foo = current.func`, `ns.Cb = callback`) — which
     /// may hold a callable. Materialized as [`ValueType::callable_or_unknown`] so a
     /// later call through the field isn't flagged `cannot-call`, while reads stay
-    /// as permissive as a bare table. Distinct from `Unknown` (a function-*call*
-    /// RHS like `CreateFrame(...)`), which keeps the bare-`table` placeholder so it
-    /// can still be subsumed by a competing concrete type in a union.
+    /// as permissive as a bare table. A more *specific* guess than `Unknown`'s
+    /// `any` for a value the scan has reason to believe is callable.
     ///
     /// Emitted only by the per-file/workspace descendants scan for an in-function
     /// `ns.field = identifier` write; the declaration-only stub sources contain no
@@ -888,7 +890,7 @@ fn scan_typed_self_fields_inner(
 /// `Foo():Bar()`. The funcall self-field scanner can only resolve callees rooted
 /// at a plain name chain (`Foo()`, `a.b.c()`, `self:M()`), so a chained receiver
 /// makes the return type unrecoverable by the coarse scan. Such fields are
-/// registered existence-only (bare `table`) by the bare scanner instead, so the
+/// registered existence-only (as `any`) by the bare scanner instead, so the
 /// funcall scanner skips them — keeping the two scanners' coverage disjoint (no
 /// dedup races). The argument list is excluded because args may legitimately
 /// contain calls (`Foo(Bar())` and `select(3, UnitClass(...))` are *not* chained
@@ -1007,7 +1009,7 @@ fn scan_funcall_self_fields_inner(
                             let Some(Expression::FunctionCall(call)) = exprs.get(i) else { continue };
                             // A chained-receiver call (`LibStub("X"):New(...)`) has no
                             // resolvable named callee — leave it to the bare scanner,
-                            // which registers it existence-only as a bare `table`.
+                            // which registers it existence-only as `any`.
                             if funcall_has_chained_receiver(call) { continue; }
                             let Some(call_ident) = call.identifier() else { continue };
                             let mut callee_names = call_ident.names();
@@ -1166,16 +1168,23 @@ fn scan_bare_self_fields_inner(
                                 // (`self.x = Foo():Bar()`, `self.x = LibStub("X"):New()`)
                                 // has a call as its receiver, so the coarse scan can't
                                 // resolve the chain; the funcall scan skips it and we
-                                // register the field existence-only as a bare `table`
-                                // (chained builder/factory calls return objects) so
-                                // cross-file reads don't false-positive as undefined.
-                                // Deliberately not `any`: `any` propagates through
-                                // `self.x.y and z` as `boolean?`, causing spurious
-                                // `return-mismatch`; a truthy `table` short-circuits to
-                                // the RHS type.
+                                // register the field existence-only as `any` so cross-file
+                                // reads don't false-positive as `undefined-field`.
+                                //
+                                // Deliberately `any`, NOT a bare `table`: the chain can
+                                // return *any* type (a number from `f():GetHeight()`, a
+                                // string, a frame, a builder object). A concrete `table`
+                                // placeholder is a guess that's wrong whenever the result
+                                // is a non-table, and it leaks into reads — passing the
+                                // field's value to a typed parameter then false-positives
+                                // as `type-mismatch` (`got table`), and a method call on
+                                // it can false-positive as `cannot-call`. `any` is the
+                                // honest "we don't know" type: it suppresses the
+                                // existence checks without asserting a shape that breaks
+                                // assignability.
                                 Some(Expression::FunctionCall(call)) => {
                                     if funcall_has_chained_receiver(call) {
-                                        AnnotationType::Simple("table".into())
+                                        AnnotationType::Simple("any".into())
                                     } else {
                                         continue;
                                     }

@@ -1250,10 +1250,12 @@ pub fn scan_file_globals_with_synth(
     //
     // So we emit an existence-only entry (`FieldValueKind::Unknown`, no type)
     // for each such field. The build's Unknown-field pass registers an
-    // otherwise-absent field as a bare `table` with no annotation — enough to
-    // suppress `undefined-field` on reads without fabricating a type (so no
-    // `field-type-mismatch` on the write and no spurious `undefined-field` on
-    // its own sub-fields) — and *skips* fields that already carry a precise type
+    // otherwise-absent field as `any` (the honest "unknown") with no annotation —
+    // enough to suppress `undefined-field` on reads without fabricating a shape
+    // (so no `field-type-mismatch` on the write, no spurious `undefined-field` on
+    // its own sub-fields, and — unlike a bare `table` — no false `type-mismatch`
+    // when the field's value is passed to a typed parameter, nor `cannot-call`
+    // when it is invoked) — and *skips* fields that already carry a precise type
     // or methods, so this never clobbers a better definition. Multi-target
     // assignments (`a.x, a.y = f()`) are handled uniformly by iterating every
     // LHS target.
@@ -1277,8 +1279,8 @@ pub fn scan_file_globals_with_synth(
         let in_function = node.ancestors().any(|a| a.kind() == SyntaxKind::FunctionDefinition);
         if !in_function && idents.len() < 2 { continue; }
         // Per-target RHS, so a field assigned a function literal can be registered
-        // callable (`FieldValueKind::Function`) rather than as a bare `table` —
-        // otherwise a later `self.cb()` call would false-positive as `cannot-call`.
+        // callable (`FieldValueKind::Function`) rather than existence-only `any` —
+        // preserving the precise callable type for hover/completion.
         let rhs_exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
         for (target_idx, ident) in idents.iter().enumerate() {
             // Skip bracket-element writes (`ns.field[123] = ...`): those write to
@@ -1445,7 +1447,7 @@ pub fn scan_file_globals_with_synth(
             // callable, so on a *namespace/`@class` field* it registers
             // callable-or-unknown (`MaybeCallable`). Everything else (a function
             // *call* like `CreateFrame(...)`, a table constructor, a literal) stays
-            // existence-only as a bare `table`.
+            // existence-only as `any`.
             //
             // Scoped to non-`self` roots: that is exactly the reported case
             // (namespace/`@class` fields, which commonly hold callbacks). A `self.`

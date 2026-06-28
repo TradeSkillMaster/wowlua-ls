@@ -10,12 +10,14 @@ pub struct FieldTypeMismatch;
 /// — the existing "workspace-scan placeholder, parked because a call's return
 /// type couldn't be resolved" marker, set at the addon-namespace parking sites
 /// and consumed symmetrically by `is_table_subtype_impl`. The self-field/global
-/// scan parks one of these on a field whose only writer it couldn't type (a
-/// chained/builder call, a `select(...)` with an arg-nested call, etc.), so it
-/// carries no shape and no author annotation and must never override an actual
-/// write type. A scan-inferred table that *does* carry a shape (an unflagged
-/// table with real fields) is not a placeholder and is handled by the
-/// structural-table path below.
+/// scan parks one of these on a field whose only writer it couldn't type but is
+/// known to be a table (a `{}` constructor whose shape it couldn't capture, an
+/// addon-namespace funcall whose chain stayed unresolved), so it carries no shape
+/// and no author annotation and must never override an actual write type. (A
+/// fully type-unknown writer — a chained call that may return a non-table — parks
+/// `Any` instead, which is universally assignable and never reaches this check.)
+/// A scan-inferred table that *does* carry a shape (an unflagged table with real
+/// fields) is not a placeholder and is handled by the structural-table path below.
 fn is_bare_scan_placeholder(analysis: &AnalysisResult, vt: &ValueType) -> bool {
     match vt {
         ValueType::Table(None) => true,
@@ -49,13 +51,13 @@ impl DiagnosticPass for FieldTypeMismatch {
             // fabricated is never authoritative for an actual write type.
             if field_info.from_scan {
                 // Bare `table` placeholder (see `is_bare_scan_placeholder`). The
-                // scan couldn't type the field's only writer — a chained/builder
-                // call, or `self.x = select(3, UnitClass("player"))` whose
-                // arg-nested call makes the scan treat the assignment as
-                // unresolvable — and parked a bare `table`. It is a "type unknown"
-                // marker with no shape, so it must never override the actual write
-                // type: skip for ANY actual, including the very scalar/nil write
-                // that produced the placeholder.
+                // scan knew the field's writer was a table but couldn't capture its
+                // shape (a `{}` constructor, an addon-namespace funcall whose chain
+                // stayed unresolved) and parked a bare `table`. It is a "shape
+                // unknown" marker, so it must never override the actual write type:
+                // skip for ANY actual, including the very table write that produced
+                // the placeholder. (A fully type-unknown writer parks `Any`, which
+                // is universally assignable and never reaches this branch.)
                 if is_bare_scan_placeholder(analysis, expected) {
                     continue;
                 }
