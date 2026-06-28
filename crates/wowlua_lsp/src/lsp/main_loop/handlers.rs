@@ -22,12 +22,19 @@ pub(super) fn parse_lua(text: &str) -> SyntaxTree {
 /// infrequent (sent on open and after debounced changes, not per keystroke).
 pub(super) fn folding_ranges_for_doc(doc: &Document) -> Option<Vec<FoldingRange>> {
     let cached_tree = doc.tree.as_ref()?;
+    // How a block's trailing closer (`end` / `}` / `until …`) is rendered when
+    // folded depends on the client's negotiated capabilities.
+    let opts = crate::lsp::folding_range::FoldingOptions {
+        line_folding_only: super::folding_line_only(),
+        collapsed_text: super::folding_collapsed_text(),
+        utf8: super::use_utf8(),
+    };
     match doc.pending_text.as_deref() {
         Some(pending) => {
             let tree = parse_lua(pending);
-            Some(crate::lsp::folding_range::compute_folding_ranges(&tree, pending))
+            Some(crate::lsp::folding_range::compute_folding_ranges(&tree, pending, opts))
         }
-        None => Some(crate::lsp::folding_range::compute_folding_ranges(cached_tree, &doc.text)),
+        None => Some(crate::lsp::folding_range::compute_folding_ranges(cached_tree, &doc.text, opts)),
     }
 }
 

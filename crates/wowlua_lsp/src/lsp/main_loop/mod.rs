@@ -82,9 +82,24 @@ pub use code_actions::{compute_quick_fixes, compute_code_actions, make_generate_
 /// Whether the negotiated position encoding is UTF-8 (byte offsets).
 /// Set once during initialization; defaults to false (UTF-16) if not set.
 static USE_UTF8_POSITIONS: OnceLock<bool> = OnceLock::new();
+static FOLDING_LINE_FOLDING_ONLY: OnceLock<bool> = OnceLock::new();
+static FOLDING_COLLAPSED_TEXT: OnceLock<bool> = OnceLock::new();
 
 pub fn use_utf8() -> bool {
     *USE_UTF8_POSITIONS.get().unwrap_or(&false)
+}
+
+/// Whether the client only folds whole lines and ignores folding-range
+/// start/end character (VS Code sets this). False ⇒ a character-precise client
+/// such as JetBrains, which can fold a block's closer inline.
+pub fn folding_line_only() -> bool {
+    *FOLDING_LINE_FOLDING_ONLY.get().unwrap_or(&false)
+}
+
+/// Whether the client supports a custom `collapsedText` placeholder on folding
+/// ranges (VS Code does), letting a line-folding client surface the closer.
+pub fn folding_collapsed_text() -> bool {
+    *FOLDING_COLLAPSED_TEXT.get().unwrap_or(&false)
 }
 
 /// Maps stale analysis byte offsets (relative to `Document::text`) into
@@ -483,6 +498,28 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         PositionEncodingKind::UTF16
     };
     log::info!("Position encoding: {:?}", negotiated_encoding);
+
+    // Folding-range rendering depends on what the client supports: a
+    // line-folding-only client (VS Code) ignores start/end character, while a
+    // character-precise client (JetBrains) can fold a block's closer inline.
+    // `collapsedText` support lets a line-folding client still surface the
+    // closer in the placeholder. See `folding_range::compute_folding_ranges`.
+    let folding_caps = client_capabilities.text_document
+        .as_ref()
+        .and_then(|td| td.folding_range.as_ref());
+    let folding_line_only = folding_caps
+        .and_then(|f| f.line_folding_only)
+        .unwrap_or(false);
+    let folding_collapsed_text = folding_caps
+        .and_then(|f| f.folding_range.as_ref())
+        .and_then(|fr| fr.collapsed_text)
+        .unwrap_or(false);
+    let _ = FOLDING_LINE_FOLDING_ONLY.set(folding_line_only);
+    let _ = FOLDING_COLLAPSED_TEXT.set(folding_collapsed_text);
+    log::info!(
+        "Folding: line_folding_only={}, collapsed_text={}",
+        folding_line_only, folding_collapsed_text
+    );
 
     let server_capabilities = ServerCapabilities {
         position_encoding: Some(negotiated_encoding),
