@@ -1,10 +1,9 @@
 package com.tradeskillmaster.wowluals
 
 import com.intellij.execution.configurations.GeneralCommandLine
-import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.openapi.application.PluginPathManager
 import com.intellij.openapi.editor.DefaultLanguageHighlighterColors
 import com.intellij.openapi.editor.colors.TextAttributesKey
-import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.api.LspServerSupportProvider
@@ -59,11 +58,12 @@ private class WowLuaLspServerDescriptor(project: Project) : ProjectWideLspServer
         val configured = WowLuaSettings.getInstance().serverPath
         if (configured.isNotBlank()) return configured
 
-        val pluginPath = PluginManagerCore.getPlugin(
-            PluginId.getId("com.tradeskillmaster.wowlua-ls")
-        )?.pluginPath
-        if (pluginPath != null) {
-            val bundled = pluginPath.resolve("server").resolve(platform).resolve(binaryName)
+        // Resolve <pluginPath>/server/<platform>/ from this plugin's own dist directory.
+        // PluginPathManager.getPluginResource is public API; it avoids the now-internal
+        // PluginManagerCore.getPlugin() and a hardcoded plugin ID.
+        val serverDir = PluginPathManager.getPluginResource(javaClass, "server")
+        if (serverDir != null) {
+            val bundled = serverDir.toPath().resolve(platform).resolve(binaryName)
             if (Files.isRegularFile(bundled)) return bundled.toString()
         }
 
