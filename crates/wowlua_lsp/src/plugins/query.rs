@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::analysis::AnalysisResult;
+use crate::analysis::{AnalysisResult, BinaryOpSite};
 use crate::annotations::{AnnotationType, annotation_type_is_nullable, format_annotation_type};
 use crate::ast::Operator;
 use crate::pre_globals::EventPayload;
@@ -24,6 +24,7 @@ pub(super) struct AnalysisSnapshot {
     pub(super) field_assignments: Vec<FieldAssignment>,
     pub(super) string_literals: HashMap<ExprId, String>,
     pub(super) number_literals: HashMap<ExprId, String>,
+    pub(super) binary_op_sites: Vec<BinaryOpSite>,
     pub(super) event_types: HashMap<String, HashMap<String, EventPayload>>,
     pub(super) event_locations: HashMap<String, HashMap<String, ExternalLocation>>,
 }
@@ -41,6 +42,7 @@ impl AnalysisSnapshot {
             field_assignments: analysis.ir.field_assignments.clone(),
             string_literals: analysis.ir.string_literals.clone(),
             number_literals: analysis.ir.number_literals.clone(),
+            binary_op_sites: analysis.ir.binary_op_sites.clone(),
             event_types: analysis.ir.ext.event_types.clone(),
             event_locations: analysis.ir.ext.event_locations.clone(),
         }
@@ -463,67 +465,39 @@ pub(super) fn function_params(snap: &AnalysisSnapshot, func_idx: FunctionIndex) 
 
 /// Find equality comparisons (== or ~=) involving a symbol.
 pub(super) fn symbol_comparisons(snap: &AnalysisSnapshot, sym_idx: SymbolIndex) -> Vec<ComparisonInfo> {
+    // `Expr::BinaryOp` carries no source range, and neither `SymbolRef` nor
+    // `Literal` operands carry a use-site range (only a symbol's *definition*
+    // node is recoverable). Every `==`/`~=` is recorded in `binary_op_sites`
+    // (the sole `Expr::BinaryOp` construction site records equality
+    // unconditionally), and each site carries the comparison's real range — so
+    // iterate the sites directly rather than scanning all exprs and re-deriving
+    // a range from the rangeless operands. Sites are in source order.
     let mut results = Vec::new();
 
-    for expr in &snap.exprs {
-        if let Expr::BinaryOp { op, lhs, rhs } = expr {
-            if *op != Operator::Equals && *op != Operator::NotEquals {
-                continue;
-            }
-
-            let (_is_lhs, other) = if is_symbol_ref(snap, *lhs, sym_idx) {
-                (true, *rhs)
-            } else if is_symbol_ref(snap, *rhs, sym_idx) {
-                (false, *lhs)
-            } else {
-                continue;
-            };
-
-            let literal = extract_literal(snap, other);
-            // We don't have the expression range directly in the Expr enum,
-            // so use the operands' ranges as a best-effort for the comparison site.
-            let (range_start, range_end) = expr_range_from_operands(snap, *lhs, *rhs);
-
-            results.push(ComparisonInfo {
-                literal,
-                range_start,
-                range_end,
-            });
+    for site in &snap.binary_op_sites {
+        let Some(Expr::BinaryOp { op, lhs, rhs }) = snap.exprs.get(site.expr_id.val()) else {
+            continue;
+        };
+        if *op != Operator::Equals && *op != Operator::NotEquals {
+            continue;
         }
+
+        let other = if is_symbol_ref(snap, *lhs, sym_idx) {
+            *rhs
+        } else if is_symbol_ref(snap, *rhs, sym_idx) {
+            *lhs
+        } else {
+            continue;
+        };
+
+        results.push(ComparisonInfo {
+            literal: extract_literal(snap, other),
+            range_start: site.expr_start,
+            range_end: site.expr_end,
+        });
     }
 
     results
-}
-
-fn expr_range_from_operands(snap: &AnalysisSnapshot, lhs: ExprId, rhs: ExprId) -> (u32, u32) {
-    // Try to get ranges from field accesses or symbol refs
-    let start = expr_start(snap, lhs).unwrap_or(0);
-    let end = expr_end(snap, rhs).unwrap_or(0);
-    (start, end)
-}
-
-fn expr_start(snap: &AnalysisSnapshot, expr_id: ExprId) -> Option<u32> {
-    match snap.exprs.get(expr_id.val())? {
-        Expr::SymbolRef(sym_idx, _) => {
-            let sym = snap.symbols.get(sym_idx.val())?;
-            Some(sym.versions[0].def_node.start)
-        }
-        Expr::FieldAccess { field_range, .. } => field_range.map(|(s, _)| s),
-        Expr::Literal(_) => None, // literals don't carry ranges in the IR
-        _ => None,
-    }
-}
-
-fn expr_end(snap: &AnalysisSnapshot, expr_id: ExprId) -> Option<u32> {
-    match snap.exprs.get(expr_id.val())? {
-        Expr::SymbolRef(sym_idx, _) => {
-            let sym = snap.symbols.get(sym_idx.val())?;
-            Some(sym.versions[0].def_node.end)
-        }
-        Expr::FieldAccess { field_range, .. } => field_range.map(|(_, e)| e),
-        Expr::Literal(_) => None,
-        _ => None,
-    }
 }
 
 /// Extract a literal value from an expression.

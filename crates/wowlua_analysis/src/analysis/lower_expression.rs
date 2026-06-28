@@ -564,9 +564,13 @@ impl<'a> Analysis<'a> {
                     // Track binary-op sites for diagnostics:
                     //   invalid-op: arithmetic, concatenation, ordered comparison
                     //   redundant-or/redundant-and: logical or/and
+                    // Equality (== / ~=) is also recorded — no built-in diagnostic
+                    // consumes it, but the plugin query layer needs the comparison's
+                    // real source range (SymbolRef/Literal operands carry none).
                     if op.is_arithmetic() || op == Operator::Concatenate
                         || matches!(op, Operator::LessThan | Operator::GreaterThan | Operator::LessThanOrEquals | Operator::GreaterThanOrEquals)
                         || matches!(op, Operator::Or | Operator::And)
+                        || matches!(op, Operator::Equals | Operator::NotEquals)
                     {
                         let r = b.syntax().text_range();
                         let op_r = b.op_token_range().unwrap_or_else(|| {

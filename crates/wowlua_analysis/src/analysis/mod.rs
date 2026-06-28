@@ -380,7 +380,9 @@ pub struct Ir {
     /// `table_expr_id` resolves the base type to check for nil.
     pub bracket_table_sites: Vec<(ExprId, ExprId, u32, u32)>,
     /// Binary-op sites for `invalid-op` and `redundant-or`/`redundant-and` diagnostics.
-    /// Covers arithmetic, concatenation, comparison, and logical ops.
+    /// Covers arithmetic, concatenation, comparison (ordered and equality), and
+    /// logical ops. Equality (`==`/`~=`) has no built-in consumer — it is recorded
+    /// so the plugin query layer can recover a comparison's source range.
     pub binary_op_sites: Vec<BinaryOpSite>,
     /// Condition sites for `redundant-condition` diagnostics.
     /// Covers `if`/`elseif` and `while` conditions.

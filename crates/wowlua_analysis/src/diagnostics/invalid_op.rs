@@ -46,9 +46,11 @@ impl DiagnosticPass for InvalidOp {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for site in &analysis.ir.binary_op_sites {
             let Expr::BinaryOp { op, lhs, rhs } = *analysis.expr(site.expr_id) else { continue };
-            // Logical or/and are always valid in Lua (any value is truthy/falsy); they are
-            // tracked in binary_op_sites only for the redundant-or/redundant-and diagnostics.
-            if matches!(op, Operator::Or | Operator::And) { continue; }
+            // Logical or/and and equality ==/~= are always valid in Lua (any value is
+            // truthy/falsy and any two values may be compared); they are tracked in
+            // binary_op_sites only for the redundant-or/redundant-and diagnostics and
+            // the plugin comparison-range query, respectively.
+            if matches!(op, Operator::Or | Operator::And | Operator::Equals | Operator::NotEquals) { continue; }
             let Some(lhs_type) = analysis.resolve_expr_type(lhs) else { continue };
             let Some(rhs_type) = analysis.resolve_expr_type(rhs) else { continue };
             // Valid operation — no diagnostic needed

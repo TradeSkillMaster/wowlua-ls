@@ -391,6 +391,45 @@ fn plugin_find_event_declarations() {
 }
 
 #[test]
+fn plugin_comparison_range_is_the_comparison_not_definition() {
+    // Regression: `param:comparisons()` must report the range of the comparison
+    // expression itself. The IR carries no use-site range on SymbolRef/Literal
+    // operands, so the old operand fallback resolved the param to its *definition*
+    // site and the string literal to offset 0 — producing a range that spanned the
+    // whole region between the param definition and the comparison (a giant underline).
+    let src = r#"
+local private = {}
+
+---@param action string
+function private.Handler(action)
+    if action == "FOO" then
+        return 1
+    elseif action == "BAR" then
+        return 2
+    end
+end
+"#;
+
+    let diags = analyze_with_plugins(src, &[plugin_path("comparison_range_plugin.lua")]);
+
+    let relevant: Vec<_> = diags.iter()
+        .filter(|(code, _)| code == "test-comparison-range")
+        .collect();
+    assert_eq!(relevant.len(), 2, "expected 2 comparison diagnostics, got: {relevant:?}");
+
+    // Each message is "<literal>:<start>:<end>". The range must cover exactly the
+    // `action == "LIT"` comparison text, not the param definition.
+    for lit in ["FOO", "BAR"] {
+        let needle = format!("action == \"{lit}\"");
+        let start = src.find(&needle).expect("comparison text present") as u32;
+        let end = start + needle.len() as u32;
+        let expected = format!("{lit}:{start}:{end}");
+        assert!(relevant.iter().any(|(_, msg)| *msg == expected),
+            "expected comparison range {expected:?} for {lit}, got: {relevant:?}");
+    }
+}
+
+#[test]
 fn plugin_param_type_name() {
     let diags = analyze_with_plugins(
         r#"
