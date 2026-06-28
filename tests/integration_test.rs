@@ -1000,6 +1000,24 @@ fn signature_help() {
 }
 
 #[test]
+fn libsharedmedia_types() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/libsharedmedia-types.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn pcall_sibling_narrow() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/pcall-sibling-narrow.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn diagnostics() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/diagnostics/test.lua",

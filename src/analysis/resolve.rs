@@ -1852,7 +1852,7 @@ impl<'a> Analysis<'a> {
                         // Try the func_expr cache first, then fall back to
                         // tracing the inner SymbolRef → FunctionCall → CallResolution.
                         let subs = self.call_site_generic_subs.get(&func_expr).cloned()
-                            .or_else(|| self.find_generic_subs_from_inner(inner));
+                            .or_else(|| self.find_generic_subs_from_inner(inner, func_expr));
                         if let Some(ref subs) = subs {
                             types = types.into_iter()
                                 .map(|t| self.substitute_generics_deep(&t, subs))
@@ -2099,7 +2099,19 @@ impl<'a> Analysis<'a> {
     /// multi-return slot has its own FunctionCall ExprId (with different func
     /// ExprIds due to re-lowering), so the `call_site_generic_subs` cache keyed
     /// by func_expr may not contain the right entry.
-    fn find_generic_subs_from_inner(&self, inner: ExprId) -> Option<HashMap<String, ValueType>> {
+    ///
+    /// `func_expr` is the OverloadNarrow's own callee expression. It is used to
+    /// disambiguate *which* call's binding to read: a position-0 sibling symbol
+    /// (e.g. a `local status` reused/redeclared across several `status, x =
+    /// pcall(...)` lines) is versioned across multiple multi-return calls. Only
+    /// ret_index=0 stores a CallResolution, so the lookup must consult that
+    /// shared sibling — but a blind reverse scan returns the *latest* call's
+    /// `generic_subs`, leaking a different function's `returns<F>` onto this
+    /// call's siblings (e.g. `decoded` from `pcall(decode, ..)` mistyped with
+    /// `returns<deser>` from a later `pcall(deser, ..)`). Matching the sibling
+    /// FunctionCall whose callee is exactly this call's `func_expr` selects the
+    /// correct binding.
+    fn find_generic_subs_from_inner(&self, inner: ExprId, func_expr: ExprId) -> Option<HashMap<String, ValueType>> {
         // inner is a SymbolRef(sym, ver) — get its symbol's type_source
         let (sym_idx, _ver) = match self.expr(inner) {
             Expr::SymbolRef(si, v) => (*si, *v),
@@ -2114,18 +2126,44 @@ impl<'a> Analysis<'a> {
         } else {
             vec![sym_idx]
         };
+        let subs_at = |ts: ExprId| -> Option<HashMap<String, ValueType>> {
+            let cr = self.ir.call_resolutions.get(&ts)?;
+            let subs: HashMap<String, ValueType> = cr.generic_subs.iter()
+                .map(|(name, bound_type, _)| (name.clone(), bound_type.clone()))
+                .collect();
+            (!subs.is_empty()).then_some(subs)
+        };
+        // First pass: the sibling FunctionCall whose callee matches this
+        // OverloadNarrow's `func_expr` is *this* call — its binding is the only
+        // correct one. If found, commit to it (return None when its subs aren't
+        // populated yet rather than falling back to an unrelated call).
+        let mut found_matching_call = false;
+        for candidate in &candidates {
+            if candidate.is_external() { continue; }
+            for v in self.ir.symbols[candidate.val()].versions.iter().rev() {
+                let Some(ts) = v.type_source else { continue };
+                let Expr::FunctionCall { func, .. } = self.ir.expr(ts) else { continue };
+                if *func != func_expr { continue; }
+                found_matching_call = true;
+                if let Some(subs) = subs_at(ts) {
+                    return Some(subs);
+                }
+            }
+        }
+        if found_matching_call {
+            return None;
+        }
+        // Fallback (no sibling FunctionCall matched func_expr): the original
+        // first-non-empty reverse scan. func_expr is derived from sibling 0's
+        // most-recent call at narrowing time, so this is effectively unreachable
+        // — kept defensively for re-lowering edge cases.
         for candidate in candidates {
             if candidate.is_external() { continue; }
             for v in self.ir.symbols[candidate.val()].versions.iter().rev() {
                 let Some(ts) = v.type_source else { continue };
                 if !matches!(self.ir.expr(ts), Expr::FunctionCall { .. }) { continue; }
-                if let Some(cr) = self.ir.call_resolutions.get(&ts) {
-                    let subs: HashMap<String, ValueType> = cr.generic_subs.iter()
-                        .map(|(name, bound_type, _)| (name.clone(), bound_type.clone()))
-                        .collect();
-                    if !subs.is_empty() {
-                        return Some(subs);
-                    }
+                if let Some(subs) = subs_at(ts) {
+                    return Some(subs);
                 }
             }
         }
