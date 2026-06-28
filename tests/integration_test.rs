@@ -946,6 +946,15 @@ fn wrong_arity_stubs() {
 }
 
 #[test]
+fn overlay_param_reassign() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/overlay-param-reassign.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn framexml_missing_globals() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/framexml-missing-globals.lua",

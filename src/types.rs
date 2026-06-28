@@ -1249,6 +1249,14 @@ pub(crate) struct DeferredFieldAssignment {
     pub(crate) expr_start: u32,
     pub(crate) expr_end: u32,
     pub(crate) is_method_def: bool,
+    /// Version of the receiver symbol current at the write site, captured at build
+    /// time (when statements before the write have created their versions but
+    /// later ones have not). Resolve-time `version_for_scope` instead returns the
+    /// *latest* in-scope version, which is the wrong receiver when the symbol is
+    /// reassigned after the write — e.g. `frame = frame or CreateFrame(...)` then
+    /// a later branch `Mixin(frame, M)` (`@narrows-arg`). The write must attach to
+    /// the frame as it was at the write, not the post-mixin merge.
+    pub(crate) receiver_version: usize,
 }
 
 #[derive(Debug, Clone)]

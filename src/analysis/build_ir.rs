@@ -1118,6 +1118,7 @@ impl<'a> Analysis<'a> {
                 } else if names.len() == 2 {
                     let r = ident.syntax().text_range();
                     let func_r = func.syntax().text_range();
+                    let receiver_version = self.deferred_receiver_version(root_name, scope_idx);
                     self.deferred_field_assignments.push(DeferredFieldAssignment {
                         root_name: root_name.clone(),
                         field_name: field_name.clone(),
@@ -1133,6 +1134,7 @@ impl<'a> Analysis<'a> {
                         expr_start: u32::from(func_r.start()),
                         expr_end: u32::from(func_r.end()),
                         is_method_def: is_method,
+                        receiver_version,
                     });
                 }
 
@@ -1280,6 +1282,20 @@ impl<'a> Analysis<'a> {
                 }
             }
         }
+    }
+
+    /// Version of `root_name` current at this point in the build. Because build
+    /// walks statements top-down, later reassignments of the symbol (e.g. a branch
+    /// `Mixin(frame, M)` after `frame.field = ...`) don't exist yet, so this
+    /// captures the receiver version at the *write site* — which a resolve-time
+    /// `version_for_scope` (returning the latest in-scope version) would not. Used
+    /// by deferred field assignments. Falls back to version 0 if the symbol is
+    /// not yet bound.
+    fn deferred_receiver_version(&self, root_name: &str, scope_idx: ScopeIndex) -> usize {
+        self.ir
+            .get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx)
+            .map(|s| self.ir.version_for_scope(s, scope_idx))
+            .unwrap_or(0)
     }
 
     fn build_stmt_assign(&mut self, assign: &Assign<'a>, scope_idx: ScopeIndex, func_id: Option<FunctionIndex>, constructor_of: Option<TableIndex>, stmt_index: usize, stack: &mut Vec<Frame<'a>>) {
@@ -1674,6 +1690,7 @@ impl<'a> Analysis<'a> {
             // function return) — defer to post-fixpoint resolution.
             let r = ident.syntax().text_range();
             let func_r = func.syntax().text_range();
+            let receiver_version = self.deferred_receiver_version(root_name, scope_idx);
             self.deferred_field_assignments.push(DeferredFieldAssignment {
                 root_name: root_name.clone(),
                 field_name: field_name.clone(),
@@ -1689,6 +1706,7 @@ impl<'a> Analysis<'a> {
                 expr_start: u32::from(func_r.start()),
                 expr_end: u32::from(func_r.end()),
                 is_method_def: true,
+                receiver_version,
             });
         }
         if let Some(inner_block) = func.block() {
@@ -1995,6 +2013,7 @@ impl<'a> Analysis<'a> {
             // function return) — defer to post-fixpoint resolution.
             let r = ident.syntax().text_range();
             let expr_r = expr.syntax().text_range();
+            let receiver_version = self.deferred_receiver_version(root_name, scope_idx);
             self.deferred_field_assignments.push(DeferredFieldAssignment {
                 root_name: root_name.clone(),
                 field_name: field_name.clone(),
@@ -2010,6 +2029,7 @@ impl<'a> Analysis<'a> {
                 expr_start: u32::from(expr_r.start()),
                 expr_end: trimmed_node_end(expr.syntax()),
                 is_method_def: false,
+                receiver_version,
             });
         }
     }

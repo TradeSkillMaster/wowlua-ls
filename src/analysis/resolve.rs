@@ -2317,6 +2317,49 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Recover the concrete class table behind a `x or Constructor(...)` chain
+    /// (the `local x = x or CreateFrame(...)` reassignment idiom). The `or`'s
+    /// resolved type is `original | constructor`; when the original is a bare
+    /// `table` the union collapses and the constructor's class index is lost, so
+    /// walk the operands' resolved types directly. Caller restricts the result to
+    /// external classes.
+    fn or_chain_table_index(&self, expr_id: ExprId) -> Option<TableIndex> {
+        match self.ir.expr(expr_id) {
+            Expr::Grouped(inner) | Expr::StripNil(inner) | Expr::StripFalsy(inner) => {
+                self.or_chain_table_index(*inner)
+            }
+            Expr::AssignNarrow { inner, .. } => self.or_chain_table_index(*inner),
+            Expr::BinaryOp { op: Operator::Or, lhs, rhs } => {
+                // Prefer the constructor side (RHS of `x or CreateFrame(...)`).
+                self.or_operand_table_index(*rhs)
+                    .or_else(|| self.or_operand_table_index(*lhs))
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve a single `or` operand to a concrete table index, via the structural
+    /// walk first and the resolved-expr cache for constructor/call results that
+    /// `find_table_index` can't reach.
+    fn or_operand_table_index(&self, expr_id: ExprId) -> Option<TableIndex> {
+        // Nested `a or b or Constructor(...)`.
+        if matches!(self.ir.expr(expr_id), Expr::BinaryOp { op: Operator::Or, .. }) {
+            return self.or_chain_table_index(expr_id);
+        }
+        // Bracket-access operands resolve to the collection's value prototype, not
+        // a writable instance — mirror the guard on the resolved_type fallback.
+        if matches!(self.ir.expr(expr_id), Expr::BracketIndex { .. }) {
+            return None;
+        }
+        if let Some(idx) = self.ir.find_table_index(expr_id) {
+            return Some(idx);
+        }
+        self.resolved_expr_cache
+            .get(expr_id.val())
+            .and_then(|o| o.as_ref())
+            .and_then(first_table_index_in_type)
+    }
+
     /// After the fixpoint loop, resolve field assignments on variables whose class table
     /// wasn't known during Phase 1 (e.g. type comes from a function return).
     fn resolve_deferred_field_assignments(&mut self) {
@@ -2330,7 +2373,14 @@ impl<'a> Analysis<'a> {
                 Some(idx) => idx,
                 None => continue,
             };
-            let ver_idx = self.ir.version_for_scope(sym_idx, assign.scope_idx);
+            // Use the receiver version captured at the write site (build time),
+            // not the latest in-scope version — a symbol reassigned after the
+            // write (`frame = frame or CreateFrame(...)` then a branch
+            // `Mixin(frame, M)`) would otherwise misattribute the field to the
+            // post-mixin merge instead of the frame the write actually targeted.
+            let ver_idx = assign
+                .receiver_version
+                .min(self.ir.sym(sym_idx).versions.len().saturating_sub(1));
             let type_source = self.ir.sym(sym_idx).versions[ver_idx].type_source;
             let table_idx = type_source
                 .and_then(|ts| self.ir.find_table_index(ts))
@@ -2343,6 +2393,15 @@ impl<'a> Analysis<'a> {
                     {
                         return None;
                     }
+                    // NOTE: deliberately NOT descending into a top-level
+                    // intersection (`Base & Template`, a concrete frame instance)
+                    // here. Attaching to the intersection's base class pollutes the
+                    // shared per-file class overlay across *every* instance of that
+                    // class — e.g. one instance's `inst.SetValue = nil` (the
+                    // "remove method" idiom) would make `SetValue` read as `nil` on
+                    // a sibling instance, a false `cannot-call`. `undefined-field`
+                    // already treats such instances permissively. The collapsed-`or`
+                    // reassignment case is recovered from the operands below.
                     match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
                         Some(ValueType::Table(Some(idx))) => Some(*idx),
                         Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
@@ -2351,6 +2410,15 @@ impl<'a> Analysis<'a> {
                         }),
                         _ => None,
                     }
+                })
+                .or_else(|| {
+                    // `local x = x or CreateFrame(...)` reassignment whose `or`
+                    // collapsed all the way to a bare `table` (the original operand
+                    // was untyped): the class index survives only in the operand
+                    // expressions, so recover it from the constructor side.
+                    type_source
+                        .and_then(|ts| self.or_chain_table_index(ts))
+                        .filter(|idx| idx.is_external())
                 });
             let Some(table_idx) = table_idx else {
                 continue;
@@ -3844,6 +3912,19 @@ pub(crate) fn parse_num_literal_str(s: &str) -> Option<f64> {
         body.parse::<f64>().ok()?
     };
     Some(if neg { -val } else { val })
+}
+
+/// First concrete table index reachable in a value type, descending into union
+/// and intersection members. Used to recover the class index from an
+/// `x or CreateFrame(...)` operand's resolved type.
+fn first_table_index_in_type(ty: &ValueType) -> Option<TableIndex> {
+    match ty {
+        ValueType::Table(Some(idx)) => Some(*idx),
+        ValueType::Union(types) | ValueType::Intersection(types) => {
+            types.iter().find_map(first_table_index_in_type)
+        }
+        _ => None,
+    }
 }
 
 /// Pure function for binary op type resolution (no `self` needed).
