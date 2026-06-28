@@ -9,6 +9,9 @@ pub mod queries;
 pub mod semantic_tokens;
 pub mod deferred;
 
+#[cfg(test)]
+mod proptests;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
