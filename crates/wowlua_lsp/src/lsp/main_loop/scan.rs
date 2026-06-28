@@ -1,4 +1,5 @@
 use super::*;
+use crate::annotations::{CorrelatedReturns, ProtectedPrefix};
 
 /// Soundness predicate for incremental warm reuse: a file may keep its prior
 /// diagnostics only when none of the changed declaration names (`affected`,
@@ -389,7 +390,7 @@ pub(super) struct LuaFileScanResult {
     pub dynamic_global_prefixes: Vec<String>,
 }
 
-pub(super) fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool, creates_global_specs: &crate::annotations::CreatesGlobalMap) -> Option<LuaFileScanResult> {
+pub(super) fn scan_lua_file(path: &Path, correlated_returns: CorrelatedReturns, protected_prefix: ProtectedPrefix, creates_global_specs: &crate::annotations::CreatesGlobalMap) -> Option<LuaFileScanResult> {
     let text = std::fs::read_to_string(path).ok()?;
     if crate::has_shebang(&text) { return None; }
     let tree = crate::syntax::parser::parse(&text);
@@ -410,7 +411,7 @@ pub(super) fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_pr
             event.def_path = Some(path.to_path_buf());
         }
     }
-    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix, creates_global_specs);
+    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), correlated_returns, protected_prefix, creates_global_specs);
     let dynamic_global_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
     Some(LuaFileScanResult { scan, file_globals, addon_ns_class, dynamic_global_prefixes })
 }
@@ -428,8 +429,8 @@ pub fn scan_paths_with_overrides(
     let results: Vec<_> = paths.par_iter()
         .filter_map(|p| {
             let is_override = override_paths.contains(p);
-            let synth = configs.map(|c| c.correlated_return_overloads_for(p)).unwrap_or(true);
-            let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+            let synth = CorrelatedReturns::from_enabled(configs.map(|c| c.correlated_return_overloads_for(p)).unwrap_or(true));
+            let ipp = ProtectedPrefix::from_enabled(configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false));
             scan_lua_file(p, synth, ipp, creates_global_specs).map(|mut r| {
                 if is_override {
                     for g in &mut r.file_globals {
@@ -816,7 +817,7 @@ pub fn scan_workspace_with_stubs(
 
 /// Scan a Lua file, returning its source text and parsed tree alongside scan results.
 /// Used by scan_directory_tracked to cache parse results for the defclass/built-name pass.
-pub(super) fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<CachedFileScan> {
+pub(super) fn scan_lua_file_cached(path: &Path, correlated_returns: CorrelatedReturns, protected_prefix: ProtectedPrefix) -> Option<CachedFileScan> {
     let text = std::fs::read_to_string(path).ok()?;
     if crate::has_shebang(&text) { return None; }
     let tree = crate::syntax::parser::parse(&text);
@@ -840,7 +841,7 @@ pub(super) fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, impl
     // Pass 1 runs without stubs (overlapped with stub loading), so the
     // `@creates-global` spec map is empty here; those named globals are detected
     // later in `complete_directory_scan` (pass 2) where stubs are available.
-    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix, &crate::annotations::CreatesGlobalMap::new());
+    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), correlated_returns, protected_prefix, &crate::annotations::CreatesGlobalMap::new());
     let dynamic_global_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
     Some(CachedFileScan { tree, scan, file_globals, addon_ns_class, dynamic_global_prefixes })
 }
@@ -871,8 +872,8 @@ pub(super) fn scan_directory_pass1(
     let configs_ref: &crate::config::ProjectConfigs = configs;
     let results: Vec<_> = paths.par_iter()
         .filter_map(|p| {
-            let synth = configs_ref.correlated_return_overloads_for(p);
-            let ipp = configs_ref.implicit_protected_prefix_for(p);
+            let synth = CorrelatedReturns::from_enabled(configs_ref.correlated_return_overloads_for(p));
+            let ipp = ProtectedPrefix::from_enabled(configs_ref.implicit_protected_prefix_for(p));
             scan_lua_file_cached(p, synth, ipp).map(|r| (p.clone(), r))
         })
         .collect();

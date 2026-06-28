@@ -7,6 +7,7 @@ use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
 use super::Analysis;
 use super::NarrowTarget;
+use super::{ConditionKind, ExitElse};
 
 // ── IR Building (Phase 1) ──────────────────────────────────────────────────────
 
@@ -585,7 +586,7 @@ impl<'a> Analysis<'a> {
             });
         } else if let Some((expr_id, range, _)) = cond_info {
             // No block to form a loop scope; record without loop hint.
-            self.ir.record_condition_site(expr_id, range, true, false);
+            self.ir.record_condition_site(expr_id, range, ConditionKind::Loop, ExitElse::Absent);
         }
     }
 
@@ -613,7 +614,7 @@ impl<'a> Analysis<'a> {
                 is_conditional: frame_is_conditional,
             });
         } else if let Some((expr_id, range)) = cond_info {
-            self.ir.record_condition_site(expr_id, range, true, false);
+            self.ir.record_condition_site(expr_id, range, ConditionKind::Loop, ExitElse::Absent);
         }
     }
 
@@ -623,16 +624,16 @@ impl<'a> Analysis<'a> {
         // returns). Conditions in a chain with a defensive exit-else are
         // suppressed from `redundant-condition` when they evaluate as
         // always-true — this is the exhaustive type-check guard pattern.
-        let has_exit_else = if_chain.else_branch()
+        let exit_else = ExitElse::from_has_exit(if_chain.else_branch()
             .and_then(|eb| eb.block())
-            .is_some_and(|b| Self::block_always_exits(&b));
+            .is_some_and(|b| Self::block_always_exits(&b)));
         let mut branch_scopes: Vec<ScopeIndex> = Vec::new();
         for (i, branch) in branches.iter().enumerate() {
             if i == 0 {
                 // First branch: lower condition in parent scope
                 if let Some(cond) = branch.expression() {
                     let expr_id = self.lower_expression(&cond, scope_idx);
-                    self.ir.record_condition_site(expr_id, cond.syntax().text_range(), false, has_exit_else);
+                    self.ir.record_condition_site(expr_id, cond.syntax().text_range(), ConditionKind::Branch, exit_else);
                 }
             }
             if let Some(inner_block) = branch.block() {
@@ -650,7 +651,7 @@ impl<'a> Analysis<'a> {
                     }
                     if let Some(cond) = branch.expression() {
                         let expr_id = self.lower_expression(&cond, new_scope_idx);
-                        self.ir.record_condition_site(expr_id, cond.syntax().text_range(), false, has_exit_else);
+                        self.ir.record_condition_site(expr_id, cond.syntax().text_range(), ConditionKind::Branch, exit_else);
                     }
                 }
                 if let Some(cond) = branch.expression() {

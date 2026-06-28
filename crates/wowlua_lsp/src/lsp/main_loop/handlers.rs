@@ -339,7 +339,7 @@ pub(super) fn handle_request(
                 let snippets = client_snippet_support && config_snippets;
                 let call_snippets = snippets && config_call_snippets;
                 let mut result: Vec<lsp_types::CompletionItem> = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
-                    analysis.completions_at(tree, offset, &doc.text, snippets, call_snippets)
+                    analysis.completions_at(tree, offset, &doc.text, Snippets::from_enabled(snippets), CallSnippets::from_enabled(call_snippets))
                 }).unwrap_or_default();
 
                 let uri_str = uri.to_string();
@@ -1541,7 +1541,7 @@ pub(super) fn try_batch_analyze(
         let ipp = file_path.as_ref()
             .map(|fp| ws.configs.implicit_protected_prefix_for(fp))
             .unwrap_or(false);
-        let (new_globals, _addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, None, synth, ipp, ws.stub_pre_globals.creates_global_specs());
+        let (new_globals, _addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, None, crate::annotations::CorrelatedReturns::from_enabled(synth), crate::annotations::ProtectedPrefix::from_enabled(ipp), ws.stub_pre_globals.creates_global_specs());
         let scan = scan_all_annotations(root);
         let would_rebuild = file_path.as_ref().is_some_and(|fp| {
             let globals_changed = ws.ws_file_globals.get(fp)

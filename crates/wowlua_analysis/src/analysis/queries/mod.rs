@@ -29,6 +29,7 @@ mod signature;
 
 pub use references::ReferenceTarget;
 pub use highlights::HighlightKind;
+pub use completion::{CallSnippets, Snippets};
 pub use call_hierarchy::{CallSiteResult, OutgoingCallResult};
 pub use format::return_type_at_slot;
 pub use format::dedup_return_types;

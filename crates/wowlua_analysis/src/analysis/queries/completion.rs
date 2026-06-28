@@ -96,12 +96,48 @@ pub(super) fn collect_type_name_completions<'a>(
     }
 }
 
+/// Whether snippet completions are offered at all (gated by client support +
+/// `completion.snippets`). Independent of [`CallSnippets`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Snippets {
+    Enabled,
+    Disabled,
+}
+
+impl Snippets {
+    pub fn from_enabled(enabled: bool) -> Self {
+        if enabled { Self::Enabled } else { Self::Disabled }
+    }
+    fn enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
+/// Whether a function-call completion auto-fills its parameter placeholders
+/// (`foo(${1:a})`) vs. inserting just the name (gated by client support +
+/// `completion.callSnippets`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CallSnippets {
+    Enabled,
+    Disabled,
+}
+
+impl CallSnippets {
+    pub fn from_enabled(enabled: bool) -> Self {
+        if enabled { Self::Enabled } else { Self::Disabled }
+    }
+    fn enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
 impl AnalysisResult {
-    /// `snippets` gates all snippet completions (requires client support). `call_snippets`
-    /// additionally gates only the function-call parameter auto-fill (`foo(${1:a})`); when
-    /// false, function completions insert just the name while annotation-tag snippets still
-    /// honor `snippets`.
-    pub fn completions_at(&self, tree: &SyntaxTree, offset: u32, source: &str, snippets: bool, call_snippets: bool) -> Option<Vec<lsp_types::CompletionItem>> {
+    /// [`Snippets`] gates all snippet completions (requires client support).
+    /// [`CallSnippets`] additionally gates only the function-call parameter
+    /// auto-fill (`foo(${1:a})`); when [`CallSnippets::Disabled`], function
+    /// completions insert just the name while annotation-tag snippets still
+    /// honor [`Snippets`].
+    pub fn completions_at(&self, tree: &SyntaxTree, offset: u32, source: &str, snippets: Snippets, call_snippets: CallSnippets) -> Option<Vec<lsp_types::CompletionItem>> {
         if offset == 0 {
             return None;
         }
@@ -131,7 +167,7 @@ impl AnalysisResult {
                         let cursor_within = cursor_within.min(tok_text.len());
                         let prefix = &tok_text[..cursor_within];
 
-                        if let Some(result) = self.annotation_completions(prefix, &tok, snippets) {
+                        if let Some(result) = self.annotation_completions(prefix, &tok, snippets.enabled()) {
                             return Some(result);
                         }
                     }
@@ -141,9 +177,10 @@ impl AnalysisResult {
         // Suppress function-call snippets when a '(' already follows the cursor.
         // This handles swapping one function name for another in an existing call —
         // inserting parens+params would duplicate the existing ones.
-        let call_snippets = call_snippets && source.get(offset as usize..)
-            .is_none_or(|rest| rest.bytes()
-                .find(|&b| b != b' ' && b != b'\t') != Some(b'('));
+        let paren_follows = source.get(offset as usize..)
+            .is_some_and(|rest| rest.bytes()
+                .find(|&b| b != b' ' && b != b'\t') == Some(b'('));
+        let call_snippets = if paren_follows { CallSnippets::Disabled } else { call_snippets };
 
         // Determine effective offset for member-access completions.
         // When the user has typed characters after a '.' or ':', scan backwards
@@ -178,9 +215,9 @@ impl AnalysisResult {
         let member_prefix_lower = member_prefix.to_ascii_lowercase();
 
         if is_member_access {
-            self.complete_member_access(tree, source, member_offset, &member_prefix_lower, call_snippets)
+            self.complete_member_access(tree, source, member_offset, &member_prefix_lower, call_snippets.enabled())
         } else {
-            self.complete_scope(tree, source, offset, call_snippets)
+            self.complete_scope(tree, source, offset, call_snippets.enabled())
         }
     }
 

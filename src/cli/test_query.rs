@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use wowlua_ls::analysis::{Analysis, AnalysisConfig};
+use wowlua_ls::analysis::queries::{CallSnippets, Snippets};
 use wowlua_ls::{annotations, config, lsp, syntax, types};
 
 use super::{load_workspace, CliResult};
@@ -110,7 +111,7 @@ pub fn run(location: &str, with_stubs: bool, scan_dir: Option<PathBuf>) -> CliRe
         }
     }
 
-    if let Some(completions) = result.completions_at(&tree, offset, &s, false, false) {
+    if let Some(completions) = result.completions_at(&tree, offset, &s, Snippets::Disabled, CallSnippets::Disabled) {
         let preview: Vec<_> = completions.iter().take(50).map(|c| c.label.as_str()).collect();
         println!("completions: {} total [{}{}]", completions.len(), preview.join(", "),
             if completions.len() > 50 { ", ..." } else { "" });

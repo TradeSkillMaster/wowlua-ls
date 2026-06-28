@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
 use wowlua_ls::analysis::{Analysis, AnalysisConfig, AnalysisResult};
+use wowlua_ls::analysis::queries::{CallSnippets, Snippets};
 use wowlua_ls::annotations;
 use wowlua_ls::config::ProjectConfigs;
 use wowlua_ls::lsp;
@@ -623,7 +624,7 @@ fn run_annotation_tests(config: &TestConfig) {
         // Check completions
         if let Some(expected) = &expected_comp {
             if *expected == "none" {
-                if let Some(completions) = result.completions_at(&tree, offset, &contents, false, false) {
+                if let Some(completions) = result.completions_at(&tree, offset, &contents, Snippets::Disabled, CallSnippets::Disabled) {
                     if !completions.is_empty() {
                         let actual_items: Vec<&str> = completions.iter()
                             .take(10)
@@ -637,7 +638,7 @@ fn run_annotation_tests(config: &TestConfig) {
                     }
                 }
             } else {
-                match result.completions_at(&tree, offset, &contents, false, false) {
+                match result.completions_at(&tree, offset, &contents, Snippets::Disabled, CallSnippets::Disabled) {
                     Some(completions) => {
                         let mut actual_items: Vec<&str> = completions.iter()
                             .take(50)
@@ -5288,7 +5289,7 @@ fn snippet_suppressed_when_parens_follow() {
     let result = analysis.into_result();
 
     // With snippets=true but '(' follows cursor: snippets should be suppressed
-    let items = result.completions_at(&tree, cursor, source, true, true).unwrap();
+    let items = result.completions_at(&tree, cursor, source, Snippets::Enabled, CallSnippets::Enabled).unwrap();
     let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
     // insert_text should be plain label (no parens/params snippet)
     assert!(
@@ -5323,7 +5324,7 @@ fn snippet_omits_trailing_optional_params() {
     analysis.resolve_types();
     let result = analysis.into_result();
 
-    let items = result.completions_at(&tree, cursor, source, true, true).unwrap();
+    let items = result.completions_at(&tree, cursor, source, Snippets::Enabled, CallSnippets::Enabled).unwrap();
     let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
     let snippet = greet.insert_text.as_ref().expect("should have snippet");
     // Only required param `x` should appear; optional `y` and `z` should be omitted
@@ -5346,7 +5347,7 @@ fn call_snippets_disabled_inserts_plain_name() {
     let result = analysis.into_result();
 
     // snippets=true (client supports them, general snippets enabled) but call_snippets=false.
-    let items = result.completions_at(&tree, cursor, source, true, false).unwrap();
+    let items = result.completions_at(&tree, cursor, source, Snippets::Enabled, CallSnippets::Disabled).unwrap();
     let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
     assert!(
         greet.insert_text.as_ref().map_or(true, |t| !t.contains('(')),
@@ -5359,7 +5360,7 @@ fn call_snippets_disabled_inserts_plain_name() {
     );
 
     // Sanity: with call_snippets=true the parameter auto-fill is still produced.
-    let items = result.completions_at(&tree, cursor, source, true, true).unwrap();
+    let items = result.completions_at(&tree, cursor, source, Snippets::Enabled, CallSnippets::Enabled).unwrap();
     let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
     assert_eq!(
         greet.insert_text.as_deref(),
@@ -5381,7 +5382,7 @@ fn snippet_keeps_optional_before_required() {
     analysis.resolve_types();
     let result = analysis.into_result();
 
-    let items = result.completions_at(&tree, cursor, source, true, true).unwrap();
+    let items = result.completions_at(&tree, cursor, source, Snippets::Enabled, CallSnippets::Enabled).unwrap();
     let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
     let snippet = greet.insert_text.as_ref().expect("should have snippet");
     // Both params should appear since optional `x` is not trailing
@@ -5400,7 +5401,7 @@ fn snippet_all_optional_becomes_no_snippet() {
     analysis.resolve_types();
     let result = analysis.into_result();
 
-    let items = result.completions_at(&tree, cursor, source, true, true).unwrap();
+    let items = result.completions_at(&tree, cursor, source, Snippets::Enabled, CallSnippets::Enabled).unwrap();
     let greet = items.iter().find(|c| c.label == "greet").expect("should find 'greet'");
     // No snippet — plain completion with just parens added by the editor
     assert!(
@@ -5424,7 +5425,7 @@ fn snippet_method_trailing_optional_with_self() {
     analysis.resolve_types();
     let result = analysis.into_result();
 
-    let items = result.completions_at(&tree, cursor, source, true, true).unwrap();
+    let items = result.completions_at(&tree, cursor, source, Snippets::Enabled, CallSnippets::Enabled).unwrap();
     let bar = items.iter().find(|c| c.label == "bar").expect("should find 'bar'");
     let snippet = bar.insert_text.as_ref().expect("should have snippet");
     // self is skipped (colon syntax), trailing optional `y` is trimmed, only `x` remains
@@ -5462,7 +5463,7 @@ fn string_literal_completion_no_doubled_quote() {
     let empty_str_pos = src.find("\"\" then").unwrap();
     let offset = (empty_str_pos + 1) as u32; // after the opening "
 
-    let items = analysis.completions_at(&tree, offset, src, false, false)
+    let items = analysis.completions_at(&tree, offset, src, Snippets::Disabled, CallSnippets::Disabled)
         .expect("expected string literal completions");
     let recipe = items.iter().find(|i| i.label == "Recipe")
         .expect("expected 'Recipe' completion");
@@ -5760,7 +5761,7 @@ fn scope_completion_external_globals_sort_text() {
     analysis.resolve_types();
     let result = analysis.into_result();
 
-    let items = result.completions_at(&tree, cursor, source, false, false)
+    let items = result.completions_at(&tree, cursor, source, Snippets::Disabled, CallSnippets::Disabled)
         .expect("should return completions for prefix 'Cr'");
 
     // External globals like "CreateFrame" should appear with sort_text "2*"
@@ -5790,7 +5791,7 @@ fn scope_completion_local_only_no_external_globals() {
     analysis.resolve_types();
     let result = analysis.into_result();
 
-    let items = result.completions_at(&tree, cursor, source, false, false)
+    let items = result.completions_at(&tree, cursor, source, Snippets::Disabled, CallSnippets::Disabled)
         .expect("should return completions for prefix 'myUniqueDesign'");
 
     // Only the local should match; no external globals
@@ -5819,7 +5820,7 @@ fn scope_completion_locals_sort_before_globals() {
     analysis.resolve_types();
     let result = analysis.into_result();
 
-    let items = result.completions_at(&tree, cursor, source, false, false)
+    let items = result.completions_at(&tree, cursor, source, Snippets::Disabled, CallSnippets::Disabled)
         .expect("should return completions for prefix 'Create'");
 
     // Both the local and external globals should be present

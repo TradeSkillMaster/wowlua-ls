@@ -461,12 +461,56 @@ pub fn scan_dynamic_global_prefixes(root: SyntaxNode<'_>) -> Vec<String> {
 
 // ── Global declaration scanning ─────────────────────────────────────────────
 
+/// Whether a file scan synthesizes correlated return-only overloads for
+/// unannotated multi-return functions (driven by
+/// `inference.correlated_return_overloads`). Travels with [`ProtectedPrefix`]
+/// as a pair from the LSP scan wrappers down to [`scan_file_globals_with_synth`]
+/// in place of a bare `bool`, so the two flags can't be silently swapped.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CorrelatedReturns {
+    /// Synthesize correlated return-only overloads.
+    Synthesize,
+    /// Leave them unsynthesized.
+    Skip,
+}
+
+impl CorrelatedReturns {
+    /// Build from a config-derived `inference.correlated_return_overloads` flag.
+    pub fn from_enabled(enabled: bool) -> Self {
+        if enabled { Self::Synthesize } else { Self::Skip }
+    }
+}
+
+/// Whether an `_`-prefixed field/name defaults to `@protected` visibility
+/// (driven by `inference.implicit_protected_prefix`). Travels with
+/// [`CorrelatedReturns`] as a pair; [`scan_file_globals_with_synth`] is the
+/// deepest signature carrying the pair — below it the flag is threaded as a
+/// lone `bool` (`implicit_protected_prefix`) through the per-element scanners,
+/// so the enum boundary stops there.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ProtectedPrefix {
+    /// `_name` is implicitly `@protected`.
+    Implicit,
+    /// Visibility comes only from explicit annotations.
+    Explicit,
+}
+
+impl ProtectedPrefix {
+    /// Build from a config-derived `inference.implicit_protected_prefix` flag.
+    pub fn from_enabled(enabled: bool) -> Self {
+        if enabled { Self::Implicit } else { Self::Explicit }
+    }
+    pub fn is_implicit(self) -> bool {
+        matches!(self, Self::Implicit)
+    }
+}
+
 pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
-    scan_file_globals_with_synth(root, source_path, true, false, &CreatesGlobalMap::new()).0
+    scan_file_globals_with_synth(root, source_path, CorrelatedReturns::Synthesize, ProtectedPrefix::Explicit, &CreatesGlobalMap::new()).0
 }
 
 /// Variant of [`scan_file_globals`] retaining the per-file
-/// `correlated_return_overloads` flag in its signature for caller compatibility.
+/// [`CorrelatedReturns`] flag in its signature for caller compatibility.
 /// The flag no longer affects workspace scanning: correlated return-only
 /// overloads (and all body-derived return types) are now synthesized lazily by
 /// the per-file harvest (`resolve_deferred_sig`), which reads
@@ -479,10 +523,14 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
 pub fn scan_file_globals_with_synth(
     root: SyntaxNode<'_>,
     source_path: Option<&Path>,
-    _correlated_return_overloads: bool,
-    implicit_protected_prefix: bool,
+    _correlated_returns: CorrelatedReturns,
+    protected_prefix: ProtectedPrefix,
     creates_global_specs: &CreatesGlobalMap,
 ) -> (Vec<ExternalGlobal>, Option<String>) {
+    // `protected_prefix` travels as part of the swap-prone pair down to here;
+    // below this point it's threaded as a plain `bool` through the per-element
+    // scanners, so unwrap it once.
+    let implicit_protected_prefix = protected_prefix.is_implicit();
     let owned_path = source_path.map(|p| p.to_path_buf());
     let Some(block) = Block::cast(root) else { return (Vec::new(), None); };
 

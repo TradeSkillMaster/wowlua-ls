@@ -74,6 +74,35 @@ pub struct ConditionSite {
     pub has_exit_else: bool,
 }
 
+/// Whether a recorded condition guards a loop (`while`/`repeat...until`) or an
+/// `if`/`elseif` branch. Passed to [`Ir::record_condition_site`] in place of a
+/// bare `is_loop` flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionKind {
+    /// A `while` or `repeat...until` loop condition.
+    Loop,
+    /// An `if`/`elseif` branch condition.
+    Branch,
+}
+
+/// Whether an `if`/`elseif` chain has a defensive exit-`else` (one whose block
+/// always `error()`s or returns). Passed to [`Ir::record_condition_site`] in
+/// place of a bare `has_exit_else` flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitElse {
+    /// The chain has an `else` block that always exits.
+    Present,
+    /// No exit-`else` (or no `else` at all).
+    Absent,
+}
+
+impl ExitElse {
+    /// Build from the boolean result of an exit-`else` analysis.
+    pub fn from_has_exit(has_exit_else: bool) -> Self {
+        if has_exit_else { Self::Present } else { Self::Absent }
+    }
+}
+
 // ── Call-site self_offset ───────────────────────────────────────────────────
 
 pub fn call_self_offset(
@@ -532,14 +561,14 @@ pub(super) fn table_indices_from_type(vt: &ValueType) -> Vec<TableIndex> {
 
 impl Ir {
     /// Record a condition expression for `redundant-condition` diagnostics.
-    pub fn record_condition_site(&mut self, expr_id: ExprId, range: crate::syntax::tree::TextRange, is_loop: bool, has_exit_else: bool) {
+    pub fn record_condition_site(&mut self, expr_id: ExprId, range: crate::syntax::tree::TextRange, kind: ConditionKind, exit_else: ExitElse) {
         self.condition_sites.push(ConditionSite {
             expr_id,
             start: u32::from(range.start()),
             end: u32::from(range.end()),
-            is_loop,
+            is_loop: kind == ConditionKind::Loop,
             loop_scope: None,
-            has_exit_else,
+            has_exit_else: exit_else == ExitElse::Present,
         });
     }
 

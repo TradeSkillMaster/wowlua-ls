@@ -41,6 +41,7 @@ pub(super) use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintCon
 pub(super) use crate::pre_globals::PreResolvedGlobals;
 pub(super) use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 pub(super) use crate::analysis::queries::HighlightKind;
+pub(super) use crate::analysis::queries::{CallSnippets, Snippets};
 pub(super) use crate::analysis::semantic_tokens::{
     RawSemanticToken, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
@@ -2280,7 +2281,7 @@ mod tests {
 
         // Pre-populate globals/classes/aliases so only the events path is tested.
         // (Without this, globals_changed is true because the file isn't in the map yet.)
-        let (globals, _) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), false, false, &crate::annotations::CreatesGlobalMap::new());
+        let (globals, _) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), crate::annotations::CorrelatedReturns::Skip, crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::new());
         let scan_pre = crate::annotations::scan_all_annotations(root);
         ws.ws_file_globals.insert(file_path.clone(), globals);
         ws.ws_file_classes.insert(file_path.clone(), scan_pre.classes);

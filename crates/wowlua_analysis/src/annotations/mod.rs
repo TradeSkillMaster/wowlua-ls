@@ -1903,6 +1903,7 @@ pub use annotation_scanning::{
 pub use scan_globals::scan_file_globals;
 pub use scan_globals::scan_dynamic_global_prefixes;
 pub use scan_globals::scan_file_globals_with_synth;
+pub use scan_globals::{CorrelatedReturns, ProtectedPrefix};
 pub use scan_globals::{CreatesGlobalMap, build_creates_global_map};
 pub use scan_globals::scan_created_globals;
 pub use scan_defclass::scan_defclass_calls;
