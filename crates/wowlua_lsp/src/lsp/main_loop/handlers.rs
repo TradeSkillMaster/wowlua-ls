@@ -5,6 +5,32 @@ pub(super) fn parse_lua(text: &str) -> SyntaxTree {
     crate::syntax::parser::parse(text)
 }
 
+/// Compute folding ranges for a Lua document, accounting for unsaved edits.
+///
+/// Returns `None` for non-Lua documents (TOC/unparsed) — gating on a parsed
+/// `tree` preserves the prior handler behavior.
+///
+/// Fold ranges are *spans* (`start_line..end_line`), so a stale tree can't be
+/// patched up by line-shifting the way point diagnostics are: inserting a line
+/// inside a block must extend that block's `end_line` while leaving its
+/// `start_line` untouched, which a uniform per-line shift can't express. When
+/// `didChange` has left unanalyzed text in `pending_text`, `doc.tree`/`doc.text`
+/// are frozen at the last analysis and their line numbers no longer match what
+/// the editor is showing — which leaves the client's fold indicators misaligned
+/// after adding/removing lines. Re-parse the pending text so the ranges line up
+/// exactly. Parsing is cheap next to analysis, and folding requests are
+/// infrequent (sent on open and after debounced changes, not per keystroke).
+pub(super) fn folding_ranges_for_doc(doc: &Document) -> Option<Vec<FoldingRange>> {
+    let cached_tree = doc.tree.as_ref()?;
+    match doc.pending_text.as_deref() {
+        Some(pending) => {
+            let tree = parse_lua(pending);
+            Some(crate::lsp::folding_range::compute_folding_ranges(&tree, pending))
+        }
+        None => Some(crate::lsp::folding_range::compute_folding_ranges(cached_tree, &doc.text)),
+    }
+}
+
 /// Convert a list of definition results into a `GotoDefinitionResponse`. Local
 /// results resolve against the current document; external results against their
 /// source file (or embedded stub content). Identical `(uri, range)` pairs are
@@ -543,10 +569,7 @@ pub(super) fn handle_request(
             if let Ok((id, params)) = cast_req::<request::FoldingRangeRequest>(req) {
                 let uri = params.text_document.uri;
                 let result: Option<Vec<FoldingRange>> = documents.get(&uri.to_string())
-                    .and_then(|doc| {
-                        let tree = doc.tree.as_ref()?;
-                        Some(crate::lsp::folding_range::compute_folding_ranges(tree, &doc.text))
-                    });
+                    .and_then(folding_ranges_for_doc);
                 send_response(connection, id, &result);
             }
         }

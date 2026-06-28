@@ -2967,6 +2967,65 @@ mod tests {
     }
 
     #[test]
+    fn folding_ranges_reflect_pending_edits() {
+        // didChange freezes doc.tree/doc.text at the last analysis and parks the
+        // live text in pending_text. Folding ranges are spans, so they must be
+        // computed against the current text — otherwise the client's fold
+        // indicators drift after lines are added/removed.
+
+        // Mirror the post-didChange Document shape: tree built from `text`, the
+        // live edit (if any) in `pending_text`.
+        fn doc_with(text: &str, pending: Option<&str>) -> Document {
+            Document {
+                text: text.to_string(),
+                pending_text: pending.map(str::to_string),
+                analysis: None,
+                tree: Some(parse_lua(text)),
+                toc: None,
+                plugin_diags: Vec::new(),
+                dirty: pending.is_some(),
+                ws_generation: 0,
+                pending_line_delta: None,
+                pending_edit_map: None,
+                cached_diagnostics: None,
+                stub_open_seq: 0,
+            }
+        }
+
+        // (start_line, end_line) of every region fold, sorted.
+        fn regions(doc: &Document) -> Vec<(u32, u32)> {
+            let mut v: Vec<(u32, u32)> = folding_ranges_for_doc(doc)
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.kind == Some(lsp_types::FoldingRangeKind::Region))
+                .map(|r| (r.start_line, r.end_line))
+                .collect();
+            v.sort();
+            v
+        }
+
+        let base = "function foo()\n  print(\"a\")\nend\n";
+        // No pending edits: fold spans the cached tree (header + body + end).
+        assert_eq!(regions(&doc_with(base, None)), vec![(0, 2)]);
+
+        // Insert a line inside the body. The fold's END must extend to the new
+        // `end` line while its START stays put — the straddling-span case a
+        // per-line shift can't express. The stale tree would report (0, 2).
+        let inserted = "function foo()\n  print(\"a\")\n  print(\"b\")\nend\n";
+        assert_eq!(regions(&doc_with(base, Some(inserted))), vec![(0, 3)]);
+
+        // Remove the only body line: header + end has nothing left to hide, so
+        // the fold disappears entirely. The stale tree would still say (0, 2).
+        let removed = "function foo()\nend\n";
+        assert_eq!(regions(&doc_with(base, Some(removed))), Vec::<(u32, u32)>::new());
+
+        // A non-Lua/unparsed document (no tree) yields no folds.
+        let mut toc_doc = doc_with(base, Some(base));
+        toc_doc.tree = None;
+        assert!(folding_ranges_for_doc(&toc_doc).is_none());
+    }
+
+    #[test]
     fn xfile_reference_cache_reuses_analysis_within_generation() {
         // Copy the cross-file fixture to a unique temp dir so we can delete a file
         // on disk mid-test and prove the second query is served from the cache
