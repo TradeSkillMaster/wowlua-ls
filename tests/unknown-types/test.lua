@@ -101,6 +101,74 @@ _consume(fwdLocal)
 local fwdAbove
 _consume(fwdAbove)
 
+-- ── unknown-local-type: forward declaration assigned later ───────────────
+-- A forward declaration (`local x`, no initializer) starts as an untyped nil
+-- placeholder, so version 0 carries no resolved type. When a later assignment
+-- gives the local a concrete type that the LS resolves at every use site, the
+-- declaration must not be flagged: the pass consults the later versions and
+-- skips when any of them resolved.
+
+-- No fire: assigned a concrete type in BOTH branches of an if/else.
+---@param cond boolean
+local function branchAssigned(cond)
+    local n
+    if cond then
+        n = 1
+    else
+        n = 2
+    end
+    return n
+end
+_consume(branchAssigned)
+
+-- No fire: assigned in only ONE branch — the merged type is `number?` (the
+-- then-branch number unioned with the fall-through nil), still a resolved type.
+---@param cond boolean
+local function oneBranch(cond)
+    local n
+    if cond then
+        n = 1
+    end
+    return n
+end
+_consume(oneBranch)
+
+-- No fire: assigned unconditionally after the declaration.
+local function plainForward()
+    local m
+    m = 5
+    return m
+end
+_consume(plainForward)
+
+-- No fire: assigned inside a loop body (the numeric loop variable). Mirrors the
+-- `local maxNeedColumns ... for ... do maxNeedColumns = ... end` addon pattern.
+local function loopAssigned()
+    local picked
+    for i = 1, 3 do
+        picked = i
+    end
+    return picked
+end
+_consume(loopAssigned)
+
+-- Fires: a forward declaration whose ONLY later assignment is itself
+-- unresolvable. No later version resolves to a type, so the local is still
+-- genuinely unknown and the declaration stays flagged.
+local fwdUnknown
+--    ^ diag: unknown-local-type
+fwdUnknown = passthrough(nil)
+_consume(fwdUnknown)
+
+-- Fires: an INITIALIZED local whose initializer couldn't be typed still fires,
+-- even when a later assignment gives it a concrete type. The relaxation is
+-- scoped to initializer-less forward declarations (version 0 keeps its
+-- `type_source` here), so `local q = <unknown>` is out of scope.
+local initUnknown = passthrough(nil)
+--    ^ diag: unknown-local-type
+initUnknown = 5
+_consume(initUnknown)
+
 -- ── unknown-return-type ──────────────────────────────────────────────────
 
 -- Fires: the return expression has no resolvable type.
