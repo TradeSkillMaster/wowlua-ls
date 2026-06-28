@@ -1,41 +1,12 @@
-pub mod syntax;
-pub mod lsp;
-pub mod diagnostics;
-pub mod analysis;
-pub mod ast;
-pub mod annotations;
-pub mod types;
-pub mod pre_globals;
-pub mod config;
-pub mod flavor;
-pub mod stub_gen;
-pub mod xml_scan;
-pub mod doc_gen;
-pub mod doc_gen_md;
-pub mod plugins;
-pub mod toc;
+// Lower workspace crates, re-exported so that both intra-crate `crate::syntax::…`
+// paths and external `wowlua_ls::syntax::…` paths (tests, the CLI binary) keep
+// resolving after the split.
+pub use wowlua_syntax::{ast, syntax};
+pub use wowlua_core::{flavor, types};
+pub use wowlua_analysis::{analysis, annotations, config, diagnostics, pre_globals, xml_scan};
+pub use wowlua_lsp::{lsp, plugins, toc};
+pub use wowlua_stub_gen::stub_gen;
+pub use wowlua_doc::{doc_gen, doc_gen_md};
 
-/// Cap for completion lists sent to the IDE. Scope completions can return 60K+
-/// items; truncating with `isIncomplete` lets the client re-request as the user
-/// types. Used by the LSP handler (truncation) and by `string_literal_completions`
-/// (pre-filtering large sets so relevant items survive truncation).
-pub const MAX_COMPLETIONS: usize = 100;
-
-pub fn has_shebang(text: &str) -> bool {
-    text.starts_with("#!")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn has_shebang_helper() {
-        assert!(has_shebang("#!/usr/bin/lua\nprint('hi')"));
-        assert!(has_shebang("#!lua"));
-        assert!(!has_shebang("-- comment\nlocal x = 1"));
-        assert!(!has_shebang(""));
-        assert!(!has_shebang("#"));
-        assert!(!has_shebang("local x = '#!'"));
-    }
-}
+pub use wowlua_analysis::MAX_COMPLETIONS;
+pub use wowlua_lsp::has_shebang;

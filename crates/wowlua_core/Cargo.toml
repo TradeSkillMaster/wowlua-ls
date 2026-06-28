@@ -1,0 +1,10 @@
+[package]
+name = "wowlua_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wowlua_syntax = { path = "../wowlua_syntax" }
+serde = { version = "1.0.219", features = ["derive"] }

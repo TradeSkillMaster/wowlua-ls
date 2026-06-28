@@ -8,6 +8,23 @@ For Neovim diagnostic integration details (push/pull namespaces, `workspace_diag
 
 ## Architecture
 
+### Workspace crates
+The project is a cargo workspace of layered library crates plus a thin binary. The layering is **one-directional and enforced at compile time** — a crate can only use the crates below it:
+
+- **`wowlua_syntax`** (`crates/wowlua_syntax/`) — leaf crate: lexer, parser, CST (`syntax/`), typed AST (`ast.rs`). Depends on nothing else.
+- **`wowlua_core`** (`crates/wowlua_core/`) — the shared type vocabulary: IR types (`types.rs`), flavor bitmask (`flavor.rs`), and the annotation type *definitions* embedded in the IR (`annotations.rs`: `AnnotationType`, `TuplePosition`, `ParamInfo`, `Visibility`, `KEYOF_SELF_TARGET`). Re-exports `syntax`/`ast`.
+- **`wowlua_analysis`** (`crates/wowlua_analysis/`) — the per-file analysis engine and everything in its dependency cycle: `analysis/`, `annotations/` (parsing/scanning; re-exports the core type defs), `pre_globals/`, `diagnostics/`, `config.rs`, `xml_scan.rs`. Owns `MAX_COMPLETIONS`. A `test-util` feature exposes `#[cfg(test)]` construction helpers (`ClassDecl`/`ExternalGlobal::for_test`, `PreResolvedGlobals::push_ext_*`) to higher crates' test builds.
+- **`wowlua_lsp`** (`crates/wowlua_lsp/`) — `lsp/` (server loop + handlers), `plugins/` (Lua plugin engine), `toc/` (.toc parsing), `has_shebang`. Owns the `embedded-stubs` feature (`lsp/main_loop/stub_loading.rs`).
+- **`wowlua_stub_gen`** (`crates/wowlua_stub_gen/`) — the offline stub-generation tool (`stub_gen/`); above `wowlua_lsp` because it drives a workspace scan. Forwards `embedded-stubs` to `wowlua_lsp`.
+- **`wowlua_doc`** (`crates/wowlua_doc/`) — Markdown doc generation (`doc_gen.rs`, `doc_gen_md.rs`); depends only on `wowlua_analysis`, parallel to `wowlua_lsp`.
+- **`wowlua_ls`** (root `src/`) — thin binary: `main.rs` + `cli/`, plus a facade `lib.rs` that re-exports every lower crate's modules so `wowlua_ls::<module>` (tests, CLI) and intra-crate `crate::<module>` paths resolve unchanged.
+
+**Conventions for working across the split:**
+- Each crate's `lib.rs` re-exports the modules of the crates below it (`pub use wowlua_core::{...}`), so the original `crate::syntax::…`/`crate::types::…`/etc. paths inside moved code resolve without edits. When a type/const must move *down* a layer, re-export it from its original module path so existing `crate::<old_path>::Name` references keep working (e.g. `annotations/mod.rs` re-exports the core annotation type defs).
+- Items that cross a crate boundary must be `pub`, not `pub(crate)` — within each split-out crate, `pub(crate)` was promoted to `pub`. **Module-level privacy is preserved**: the `Ir`/`PreResolvedGlobals` arena fields and the `lsp` `main_loop` struct fields are plain `private` (never `pub(crate)`), so the promotion didn't touch them and they stay encapsulated behind their routing surfaces.
+- The detailed module descriptions below use pre-split `src/<module>` paths; those files now live under `crates/<crate>/src/<module>` per the mapping above (only `main.rs`, `cli/`, and the facade `lib.rs` remain in the root `src/`).
+- `stubs/` stays at the workspace root. Code that locates it via `env!("CARGO_MANIFEST_DIR")` (the `include_bytes!` in `stub_loading.rs`, the regenerate-stubs output path) uses `../../stubs` to climb from `crates/<crate>/` to the root.
+
 ### Source files
 - `src/main.rs` — CLI entry point: `evaluate` subcommand, `test-query` subcommand (hover/def/sig/completions/diagnostics), `dump-types` subcommand (hover regression baselines), `doc` subcommand (markdown API doc generation), otherwise starts LSP
 - `src/doc_gen.rs` — Documentation data model: `DocNamespace`, `DocDefine`, `DocField`, `DocParam` structs, standalone type formatter operating on `PreResolvedGlobals`, class/field iteration with visibility and source locations
@@ -76,7 +93,7 @@ The `Ir` arenas (`symbols`, `functions`, `tables`, `exprs`, `scopes`) carry load
 
 The shared `unwrap_to_inner_expr(ir: &Ir, id)` helper in `diagnostics/mod.rs` also takes `&Ir` (not a raw `&[Expr]` slice) so its expr lookups route through `expr()`. Rule of thumb when writing a new diagnostic: iterate user code via `analysis.local_*()`, resolve any index via `analysis.sym/func/expr/table/scope(idx)`, and never write `analysis.ir.symbols[...]` / `.functions[...]` / `.exprs[...]` / `.tables[...]` / `.scopes[...]`. (Method calls like `analysis.ir.expr(idx)`, `.ir.get_field(...)`, `.ir.classes`, and the deferred-check collection fields such as `.ir.call_resolutions` / `.ir.binary_op_sites` are fine — they don't bypass routing.)
 
-**The boundary is now enforced at the type level.** The five arena fields on `Ir` are **private to the `analysis` module** (not `pub(crate)`): builders and queries in descendant modules (`build_ir`, `resolve`, `prescan`, `narrowing`, `queries/*`, …) still touch them directly, but every consumer *outside* `analysis` (diagnostics, `doc_gen`, `stub_gen`, `lsp/main_loop`, `plugins/query`) is forced through the surface methods, which stay `pub(crate)`. `PreResolvedGlobals` got the symmetric treatment: its five arena fields are **private to `pre_globals`** behind matching `pub(crate)` routing accessors (`sym`/`func`/`expr`/`table`/`scope`, fallible `try_expr`/`try_scope`/`try_table`, `iter_symbols`, and the existing `*_len`). The `Ir` routing layer reads its `ext` through those (`self.ext.sym(idx)`, never `self.ext.symbols[…]`), so the `analysis`→`pre_globals` arena dependency is also encapsulated. `doc_gen`'s unit-test helpers build a synthetic `PreResolvedGlobals` via the `#[cfg(test)]` `push_ext_{symbol,function,expr,table}` methods rather than pushing to the (now private) arenas. Do not re-widen any of these fields to `pub(crate)`; add a new accessor on the relevant surface instead.
+**The boundary is now enforced at the type level.** The five arena fields on `Ir` are **private to the `analysis` module** (plain private, not `pub(crate)`): builders and queries in descendant modules (`build_ir`, `resolve`, `prescan`, `narrowing`, `queries/*`, …) still touch them directly, but every consumer *outside* the module — `diagnostics` (a sibling module in the same `wowlua_analysis` crate) and `doc_gen`/`stub_gen`/`lsp/main_loop`/`plugins/query` (in higher crates) — is forced through the surface methods. Those methods are now `pub` (they are the analysis crate's public API across the crate boundary), while the arena fields stay private. `PreResolvedGlobals` got the symmetric treatment: its five arena fields are **private to `pre_globals`** behind matching `pub` routing accessors (`sym`/`func`/`expr`/`table`/`scope`, fallible `try_expr`/`try_scope`/`try_table`, `iter_symbols`, and the existing `*_len`). The `Ir` routing layer reads its `ext` through those (`self.ext.sym(idx)`, never `self.ext.symbols[…]`), so the `analysis`→`pre_globals` arena dependency is also encapsulated. `doc_gen`'s unit-test helpers build a synthetic `PreResolvedGlobals` via the `push_ext_{symbol,function,expr,table}` methods (gated on `any(test, feature = "test-util")` since `doc_gen` is a higher crate) rather than pushing to the (now private) arenas. Keep these fields private; do not widen them — add a new accessor on the relevant surface instead.
 
 ### Key query functions (in `queries/nav.rs`)
 - `find_symbol_at(offset)` — Resolves direct names: gets token at offset → scope lookup → returns `(SymbolIndex, name)`
@@ -192,7 +209,7 @@ To add a new diagnostic: add a `DiagnosticDef` constant to `mod.rs`, create `src
 
 ## Bug fixes
 
-When fixing a bug, always add a regression test covering the fix. Add test assertions to the appropriate existing test file (see test file layout below) using the annotation format (`hover:`, `def:`, `sig:`, `diag:`, etc.). Run `cargo test` to confirm the new test passes.
+When fixing a bug, always add a regression test covering the fix. Add test assertions to the appropriate existing test file (see test file layout below) using the annotation format (`hover:`, `def:`, `sig:`, `diag:`, etc.). Run `cargo test --workspace` to confirm the new test passes.
 
 ### Investigating false positives in real addon code
 
@@ -245,15 +262,17 @@ cargo run -- test-query /path/to/addon/SubLib/Source/File.lua:386:1 --with-stubs
 - **Never special-case specific functions** (e.g. `tinsert`, `table.insert`) in the LS engine code. Behavior differences should be expressed through stub annotations (`@generic`, `@overload`, etc.) so the general type system handles them.
 - **Workspace rebuild comparisons** (`main_loop/rebuild.rs`): `globals_match()`, `classes_match()`, `aliases_match()`, `events_match()`, and `self_fields_match()` use allow-list field comparisons to ignore positional/display-only fields (e.g. `def_range`, `field_ranges`, `byte_range`). When adding a new semantic field to `ExternalGlobal`, `ClassDecl`, `AliasDecl`, `EventDecl`, or `TypedSelfField`, you **must** add it to the corresponding `*_match()` function — otherwise edits that change that field won't trigger a workspace rebuild.
 - **Structured logging**: Use `log::info!`, `log::warn!`, `log::error!`, `log::debug!` instead of `eprintln!`. The logger (`env_logger`) is initialized in `main.rs`; library code uses `log::` macros directly. `RUST_LOG` env var controls filtering at runtime.
-- **Zero warnings policy**: Always run `cargo build` and `cargo clippy --lib` after completing changes and ensure there are zero warnings before considering work done. If clippy suggests a fix, apply it. Do not add `#[allow(clippy::...)]` suppressions unless there's a documented reason in a code comment.
+- **Zero warnings policy**: Always run `cargo build --workspace` and `cargo clippy --workspace` after completing changes and ensure there are zero warnings before considering work done. If clippy suggests a fix, apply it. Do not add `#[allow(clippy::...)]` suppressions unless there's a documented reason in a code comment.
 - **No real addon code in source**: Never use code from real addons (e.g. TradeSkillMaster) in source comments, test names, or examples. Always generalize to fictional/generic examples.
 - **Never `git stash` in a worktree**: All worktrees of a repo share a single stash stack (it lives on the common git dir, not per-worktree). Concurrent workspaces running `git stash push` / `pop` will clobber each other's entries. To shelve changes, use a per-worktree WIP commit (`git commit -m WIP`, reset later) or write to a uniquely-named ref (`git stash create` + `git update-ref refs/wip/<name>`).
 
 ## Testing
 
 ```bash
-# Run all tests
-cargo test
+# Run all tests. Use --workspace: the root is a package-in-a-workspace, so a bare
+# `cargo test` runs only the root package's tests and skips the lower crates'
+# unit tests (syntax/core/analysis/lsp).
+cargo test --workspace
 
 # Check all diagnostics across a workspace (the primary way to verify diagnostic behavior)
 cargo run -- check /path/to/addon

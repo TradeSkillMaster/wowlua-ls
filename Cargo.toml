@@ -1,25 +1,41 @@
-[package]
-name = "wowlua_ls"
+[workspace]
+members = [
+    "crates/wowlua_syntax",
+    "crates/wowlua_core",
+    "crates/wowlua_analysis",
+    "crates/wowlua_lsp",
+    "crates/wowlua_stub_gen",
+    "crates/wowlua_doc",
+]
+# cargo-fuzz crate: its own standalone build (nightly + libfuzzer), depends on the
+# root facade. Excluded so it doesn't pull into normal workspace builds/tests.
+exclude = ["fuzz"]
+
+[workspace.package]
 version = "0.0.0"
-repository = "https://github.com/TradeSkillMaster/wowlua_ls"
 edition = "2024"
 license = "GPL-3.0"
+repository = "https://github.com/TradeSkillMaster/wowlua_ls"
+
+[package]
+name = "wowlua_ls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
+# The bin is a thin facade + CLI on top of the library crates.
+wowlua_syntax = { path = "crates/wowlua_syntax" }
+wowlua_core = { path = "crates/wowlua_core" }
+wowlua_analysis = { path = "crates/wowlua_analysis" }
+wowlua_lsp = { path = "crates/wowlua_lsp", default-features = false }
+wowlua_stub_gen = { path = "crates/wowlua_stub_gen", default-features = false }
+wowlua_doc = { path = "crates/wowlua_doc" }
 rayon = "1.10"
 clap = { version = "4", features = ["derive"] }
 line-numbers = "0.4.0"
-crossbeam-channel = "0.5"
-lsp-server = "=0.7.8"
 lsp-types = "0.97.0"
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.140"
-bincode = "1.3"
-zstd = "0.13"
-ureq = "2.10"
-regex-lite = "0.1"
-quick-xml = "0.37"
-url = "2"
 log = "0.4"
 env_logger = { version = "0.11", default-features = false }
 mimalloc = "0.1"
@@ -27,7 +43,11 @@ mlua = { version = "0.10", features = ["lua51", "vendored", "send"] }
 
 [features]
 default = ["embedded-stubs"]
-embedded-stubs = []
+# Forwards to every crate that reaches wowlua_lsp (which owns stub_loading.rs).
+# All such deps are pulled with default-features = false, so a root
+# `--no-default-features` build leaves the embedded blob out of every path and
+# selects disk loading.
+embedded-stubs = ["wowlua_lsp/embedded-stubs", "wowlua_stub_gen/embedded-stubs"]
 
 # Release profile tuned for a latency-sensitive LSP server that also ships as
 # downloadable release binaries. Numbers below are measured against a clean
