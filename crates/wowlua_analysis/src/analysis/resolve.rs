@@ -3783,8 +3783,11 @@ impl<'a> Analysis<'a> {
                     && generic_names.contains(name) {
                         generic_subs.insert(name.clone(), arg_vt.clone());
                 }
-                // Structural inference (handles table<K,V>, T[], etc.)
-                self.infer_generics_from_annotation(first_annotation, &generic_names, &generics, &None, state_eid, &mut generic_subs);
+                // Structural inference (handles table<K,V>, T[], etc.). The
+                // array-bound-generic tracking is unused here (this path doesn't
+                // build per-arg type-mismatch checks), so discard it.
+                let mut array_bound = HashSet::new();
+                self.infer_generics_from_annotation(first_annotation, &generic_names, &generics, &None, state_eid, &mut generic_subs, &mut array_bound);
             }
         }
 

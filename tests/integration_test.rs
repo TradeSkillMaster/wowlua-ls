@@ -1044,6 +1044,15 @@ fn overloads() {
 }
 
 #[test]
+fn array_element_supertype() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/array-element-supertype.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn deep_inheritance() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/deep-inheritance.lua",

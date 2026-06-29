@@ -2296,6 +2296,7 @@ impl<'a> Analysis<'a> {
 
     /// Infer generic type variables from structured param annotations.
     /// E.g. for `T[]`, extract element types from the arg's table to infer T.
+    #[allow(clippy::too_many_arguments)] // mirrors the call-resolution binding state threaded from resolve_call.rs
     pub(super) fn infer_generics_from_annotation(
         &mut self,
         annotation: &AnnotationType,
@@ -2304,6 +2305,7 @@ impl<'a> Analysis<'a> {
         defclass: &Option<String>,
         arg_expr_id: ExprId,
         subs: &mut HashMap<String, ValueType>,
+        array_bound: &mut HashSet<String>,
     ) {
         match annotation {
             AnnotationType::Array(inner) => {
@@ -2312,6 +2314,7 @@ impl<'a> Analysis<'a> {
                     && generic_names.contains(name) && !subs.contains_key(name)
                         && let Some(elem_type) = self.infer_array_element_type(arg_expr_id) {
                             subs.insert(name.clone(), elem_type);
+                            array_bound.insert(name.clone());
                         }
             }
             AnnotationType::Parameterized(_base, args) => {
@@ -2444,7 +2447,7 @@ impl<'a> Analysis<'a> {
                         }
             }
             AnnotationType::NonNil(inner) => {
-                self.infer_generics_from_annotation(inner, generic_names, generics, defclass, arg_expr_id, subs);
+                self.infer_generics_from_annotation(inner, generic_names, generics, defclass, arg_expr_id, subs, array_bound);
             }
             AnnotationType::Fun(params, returns, _) => {
                 let type_info = self.arg_function_type_info(arg_expr_id);
@@ -2508,7 +2511,7 @@ impl<'a> Analysis<'a> {
                 // generic (e.g. `(fun(): T) | U` binds T from a function arg, U
                 // from a non-function arg), so we don't short-circuit.
                 for member in members {
-                    self.infer_generics_from_annotation(member, generic_names, generics, defclass, arg_expr_id, subs);
+                    self.infer_generics_from_annotation(member, generic_names, generics, defclass, arg_expr_id, subs, array_bound);
                 }
             }
             AnnotationType::Simple(name) => {

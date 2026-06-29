@@ -315,7 +315,16 @@ impl<'a> Analysis<'a> {
         //     generic was re-bound to a string but couldn't resolve to a global
         //     function, it is restored to the constraint type.
         let mut constraint_fallback_names: HashSet<String> = HashSet::new();
-        self.infer_call_generic_subs(func_idx, func, func_expr_id, args, &func_args, &param_annotations, &generics, &defclass, self_offset, is_method_call, call_func_table_idx, &mut generic_subs, &mut generic_arg_indices, &mut substitutable_generic_names, &mut constraint_fallback_names);
+        // Track generics bound from an array `T[]` argument via element-type
+        // inference. The element type of a heterogeneous array (e.g. one holding
+        // `Frame & TemplateA` alongside a plain `Frame`) is too strict when used
+        // to check a sibling `T`-typed argument (e.g. `table.insert(arr, plain)`):
+        // a value sharing a common supertype with the most-specific element
+        // should be accepted. `build_resolved_call_args` relaxes only those
+        // arg checks, leaving the binding itself (used for `ipairs` reads etc.)
+        // at its precise intersection.
+        let mut array_bound_generics: HashSet<String> = HashSet::new();
+        self.infer_call_generic_subs(func_idx, func, func_expr_id, args, &func_args, &param_annotations, &generics, &defclass, self_offset, is_method_call, call_func_table_idx, &mut generic_subs, &mut generic_arg_indices, &mut substitutable_generic_names, &mut constraint_fallback_names, &mut array_bound_generics);
 
         // Type inline event-callback varargs from a literal event name. For:
         //   ---@generic E: FrameEvent
@@ -354,7 +363,7 @@ impl<'a> Analysis<'a> {
         // function's param layout which may map args to different positions
         // (e.g. 2-arg overload vs 3-arg primary for tinsert).
         if has_generics && let Some(overload) = matching_overload {
-            self.reinfer_overload_generics(overload, args, &generics, overload_self_offset, &mut generic_subs, &mut generic_arg_indices, &mut substitutable_generic_names, &mut constraint_fallback_names);
+            self.reinfer_overload_generics(overload, args, &generics, overload_self_offset, &mut generic_subs, &mut generic_arg_indices, &mut substitutable_generic_names, &mut constraint_fallback_names, &mut array_bound_generics);
         }
 
         // Resolve string-bound function-constrained generics to global function types.
@@ -381,6 +390,7 @@ impl<'a> Analysis<'a> {
             args, arg_ranges, func_idx, &func_args, &param_annotations, self_offset,
             matching_overload, overload_self_offset, &ambiguous_overload_ret_type,
             projected_f_idx, &generic_subs, &generic_arg_indices, &substitutable_generic_names,
+            &array_bound_generics,
         );
 
         // Build per-call generic bindings with arg source ranges
@@ -474,6 +484,7 @@ impl<'a> Analysis<'a> {
         generic_arg_indices: &mut HashMap<String, usize>,
         substitutable_generic_names: &mut HashSet<String>,
         constraint_fallback_names: &mut HashSet<String>,
+        array_bound_generics: &mut HashSet<String>,
     ) {
         if !generics.is_empty() {
             let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
@@ -564,7 +575,7 @@ impl<'a> Analysis<'a> {
                         if has_fun_member
                             && let Some(annotation) = param_annotations.get(i + self_offset).cloned() {
                                 let prev_len = generic_subs.len();
-                                self.infer_generics_from_annotation(&annotation, &generic_names, generics, defclass, *arg_expr_id, generic_subs);
+                                self.infer_generics_from_annotation(&annotation, &generic_names, generics, defclass, *arg_expr_id, generic_subs, array_bound_generics);
                                 if generic_subs.len() > prev_len {
                                     for name in generic_subs.keys() {
                                         if !generic_arg_indices.contains_key(name) {
@@ -602,7 +613,7 @@ impl<'a> Analysis<'a> {
                     // Infer generics from structured param annotations (T[], table<K,V>)
                     let prev_len = generic_subs.len();
                     if let Some(annotation) = param_annotations.get(i + self_offset) {
-                        self.infer_generics_from_annotation(annotation, &generic_names, generics, defclass, *arg_expr_id, generic_subs);
+                        self.infer_generics_from_annotation(annotation, &generic_names, generics, defclass, *arg_expr_id, generic_subs, array_bound_generics);
                     }
                     // Record arg index for any newly inferred generics
                     if generic_subs.len() > prev_len {
@@ -713,6 +724,7 @@ impl<'a> Analysis<'a> {
         generic_arg_indices: &mut HashMap<String, usize>,
         substitutable_generic_names: &mut HashSet<String>,
         constraint_fallback_names: &mut HashSet<String>,
+        array_bound_generics: &mut HashSet<String>,
     ) {
         let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
         for (i, arg_expr_id) in args.iter().enumerate() {
@@ -742,6 +754,7 @@ impl<'a> Analysis<'a> {
                             generic_subs.insert(name.clone(), elem_type);
                             generic_arg_indices.entry(name.clone()).or_insert(i);
                             substitutable_generic_names.insert(name.clone());
+                            array_bound_generics.insert(name.clone());
                         }
             }
             // Function with TypeVariable return: fun(...): R → infer R
@@ -801,6 +814,32 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Widen the element type of an array-bound generic for a sibling-argument
+    /// check by decomposing intersections into a union of their facets: a
+    /// top-level `Frame & Template` becomes `Frame | Template`, and any
+    /// intersection nested inside a union (the heterogeneous-array case, since
+    /// `infer_array_element_type` returns a union of per-element types) is
+    /// flattened in place. The result is a common supertype that accepts a value
+    /// sharing any facet (a plain `Frame`) while still rejecting an unrelated
+    /// value (it matches no facet). Any other type is returned unchanged. See
+    /// the call site in `build_resolved_call_args`.
+    fn widen_array_element_type(vt: ValueType) -> ValueType {
+        match vt {
+            ValueType::Intersection(members) => ValueType::make_union(members),
+            ValueType::Union(members) => {
+                let mut flat: Vec<ValueType> = Vec::new();
+                for m in members {
+                    match m {
+                        ValueType::Intersection(inner) => flat.extend(inner),
+                        other => flat.push(other),
+                    }
+                }
+                ValueType::make_union(flat)
+            }
+            other => other,
+        }
+    }
+
     /// Resolve each call argument and build its `ResolvedCallArg` (expected type with
     /// generic substitutions applied, param name, ranges, type-args) for the deferred
     /// type-mismatch / need-check-nil diagnostics. Resolving each arg also drives the
@@ -821,6 +860,7 @@ impl<'a> Analysis<'a> {
         generic_subs: &HashMap<String, ValueType>,
         generic_arg_indices: &HashMap<String, usize>,
         substitutable_generic_names: &HashSet<String>,
+        array_bound_generics: &HashSet<String>,
     ) -> Vec<ResolvedCallArg> {
         let mut resolved_call_args: Vec<ResolvedCallArg> = Vec::new();
         for (i, arg_expr_id) in args.iter().enumerate() {
@@ -890,6 +930,12 @@ impl<'a> Analysis<'a> {
                 }
                 other => other,
             };
+            // Remember whether this parameter's type is exactly a generic `T`
+            // bound from an array `T[]` argument, so the post-substitution
+            // relaxation below can widen its intersection element type. (See the
+            // `array_bound_generics` note in `resolve_function_call`.)
+            let array_bound_param = matches!(&expected_type,
+                Some(ValueType::TypeVariable(n)) if array_bound_generics.contains(n));
             // Apply generic substitutions and filter out unresolved type variables.
             // Exclude generics bound from THIS argument — checking an argument
             // against a type derived from itself is circular and produces false
@@ -912,6 +958,19 @@ impl<'a> Analysis<'a> {
                 }
             }).filter(|et| !matches!(et, ValueType::TypeVariable(_)))
             .filter(|et| !self.type_contains_type_variable_deep(et));
+            // When the parameter is a generic `T` bound from an array `T[]` arg
+            // (e.g. `table.insert(arr, value)`), relax the element type so a
+            // sibling value sharing a common supertype with the array's
+            // most-specific element type-checks: decompose each intersection
+            // (`Frame & Template`) into a union of its facets (`Frame | Template`).
+            // A genuinely-unrelated value (string, number) still matches no facet
+            // and is flagged. Only this per-arg expected type is relaxed — the
+            // binding itself (used for `ipairs`/`pairs` reads) stays precise.
+            let expected_type = if array_bound_param {
+                expected_type.map(Self::widen_array_element_type)
+            } else {
+                expected_type
+            };
             // When multiple overloads tied at 0 mismatches, we know the call is
             // valid against at least one overload — suppress type-mismatch checks.
             let expected_type = if ambiguous_overload_ret_type.is_some() { None } else { expected_type };
