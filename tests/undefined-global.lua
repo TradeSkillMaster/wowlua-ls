@@ -126,3 +126,29 @@ obj.sub[undefinedDeep] = 1
 tbl[print] = 2
 -- Known local used as nested bracket index — no warning:
 tbl[tbl[k]] = 3
+
+-- ── Runtime/legacy frame globals from stubs/overrides/RuntimeMissingGlobals.lua ─
+-- These frames are absent from EVERY published wow-ui-source branch (removed or
+-- runtime-only), so XML named-frame discovery cannot see them. Reading them must
+-- not false-positive as undefined-global.
+
+-- AccountBankPanel: the Warband bank panel (unified into BankPanel on current
+-- retail). Typed `BankPanel` — not bare `Frame` — so its field chain resolves
+-- without a false undefined-field on `.PurchasePrompt.TabCostFrame`.
+_consume(AccountBankPanel.PurchasePrompt.TabCostFrame)
+--       ^ hover: (global) AccountBankPanel: BankPanel {
+
+-- InterfaceOptionsFramePanelContainer: legacy options container, removed when
+-- the Settings UI replaced InterfaceOptionsFrame in 10.0; still used as a
+-- CreateFrame parent by config libraries (e.g. AceGUI BlizOptionsGroup).
+_consume(InterfaceOptionsFramePanelContainer)
+--       ^ hover: (global) InterfaceOptionsFramePanelContainer: Frame {
+
+-- LFG_EYE_TEXTURES: a Classic-only top-level `LFG_EYE_TEXTURES = {}` table
+-- constant discovered by the classic-only-constant scan (NOT an override). The
+-- scan emitted table constants as `Name = {first source line}`, which dropped the
+-- whole class — a multi-line table became an unclosed `Name = {` (a syntax error
+-- corrupting following entries) and a `Name = {}` table-constructor global never
+-- registered. They are now emitted as `Name = nil` carrying `---@type table`.
+_consume(LFG_EYE_TEXTURES["default"])
+--       ^ hover: (global) LFG_EYE_TEXTURES: table

@@ -11,6 +11,27 @@
 ---@type Frame
 ObjectiveTrackerBlocksFrame = nil
 
+-- Frames that exist (or existed) at runtime but are absent from EVERY published
+-- wow-ui-source branch, so XML named-frame discovery cannot see them. Addons
+-- branch onto them on guarded / per-client code paths (same situation as the
+-- reagent-bank API below), so a bare read should not false-positive.
+--
+-- AccountBankPanel: the transitional Warband (account) bank panel global from the
+-- 11.0 bank UI. Current retail (BankFrame.xml) unifies it into `BankPanel`, so
+-- only `BankPanel` is in source; bank addons still reference `AccountBankPanel`
+-- on the pre-unification path (e.g. `(AccountBankPanel or BankPanel)`). It is the
+-- same `BankPanelTemplate` panel, so type it `BankPanel` (not bare `Frame`) so
+-- field chains like `.PurchasePrompt.TabCostFrame` / `.selectedTabID` resolve.
+---@type BankPanel
+AccountBankPanel = nil
+
+-- InterfaceOptionsFramePanelContainer: the legacy Interface Options panel
+-- container, removed when the Settings UI replaced InterfaceOptionsFrame in 10.0
+-- (gone from retail and the modern Classic clients alike). Still used as a
+-- CreateFrame parent by config libraries such as AceGUI's BlizOptionsGroup.
+---@type Frame
+InterfaceOptionsFramePanelContainer = nil
+
 -- Font objects declared in Interface/FrameXML/Fonts.xml (classic FrameXML).
 -- The Gethe/wow-ui-source repository ships Interface/AddOns/ (Blizzard addon
 -- code) but NOT Interface/FrameXML/ (core client UI). Fonts.xml lives in the

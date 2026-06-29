@@ -272,7 +272,21 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
                 out.push(String::new());
                 for (name, typ, val) in &only_constants {
                     out.push(format!("---@type {typ}"));
-                    out.push(format!("{name} = {val}"));
+                    // Table constants: `val` is only the FIRST source line of the
+                    // constructor (the `assign_re` scan is line-by-line), so a
+                    // multi-line `X = { ... }` table emits an unclosed `X = {`
+                    // — a syntax error that corrupts the scan of every following
+                    // entry — and even a complete single-line `X = {}` table-
+                    // constructor global is not registered by PreResolvedGlobals.
+                    // Emit `X = nil`; the `---@type table` carries the type, so it
+                    // registers as a plain typed global like the GlobalVariables /
+                    // RuntimeMissingGlobals stubs. (The constructor contents are
+                    // never captured anyway, so nothing is lost.)
+                    if typ == "table" {
+                        out.push(format!("{name} = nil"));
+                    } else {
+                        out.push(format!("{name} = {val}"));
+                    }
                     out.push(String::new());
                 }
                 log::info!("  Classic-only constants: {}", only_constants.len());

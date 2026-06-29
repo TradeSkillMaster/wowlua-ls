@@ -1256,3 +1256,25 @@ local _tdlGemIcon = _tdl.gemIcon
 --    ^ hover: (local) _tdlGemIcon: any?
 local _tdlSocketType = _tdl.socketType
 --    ^ hover: (local) _tdlSocketType: any?
+
+-- ── EquipmentManager_UnpackLocation returns (deprecated; classic-only body) ──
+-- Regression: the function is deprecated on retail (11.2.0) and Ketho stubs it
+-- with NO @return, so destructuring its result false-positived as
+-- `unbalanced-assignments`. stubs/overrides/EquipmentManager.lua declares the
+-- six-value signature, so BOTH the 5-variable (Classic) and 6-variable (retail,
+-- with the discarded isInVoidStorage at position 4) destructure idioms are
+-- clean. The `deprecated` warning is suppressed per-line here only because this
+-- file has no flavor config to suppress it; absence of `unbalanced-assignments`
+-- is verified exhaustively by the harness.
+
+-- 5-variable Classic idiom — slot/bag land at positions 4/5 (both number).
+---@diagnostic disable-next-line: deprecated
+local p1, b1, g1, s1, bag1 = EquipmentManager_UnpackLocation(5)
+--    ^ hover: (local) p1: boolean  def: local
+--                    ^ hover: (local) bag1: number
+
+-- 6-variable retail idiom — slot/bag land at positions 5/6, position 4 discarded.
+---@diagnostic disable-next-line: deprecated
+local p2, b2, g2, _, s2, bag2 = EquipmentManager_UnpackLocation(5)
+--                   ^ hover: (local) s2: number
+--                         ^ hover: (local) bag2: number
