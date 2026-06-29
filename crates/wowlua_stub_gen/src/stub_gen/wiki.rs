@@ -299,56 +299,11 @@ pub(in crate::stub_gen) fn parse_wikitext(api_name: &str, wikitext: &str, doc_na
     // Extract function name and args
     let call_re = regex_lite::Regex::new(r"\s*(\w[\w.]*)\s*\(([^)]*)\)").unwrap();
     let call_cap = call_re.captures(&call_part)?;
-    let _func_name = call_cap.get(1)?.as_str();
+    let func_name = call_cap.get(1)?.as_str();
     let orig_args = call_cap.get(2)?.as_str().trim();
 
-    // Track optional params
-    let opt_re = regex_lite::Regex::new(r"\[\s*,?\s*(\w+)").unwrap();
-    let bracket_group_re = regex_lite::Regex::new(r"\[([^\]]+)\]").unwrap();
-    let brace_re = regex_lite::Regex::new(r"\{([^}]+)\}").unwrap();
-    let word_re = regex_lite::Regex::new(r"(\w+)").unwrap();
-    let mut optional_params: HashSet<String> = HashSet::new();
-    for c in opt_re.captures_iter(orig_args) {
-        optional_params.insert(c.get(1).unwrap().as_str().to_string());
-    }
-    // Mark *every* arg inside a `[...]` optional group, not just the first word.
-    // Wiki pages frequently group several trailing optionals in one bracket
-    // (e.g. `JoinChannelByName(channelName [, password, frameID, hasVoice])`),
-    // where `opt_re` alone would only catch `password` and leave `frameID` /
-    // `hasVoice` spuriously required. Mirrors the `{...}` handling below.
-    for c in bracket_group_re.captures_iter(orig_args) {
-        let group = c.get(1).unwrap().as_str();
-        for wc in word_re.captures_iter(group) {
-            optional_params.insert(wc.get(1).unwrap().as_str().to_string());
-        }
-    }
-    for c in brace_re.captures_iter(orig_args) {
-        let group = c.get(1).unwrap().as_str();
-        for wc in word_re.captures_iter(group) {
-            optional_params.insert(wc.get(1).unwrap().as_str().to_string());
-        }
-    }
-
-    // Clean args text
-    let bracket_re = regex_lite::Regex::new(r"\[\s*,\s*").unwrap();
-    let bracket2_re = regex_lite::Regex::new(r"\[\s*").unwrap();
-    let mut args_text = bracket_re.replace_all(orig_args, ", ").to_string();
-    args_text = bracket2_re.replace_all(&args_text, "").to_string();
-    args_text = args_text.replace([']', '{', '}'], "").trim().to_string();
-
-    let (arg_names, has_vararg_param) = if args_text == "..." {
-        (Vec::new(), true)
-    } else if !args_text.is_empty() {
-        let has_va = args_text.contains("...");
-        let names: Vec<String> = args_text
-            .split(',')
-            .map(|a| a.trim().to_string())
-            .filter(|a| !a.is_empty() && a != "...")
-            .collect();
-        (names, has_va)
-    } else {
-        (Vec::new(), false)
-    };
+    // Parse the primary call form's argument list (optional-bracket aware).
+    let (arg_names, has_vararg_param, optional_params) = parse_apisig_call_args(orig_args);
 
     // Parse parameter/return types from wikitext sections
     // Compile regexes once for the whole function, not per line
@@ -429,14 +384,32 @@ pub(in crate::stub_gen) fn parse_wikitext(api_name: &str, wikitext: &str, doc_na
         }
     }
 
-    // Build annotation
+    // Build annotation. `resolve_param_type` / `resolve_return_type` are the single
+    // source of truth for per-name type resolution, shared by the primary signature
+    // below and the `@overload` forms (which must mirror it) so the two can't drift.
+    let resolve_param_type = |name: &str, optional_set: &HashSet<String>| -> (String, bool) {
+        let (typ, mut optional) = param_types
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| ("any".to_string(), false));
+        if optional_set.contains(name) {
+            optional = true;
+        }
+        (typ, optional)
+    };
+    let resolve_return_type = |name: &str| -> (String, bool) {
+        return_types.get(name).cloned().unwrap_or_else(|| {
+            // Fall back to name-based inference when the wiki lacks a type annotation.
+            infer_type_from_name(name)
+                .map(|t| (t.to_string(), false))
+                .unwrap_or_else(|| ("any".to_string(), false))
+        })
+    };
+
     let mut lines = vec![doc_link];
 
     for arg in &arg_names {
-        let (typ, mut optional) = param_types.get(arg.as_str()).cloned().unwrap_or(("any".to_string(), false));
-        if optional_params.contains(arg.as_str()) {
-            optional = true;
-        }
+        let (typ, optional) = resolve_param_type(arg, &optional_params);
         let opt = if optional { "?" } else { "" };
         lines.push(format!("---@param {arg}{opt} {typ}"));
     }
@@ -444,21 +417,60 @@ pub(in crate::stub_gen) fn parse_wikitext(api_name: &str, wikitext: &str, doc_na
         lines.push("---@param ... any".to_string());
     }
     for ret in &ret_names {
-        let (typ, optional) = return_types.get(ret.as_str())
-            .cloned()
-            .unwrap_or_else(|| {
-                // Fall back to name-based type inference when the wiki lacks type annotations
-                if let Some(inferred) = infer_type_from_name(ret) {
-                    (inferred.to_string(), false)
-                } else {
-                    ("any".to_string(), false)
-                }
-            });
+        let (typ, optional) = resolve_return_type(ret);
         let opt = if optional { "?" } else { "" };
         lines.push(format!("---@return {typ}{opt} {ret}"));
     }
     if has_vararg_return && ret_names.is_empty() {
         lines.push("---@return ...any".to_string());
+    }
+
+    // Emit secondary call forms as `@overload`. Many wiki pages list multiple
+    // signatures inside one `{{apisig}}` (separated by `{{=}}` or whitespace).
+    // Only forms whose function name matches the primary are real overloads of
+    // *this* function — e.g. the legacy spell-book family documents both
+    // `GetSpellInfo(spell)` and `GetSpellInfo(index, bookType)`, and
+    // `IsSpellInRange(spellName, unit)` / `IsSpellInRange(index, bookType, unit)`.
+    // Forms with a *different* name (e.g. `C_Item.GetItemQuality` /
+    // `C_Item.GetItemQualityByID` sharing a page) are separate functions, get
+    // their own stubs, and must be skipped here.
+    {
+        // Pre-format the shared return-type list once (overloads return the same
+        // values as the primary form).
+        let ret_type_list: Vec<String> = ret_names.iter().map(|ret| {
+            let (typ, optional) = resolve_return_type(ret);
+            format!("{typ}{}", if optional { "?" } else { "" })
+        }).collect();
+
+        // Dedup by argument-name list so identical repeated forms (e.g.
+        // `GetBuildInfo()` documented once per flavor) don't emit a redundant
+        // overload. The primary form seeds the set.
+        let mut seen_arg_lists: HashSet<Vec<String>> = HashSet::new();
+        seen_arg_lists.insert(arg_names.clone());
+
+        for cap in call_re.captures_iter(&call_part).skip(1) {
+            let oname = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+            if oname != func_name {
+                continue;
+            }
+            let oargs_raw = cap.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+            let (oarg_names, ovararg, oopt) = parse_apisig_call_args(oargs_raw);
+            if !seen_arg_lists.insert(oarg_names.clone()) {
+                continue;
+            }
+            let mut params: Vec<String> = oarg_names.iter().map(|a| {
+                let (typ, optional) = resolve_param_type(a, &oopt);
+                format!("{a}{}: {typ}", if optional { "?" } else { "" })
+            }).collect();
+            if ovararg {
+                params.push("...: any".to_string());
+            }
+            if ret_type_list.is_empty() {
+                lines.push(format!("---@overload fun({})", params.join(", ")));
+            } else {
+                lines.push(format!("---@overload fun({}): {}", params.join(", "), ret_type_list.join(", ")));
+            }
+        }
     }
 
     let mut all_args: Vec<String> = arg_names;
@@ -468,6 +480,58 @@ pub(in crate::stub_gen) fn parse_wikitext(api_name: &str, wikitext: &str, doc_na
     lines.push(format!("function {api_name}({}) end", all_args.join(", ")));
 
     Some(lines.join("\n"))
+}
+
+/// Parse one wiki `{{apisig}}` call form's raw argument string into
+/// `(arg_names, has_vararg, optional_names)`.
+///
+/// Handles the wiki's optional-marker conventions: `[, optional]` brackets and
+/// `{optional}` braces mark every word inside as optional (a bracket group can
+/// list several trailing optionals at once, e.g.
+/// `JoinChannelByName(channelName [, password, frameID, hasVoice])`). The bracket
+/// and brace delimiters are then stripped so the remaining comma-separated names
+/// are the parameter list. Shared by the primary form and every `@overload` form.
+fn parse_apisig_call_args(orig_args: &str) -> (Vec<String>, bool, HashSet<String>) {
+    let orig_args = orig_args.trim();
+    let opt_re = regex_lite::Regex::new(r"\[\s*,?\s*(\w+)").unwrap();
+    let bracket_group_re = regex_lite::Regex::new(r"\[([^\]]+)\]").unwrap();
+    let brace_re = regex_lite::Regex::new(r"\{([^}]+)\}").unwrap();
+    let word_re = regex_lite::Regex::new(r"(\w+)").unwrap();
+
+    let mut optional_params: HashSet<String> = HashSet::new();
+    for c in opt_re.captures_iter(orig_args) {
+        optional_params.insert(c.get(1).unwrap().as_str().to_string());
+    }
+    for c in bracket_group_re.captures_iter(orig_args) {
+        for wc in word_re.captures_iter(c.get(1).unwrap().as_str()) {
+            optional_params.insert(wc.get(1).unwrap().as_str().to_string());
+        }
+    }
+    for c in brace_re.captures_iter(orig_args) {
+        for wc in word_re.captures_iter(c.get(1).unwrap().as_str()) {
+            optional_params.insert(wc.get(1).unwrap().as_str().to_string());
+        }
+    }
+
+    let bracket_re = regex_lite::Regex::new(r"\[\s*,\s*").unwrap();
+    let bracket2_re = regex_lite::Regex::new(r"\[\s*").unwrap();
+    let mut args_text = bracket_re.replace_all(orig_args, ", ").to_string();
+    args_text = bracket2_re.replace_all(&args_text, "").to_string();
+    args_text = args_text.replace([']', '{', '}'], "").trim().to_string();
+
+    if args_text == "..." {
+        (Vec::new(), true, optional_params)
+    } else if !args_text.is_empty() {
+        let has_va = args_text.contains("...");
+        let names: Vec<String> = args_text
+            .split(',')
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty() && a != "...")
+            .collect();
+        (names, has_va, optional_params)
+    } else {
+        (Vec::new(), false, optional_params)
+    }
 }
 
 // ── Widget stub wiki enrichment ───────────────────────────────────────────────

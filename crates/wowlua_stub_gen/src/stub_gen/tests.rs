@@ -756,6 +756,93 @@ Join a chat channel.
 }
 
 #[test]
+fn test_parse_wikitext_multi_form_overload_untyped() {
+    // GetSpellInfo documents two same-name forms in one apisig: the modern
+    // `GetSpellInfo(spell)` and the legacy `GetSpellInfo(index, bookType)`. The
+    // second form must become an `@overload` so a 2-arg call doesn't false-positive
+    // as redundant-parameter. Args have no Arguments section (a transcluded
+    // template), so overload params fall back to `any`; the overload returns the
+    // same values as the primary.
+    let wikitext = r#"{{wowapi}} {{deprecatedapi|patch=11.0.0}}
+Returns spell info.
+{{apisig|name, icon, castTime
+  {{=}} GetSpellInfo(spell)
+  {{=}} GetSpellInfo(index, bookType)}}
+
+==Returns==
+:;name:{{apitype|string}} - The name.
+:;icon:{{apitype|number}} - The icon.
+:;castTime:{{apitype|number}} - Cast time."#;
+    let result = parse_wikitext("GetSpellInfo", wikitext, "GetSpellInfo").unwrap();
+    assert!(result.contains("function GetSpellInfo(spell) end"), "primary form: {result}");
+    assert!(result.contains("@param spell any"), "primary param: {result}");
+    assert!(
+        result.contains("---@overload fun(index: any, bookType: any): string, number, number"),
+        "legacy index/bookType overload with shared returns: {result}"
+    );
+}
+
+#[test]
+fn test_parse_wikitext_multi_form_overload_typed() {
+    // IsSpellInRange documents both `(spellName, unit)` and the spell-book
+    // `(index, bookType, unit)` form; the collapsed Arguments section types the
+    // overload's params, so the overload should carry concrete types and the
+    // shared optional `number?` return.
+    let wikitext = r#"{{wowapi}}
+Returns 1 if in range.
+{{apisig|inRange {{=}} IsSpellInRange(spellName, unit)
+        {{=}} IsSpellInRange(index, bookType, unit)}}
+
+==Arguments==
+:;spellName:{{apitype|string}} - The spell name.
+:;unit:{{apitype|string}} - The unit.
+:;index:{{apitype|number}} - Spellbook slot index.
+:;bookType:{{apitype|string}} - Book type.
+
+==Returns==
+:;inRange:{{apitype|number?}} - 1, 0, or nil."#;
+    let result = parse_wikitext("IsSpellInRange", wikitext, "IsSpellInRange").unwrap();
+    assert!(result.contains("function IsSpellInRange(spellName, unit) end"), "primary form: {result}");
+    assert!(result.contains("@return number? inRange"), "primary return: {result}");
+    assert!(
+        result.contains("---@overload fun(index: number, bookType: string, unit: string): number?"),
+        "typed 3-arg overload with optional return: {result}"
+    );
+}
+
+#[test]
+fn test_parse_wikitext_multi_form_distinct_functions_not_overloaded() {
+    // A page documenting two *differently named* functions (the common
+    // `X(itemLocation)` / `XByID(itemInfo)` idiom) must NOT fold the second into
+    // an `@overload` of the first — they are separate functions with their own
+    // stubs. Only the primary's own form is emitted.
+    let wikitext = r#"{{wowapi}}
+Returns the item quality.
+{{apisig|itemQuality {{=}} C_Item.GetItemQuality(itemLocation) {{=}} C_Item.GetItemQualityByID(itemInfo)}}
+
+==Returns==
+:;itemQuality:{{apitype|number}} - The quality."#;
+    let result = parse_wikitext("C_Item.GetItemQuality", wikitext, "C_Item.GetItemQuality").unwrap();
+    assert!(result.contains("function C_Item.GetItemQuality(itemLocation) end"), "primary form: {result}");
+    assert!(!result.contains("@overload"), "distinct-named form must not become an overload: {result}");
+}
+
+#[test]
+fn test_parse_wikitext_multi_form_identical_deduped() {
+    // GetBuildInfo lists the same 0-arg form once per flavor; identical repeats
+    // must not produce a redundant `@overload`.
+    let wikitext = r#"{{wowapi}}
+Build info.
+{{apisig|version {{=}} GetBuildInfo() {{=}} GetBuildInfo()}}
+
+==Returns==
+:;version:{{apitype|string}} - The version."#;
+    let result = parse_wikitext("GetBuildInfo", wikitext, "GetBuildInfo").unwrap();
+    assert!(result.contains("function GetBuildInfo() end"), "primary form: {result}");
+    assert!(!result.contains("@overload"), "identical repeated form must be deduped: {result}");
+}
+
+#[test]
 fn test_widget_wiki_apitype_template() {
     // Widget method with {{apisig}} and {{apitype}} — standard well-formatted page
     let wikitext = r#"{{widgetmethod|system=SimpleScriptRegionAPI}}
