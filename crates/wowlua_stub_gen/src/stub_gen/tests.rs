@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn test_safe_constant_value() {
+    // Self-contained literals/references are kept verbatim.
+    assert_eq!(safe_constant_value("number", "5"), "5");
+    assert_eq!(safe_constant_value("number", "-1"), "-1");
+    assert_eq!(safe_constant_value("number", "0xFF"), "0xFF");
+    assert_eq!(safe_constant_value("number", "3.14"), "3.14");
+    assert_eq!(safe_constant_value("string", "\"spell\""), "\"spell\"");
+    assert_eq!(safe_constant_value("boolean", "true"), "true");
+    assert_eq!(safe_constant_value("number", "Enum.BagIndex.Bank"), "Enum.BagIndex.Bank");
+    assert_eq!(
+        safe_constant_value("any", "Constants.InventoryConstants.NumBankBagSlots"),
+        "Constants.InventoryConstants.NumBankBagSlots"
+    );
+
+    // Trailing line comment and statement separator are stripped.
+    assert_eq!(safe_constant_value("number", "3;\t\t-- can show 3 lines"), "3");
+    assert_eq!(safe_constant_value("number", "39; -- Used for PickupInventoryItem"), "39");
+
+    // Table constants always become `nil` — a table constructor isn't registered
+    // as a global by PreResolvedGlobals, and a multi-line `{ ... }` is captured
+    // as an unclosed `{`. The `---@type table` carries the type.
+    assert_eq!(safe_constant_value("table", "{}"), "nil");
+    assert_eq!(safe_constant_value("table", "{ 1, 2, 3 }"), "nil");
+    assert_eq!(safe_constant_value("table", "{"), "nil");
+
+    // Non-table multi-line / expression fragments are not self-contained, so they
+    // also fall back to `nil` (the regression: an unbalanced `bit.bor(` or `{`
+    // emitted verbatim corrupts the scan of every following constant).
+    assert_eq!(safe_constant_value("any", "bit.bor("), "nil");
+    assert_eq!(safe_constant_value("any", "(21 * 60) +  0"), "nil");
+    assert_eq!(safe_constant_value("any", "SHOW_MULTI_ACTIONBAR_1 or"), "nil");
+    assert_eq!(safe_constant_value("string", "\"unterminated"), "nil");
+    assert_eq!(safe_constant_value("boolean", "PLAYER_FRAME_UNLOCKED and"), "nil");
+}
+
+#[test]
 fn test_infer_rhs_type() {
     assert_eq!(infer_rhs_type("3"), "number");
     assert_eq!(infer_rhs_type("0"), "number");

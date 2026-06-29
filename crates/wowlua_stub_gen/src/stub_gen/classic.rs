@@ -272,21 +272,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
                 out.push(String::new());
                 for (name, typ, val) in &only_constants {
                     out.push(format!("---@type {typ}"));
-                    // Table constants: `val` is only the FIRST source line of the
-                    // constructor (the `assign_re` scan is line-by-line), so a
-                    // multi-line `X = { ... }` table emits an unclosed `X = {`
-                    // — a syntax error that corrupts the scan of every following
-                    // entry — and even a complete single-line `X = {}` table-
-                    // constructor global is not registered by PreResolvedGlobals.
-                    // Emit `X = nil`; the `---@type table` carries the type, so it
-                    // registers as a plain typed global like the GlobalVariables /
-                    // RuntimeMissingGlobals stubs. (The constructor contents are
-                    // never captured anyway, so nothing is lost.)
-                    if typ == "table" {
-                        out.push(format!("{name} = nil"));
-                    } else {
-                        out.push(format!("{name} = {val}"));
-                    }
+                    out.push(format!("{name} = {}", safe_constant_value(typ, val)));
                     out.push(String::new());
                 }
                 log::info!("  Classic-only constants: {}", only_constants.len());
@@ -800,6 +786,81 @@ pub(in crate::stub_gen) fn infer_constant_type(value: &str) -> Option<&'static s
     // These get typed as "any" — imprecise, but ensures the global is defined
     // so addons using it don't get undefined-global diagnostics.
     Some("any")
+}
+
+
+/// Choose a safe RHS to emit for `NAME = <value>` in a generated constant stub.
+///
+/// The FrameXML constant scan is line-based, so a value is only the *first
+/// source line* of the assignment. Two failure modes follow, both of which
+/// would otherwise drop globals to `undefined-global`:
+///
+/// 1. A table constructor (`typ == "table"`) is never registered as a global by
+///    `PreResolvedGlobals`, and a multi-line `{ ... }` is captured as an
+///    unclosed `{` — a syntax error that, after the parser's
+///    table-missing-separator recovery, swallows every following constant
+///    declaration as table fields.
+/// 2. Any other multi-line / expression RHS (`bit.bor(`, `X or`, `(a) + (b)`)
+///    arrives as an incomplete or unbalanced fragment that is likewise invalid
+///    Lua.
+///
+/// In both cases emit `nil`: the `---@type` annotation preceding the assignment
+/// carries the real type, so `NAME = nil` registers as a plain typed global,
+/// exactly like the GlobalVariables / RuntimeMissingGlobals stubs (the
+/// constructor/expression contents are never recoverable from one line anyway).
+/// Otherwise keep the source value — it is a complete, self-contained literal or
+/// dotted reference worth preserving for hover.
+pub(in crate::stub_gen) fn safe_constant_value(typ: &str, raw: &str) -> String {
+    if typ == "table" {
+        return "nil".to_string();
+    }
+    // Drop a trailing line comment and statement separator before classifying.
+    let v = raw.split("--").next().unwrap_or("").trim().trim_end_matches(';').trim();
+    if is_self_contained_constant(v) {
+        v.to_string()
+    } else {
+        "nil".to_string()
+    }
+}
+
+
+/// True when `v` is a complete single-line Lua literal or dotted reference safe
+/// to emit verbatim as `NAME = v` (see [`safe_constant_value`]): a number,
+/// boolean/nil, complete quoted string, or dotted identifier path. Everything
+/// else — expressions, calls, table constructors, unbalanced multi-line
+/// fragments — is rejected so the caller falls back to `nil`.
+fn is_self_contained_constant(v: &str) -> bool {
+    if v.is_empty() {
+        return false;
+    }
+    // Number literal (decimal/float/hex, optional leading `-`).
+    let num = v.strip_prefix('-').unwrap_or(v);
+    if let Some(hex) = num.strip_prefix("0x").or_else(|| num.strip_prefix("0X")) {
+        if !hex.is_empty() && hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return true;
+        }
+    } else if !num.is_empty() && num.parse::<f64>().is_ok() {
+        return true;
+    }
+    // Boolean / nil.
+    if matches!(v, "true" | "false" | "nil") {
+        return true;
+    }
+    // Complete single-line quoted string (no embedded same-kind quote/newline).
+    let b = v.as_bytes();
+    if b.len() >= 2
+        && (b[0] == b'"' || b[0] == b'\'')
+        && b[b.len() - 1] == b[0]
+        && !v[1..v.len() - 1].bytes().any(|c| c == b[0] || c == b'\n')
+    {
+        return true;
+    }
+    // Dotted identifier path: `Enum.BagIndex.Bank`, `Constants.X.Y`, `FOO`.
+    v.split('.').all(|seg| {
+        let mut bytes = seg.bytes();
+        matches!(bytes.next(), Some(c) if c.is_ascii_alphabetic() || c == b'_')
+            && bytes.all(|c| c.is_ascii_alphanumeric() || c == b'_')
+    })
 }
 
 
