@@ -1,5 +1,5 @@
 use crate::analysis::AnalysisResult;
-use crate::types::InjectFieldCheck;
+use crate::types::{InjectFieldCheck, SymbolIndex, ValueType};
 use super::{DiagnosticPass, WowDiagnostic};
 
 pub struct InjectField;
@@ -15,6 +15,15 @@ impl DiagnosticPass for InjectField {
             // @class-annotated variables are class definitions — field assignments
             // on them define new class fields, not inject foreign fields.
             if fa.root_symbol.is_some_and(|s| analysis.ir.class_def_symbols.contains(&s)) { continue; }
+            // A field write on a multi-type union receiver (`---@type A|B|C` /
+            // `---@param x A|B`) carries only a single `table_idx` — the *first*
+            // union member (the deferred resolver picks the first `Table` in the
+            // union; see `resolve_deferred_field_assignments`). A field declared on
+            // a *later* member would otherwise be reported as injected into the
+            // first. Mirror `call_arity`'s `receiver_is_multi_type_union` leniency:
+            // a union-typed receiver has no statically known runtime member, so a
+            // write of a field declared on any member is legitimate.
+            if union_receiver_declares_field(analysis, fa.root_symbol, fa.ident_start, &fa.field_name) { continue; }
             check_inject(analysis, fa.table_idx, &fa.field_name, fa.scope_idx, fa.ident_start, fa.ident_end, diags);
         }
         // Excess structural fields from type-mismatch pipeline: these come from
@@ -66,4 +75,34 @@ fn check_inject(
         start as usize,
         end as usize,
     );
+}
+
+/// True when the field-write receiver resolves to a genuine multi-type union
+/// (2+ table-bearing members) and `field_name` is declared (own or inherited) on
+/// ANY of those members. Every `field_assignments` entry's receiver is its root
+/// symbol (deep `a.b.c = …` chains are resolved separately and never reach this
+/// list), so resolving the root symbol's type at the write site recovers the full
+/// union the single recorded `table_idx` collapsed away.
+///
+/// Suppression uses `class_has_annotated_field` (author `@field` only), not bare
+/// field existence, deliberately: the deferred resolver registers the injected
+/// field onto the first union member as an *un*annotated field, so an existence
+/// check would also see a genuinely-injected control field there and wrongly
+/// suppress it. A `@field`-declared member is the honest "this is not an
+/// injection" signal — matching the single-member suppression in `check_inject`.
+fn union_receiver_declares_field(
+    analysis: &AnalysisResult,
+    root_symbol: Option<SymbolIndex>,
+    ident_start: u32,
+    field_name: &str,
+) -> bool {
+    let Some(sym) = root_symbol else { return false };
+    let Some(rt) = analysis.symbol_resolved_type_at(sym, ident_start) else { return false };
+    if !matches!(rt, ValueType::Union(_)) { return false; }
+    let mut indices = Vec::new();
+    super::collect_class_indices(rt, &mut indices);
+    // A single-table union (`Foo | string`, `T | nil`) already resolves to that
+    // one member and is checked normally; only a real multi-table union is lenient.
+    if indices.len() < 2 { return false; }
+    indices.iter().any(|&idx| analysis.class_has_annotated_field(idx, field_name))
 }

@@ -902,6 +902,75 @@ pij.dynamicField = 42
 
 _consume(pij)
 
+-- ── inject-field on a multi-type union receiver ─────────────────────────
+-- Regression: a field write on a union-typed receiver records only the FIRST
+-- union member's table, so a field declared on a LATER member (or inherited by
+-- one) used to false-positive as inject-field into the first member. Suppress
+-- when the field is declared on ANY member (like call_arity's union leniency).
+
+---@class UInjP1
+---@field p1 number
+
+---@class UInjP2
+---@field p2 number
+---@field shared string
+
+---@param u UInjP1|UInjP2
+local function injectUnionParam(u)
+    -- declared on the second union member — not an injection
+    u.p2 = 1
+    u.shared = "ok"
+    -- declared on the first union member — not an injection
+    u.p1 = 2
+    -- declared on NEITHER member — still an injection
+    u.bogus = 3
+--    ^ diag: inject-field
+end
+_consume(injectUnionParam)
+
+-- Inherited-field case + a `---@type A|B` local (non-param) receiver.
+---@class UInjQ1
+---@field q1 number
+
+---@class UInjQBase
+---@field qb string
+
+---@class UInjQ2 : UInjQBase
+---@field q2 number
+
+---@param src UInjQ1|UInjQ2
+local function injectUnionLocal(src)
+    ---@type UInjQ1|UInjQ2
+    local v = src
+    -- `qb` is inherited by UInjQ2 from UInjQBase — not an injection
+    v.qb = "ok"
+    -- `q2` is on UInjQ2 directly — not an injection
+    v.q2 = 4
+    -- declared on neither member nor any ancestor — still an injection
+    v.nope = 5
+--    ^ diag: inject-field
+    _consume(v)
+end
+_consume(injectUnionLocal)
+
+-- Negative control — the single-table-union boundary (`indices.len() < 2`). A
+-- nilable class receiver (`Foo | nil`, extremely common) collects only ONE table
+-- member, so the multi-member leniency must NOT engage: an undeclared field write
+-- still fires inject-field. This pins inject-field STRICT on nilable receivers so
+-- the union suppression can never silently widen to swallow the common `Foo | nil`
+-- case (the other inject-field tests use plain non-union `@type Foo` receivers,
+-- which never reach the `ValueType::Union` branch at all).
+---@class UInjNilable
+---@field n1 number
+
+---@param x UInjNilable|nil
+local function injectNilableUnion(x)
+    x.bogus = 1
+--    ^ diag: inject-field
+    _consume(x)
+end
+_consume(injectNilableUnion)
+
 -- ── @constructor suppresses inject-field ────────────────────────────────
 
 -- Class-level @constructor: declares which method name is the constructor
