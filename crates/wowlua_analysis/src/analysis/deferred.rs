@@ -20,13 +20,15 @@
 //! its signature, so cross-file callers see the precise `fun(...)` rather than a
 //! bare `function`. Everything else nameable (class instances, primitives,
 //! unions) is preserved; anonymous tables still decay to `any` (their arena
-//! index is meaningless cross-file). A returned class instance carrying per-file
-//! overlay fields (`frame.DropDown = ...` on a `CreateFrame` result) is lifted
-//! into `Class & { DropDown: ... }` — an `Intersection` of its ext class with an
-//! inline `ValueType::TableShape` carrying the injected fields (each field type
-//! resolved and lifted to ext space). The shape makes the injected fields
-//! resolve, complete, and hover cross-file, and the intersection marks the value
-//! as a concrete instance so `undefined-field` doesn't fire on them downstream.
+//! index is meaningless cross-file). A returned class instance carrying injected
+//! fields (`frame.DropDown = ...` on a `CreateFrame` result) is lifted into
+//! `Class & { DropDown: ... }` — an `Intersection` of its ext class with an
+//! inline `ValueType::TableShape` carrying the injected fields (narrowed to the
+//! returned instance's own fields, each type resolved and lifted to ext space,
+//! and each field's definition location carried for go-to-definition). The shape
+//! makes the injected fields resolve, complete, hover, and go-to-define
+//! cross-file, and the intersection marks the value as a concrete instance so
+//! `undefined-field` doesn't fire on them downstream.
 //!
 //! Resolution is re-entrant: when the nested analysis reads a deferred return
 //! defined in *another* file it recurses, so multi-hop chains resolve precisely.
@@ -323,7 +325,7 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                         .map(|t| {
                             let lifted = lift_local_type_to_ext(&t, ir, ext);
                             if contains_any(&lifted) { ValueType::Any }
-                            else { wrap_overlay_shape(&t, lifted, &result, ext) }
+                            else { wrap_overlay_shape(&t, lifted, &result, ext, &local.rets, path) }
                         })
                         .collect();
                     // Lift the engine-synthesized overloads (precise correlated
@@ -609,58 +611,144 @@ fn contains_any(ty: &ValueType) -> bool {
     }
 }
 
-/// When a deferred function returns an external class instance that had per-file
-/// overlay fields injected on it (`frame.DropDown = ...`, stored in
-/// `ir.overlay_fields`), carry those fields cross-file by intersecting the lifted
-/// class with an inline `TableShape` of the injected fields. Each field's type is
-/// resolved in the defining file and lifted to ext space; fields that lift to
-/// bare `any` are dropped (no information). `orig` is the pre-lift return type;
-/// `lifted` is its ext-space lift (a `Table(Some(ext_class))`). Returns `lifted`
-/// unchanged when there are no carryable overlay fields.
+/// When a deferred function returns an external class instance that had fields
+/// injected on it (`frame.DropDown = ...`, `function frame:SetValue()`), carry
+/// those fields cross-file by intersecting the lifted class with an inline
+/// `TableShape` of the injected fields. Each field's type is resolved at its own
+/// assignment site and lifted to ext space; fields that lift to bare `any` (or a
+/// `nil` "remove-method" placeholder) are dropped. The shape also carries each
+/// field's source location (`field_defs`) so go-to-definition on the injected
+/// field jumps back here. `orig` is the pre-lift return type; `lifted` is its
+/// ext-space lift (a `Table(Some(ext_class))`); `ret_syms` are the function's
+/// return slot symbols and `def_path` its defining file. Returns `lifted`
+/// unchanged when there are no carryable fields.
 ///
-/// **Per-file aggregation (intentional, pre-existing).** `overlay_fields` is keyed
-/// by the *shared* external class index (every `CreateFrame("Frame")` in a file
-/// resolves to the same `Frame` index), so this carries the union of every
-/// same-classed instance's injected fields in the defining file — not just the
-/// returned variable's. This exactly mirrors what same-file hover already shows
-/// for a `Frame`-typed local (which reads the same per-file overlay), so the
-/// cross-file view stays consistent with the same-file view. True per-instance
-/// fields would require per-symbol field tracking the external-index optimization
-/// deliberately avoids.
+/// **Per-*instance* narrowing.** The fields come from the per-assignment
+/// `field_assignments` log, filtered to those written to one of *this* factory's
+/// returned variables (`return holder` → the `holder` local, recovered from each
+/// `FunctionRet` slot's type source). This is deliberately *not* read from
+/// `ir.overlay_fields`, which is keyed by the shared external class index and so
+/// aggregates every same-classed instance's fields — and merged types — across
+/// the whole file (e.g. every `CreateFrame("Frame")` factory's fields landing on
+/// one `Frame` overlay). Per-instance attribution gives the returned value only
+/// its own fields, each with its own assignment's precise type.
+/// Follow a simple `local b = a` alias chain to the ultimate bound variable, so a
+/// field injected through an alias of the returned instance (`local f2 = frame;
+/// f2.Injected = …`) is still attributed to it. Only a plain `SymbolRef` binding
+/// is followed — not a field access (`local c = frame.Child`, which names a
+/// *different* object) — and a hop cap guards against cyclic reassignment chains.
+fn resolve_alias_root(ir: &Ir, mut sym: SymbolIndex) -> SymbolIndex {
+    for _ in 0..32 {
+        if sym.is_external() {
+            break;
+        }
+        let Some(src) = ir.sym(sym).versions.first().and_then(|v| v.type_source) else { break };
+        match ir.expr(src) {
+            Expr::SymbolRef(next, _) if *next != sym => sym = *next,
+            _ => break,
+        }
+    }
+    sym
+}
+
 fn wrap_overlay_shape(
     orig: &ValueType,
     lifted: ValueType,
     result: &crate::analysis::AnalysisResult,
     ext: &PreResolvedGlobals,
+    ret_syms: &[SymbolIndex],
+    def_path: &Path,
 ) -> ValueType {
     let ValueType::Table(Some(idx)) = orig else { return lifted };
     if !idx.is_external() {
         return lifted;
     }
     let ir = &result.ir;
-    let Some(overlay) = ir.overlay_fields.get(idx) else { return lifted };
-    if overlay.is_empty() {
+
+    // Narrow to the *returned* instance. The per-file overlay (`overlay_fields`)
+    // is keyed by the shared external class index, so it aggregates every
+    // same-classed instance's injected fields — and types — across the whole file
+    // (e.g. every `CreateFrame("Frame")` factory's fields land on one `Frame`
+    // overlay). Instead, read the per-assignment `field_assignments` log and keep
+    // only the fields written to one of *this* factory's returned symbols
+    // (`return holder`). Each field's type comes from its own assignment site
+    // (`resolve_expr_type`), not the merged overlay union, so a method like
+    // `SetValue` defined differently in several factories shows only this one's
+    // signature. The first site provides the go-to-definition location.
+    // `rets` holds synthetic `FunctionRet` slot symbols; map each back to the
+    // *returned variable* (`return frame` → the `frame` local) via its type
+    // source, then to that variable's ultimate alias root (see
+    // `resolve_alias_root`), so it can be matched against the field assignments'
+    // receivers. A return with no single root symbol (e.g. `return CreateFrame(...)`)
+    // yields nothing, leaving the value its bare class.
+    let ret_var_syms: HashSet<SymbolIndex> = ret_syms
+        .iter()
+        .filter_map(|&rs| ir.sym(rs).versions.first().and_then(|v| v.type_source))
+        .filter_map(|src| ir.find_root_symbol(src))
+        .map(|s| resolve_alias_root(ir, s))
+        .collect();
+    if ret_var_syms.is_empty() {
         return lifted;
     }
-    let mut fields: Vec<(String, ValueType)> = Vec::new();
-    for (name, fi) in overlay.iter() {
+
+    use std::collections::BTreeMap;
+    let mut by_field: BTreeMap<String, (Vec<ValueType>, (u32, u32))> = BTreeMap::new();
+    for fa in &ir.field_assignments {
+        if fa.table_idx != *idx {
+            continue;
+        }
+        // Match the field's receiver against a returned instance, resolving simple
+        // local aliases on both sides (`local f2 = frame; f2.X = …`) so a field
+        // injected through an alias of the returned frame is still carried.
+        if !fa.root_symbol.is_some_and(|s| ret_var_syms.contains(&resolve_alias_root(ir, s))) {
+            continue;
+        }
         // Don't re-carry a field the canonical ext class already declares — the
         // class member of the intersection handles it, and overriding it here
         // could mask an inherited type.
-        if ext_class_declares(ext, *idx, name) {
+        if ext_class_declares(ext, *idx, &fa.field_name) {
             continue;
         }
-        let Some(ty) = result.resolve_field_type(fi) else { continue };
+        let Some(ty) = result.resolve_expr_type(fa.actual_expr) else { continue };
         let lifted_ty = lift_local_type_to_ext(&ty, ir, ext);
-        if matches!(lifted_ty, ValueType::Any) {
+        // `Any` carries no information; `Nil` is the "remove method" placeholder
+        // idiom (`inst.M = nil`) — neither belongs in the carried shape.
+        if matches!(lifted_ty, ValueType::Any | ValueType::Nil) {
             continue;
         }
-        fields.push((name.clone(), lifted_ty));
+        let entry = by_field
+            .entry(fa.field_name.clone())
+            .or_insert_with(|| (Vec::new(), (fa.ident_start, fa.ident_end)));
+        if !entry.0.contains(&lifted_ty) {
+            entry.0.push(lifted_ty);
+        }
     }
-    if fields.is_empty() {
+    if by_field.is_empty() {
         return lifted;
     }
-    ValueType::Intersection(vec![lifted, ValueType::TableShape(Box::new(crate::types::TableShape::new(fields)))])
+
+    let mut fields: Vec<(String, ValueType)> = Vec::new();
+    let mut field_defs: Vec<(String, crate::types::ExternalLocation)> = Vec::new();
+    for (name, (mut tys, (start, end))) in by_field {
+        let ty = if tys.len() == 1 {
+            tys.pop().unwrap()
+        } else {
+            ValueType::make_union(tys)
+        };
+        field_defs.push((
+            name.clone(),
+            crate::types::ExternalLocation {
+                path: def_path.to_path_buf(),
+                start,
+                end,
+                name_start: start,
+                name_end: end,
+            },
+        ));
+        fields.push((name, ty));
+    }
+    let shape = crate::types::TableShape::new_with_defs(fields, field_defs);
+    ValueType::Intersection(vec![lifted, ValueType::TableShape(Box::new(shape))])
 }
 
 /// True when ext class `idx` (or any ancestor) declares `field`. `parent_classes`

@@ -274,22 +274,52 @@ pub enum ValueType {
 /// Inline anonymous table type carried by [`ValueType::TableShape`]. Minimal by
 /// design: an ordered (sorted-by-name, for deterministic output) list of
 /// `field → type` pairs, where each type is already in ext-index space.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+///
+/// `field_defs` carries each field's cross-file *definition location* (the
+/// `recv.field = …` assignment in the factory body), so go-to-definition on an
+/// injected field carried cross-file can jump to its source. It is additive
+/// navigation metadata: it is **excluded from `PartialEq`** (see the manual impl)
+/// so two shapes with the same fields stay type-equal regardless of where each
+/// field was defined, and `fields` consumers are entirely unaffected.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TableShape {
     pub fields: Vec<(String, ValueType)>,
+    #[serde(default)]
+    pub field_defs: Vec<(String, ExternalLocation)>,
+}
+
+// Locations are navigation metadata, not part of the type's structural identity.
+impl PartialEq for TableShape {
+    fn eq(&self, other: &Self) -> bool {
+        self.fields == other.fields
+    }
 }
 
 impl TableShape {
     /// Build a shape from `field → type` pairs, sorting by name so equal field
     /// sets compare equal and hover/completion output is stable.
-    pub fn new(mut fields: Vec<(String, ValueType)>) -> Self {
+    pub fn new(fields: Vec<(String, ValueType)>) -> Self {
+        Self::new_with_defs(fields, Vec::new())
+    }
+
+    /// Like [`new`](Self::new) but also carries per-field definition locations.
+    pub fn new_with_defs(
+        mut fields: Vec<(String, ValueType)>,
+        mut field_defs: Vec<(String, ExternalLocation)>,
+    ) -> Self {
         fields.sort_by(|a, b| a.0.cmp(&b.0));
-        TableShape { fields }
+        field_defs.sort_by(|a, b| a.0.cmp(&b.0));
+        TableShape { fields, field_defs }
     }
 
     /// The declared type of `name`, if this shape carries it.
     pub fn field(&self, name: &str) -> Option<&ValueType> {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, t)| t)
+    }
+
+    /// The cross-file definition location of `name`, if this shape carries one.
+    pub fn field_def(&self, name: &str) -> Option<&ExternalLocation> {
+        self.field_defs.iter().find(|(n, _)| n == name).map(|(_, l)| l)
     }
 }
 
@@ -340,6 +370,22 @@ impl ValueType {
             }
             ValueType::OpaqueAlias(_, inner) => inner.collect_shape_field_types(field, out),
             _ => {}
+        }
+    }
+
+    /// The cross-file definition location of `field` carried by an inline
+    /// `TableShape` member of this type (recursing into `Union`/`Intersection`,
+    /// unwrapping opaque aliases). Returns the first match — used by
+    /// go-to-definition on an injected field. `None` when no shape member carries
+    /// a location for `field`.
+    pub fn collect_shape_field_def(&self, field: &str) -> Option<&ExternalLocation> {
+        match self {
+            ValueType::TableShape(shape) => shape.field_def(field),
+            ValueType::Union(members) | ValueType::Intersection(members) => {
+                members.iter().find_map(|m| m.collect_shape_field_def(field))
+            }
+            ValueType::OpaqueAlias(_, inner) => inner.collect_shape_field_def(field),
+            _ => None,
         }
     }
 

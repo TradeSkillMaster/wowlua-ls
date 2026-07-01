@@ -937,8 +937,14 @@ impl AnalysisResult {
         self.format_value_type_depth(vt, depth)
     }
 
-    /// Format a type for inlay hints: anonymous shape tables (no class name,
-    /// no key/value type) collapse to `table` instead of listing fields inline.
+    /// Format a type for inlay hints: a standalone anonymous shape table (no
+    /// class name, no key/value type) collapses to `table` instead of listing
+    /// fields inline; the same applies to anonymous members of a union. (An
+    /// intersection-carried `TableShape` — the cross-file injected-field carrier
+    /// behind `Frame & { … }` — is *not* collapsed here: it formats through the
+    /// depth-1 path, where the shape's own field-count cap keeps it concise, e.g.
+    /// `Frame & { SetValue: fun… }` for a small shape or `Frame & {... N fields}`
+    /// for a large one.)
     pub(super) fn format_type_for_hint(&self, vt: &ValueType) -> String {
         if self.is_anon_shape_table(vt) {
             return "table".to_string();
@@ -1291,6 +1297,22 @@ impl AnalysisResult {
                 // Inline anonymous shape (cross-file overlay carrier). Format
                 // compactly on one line; field types are formatted at depth+1 so
                 // class-typed fields show as class names, not expanded listings.
+                //
+                // When nested (depth ≥ 1 — i.e. anywhere but the rare case of the
+                // shape being the whole hovered type), collapse a large shape to a
+                // field count instead of listing every field, exactly mirroring the
+                // anonymous `Table` cap. This keeps both the `Class & { … }`
+                // intersection's hover signature line (shape at depth 1) and its
+                // inlay hint (shape at depth 2) short: a small per-instance shape
+                // shows inline (`{ SetValue: fun… }`), a large one caps
+                // (`{... N fields}`), and each field still hovers/navigates on its
+                // own access.
+                let field_count = shape.fields.len();
+                let has_methods = shape.fields.iter()
+                    .any(|(_, t)| matches!(t, ValueType::Function(_) | ValueType::FunctionSig(_)));
+                if depth >= 1 && ((has_methods && field_count > 2) || field_count > 4) {
+                    return format!("{{... {} fields}}", field_count);
+                }
                 let fields: Vec<String> = shape.fields.iter()
                     .map(|(n, t)| format!("{}: {}", n, self.format_value_type_depth(t, depth + 1)))
                     .collect();

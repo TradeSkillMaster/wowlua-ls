@@ -40,6 +40,13 @@ impl AnalysisResult {
     /// returned (primary first) so the editor can present a picker. Single-def
     /// cases return a one-element vector, matching the previous behavior.
     pub fn definitions_at(&self, tree: &SyntaxTree, offset: u32) -> Vec<DefinitionResult> {
+        // Injected field carried cross-file by an inline `TableShape` member
+        // (e.g. a factory's `frame.SetValue = …` read through `Frame & { … }`):
+        // jump to its recorded definition site in the defining file. Checked
+        // before the field-chain path, which can't resolve a shape-only field.
+        if let Some(result) = self.shape_field_definition_at(offset) {
+            return vec![result];
+        }
         // Try field access first so that a same-named global doesn't shadow the field.
         if let Some((table_idx, field_name, expr_id, _, _)) = self.resolve_field_chain_at(tree, offset) {
             // Check the field's local definition range first (from @field annotation,
@@ -127,6 +134,29 @@ impl AnalysisResult {
             return anno;
         }
         Vec::new()
+    }
+
+    /// Go-to-definition for a field access whose receiver carries the field via
+    /// an inline `TableShape` member (cross-file injected-field carrier). Mirrors
+    /// [`Self::shape_field_hover_at`]: finds the `Expr::FieldAccess` whose
+    /// field-name range covers `offset`, resolves the receiver type, and returns
+    /// the field's carried cross-file definition location when a shape member
+    /// declares one. `None` for ordinary class/record fields.
+    fn shape_field_definition_at(&self, offset: u32) -> Option<DefinitionResult> {
+        for expr in self.ir.exprs.iter() {
+            let Expr::FieldAccess { table, field, field_range: Some((s, e)) } = expr else { continue };
+            if offset < *s || offset >= *e {
+                continue;
+            }
+            // Skip (not bail) on an unresolvable receiver, matching
+            // `shape_field_hover_at`: another lowered `FieldAccess` may share this
+            // offset and carry the shape.
+            let Some(recv) = self.resolve_expr_type(*table).map(|t| t.into_strip_opaque()) else { continue };
+            if let Some(loc) = recv.collect_shape_field_def(field) {
+                return Some(DefinitionResult::External(loc.clone()));
+            }
+        }
+        None
     }
 
     /// All definition sites for an external (global) symbol: the primary

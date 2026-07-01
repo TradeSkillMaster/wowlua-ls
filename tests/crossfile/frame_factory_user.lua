@@ -9,14 +9,23 @@
 local addonName, ns = ...
 
 local dropdown = ns.Components.GetBasicDropdown(nil)
---    ^ hover: (local) dropdown: Frame & { DropDown: DropdownButton & WowStyle1DropdownTemplate, Init: fun(_: any, entries: any), Label: FontString }
+--    ^ hover: (local) dropdown: Frame & {... 4 fields} {
+--            ^ hint: : Frame & {... 4 fields}
+-- A large injected shape caps to a field count in BOTH hover and hint (the
+-- existing anonymous-table `{... N fields}` convention); each field still
+-- hovers/navigates on its own access below.
 
 -- Injected per-instance fields carried cross-file as an inline table shape:
--- precise hover, no false `undefined-field`, and the field's own methods resolve.
+-- precise hover, no false `undefined-field`, the field's own methods resolve,
+-- and go-to-definition jumps to the field's assignment in the factory's file.
 dropdown.DropDown:SetWidth(250)
---       ^ hover: (field) DropDown: DropdownButton & WowStyle1DropdownTemplate
+--       ^ hover: (field) DropDown: DropdownButton & WowStyle1DropdownTemplate  def: external
 dropdown.Label:SetText("hi")
 --       ^ hover: (field) Label: FontString
+-- Method-style injected field, including go-to-def on the method *call* (the
+-- reported case): `:SetValue()` resolves cross-file to the factory definition.
+dropdown:SetValue(1)
+--       ^ def: external
 
 -- Completion surfaces the injected shape field (typed prefix filters to it).
 local d = dropdown.DropDown
@@ -30,3 +39,19 @@ dropdown:SetPoint("TOP")
 local plain = ns.PlainComponents.GetPlainFrame(nil)
 --    ^ hover: (local) plain: Frame {
 plain:SetShown(true)
+
+-- A factory injecting a single field: the narrowed shape is small enough to
+-- render inline in the inlay hint (no field-count cap), which is the concise,
+-- precise form for a per-instance factory result.
+local toggle = ns.Components.GetToggle(nil)
+--    ^ hover: (local) toggle: Frame & { Toggle: fun(self: Frame) } {
+--          ^ hint: : Frame & { Toggle: fun(self: Frame) }
+toggle:Toggle()
+
+-- Field injected via a local alias of the returned frame (`local f2 = frame`):
+-- the shape still carries it, so it resolves cross-file with no false
+-- `undefined-field`, and go-to-def jumps to the aliased write.
+local aliased = ns.Components.GetAliased(nil)
+--    ^ hover: (local) aliased: Frame & { Aliased: Frame } {
+aliased.Aliased:SetShown(true)
+--      ^ hover: (field) Aliased: Frame  def: external

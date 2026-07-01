@@ -3059,6 +3059,61 @@ fn crossfile_frame_factory_overlay() {
 }
 
 #[test]
+fn crossfile_frame_factory_overlay_gotodef() {
+    // Go-to-definition on a cross-file injected field — carried by the
+    // `Frame & { ... }` TableShape — jumps to the field's *assignment site* in
+    // the factory's defining file, for both `recv.field = …` (assignment-style)
+    // and `function recv:Method()` (method-style, incl. on the method call). The
+    // location precision is what the annotation harness's `def: external` can't
+    // assert (it only checks the result is external).
+    let dir = std::path::PathBuf::from("tests/crossfile");
+    let user_text = std::fs::read_to_string("tests/crossfile/frame_factory_user.lua").unwrap();
+    let defs_text = std::fs::read_to_string("tests/crossfile/frame_factory_defs.lua").unwrap();
+
+    // Build cross-file pre_globals with stubs (mirrors run_annotation_tests' with_stubs path).
+    let mut project_configs = ProjectConfigs::default();
+    let scan = lsp::scan_workspace_with_stubs(
+        std::slice::from_ref(&dir), &mut project_configs, &[], &[], STUB_GLOBALS.creates_global_specs(),
+    );
+    let (sc, mut sa, sg, ans, se, ws_callable) =
+        (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
+    wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
+    let mut pg = PreResolvedGlobals::build_on_stubs(&STUB_GLOBALS, &sg, &sc, &sa, false, &ans, &ws_callable);
+    pg.merge_events(&se);
+    // The deferred harvester reads per-file inference flags from project configs.
+    pg.set_project_configs(Arc::new(project_configs.clone()));
+    let pre_globals = Arc::new(pg);
+
+    let tree = wowlua_ls::syntax::parser::parse(&user_text);
+    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let defs_lines = line_numbers::LinePositions::from(defs_text.as_str());
+    // Each case: (byte offset of the field token in the user file, the substring
+    // in the defs file whose line is the expected definition target).
+    let assert_jumps = |query_at: usize, defs_needle: &str| {
+        let def = result.definition_at(&tree, query_at as u32)
+            .unwrap_or_else(|| panic!("expected a definition at offset {query_at}"));
+        let DefinitionResult::External(loc) = def else {
+            panic!("expected an External definition at offset {query_at}");
+        };
+        assert!(loc.path.ends_with("frame_factory_defs.lua"), "wrong file: {:?}", loc.path);
+        let got_line = defs_lines.from_offset(loc.start as usize).0.0 + 1;
+        let want_line = defs_lines.from_offset(defs_text.find(defs_needle).unwrap()).0.0 + 1;
+        assert_eq!(got_line, want_line, "jumped to defs line {got_line}, expected {want_line} ({defs_needle:?})");
+    };
+
+    // Assignment-style: `dropdown.DropDown` → `frame.DropDown = dropdown`.
+    assert_jumps(user_text.find("dropdown.DropDown:SetWidth").unwrap() + "dropdown.".len(), "frame.DropDown = dropdown");
+    // Method-style, via the method *call*: `dropdown:SetValue(1)` → `function frame:SetValue`.
+    assert_jumps(user_text.find("dropdown:SetValue(1)").unwrap() + "dropdown:".len(), "function frame:SetValue");
+    // Injected through a local alias (`local f2 = frame; f2.Aliased = …`):
+    // `aliased.Aliased` → the aliased write site.
+    assert_jumps(user_text.find("aliased.Aliased:SetShown").unwrap() + "aliased.".len(), "f2.Aliased = CreateFrame");
+}
+
+#[test]
 fn crossfile_inferred_field_return() {
     // Cross-file lazy resolution of a body-inferred, class-typed field-access
     // return (no @return). The coarse scan yields `any`; the deferred resolver
