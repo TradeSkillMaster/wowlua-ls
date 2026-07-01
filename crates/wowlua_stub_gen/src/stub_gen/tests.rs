@@ -1477,3 +1477,31 @@ fn test_generate_blizzard_event_stubs_extra_events() {
     assert!(out.contains("---@event FrameEvent \"CRAFT_SHOW\""), "out:\n{out}");
     assert!(!out.contains("CRAFT_SHOW\"\n---@param"), "extra event must have no payload:\n{out}");
 }
+
+#[test]
+fn override_stem_collision_ok_when_unique() {
+    // A stem that matches a single vendor file is fine (the normal case).
+    let dir = std::env::temp_dir().join(format!("wlua_stemok_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Type")).unwrap();
+    std::fs::create_dir_all(dir.join("FrameXML")).unwrap();
+    std::fs::write(dir.join("Type/Mixin.lua"), "---@meta _\n").unwrap();
+    std::fs::write(dir.join("FrameXML/Other.lua"), "---@meta _\n").unwrap();
+    let stems: HashSet<String> = ["Mixin".to_string()].into_iter().collect();
+    check_override_stem_collisions(std::slice::from_ref(&dir), &stems);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[should_panic(expected = "shadow multiple vendor files")]
+fn override_stem_collision_panics_on_multi_match() {
+    // Two vendor files share the stem `Mixin` — the exact footgun this guards.
+    let dir = std::env::temp_dir().join(format!("wlua_stembad_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Type")).unwrap();
+    std::fs::create_dir_all(dir.join("FrameXML")).unwrap();
+    std::fs::write(dir.join("Type/Mixin.lua"), "---@meta _\n").unwrap();
+    std::fs::write(dir.join("FrameXML/Mixin.lua"), "---@meta _\n").unwrap();
+    let stems: HashSet<String> = ["Mixin".to_string()].into_iter().collect();
+    check_override_stem_collisions(&[dir], &stems);
+}

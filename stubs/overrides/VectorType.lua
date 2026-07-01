@@ -1,0 +1,15 @@
+---@meta _
+-- Map Blizzard's `vector2`/`vector3` types to the plain-data classes rather than
+-- Ketho's default `Core/Type/Mixin.lua` aliases (`vector2 = Vector2DMixin`,
+-- `vector3 = Vector3DMixin`).
+--
+-- Blizzard's APIDocumentationGenerated tags position/point struct fields as
+-- `Type = "vector2"` (e.g. `DungeonEntranceMapInfo.position` from
+-- `C_EncounterJournal.GetDungeonEntrancesForMap`). Those fields hold plain
+-- `{x, y}` data read by C++, not method-bearing mixin instances, so the data
+-- class (`Vector2DType` = `{x, y}` / `Vector3DType` = `{x, y, z}`) is the honest
+-- type — mirroring the mixin-object → data-type treatment in `data_params.rs`.
+--
+-- Override aliases win over the vendor alias by last-registration.
+---@alias vector2 Vector2DType
+---@alias vector3 Vector3DType

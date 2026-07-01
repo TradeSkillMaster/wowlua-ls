@@ -1278,3 +1278,28 @@ local p1, b1, g1, s1, bag1 = EquipmentManager_UnpackLocation(5)
 local p2, b2, g2, _, s2, bag2 = EquipmentManager_UnpackLocation(5)
 --                   ^ hover: (local) s2: number
 --                         ^ hover: (local) bag2: number
+
+-- ── C_EncounterJournal.GetDungeonEntrancesForMap: vector2 field (Vector2DType) ──
+-- Regression: Blizzard tags struct fields such as DungeonEntranceMapInfo.position
+-- as `Type = "vector2"`. The vendor `vector2` alias lives in Core/Type/Mixin.lua,
+-- whose file stem collided with the Mixin() function override (formerly
+-- stubs/overrides/Mixin.lua) and was skipped wholesale — dropping the alias and
+-- with it the whole field. Fixed by renaming the override to MixinFunctions.lua
+-- (so the vendor alias file is no longer shadowed) and mapping vector2 ->
+-- Vector2DType (the plain {x, y} data shape) via stubs/overrides/VectorType.lua.
+local _dungeonEntrances = C_EncounterJournal.GetDungeonEntrancesForMap(123)
+local _dungeonEntrance = _dungeonEntrances[1]
+local _entrancePos = _dungeonEntrance.position
+--    ^ hover: (local) _entrancePos: Vector2DType
+local _entranceX = _entrancePos.x
+--    ^ hover: (local) _entranceX: number
+
+-- ── C_Map.GetWorldPosFromMapPos: a vector2 return must not drop the return count ──
+-- Regression (same root cause as above): the 2nd @return is `vector2 worldPosition`.
+-- When `vector2` was unresolvable, that return was dropped and the function looked
+-- like it returned a single value, so `local a, b = C_Map.GetWorldPosFromMapPos(...)`
+-- false-positived as unbalanced-assignments. Exhaustive diag checking asserts that
+-- diagnostic's absence; the hovers pin the recovered second return type.
+local _continentID, _worldPos = C_Map.GetWorldPosFromMapPos(84, { x = 0.5, y = 0.5 })
+--    ^ hover: (local) _continentID: number
+--                  ^ hover: (local) _worldPos: Vector2DType

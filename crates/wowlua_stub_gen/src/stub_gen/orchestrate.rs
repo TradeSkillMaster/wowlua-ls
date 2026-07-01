@@ -588,6 +588,15 @@ pub fn regenerate_stubs() {
             }
         }
     }
+
+    // Fail loudly if an override *file* stem shadows more than one vendor file (a
+    // stem is not a unique key across the vendor tree, so a colliding override
+    // would silently drop unrelated vendor content). Run this before adding the
+    // skip-directive stems below: those have no backing override file and are
+    // *meant* to shadow every vendor file with their stem (we regenerate that
+    // data from upstream), so a multi-match is intended, not a collision.
+    check_override_stem_collisions(&vendor_dirs, &override_stems);
+
     // Skip Ketho's vendor files that we now generate from upstream sources
     override_stems.insert("Wiki".to_string());
     override_stems.insert("Event".to_string());

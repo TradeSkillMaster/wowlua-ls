@@ -210,6 +210,58 @@ pub(in crate::stub_gen) fn collect_stub_scan_paths(
 }
 
 
+/// Hard-fail if any override *file* stem shadows more than one vendor file.
+///
+/// Override files dominate vendor files by *file stem* (`collect_stub_scan_paths`
+/// drops every vendor file whose stem is in `override_stems`). Vendor stems are not
+/// unique across directories — e.g. `Core/Type/Mixin.lua` (type aliases) and
+/// `Core/FrameXML/Blizzard_SharedXML/Mixin.lua` (the `Mixin()` functions) — so a
+/// single override stem can shadow a vendor file it never meant to replace, dropping
+/// its content wholesale. That failure is otherwise invisible until some stub turns
+/// up mysteriously missing. Overrides win by last-registration regardless of the stem
+/// skip, so a colliding override just needs a unique stem; the skip is only a dedup.
+///
+/// Pass only stems backed by an actual override file. The panic remedy is "rename the
+/// override", so a stem with no backing file has no actionable fix — and the pure
+/// skip-directive stems (`Wiki`/`Event`/`Enum`/`CVar`) are *meant* to shadow every
+/// vendor file with their stem, so a multi-match there is intended, not a collision.
+pub(in crate::stub_gen) fn check_override_stem_collisions(
+    vendor_dirs: &[PathBuf],
+    override_stems: &HashSet<String>,
+) {
+    let mut by_stem: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for vendor_dir in vendor_dirs {
+        let mut vendor_paths = Vec::new();
+        collect_lua_paths(vendor_dir, &mut vendor_paths);
+        for p in vendor_paths {
+            if let Some(stem) = p.file_stem().and_then(|s| s.to_str())
+                && override_stems.contains(stem)
+            {
+                by_stem.entry(stem.to_string()).or_default().push(p);
+            }
+        }
+    }
+    let mut collisions: Vec<(&String, &Vec<PathBuf>)> =
+        by_stem.iter().filter(|(_, files)| files.len() > 1).collect();
+    if collisions.is_empty() {
+        return;
+    }
+    collisions.sort_by(|a, b| a.0.cmp(b.0));
+    for (stem, files) in &collisions {
+        let list = files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
+        log::error!("Override stem `{stem}` shadows {} vendor files: {list}", files.len());
+    }
+    panic!(
+        "Stub regeneration aborted — {} override stem(s) shadow multiple vendor files. \
+         An override dominates vendor files by file stem, so a stem matching more than one \
+         vendor file silently drops the content of every file it does not mean to replace. \
+         Give the override a unique stem (overrides win by last-registration, so the stem \
+         skip is not needed for correctness).",
+        collisions.len(),
+    );
+}
+
+
 pub(in crate::stub_gen) fn collect_lua_paths(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
