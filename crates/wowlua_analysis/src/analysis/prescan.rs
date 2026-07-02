@@ -1608,7 +1608,7 @@ impl<'a> Analysis<'a> {
             let mut ret_symbols = Vec::new();
 
             // Helper: create a return symbol with the given resolved type
-            let push_ret_symbol = |ir: &mut super::Ir, col: usize, resolved: Option<ValueType>| {
+            let push_ret_symbol = |ir: &mut super::Ir, col: usize, resolved: ValueType| {
                 let sym_idx = SymbolIndex(ir.symbols.len());
                 ir.symbols.push(Symbol {
                     id: SymbolIdentifier::FunctionRet(func_idx, col),
@@ -1616,7 +1616,7 @@ impl<'a> Analysis<'a> {
                     versions: vec![SymbolVersion {
                         def_node: dummy_node,
                         type_source: None,
-                        resolved_type: resolved,
+                        resolved_type: Some(resolved),
                         type_args: Vec::new(),
                         created_in_scope: func_scope,
                         creation_order: 0,
@@ -1642,7 +1642,7 @@ impl<'a> Analysis<'a> {
                         self.resolve_annotation_type_mut(at)
                     });
                 for (col, vt) in col_vts.iter().enumerate() {
-                    ret_symbols.push(push_ret_symbol(&mut self.ir, col, Some(vt.clone())));
+                    ret_symbols.push(push_ret_symbol(&mut self.ir, col, vt.clone()));
                 }
                 return_annotations = col_vts;
                 return_annotations_raw = col_raws;
@@ -1650,11 +1650,16 @@ impl<'a> Analysis<'a> {
                 overloads = synth;
             } else {
                 has_vararg_return = false;
-                // Resolve each return type once and reuse for both symbols and annotations
-                let resolved: Vec<Option<ValueType>> = sig.returns.iter()
-                    .map(|rt| self.resolve_annotation_type_mut(rt))
+                // Resolve each return type once and reuse for both symbols and
+                // annotations. Preserve an unresolvable slot as `any` rather than
+                // dropping it, so `return_annotations`, `return_annotations_raw`, and the
+                // per-slot return symbols all stay aligned with the raw `@return` count —
+                // a dropped slot would undercount the arity and false-positive
+                // `unbalanced-assignments` on a valid destructure.
+                let resolved: Vec<ValueType> = sig.returns.iter()
+                    .map(|rt| self.resolve_annotation_type_mut(rt).unwrap_or(ValueType::Any))
                     .collect();
-                return_annotations = resolved.iter().filter_map(|r| r.clone()).collect();
+                return_annotations = resolved.clone();
                 return_annotations_raw = sig.returns.clone();
                 return_labels = Vec::new();
                 overloads = Vec::new();

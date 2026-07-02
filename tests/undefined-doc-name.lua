@@ -60,6 +60,69 @@ local function _returnTest() end
 ---@return number
 local function _goodReturn() return 1 end
 
+-- ── Unresolvable @return type must not undercount destructure arity ───────
+-- Regression: an unresolvable `@return` type name is preserved as an `any`
+-- return slot rather than silently dropped, so the return arity stays correct.
+-- A matching multi-variable destructure must NOT false-positive
+-- `unbalanced-assignments` (the exhaustive harness flags it if it fires), and
+-- the receiving variable hovers as `any`. Covers the unresolvable slot in both
+-- trailing and leading position.
+
+---@return number
+---@return MissingTrailingReturn
+local function _multiRetTrailing() return 1, nil end
+-- ^ diag: undefined-doc-name
+local _mrt1, _mrt2 = _multiRetTrailing()
+local _ = _mrt2
+--        ^ hover: (local) _mrt2: any
+
+---@return MissingLeadingReturn
+---@return number
+local function _multiRetLeading() return nil, 2 end
+-- ^ diag: undefined-doc-name
+local _mrl1, _mrl2 = _multiRetLeading()
+local _ = _mrl1
+--        ^ hover: (local) _mrl1: any
+
+-- Same weakness via the prescan fun()-alias materialization path (drop site 1):
+-- an unresolvable return inside a function-typed alias field is likewise kept as
+-- an `any` slot, so calling the field and destructuring stays balanced.
+---@alias _FunAliasRet fun(): number, MissingFunAliasReturn
+-- ^ diag: undefined-doc-name
+---@class _FunAliasHolder
+---@field cb _FunAliasRet
+---@type _FunAliasHolder
+local _fah = {}
+local _fa1, _fa2 = _fah.cb()
+local _ = _fa2
+--        ^ hover: (local) _fa2: any
+
+-- Intended cascade: because the unresolvable slot is now a *required* `any`
+-- (not dropped), an incomplete body reports the same return-completeness
+-- diagnostics it would for a resolvable required type — behaviour the drop bug
+-- previously masked. The undefined type name and the missing return are
+-- independent problems, both surfaced.
+
+-- Sole unresolvable @return + empty body → missing-return (undefined-doc-name is
+-- still emitted on the annotation line above, covered by this assertion).
+---@return MissingSoleReturn
+local function _soleUnresolvedReturn() end
+-- ^ diag: missing-return
+_consume(_soleUnresolvedReturn)
+
+-- Unresolvable @return + early bare `return` → missing-return-value on the bare
+-- return (undefined-doc-name suppressed so the arity diagnostic is the lone
+-- assertion, mirroring the return-mismatch blocks elsewhere in this file).
+---@diagnostic disable: undefined-doc-name
+---@return MissingEarlyReturn
+local function _earlyBareReturn(cond)
+    if cond then return end
+    -- ^ diag: missing-return-value
+    return nil
+end
+---@diagnostic enable: undefined-doc-name
+_consume(_earlyBareReturn)
+
 -- ── @type on variables ──────────────────────────────────────────────────
 
 ---@type MissingVarType

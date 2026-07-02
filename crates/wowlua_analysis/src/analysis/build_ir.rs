@@ -3157,18 +3157,28 @@ impl<'a> Analysis<'a> {
                     // `params<F>` projects multiple positions → can't fit one
                     // return slot → malformed-annotation. `returns<F>` is the
                     // expected shape and gets stored on return_projections.
-                    match crate::annotations::match_projection(ret_annotation, &generic_names) {
+                    let projection = crate::annotations::match_projection(ret_annotation, &generic_names);
+                    let is_projection = projection.is_some();
+                    match projection {
                         Some(crate::types::ProjectionKind::Params(_)) => {}
                         Some(proj @ crate::types::ProjectionKind::Return(..)) => {
                             self.ir.functions[func_idx.val()].return_projections.insert(i, proj);
                         }
                         None => {}
                     }
-                    if let Some(vt) = self.resolve_annotation_type_mut_gen(ret_annotation, generics)
-                        // Materialize a function-typed alias (e.g. `@return MyFuncType`
-                        // where `MyFuncType = fun(...)`) so the signature survives into
-                        // a caller's `local cb = GetCallback()` for type-checking/hints.
-                        .map(|vt| self.materialize_fun_alias(vt, ret_annotation)) {
+                    // Resolve the return type, materializing a `fun(...)` alias so a
+                    // caller's `local cb = GetCallback()` sees the signature. On an unknown
+                    // class/alias name, fall back to `any` rather than dropping the slot —
+                    // a dropped slot undercounts the return arity (false-positiving
+                    // `unbalanced-assignments`) and drops the receiving variable's type.
+                    // Excluded from the placeholder: projection slots (already resolve to
+                    // `any` or expand at call sites via `return_projections`) and a stray
+                    // tuple-form entry (mixed tuple/legacy `@return`, already flagged
+                    // `malformed-annotation`) — neither is a real return slot to count.
+                    let resolved_vt = self.resolve_annotation_type_mut_gen(ret_annotation, generics)
+                        .map(|vt| self.materialize_fun_alias(vt, ret_annotation));
+                    let allow_placeholder = !is_projection && !tuple_form_flags[i];
+                    if let Some(vt) = resolved_vt.or_else(|| allow_placeholder.then_some(ValueType::Any)) {
                         let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
                         let ret_sym_idx = self.ir.insert_symbol(
                             SymbolIdentifier::FunctionRet(func_idx, i),
