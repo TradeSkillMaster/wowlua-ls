@@ -7,6 +7,8 @@ use super::{DiagnosticPass, WowDiagnostic};
 pub struct UnknownDiagCode;
 
 impl DiagnosticPass for UnknownDiagCode {
+    fn runs_in_meta(&self) -> bool { true }
+
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let known = super::known_codes();
         for event in SyntaxNode::new_root(tree).descendants_with_tokens() {

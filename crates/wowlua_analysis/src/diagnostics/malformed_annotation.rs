@@ -48,6 +48,8 @@ const KNOWN_TAGS: &[&str] = &[
 pub struct MalformedAnnotation;
 
 impl DiagnosticPass for MalformedAnnotation {
+    fn runs_in_meta(&self) -> bool { true }
+
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let mut current_class: Option<&str> = None;
 

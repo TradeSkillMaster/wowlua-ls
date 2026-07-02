@@ -273,6 +273,16 @@ pub trait DiagnosticPass {
     fn visit_node(&self, _node: SyntaxNode<'_>, _analysis: &AnalysisResult, _diags: &mut Vec<WowDiagnostic>) {}
     fn run(&self, _analysis: &AnalysisResult, _tree: &SyntaxTree, _diags: &mut Vec<WowDiagnostic>) {}
     fn run_inject(&self, _analysis: &AnalysisResult, _tree: &SyntaxTree, _inject: &mut Vec<InjectFieldCheck>, _diags: &mut Vec<WowDiagnostic>) {}
+
+    /// Whether this pass runs in `@meta` files. `@meta` marks a declaration-only
+    /// stub whose Lua body isn't real code, so runtime/behavior diagnostics are
+    /// suppressed there. Annotation type-integrity checks are the exception: a
+    /// reference to a type that doesn't exist (e.g. a `@field`/`@param` naming a
+    /// removed `@class`/`@alias`) is a genuine error regardless of file kind —
+    /// defeating a stub file silently is exactly what these files exist to
+    /// prevent. Only the passes whose sole job is validating annotation type
+    /// references override this to `true`.
+    fn runs_in_meta(&self) -> bool { false }
 }
 
 // ── Run all diagnostic passes ──────────────────────────────────────────────────
@@ -280,7 +290,11 @@ pub trait DiagnosticPass {
 pub fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDiagnostic> {
     use std::collections::HashSet;
 
-    if analysis.is_meta { return Vec::new(); }
+    // `@meta` files run only annotation type-integrity passes (see
+    // `DiagnosticPass::runs_in_meta`); every other pass — the AST-walk and
+    // inject/type-mismatch passes below, and the safety-limit note — checks
+    // runtime behavior and stays suppressed.
+    let meta = analysis.is_meta;
     let mut diags = Vec::new();
 
     let run_passes: &[&dyn DiagnosticPass] = &[
@@ -331,29 +345,34 @@ pub fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDiagnosti
         &destructure_arity::DestructureArity,
         &class_shadows_builtin::ClassShadowsBuiltin,
     ];
-    for pass in run_passes { pass.run(analysis, tree, &mut diags); }
-
-    let node_passes: &[&dyn DiagnosticPass] = &[
-        &ast_checks::AstChecks,
-        &not_precedence::NotPrecedence,
-        &unused_vararg::UnusedVararg,
-    ];
-    let root = SyntaxNode::new_root(tree);
-    for node in root.descendants() {
-        for pass in node_passes { pass.visit_node(node, analysis, &mut diags); }
+    for pass in run_passes {
+        if meta && !pass.runs_in_meta() { continue; }
+        pass.run(analysis, tree, &mut diags);
     }
 
-    // Order matters: producers append to excess_inject, InjectField consumes it last.
-    let inject_passes: &[&dyn DiagnosticPass] = &[
-        &return_mismatch::ReturnMismatch,
-        &field_type_mismatch::FieldTypeMismatch,
-        &assign_type_mismatch::AssignTypeMismatch,
-        &type_mismatch::TypeMismatch,
-        &inject_field::InjectField,
-    ];
-    let mut excess_inject = Vec::new();
-    for pass in inject_passes {
-        pass.run_inject(analysis, tree, &mut excess_inject, &mut diags);
+    if !meta {
+        let node_passes: &[&dyn DiagnosticPass] = &[
+            &ast_checks::AstChecks,
+            &not_precedence::NotPrecedence,
+            &unused_vararg::UnusedVararg,
+        ];
+        let root = SyntaxNode::new_root(tree);
+        for node in root.descendants() {
+            for pass in node_passes { pass.visit_node(node, analysis, &mut diags); }
+        }
+
+        // Order matters: producers append to excess_inject, InjectField consumes it last.
+        let inject_passes: &[&dyn DiagnosticPass] = &[
+            &return_mismatch::ReturnMismatch,
+            &field_type_mismatch::FieldTypeMismatch,
+            &assign_type_mismatch::AssignTypeMismatch,
+            &type_mismatch::TypeMismatch,
+            &inject_field::InjectField,
+        ];
+        let mut excess_inject = Vec::new();
+        for pass in inject_passes {
+            pass.run_inject(analysis, tree, &mut excess_inject, &mut diags);
+        }
     }
 
     // Post-processing: remove stale undefined-doc diagnostics for
@@ -385,7 +404,7 @@ pub fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDiagnosti
     let mut seen = HashSet::new();
     diags.retain(|d| seen.insert((d.code, d.start, d.end)));
 
-    if let Some(ref msg) = analysis.safety_limit_hit {
+    if !meta && let Some(ref msg) = analysis.safety_limit_hit {
         SAFETY_LIMIT.emit(
             &mut diags,
             format!("analysis incomplete: {msg}; some types and diagnostics may be missing"),

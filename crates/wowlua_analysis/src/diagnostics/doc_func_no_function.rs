@@ -16,6 +16,8 @@ const EVENT_VALID_TAGS: &[&str] = &["param"];
 pub struct DocFuncNoFunction;
 
 impl DiagnosticPass for DocFuncNoFunction {
+    fn runs_in_meta(&self) -> bool { true }
+
     fn run(&self, _analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let root = SyntaxNode::new_root(tree);
 

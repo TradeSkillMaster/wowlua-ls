@@ -840,6 +840,7 @@ fn buffered_input_connection(connection: Connection) -> Connection {
 }
 
 /// Client capability flags negotiated during initialization.
+#[derive(Default)]
 struct ClientSupport {
     progress: bool,
     code_lens_refresh: bool,
@@ -992,6 +993,7 @@ fn main_loop(
         }
 
         // Drain completed background stub analyses and patch into documents.
+        let mut drained_meta_uris: Vec<lsp_types::Uri> = Vec::new();
         while let Ok(res) = stub_rx.try_recv() {
             // Only install if the document is still open and the sequence
             // number matches the didOpen that spawned this work. A mismatch
@@ -1000,8 +1002,35 @@ fn main_loop(
                 && doc.stub_open_seq == res.open_seq
                 && doc.analysis.is_none()
             {
+                let is_meta = res.analysis.is_meta();
                 doc.tree = Some(res.tree);
                 doc.analysis = Some(res.analysis);
+                // Stub files stay silent, but `@meta` files now surface
+                // annotation type-integrity diagnostics (undefined type/class
+                // references). The didOpen fast-path routes these to background
+                // analysis and returns before publishing, so publishing has to
+                // happen here once the analysis lands.
+                if is_meta
+                    && let Ok(uri) = lsp_types::Uri::from_str(&res.uri_key)
+                    && !is_stub_path(&uri)
+                {
+                    drained_meta_uris.push(uri);
+                }
+            }
+        }
+        if !drained_meta_uris.is_empty() {
+            if client.diagnostic_refresh {
+                // Pull-model clients (VS Code) re-request textDocument/diagnostic
+                // on a refresh; the initial post-didOpen pull returned nothing
+                // because analysis wasn't ready yet.
+                send_refresh_requests(&connection, &mut progress_counter, false, false, false, true);
+            } else {
+                // Push-only clients (Neovim) get an explicit publish.
+                for uri in &drained_meta_uris {
+                    if let Some(doc) = documents.get_mut(&uri.to_string()) {
+                        push_fresh_diagnostics(&connection, uri, doc, &ws);
+                    }
+                }
             }
         }
 
@@ -1168,7 +1197,7 @@ fn main_loop(
                 "request {} {}", req.method,
                 watchdog::message_uri(&req.params).unwrap_or_default(),
             ));
-            handle_request(&connection, &mut documents, &mut ws, req, client.snippets);
+            handle_request(&connection, &mut documents, &mut ws, req, &client);
         }
 
         // Phase 4: Re-analyze any dirty documents once the debounce
@@ -1235,7 +1264,7 @@ fn main_loop(
                 for chunk in dirty_uris.chunks(BATCH_CHUNK) {
                     // Serve any requests that arrived since the last chunk so the
                     // editor stays responsive instead of waiting out the whole batch.
-                    let (drained, shutdown) = drain_pending_requests(&connection, &mut documents, &mut ws, client.snippets);
+                    let (drained, shutdown) = drain_pending_requests(&connection, &mut documents, &mut ws, &client);
                     if shutdown { return Ok(()); }
                     for not in drained {
                         handle_notification(&connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter, &bg);
@@ -1281,7 +1310,7 @@ fn main_loop(
             if !did_batch {
                 // Sequential fallback: process one file at a time, checking for messages between each.
                 for uri_str in &dirty_uris {
-                    let (drained, shutdown) = drain_pending_requests(&connection, &mut documents, &mut ws, client.snippets);
+                    let (drained, shutdown) = drain_pending_requests(&connection, &mut documents, &mut ws, &client);
                     if shutdown { return Ok(()); }
                     if !drained.is_empty() {
                         for not in drained {
@@ -1551,7 +1580,7 @@ fn drain_pending_requests(
     connection: &Connection,
     documents: &mut HashMap<String, Document>,
     ws: &mut WorkspaceState,
-    client_snippet_support: bool,
+    client: &ClientSupport,
 ) -> (Vec<Notification>, bool) {
     let mut pending_notifications = Vec::new();
     for msg in connection.receiver.try_iter() {
@@ -1562,7 +1591,7 @@ fn drain_pending_requests(
                     let _ = connection.sender.send(Message::Response(resp));
                     return (pending_notifications, true);
                 }
-                handle_request(connection, documents, ws, req, client_snippet_support);
+                handle_request(connection, documents, ws, req, client);
             }
             Message::Notification(not) => pending_notifications.push(not),
             Message::Response(_) => {}
@@ -1825,12 +1854,16 @@ mod tests {
         let ws = WorkspaceState::for_test(None);
         let uri = lsp_types::Uri::from_str("file:///tmp/wowlua-ls-stubs/Test.lua").unwrap();
         let text = "local x = 1\nlocal y = x\n";
+        // A stub-path file never publishes, so these are inert here (the publish
+        // branch is gated on `!is_stub_path`); they just satisfy the signature.
+        let (connection, _client_conn) = Connection::memory();
+        let client = ClientSupport::default();
 
         // A pending background stub doc (stub_open_seq != 0, analysis None) is
         // warmed in place.
         let mut documents = HashMap::new();
         documents.insert(uri.to_string(), pending_stub_doc(text, 7));
-        ensure_stub_doc_analyzed(&mut documents, &uri, &ws);
+        ensure_stub_doc_analyzed(&connection, &mut documents, &uri, &ws, &client);
         let doc = &documents[&uri.to_string()];
         assert!(doc.analysis.is_some(), "pending stub doc must be analyzed on demand");
         assert!(doc.tree.is_some(), "pending stub doc must be parsed on demand");
@@ -1850,11 +1883,49 @@ mod tests {
         // purpose — they must be left untouched.
         let mut documents = HashMap::new();
         documents.insert(uri.to_string(), pending_stub_doc(text, 0));
-        ensure_stub_doc_analyzed(&mut documents, &uri, &ws);
+        ensure_stub_doc_analyzed(&connection, &mut documents, &uri, &ws, &client);
         assert!(
             documents[&uri.to_string()].analysis.is_none(),
             "non-background docs (stub_open_seq == 0) must not be analyzed",
         );
+    }
+
+    /// Regression: a user `@meta` file's annotation type-integrity diagnostics
+    /// must be published even when the synchronous `ensure_stub_doc_analyzed`
+    /// install wins the race against the background-analysis drain. For a
+    /// push-only client this path is the ONLY publish opportunity — the drain
+    /// then skips (analysis already installed), so without this a push client
+    /// would see nothing until the first edit marked the doc dirty.
+    #[test]
+    fn ensure_stub_doc_analyzed_publishes_meta_diagnostics_for_push_client() {
+        let ws = WorkspaceState::for_test(None);
+        // Non-stub user path so the publish branch is not gated out by is_stub_path.
+        let path = std::env::temp_dir().join("wowlua-ls-meta-test").join("types.lua");
+        let uri = abs_path_to_uri(&path).unwrap();
+        // A dead type nested inside `table<K, V>` on a @field — the reported case.
+        let text = "---@meta\n---@class Foo\n---@field bad table<integer, DeadMetaType>\n";
+
+        // Push-only client (diagnostic_refresh == false via Default).
+        let client = ClientSupport::default();
+        let (server, client_side) = Connection::memory();
+
+        let mut documents = HashMap::new();
+        documents.insert(uri.to_string(), pending_stub_doc(text, 3));
+        ensure_stub_doc_analyzed(&server, &mut documents, &uri, &ws, &client);
+
+        assert!(
+            documents[&uri.to_string()].analysis.is_some(),
+            "pending @meta doc must be analyzed on demand",
+        );
+
+        // The synchronous install must publish the diagnostic itself.
+        let msg = client_side.receiver.try_recv()
+            .expect("push-only client must receive a publishDiagnostics notification");
+        let Message::Notification(not) = msg else { panic!("expected a notification, got {msg:?}") };
+        assert_eq!(not.method, "textDocument/publishDiagnostics");
+        let json = serde_json::to_string(&not.params).unwrap();
+        assert!(json.contains("undefined-doc-name"), "expected undefined-doc-name, got: {json}");
+        assert!(json.contains("DeadMetaType"), "expected the dead type name, got: {json}");
     }
 
     /// Regression: `cached_built_name_func_names` only included direct @built-name
@@ -2798,6 +2869,52 @@ mod tests {
         let inputs = ws.warm_inputs(None);
         assert_eq!(inputs.generation, ws.ws_generation);
         assert_eq!(inputs.live_generation.load(Ordering::Relaxed), ws.ws_generation);
+    }
+
+    #[test]
+    fn meta_file_pull_diagnostics_exclude_crossfile_unused_function() {
+        // Cross-file items are exclusively `unused-function` (a runtime/behavior
+        // diagnostic). A function declared in a user `@meta` file that isn't
+        // referenced elsewhere lands in the cross-file cache keyed to that file —
+        // but @meta files surface only annotation type-integrity diagnostics, so
+        // the pull path must not append it.
+        let mut ws = WorkspaceState::for_test(None);
+        let path = std::env::temp_dir().join("wowlua-ls-meta-xf").join("types.lua");
+        let uri = abs_path_to_uri(&path).unwrap();
+        let uri_str = uri.to_string();
+        // Meta file with a dead type (fires undefined-doc-name) and nothing else.
+        let text = "---@meta\n---@class Foo\n---@field bad DeadXfType\n";
+
+        let cf_diag = lsp_types::Diagnostic {
+            range: Default::default(),
+            severity: Some(lsp_types::DiagnosticSeverity::HINT),
+            code: Some(lsp_types::NumberOrString::String("unused-function".to_string())),
+            source: Some("wowlua_ls".to_string()),
+            message: "Function 'Unused' is never used".to_string(),
+            ..Default::default()
+        };
+        ws.cached_crossfile_diagnostics.insert(uri_str.clone(), vec![cf_diag]);
+
+        let mut doc = pending_stub_doc(text, 0);
+        let (tree, analysis) = analyze_lua(&uri, text, &ws.pre_globals, &ws.configs);
+        assert!(analysis.is_meta(), "test fixture must be a @meta file");
+        doc.tree = Some(tree);
+        doc.analysis = Some(analysis);
+        let mut documents = HashMap::new();
+        documents.insert(uri_str.clone(), doc);
+
+        let report = diagnostics_handlers::handle_document_diagnostic(&uri, &mut documents, &ws);
+        let items = match report {
+            lsp_types::DocumentDiagnosticReportResult::Report(
+                lsp_types::DocumentDiagnosticReport::Full(r),
+            ) => r.full_document_diagnostic_report.items,
+            other => panic!("unexpected report kind: {other:?}"),
+        };
+        let has = |code: &str| items.iter().any(|d| {
+            matches!(&d.code, Some(lsp_types::NumberOrString::String(c)) if c == code)
+        });
+        assert!(has("undefined-doc-name"), "meta file must still report undefined-doc-name");
+        assert!(!has("unused-function"), "meta file must NOT include cross-file unused-function");
     }
 
     #[test]

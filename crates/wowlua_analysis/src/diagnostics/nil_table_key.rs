@@ -85,6 +85,8 @@ fn emit_violations(violations: &[String], start: usize, end: usize, diags: &mut 
 pub struct NilTableKey;
 
 impl DiagnosticPass for NilTableKey {
+    fn runs_in_meta(&self) -> bool { true }
+
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let root = SyntaxNode::new_root(tree);
         let scan = crate::annotations::scan_all_annotations(root);

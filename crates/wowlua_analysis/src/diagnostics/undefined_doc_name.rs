@@ -16,6 +16,8 @@ pub struct UndefinedDocName;
 /// Emits undefined-doc-name (and malformed-annotation for shape errors) via
 /// Ir::check_annotation_type_names.
 impl DiagnosticPass for UndefinedDocName {
+    fn runs_in_meta(&self) -> bool { true }
+
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let root = SyntaxNode::new_root(tree);
 

@@ -32,9 +32,11 @@ pub(super) fn build_file_diagnostics_with(
     configs: &crate::config::ProjectConfigs,
     suppressions: &[DiagnosticSuppression],
 ) -> Vec<lsp_types::Diagnostic> {
-    if analysis.is_meta() {
-        return Vec::new();
-    }
+    // `@meta` files are NOT short-circuited here: `run_diagnostics` (via
+    // `run_all`) already restricts them to annotation type-integrity checks
+    // (undefined type/class references), which are meaningful even in a
+    // declaration-only stub. Library files stay fully suppressed — that code
+    // is external and not the user's to fix.
     let file_path = uri_to_abs_path(uri).unwrap_or_default();
     if configs.is_library(&file_path) {
         return Vec::new();
@@ -146,13 +148,15 @@ pub(super) fn push_fresh_diagnostics(
     ws: &WorkspaceState,
 ) {
     let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) else { return };
-    // @meta files (declaration-only stubs) and files under `stubs/` never
-    // produce diagnostics. Clear cached diagnostics and publish an empty list
-    // so push-only clients don't retain stale diagnostics from a previous
-    // analysis. The `is_stub_path` check mirrors the defense-in-depth guard
+    // Files under `stubs/` never produce diagnostics. Clear cached diagnostics
+    // and publish an empty list so push-only clients don't retain stale
+    // diagnostics from a previous analysis. `@meta` files are NOT short-circuited
+    // here — they still surface annotation type-integrity diagnostics via the
+    // normal `build_file_diagnostics_with` path below (which restricts them to
+    // that subset). The `is_stub_path` check mirrors the defense-in-depth guard
     // that `build_file_diagnostics` applies — we bypass that wrapper below to
     // share a single suppression scan with `append_crossfile_diagnostics`.
-    if analysis.is_meta() || is_stub_path(uri) {
+    if is_stub_path(uri) {
         doc.cached_diagnostics = Some(Vec::new());
         let params = lsp_types::PublishDiagnosticsParams {
             uri: uri.clone(),
@@ -181,7 +185,14 @@ pub(super) fn push_fresh_diagnostics(
     doc.cached_diagnostics = Some(per_file.clone());
     let mut items = per_file;
     let uri_str = uri.to_string();
-    append_crossfile_diagnostics(&mut items, &uri_str, ws, Some(&suppressions));
+    // Cross-file items are exclusively `unused-function` (a runtime/behavior
+    // diagnostic), so they stay suppressed in `@meta` files — which surface only
+    // annotation type-integrity diagnostics. The per-file build above already
+    // restricts meta files to that subset; this keeps the cross-file append
+    // consistent with that contract.
+    if !analysis.is_meta() {
+        append_crossfile_diagnostics(&mut items, &uri_str, ws, Some(&suppressions));
+    }
     let params = lsp_types::PublishDiagnosticsParams {
         uri: uri.clone(),
         diagnostics: items,
@@ -199,14 +210,11 @@ pub(super) fn handle_document_diagnostic(
     ws: &WorkspaceState,
 ) -> DocumentDiagnosticReportResult {
     // Stub files should never produce diagnostics in the Problems panel.
-    // Defense-in-depth: also check the analysis result's is_meta flag
-    // (analysis may be None for stubs whose background analysis hasn't landed).
+    // `@meta` files are not excluded here — they still report annotation
+    // type-integrity diagnostics through the normal path below (restricted to
+    // that subset by `run_all`).
     let uri_str = uri.to_string();
-    if is_stub_path(uri)
-        || documents.get(&uri_str)
-            .and_then(|d| d.analysis.as_ref())
-            .is_some_and(|a| a.is_meta())
-    {
+    if is_stub_path(uri) {
         return DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
             RelatedFullDocumentDiagnosticReport {
                 related_documents: None,
@@ -232,6 +240,10 @@ pub(super) fn handle_document_diagnostic(
     // cross-file diagnostics against any `@diagnostic disable/enable` directives
     // the user may have added since the workspace warm last ran.
     let mut open_suppressions: Option<Vec<DiagnosticSuppression>> = None;
+    // Cross-file items (unused-function) stay suppressed in `@meta` files; track
+    // whether the diagnostics we're building came from a meta source so the
+    // append below can honor that.
+    let mut source_is_meta = false;
     let mut items = if let Some(doc) = documents.get_mut(&uri_str) {
         // TOC document: run TOC-specific diagnostics.
         if let Some(toc) = &doc.toc {
@@ -246,6 +258,7 @@ pub(super) fn handle_document_diagnostic(
         // The cache stores per-file items only (no cross-file); cross-file
         // items are appended below after line-shifting.
         else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
+            source_is_meta = analysis.is_meta();
             // Scan suppressions once and reuse for both the (uncached) per-file
             // build and the cross-file append below — without this, an uncached
             // request would walk the tree twice.
@@ -300,6 +313,7 @@ pub(super) fn handle_document_diagnostic(
                         let tree = parse_lua(&text);
                         let mut analysis = analyze_lua_parsed(uri, &ws.pre_globals, &ws.configs, &tree);
                         analysis.plugin_diag_codes = ws.plugin_codes();
+                        source_is_meta = analysis.is_meta();
                         build_file_diagnostics(uri, &tree, &analysis, &text, &[], ws)
                     }
                 }
@@ -314,8 +328,12 @@ pub(super) fn handle_document_diagnostic(
     // warm). These come from a separate cache that contains ONLY cross-file
     // items, so no duplication with per-file unused-function diagnostics.
     // Appended after line-shifting so both per-file and cross-file items
-    // have consistent positions during pending edits.
-    append_crossfile_diagnostics(&mut items, &uri_str, ws, open_suppressions.as_deref());
+    // have consistent positions during pending edits. `@meta` files surface
+    // only annotation type-integrity diagnostics, so the runtime cross-file
+    // items (unused-function) stay suppressed there.
+    if !source_is_meta {
+        append_crossfile_diagnostics(&mut items, &uri_str, ws, open_suppressions.as_deref());
+    }
 
     DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
         RelatedFullDocumentDiagnosticReport {

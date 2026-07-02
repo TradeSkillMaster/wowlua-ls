@@ -2481,6 +2481,24 @@ fn undefined_doc_name() {
 }
 
 #[test]
+fn undefined_doc_name_meta() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/undefined-doc-name-meta.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn meta_annotation_integrity() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/meta-annotation-integrity.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn return_overloads() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/return-overloads.lua",

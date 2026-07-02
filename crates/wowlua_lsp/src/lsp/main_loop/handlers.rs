@@ -142,9 +142,11 @@ pub(super) fn analyze_lua_parsed(
 /// excludes shebang/ignored docs (which carry `analysis: None` with
 /// `stub_open_seq == 0` on purpose) and is a no-op for already-analyzed docs.
 pub(super) fn ensure_stub_doc_analyzed(
+    connection: &Connection,
     documents: &mut HashMap<String, Document>,
     uri: &lsp_types::Uri,
     ws: &WorkspaceState,
+    client: &ClientSupport,
 ) {
     let uri_key = uri.to_string();
     let Some(doc) = documents.get(&uri_key) else { return };
@@ -153,9 +155,24 @@ pub(super) fn ensure_stub_doc_analyzed(
     }
     let text = doc.text.clone();
     let (tree, analysis) = analyze_lua(uri, &text, &ws.pre_globals, &ws.configs);
+    let is_meta = analysis.is_meta();
     if let Some(doc) = documents.get_mut(&uri_key) {
         doc.tree = Some(tree);
         doc.analysis = Some(analysis);
+    }
+    // This synchronous install races the background-analysis drain (editors fire
+    // nav/token requests the instant a stub/`@meta` file opens). The drain
+    // publishes a `@meta` file's type-integrity diagnostics for push-only
+    // clients, but only when it installs the analysis first — so when this path
+    // wins, publish here instead, or push-only clients get nothing until the
+    // first edit. Pull-model clients self-heal: their `textDocument/diagnostic`
+    // request runs through this same function before the report is built.
+    if is_meta
+        && !client.diagnostic_refresh
+        && !is_stub_path(uri)
+        && let Some(doc) = documents.get_mut(&uri_key)
+    {
+        push_fresh_diagnostics(connection, uri, doc, ws);
     }
 }
 
@@ -165,7 +182,7 @@ pub(super) fn handle_request(
     documents: &mut HashMap<String, Document>,
     ws: &mut WorkspaceState,
     req: Request,
-    client_snippet_support: bool,
+    client: &ClientSupport,
 ) {
     let method = req.method.clone();
     let req_start = std::time::Instant::now();
@@ -179,7 +196,7 @@ pub(super) fn handle_request(
         .and_then(|u| u.as_str())
         .and_then(|s| lsp_types::Uri::from_str(s).ok())
     {
-        ensure_stub_doc_analyzed(documents, &uri, ws);
+        ensure_stub_doc_analyzed(connection, documents, &uri, ws, client);
     }
     match &*req.method {
         "textDocument/definition" => {
@@ -336,7 +353,7 @@ pub(super) fn handle_request(
                 let config_call_snippets = file_path.as_ref()
                     .map(|p| ws.configs.completion_call_snippets_for(p))
                     .unwrap_or(true);
-                let snippets = client_snippet_support && config_snippets;
+                let snippets = client.snippets && config_snippets;
                 let call_snippets = snippets && config_call_snippets;
                 let mut result: Vec<lsp_types::CompletionItem> = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
                     analysis.completions_at(tree, offset, &doc.text, Snippets::from_enabled(snippets), CallSnippets::from_enabled(call_snippets))

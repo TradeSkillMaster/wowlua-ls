@@ -10,6 +10,8 @@ pub struct FunctionAnnotationChecks;
 /// tuple-union @return), and undefined-doc-name on @param/@return/@overload types
 /// (the last via Ir::check_annotation_type_names).
 impl DiagnosticPass for FunctionAnnotationChecks {
+    fn runs_in_meta(&self) -> bool { true }
+
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for (func_idx, func) in analysis.local_functions() {
             let Some(nid) = func.def_node.node_id else { continue };

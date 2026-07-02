@@ -17,6 +17,8 @@ pub struct UndefinedDocClass;
 /// - circle-doc-class on cyclic inheritance
 /// - undefined-doc-name on class field types and alias bodies
 impl DiagnosticPass for UndefinedDocClass {
+    fn runs_in_meta(&self) -> bool { true }
+
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let root = SyntaxNode::new_root(tree);
         let scan = crate::annotations::scan_all_annotations(root);

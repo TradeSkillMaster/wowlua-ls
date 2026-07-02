@@ -8,6 +8,8 @@ pub struct DocFieldNoClass;
 /// Walk comment tokens looking for `@field` annotations that don't follow a
 /// preceding `@class`/`@enum` declaration in the same comment group.
 impl DiagnosticPass for DocFieldNoClass {
+    fn runs_in_meta(&self) -> bool { true }
+
     fn run(&self, _analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let root = SyntaxNode::new_root(tree);
 
