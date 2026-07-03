@@ -725,6 +725,17 @@ pub fn regenerate_stubs() {
         phase!("PreResolvedGlobals::build (pass 2)");
     }
 
+    // Drop untyped fields scanned from full-source `.annotated.lua` bodies (e.g.
+    // Vector2DMixin's `self.x = x` in SetXY) that shadow a concretely-typed
+    // inherited field, so the parent's authored type resolves instead of `any`.
+    let stripped = pre_globals.strip_untyped_fields_shadowing_typed_ancestors();
+    if !stripped.is_empty() {
+        log::info!("  Stripped {} untyped field(s) shadowing typed ancestors", stripped.len());
+        for (class, field) in &stripped {
+            log::debug!("    {class}.{field}");
+        }
+    }
+
     log::info!("  Event types: {} types, {} total events",
         pre_globals.event_types.len(),
         pre_globals.event_types.values().map(|m| m.len()).sum::<usize>());

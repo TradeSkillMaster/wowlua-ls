@@ -1279,20 +1279,32 @@ local p2, b2, g2, _, s2, bag2 = EquipmentManager_UnpackLocation(5)
 --                   ^ hover: (local) s2: number
 --                         ^ hover: (local) bag2: number
 
--- ── C_EncounterJournal.GetDungeonEntrancesForMap: vector2 field (Vector2DType) ──
--- Regression: Blizzard tags struct fields such as DungeonEntranceMapInfo.position
--- as `Type = "vector2"`. The vendor `vector2` alias lives in Core/Type/Mixin.lua,
--- whose file stem collided with the Mixin() function override (formerly
--- stubs/overrides/Mixin.lua) and was skipped wholesale — dropping the alias and
--- with it the whole field. Fixed by renaming the override to MixinFunctions.lua
--- (so the vendor alias file is no longer shadowed) and mapping vector2 ->
--- Vector2DType (the plain {x, y} data shape) via stubs/overrides/VectorType.lua.
+-- ── C_EncounterJournal.GetDungeonEntrancesForMap: vector2 field is a Vector2DMixin ──
+-- Regression: Blizzard tags struct fields such as DungeonEntranceMapInfo.position as
+-- `Type = "vector2", Mixin = "Vector2DMixin"`. The vendor `vector2` alias lives in
+-- Core/Type/Mixin.lua (`vector2 = Vector2DMixin`), whose file stem collided with the
+-- Mixin() function override (formerly stubs/overrides/Mixin.lua) and was skipped
+-- wholesale — dropping the alias and with it the whole field. Fixed by renaming the
+-- override to MixinFunctions.lua so the vendor alias file is no longer shadowed.
+--
+-- The value IS a real mixin, not plain {x, y} data: WoW's C marshaller applies the
+-- documented `Mixin`, so the field carries the Vector2DMixin methods (Blizzard's own
+-- code calls e.g. `actorInfo.position:GetXYZ()` directly on such C returns). Mapping
+-- it to the method-less Vector2DType instead — as a prior revision did — false-
+-- positived every such method call. So it must resolve to Vector2DMixin.
+--
+-- Both the data fields (x/y, inherited from Vector2DType) and the methods resolve.
+-- The x/y stayed `number` only after stripping the untyped `x: any` that the scan of
+-- Vector2DMixin:SetXY's `self.x = x` body registered directly on the mixin, shadowing
+-- the inherited Vector2DType.x — see strip_untyped_fields_shadowing_typed_ancestors.
 local _dungeonEntrances = C_EncounterJournal.GetDungeonEntrancesForMap(123)
 local _dungeonEntrance = _dungeonEntrances[1]
 local _entrancePos = _dungeonEntrance.position
---    ^ hover: (local) _entrancePos: Vector2DType
+--    ^ hover: (local) _entrancePos: Vector2DMixin
 local _entranceX = _entrancePos.x
 --    ^ hover: (local) _entranceX: number
+local _entranceLen = _entrancePos:GetLength()
+--    ^ hover: (local) _entranceLen: number
 
 -- ── C_Map.GetWorldPosFromMapPos: a vector2 return must not drop the return count ──
 -- Regression (same root cause as above): the 2nd @return is `vector2 worldPosition`.
@@ -1302,4 +1314,4 @@ local _entranceX = _entrancePos.x
 -- diagnostic's absence; the hovers pin the recovered second return type.
 local _continentID, _worldPos = C_Map.GetWorldPosFromMapPos(84, { x = 0.5, y = 0.5 })
 --    ^ hover: (local) _continentID: number
---                  ^ hover: (local) _worldPos: Vector2DType
+--                  ^ hover: (local) _worldPos: Vector2DMixin

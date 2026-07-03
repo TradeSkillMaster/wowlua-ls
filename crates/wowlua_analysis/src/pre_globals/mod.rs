@@ -2233,6 +2233,85 @@ impl PreResolvedGlobals {
         self.tables.get(idx.ext_offset())
     }
 
+    /// Drop untyped own class fields that shadow a concretely-typed field inherited
+    /// from a **data-only** (method-less) ancestor, so the ancestor's authored type
+    /// resolves instead of a shadowing `any`.
+    ///
+    /// Ketho ships full-source `.annotated.lua` stubs whose real method bodies
+    /// contain assignments like `Vector2DMixin:SetXY(x, y)` → `self.x = x`.
+    /// Scanning those registers an untyped `x: any` directly on the mixin, which
+    /// shadows the `x: number` it inherits from its data parent
+    /// (`Vector2DMixin : Vector2DType`). Removing the untyped own copy lets the
+    /// parent's authored type win.
+    ///
+    /// Guards keep this surgical and non-destructive:
+    /// * "untyped" means no concrete annotation (`None`/`Any`) **and** an expr that
+    ///   carries no type either — so methods (`Expr::FunctionDef`, whose `annotation`
+    ///   is `None`) and inline table/literal fields are never removed.
+    /// * the shadowed field must come from a *data-only* ancestor — one with no
+    ///   method fields — which restricts this to the clean data/mixin split
+    ///   (`Vector2DType`) and leaves rich frame/widget hierarchies untouched.
+    ///
+    /// Returns the removed `(class, field)` pairs (sorted) for logging. Meant to run
+    /// once at stub-gen build time, before serialization — `parent_classes` must
+    /// already be the transitive closure (as produced by `build`).
+    pub fn strip_untyped_fields_shadowing_typed_ancestors(&mut self) -> Vec<(String, String)> {
+        // Effective field type mirrors hover resolution: the annotation wins;
+        // otherwise it is derived from the field's expr — a `Literal` carries its own
+        // type (including `Literal(Any)` for an untyped `self.x = param` write), a
+        // `FunctionDef` is a method, a table constructor is a table. A bare reference
+        // that resolved to nothing yields `None`.
+        let effective_type = |fi: &FieldInfo| -> Option<ValueType> {
+            fi.annotation.clone().or_else(|| match self.try_expr(fi.expr) {
+                Some(Expr::Literal(vt)) => Some(vt.clone()),
+                Some(Expr::FunctionDef(idx)) => Some(ValueType::Function(Some(*idx))),
+                Some(Expr::TableConstructor(idx)) => Some(ValueType::Table(Some(*idx))),
+                _ => None,
+            })
+        };
+        let is_untyped = |fi: &FieldInfo| matches!(effective_type(fi), None | Some(ValueType::Any));
+        let is_method = |fi: &FieldInfo| {
+            matches!(effective_type(fi), Some(ValueType::Function(_)) | Some(ValueType::FunctionSig(_)))
+        };
+        // "Data-only" (method-less) is a property of the table alone, so compute it
+        // once per table rather than rescanning each ancestor's field map for every
+        // untyped candidate field. Indexed by local table offset.
+        let data_only: Vec<bool> = self.tables.iter().map(|t| !t.fields.values().any(&is_method)).collect();
+        let mut removed: Vec<(usize, String)> = Vec::new();
+        for (local_idx, table) in self.tables.iter().enumerate() {
+            for (fname, fi) in &table.fields {
+                if !is_untyped(fi) {
+                    continue;
+                }
+                let shadows_data_only_ancestor = table.parent_classes.iter().any(|&pidx| {
+                    let po = pidx.ext_offset();
+                    data_only.get(po).copied().unwrap_or(false)
+                        && self.tables[po]
+                            .fields
+                            .get(fname)
+                            .is_some_and(|pf| pf.annotation.as_ref().is_some_and(|a| !matches!(a, ValueType::Any)))
+                });
+                if shadows_data_only_ancestor {
+                    removed.push((local_idx, fname.clone()));
+                }
+            }
+        }
+        let idx_to_name: std::collections::HashMap<usize, &str> = self
+            .classes
+            .iter()
+            .map(|(name, tidx)| (tidx.ext_offset(), name.as_str()))
+            .collect();
+        let mut labeled: Vec<(String, String)> = removed
+            .iter()
+            .map(|(idx, fname)| (idx_to_name.get(idx).map_or_else(String::new, |s| (*s).to_string()), fname.clone()))
+            .collect();
+        for (idx, fname) in &removed {
+            self.tables[*idx].fields.remove(fname);
+        }
+        labeled.sort();
+        labeled
+    }
+
     /// Iterate every precomputed (external) symbol.
     #[inline] pub fn iter_symbols(&self) -> impl Iterator<Item = &Symbol> { self.symbols.iter() }
 
@@ -3716,5 +3795,65 @@ mod tests {
         pg.merge_callback_registries(&[with_ref], &[cst]);
         let set = pg.callback_registries.get("R").unwrap();
         assert!(set.complete && set.events.contains("E1") && set.events.contains("E2"), "resolved reference is complete");
+    }
+
+    #[test]
+    fn strip_untyped_fields_shadowing_typed_ancestors_guards() {
+        use std::collections::HashMap;
+        let mut pg = PreResolvedGlobals::empty();
+
+        // Minimal FieldInfo — only `expr` and `annotation` vary across the cases.
+        let field = |expr: ExprId, annotation: Option<ValueType>| FieldInfo {
+            expr,
+            extra_exprs: Vec::new(),
+            visibility: crate::annotations::Visibility::Public,
+            annotation,
+            annotation_text: None,
+            annotation_type_raw: None,
+            lateinit: false,
+            def_range: None,
+            flavor_guard: 0,
+            description: None,
+            from_scan: false,
+        };
+        // A scanned `self.x = <untyped param>` field is stored with no annotation and a
+        // `Literal(Any)` expr; a method is an un-annotated `FunctionDef` expr. The
+        // strip must treat the first as untyped and the second as a (typed) method.
+        let lit_any = pg.push_ext_expr(Expr::Literal(ValueType::Any));
+        let func_def = pg.push_ext_expr(Expr::FunctionDef(FunctionIndex(EXT_BASE)));
+        let table = |fields: Vec<(&str, FieldInfo)>, parents: Vec<TableIndex>| TableInfo {
+            fields: fields.into_iter().map(|(n, f)| (n.to_string(), f)).collect::<HashMap<_, _>>(),
+            parent_classes: parents,
+            ..Default::default()
+        };
+
+        // Data-only parent with an authored `x: number`.
+        let data_parent = pg.push_ext_table(table(vec![("x", field(lit_any, Some(ValueType::Number)))], vec![]));
+        // Non-data-only parent: authored `y: number` PLUS a method.
+        let method_parent = pg.push_ext_table(table(
+            vec![("y", field(lit_any, Some(ValueType::Number))), ("DoThing", field(func_def, None))],
+            vec![],
+        ));
+        // Child mixin : data_parent — untyped `x` shadowing the parent's number, plus
+        // its own method `GetX` (which must survive).
+        let mixin = pg.push_ext_table(table(
+            vec![("x", field(lit_any, None)), ("GetX", field(func_def, None))],
+            vec![data_parent],
+        ));
+        // Control child : method_parent — untyped `y`, but the ancestor is not data-only.
+        let control = pg.push_ext_table(table(vec![("y", field(lit_any, None))], vec![method_parent]));
+
+        pg.classes.insert("Mixin".to_string(), mixin);
+        pg.classes.insert("Control".to_string(), control);
+
+        let removed = pg.strip_untyped_fields_shadowing_typed_ancestors();
+
+        // Only the mixin's untyped data field is stripped — never the method, and never
+        // a field whose only concretely-typed ancestor carries methods.
+        assert_eq!(removed, vec![("Mixin".to_string(), "x".to_string())]);
+        assert!(!pg.table(mixin).fields.contains_key("x"), "untyped x must be stripped (inherits number)");
+        assert!(pg.table(mixin).fields.contains_key("GetX"), "method must be kept");
+        assert!(pg.table(control).fields.contains_key("y"), "non-data-only ancestor must not strip");
+        assert!(pg.table(data_parent).fields.contains_key("x"), "authored parent field is untouched");
     }
 }
