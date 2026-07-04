@@ -376,6 +376,13 @@ pub struct Ir {
     pub block_scopes: Vec<(u32, u32, ScopeIndex)>,
     pub classes: HashMap<String, TableIndex>,
     pub aliases: HashMap<String, ValueType>,
+    /// String-literal completion suggestions for "open" string-enum aliases
+    /// (`@alias Foo string` + `---|"a"` lines) — both stub aliases imported from
+    /// `ext` and file-local ones. The resolved type collapses `string | "literal"`
+    /// to bare `string`, losing the completion values (see the mirror field on
+    /// `PreResolvedGlobals`); they are kept here keyed by alias name for
+    /// string-argument completion.
+    pub alias_string_literals: HashMap<String, Vec<String>>,
     /// Raw annotation types for local aliases that resolve to Function(None).
     /// Used by materialize_fun_annotations() to recover function signatures from alias fields.
     pub alias_fun_types: HashMap<String, crate::annotations::AnnotationType>,
@@ -2538,6 +2545,7 @@ impl<'a> Analysis<'a> {
                 block_scopes: Vec::new(),
                 classes: HashMap::new(),
                 aliases: HashMap::new(),
+                alias_string_literals: HashMap::new(),
                 alias_fun_types: HashMap::new(),
                 parameterized_aliases: HashMap::new(),
                 parameterized_alias_constraints: HashMap::new(),

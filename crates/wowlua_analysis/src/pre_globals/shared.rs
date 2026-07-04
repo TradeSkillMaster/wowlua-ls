@@ -53,6 +53,7 @@ pub struct ClassAliasRegistry<'x> {
     pub classes: &'x mut HashMap<String, TableIndex>,
     pub tables: &'x mut Vec<TableInfo>,
     pub aliases: &'x mut HashMap<String, ValueType>,
+    pub alias_string_literals: &'x mut HashMap<String, Vec<String>>,
     pub alias_fun_types: &'x mut HashMap<String, AnnotationType>,
     pub parameterized_aliases: &'x mut HashMap<String, (Vec<String>, AnnotationType)>,
     pub parameterized_alias_constraints: &'x mut HashMap<String, Vec<Option<(String, AnnotationType)>>>,
@@ -93,6 +94,13 @@ pub fn register_classes_and_aliases(
     // Register aliases before populating fields so alias types (e.g. fileID)
     // are available during field type resolution.
     for alias in alias_decls {
+        // Shadowing: this alias may redefine one already present in
+        // `alias_string_literals` — a no-op in the cold build (map starts empty),
+        // but in the warm workspace-on-stubs build the map is cloned from the stub
+        // base, so a workspace alias reusing a stub open-string-enum name must clear
+        // the stub's literals up front. Only a genuine open string-enum re-inserts
+        // them below; every other redefinition form leaves the entry cleared.
+        reg.alias_string_literals.remove(&alias.name);
         if !alias.type_params.is_empty() {
             reg.parameterized_aliases.insert(alias.name.clone(), (alias.type_params.clone(), alias.typ.clone()));
             if alias.type_param_constraints.iter().any(Option::is_some) {
@@ -106,6 +114,17 @@ pub fn register_classes_and_aliases(
         } else if let Some(vt) = PreResolvedGlobals::resolve_annotation(&alias.typ, reg.classes, reg.aliases, reg.parameterized_aliases) {
             if matches!(&vt, ValueType::Function(None)) {
                 reg.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
+            }
+            // Open string-enum alias (`@alias UnitToken string` + `---|"player"`
+            // lines): the resolved type is bare `string`, but the raw annotation
+            // carries literal completion values that `make_union` collapsed away.
+            // Keep them for string-argument completion.
+            if matches!(&vt, ValueType::String(None)) {
+                let mut literals = Vec::new();
+                crate::annotations::collect_annotation_string_literals(&alias.typ, &mut literals);
+                if !literals.is_empty() {
+                    reg.alias_string_literals.insert(alias.name.clone(), literals);
+                }
             }
             let vt = if alias.is_opaque {
                 ValueType::OpaqueAlias(alias.name.clone(), Box::new(vt))

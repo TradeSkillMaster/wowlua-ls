@@ -2670,6 +2670,28 @@ fn string_literal_completion() {
 }
 
 #[test]
+fn string_enum_alias() {
+    // Open string-enum alias (`@alias Name string` + `---|"literal"` lines):
+    // completions offer the enumerated values while any string stays assignable.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/string-enum-alias.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn string_enum_alias_shadow() {
+    // Redefining a stub open string-enum alias to a non-string type clears the
+    // imported completion literals instead of leaving them stale.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/string-enum-alias-shadow.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn constructor_completion() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/constructor-completion.lua",

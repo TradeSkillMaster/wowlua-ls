@@ -636,6 +636,15 @@ _evFrame:RegisterEvent("NONEXISTENT_EVENT_XYZ")
 _evFrame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
 --                         ^ comp: NAME_PLATE_CREATED, NAME_PLATE_UNIT_ADDED, NAME_PLATE_UNIT_BEHIND_CAMERA_CHANGED, NAME_PLATE_UNIT_REMOVED
 
+-- UnitToken string argument: the `UnitToken` alias is defined as `string` with
+-- `---|"player"`-style completion values. Its resolved type collapses to bare
+-- `string` (so any string is accepted, no type-mismatch), but the enumerated unit
+-- tokens are preserved and offered as completions inside the argument string.
+-- Regression: this used to fall through to scope completion, offering unrelated
+-- WoW globals (PLAY, PLAYER, PLAYER_*, …) inside the string instead.
+UnitOnTaxi("")
+--          ^ comp: player, target, focus, mouseover, pet, vehicle, npc, questnpc, none, party1, raid1, arena1, boss1, nameplate1, anyenemy, anyfriend, anyinteract, softenemy, softfriend, softinteract
+
 -- Event hover through field chain (regression: manual chain resolution could fail)
 do
     ---@class _EvNs

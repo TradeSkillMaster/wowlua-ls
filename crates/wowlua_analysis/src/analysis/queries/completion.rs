@@ -154,6 +154,15 @@ impl AnalysisResult {
             return Some(items);
         }
 
+        // Inside a string literal but no value completions applied above: do NOT
+        // fall through to scope/member completion. Offering identifier names (local
+        // variables, WoW globals, keywords) inside a string is never correct — it's
+        // what produced spurious `PLAY`/`PLAYER`-style suggestions inside a string
+        // argument whose type carried no completable literals.
+        if Self::offset_inside_string_literal(tree, offset) {
+            return None;
+        }
+
         // --- Annotation completion: detect if cursor is inside a ---@ comment ---
         {
             let text_size = TextSize::from(offset.saturating_sub(1));
@@ -219,6 +228,24 @@ impl AnalysisResult {
         } else {
             self.complete_scope(tree, source, offset, call_snippets.enabled())
         }
+    }
+
+    /// Whether the cursor at `offset` sits in a string-literal token, mirroring
+    /// exactly how [`string_literal_completions`](Self::string_literal_completions)
+    /// locates the string (left-biased token at `offset - 1`). Used to suppress
+    /// identifier completion inside string literals: when no string-value
+    /// completion applied, the caller must return nothing rather than fall through
+    /// to scope/member completion — the two must agree on "in a string" so plain
+    /// strings don't leak scope symbols where enum strings offer value completions.
+    fn offset_inside_string_literal(tree: &SyntaxTree, offset: u32) -> bool {
+        if offset == 0 {
+            return false;
+        }
+        let text_size = TextSize::from(offset - 1);
+        SyntaxNode::new_root(tree)
+            .token_at_offset(text_size)
+            .left_biased()
+            .is_some_and(|token| token.kind() == SyntaxKind::String)
     }
 
     /// Dot/colon member completion: resolve the receiver to a table and enumerate its fields.
@@ -1240,6 +1267,12 @@ impl AnalysisResult {
                     return Some(vt);
                 }
             }
+            // Open string-enum alias (e.g. `UnitToken`): the resolved type collapsed
+            // to bare `string`, but the alias's `---|"literal"` completion values are
+            // preserved in `alias_string_literals`.
+            if let Some(vt) = self.string_enum_alias_literal_type(ann) {
+                return Some(vt);
+            }
             // Check if the annotation is an event type name — build completions from event registry
             if let crate::annotations::AnnotationType::Simple(type_name) = ann
                 && let Some(events) = self.ir.ext.event_types.get(type_name.as_str())
@@ -1305,6 +1338,35 @@ impl AnalysisResult {
         }
 
         None
+    }
+
+    /// If `ann` names an "open" string-enum alias (`@alias UnitToken string`
+    /// followed by `---|"player"` continuation lines), return a union of its
+    /// string-literal completion suggestions. The alias's resolved type is bare
+    /// `string` (the literals were collapsed away by `make_union`), so they are
+    /// recovered from `alias_string_literals` — which holds both stub aliases and
+    /// file-local ones. Searches through `nil`-optional unions and `!`/backtick
+    /// wrappers to find the aliased name.
+    fn string_enum_alias_literal_type(&self, ann: &crate::annotations::AnnotationType) -> Option<ValueType> {
+        use crate::annotations::AnnotationType;
+        match ann {
+            AnnotationType::Simple(name) => {
+                let literals = self.ir.alias_string_literals.get(name)?;
+                if literals.is_empty() {
+                    return None;
+                }
+                Some(ValueType::Union(
+                    literals.iter().map(|s| ValueType::String(Some(s.clone()))).collect(),
+                ))
+            }
+            AnnotationType::NonNil(inner) | AnnotationType::Backtick(inner) => {
+                self.string_enum_alias_literal_type(inner)
+            }
+            AnnotationType::Union(parts) => {
+                parts.iter().find_map(|p| self.string_enum_alias_literal_type(p))
+            }
+            _ => None,
+        }
     }
 
     /// Extract the generic type-parameter name from a backtick annotation

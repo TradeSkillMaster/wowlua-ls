@@ -156,7 +156,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 33;
+pub const BLOB_VERSION: u32 = 34;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -216,6 +216,14 @@ pub struct PreResolvedGlobals {
     tables: Vec<TableInfo>,
     pub classes: HashMap<String, TableIndex>,
     pub aliases: HashMap<String, ValueType>,
+    /// String-literal completion suggestions for "open" string-enum aliases —
+    /// `@alias UnitToken string` followed by `---|"player"` continuation lines.
+    /// The resolved alias type in `aliases` collapses `string | "literal"` to
+    /// bare `string` (see `ValueType::make_union`), which is correct for
+    /// assignability but loses the completion values, so they are kept here
+    /// keyed by alias name. Consumed by string-argument completion.
+    #[serde(default)]
+    pub alias_string_literals: HashMap<String, Vec<String>>,
     /// Raw annotation types for external aliases that resolve to Function(None).
     /// Used by materialize_fun_annotations() to recover function signatures.
     pub alias_fun_types: HashMap<String, AnnotationType>,
@@ -1113,6 +1121,7 @@ struct BuildContext {
     tables: Vec<TableInfo>,
     classes: HashMap<String, TableIndex>,
     aliases: HashMap<String, ValueType>,
+    alias_string_literals: HashMap<String, Vec<String>>,
     alias_fun_types: HashMap<String, AnnotationType>,
     parameterized_aliases: HashMap<String, (Vec<String>, AnnotationType)>,
     parameterized_alias_constraints: HashMap<String, Vec<Option<(String, AnnotationType)>>>,
@@ -1170,6 +1179,7 @@ impl BuildContext {
             tables: Vec::new(),
             classes: HashMap::new(),
             aliases: HashMap::new(),
+            alias_string_literals: HashMap::new(),
             alias_fun_types: HashMap::new(),
             parameterized_aliases: HashMap::new(),
             parameterized_alias_constraints: HashMap::new(),
@@ -1264,6 +1274,7 @@ impl BuildContext {
                 classes: &mut self.classes,
                 tables: &mut self.tables,
                 aliases: &mut self.aliases,
+                alias_string_literals: &mut self.alias_string_literals,
                 alias_fun_types: &mut self.alias_fun_types,
                 parameterized_aliases: &mut self.parameterized_aliases,
                 parameterized_alias_constraints: &mut self.parameterized_alias_constraints,
@@ -2136,7 +2147,9 @@ impl BuildContext {
         PreResolvedGlobals {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,
             exprs: self.exprs, tables: self.tables,
-            classes: self.classes, aliases: self.aliases, alias_fun_types: self.alias_fun_types,
+            classes: self.classes, aliases: self.aliases,
+            alias_string_literals: self.alias_string_literals,
+            alias_fun_types: self.alias_fun_types,
             parameterized_aliases: self.parameterized_aliases,
             parameterized_alias_constraints: self.parameterized_alias_constraints,
             tuple_form_aliases: self.tuple_form_aliases,
@@ -2499,6 +2512,7 @@ impl PreResolvedGlobals {
             tables: vec![g_table],
             classes: HashMap::new(),
             aliases: HashMap::new(),
+            alias_string_literals: HashMap::new(),
             alias_fun_types: HashMap::new(),
             parameterized_aliases: HashMap::new(),
             parameterized_alias_constraints: HashMap::new(),

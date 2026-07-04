@@ -1880,6 +1880,7 @@ pub mod scan_built_name;
 pub mod scan_callback;
 
 pub use annotation_types::{
+    collect_annotation_string_literals,
     format_annotation_type, substitute_alias_type_params, match_projection,
     detect_event_params, detect_event_params_from_generic, parse_type, parse_return_line,
     strip_return_description, extract_type_prefix,

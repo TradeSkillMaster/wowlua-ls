@@ -23,9 +23,11 @@ if reward.type ~= "" then
 --                  ^ comp: Recipe, Profession, Mount, Cosmetic
 end
 
--- No completions for plain string fields (falls through to scope completions)
+-- No completions for plain string fields — inside a string literal we must NOT
+-- fall through to scope/global completions (offering identifier names inside a
+-- string is never correct).
 if reward.name == "" then
---                  ^ comp: SLCCreateWidget, SLCInnerFn, SLCObj, SLCOuterFn, SLCRegistry, SLCSet, SLCUtils, _G, count, mode, nested, obj, reg, reward, toggle
+--                  ^ comp: none
 end
 
 -- ── Simple variable with string literal union ───────────────────────────────
@@ -65,8 +67,10 @@ end
 ---@type number
 local count
 
+-- Comparing a number against a string literal: no string-value completions, and
+-- no scope fall-through inside the string either.
 if count == "" then
---           ^ comp: SLCCreateWidget, SLCInnerFn, SLCObj, SLCOuterFn, SLCRegistry, SLCSet, SLCUtils, _G, count, mode, nested, obj, reg, reward, toggle
+--           ^ comp: none
 end
 
 -- ── Two-value string literal union ──────────────────────────────────────────
@@ -116,9 +120,10 @@ end
 SLCCreateWidget("")
 --               ^ comp: Frame, Button, Slider, EditBox
 
--- Second parameter (plain string, no completions → falls through to scope)
+-- Second parameter (plain string): no string-value completions and no scope
+-- fall-through inside the string.
 SLCCreateWidget("Frame", "")
---                         ^ comp: SLCCreateWidget, SLCInnerFn, SLCObj, SLCOuterFn, SLCRegistry, SLCSet, SLCUtils, _G, count, mode, nested, obj, reg, reward, toggle
+--                         ^ comp: none
 
 -- ── Method call with string literal param ─────────────────────────────────
 
@@ -173,3 +178,27 @@ end
 
 SLCOuterFn(SLCInnerFn(""))
 --                      ^ comp: yes, no
+
+-- ── Open string-enum alias (`string` + `---|"literal"` lines) ─────────────
+-- The alias's resolved type collapses `string | "literal"` down to bare `string`
+-- (so any string is still accepted), but the enumerated completion values are
+-- preserved and offered inside a string argument typed with the alias.
+
+---@alias SLCUnit string
+---|"player"
+---|"target"
+---|"focus"
+
+---@param u SLCUnit
+local function SLCTakesUnit(u) end
+
+SLCTakesUnit("")
+--            ^ comp: player, target, focus
+
+-- Also works when the alias is wrapped in an optional/union position.
+
+---@param u SLCUnit|nil
+local function SLCTakesOptUnit(u) end
+
+SLCTakesOptUnit("")
+--               ^ comp: player, target, focus

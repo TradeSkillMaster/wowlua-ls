@@ -119,6 +119,9 @@ impl<'a> Analysis<'a> {
         for (name, vt) in &ext.aliases {
             self.ir.aliases.insert(name.clone(), vt.clone());
         }
+        for (name, literals) in &ext.alias_string_literals {
+            self.ir.alias_string_literals.insert(name.clone(), literals.clone());
+        }
 
         // Process file-local declarations only
         let scan = scan_all_annotations(self.root());
@@ -170,6 +173,12 @@ impl<'a> Analysis<'a> {
         // Register local aliases before populating fields so alias types
         // are available during field type resolution.
         for alias in &scan.aliases {
+            // A file-local alias shadows any imported/stub alias of the same name.
+            // Clear its stale string-enum completion literals up front (seeded above
+            // from `ext.alias_string_literals`); only a genuine open string-enum
+            // redefinition re-inserts them below. Doing this unconditionally handles
+            // every redefinition form (non-string, parameterized, tuple, function).
+            self.ir.alias_string_literals.remove(&alias.name);
             if !alias.type_params.is_empty() {
                 // Parameterized alias: store raw template for later instantiation
                 self.ir.parameterized_aliases.insert(
@@ -193,6 +202,17 @@ impl<'a> Analysis<'a> {
             } else if let Some(vt) = self.resolve_annotation_type_mut(&alias.typ) {
                 if matches!(&vt, ValueType::Function(None)) {
                     self.ir.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
+                }
+                // Open string-enum alias: `string | "literal"` collapses to bare
+                // `string`, dropping the `---|"literal"` completion values. Keep
+                // them for string-argument completion (the stale entry, if any,
+                // was already cleared at the top of the loop).
+                if matches!(&vt, ValueType::String(None)) {
+                    let mut literals = Vec::new();
+                    crate::annotations::collect_annotation_string_literals(&alias.typ, &mut literals);
+                    if !literals.is_empty() {
+                        self.ir.alias_string_literals.insert(alias.name.clone(), literals);
+                    }
                 }
                 let vt = if alias.is_opaque {
                     ValueType::OpaqueAlias(alias.name.clone(), Box::new(vt))

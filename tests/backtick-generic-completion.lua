@@ -65,7 +65,7 @@ bgOptional("")
 --          ^ comp: BGButton, BGElement, BGSlider
 
 -- ── Malformed: backtick names a non-declared generic (no @generic Foo) ──────
--- Falls through to scope completions (no class-name suggestions).
+-- No class-name suggestions, and no scope fall-through inside the string.
 
 ---@param elementType `Foo`
 ---@return any
@@ -73,4 +73,4 @@ local function bgMalformed(elementType) end
 -- ^ diag: undefined-doc-name
 
 bgMalformed("")
---           ^ comp: BGRegistry, _G, bgAny, bgMalformed, bgNew, bgOptional, reg
+--           ^ comp: none

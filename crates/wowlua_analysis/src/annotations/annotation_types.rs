@@ -1,5 +1,30 @@
 use super::{AnnotationType, ParamInfo, TuplePosition};
 
+/// Collect the string-literal values embedded in an annotation type, unquoted
+/// (`"player"` → `player`). Used to preserve completion suggestions for "open"
+/// string-enum aliases — `@alias UnitToken string` followed by `---|"player"`
+/// continuation lines — whose resolved `ValueType` collapses `string | "literal"`
+/// down to bare `string` (see [`ValueType::make_union`](crate::types::ValueType::make_union)),
+/// which is correct for assignability but discards the completion values.
+pub fn collect_annotation_string_literals(at: &AnnotationType, out: &mut Vec<String>) {
+    match at {
+        AnnotationType::Simple(name) => {
+            if (name.starts_with('"') && name.ends_with('"'))
+                || (name.starts_with('\'') && name.ends_with('\''))
+            {
+                out.push(name.trim_matches(|c| c == '"' || c == '\'').to_string());
+            }
+        }
+        AnnotationType::Union(parts) => {
+            for p in parts {
+                collect_annotation_string_literals(p, out);
+            }
+        }
+        AnnotationType::NonNil(inner) => collect_annotation_string_literals(inner, out),
+        _ => {}
+    }
+}
+
 pub fn format_annotation_type(at: &AnnotationType) -> String {
     match at {
         AnnotationType::Simple(s) => s.clone(),

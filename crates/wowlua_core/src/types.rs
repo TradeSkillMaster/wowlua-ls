@@ -731,7 +731,11 @@ impl ValueType {
             deduped.retain(|t| !matches!(t, ValueType::Boolean(_)));
             deduped.push(ValueType::Boolean(None));
         }
-        // Collapse string variants: string | "literal" → string (generic subsumes literals)
+        // Collapse string variants: string | "literal" → string (generic subsumes literals).
+        // This discards the literals, so "open" string-enum aliases (`@alias UnitToken
+        // string` + `---|"player"` lines) preserve them separately in
+        // `alias_string_literals` for string-argument completion — see the alias
+        // registration in `pre_globals::shared` / `analysis::prescan`.
         if deduped.contains(&ValueType::String(None)) {
             deduped.retain(|t| !matches!(t, ValueType::String(Some(_))));
         }
