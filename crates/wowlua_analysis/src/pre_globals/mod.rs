@@ -3395,7 +3395,11 @@ impl PreResolvedGlobals {
 
         // Extract vararg annotation from @param ...
         let vararg_param = params.iter().find(|p| p.name == "...");
-        let vararg_annotation = vararg_param.map(|p| p.typ.clone());
+        // A bare `...` with no `@param` type carries the empty sentinel; treat it
+        // as absent so the formatters render `...`, not `...: `.
+        let vararg_annotation = vararg_param
+            .map(|p| p.typ.clone())
+            .filter(|t| !crate::annotations::annotation_type_is_empty(t));
         let vararg_description = vararg_param.and_then(|p| p.description.clone());
 
         // Detect projections (params<F>/returns<F>) on vararg and return slots.

@@ -4357,6 +4357,18 @@ fn crossfile_duplicate_method_overload() {
 }
 
 #[test]
+fn crossfile_bare_vararg_method() {
+    // A cross-file method with a bare `...` (no `@param ...` type) must hover
+    // with a plain `...`, not `...: ` — the workspace scan's empty annotation
+    // sentinel for the vararg slot must be treated as absent.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/bare_vararg_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_meta_types() {
     // Types (@alias, @class) defined in a @meta file should not produce
     // undefined-doc-name warnings when used in other files.

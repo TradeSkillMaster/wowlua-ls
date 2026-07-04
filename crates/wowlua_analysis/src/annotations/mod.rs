@@ -26,6 +26,15 @@ pub fn annotation_type_is_nullable(ann: &AnnotationType) -> bool {
     }
 }
 
+/// Whether an annotation is the empty "no annotation" sentinel (`Simple("")`).
+/// The workspace scan synthesizes this for a signature parameter — including a
+/// bare `...` — that carries no `@param` type (see `scan_file_globals`). Such a
+/// vararg annotation must be treated as absent (`None`), otherwise the type
+/// formatters render it as `...: ` (a dangling colon with an empty type).
+pub fn annotation_type_is_empty(ann: &AnnotationType) -> bool {
+    matches!(ann, AnnotationType::Simple(s) if s.is_empty())
+}
+
 /// Check if an annotation type contains a `Backtick(...)` anywhere (including inside unions).
 pub fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
     match ann {
