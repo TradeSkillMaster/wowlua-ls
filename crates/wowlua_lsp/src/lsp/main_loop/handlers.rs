@@ -122,6 +122,14 @@ pub(super) fn analyze_lua_parsed(
     analysis.into_result()
 }
 
+/// `stub_open_seq` marker for a stub document materialized on demand by
+/// [`ensure_stub_doc_analyzed`] when the editor navigated into it without a
+/// `didOpen`. Any non-zero value works — it only keeps the doc out of the
+/// "shebang/ignored" (`stub_open_seq == 0`) class; the background-analysis
+/// drain never touches it because its analysis is installed up front. `u64::MAX`
+/// cannot collide with a real `didOpen`-assigned sequence number.
+const SYNTHETIC_STUB_OPEN_SEQ: u64 = u64::MAX;
+
 /// Ensure a stub / `@meta` document opened via go-to-definition has its
 /// analysis ready before a query runs against it.
 ///
@@ -141,6 +149,13 @@ pub(super) fn analyze_lua_parsed(
 /// exactly the docs it routes through background analysis. This deliberately
 /// excludes shebang/ignored docs (which carry `analysis: None` with
 /// `stub_open_seq == 0` on purpose) and is a no-op for already-analyzed docs.
+///
+/// The no-tracked-document case is handled too: an editor that scopes the
+/// language server to project files (IntelliJ) navigates INTO a stub file —
+/// which lives outside the project, under the temp stubs dir — without ever
+/// sending `didOpen`, so no document exists and nested go-to-definition would
+/// return an empty result ("Cannot find declaration to go to"). Such a stub
+/// path is materialized on demand from the file on disk.
 pub(super) fn ensure_stub_doc_analyzed(
     connection: &Connection,
     documents: &mut HashMap<String, Document>,
@@ -149,7 +164,36 @@ pub(super) fn ensure_stub_doc_analyzed(
     client: &ClientSupport,
 ) {
     let uri_key = uri.to_string();
-    let Some(doc) = documents.get(&uri_key) else { return };
+    let Some(doc) = documents.get(&uri_key) else {
+        // No tracked document. If this is a stub path the editor navigated into
+        // without a `didOpen` (see the doc comment), materialize a read-only
+        // document from the stub file on disk — written by
+        // `resolve_external_location` during the prior go-to-def that brought
+        // the user here — and analyze it so nested navigation resolves. Only
+        // stub paths qualify, and stub files never publish diagnostics, so
+        // there is nothing to send afterwards.
+        if is_stub_path(uri)
+            && let Some(path) = uri_to_abs_path(uri)
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            let (tree, analysis) = analyze_lua(uri, &text, &ws.pre_globals, &ws.configs);
+            documents.insert(uri_key, Document {
+                text,
+                pending_text: None,
+                analysis: Some(analysis),
+                tree: Some(tree),
+                toc: None,
+                plugin_diags: Vec::new(),
+                dirty: false,
+                ws_generation: ws.ws_generation,
+                pending_line_delta: None,
+                pending_edit_map: None,
+                cached_diagnostics: None,
+                stub_open_seq: SYNTHETIC_STUB_OPEN_SEQ,
+            });
+        }
+        return;
+    };
     if doc.analysis.is_some() || doc.stub_open_seq == 0 {
         return;
     }

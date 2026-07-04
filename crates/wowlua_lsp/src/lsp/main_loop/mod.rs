@@ -1890,6 +1890,72 @@ mod tests {
         );
     }
 
+    /// Regression: an editor (e.g. IntelliJ) that scopes the language server to
+    /// project files navigates INTO a stub file — outside the project, under the
+    /// temp stubs dir — without sending `didOpen`, so the document is never
+    /// tracked. A nested go-to-definition then found no document and returned an
+    /// empty result ("Cannot find declaration to go to"). `ensure_stub_doc_analyzed`
+    /// now materializes the on-disk stub file on demand so navigation resolves.
+    #[test]
+    fn ensure_stub_doc_analyzed_materializes_untracked_stub_from_disk() {
+        let ws = WorkspaceState::for_test(None);
+        let (connection, _client_conn) = Connection::memory();
+        let client = ClientSupport::default();
+
+        // Write a stub file on disk under the temp stubs dir so `is_stub_path`
+        // recognizes it — mirroring what `resolve_external_location` does on the
+        // prior go-to-def that brought the user into the file.
+        let dir = std::env::temp_dir().join("wowlua-ls-stubs").join("synth_nav_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Nav.lua");
+        let text = "local x = 1\nlocal y = x\n";
+        std::fs::write(&path, text).unwrap();
+        let uri = abs_path_to_uri(&path).unwrap();
+
+        // No tracked document at all — the untracked-stub case.
+        let mut documents = HashMap::new();
+        ensure_stub_doc_analyzed(&connection, &mut documents, &uri, &ws, &client);
+
+        let doc = documents
+            .get(&uri.to_string())
+            .expect("untracked stub doc must be materialized on demand");
+        assert!(doc.analysis.is_some(), "materialized stub doc must be analyzed");
+        assert!(doc.tree.is_some(), "materialized stub doc must be parsed");
+
+        // Go-to-definition WITHIN the stub file resolves: `x` in `local y = x`
+        // points back to the `local x` definition.
+        let tree = doc.tree.as_ref().unwrap();
+        let analysis = doc.analysis.as_ref().unwrap();
+        let use_offset = text.find("x\n").unwrap() as u32;
+        let def = analysis.definition_at(tree, use_offset);
+        assert!(
+            matches!(def, Some(DefinitionResult::Local(_))),
+            "navigation within the materialized stub file must resolve",
+        );
+        let _ = std::fs::remove_file(&path);
+
+        // A non-stub untracked path must NOT be synthesized (only stub paths
+        // qualify — user project files are delivered via didOpen). Point at a
+        // real, readable file OUTSIDE the stub dir so `read_to_string` would
+        // succeed — this isolates `is_stub_path` as the sole reason for
+        // rejection (a non-existent path would be blocked by the failing read
+        // regardless of the gate).
+        let user_dir = std::env::temp_dir().join("wowlua-ls-notstub_nav_test");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        let user_path = user_dir.join("Main.lua");
+        std::fs::write(&user_path, text).unwrap();
+        let user_uri = abs_path_to_uri(&user_path).unwrap();
+        assert!(!is_stub_path(&user_uri), "test setup: path must be outside the stub dir");
+
+        let mut documents = HashMap::new();
+        ensure_stub_doc_analyzed(&connection, &mut documents, &user_uri, &ws, &client);
+        assert!(
+            documents.is_empty(),
+            "a readable non-stub untracked path must not be materialized",
+        );
+        let _ = std::fs::remove_file(&user_path);
+    }
+
     /// Regression: a user `@meta` file's annotation type-integrity diagnostics
     /// must be published even when the synchronous `ensure_stub_doc_analyzed`
     /// install wins the race against the background-analysis drain. For a
