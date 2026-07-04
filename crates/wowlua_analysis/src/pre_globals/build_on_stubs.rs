@@ -1122,6 +1122,7 @@ impl<'a> BuildOnStubsContext<'a> {
             symbol_locations_by_name: HashMap::new(),
             class_locations_all,
             alias_locations_all: HashMap::new(),
+            func_alt_locations: HashMap::new(),
             setmetatable_func_idx: self.stubs_base.setmetatable_func_idx,
             getmetatable_func_idx: self.stubs_base.getmetatable_func_idx,
             stub_symbols_end: self.stubs_base.stub_symbols_end,
@@ -1196,6 +1197,28 @@ impl PreResolvedGlobals {
                         &ExternalLocation { path: path.clone(), start, end, ..Default::default() },
                     );
                 }
+        }
+        // Record extra definition sites for methods that a workspace `library`
+        // redefines on top of a built-in stub. Additive stub reuse keeps the stub's
+        // field (`.or_insert`), so the field's expr still points at the stub's
+        // function while this workspace method's `func_idx` is orphaned in
+        // `function_to_field` (workspace methods only). When the two differ, they are
+        // two definitions of the same logical method — record both against the
+        // winning (stub) function so go-to-definition on any receiver offers each site.
+        let extra_sites: Vec<(FunctionIndex, ExternalLocation, ExternalLocation)> = pg.function_to_field.iter()
+            .filter_map(|(&ws_func, (owner_idx, method_name))| {
+                let ws_loc = pg.function_locations.get(&ws_func)?;
+                let field = pg.tables[owner_idx.ext_offset()].fields.get(method_name)?;
+                let Expr::FunctionDef(winner) = pg.exprs[field.expr.ext_offset()] else { return None };
+                if winner == ws_func { return None; }
+                let winner_loc = pg.function_locations.get(&winner)?;
+                Some((winner, winner_loc.clone(), ws_loc.clone()))
+            })
+            .collect();
+        for (winner, winner_loc, ws_loc) in extra_sites {
+            let entry = pg.func_alt_locations.entry(winner).or_default();
+            push_distinct_location(entry, &winner_loc);
+            push_distinct_location(entry, &ws_loc);
         }
         // Two merge passes: (1) sub-table methods → class tables, (2) top-level ns fields → ns-class
         pg.merge_addon_ns_subtable_methods();

@@ -295,6 +295,16 @@ pub struct PreResolvedGlobals {
     /// see `symbol_locations_by_name`.
     #[serde(skip)]
     pub alias_locations_all: HashMap<String, Vec<ExternalLocation>>,
+    /// Extra definition sites for a method/function field, keyed by the
+    /// `FunctionIndex` its field expr points to (the "winning" definition kept by
+    /// additive stub reuse). When a workspace `library` redefines a method that
+    /// also exists in the built-in stubs, both the stub site and the workspace
+    /// site are recorded here so go-to-definition offers every site — the field
+    /// analogue of `symbol_locations_by_name`. Keyed by function index (stable
+    /// across every receiver the field is reached through). Runtime only —
+    /// populated by `build_on_stubs`, never serialized into the stub blob.
+    #[serde(skip)]
+    pub func_alt_locations: HashMap<FunctionIndex, Vec<ExternalLocation>>,
     /// Function index for the built-in `setmetatable()` — used for metatable type inference.
     pub setmetatable_func_idx: Option<FunctionIndex>,
     /// Function index for the built-in `getmetatable()` — used for metatable type inference.
@@ -2146,6 +2156,7 @@ impl BuildContext {
             symbol_locations_by_name: HashMap::new(),
             class_locations_all: HashMap::new(),
             alias_locations_all: HashMap::new(),
+            func_alt_locations: HashMap::new(),
             setmetatable_func_idx: self.setmetatable_func_idx,
             getmetatable_func_idx: self.getmetatable_func_idx,
             stub_symbols_end: 0,
@@ -2200,6 +2211,12 @@ impl PreResolvedGlobals {
     /// All workspace definition locations for an `@alias` name.
     pub fn alias_locations_for_name(&self, name: &str) -> &[ExternalLocation] {
         self.alias_locations_all.get(name).map_or(&[], Vec::as_slice)
+    }
+    /// Extra definition sites for the method/function field pointing at `func_idx`
+    /// (stub + workspace `library` redefinitions). Empty slice for a function with
+    /// only one recorded site. See [`Self::func_alt_locations`].
+    pub fn func_alt_locations_for(&self, func_idx: FunctionIndex) -> &[ExternalLocation] {
+        self.func_alt_locations.get(&func_idx).map_or(&[], Vec::as_slice)
     }
 
     // ── Read-only routing accessors (post-build consumers) ──────────────────────
@@ -2505,6 +2522,7 @@ impl PreResolvedGlobals {
             symbol_locations_by_name: HashMap::new(),
             class_locations_all: HashMap::new(),
             alias_locations_all: HashMap::new(),
+            func_alt_locations: HashMap::new(),
             setmetatable_func_idx: None,
             getmetatable_func_idx: None,
             stub_symbols_end: 0,

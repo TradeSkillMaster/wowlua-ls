@@ -65,7 +65,7 @@ impl AnalysisResult {
                     return vec![DefinitionResult::Local(range)];
                 }
             if let Some(result) = self.definition_for_expr(expr_id) {
-                return vec![result];
+                return self.field_definitions_with_alts(result, expr_id);
             }
             // Fall back to external field location (stubs / workspace @field annotations)
             if let Some(loc) = self.find_external_field_location(table_idx, &field_name) {
@@ -344,6 +344,29 @@ impl AnalysisResult {
             }
             _ => None,
         }
+    }
+
+    /// Given the primary go-to-definition `result` for a method/function field
+    /// reached through expr `expr_id`, append every additional external definition
+    /// site recorded for the field's function — the built-in stub site plus any
+    /// workspace `library` redefinition — deduplicated by `(path, start)`. Returns
+    /// `[result]` unchanged when the field isn't a function or has no extra sites.
+    /// Mirrors the multi-site behavior of globals/classes/aliases for methods.
+    fn field_definitions_with_alts(&self, result: DefinitionResult, expr_id: ExprId) -> Vec<DefinitionResult> {
+        let Expr::FunctionDef(func_idx) = self.expr(expr_id) else {
+            return vec![result];
+        };
+        let extras = self.ir.ext.func_alt_locations_for(*func_idx);
+        if extras.is_empty() {
+            return vec![result];
+        }
+        let mut out = vec![result];
+        for loc in extras {
+            if !out.iter().any(|d| matches!(d, DefinitionResult::External(e) if e.path == loc.path && e.start == loc.start)) {
+                out.push(DefinitionResult::External(loc.clone()));
+            }
+        }
+        out
     }
 
     /// Go-to-definition on a class or alias name inside an annotation comment.
