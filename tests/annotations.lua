@@ -118,6 +118,25 @@ end
 local prepVar ---@type PrepareFunc
 --                      ^ hover: (alias) PrepareFunc = fun(link: string, qty: number): boolean
 
+-- Regression: a bare forward-declared local must NOT absorb a `---@type` on the
+-- *next* line — that annotation belongs to the following declaration. The parser
+-- folds the leading comment into the bare-local node as trailing trivia, which
+-- previously mis-typed `bareForward` as `table<number, number>?`.
+local bareForward
+--    ^ hover: (local) bareForward: ?
+---@type table<number, number>?
+local afterBare
+--    ^ hover: (local) afterBare: table<number, number>?
+
+-- ...but a genuine *same-line* trailing `---@type` still applies, even when the
+-- next statement's leading annotation block is folded into this node right after
+-- it. `sameLineTyped` keeps its own `string`; `blockTyped` gets `boolean`.
+local sameLineTyped ---@type string
+--    ^ hover: (local) sameLineTyped: string
+---@type boolean
+local blockTyped
+--    ^ hover: (local) blockTyped: boolean
+
 -- Field hover with function-typed alias expands signature
 ---@class AliasFieldHost
 ---@field _iter PrepareFunc!

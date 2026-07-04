@@ -3784,6 +3784,27 @@ impl<'a> Analysis<'a> {
                     tok = t.prev_token();
                 }
                 SyntaxKind::Comment => {
+                    // Accept only a comment on the *same line* as the local's code
+                    // (`local Options ---@type Foo`). A `---@type` on a following
+                    // line is a *leading* annotation for the next statement, which
+                    // the parser folds into this node as trailing trivia. Skip past
+                    // such newline-separated comments and keep walking, so a genuine
+                    // same-line trailing `---@type` is still found even when a
+                    // next-statement annotation block sits between it and the node
+                    // end (`local Options ---@type Foo` / `---@type Bar` / `local X`).
+                    let mut prev = t.prev_token();
+                    let mut same_line = false;
+                    while let Some(ref p) = prev {
+                        match p.kind() {
+                            SyntaxKind::Whitespace => prev = p.prev_token(),
+                            SyntaxKind::Newline => break,
+                            _ => { same_line = true; break; }
+                        }
+                    }
+                    if !same_line {
+                        tok = t.prev_token();
+                        continue;
+                    }
                     let content = t.text().trim_start_matches('-').trim();
                     let rest = content.strip_prefix("@type")?.trim();
                     if rest.is_empty() { return None; }
