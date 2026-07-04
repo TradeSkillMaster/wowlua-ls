@@ -13,7 +13,9 @@
   ],
   "activationEvents": [
     "onLanguage:lua",
-    "onLanguage:toc"
+    "onLanguage:toc",
+    "workspaceContains:**/*.toc",
+    "workspaceContains:**/*.lua"
   ],
   "main": "./dist/extension.js",
   "contributes": {
