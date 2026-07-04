@@ -33,12 +33,12 @@ pub fn hover_at(doc: &TocDocument, offset: u32) -> Option<TocHover> {
                 hover_field_key(key)
             }
         }
-        TocLine::FilePath { path, directive, .. } => {
+        TocLine::FilePath { path, directives, .. } => {
             let mut parts = Vec::new();
-            if let Some(dir) = directive
-                && let Some((_, doc)) = schema::FILE_DIRECTIVES.iter().find(|(k, _)| *k == dir.kind)
-            {
-                parts.push(format!("`[{}]`: {}", dir.kind, doc));
+            for dir in directives {
+                if let Some((_, doc)) = schema::FILE_DIRECTIVES.iter().find(|(k, _)| *k == dir.kind) {
+                    parts.push(format!("`[{}]`: {}", dir.kind, doc));
+                }
             }
             if !path.is_empty() {
                 parts.push(format!("File: `{}`", path));
@@ -284,12 +284,12 @@ fn complete_file_paths(text: &str, offset: u32, toc_dir: &Path) -> Vec<TocComple
 /// Go-to-definition at a byte offset: returns the resolved file path if on a file reference line.
 pub fn definition_at(doc: &TocDocument, offset: u32, toc_dir: &Path) -> Option<PathBuf> {
     let line = line_at_offset(doc, offset)?;
-    if let TocLine::FilePath { path, directive, .. } = line {
+    if let TocLine::FilePath { path, directives, .. } = line {
         if path.is_empty() {
             return None;
         }
         // Skip path-variable directives (can't resolve without runtime context)
-        if directive.as_ref().is_some_and(|d| d.kind == "Family" || d.kind == "Game") {
+        if directives.iter().any(|d| crate::flavor::is_toc_path_variable(&d.kind)) {
             return None;
         }
         let normalized = path.replace('\\', "/");

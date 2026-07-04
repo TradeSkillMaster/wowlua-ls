@@ -1,0 +1,14 @@
+-- The base TOC lists this file with the wiki-documented SUFFIX form of the
+-- per-line directive: `Retail.lua [AllowLoadGameType mainline]`, restricting it
+-- to Retail. The addon itself targets all flavors (.wowluarc.json), so the
+-- directive is what narrows this file.
+--
+-- Regression: the suffix form was previously discarded (only the prefix form
+-- `[AllowLoadGameType mainline] Retail.lua` was parsed), leaving this file at the
+-- addon's full breadth (retail + classic + classic_era). A retail-only API would
+-- then falsely warn as unavailable on Classic / Classic Era. It must NOT warn.
+-- (No `diag:` assertion here: the harness checks diagnostics exhaustively, so any
+-- stray wrong-flavor-api on this line fails the test. The `def:` gives the file
+-- the one annotation the harness requires to run.)
+AbbreviateLargeNumbers(100)
+-- ^ def: external

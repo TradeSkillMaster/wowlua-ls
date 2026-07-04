@@ -198,19 +198,25 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
 /// Known values for `AllowLoadGameType` and the `[AllowLoadGameType ...]` directive.
 pub static GAME_TYPE_VALUES: &[(&str, &str)] = &[
     ("mainline", "Retail (The War Within, etc.)"),
+    ("standard", "Retail, excluding Plunderstorm"),
     ("classic", "All Classic flavors (Classic Era, Cata, Wrath, TBC, Mists)"),
     ("vanilla", "Classic Era (Vanilla only)"),
     ("cata", "Cataclysm Classic"),
     ("wrath", "Wrath of the Lich King Classic"),
     ("tbc", "The Burning Crusade Classic"),
     ("mists", "Mists of Pandaria Classic"),
+    ("plunderstorm", "Plunderstorm event"),
+    ("wowhack", "WoW Hack event"),
 ];
 
-/// Known `[Directive]` names for file path lines.
+/// Known `[Directive]` names for file path lines (load conditions + path variables).
 pub static FILE_DIRECTIVES: &[(&str, &str)] = &[
-    ("AllowLoadGameType", "Restricts this file to specific game flavors (comma-separated: mainline, classic, vanilla, cata, wrath, tbc, mists)."),
+    ("AllowLoadGameType", "Restricts this file to specific game flavors (comma-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, plunderstorm, wowhack)."),
+    ("AllowLoadTextLocale", "Restricts this file to specific client text locales (comma-separated, e.g. enUS, frFR)."),
+    ("AllowLoad", "Restricts this file to an environment (ingame / glue). Functionally inoperable for addons."),
     ("Family", "Path variable that expands to the game family subdirectory."),
     ("Game", "Path variable that expands to the specific game subdirectory."),
+    ("TextLocale", "Path variable that expands to the client text locale (e.g. enUS)."),
 ];
 
 /// Look up a field by name (case-insensitive) or alias.

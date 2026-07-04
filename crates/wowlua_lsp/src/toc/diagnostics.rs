@@ -121,12 +121,13 @@ fn check_invalid_interface(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
 
 fn check_nonexistent_files(doc: &TocDocument, toc_dir: &Path, diags: &mut Vec<TocDiagnostic>) {
     for line in &doc.lines {
-        if let TocLine::FilePath { path, path_range, directive, .. } = line {
+        if let TocLine::FilePath { path, path_range, directives, .. } = line {
             if path.is_empty() {
                 continue;
             }
-            // Skip paths with variables like [Family] or [Game] — can't resolve without context
-            if directive.as_ref().is_some_and(|d| d.kind == "Family" || d.kind == "Game") {
+            // Skip paths with variables like [Family]/[Game]/[TextLocale] — can't
+            // resolve without runtime context.
+            if directives.iter().any(|d| crate::flavor::is_toc_path_variable(&d.kind)) {
                 continue;
             }
             // Normalize backslashes to forward slashes for path resolution
@@ -167,21 +168,24 @@ fn check_invalid_game_types(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
                 }
             }
         }
-        // Check directive args
-        if let TocLine::FilePath { directive: Some(dir), .. } = line
-            && dir.kind == "AllowLoadGameType" && !dir.args.is_empty()
-        {
-            for part in dir.args.split(',') {
-                let trimmed = part.trim();
-                if !trimmed.is_empty() && !known_names.contains(&trimmed) {
-                    diags.push(TocDiagnostic {
-                        code: "toc-invalid-value",
-                        message: format!("Unknown game type `{}`. Known values: {}.", trimmed, known_names.join(", ")),
-                        severity: TocSeverity::Warning,
-                        start: dir.range.0,
-                        end: dir.range.1,
-                    });
-                    break;
+        // Check each per-file `[AllowLoadGameType ...]` condition's args
+        if let TocLine::FilePath { directives, .. } = line {
+            for dir in directives {
+                if dir.kind != "AllowLoadGameType" || dir.args.is_empty() {
+                    continue;
+                }
+                for part in dir.args.split(',') {
+                    let trimmed = part.trim();
+                    if !trimmed.is_empty() && !known_names.contains(&trimmed) {
+                        diags.push(TocDiagnostic {
+                            code: "toc-invalid-value",
+                            message: format!("Unknown game type `{}`. Known values: {}.", trimmed, known_names.join(", ")),
+                            severity: TocSeverity::Warning,
+                            start: dir.range.0,
+                            end: dir.range.1,
+                        });
+                        break;
+                    }
                 }
             }
         }
@@ -296,5 +300,53 @@ mod tests {
     fn nonexistent_file() {
         let diags = run("## Interface: 110002\nSomeFile.lua\n");
         assert!(diags.iter().any(|d| d.code == "toc-nonexistent-file"));
+    }
+
+    #[test]
+    fn suffix_directive_reports_clean_path() {
+        // The trailing `[AllowLoadGameType ...]` must not leak into the path used
+        // for the existence check (previously the whole line became the "path").
+        let diags = run("## Interface: 110002\nDisplay/AuraIconRetail.lua [AllowLoadGameType mainline]\n");
+        let file_diag = diags.iter().find(|d| d.code == "toc-nonexistent-file").unwrap();
+        assert!(file_diag.message.contains("Display/AuraIconRetail.lua"));
+        assert!(!file_diag.message.contains("AllowLoadGameType"));
+    }
+
+    #[test]
+    fn valid_suffix_game_type() {
+        let diags = run("## Interface: 110002\nRetail.lua [AllowLoadGameType mainline]\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-invalid-value"));
+    }
+
+    #[test]
+    fn invalid_suffix_game_type() {
+        let diags = run("## Interface: 110002\nRetail.lua [AllowLoadGameType bogustype]\n");
+        assert!(diags.iter().any(|d| d.code == "toc-invalid-value" && d.message.contains("bogustype")));
+    }
+
+    #[test]
+    fn suffix_locale_condition_reports_clean_path() {
+        // A non-flavor condition must also be stripped from the resolved path.
+        let diags = run("## Interface: 110002\nStrings.lua [AllowLoadTextLocale enUS, frFR]\n");
+        let file_diag = diags.iter().find(|d| d.code == "toc-nonexistent-file").unwrap();
+        assert!(file_diag.message.contains("Strings.lua"));
+        assert!(!file_diag.message.contains("AllowLoadTextLocale"));
+    }
+
+    #[test]
+    fn path_variable_skips_existence_check() {
+        // `[Family]` marks an unresolvable path — no nonexistent-file warning, even
+        // with a trailing game-type condition on the same line.
+        let diags = run("## Interface: 110002\n[Family]Shared/Core.lua [AllowLoadGameType classic]\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-nonexistent-file"));
+        // ...but an invalid game type in that condition is still reported.
+        let diags = run("## Interface: 110002\n[Family]Shared/Core.lua [AllowLoadGameType bogus]\n");
+        assert!(diags.iter().any(|d| d.code == "toc-invalid-value" && d.message.contains("bogus")));
+    }
+
+    #[test]
+    fn standard_game_type_not_flagged() {
+        let diags = run("## Interface: 110002\nData.lua [AllowLoadGameType standard, plunderstorm]\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-invalid-value"));
     }
 }

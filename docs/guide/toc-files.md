@@ -72,22 +72,33 @@ Additionally:
 
 ## Per-line directives
 
-TOC files support directives that prefix individual file paths:
+TOC files support two kinds of bracketed tokens on file lines: **load conditions**
+that restrict when a file loads, and **path variables** that expand inline within
+the path. Conditions may appear before, after, or between path segments — the WoW
+client's documented form places them after the path:
 
 ```
-[AllowLoadGameType mainline]Retail/FrameOverrides.lua
-[AllowLoadGameType classic]Classic/Compatibility.lua
+Retail/FrameOverrides.lua [AllowLoadGameType mainline]
+Classic/Compatibility.lua [AllowLoadGameType classic]
+Localized.lua [AllowLoadGameType mainline] [AllowLoadTextLocale enUS]
 [Family]Shared/Utils.lua
-[Game]Locale/Strings.lua
+Locale/[TextLocale].lua
 ```
 
-| Directive | Description |
-|---|---|
-| `[AllowLoadGameType ...]` | Only load this file on specified game flavors |
-| `[Family]` | Path variable expanding to game family subdirectory |
-| `[Game]` | Path variable expanding to specific game subdirectory |
+The prefix form (`[AllowLoadGameType mainline] File.lua`) is also accepted.
 
-Hover a directive to see its documentation.
+| Bracket | Kind | Description |
+|---|---|---|
+| `[AllowLoadGameType ...]` | Condition | Only load this file on specified game flavors (`mainline`, `standard`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `plunderstorm`, `wowhack`) |
+| `[AllowLoadTextLocale ...]` | Condition | Only load on specified client locales (e.g. `enUS, frFR`) |
+| `[AllowLoad ...]` | Condition | Restrict to an environment (ingame / glue) |
+| `[Family]` | Path variable | Expands to the game family subdirectory (`Mainline` / `Classic`) |
+| `[Game]` | Path variable | Expands to the specific game subdirectory |
+| `[TextLocale]` | Path variable | Expands to the client text locale (e.g. `enUS`) |
+
+Only `[AllowLoadGameType]` affects [flavor filtering](./flavor-filtering.md); the
+other conditions are recognized and stripped but don't change a file's flavor.
+Hover a bracket to see its documentation.
 
 ## Diagnostics
 

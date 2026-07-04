@@ -1057,30 +1057,42 @@ fn expand_toc_path_variables(
     }
 }
 
-/// Parse `[AllowLoadGameType ...]` directives from the start of a TOC file line.
-/// Only consumes recognized directive brackets; leaves path variables like
-/// `[Family]` and `[Game]` in the returned path.
-/// Returns `(remaining_file_path, game_type_mask)`. Mask is 0 if no directive found.
-fn parse_file_line_directives(line: &str) -> (&str, u8) {
-    let mut rest = line;
+/// Parse inline `[...]` directives out of a TOC file line. Load *conditions*
+/// (`[AllowLoadGameType ...]`, `[AllowLoadTextLocale ...]`, `[AllowLoad ...]`, …)
+/// may appear before or after the path — anywhere on the line — and are stripped;
+/// only `AllowLoadGameType` contributes to the returned flavor mask (other
+/// conditions restrict on locale/environment, not flavor). Path *variables*
+/// (`[Family]`, `[Game]`, `[TextLocale]`) are part of the path and are kept for
+/// later expansion. Returns `(remaining_file_path, game_type_mask)`; mask is 0 if
+/// no `AllowLoadGameType` condition is present.
+fn parse_file_line_directives(line: &str) -> (String, u8) {
+    let mut path = String::new();
     let mut flavor_mask = 0u8;
+    let mut rest = line;
 
     while let Some(bracket_start) = rest.find('[') {
-        if let Some(bracket_end) = rest[bracket_start..].find(']') {
-            let directive = &rest[bracket_start + 1..bracket_start + bracket_end];
-            if let Some(types) = directive.strip_prefix("AllowLoadGameType") {
-                let types = types.trim_start();
-                flavor_mask = crate::flavor::parse_game_type_list(types);
-                rest = rest[bracket_start + bracket_end + 1..].trim_start();
-            } else {
-                break;
-            }
+        let Some(rel_end) = rest[bracket_start..].find(']') else {
+            break; // unterminated '[' — keep the remainder verbatim
+        };
+        let bracket_end = bracket_start + rel_end;
+        let directive = rest[bracket_start + 1..bracket_end].trim();
+        let keyword = directive.split_whitespace().next().unwrap_or("");
+        if crate::flavor::is_toc_path_variable(keyword) {
+            // `[Family]`/`[Game]`/`[TextLocale]`: part of the path — keep verbatim.
+            path.push_str(&rest[..=bracket_end]);
         } else {
-            break;
+            // A load condition — strip it, keeping the surrounding path text.
+            path.push_str(&rest[..bracket_start]);
+            if keyword == "AllowLoadGameType" {
+                let args = directive[keyword.len()..].trim_start();
+                flavor_mask |= crate::flavor::parse_game_type_list(args);
+            }
         }
+        rest = &rest[bracket_end + 1..];
     }
+    path.push_str(rest);
 
-    (rest, flavor_mask)
+    (path.trim().to_string(), flavor_mask)
 }
 
 /// Parse `.toc` files in a directory for `SavedVariables` and
@@ -2319,6 +2331,35 @@ NormalFile.lua
     }
 
     #[test]
+    fn test_toc_suffix_allow_load_game_type() {
+        // The wiki-documented syntax lists the directive AFTER the file path:
+        //   File.lua [AllowLoadGameType mainline]
+        // Regression: this form was previously discarded, leaving the file with
+        // no flavor restriction so wrong-flavor-api fired on every flavor.
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_suffix_allow");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("MyAddon.toc"), "\
+Display/AuraFromItem.lua [AllowLoadGameType mainline]
+Display/AuraIconRetail.lua [AllowLoadGameType mainline]
+Display/AuraIconClassic.lua [AllowLoadGameType classic]
+").unwrap();
+
+        let result = parse_toc_files(&dir);
+        // mainline → retail only
+        assert_eq!(*result.file_flavors.get(&dir.join("Display/AuraFromItem.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+        assert_eq!(*result.file_flavors.get(&dir.join("Display/AuraIconRetail.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+        // classic → classic | classic_era
+        assert_eq!(*result.file_flavors.get(&dir.join("Display/AuraIconClassic.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_toc_subdirectory_paths() {
         let dir = std::env::temp_dir().join("wowlua_ls_test_toc_subdir");
         let _ = std::fs::remove_dir_all(&dir);
@@ -2423,11 +2464,40 @@ UI\\Panel.lua
 
     #[test]
     fn test_parse_file_line_directives() {
-        assert_eq!(parse_file_line_directives("Normal.lua"), ("Normal.lua", 0));
-        assert_eq!(parse_file_line_directives("[AllowLoadGameType mainline] Retail.lua"),
-                   ("Retail.lua", crate::flavor::FLAVOR_RETAIL));
-        assert_eq!(parse_file_line_directives("[AllowLoadGameType vanilla, cata] Mixed.lua"),
-                   ("Mixed.lua", crate::flavor::FLAVOR_CLASSIC_ERA | crate::flavor::FLAVOR_CLASSIC));
+        let parse = parse_file_line_directives;
+        assert_eq!(parse("Normal.lua"), ("Normal.lua".to_string(), 0));
+        // Prefix form (directive before the path)
+        assert_eq!(parse("[AllowLoadGameType mainline] Retail.lua"),
+                   ("Retail.lua".to_string(), crate::flavor::FLAVOR_RETAIL));
+        assert_eq!(parse("[AllowLoadGameType vanilla, cata] Mixed.lua"),
+                   ("Mixed.lua".to_string(), crate::flavor::FLAVOR_CLASSIC_ERA | crate::flavor::FLAVOR_CLASSIC));
+        // Suffix form (the wiki-documented syntax: path first, directive after)
+        assert_eq!(parse("Display/AuraIconRetail.lua [AllowLoadGameType mainline]"),
+                   ("Display/AuraIconRetail.lua".to_string(), crate::flavor::FLAVOR_RETAIL));
+        assert_eq!(parse("Display/AuraIconClassic.lua [AllowLoadGameType classic]"),
+                   ("Display/AuraIconClassic.lua".to_string(),
+                    crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA));
+        assert_eq!(parse("VanillaOrTBC.lua [AllowLoadGameType vanilla, tbc]"),
+                   ("VanillaOrTBC.lua".to_string(),
+                    crate::flavor::FLAVOR_CLASSIC_ERA | crate::flavor::FLAVOR_CLASSIC));
+        // Suffix directive with a [Family] path variable preserved for expansion
+        assert_eq!(parse("Locale/[Family].lua [AllowLoadGameType mainline]"),
+                   ("Locale/[Family].lua".to_string(), crate::flavor::FLAVOR_RETAIL));
+
+        // Non-flavor conditions are stripped but contribute no flavor mask, in
+        // either position.
+        assert_eq!(parse("Strings.lua [AllowLoadTextLocale enUS, frFR]"),
+                   ("Strings.lua".to_string(), 0));
+        assert_eq!(parse("[AllowLoad ingame] InGameOnly.lua"),
+                   ("InGameOnly.lua".to_string(), 0));
+        // Path variables (Family/Game/TextLocale) are kept in the path.
+        assert_eq!(parse("[Game]Data.lua"), ("[Game]Data.lua".to_string(), 0));
+        assert_eq!(parse("Localization/[TextLocale].lua"),
+                   ("Localization/[TextLocale].lua".to_string(), 0));
+        // A flavor condition combined with a locale condition on one line: the
+        // path is recovered and only the game-type mask is applied.
+        assert_eq!(parse("Core.lua [AllowLoadGameType mainline] [AllowLoadTextLocale enUS]"),
+                   ("Core.lua".to_string(), crate::flavor::FLAVOR_RETAIL));
     }
 
     #[test]

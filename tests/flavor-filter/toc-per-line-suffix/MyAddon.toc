@@ -1,0 +1,4 @@
+## Interface: 110002, 50500, 11503
+## Title: MyAddon
+Retail.lua [AllowLoadGameType mainline]
+Classic.lua [AllowLoadGameType classic]

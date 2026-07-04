@@ -162,6 +162,15 @@ pub fn parse_game_type_name(name: &str) -> Option<u8> {
     }
 }
 
+/// Is `name` a TOC inline *path variable* (`[Family]`, `[Game]`, `[TextLocale]`)
+/// rather than a load *condition* (`[AllowLoadGameType ...]`, `[AllowLoadTextLocale
+/// ...]`, `[AllowLoad ...]`)? Path variables are part of the file path and expand
+/// per flavor/locale; conditions are separate tokens that restrict when a file
+/// loads. Used to decide which brackets to strip vs. keep when parsing a file line.
+pub fn is_toc_path_variable(name: &str) -> bool {
+    matches!(name, "Family" | "Game" | "TextLocale")
+}
+
 /// Parse a comma-separated list of game type names into a flavor mask.
 /// Unknown names are ignored.
 pub fn parse_game_type_list(names: &str) -> u8 {

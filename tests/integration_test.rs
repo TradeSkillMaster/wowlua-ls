@@ -2298,6 +2298,28 @@ fn flavor_filter_toc_per_line() {
     });
 }
 
+// Per-line directive in the wiki-documented SUFFIX position
+// (`File.lua [AllowLoadGameType ...]`). Regression: the suffix form was
+// previously discarded, so a `mainline`-tagged file fell back to the addon's
+// full flavor breadth and falsely warned on retail-only APIs.
+#[test]
+fn flavor_filter_toc_per_line_suffix_mainline() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/toc-per-line-suffix/Retail.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_toc_per_line_suffix_classic() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/toc-per-line-suffix/Classic.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
 #[test]
 fn flavor_filter_toc_intersect() {
     run_annotation_tests(&TestConfig {

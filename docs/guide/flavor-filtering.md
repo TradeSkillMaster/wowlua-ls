@@ -58,11 +58,13 @@ Core.lua
 ```
 
 ```toc
-[AllowLoadGameType mainline] RetailUI.lua
+RetailUI.lua [AllowLoadGameType mainline]
 SharedCode.lua
 ```
 
-These intersect with the TOC's suffix flavor, further restricting which flavors a file is loaded for.
+The directive may follow the file path (the form the WoW client documents, shown above) or precede it (`[AllowLoadGameType mainline] RetailUI.lua`). These intersect with the TOC's suffix flavor, further restricting which flavors a file is loaded for.
+
+Other per-line conditions (`[AllowLoadTextLocale ...]`, `[AllowLoad ...]`) and path variables (`[Family]`, `[Game]`, `[TextLocale]`) are recognized in either position, but only `AllowLoadGameType` affects flavor — the rest are parsed so they don't corrupt the file path. See the [TOC file guide](./toc-files.md#per-line-directives) for the full list.
 
 **Path variables (`[Family]` and `[Game]`):**
 

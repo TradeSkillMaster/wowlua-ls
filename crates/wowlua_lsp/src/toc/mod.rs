@@ -2,7 +2,10 @@ pub mod schema;
 pub mod diagnostics;
 pub mod queries;
 
-/// A parsed directive prefix on a file path line, e.g. `[AllowLoadGameType mainline]`.
+/// A parsed `[...]` bracket on a file path line — either a load condition
+/// (`[AllowLoadGameType mainline]`, `[AllowLoadTextLocale enUS]`, `[AllowLoad ...]`)
+/// or a path variable (`[Family]`, `[Game]`, `[TextLocale]`). May appear before,
+/// after, or within the path. `kind` is the first token; `args` is the remainder.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileDirective {
     pub kind: String,
@@ -24,9 +27,10 @@ pub enum TocLine {
     },
     /// `# comment text` (single `#`, not `##`).
     Comment { line_range: (u32, u32) },
-    /// A file path reference, optionally prefixed by a `[Directive ...]`.
+    /// A file path reference, optionally carrying `[Directive ...]` brackets
+    /// before, after, or within the path (conditions and path variables alike).
     FilePath {
-        directive: Option<FileDirective>,
+        directives: Vec<FileDirective>,
         path: String,
         path_range: (u32, u32),
         line_range: (u32, u32),
@@ -122,51 +126,64 @@ fn classify_line(content: &str, base_offset: u32, line_range: (u32, u32)) -> Toc
     parse_file_path_line(content, base_offset, line_range)
 }
 
+/// Parse a `[Kind args]` bracket into a `FileDirective`. `open`/`close` are the
+/// byte indices of the `[` and `]` characters within `content`.
+fn parse_bracket_directive(content: &str, open: usize, close: usize, base_offset: u32) -> FileDirective {
+    let bracket_content = &content[open + 1..close];
+    let (kind, args) = if let Some(space_pos) = bracket_content.find(' ') {
+        (
+            bracket_content[..space_pos].to_string(),
+            bracket_content[space_pos + 1..].trim().to_string(),
+        )
+    } else {
+        (bracket_content.to_string(), String::new())
+    };
+    FileDirective {
+        kind,
+        args,
+        range: (base_offset + open as u32, base_offset + close as u32 + 1),
+    }
+}
+
 fn parse_file_path_line(content: &str, base_offset: u32, line_range: (u32, u32)) -> TocLine {
-    let mut pos = 0;
     let bytes = content.as_bytes();
-    let mut directive: Option<FileDirective> = None;
+    let mut directives: Vec<FileDirective> = Vec::new();
+    let mut path = String::new();
+    // Byte range of the path text (first..last non-whitespace char), which may sit
+    // before, between, or after the `[...]` brackets. Conditions are conventionally
+    // at the end, but WoW allows them anywhere on the line.
+    let mut path_start: Option<u32> = None;
+    let mut path_end = base_offset;
 
-    // Consume directive prefixes like `[AllowLoadGameType mainline]`
-    while pos < bytes.len() && bytes[pos] == b'[' {
-        if let Some(close) = content[pos..].find(']') {
-            let bracket_content = &content[pos + 1..pos + close];
-            let dir_range = (base_offset + pos as u32, base_offset + pos as u32 + close as u32 + 1);
-
-            let (kind, args) = if let Some(space_pos) = bracket_content.find(' ') {
-                (
-                    bracket_content[..space_pos].to_string(),
-                    bracket_content[space_pos + 1..].trim().to_string(),
-                )
-            } else {
-                (bracket_content.to_string(), String::new())
-            };
-
-            // Only keep the last directive (they don't really stack in practice)
-            directive = Some(FileDirective {
-                kind,
-                args,
-                range: dir_range,
-            });
-
-            pos += close + 1;
-        } else {
-            // Unclosed bracket — treat rest as path
-            break;
+    let mut i = 0;
+    while i < content.len() {
+        if bytes[i] == b'['
+            && let Some(close_rel) = content[i..].find(']')
+        {
+            let close = i + close_rel;
+            directives.push(parse_bracket_directive(content, i, close, base_offset));
+            i = close + 1;
+            continue;
         }
+        // A non-'[' char, or an unclosed '[', is ordinary path text.
+        let ch = content[i..].chars().next().unwrap();
+        let ch_len = ch.len_utf8();
+        if !ch.is_whitespace() {
+            if path_start.is_none() {
+                path_start = Some(base_offset + i as u32);
+            }
+            path_end = base_offset + (i + ch_len) as u32;
+        }
+        path.push(ch);
+        i += ch_len;
     }
 
-    let path = content[pos..].trim().to_string();
-    let path_start = base_offset + pos as u32;
-    // Calculate end by finding last non-whitespace in the path portion
-    let path_end = if path.is_empty() {
-        path_start
-    } else {
-        path_start + path.len() as u32
-    };
+    let path = path.trim().to_string();
+    let path_start = path_start.unwrap_or(base_offset);
+    let path_end = if path.is_empty() { path_start } else { path_end };
 
     TocLine::FilePath {
-        directive,
+        directives,
         path,
         path_range: (path_start, path_end),
         line_range,
@@ -232,9 +249,9 @@ mod tests {
     fn parse_file_path() {
         let doc = parse_toc("Core/Init.lua\n");
         match &doc.lines[0] {
-            TocLine::FilePath { path, directive, path_range, .. } => {
+            TocLine::FilePath { path, directives, path_range, .. } => {
                 assert_eq!(path, "Core/Init.lua");
-                assert!(directive.is_none());
+                assert!(directives.is_empty());
                 assert_eq!(*path_range, (0, 13));
             }
             _ => panic!("expected FilePath"),
@@ -245,13 +262,65 @@ mod tests {
     fn parse_directive_file_path() {
         let doc = parse_toc("[AllowLoadGameType mainline]Retail/Init.lua\n");
         match &doc.lines[0] {
-            TocLine::FilePath { path, directive, path_range, .. } => {
+            TocLine::FilePath { path, directives, path_range, .. } => {
                 assert_eq!(path, "Retail/Init.lua");
-                let dir = directive.as_ref().unwrap();
+                let dir = &directives[0];
                 assert_eq!(dir.kind, "AllowLoadGameType");
                 assert_eq!(dir.args, "mainline");
                 assert_eq!(dir.range, (0, 28));
                 assert_eq!(*path_range, (28, 43));
+            }
+            _ => panic!("expected FilePath"),
+        }
+    }
+
+    #[test]
+    fn parse_suffix_directive_file_path() {
+        // Wiki-documented form: path first, `[AllowLoadGameType ...]` after.
+        let doc = parse_toc("Display/AuraIconRetail.lua [AllowLoadGameType mainline]\n");
+        match &doc.lines[0] {
+            TocLine::FilePath { path, directives, path_range, .. } => {
+                assert_eq!(path, "Display/AuraIconRetail.lua");
+                let dir = &directives[0];
+                assert_eq!(dir.kind, "AllowLoadGameType");
+                assert_eq!(dir.args, "mainline");
+                // Path range covers only the path, not the trailing directive.
+                assert_eq!(*path_range, (0, "Display/AuraIconRetail.lua".len() as u32));
+                // Directive range covers the `[...]` bracket.
+                assert_eq!(dir.range, (27, 55));
+            }
+            _ => panic!("expected FilePath"),
+        }
+    }
+
+    #[test]
+    fn parse_suffix_directive_multi_value() {
+        let doc = parse_toc("VanillaOrTBC.lua [AllowLoadGameType vanilla, tbc]\n");
+        match &doc.lines[0] {
+            TocLine::FilePath { path, directives, .. } => {
+                assert_eq!(path, "VanillaOrTBC.lua");
+                let dir = &directives[0];
+                assert_eq!(dir.kind, "AllowLoadGameType");
+                assert_eq!(dir.args, "vanilla, tbc");
+            }
+            _ => panic!("expected FilePath"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_directives_any_position() {
+        // A leading path variable plus a trailing condition, and a second
+        // condition — all captured, in order.
+        let doc = parse_toc("[Family]Core.lua [AllowLoadGameType mainline] [AllowLoadTextLocale enUS]\n");
+        match &doc.lines[0] {
+            TocLine::FilePath { path, directives, .. } => {
+                assert_eq!(path, "Core.lua");
+                assert_eq!(directives.len(), 3);
+                assert_eq!(directives[0].kind, "Family");
+                assert_eq!(directives[1].kind, "AllowLoadGameType");
+                assert_eq!(directives[1].args, "mainline");
+                assert_eq!(directives[2].kind, "AllowLoadTextLocale");
+                assert_eq!(directives[2].args, "enUS");
             }
             _ => panic!("expected FilePath"),
         }
@@ -272,9 +341,9 @@ mod tests {
     fn parse_path_variable() {
         let doc = parse_toc("[Family]Utils/Core.lua\n");
         match &doc.lines[0] {
-            TocLine::FilePath { path, directive, .. } => {
+            TocLine::FilePath { path, directives, .. } => {
                 assert_eq!(path, "Utils/Core.lua");
-                let dir = directive.as_ref().unwrap();
+                let dir = &directives[0];
                 assert_eq!(dir.kind, "Family");
                 assert_eq!(dir.args, "");
             }
