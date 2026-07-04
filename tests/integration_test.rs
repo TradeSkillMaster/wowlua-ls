@@ -2657,6 +2657,16 @@ fn constructor_completion() {
 }
 
 #[test]
+fn bracket_index_completion() {
+    // Member completion on a bracket-indexed receiver (`x[i]:m` / `x[i].f`).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/bracket-index-completion.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn backtick_generic_completion() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/backtick-generic-completion.lua",

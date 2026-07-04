@@ -257,6 +257,13 @@ impl AnalysisResult {
             } else {
                 return None;
             }
+        } else if token.kind() == SyntaxKind::RightSquareBracket {
+            // x[i]. or x[i]:  — the token before the separator is ']', the close
+            // of a bracket-index expression. Resolve the `BracketAccess` node to
+            // its element type (e.g. `x ---@type Foo[]` makes `x[1]` a `Foo`).
+            let bracket_node = token.parent()
+                .filter(|p| p.kind() == SyntaxKind::BracketAccess)?;
+            Some(self.resolve_identifier_to_table(&bracket_node, text_size)?)
         } else if token.kind() == SyntaxKind::String {
             // "str". or "str":  — bare string literal
             let vt = ValueType::String(None);
@@ -1000,6 +1007,10 @@ impl AnalysisResult {
                 .and_then(|al| al.parent())
                 .filter(|p| p.kind() == SyntaxKind::FunctionCall || p.kind() == SyntaxKind::MethodCall)?;
             self.resolve_funcall_node_to_table(&funcall_node, text_size)?
+        } else if token.kind() == SyntaxKind::RightSquareBracket {
+            // x[i]. or x[i]:  — resolve the bracket-index expression's element type.
+            let bracket_node = token.parent().filter(|p| p.kind() == SyntaxKind::BracketAccess)?;
+            self.resolve_identifier_to_table(&bracket_node, text_size)?
         } else if token.kind() == SyntaxKind::Name {
             let name = token.text().to_string();
             let scope_idx = self.scope_at_offset(text_size)?;
