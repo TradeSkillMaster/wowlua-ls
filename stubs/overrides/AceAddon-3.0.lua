@@ -56,7 +56,7 @@ local AceAddon = {}
 ---@generic T: AceModule
 ---@defclass T : AceModule
 ---@param name `T`
----@param prototype? table
+---@param prototype? table|string @ prototype table, or the first Ace library name to embed
 ---@param ... string @ Ace library names to embed
 ---@return T
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-addon-3-0#title-8)

@@ -12,6 +12,13 @@
 local Addon
 
 local sub = Addon:NewModule("Submodule")
+-- NewModule's `prototype` arg accepts a string (an Ace library name to embed),
+-- not just a table prototype — passing a lib name must not trip type-mismatch,
+-- and the generic @defclass module return type must survive the string arg
+-- (so a union param is sufficient here; no @overload is needed).
+local ev = Addon:NewModule("EventModule", "AceEvent-3.0")
+local evName = ev:GetName()
+--    ^ hover: (local) evName: string
 Addon:GetModule("Submodule")
 Addon:IterateModules()
 Addon:EnableModule("Submodule")
