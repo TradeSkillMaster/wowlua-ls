@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall, Operator,
+use crate::ast::{AstNode, Block, Statement, Expression, ExpressionList, FunctionCall, Operator,
     LocalAssign, FunctionDefinition, ForCountLoop, ForInLoop, ParameterList};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
@@ -669,12 +669,15 @@ pub fn scan_file_globals_with_synth(
                         local_type_vars.insert(names[0].clone(), type_name);
                     }
                     // Defclass-style calls: `local X = Y:Init("ClassName")` or `local X = DefineClass("ClassName")`.
-                    // Skip chained-receiver calls (`getter():asType("ClassName")`): the string names an
-                    // argument to a type-transforming outer method, not the class the local becomes
-                    // (the defclass forms have the class string on a *named*-rooted call).
+                    // A chained receiver is allowed only for the string-keyed navigation idiom
+                    // (`Base:From("Lib"):IncludeClassType("ClassName")` — every hop is `:Method("name")`,
+                    // so the local genuinely becomes the named class). An instance transform
+                    // (`getter():asType("ClassName")`, `h:getReg():asType("ClassName")`) has a hop that
+                    // yields a runtime instance rather than a named class, so its outer string is just a
+                    // parameter, not the class the local becomes — it is skipped.
                     if exprs.len() == 1
                         && let Expression::FunctionCall(call) = &exprs[0]
-                        && !funcall_has_chained_receiver(call) {
+                        && (!funcall_has_chained_receiver(call) || chain_is_string_keyed_navigation(call)) {
                             if let Some(cn) = extract_string_arg_from_call_chain(call) {
                                 class_vars.insert(names[0].clone(), cn);
                             } else if let Some(cn) = extract_first_string_arg(call) {
@@ -1585,6 +1588,49 @@ fn extract_string_arg_from_call_chain(call: &FunctionCall<'_>) -> Option<String>
     // Check nested call in the identifier (for method chains)
     let nested = ident.syntax().children().find_map(FunctionCall::cast)?;
     extract_string_arg_from_call_chain(&nested)
+}
+
+/// The nested *receiver* call of `call`, if any — the call whose result `call` is
+/// invoked on. Descends through grouping nodes (`(expr)`) so a parenthesized
+/// receiver like `(getReg()):asType(...)` still reaches `getReg()`, and skips the
+/// argument list so a call passed as an *argument* is never mistaken for the
+/// receiver. Returns `None` when the receiver is a bare name / dotted path (the
+/// chain's root) — or when there is no receiver (a plain `f(...)` call).
+fn nested_receiver_call<'a>(call: &FunctionCall<'a>) -> Option<FunctionCall<'a>> {
+    let ident = call.identifier()?;
+    ident.syntax().children().find_map(|child| {
+        if ExpressionList::cast(child).is_some() {
+            return None; // argument list, not the receiver
+        }
+        FunctionCall::cast(child).or_else(|| child.descendants().find_map(FunctionCall::cast))
+    })
+}
+
+/// Whether a (possibly chained) receiver is the "navigate to a class by name"
+/// idiom: every call in the chain is a colon method-call taking a string-literal
+/// first argument, bottoming out at a bare name
+/// (`Base:From("Lib"):IncludeClassType("Class")`).
+///
+/// This is the signal that the defclass-local heuristic below may bind the local
+/// to the class named by the outer string. It deliberately rejects instance
+/// transforms — `getReg():asType("Class")` and `h:getReg():asType("Class")` —
+/// where an intermediate call yields a runtime instance (no string key) and the
+/// outer string is merely a parameter, not a class the local becomes. Classifying
+/// by call *form* alone (`is_call_to_self`) can't separate those from navigation:
+/// both are `name:m():m()`. Requiring a string-literal key on *every* hop is what
+/// distinguishes name-navigation from instance access. The coarse scanner has no
+/// callee `@return`/`@generic` type info, so this syntactic key check stands in for
+/// "the method returns the class it was passed the name of".
+fn chain_is_string_keyed_navigation(call: &FunctionCall<'_>) -> bool {
+    let Some(ident) = call.identifier() else { return false };
+    // This hop must be `:Method("name-literal")`.
+    if !ident.is_call_to_self() || extract_first_string_arg(call).is_none() {
+        return false;
+    }
+    match nested_receiver_call(call) {
+        Some(nested) => chain_is_string_keyed_navigation(&nested),
+        None => true, // reached the bare-name root
+    }
 }
 
 /// Extract the first string literal argument from a plain (non-colon) function call.

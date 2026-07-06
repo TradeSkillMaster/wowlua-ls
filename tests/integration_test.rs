@@ -1595,6 +1595,15 @@ fn callbackhandler_field_indirect_chained_getter() {
 }
 
 #[test]
+fn callbackhandler_field_chained_navigation_getter() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/callbackhandler-field/chained_navigation_getter.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/callbackhandler-field"),
+    });
+}
+
+#[test]
 fn crossfile_addon_table() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/file_b.lua",
