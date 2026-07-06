@@ -12,8 +12,35 @@ use super::annotation_types::{parse_overload, OverloadSig};
 use super::annotation_scanning::{
     ADDON_NS_NAME, ExternalGlobal, ExternalGlobalKind, FieldValueKind, InferredTypeCategory,
     is_select_varargs, collect_statements_recursive, infer_type_category, receiver_name,
-    build_var_to_class,
+    build_var_to_class, funcall_has_chained_receiver,
 };
+
+/// First string-literal argument of `call`'s (outer) argument list — used as a
+/// class-name hint for defclass resolution (`DefineClass("X")`).
+///
+/// Returns `None` for a chained receiver (`Inner("X"):Outer(...)`): the outer
+/// method transforms the type, so the inner string names the *receiver*, not the
+/// field's class (`LibStub("CallbackHandler-1.0"):New()` yields a registry, not
+/// the library). Forwarding it would let the class-name fallback in
+/// `build_on_stubs` mis-resolve the field to that receiver class. The guard lives
+/// here so both sites feeding this hint stay consistent: the direct
+/// `ns.field = call()` path and the `local x = call(); ns.field = x` forwarding
+/// path (`local_call_origins`). (The sibling `local x = getter():M("Class")` case,
+/// where the *local itself* is mis-typed as the class, is guarded separately at the
+/// `class_vars` defclass-heuristic site.)
+fn first_string_literal_arg(call: &FunctionCall<'_>) -> Option<String> {
+    if funcall_has_chained_receiver(call) {
+        return None;
+    }
+    call.arguments().and_then(|al| {
+        let args = al.expressions();
+        if let Some(Expression::Literal(lit)) = args.first() {
+            lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+        } else {
+            None
+        }
+    })
+}
 
 /// Unwrap `and`/`or` chains to the effective operand for type inference.
 /// `a and b` evaluates to `b` when `a` is truthy, so the effective type is `b`.
@@ -641,9 +668,13 @@ pub fn scan_file_globals_with_synth(
                         }
                         local_type_vars.insert(names[0].clone(), type_name);
                     }
-                    // Defclass-style calls: `local X = Y:Init("ClassName")` or `local X = DefineClass("ClassName")`
+                    // Defclass-style calls: `local X = Y:Init("ClassName")` or `local X = DefineClass("ClassName")`.
+                    // Skip chained-receiver calls (`getter():asType("ClassName")`): the string names an
+                    // argument to a type-transforming outer method, not the class the local becomes
+                    // (the defclass forms have the class string on a *named*-rooted call).
                     if exprs.len() == 1
-                        && let Expression::FunctionCall(call) = &exprs[0] {
+                        && let Expression::FunctionCall(call) = &exprs[0]
+                        && !funcall_has_chained_receiver(call) {
                             if let Some(cn) = extract_string_arg_from_call_chain(call) {
                                 class_vars.insert(names[0].clone(), cn);
                             } else if let Some(cn) = extract_first_string_arg(call) {
@@ -732,14 +763,7 @@ pub fn scan_file_globals_with_synth(
                                         callee_chain[0] = tn.clone();
                                     }
                                 }
-                                let first_string_arg = call.arguments().and_then(|al| {
-                                    let args = al.expressions();
-                                    if let Some(Expression::Literal(lit)) = args.first() {
-                                        lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
-                                    } else {
-                                        None
-                                    }
-                                });
+                                let first_string_arg = first_string_literal_arg(call);
                                 local_call_origins.insert(names[0].clone(), (callee_chain, first_string_arg));
                             }
                         }
@@ -1083,25 +1107,14 @@ pub fn scan_file_globals_with_synth(
                                                 callee_names[0] = type_name.clone();
                                             }
                                         }
-                                        // Extract first string literal argument (for defclass resolution)
-                                        // For method chains like a.b("x"):c("y"), use the innermost
-                                        // call's arg ("x") instead of the outermost ("y")
-                                        let first_string_arg = {
-                                            let innermost_args = ident.syntax().descendants()
-                                                .filter(|n| n.kind() == SyntaxKind::FunctionCall)
-                                                .last()
-                                                .and_then(crate::ast::FunctionCall::cast)
-                                                .and_then(|fc| fc.arguments());
-                                            let arg_list = innermost_args.or_else(|| call.arguments());
-                                            arg_list.and_then(|al| {
-                                                let args = al.expressions();
-                                                if let Some(Expression::Literal(lit)) = args.first() {
-                                                    lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                        };
+                                        // `first_string_literal_arg` yields the defclass class-name
+                                        // hint (`DefineClass("X")`) but suppresses it for chained
+                                        // receivers, where the outer method transforms the type and
+                                        // the inner string names the receiver, not the field's
+                                        // class. Genuine builder chains rooted at a named object
+                                        // (`Schema:AddField("x"):...`) still resolve via the callee
+                                        // chain through `resolve_funcall_chain`/the fixpoint.
+                                        let first_string_arg = first_string_literal_arg(call);
                                         FieldValueKind::FunctionCall(callee_names, first_string_arg)
                                     } else {
                                         FieldValueKind::Unknown

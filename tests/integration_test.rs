@@ -1577,6 +1577,24 @@ fn ace3_locale_default_newlocale_non_nil() {
 }
 
 #[test]
+fn callbackhandler_field_chained_generic_call() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/callbackhandler-field/callbackhandler.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/callbackhandler-field"),
+    });
+}
+
+#[test]
+fn callbackhandler_field_indirect_chained_getter() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/callbackhandler-field/indirect_chained_getter.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/callbackhandler-field"),
+    });
+}
+
+#[test]
 fn crossfile_addon_table() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/file_b.lua",

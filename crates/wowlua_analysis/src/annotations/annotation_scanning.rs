@@ -898,7 +898,7 @@ fn scan_typed_self_fields_inner(
 /// `ArgumentList` (the old `!= ExpressionList` check never matched it — hence the
 /// bug); `ExpressionList::cast` accepts both `ExpressionList` and `ArgumentList`,
 /// so it robustly excludes the argument container.
-fn funcall_has_chained_receiver(call: &FunctionCall<'_>) -> bool {
+pub(crate) fn funcall_has_chained_receiver(call: &FunctionCall<'_>) -> bool {
     call.syntax().children().any(|child| {
         ExpressionList::cast(child).is_none()
             && child.descendants().any(|d| matches!(d.kind(), SyntaxKind::FunctionCall | SyntaxKind::MethodCall))
