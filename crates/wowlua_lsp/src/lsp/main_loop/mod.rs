@@ -49,7 +49,7 @@ pub(super) use crate::ast::{AstNode, BinaryExpression};
 pub(super) use crate::syntax::tree::{NodeId, SyntaxTree};
 pub(super) use crate::syntax::SyntaxKind;
 pub(super) use crate::lsp::diagnostics;
-pub(super) use crate::lsp::uri::{abs_path_to_uri, uri_to_abs_path};
+pub(super) use crate::lsp::uri::{abs_path_to_uri, uri_file_name, uri_to_abs_path};
 
 mod code_actions;
 mod conversions;
@@ -413,6 +413,7 @@ fn begin_warm_progress(
     progress_counter: &mut i32,
     supports_progress: bool,
     token_slot: &mut Option<NumberOrString>,
+    file_count: usize,
 ) {
     if !supports_progress || token_slot.is_some() {
         return;
@@ -425,9 +426,14 @@ fn begin_warm_progress(
         lsp_types::WorkDoneProgressCreateParams { token: token.clone() },
     );
     let _ = connection.sender.send(Message::Request(create_req));
+    // The warm fans out over the whole workspace in parallel, so there's no
+    // single "current file" — report the file count as the detail instead.
+    let detail = (file_count > 0).then(|| {
+        format!("{file_count} file{}", if file_count == 1 { "" } else { "s" })
+    });
     send_progress(connection, &token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
         title: "wowlua_ls: Checking diagnostics".to_string(),
-        message: None,
+        message: detail,
         percentage: None,
         cancellable: Some(false),
     }));
@@ -911,9 +917,10 @@ fn main_loop(
     if client.diagnostic_refresh && !ws.ws_file_globals.is_empty() {
         let mut inputs = ws.warm_inputs(None);
         inputs.is_initial = true;
+        let file_count = inputs.paths.len();
         ws.warm_in_flight = true;
         spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
-        begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token);
+        begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token, file_count);
     }
 
     loop {
@@ -962,10 +969,11 @@ fn main_loop(
                         _ => None,
                     };
                     let inputs = ws.warm_inputs(affected);
+                    let file_count = inputs.paths.len();
                     ws.warm_in_flight = true;
                     spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
                     // A coalesced warm took over; keep the existing progress span.
-                    begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token);
+                    begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token, file_count);
                 } else {
                     // Shouldn't happen (we just cleared warm_in_flight above),
                     // but defensively put the scope back.
@@ -987,9 +995,10 @@ fn main_loop(
             ws.pending_lazy_warm = false;
             log::debug!("Spawning deferred background warm (full)");
             let inputs = ws.warm_inputs(None);
+            let file_count = inputs.paths.len();
             ws.warm_in_flight = true;
             spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
-            begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token);
+            begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token, file_count);
         }
 
         // Drain completed background stub analyses and patch into documents.
@@ -1234,9 +1243,15 @@ fn main_loop(
                     lsp_types::WorkDoneProgressCreateParams { token: token.clone() },
                 );
                 let _ = connection.sender.send(Message::Request(create_req));
+                // Detail line: the file name when a single document is dirty,
+                // else a count (Phase 4 may re-analyze many files at once).
+                let progress_detail = match dirty_uris.as_slice() {
+                    [only] => uri_file_name(only),
+                    uris => Some(format!("{} files", uris.len())),
+                };
                 send_progress(&connection, &token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
                     title: "wowlua_ls: Analyzing".to_string(),
-                    message: None,
+                    message: progress_detail,
                     percentage: None,
                     cancellable: Some(false),
                 }));
@@ -1462,9 +1477,10 @@ fn main_loop(
                         }
                     );
                     let inputs = ws.warm_inputs(affected);
+                    let file_count = inputs.paths.len();
                     ws.warm_in_flight = true;
                     spawn_warm(inputs, warm_tx.clone(), wake_tx.clone());
-                    begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token);
+                    begin_warm_progress(&connection, &mut progress_counter, client.progress, &mut warm_progress_token, file_count);
                 }
             }
 

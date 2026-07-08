@@ -1,8 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+/// Parse a `file://` URI string into an absolute path. Centralizes the subtle
+/// conversion (percent-encoding, Windows drive letters, spaces) so every caller
+/// shares one implementation — see the round-trip tests below.
+fn parse_file_uri(uri: &str) -> Option<PathBuf> {
+    url::Url::parse(uri).ok()?.to_file_path().ok()
+}
+
 pub fn uri_to_abs_path(uri: &lsp_types::Uri) -> Option<PathBuf> {
-    url::Url::parse(uri.as_str()).ok()?.to_file_path().ok()
+    parse_file_uri(uri.as_str())
 }
 
 pub fn abs_path_to_uri(path: &Path) -> Option<lsp_types::Uri> {
@@ -10,6 +17,14 @@ pub fn abs_path_to_uri(path: &Path) -> Option<lsp_types::Uri> {
     // through the serialized string form.
     let url = url::Url::from_file_path(path).ok()?;
     lsp_types::Uri::from_str(url.as_str()).ok()
+}
+
+/// Final path segment (file name) of a `file://` URI string, for display in
+/// progress messages. Returns `None` when the URI can't be parsed to a path.
+pub fn uri_file_name(uri: &str) -> Option<String> {
+    parse_file_uri(uri)?
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -52,6 +67,17 @@ mod tests {
             path,
             PathBuf::from(r"C:\Program Files (x86)\World of Warcraft\_retail_\Interface\AddOns\Foo\Foo.lua")
         );
+    }
+
+    #[test]
+    fn file_name_decodes_percent_encoding() {
+        let uri = abs_path_to_uri(&PathBuf::from("/home/user/my proj/My File.lua")).unwrap();
+        assert_eq!(uri_file_name(uri.as_str()).as_deref(), Some("My File.lua"));
+    }
+
+    #[test]
+    fn file_name_none_for_non_file_uri() {
+        assert_eq!(uri_file_name("untitled:Untitled-1"), None);
     }
 
     #[cfg(windows)]

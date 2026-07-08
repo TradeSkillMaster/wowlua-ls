@@ -1230,7 +1230,7 @@ pub(super) fn handle_notification(
                         let _ = connection.sender.send(Message::Request(create_req));
                         send_progress(connection, &token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
                             title: "wowlua_ls: Analyzing".to_string(),
-                            message: None,
+                            message: uri_file_name(uri.as_str()),
                             percentage: None,
                             cancellable: Some(false),
                         }));
