@@ -1975,6 +1975,39 @@ impl AnalysisResult {
         }).collect()
     }
 
+    /// Recognizes the FrameXML "static factory" idiom for stub generation: a
+    /// namespace function like `UiMapPoint.CreateFromCoordinates` that builds and
+    /// returns a plain table which is structurally an instance of the `@class`
+    /// sharing the namespace name. When the function has no `@return` and its sole
+    /// inferred return is an anonymous (non-nominal) table shape whose every field
+    /// key is a declared field of the class `class_name`, returns `true` so the
+    /// generated stub can read `@return <class_name>` instead of an anonymous
+    /// `{...}` shape — which no nominal `<class_name>` parameter would accept.
+    pub fn inferred_return_matches_class(&self, func: &Function, class_name: &str) -> bool {
+        // The namespace must name a known @class.
+        let Some(&class_idx) = self.ir.classes.get(class_name)
+            .or_else(|| self.ir.ext.classes.get(class_name)) else { return false };
+        // Only a single-slot return that is an anonymous, struct-shaped table
+        // (no class_name, no array/dict portion) is a factory-return candidate.
+        let rets = self.inferred_return_types(func);
+        let [ValueType::Table(Some(shape_idx))] = rets.as_slice() else { return false };
+        let shape = self.ir.table(*shape_idx);
+        if shape.class_name.is_some()
+            || shape.fields.is_empty()
+            || !shape.array_fields.is_empty()
+            || shape.key_type.is_some()
+        {
+            return false;
+        }
+        // Every key the factory populates must be a declared field of the class
+        // (its own or inherited); an unexpected key means it isn't an instance.
+        let class_fields = crate::analysis::collect_class_fields_impl(
+            &self.ir, &self.resolved_expr_cache, class_idx,
+        );
+        let declared: HashSet<&str> = class_fields.iter().map(|(n, _, _)| n.as_str()).collect();
+        shape.fields.keys().all(|k| declared.contains(k.as_str()))
+    }
+
     /// Like `format_inferred_returns` but collapses anonymous shape tables for inlay hints.
     pub(super) fn format_inferred_returns_for_hint(&self, func: &Function) -> Vec<String> {
         // Same overload-based summary as format_inferred_returns.
@@ -2191,5 +2224,71 @@ impl AnalysisResult {
         } else {
             format!("fun({}): {}", args.join(", "), join_returns(&rets))
         }
+    }
+}
+
+#[cfg(test)]
+mod factory_return_tests {
+    use super::*;
+    use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
+    use crate::pre_globals::PreResolvedGlobals;
+    use crate::types::SymbolIdentifier;
+    use std::sync::Arc;
+
+    fn analyze(src: &str) -> AnalysisResult {
+        let tree = crate::syntax::parser::Parser::new(src).parse();
+        let pre = Arc::new(PreResolvedGlobals::empty());
+        let mut analysis = Analysis::new_with_tree(&tree, pre, AnalysisConfig::default());
+        analysis.resolve_types();
+        analysis.into_result()
+    }
+
+    /// Look up a scope-0 global function by name.
+    fn global_func<'a>(ar: &'a AnalysisResult, name: &str) -> &'a crate::types::Function {
+        for (id, idx) in ar.ir.scope0_local_symbols() {
+            if let SymbolIdentifier::Name(n) = id
+                && n == name
+            {
+                let ver = ar.ir.sym(idx).versions.first().unwrap();
+                if let Some(ValueType::Function(Some(fidx))) = &ver.resolved_type {
+                    return ar.ir.func(*fidx);
+                }
+            }
+        }
+        panic!("no global function `{name}`");
+    }
+
+    #[test]
+    fn factory_shape_matching_class_is_recognized() {
+        let ar = analyze(
+            "---@class Foo\n\
+             ---@field a number\n\
+             ---@field b number\n\
+             ---@field c number?\n\
+             function make() local t = { a = 1, b = 2 }; return t end\n",
+        );
+        // Every returned key (a, b) is a declared field of Foo → collapse to Foo.
+        assert!(ar.inferred_return_matches_class(global_func(&ar, "make"), "Foo"));
+    }
+
+    #[test]
+    fn factory_shape_with_unknown_key_is_rejected() {
+        let ar = analyze(
+            "---@class Foo\n\
+             ---@field a number\n\
+             function make() local t = { a = 1, zzz = 2 }; return t end\n",
+        );
+        // `zzz` isn't a field of Foo → not an instance, no collapse.
+        assert!(!ar.inferred_return_matches_class(global_func(&ar, "make"), "Foo"));
+    }
+
+    #[test]
+    fn unknown_class_name_is_rejected() {
+        let ar = analyze(
+            "---@class Foo\n\
+             ---@field a number\n\
+             function make() local t = { a = 1 }; return t end\n",
+        );
+        assert!(!ar.inferred_return_matches_class(global_func(&ar, "make"), "Nonexistent"));
     }
 }

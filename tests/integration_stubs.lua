@@ -1324,3 +1324,17 @@ local _entranceLen = _entrancePos:GetLength()
 local _continentID, _worldPos = C_Map.GetWorldPosFromMapPos(84, { x = 0.5, y = 0.5 })
 --    ^ hover: (local) _continentID: number
 --                  ^ hover: (local) _worldPos: Vector2DMixin
+
+-- ── UiMapPoint static factories return the nominal UiMapPoint (not an anon shape) ──
+-- Regression: UiMapPoint.CreateFrom* are un-annotated FrameXML factories, so return
+-- inference builds their `{ uiMapID = mapID, position = CreateVector2D(x, y), z = z }`
+-- table as an anonymous shape. It now collapses that shape to the `@class UiMapPoint`
+-- sharing the namespace (every key is a declared field), so a `UiMapPoint` parameter
+-- accepts the result. The hover pins the nominal return; exhaustive diag checking
+-- asserts the absence of the former structural type-mismatch on the SetUserWaypoint
+-- calls (including the 2-arg CreateFromVector2D form with `z` omitted).
+local _waypoint = UiMapPoint.CreateFromCoordinates(84, 0.5, 0.5)
+--    ^ hover: (local) _waypoint: UiMapPoint {
+C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(84, 0.5, 0.5))
+C_Map.SetUserWaypoint(UiMapPoint.CreateFromVector2D(84, CreateVector2D(0.5, 0.5)))
+C_Map.SetUserWaypoint(UiMapPoint.CreateFromVector3D(84, CreateVector3D(0.5, 0.5, 0)))

@@ -42,6 +42,7 @@ pub(in crate::stub_gen) fn get_functions_with_return(dir: &Path) -> HashSet<Stri
 pub(in crate::stub_gen) fn extract_inferred_return(
     ar: &crate::analysis::AnalysisResult,
     func: &crate::types::Function,
+    namespace: Option<&str>,
 ) -> Option<InferredReturn> {
     use crate::types::SymbolIdentifier;
 
@@ -49,6 +50,13 @@ pub(in crate::stub_gen) fn extract_inferred_return(
         func.return_annotations.iter()
             .map(|vt| ar.format_type_depth(vt, 1))
             .collect()
+    } else if let Some(class_name) =
+        namespace.filter(|ns| ar.inferred_return_matches_class(func, ns))
+    {
+        // Static factory (`Namespace.Create*`) whose returned table is structurally
+        // an instance of the `@class Namespace` — emit the nominal class name so a
+        // `@param p Namespace` accepts the result, instead of an anonymous shape.
+        vec![class_name.to_string()]
     } else {
         ar.format_inferred_returns(func, 1)
     };
@@ -243,7 +251,7 @@ pub(in crate::stub_gen) fn infer_fxml_return_types(
                 continue;
             }
             let func = ar.ir.func(*func_idx);
-            if let Some(inferred) = extract_inferred_return(&ar, func) {
+            if let Some(inferred) = extract_inferred_return(&ar, func, None) {
                 file_results.push((name.clone(), inferred));
             }
         }
@@ -260,8 +268,12 @@ pub(in crate::stub_gen) fn infer_fxml_return_types(
                 if names.len() < 2 { continue; }
                 if !util_table_names.contains(&names[0]) { continue; }
 
-                if let Some(inferred) = extract_inferred_return(&ar, func) {
-                    let sep = if ident.is_call_to_self() { ":" } else { "." };
+                // Only dot-methods (`Ns.Create*`) are static-factory candidates
+                // whose anonymous return shape may collapse to `@class Ns`.
+                let is_colon = ident.is_call_to_self();
+                let namespace = (!is_colon).then(|| names[0].as_str());
+                if let Some(inferred) = extract_inferred_return(&ar, func, namespace) {
+                    let sep = if is_colon { ":" } else { "." };
                     let table_name = &names[0];
                     let method_name = &names[names.len() - 1];
                     let key = format!("{table_name}{sep}{method_name}");
