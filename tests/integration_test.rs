@@ -3721,7 +3721,7 @@ fn build_per_addon_tables_from_globals(
             }
     }
     let per_addon_class_names = configs.group_addon_ns_classes_by_root(addon_ns_class_files);
-    pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names);
+    pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names, globals);
 }
 
 fn analyze_source_with_tree(source: &str) -> (wowlua_ls::syntax::tree::SyntaxTree, AnalysisResult) {
@@ -4374,6 +4374,75 @@ fn call_hierarchy_crossfile_outgoing() {
             "function_locations should have entry for '{}' (idx={})",
             call.name, call.func_idx);
     }
+}
+
+#[test]
+fn multi_addon_namespace_isolation_shared_p() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-shared/AddonP/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-shared"),
+    });
+}
+
+#[test]
+fn multi_addon_namespace_isolation_shared_q() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-shared/AddonQ/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-shared"),
+    });
+}
+
+// A pure `@class`/`@field` addon (no runtime `ns.x = ...` writes) emits no
+// global, so its root must be seeded into the per-addon set from the declared
+// class names — otherwise it gets no isolated table and re-leaks the combined one.
+#[test]
+fn multi_addon_namespace_isolation_classonly_e() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-classonly/AddonE/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-classonly"),
+    });
+}
+
+#[test]
+fn multi_addon_namespace_isolation_classonly_f() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-classonly/AddonF/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-classonly"),
+    });
+}
+
+// Two isolated roots sharing one `@class` name map to a single shared table;
+// the cross-addon-leak strip must run once against the union of claimants so it
+// never erases either addon's exclusive fields.
+#[test]
+fn multi_addon_shared_class_name_g() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-sharedclass/AddonG/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-sharedclass"),
+    });
+}
+
+#[test]
+fn multi_addon_shared_class_name_h() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-sharedclass/AddonH/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-sharedclass"),
+    });
+}
+
+#[test]
+fn multi_addon_shared_class_name_unrelated_i() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-sharedclass/AddonI/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-sharedclass"),
+    });
 }
 
 #[test]

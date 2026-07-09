@@ -280,7 +280,7 @@ impl WorkspaceState {
                 }
             }
             let per_addon_class_names = self.configs.group_addon_ns_classes_by_root(&self.ws_file_addon_ns_class);
-            pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names);
+            pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names, &ws_globals);
         }
 
         // Inject project configs so the deferred harvester can build the

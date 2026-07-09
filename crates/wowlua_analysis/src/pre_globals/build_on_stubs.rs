@@ -1121,6 +1121,7 @@ impl<'a> BuildOnStubsContext<'a> {
             string_values: self.string_values, number_values: self.number_values,
             number_literals: self.number_literals, string_literals: self.string_literals,
             addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),
+            addon_ns_class_own_fields: HashMap::new(),
             constructor_method_names, class_locations,
             alias_locations: self.alias_locations, field_locations: self.field_locations,
             // Populated by `build_on_stubs` after `finish` (it has ws_globals/aliases).

@@ -244,6 +244,7 @@ pub(crate) fn load_workspace(
             pg.merge_callback_registries(&scan.callback_registries, &scan.string_consts);
             pg.register_callback_consumer_methods(&s.stub_globals);
             pg.register_callback_consumer_methods(&scan.globals);
+            build_per_addon_tables(&mut pg, &scan, project_configs);
             if store_project_configs {
                 pg.set_project_configs(Arc::new(project_configs.clone()));
             }
@@ -258,6 +259,7 @@ pub(crate) fn load_workspace(
             pg.merge_events(&scan.events);
             pg.merge_callback_registries(&scan.callback_registries, &scan.string_consts);
             pg.register_callback_consumer_methods(&scan.globals);
+            build_per_addon_tables(&mut pg, &scan, project_configs);
             if store_project_configs {
                 pg.set_project_configs(Arc::new(project_configs.clone()));
             }
@@ -265,6 +267,29 @@ pub(crate) fn load_workspace(
         }
     };
     WorkspaceData { pre_globals, scan }
+}
+
+/// Build per-addon namespace tables so multi-addon workspaces (those using
+/// `addon_root`) get isolated `ns` tables, mirroring the LSP server's
+/// `WorkspaceState` rebuild. Without this, every workspace-aware subcommand
+/// (`check`, `test-query`, `dump-types`) would resolve `ns` against the combined
+/// table and leak every addon's fields into every other addon.
+fn build_per_addon_tables(
+    pg: &mut PreResolvedGlobals,
+    scan: &lsp::WorkspaceScanResult,
+    configs: &config::ProjectConfigs,
+) {
+    use std::collections::HashMap;
+    if configs.addon_roots().is_empty() { return; }
+    let mut file_addon_roots: HashMap<PathBuf, PathBuf> = HashMap::new();
+    for g in &scan.globals {
+        if let Some(ref path) = g.source_path
+            && let Some(root) = configs.addon_root_for(path) {
+                file_addon_roots.insert(path.clone(), root.to_path_buf());
+            }
+    }
+    let per_addon_class_names = configs.group_addon_ns_classes_by_root(&scan.addon_ns_class_files);
+    pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names, &scan.globals);
 }
 
 #[cfg(test)]

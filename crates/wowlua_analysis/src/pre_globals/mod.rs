@@ -279,6 +279,14 @@ pub struct PreResolvedGlobals {
     /// each addon root gets its own isolated namespace table.
     #[serde(skip)]
     pub addon_tables: HashMap<PathBuf, TableIndex>,
+    /// Genuine field names each addon-ns `@class` declares (its own `@field`s and
+    /// class-name methods), snapshotted *before* `merge_addon_ns_into_classes`
+    /// folds runtime writes in. `build_per_addon_tables` consults this so its
+    /// cross-addon-leak strip never removes a legitimately-declared field whose
+    /// name happens to collide with another addon's runtime write. Runtime only —
+    /// populated per build, never serialized.
+    #[serde(skip)]
+    pub addon_ns_class_own_fields: HashMap<String, HashSet<String>>,
     /// Global set of constructor method names from all @constructor annotations
     pub constructor_method_names: HashSet<String>,
     /// Source locations for external class definitions (class name → location)
@@ -446,6 +454,21 @@ pub struct PreResolvedGlobals {
     pub project_configs: Option<std::sync::Arc<crate::config::ProjectConfigs>>,
     // Stub file contents are loaded lazily from a separate blob
     // (`precomputed-files.bin.zst`) via `stub_file_contents()` in main_loop.rs.
+}
+
+/// The top-level field name an addon-namespace global contributes to the ns
+/// table. For deep writes (`ns.A.x = v`, `function ns.A.B:M()`) the direct field
+/// on the ns table is the first path segment (`A`); for shallow ones it is the
+/// field/method name itself. Non-field kinds (the `ns` variable, plain
+/// functions/tables/field-refs) contribute no ns field and yield `None`.
+fn addon_ns_top_field(kind: &crate::annotations::ExternalGlobalKind) -> Option<&str> {
+    use crate::annotations::ExternalGlobalKind::{Method, TableField};
+    match kind {
+        Method(path, name, _) | TableField(path, name, _) => {
+            Some(path.first().map_or(name.as_str(), String::as_str))
+        }
+        _ => None,
+    }
 }
 
 /// Record a global's source location in the field_locations map for go-to-definition.
@@ -2160,6 +2183,7 @@ impl BuildContext {
             string_values: self.string_values, number_values: self.number_values,
             number_literals: self.number_literals, string_literals: self.string_literals,
             addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),
+            addon_ns_class_own_fields: HashMap::new(),
             constructor_method_names: self.constructor_method_names,
             class_locations: self.class_locations,
             alias_locations: self.alias_locations,
@@ -2529,6 +2553,7 @@ impl PreResolvedGlobals {
             number_literals: HashMap::new(),
             string_literals: HashMap::new(),
             addon_table_idx: None, addon_tables: HashMap::new(),
+            addon_ns_class_own_fields: HashMap::new(),
             constructor_method_names: HashSet::new(),
             class_locations: HashMap::new(),
             alias_locations: HashMap::new(),
@@ -2664,6 +2689,13 @@ impl PreResolvedGlobals {
             let Some(&class_idx) = self.classes.get(*class_name) else { continue };
             let class_local = class_idx.ext_offset();
             if class_local == addon_local { continue; }
+            // Snapshot the class's genuinely-declared fields (its own `@field`s and
+            // class-name methods) before the forward merge below folds runtime ns
+            // writes in, so `build_per_addon_tables` can protect them from its
+            // cross-addon-leak strip even when a name collides with another addon's
+            // runtime write.
+            let own_fields: HashSet<String> = self.tables[class_local].fields.keys().cloned().collect();
+            self.addon_ns_class_own_fields.entry((*class_name).to_string()).or_default().extend(own_fields);
             // Reverse: class @field annotations → namespace table, so bare
             // `local _, ns = ...` access sees declared fields. or_insert means
             // runtime-assigned fields (already on the namespace) take priority.
@@ -2725,23 +2757,111 @@ impl PreResolvedGlobals {
     ///
     /// When `addon_root: true` is set in per-directory `.wowluarc.json`, each
     /// addon root gets its own isolated copy of the addon namespace table,
-    /// containing only fields contributed by files under that root.
+    /// containing only the fields that addon actually contributes.
+    ///
+    /// Membership is computed from each addon's **own** source, not by reverse-
+    /// engineering the merged combined table (which is lossy):
+    ///   - runtime writes / methods — every `ADDON_NS_NAME` global whose
+    ///     `source_path` is under the root contributes its top-level field name;
+    ///   - `@field` declarations — the field names of that root's addon-ns
+    ///     `@class` (which have no runtime write, hence no global/location).
+    ///
+    /// This avoids two failure modes of the previous name-keyed `field_locations`
+    /// filter: a field name written by several addons collapsed to a single
+    /// recorded location and was dropped in all-but-one addon (missing fields),
+    /// and a location-less field (a reverse-merged `@field`) fell through to an
+    /// "include everywhere" fallback and leaked into every addon that lacked its
+    /// own `@class` (cross-addon pollution).
     ///
     /// `file_addon_roots` maps each file path to its addon root directory.
     /// `per_addon_class_names` maps addon root → set of `@class` names declared
-    /// on addon namespace variables in that root's files.
+    /// on addon namespace variables in that root's files. `all_globals` is the
+    /// full workspace global set (filtered to addon-ns entries internally).
     pub fn build_per_addon_tables(
         &mut self,
         file_addon_roots: &HashMap<PathBuf, PathBuf>,
         per_addon_class_names: &HashMap<PathBuf, HashSet<String>>,
+        all_globals: &[crate::annotations::ExternalGlobal],
     ) {
         let Some(combined_idx) = self.addon_table_idx else { return; };
-        if file_addon_roots.is_empty() { return; }
+        if file_addon_roots.is_empty() && per_addon_class_names.is_empty() { return; }
 
-        // Collect unique addon roots
+        // Collect unique addon roots — from files that emitted globals *and* from
+        // roots that declared a `@class` on their ns. An addon whose namespace is
+        // pure `@class`/`@field` (no runtime `ns.x = ...` write anywhere) emits no
+        // global, so it would otherwise be absent here, get no per-addon table, and
+        // fall back to the combined table — re-leaking every addon's fields into it.
         let addon_roots: HashSet<&Path> = file_addon_roots.values()
             .map(|p| p.as_path())
+            .chain(per_addon_class_names.keys().map(|p| p.as_path()))
             .collect();
+
+        // (a) Runtime writes / methods each addon contributes — the clean,
+        // authoritative signal. `runtime_owned[root]` = top-level ns field names
+        // written by an `ADDON_NS_NAME` global whose source file is under `root`.
+        let mut runtime_owned: HashMap<&Path, HashSet<String>> = addon_roots.iter()
+            .map(|r| (*r, HashSet::new()))
+            .collect();
+        for g in all_globals {
+            if g.name != crate::annotations::ADDON_NS_NAME { continue; }
+            let (Some(field), Some(src)) = (addon_ns_top_field(&g.kind), &g.source_path) else { continue };
+            for root in &addon_roots {
+                if src.starts_with(root) {
+                    runtime_owned.get_mut(root).unwrap().insert(field.to_string());
+                }
+            }
+        }
+
+        // A `@class` on the `ns` local retypes `ns` to the class table itself, so
+        // that table must also be free of cross-addon leaks. When only one addon
+        // in the workspace annotates its ns with a `@class`, the build-time
+        // `merge_addon_ns_into_classes` folds *every* addon's unannotated runtime
+        // fields into that lone class (its single-class path can't tell addons
+        // apart). Strip fields written only by a *foreign* addon at runtime,
+        // leaving each claiming addon's own writes and genuine `@field`s intact.
+        //
+        // The class table is keyed by name and thus shared: if two isolated roots
+        // pick the same class name, we must process it once against the *union* of
+        // its claiming roots' runtime fields — stripping per-root would erase each
+        // addon's exclusive fields (each root's pass removing the other's).
+        let mut class_claim_roots: HashMap<&str, Vec<&Path>> = HashMap::new();
+        for root in &addon_roots {
+            if let Some(class_names) = per_addon_class_names.get(*root) {
+                for cn in class_names {
+                    class_claim_roots.entry(cn.as_str()).or_default().push(*root);
+                }
+            }
+        }
+        for (cn, roots) in &class_claim_roots {
+            let Some(&cidx) = self.classes.get(*cn) else { continue };
+            // Never strip a field the class genuinely declares, even if its name
+            // collides with another addon's runtime write.
+            let genuine = self.addon_ns_class_own_fields.get(*cn);
+            let leaked: Vec<String> = self.tables[cidx.ext_offset()].fields.keys()
+                .filter(|f| {
+                    !roots.iter().any(|r| runtime_owned[*r].contains(*f))
+                        && !genuine.is_some_and(|g| g.contains(*f))
+                        && runtime_owned.iter().any(|(other, set)| !roots.contains(other) && set.contains(*f))
+                })
+                .cloned()
+                .collect();
+            for f in leaked {
+                self.tables[cidx.ext_offset()].fields.remove(&f);
+            }
+        }
+
+        // (b) Genuine `@field` declarations: names on the root's own (now de-leaked)
+        // addon-ns `@class(es)`. These carry no runtime write and so no global, so
+        // runtime scanning alone would miss them.
+        let mut owned = runtime_owned.clone();
+        for root in &addon_roots {
+            let Some(class_names) = per_addon_class_names.get(*root) else { continue };
+            let field_names: Vec<String> = class_names.iter()
+                .filter_map(|cn| self.classes.get(cn))
+                .flat_map(|&cidx| self.tables[cidx.ext_offset()].fields.keys().cloned())
+                .collect();
+            owned.get_mut(root).unwrap().extend(field_names);
+        }
 
         let combined_local = combined_idx.ext_offset();
         let combined_fields: Vec<(String, FieldInfo)> = self.tables[combined_local]
@@ -2754,44 +2874,19 @@ impl PreResolvedGlobals {
             .unwrap_or_default();
 
         for addon_root in &addon_roots {
+            let owned_set = &owned[*addon_root];
             let table_idx = TableIndex(EXT_BASE + self.tables.len());
             let mut table = TableInfo::default();
 
             for (field_name, field_info) in &combined_fields {
-                // Determine if this field belongs to this addon root by checking
-                // its source location. Table fields use field_locations; methods
-                // use function_locations (keyed by the FunctionIndex from the expr).
-                let belongs = if let Some(loc) = combined_field_locs.get(field_name) {
-                    loc.path.starts_with(addon_root)
-                } else if let Expr::FunctionDef(func_idx) = self.exprs[field_info.expr.ext_offset()] {
-                    if let Some(loc) = self.function_locations.get(&func_idx) {
-                        loc.path.starts_with(addon_root)
-                    } else {
-                        true
-                    }
-                } else if let Some(class_names) = per_addon_class_names.get(*addon_root) {
-                    // No location info — might be a reverse-merged @field from
-                    // another addon's class. Include only if this addon's own
-                    // class has it; the per-addon reverse merge below handles
-                    // adding back this addon's class @field declarations.
-                    class_names.iter().any(|cn| {
-                        self.classes.get(cn)
-                            .map(|&cidx| self.tables[cidx.ext_offset()].fields.contains_key(field_name))
-                            .unwrap_or(false)
-                    })
-                } else {
-                    // No @class for this addon — include all as fallback.
-                    true
-                };
-                if belongs {
-                    table.fields.insert(field_name.clone(), field_info.clone());
-                    // Copy field locations to the per-addon table too
-                    if let Some(loc) = combined_field_locs.get(field_name) {
-                        self.field_locations
-                            .entry(table_idx)
-                            .or_default()
-                            .insert(field_name.clone(), loc.clone());
-                    }
+                if !owned_set.contains(field_name) { continue; }
+                table.fields.insert(field_name.clone(), field_info.clone());
+                // Copy field locations to the per-addon table too
+                if let Some(loc) = combined_field_locs.get(field_name) {
+                    self.field_locations
+                        .entry(table_idx)
+                        .or_default()
+                        .insert(field_name.clone(), loc.clone());
                 }
             }
 

@@ -1,0 +1,3 @@
+---@class SharedNS
+local _, ns = ...
+ns.gField = 42
