@@ -326,7 +326,7 @@ impl<'a> Analysis<'a> {
         let mut array_bound_generics: HashSet<String> = HashSet::new();
         self.infer_call_generic_subs(func_idx, func, func_expr_id, args, &func_args, &param_annotations, &generics, &defclass, self_offset, is_method_call, call_func_table_idx, &mut generic_subs, &mut generic_arg_indices, &mut substitutable_generic_names, &mut constraint_fallback_names, &mut array_bound_generics);
 
-        // Type inline event-callback varargs from a literal event name. For:
+        // Type event-callback params from a literal event name. For:
         //   ---@generic E: FrameEvent
         //   ---@param event E
         //   ---@param callback fun(...params<E>)
@@ -334,9 +334,13 @@ impl<'a> Analysis<'a> {
         //   Event.Register("BAG_UPDATE", function(...) local id = ... end)
         // the generic E was bound to the string literal "BAG_UPDATE" above. When the
         // callback param is `fun(...params<E>)` and E's constraint names a registered
-        // event type, project that event's payload onto the inline callback's varargs
+        // event type, project that event's payload onto the callback's params — whether
+        // the callback is an inline function or a string naming a same-file method
         // (reusing the same `event_vararg_types` mechanism as in-body event narrowing).
-        self.type_inline_event_callback_varargs(&generics, func_idx, args, &param_annotations, self_offset, &generic_arg_indices);
+        if !generics.is_empty() {
+            let receiver_table_idx = self.event_handler_receiver_table(func_expr_id, is_method_call);
+            self.type_event_callback_params(func_idx, args, &param_annotations, self_offset, &generic_arg_indices, receiver_table_idx);
+        }
 
         // Extend projected_f_idx for non-method calls: if the vararg has a
         // projection (Params or Return) and the generic is now bound via
@@ -1025,6 +1029,59 @@ impl<'a> Analysis<'a> {
         resolved_call_args
     }
 
+    /// True if `vt` is or contains (through intersections/unions) a `keyof X`.
+    fn type_contains_keyof(vt: &ValueType) -> bool {
+        match vt {
+            ValueType::KeyOf(_) => true,
+            ValueType::Intersection(m) | ValueType::Union(m) => m.iter().any(Self::type_contains_keyof),
+            _ => false,
+        }
+    }
+
+    /// Replace every `keyof X` in `vt` with a union of `X`'s key string-literals,
+    /// resolving `self` via `receiver` and generic names via `generic_subs` (and a
+    /// bare class name via the class tables). Records the resolved target table in
+    /// `target_out` for the go-to-definition / hover path. An unresolvable target
+    /// degrades to plain `string` so no false type-mismatch is reported.
+    fn flatten_keyof(
+        &self,
+        vt: ValueType,
+        receiver: Option<TableIndex>,
+        generic_subs: &HashMap<String, ValueType>,
+        target_out: &mut Option<TableIndex>,
+    ) -> ValueType {
+        match vt {
+            ValueType::KeyOf(target) => {
+                let table = if target == crate::annotations::KEYOF_SELF_TARGET {
+                    receiver
+                } else if let Some(ValueType::Table(Some(idx))) = generic_subs.get(&target) {
+                    Some(*idx)
+                } else {
+                    self.ir.classes.get(&target).or_else(|| self.ir.ext.classes.get(&target)).copied()
+                };
+                match table {
+                    Some(t) => {
+                        *target_out = Some(t);
+                        let mut names: Vec<String> = crate::analysis::collect_class_fields_impl(
+                            &self.ir, &self.resolved_expr_cache, t,
+                        ).into_iter().map(|(n, _, _)| n).collect();
+                        names.sort_unstable();
+                        names.dedup();
+                        ValueType::Union(names.into_iter().map(|n| ValueType::String(Some(n))).collect())
+                    }
+                    None => ValueType::String(None),
+                }
+            }
+            ValueType::Intersection(members) => ValueType::Intersection(
+                members.into_iter().map(|m| self.flatten_keyof(m, receiver, generic_subs, target_out)).collect(),
+            ),
+            ValueType::Union(members) => ValueType::Union(
+                members.into_iter().map(|m| self.flatten_keyof(m, receiver, generic_subs, target_out)).collect(),
+            ),
+            other => other,
+        }
+    }
+
     /// Record the `CallResolution` for this call (when resolving the first return
     /// slot): the per-call generic bindings, method-decl subs for hover, the receiver
     /// class table, and any `expression<C, R>` argument metadata — inferring a generic
@@ -1085,6 +1142,24 @@ impl<'a> Analysis<'a> {
             })
         } else { None };
 
+        // Flatten `keyof X` parameter types (direct or inside an intersection/union)
+        // to a union of the target's key string-literals, now that the receiver table
+        // is known. Type-mismatch and completion then reuse the normal string-enum
+        // machinery, and each keyof arg's resolved target table is remembered for
+        // go-to-definition / hover on the string literal.
+        let mut resolved_call_args = resolved_call_args;
+        let mut keyof_arg_targets: HashMap<usize, TableIndex> = HashMap::new();
+        for (i, arg) in resolved_call_args.iter_mut().enumerate() {
+            if arg.expected_type.as_ref().is_some_and(Self::type_contains_keyof)
+                && let Some(et) = arg.expected_type.take()
+            {
+                let mut target = None;
+                let flat = self.flatten_keyof(et, receiver_table_idx, &*generic_subs, &mut target);
+                if let Some(t) = target { keyof_arg_targets.insert(i, t); }
+                arg.expected_type = Some(flat);
+            }
+        }
+
         self.ir.call_resolutions.insert(expr_id, CallResolution {
             func_idx,
             expected_args: resolved_call_args,
@@ -1094,6 +1169,7 @@ impl<'a> Analysis<'a> {
             first_arg_range: arg_ranges.first().copied(),
             receiver_param_subs: class_type_param_subs.clone(),
             receiver_table_idx,
+            keyof_arg_targets,
         });
 
         // Detect expression<C, R> parameters and record them for diagnostics/queries
@@ -2076,77 +2152,192 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Type inline event-callback varargs from a literal event name bound to a
+    /// Type event-callback params from a literal event name bound to a
     /// `@generic E: SomeEvent` parameter with a `fun(...params<E>)` callback.
-    fn type_inline_event_callback_varargs(
+    ///
+    /// The callback argument may be either an **inline function literal**
+    /// (`function(event, ...) end`) or a **string literal naming a same-file method**
+    /// on the receiver (`"OnEvent"` → `self.OnEvent`) — the register-by-name idiom
+    /// where a handler is dispatched as a method. In both cases the referenced
+    /// function's parameters at/after the `...params<E>` position are typed from the
+    /// event's payload. A named method registered for two events with differing
+    /// payloads is a conflict and is left untyped (see `event_handler_method_*`).
+    fn type_event_callback_params(
         &mut self,
-        generics: &[(String, Option<ValueType>)],
         func_idx: FunctionIndex,
         args: &[ExprId],
         param_annotations: &[crate::annotations::AnnotationType],
         self_offset: usize,
         generic_arg_indices: &HashMap<String, usize>,
+        receiver_table_idx: Option<TableIndex>,
     ) {
-        if !generics.is_empty() {
-            let generic_constraints_raw = self.func(func_idx).generic_constraints_raw.clone();
-            for (i, arg_expr_id) in args.iter().enumerate() {
-                let inline_func_idx = match self.ir.expr(*arg_expr_id) {
-                    Expr::FunctionDef(idx) => *idx,
-                    _ => continue,
-                };
-                if inline_func_idx.is_external() { continue; }
-                // Reduce the callee's param annotation to the callback's fun() params.
-                let Some(sig) = param_annotations.get(i + self_offset)
-                    .and_then(|ann| crate::annotations::extract_fun_sig(
-                        ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
-                    )) else { continue };
-                let params = sig.params;
-                // Find the `...params<G>` vararg projection's generic name and its
-                // position within the annotation's param list (e.g. for
-                // `fun(label: string, ...params<E>)`, vararg_pos=1). The inline
-                // callback's params at and after that index are typed from the payload.
-                let Some((vararg_pos, gen_name)) = params.iter().enumerate().find_map(|(pos, p)| {
-                    if p.name != "..." { return None; }
-                    if let crate::annotations::AnnotationType::Parameterized(base, targs) = &p.typ
-                        && base == "params" && targs.len() == 1
-                        && let crate::annotations::AnnotationType::Simple(g) = &targs[0]
-                    {
-                        Some((pos, g.clone()))
-                    } else {
-                        None
-                    }
-                }) else { continue };
-                // G must have been bound from a concrete event-name string literal arg.
-                let Some(&bind_arg_i) = generic_arg_indices.get(&gen_name) else { continue };
-                let Some(event_name) = args.get(bind_arg_i)
-                    .and_then(|e| self.ir.string_literals.get(e)).cloned() else { continue };
-                // G's constraint must name a registered event type (e.g. FrameEvent).
-                let Some(Some(event_type_name)) = generic_constraints_raw.iter()
-                    .find(|(n, _)| *n == gen_name).map(|(_, c)| c.clone()) else { continue };
-                let Some(payload_params) = self.ir.ext.event_types.get(&event_type_name)
-                    .and_then(|m| m.get(&event_name))
-                    .map(|payload| payload.params.clone()) else { continue };
-                let vararg_types: Vec<ValueType> = payload_params.iter()
-                    .filter_map(|p| Self::resolve_event_param_type_static(&self.ir, p))
-                    .collect();
-                if !vararg_types.is_empty() {
-                    let scope = self.ir.functions[inline_func_idx.val()].scope;
-                    // Type the inline callback's named params positionally from the
-                    // payload: a callback written as `function(foo)` (rather than
-                    // `function(...)`) consumes the varargs through named params, so
-                    // map payload[j] onto the j-th param after the vararg position.
-                    let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
-                    for (j, vt) in vararg_types.iter().enumerate() {
-                        let Some(&param_sym) = inline_args.get(vararg_pos + j) else { break };
-                        if param_sym.is_external() { continue; }
-                        if let Some(v) = self.ir.symbols[param_sym.val()].versions.first_mut()
-                            && v.resolved_type.is_none()
-                        {
-                            v.resolved_type = Some(vt.clone());
+        let generic_constraints_raw = self.func(func_idx).generic_constraints_raw.clone();
+        for (i, arg_expr_id) in args.iter().enumerate() {
+            // The callback target: an inline function literal, or a string literal
+            // naming a same-file method on the receiver.
+            let (target_func_idx, is_named_method) = match self.ir.expr(*arg_expr_id) {
+                Expr::FunctionDef(idx) => (*idx, false),
+                _ => match self.string_handler_method_idx(*arg_expr_id, receiver_table_idx) {
+                    Some(idx) => (idx, true),
+                    None => continue,
+                },
+            };
+            if target_func_idx.is_external() { continue; }
+            // Reduce the callee's param annotation to the callback's fun() params.
+            let Some(sig) = param_annotations.get(i + self_offset)
+                .and_then(|ann| crate::annotations::extract_fun_sig(
+                    ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
+                )) else { continue };
+            let params = sig.params;
+            // Find the `...params<G>` vararg projection's generic name and its
+            // position within the annotation's param list (e.g. for
+            // `fun(label: string, ...params<E>)`, vararg_pos=1). The callback's
+            // params at and after that index are typed from the payload.
+            let Some((vararg_pos, gen_name)) = params.iter().enumerate().find_map(|(pos, p)| {
+                if p.name != "..." { return None; }
+                if let crate::annotations::AnnotationType::Parameterized(base, targs) = &p.typ
+                    && base == "params" && targs.len() == 1
+                    && let crate::annotations::AnnotationType::Simple(g) = &targs[0]
+                {
+                    Some((pos, g.clone()))
+                } else {
+                    None
+                }
+            }) else { continue };
+            // G must have been bound from a concrete event-name string literal arg.
+            let Some(&bind_arg_i) = generic_arg_indices.get(&gen_name) else { continue };
+            let Some(event_name) = args.get(bind_arg_i)
+                .and_then(|e| self.ir.string_literals.get(e)).cloned() else { continue };
+            // G's constraint must name a registered event type (e.g. FrameEvent).
+            let Some(Some(event_type_name)) = generic_constraints_raw.iter()
+                .find(|(n, _)| *n == gen_name).map(|(_, c)| c.clone()) else { continue };
+            let Some(payload_params) = self.ir.ext.event_types.get(&event_type_name)
+                .and_then(|m| m.get(&event_name))
+                .map(|payload| payload.params.clone()) else { continue };
+            let vararg_types: Vec<ValueType> = payload_params.iter()
+                .filter_map(|p| Self::resolve_event_param_type_static(&self.ir, p))
+                .collect();
+            if vararg_types.is_empty() { continue; }
+            let target_args = self.ir.functions[target_func_idx.val()].args.clone();
+            // A named handler is dispatched as `self[method](self, event, ...)`, so the
+            // method carries an implicit leading `self` that the callback signature
+            // (which describes only the dispatched args) does not. Shift the mapping
+            // past it. Inline callbacks — and signatures that already declare a leading
+            // `self` (e.g. SetScript handlers) — need no shift.
+            let method_has_self = target_args.first().is_some_and(|s| {
+                !s.is_external() && matches!(&self.ir.symbols[s.val()].id,
+                    crate::types::SymbolIdentifier::Name(n) if n == "self")
+            });
+            let sig_has_self = params.first().is_some_and(|p| p.name == "self");
+            let self_off = usize::from(is_named_method && method_has_self && !sig_has_self);
+            // A named method can be registered from more than one call site: guard
+            // against conflicting payloads (differing event types on the same method).
+            if is_named_method && !self.claim_event_handler_method(target_func_idx, self_off + vararg_pos, &vararg_types) {
+                continue;
+            }
+            // For a named method, also type the leading (pre-vararg) signature params
+            // — e.g. `event: FrameEvent` → string. Inline callbacks get these from
+            // `propagate_inline_callback_params`; a named method does not.
+            if is_named_method {
+                for (pos, p) in params.iter().enumerate().take(vararg_pos) {
+                    let Some(&sym) = target_args.get(self_off + pos) else { break };
+                    if sym.is_external() { continue; }
+                    if self.ir.symbols[sym.val()].versions.first().is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                    if let Some(vt) = self.resolve_annotation_with_class_generics(&p.typ, &[], &HashMap::new()) {
+                        let vt = if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt };
+                        if let Some(v) = self.ir.symbols[sym.val()].versions.first_mut() {
+                            v.resolved_type = Some(vt);
                         }
                     }
-                    self.event_vararg_types.insert(scope, vararg_types);
                 }
+            }
+            // Type the callback's payload params positionally: a callback written as
+            // `function(foo)` (rather than `function(...)`) consumes the varargs through
+            // named params, so map payload[j] onto the j-th param after the vararg pos.
+            for (j, vt) in vararg_types.iter().enumerate() {
+                let Some(&param_sym) = target_args.get(self_off + vararg_pos + j) else { break };
+                if param_sym.is_external() { continue; }
+                if let Some(v) = self.ir.symbols[param_sym.val()].versions.first_mut()
+                    && v.resolved_type.is_none()
+                {
+                    v.resolved_type = Some(vt.clone());
+                }
+            }
+            let scope = self.ir.functions[target_func_idx.val()].scope;
+            self.event_vararg_types.insert(scope, vararg_types);
+        }
+    }
+
+    /// The receiver's class table for a method call (`self:Register(...)`), used to
+    /// resolve a string handler-name argument to a same-file method. `None` for
+    /// non-method calls or when the receiver type is not a resolved table.
+    fn event_handler_receiver_table(&mut self, func_expr_id: ExprId, is_method_call: bool) -> Option<TableIndex> {
+        if !is_method_call { return None; }
+        let receiver_expr = match self.expr(func_expr_id) {
+            Expr::FieldAccess { table, .. } => Some(*table),
+            _ => None,
+        }?;
+        match self.resolve_expr(receiver_expr) {
+            Some(ValueType::Table(Some(idx))) => Some(idx),
+            _ => None,
+        }
+    }
+
+    /// Resolve a string-literal argument naming a method on `receiver_table` to that
+    /// method's (local, same-file) function index. `None` if the argument is not a
+    /// string literal, names no such field, or the field is not a local function.
+    fn string_handler_method_idx(&mut self, arg_expr_id: ExprId, receiver_table: Option<TableIndex>) -> Option<FunctionIndex> {
+        let name = self.ir.string_literals.get(&arg_expr_id)?.clone();
+        let field_expr = self.get_field(receiver_table?, &name)?.expr;
+        match self.resolve_expr(field_expr) {
+            Some(ValueType::Function(Some(idx))) if !idx.is_external() => Some(idx),
+            _ => None,
+        }
+    }
+
+    /// Record a payload projection for a named handler method, returning whether it
+    /// may proceed. The first registration claims the method; a later registration
+    /// with the *same* payload is idempotent; a later registration with a
+    /// *different* payload is a conflict — the method's previously-set params are
+    /// reverted to untyped and all further projection onto it is refused.
+    fn claim_event_handler_method(&mut self, method_idx: FunctionIndex, payload_start: usize, vararg_types: &[ValueType]) -> bool {
+        if self.event_handler_method_conflicts.contains(&method_idx) {
+            return false;
+        }
+        match self.event_handler_method_payloads.get(&method_idx) {
+            Some((prev, _)) if prev.as_slice() == vararg_types => true,
+            Some((_, set_syms)) => {
+                for &sym in set_syms.clone().iter() {
+                    if let Some(v) = self.ir.symbols[sym.val()].versions.first_mut() {
+                        v.resolved_type = None;
+                    }
+                }
+                self.event_handler_method_payloads.remove(&method_idx);
+                self.event_handler_method_conflicts.insert(method_idx);
+                // Also drop the first registration's payload for the method's raw `...`
+                // (inserted at resolve time), so a `...` in a conflicted handler's body
+                // is left untyped rather than resolving to the first event's payload.
+                let scope = self.ir.functions[method_idx.val()].scope;
+                self.event_vararg_types.remove(&scope);
+                false
+            }
+            None => {
+                // Record which payload params this projection will set (the
+                // currently-untyped ones, starting at `payload_start`), so they can be
+                // reverted if a later conflicting registration is found.
+                let args = self.ir.functions[method_idx.val()].args.clone();
+                let mut set_syms = Vec::new();
+                for j in 0..vararg_types.len() {
+                    let Some(&param_sym) = args.get(payload_start + j) else { break };
+                    if param_sym.is_external() { continue; }
+                    if self.ir.symbols[param_sym.val()].versions.first()
+                        .is_some_and(|v| v.resolved_type.is_none())
+                    {
+                        set_syms.push(param_sym);
+                    }
+                }
+                self.event_handler_method_payloads.insert(method_idx, (vararg_types.to_vec(), set_syms));
+                true
             }
         }
     }

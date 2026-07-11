@@ -252,6 +252,15 @@ pub enum ValueType {
     /// Kept before the runtime-only variants below so adding it didn't shift
     /// serde variant indices in the precomputed-stub blob.
     NumberLiteral(String),
+    /// Deferred `keyof X` type: a string that is one of `X`'s field/method names.
+    /// The String is the target — `self` (resolved to the call receiver) or a
+    /// class/generic name. Carried unresolved through param/overload/intersection
+    /// types and flattened to a `Union` of the target's key string-literals at each
+    /// call site (`resolve_call`), so type-checking and completion reuse the normal
+    /// string-enum machinery. Behaves like a plain `string` in `is_assignable_to`
+    /// until flattened. Kept before the runtime-only variants below to hold a stable
+    /// serialized index.
+    KeyOf(String),
     /// Inline function signature produced by the cross-file harvest lift when a
     /// deferred function returns a *local* function value. The local arena index
     /// is meaningless cross-file, so the callable's signature (params + return
@@ -434,6 +443,7 @@ impl ValueType {
             ValueType::Number => true,
             ValueType::NumberLiteral(_) => true,
             ValueType::String(_) => true,
+            ValueType::KeyOf(_) => true,
             ValueType::Function(_) => false,
             ValueType::FunctionSig(_) => false,
             ValueType::Table(_) => false,
@@ -456,6 +466,7 @@ impl ValueType {
                 ValueType::Number
                 | ValueType::NumberLiteral(_)
                 | ValueType::String(_)
+                | ValueType::KeyOf(_)
                 | ValueType::Function(_)
                 | ValueType::FunctionSig(_)
                 | ValueType::Table(_)
@@ -486,6 +497,11 @@ impl ValueType {
         match (self, expected) {
             // Any is assignable to everything and everything is assignable to Any
             (ValueType::Any, _) | (_, ValueType::Any) => true,
+            // An unresolved `keyof X` behaves like a plain string in both
+            // directions — the precise key check happens once it is flattened to
+            // a literal union at the call site (see `resolve_call`).
+            (ValueType::KeyOf(_), _) => ValueType::String(None).is_assignable_to(expected),
+            (_, ValueType::KeyOf(_)) => self.is_assignable_to(&ValueType::String(None)),
             // Nil assignable to any union containing nil (optional params)
             (ValueType::Nil, ValueType::Union(types)) => types.contains(&ValueType::Nil),
             // Boolean literal assignable to generic boolean
@@ -1340,6 +1356,11 @@ pub struct CallResolution {
     /// through) — the population logic is intentionally narrow, so check with
     /// those callers before repurposing this field.
     pub receiver_table_idx: Option<TableIndex>,
+    /// For arguments whose parameter type is (or contains) `keyof X`, the resolved
+    /// target table keyed by 0-based argument index (excluding `self`). Populated in
+    /// `record_call_resolution` when the keyof is flattened to its key union, so
+    /// go-to-definition and hover on the string literal can jump to the named field.
+    pub keyof_arg_targets: std::collections::HashMap<usize, TableIndex>,
 }
 
 impl CallResolution {

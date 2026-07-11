@@ -1398,6 +1398,15 @@ impl<'a> Analysis<'a> {
                     description.clone(),
                 )
             }
+            AnnotationType::KeyOf(target) => {
+                if let Some(&table_idx) = subs.get(target)
+                    && let Some(class_name) = &self.ir.table(table_idx).class_name
+                {
+                    AnnotationType::KeyOf(class_name.clone())
+                } else {
+                    at.clone()
+                }
+            }
         }
     }
 

@@ -124,9 +124,15 @@ impl AnalysisResult {
         if let Some(result) = self.expression_definition_at(tree, offset) {
             return vec![result];
         }
-        // Try event string go-to-definition
-        if let Some(result) = self.event_string_definition_at(tree, offset) {
-            return vec![result];
+        // A `keyof X` string names a member of X — jump to it. Combined with any
+        // event definition on the same token so `RegisterEvent("PLAYER_LOGIN")`
+        // (typed `FrameEvent & keyof self`) lands on both the `self:PLAYER_LOGIN`
+        // handler (listed first) and the game event.
+        let mut string_defs = Vec::new();
+        string_defs.extend(self.keyof_string_definition_at(tree, offset));
+        string_defs.extend(self.event_string_definition_at(tree, offset));
+        if !string_defs.is_empty() {
+            return string_defs;
         }
         // Try annotation class/alias name go-to-definition (may be multi-file)
         let anno = self.annotation_name_definitions_at(tree, offset);

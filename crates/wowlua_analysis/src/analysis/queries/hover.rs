@@ -337,6 +337,10 @@ impl AnalysisResult {
         if let Some(result) = self.event_string_hover_at(tree, offset) {
             return Some(result);
         }
+        // Try `keyof X` string hover (e.g. hovering over "doThing" in RegisterEvent("EVENT", "doThing"))
+        if let Some(result) = self.keyof_string_hover_at(tree, offset) {
+            return Some(result);
+        }
         // Try annotation class/alias name hover (e.g. hovering over "osdateparam" in ---@type osdateparam)
         if let Some(result) = self.annotation_name_hover_at(tree, offset) {
             return Some(result);

@@ -243,6 +243,8 @@ w:Dispatch("Nope")   -- generic-constraint-mismatch: "Nope" is not a method of W
 
 For subclasses, the receiver's full surface (own + inherited methods) satisfies the constraint, and completions, references, and rename all see the resolved set. `keyof self` only fires for method calls (`:` syntax) — a direct function call where `self` is passed explicitly won't enforce the constraint.
 
+`keyof self` / `keyof ClassName` is also usable directly as a parameter type (no generic needed), and composes in overloads and intersections — see [`keyof T`](/reference/annotations#keyof-t) in the annotation reference. That is how the built-in AceEvent-3.0 stub types its handler arguments, so `self:RegisterEvent("PLAYER_LOGIN")` navigates to and checks `self:PLAYER_LOGIN`.
+
 ### Bracket-index fields
 
 Type parameters work in bracket-index field declarations:

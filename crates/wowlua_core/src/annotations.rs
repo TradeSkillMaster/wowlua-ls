@@ -19,6 +19,12 @@ pub enum AnnotationType {
     TableLiteral(Vec<(String, AnnotationType)>),  // {field: type, ...} — anonymous table shape
     VarArgs(Box<AnnotationType>),                // ...T — variadic return expansion
     IndexedAccess(String, Box<AnnotationType>),  // T[K] — indexed access type
+    /// `keyof X` — a string that is one of `X`'s field/method names. `X` is
+    /// `self` (the call receiver, resolved per call site) or a class/generic
+    /// name. Resolves to a union of `X`'s key string-literals; a non-key literal
+    /// is a type-mismatch, and go-to-definition/hover on the literal jump to the
+    /// named field. Composes in intersections (`FrameEvent & keyof self`).
+    KeyOf(String),
     /// `(T1 name1, T2 name2, ...)` — multi-value return tuple. Only valid in
     /// return position (top-level of `@return`, inside `fun(): ...`, as an
     /// `@alias` body). The optional `description` is per-case text from the

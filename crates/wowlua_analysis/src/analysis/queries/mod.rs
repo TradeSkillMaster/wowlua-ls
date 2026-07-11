@@ -22,6 +22,7 @@ mod format;
 mod highlights;
 mod hover;
 mod inlay_hints;
+mod keyof;
 mod nav;
 mod references;
 mod rename;

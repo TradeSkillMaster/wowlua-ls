@@ -1124,6 +1124,7 @@ impl AnalysisResult {
             ValueType::NumberLiteral(val) => val.clone(),
             ValueType::String(Some(val)) => format!("\"{}\"", val),
             ValueType::String(None) => "string".to_string(),
+            ValueType::KeyOf(target) => format!("keyof {}", target),
             ValueType::Function(Some(func_idx)) => {
                 let primary = self.format_function_value(*func_idx, depth, None);
                 let func = self.func(*func_idx);
@@ -1836,6 +1837,9 @@ impl AnalysisResult {
                 }).collect(),
                 desc.clone(),
             ),
+            // `keyof self` needs no substitution; `keyof <generic>` is resolved at
+            // the call site via the receiver's generic bindings.
+            AT::KeyOf(_) => ann.clone(),
         }
     }
 
@@ -1887,6 +1891,9 @@ impl AnalysisResult {
                 || self.annotation_has_unresolvable(key, generics)
             }
             AnnotationType::Tuple(positions, _) => positions.iter().any(|p| self.annotation_has_unresolvable(&p.typ, generics)),
+            // `keyof X` always resolves to a string-literal union; target validity
+            // is reported separately by `undefined-doc-name`.
+            AnnotationType::KeyOf(_) => false,
         }
     }
 

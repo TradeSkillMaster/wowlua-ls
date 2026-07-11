@@ -92,6 +92,15 @@ function RegisterFunPayload(event, callback) end
 ---@param callback fun(label: string, ...params<E>)
 function RegisterLabeled(event, callback) end
 
+-- Callback annotation whose leading param is typed as the event type itself
+-- (`fun(event: ActionEvent, ...params<E>)`), modelling the AceEvent handler shape
+-- `function(event, ...)`: the event-typed param decays to string, and the payload
+-- params/varargs after it map to the bound event's payload.
+---@generic E: ActionEvent
+---@param event E
+---@param callback fun(event: ActionEvent, ...params<E>)
+function RegisterEventShaped(event, callback) end
+
 ---@overload fun(self: EventFrame, script: "OnEvent", handler: fun(self: EventFrame, event: WowEvent, ...params<WowEvent>))
 ---@overload fun(self: EventFrame, script: "OnUpdate", handler: fun(self: EventFrame, elapsed: number))
 ---@param scriptType string

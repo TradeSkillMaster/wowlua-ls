@@ -100,6 +100,7 @@ fn format_value_type(vt: &ValueType, pg: &PreResolvedGlobals) -> String {
         ValueType::NumberLiteral(val) => val.clone(),
         ValueType::String(Some(val)) => format!("\"{}\"", val),
         ValueType::String(None) => "string".to_string(),
+        ValueType::KeyOf(target) => format!("keyof {}", target),
         ValueType::Userdata => "userdata".to_string(),
         ValueType::Thread => "thread".to_string(),
         ValueType::TypeVariable(name) => name.clone(),

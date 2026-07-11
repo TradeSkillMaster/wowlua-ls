@@ -1093,6 +1093,7 @@ impl Ir {
             ValueType::NumberLiteral(v) => format!("#{v}"),
             ValueType::String(Some(s)) => format!("\"{s}\""),
             ValueType::String(None) => "string".into(),
+            ValueType::KeyOf(target) => format!("keyof {target}"),
             ValueType::Function(_) => "function".into(),
             ValueType::FunctionSig(shape) => {
                 let params: Vec<String> = shape.params.iter()
@@ -1970,6 +1971,23 @@ impl Ir {
                     self.check_annotation_type_names(&p.typ, generics, start, end, diags);
                 }
             }
+            AnnotationType::KeyOf(target) => {
+                // `keyof self` is always valid inside a method; otherwise the target
+                // must be a declared generic or a known class.
+                if target == crate::annotations::KEYOF_SELF_TARGET
+                    || generics.iter().any(|(g, _)| g == target)
+                    || self.classes.contains_key(target.as_str())
+                    || self.ext.classes.contains_key(target.as_str())
+                {
+                    return;
+                }
+                crate::diagnostics::UNDEFINED_DOC_NAME.emit(
+                    diags,
+                    format!("undefined type '{}' in `keyof`", target),
+                    start,
+                    end,
+                );
+            }
         }
     }
 
@@ -2456,6 +2474,14 @@ pub struct Analysis<'a> {
     /// Used to suppress redundant inlay hints (contextual propagation should show hints,
     /// but user annotations shouldn't be duplicated).
     pub vararg_user_annotated_fns: HashSet<FunctionIndex>,
+    /// Named event-handler methods (registered by string name in a register-by-name
+    /// call, e.g. `self:RegisterEvent("E", "OnE")`) mapped to the payload types
+    /// projected onto their parameters and the param symbols that were set. A method
+    /// registered for two events with **differing** payloads is a conflict: its set
+    /// params are reverted and it is recorded in `event_handler_method_conflicts`.
+    pub event_handler_method_payloads: HashMap<FunctionIndex, (Vec<ValueType>, Vec<SymbolIndex>)>,
+    /// Named handler methods with conflicting payloads (see above) — left untyped.
+    pub event_handler_method_conflicts: HashSet<FunctionIndex>,
 }
 
 /// Per-file analysis configuration bundling project-level settings.
@@ -2638,6 +2664,8 @@ impl<'a> Analysis<'a> {
             safety_limit_hit: None,
             event_vararg_types: HashMap::new(),
             vararg_user_annotated_fns: HashSet::new(),
+            event_handler_method_payloads: HashMap::new(),
+            event_handler_method_conflicts: HashSet::new(),
         };
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();

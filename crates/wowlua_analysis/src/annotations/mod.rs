@@ -76,6 +76,9 @@ pub fn collect_referenced_type_names(ann: &AnnotationType, out: &mut HashSet<Str
             out.insert(base.clone());
             collect_referenced_type_names(key, out);
         }
+        AnnotationType::KeyOf(target) => {
+            out.insert(target.clone());
+        }
         AnnotationType::Fun(params, returns, _) => {
             for p in params {
                 collect_referenced_type_names(&p.typ, out);

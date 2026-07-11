@@ -87,6 +87,7 @@ fn remap_param_type(ty: &mut AnnotationType, map: &HashMap<&'static str, &'stati
                 remap_param_type(&mut p.typ, map);
             }
         }
+        AnnotationType::KeyOf(_) => {}
     }
 }
 

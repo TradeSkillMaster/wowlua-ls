@@ -227,6 +227,53 @@ end)
 Extra named parameters beyond the payload length remain untyped (`?`); if fewer are
 declared, only those are typed.
 
+The callback signature may also carry a **leading parameter typed as the event type**
+before the payload — `fun(event: FrameEvent, ...params<E>)`. The event-typed parameter
+resolves to the event name (a `string`), and the payload maps onto the parameters after
+it:
+
+```lua
+---@generic E: FrameEvent
+---@param event E
+---@param callback fun(event: FrameEvent, ...params<E>)
+function Event.Register(event, callback) end
+
+Event.Register("BAG_UPDATE", function(event, bagID)
+    -- event: string
+    -- bagID: Enum.BagIndex
+end)
+```
+
+This is the shape the built-in **AceEvent-3.0** stub uses. Because a registered handler
+is invoked as `handler(event, ...)`, an inline function passed to
+`self:RegisterEvent("BAG_UPDATE", function(event, ...) end)` gets its `event` and
+payload parameters typed automatically. A string handler name — or the omitted-callback
+form, where the event name doubles as the method — instead resolves to a method on the
+receiver via [`keyof self`](/reference/annotations#keyof-t).
+
+#### Typing a named handler method's parameters
+
+When the handler is passed **by name** (a string naming a method on the receiver), that
+method's own parameters are typed from the event payload too — the method is dispatched
+exactly like the inline callback, so it receives `(self, event, ...payload)`:
+
+```lua
+---@class MyAddon : AceEvent-3.0
+local MyAddon = {}
+
+function MyAddon:OnBagUpdate(event, bagID)
+    -- event: string
+    -- bagID: Enum.BagIndex   ← typed from the BAG_UPDATE payload
+end
+
+MyAddon:RegisterEvent("BAG_UPDATE", "OnBagUpdate")
+```
+
+This applies only to **same-file** registrations of methods with **unannotated**
+parameters (an explicit `@param` always wins). A method registered for two events with
+**differing** payloads is a conflict and is left untyped, rather than guessing one
+event's payload.
+
 ### Event name quoting
 
 Event names in `@event` declarations should be quoted to match how they appear at call sites:

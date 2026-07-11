@@ -41,6 +41,7 @@ pub fn annotation_type_references_type_params(at: &AnnotationType, type_params: 
                 || annotation_type_references_type_params(key, type_params)
         }
         AnnotationType::Tuple(positions, _) => positions.iter().any(|p| annotation_type_references_type_params(&p.typ, type_params)),
+        AnnotationType::KeyOf(target) => type_params.iter().any(|p| p == target),
     }
 }
 
@@ -147,6 +148,14 @@ fn substitute_annotation_type_inner(
                 description.clone(),
             )
         }
+        AnnotationType::KeyOf(target) => {
+            let substituted = if let Some(&table_idx) = subs.get(target) {
+                reverse.get(&table_idx).map(|n| (*n).clone()).unwrap_or_else(|| target.clone())
+            } else {
+                target.clone()
+            };
+            AnnotationType::KeyOf(substituted)
+        }
     }
 }
 
@@ -156,7 +165,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 34;
+pub const BLOB_VERSION: u32 = 35;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).

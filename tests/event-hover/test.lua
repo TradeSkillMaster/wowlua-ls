@@ -349,6 +349,19 @@ RegisterLabeled("DO_PROCESS", function(lbl, success, canRetry)
 --        ^ hover: (local) c: boolean
 end)
 
+-- The AceEvent handler shape `function(event, ...)`: the callback's leading param
+-- is typed as the event type (decays to string) and the payload follows it, so an
+-- inline handler gets both the event name and its payload typed. This is exactly
+-- what the built-in AceEvent-3.0 `RegisterEvent` stub relies on.
+RegisterEventShaped("DO_PROCESS", function(event, success, canRetry)
+    local e = event
+--        ^ hover: (local) e: string
+    local s = success
+--        ^ hover: (local) s: boolean
+    local c = canRetry
+--        ^ hover: (local) c: boolean
+end)
+
 -- ── Event-name string hover/def resolves through a generic constraint ──
 -- (regression: `@param event E` with `@generic E: ActionEvent` should still
 --  hover the event-name argument as an event, via E's constraint)

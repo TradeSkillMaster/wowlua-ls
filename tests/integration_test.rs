@@ -1541,6 +1541,15 @@ fn callback_registry_event_validation() {
 }
 
 #[test]
+fn keyof_self_navigation_and_validation() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/keyof/widget.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/keyof"),
+    });
+}
+
+#[test]
 fn callback_registry_multi_addon_scoping() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/callback-multi-addon/AddonA/user.lua",
@@ -1553,6 +1562,15 @@ fn callback_registry_multi_addon_scoping() {
 fn ace3_addon_inherits_instance_methods() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/ace3/addon.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ace3"),
+    });
+}
+
+#[test]
+fn ace3_register_event_handler_typing() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace3/events.lua",
         with_stubs: true,
         scan_dir: Some("tests/ace3"),
     });

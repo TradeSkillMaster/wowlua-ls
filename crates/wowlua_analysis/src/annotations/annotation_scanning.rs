@@ -1496,6 +1496,9 @@ pub fn resolve_annotation_type(
                 Some(ValueType::Any)
             }
         }
+        // Deferred: `keyof X` resolves to a union of X's keys at each call site
+        // (`resolve_call.rs`), where the receiver/generic bindings are known.
+        AnnotationType::KeyOf(target) => Some(ValueType::KeyOf(target.clone())),
     }
 }
 

@@ -65,11 +65,12 @@ Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments 
 
 ### 6. Local overrides
 
-Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (39 files, alphabetical — keep in sync with `ls stubs/overrides/*.lua`):
+Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (42 files, alphabetical — keep in sync with `ls stubs/overrides/*.lua`):
 
 | File | Purpose |
 |------|---------|
 | `AceAddon-3.0.lua` | AceAddon library stubs; the library class inherits the embeddable `AceAddon` prototype so `---@class Foo : AceAddon-3.0` resolves `NewModule`/`GetModule`/… |
+| `AceEvent-3.0.lua` | AceEvent library stubs; `RegisterEvent`/`RegisterMessage` type the handler as `keyof self` so the handler string navigates to (and is checked against) the method on `self` |
 | `AceGUI-3.0.lua` | AceGUI library stubs |
 | `AceLocale-3.0.lua` | AceLocale library stubs; default-locale `NewLocale(app, locale, true)` returns a non-nil table so the `L[key] = true` idiom doesn't trip `need-check-nil` |
 | `BattlePetTooltip.lua` | Runtime-injected `AddLine` method that Ketho's vendor annotation omits |
@@ -79,17 +80,20 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `CreateFont.lua` | `@creates-global` for `CreateFont`/`CreateFontFamily` named-font side effect |
 | `CreateFrame.lua` | Intersection types (`CreateFrame(..., template) → T & Tp`) and `@creates-global` for the named-frame side effect |
 | `debugstack.lua` | Debug stack trace function |
+| `EquipmentManager.lua` | Full-arity `@return` for `EquipmentManager_UnpackLocation` (deprecated on retail with no `@return`, still live on Classic) so destructuring its result doesn't false-positive `unbalanced-assignments` |
 | `EventRegistry.lua` | `@class EventRegistry : CallbackRegistryMixin` with `FrameEvent`-typed callback params |
 | `GameTooltip.lua` | `GameTooltip` frame class + script-handler (`GetScript`/`SetScript`) typing |
 | `GetCursorInfo.lua` | Cursor info return type overloads |
+| `GetObjectType.lua` | `@returns-class-name` on `FrameScriptObject:GetObjectType` for equality-comparison receiver narrowing (`region:GetObjectType() == "FontString"`) |
 | `HookScript.lua` | Event handler hook typing |
 | `hooksecurefunc.lua` | Backtick-generic `@overload` for the table-less `hooksecurefunc(name, hook)` form |
 | `ipairs.lua` | Generic iterator with `K!, V!` (non-nil keys/values) |
 | `IsObjectType.lua` | `@type-narrows` for `IsObjectType()` → frame subclass narrowing |
 | `LibDBIcon-1.0.lua` | LibDBIcon stubs with the `db` options table fields optional (no false `missing-fields` on `Register`) |
+| `LibSharedMedia-3.0.lua` | Full replacement of the vendored LibSharedMedia annotations: `mediatype` is `string` (not a closed enum) so custom media types registered via `:Register` type-check |
 | `LibStub.lua` | Library version management |
 | `loadstring.lua` | `loadstring` return tuple (compiled chunk, or nil + error message) |
-| `Mixin.lua` | Variadic generics: `Mixin(T, ...M) → T & ...M` |
+| `MixinFunctions.lua` | Variadic generics for `Mixin`/`CreateFromMixins`/`CreateAndInitFromMixin`: `(T, ...M) → T & ...M` |
 | `NamePlateBaseMixin.lua` | Base mixin for name plates |
 | `newproxy.lua` | Userdata proxy creation |
 | `next.lua` | Generic next iterator with `K!, V!` |

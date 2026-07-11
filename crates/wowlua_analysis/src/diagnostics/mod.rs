@@ -575,7 +575,7 @@ fn base_kind(t: &ValueType) -> u8 {
         ValueType::Nil => 0,
         ValueType::Boolean(_) => 1,
         ValueType::Number | ValueType::NumberLiteral(_) => 2,
-        ValueType::String(_) => 3,
+        ValueType::String(_) | ValueType::KeyOf(_) => 3,
         ValueType::Table(_) | ValueType::TableShape(_) => 4,
         ValueType::Function(_) | ValueType::FunctionSig(_) => 5,
         ValueType::Userdata => 6,

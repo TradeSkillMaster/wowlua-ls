@@ -94,6 +94,7 @@ pub fn format_annotation_type(at: &AnnotationType) -> String {
         AnnotationType::IndexedAccess(base, key) => {
             format!("{}[{}]", base, format_annotation_type(key))
         }
+        AnnotationType::KeyOf(target) => format!("keyof {}", target),
         AnnotationType::Tuple(positions, description) => {
             let parts: Vec<String> = positions.iter().map(|p| {
                 match &p.name {
@@ -170,6 +171,15 @@ pub fn substitute_alias_type_params(
                 substituted_base,
                 Box::new(substitute_alias_type_params(key, type_params, args)),
             )
+        }
+        AnnotationType::KeyOf(target) => {
+            // Substitute the target if it names an alias type param (`keyof T`);
+            // otherwise (`keyof self`, `keyof ClassName`) leave it unchanged.
+            let substituted = type_params.iter().zip(args.iter())
+                .find(|(p, _)| *p == target)
+                .and_then(|(_, arg)| if let AnnotationType::Simple(name) = arg { Some(name.clone()) } else { None })
+                .unwrap_or_else(|| target.clone());
+            AnnotationType::KeyOf(substituted)
         }
         AnnotationType::Tuple(positions, description) => {
             AnnotationType::Tuple(
@@ -350,6 +360,15 @@ pub fn parse_type(s: &str) -> AnnotationType {
     if intersection_parts.len() > 1 {
         let parts: Vec<AnnotationType> = intersection_parts.iter().map(|p| parse_type(p.trim())).collect();
         return AnnotationType::Intersection(parts);
+    }
+    // `keyof X` — checked after `|`/`&` splits so `FrameEvent & keyof self` parses
+    // as an intersection whose second member is `KeyOf("self")`. The target is a
+    // single token (`self`, a class name, or a generic name).
+    if let Some(target) = s.strip_prefix("keyof ") {
+        let target = target.trim();
+        if !target.is_empty() {
+            return AnnotationType::KeyOf(target.to_string());
+        }
     }
     if s.starts_with('(') {
         let mut depth = 0i32;
@@ -829,6 +848,14 @@ pub fn extract_type_prefix(s: &str) -> &str {
             ',' if depth == 0 => { return &s[..i]; }
             ':' if depth == 0 => { after_colon = true; after_pipe = false; after_ampersand = false; }
             c if c.is_whitespace() && depth == 0 && !after_colon && !after_comma && !after_pipe && !after_ampersand => {
+                // `keyof <target>` is a two-word type: don't terminate on the space
+                // after the `keyof` keyword — the target token is part of the type.
+                let last_word = s[..i].trim_end()
+                    .rsplit(|ch: char| ch.is_whitespace() || ch == '&' || ch == '|')
+                    .next().unwrap_or("");
+                if last_word == "keyof" {
+                    continue;
+                }
                 let mut j = i + 1;
                 while j < bytes.len() && bytes[j] == b' ' { j += 1; }
                 if j < bytes.len() && (bytes[j] == b'|' || bytes[j] == b'&') {

@@ -240,6 +240,7 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `A & B` | Intersection |
 | `T[]` | Array |
 | `T[K]` | Indexed access — field type of K on T |
+| `keyof T` | A string that is one of `T`'s field/method names (see below) |
 | `[T1, T2]` | Tuple — fixed-shape table (`{ [1]: T1, [2]: T2 }`) |
 | `T?` | Optional (`T \| nil`) |
 | `?T` | Optional, prefix form — same as `T?` |
@@ -258,3 +259,30 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `expression<C, R>` (R is `@generic`) | Result type R inferred from the expression and propagated to the return |
 | `expression<C & F>` | Expression string with additional functions/fields from F |
 | `expression<C & F, R>` | Expression with extra environment and return constraint |
+
+### `keyof T`
+
+`keyof self` / `keyof ClassName` is a first-class type: a string that must be one
+of the target's field/method names. `self` resolves to the call receiver at each
+call site. On such an argument the language server:
+
+- **completes** the receiver's member names inside the string,
+- **go-to-definition** and **hover** jump to / show the named member, and
+- reports a [`type-mismatch`](/reference/diagnostics) when the literal isn't a
+  member — a closed set, unlike an open `"a"|"b"` string enum.
+
+It composes in overloads and intersections, which is what libraries like
+**AceEvent-3.0** need: a handler is dispatched as a method on the receiver, and the
+1-arg form reuses the event name as that method:
+
+```lua
+---@overload fun(self, event: FrameEvent & keyof self)  -- 1-arg: event is both an event AND a method of self
+---@param event FrameEvent
+---@param callback keyof self | function
+function AceEvent:RegisterEvent(event, callback, arg) end
+```
+
+So `self:RegisterEvent("PLAYER_LOGIN")` navigates to `self:PLAYER_LOGIN` (and the
+game event), `self:RegisterEvent("EVT", "OnEvt")` navigates to `self:OnEvt`, and a
+handler the receiver doesn't define is flagged. Also usable as a `@generic`
+constraint (`@generic K: keyof self`) — see the [generics guide](/guide/generics#keyof-constraints).

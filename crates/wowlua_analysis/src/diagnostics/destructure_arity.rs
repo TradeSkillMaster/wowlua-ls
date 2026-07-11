@@ -114,6 +114,7 @@ fn find_call_resolution(
                         first_arg_range: None,
                         receiver_param_subs: std::collections::HashMap::new(),
                         receiver_table_idx: None,
+                        keyof_arg_targets: std::collections::HashMap::new(),
                     },
                 ));
             }
