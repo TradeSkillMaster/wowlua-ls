@@ -46,7 +46,7 @@ cd /path/to/wowlua-ls
 cargo build --release
 ```
 
-Then add the binary to your PATH, or configure the path in the plugin settings (see below).
+Then add the binary to your PATH.
 
 ### 2. Build the plugin
 
@@ -67,12 +67,6 @@ The plugin ZIP will be at `build/distributions/wowlua-ls-0.0.1.zip`.
 1. Open your JetBrains IDE
 2. Go to **Settings → Plugins → ⚙️ → Install Plugin from Disk...**
 3. Select the ZIP file from step 2
-
-### 4. Configure (optional)
-
-If `wowlua_ls` is not on your PATH, configure the binary location:
-
-**Settings → Tools → WoW Lua LS → Server path**
 
 ## Notes
 
@@ -101,7 +95,7 @@ src/main/
 │   ├── WowLuaServerPath.kt                # Shared wowlua_ls binary resolution
 │   ├── WowLuaTextMateBundleProvider.kt    # Registers the bundled TextMate grammars
 │   ├── WowLuaPluginSuggestionSuppressor.kt # Suppresses the plugin-advertiser banner for .lua/.toc
-│   ├── WowLuaSettings.kt                  # Persistent settings (server path, backend toggle)
+│   ├── WowLuaSettings.kt                  # Persistent settings (backend toggle)
 │   └── WowLuaSettingsConfigurable.kt      # Settings UI
 └── resources/META-INF/
     ├── plugin.xml                         # Plugin descriptor (optional deps per backend)

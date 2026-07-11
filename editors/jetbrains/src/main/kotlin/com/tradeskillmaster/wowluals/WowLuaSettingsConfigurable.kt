@@ -1,8 +1,6 @@
 package com.tradeskillmaster.wowluals
 
-import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.options.Configurable
-import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.FormBuilder
@@ -12,21 +10,11 @@ import javax.swing.JPanel
 
 class WowLuaSettingsConfigurable : Configurable {
     private var panel: JPanel? = null
-    private var pathField: TextFieldWithBrowseButton? = null
     private var lsp4ijCheckBox: JBCheckBox? = null
 
     override fun getDisplayName(): String = "WoW Lua LS"
 
     override fun createComponent(): JComponent {
-        val field = TextFieldWithBrowseButton()
-        field.addBrowseFolderListener(
-            null,
-            FileChooserDescriptor(true, false, false, false, false, false)
-                .withTitle("Select wowlua_ls Binary")
-                .withDescription("Path to the wowlua_ls language server binary. Leave empty to search PATH.")
-        )
-        pathField = field
-
         val checkBox = JBCheckBox("Use the LSP4IJ plugin instead of the IDE's built-in LSP client")
         // The toggle only represents a real choice when both backends exist:
         // without LSP4IJ there is nothing to switch to, and without the
@@ -48,7 +36,6 @@ class WowLuaSettingsConfigurable : Configurable {
         noteLabel.foreground = UIUtil.getContextHelpForeground()
 
         val form = FormBuilder.createFormBuilder()
-            .addLabeledComponent("Server path:", field)
             .addComponent(checkBox)
             .addComponent(noteLabel)
             .addComponentFillVertically(JPanel(), 0)
@@ -59,12 +46,10 @@ class WowLuaSettingsConfigurable : Configurable {
     }
 
     override fun isModified(): Boolean =
-        pathField?.text != WowLuaSettings.getInstance().serverPath ||
-            lsp4ijCheckBox?.isSelected != WowLuaSettings.getInstance().useLsp4ij
+        lsp4ijCheckBox?.isSelected != WowLuaSettings.getInstance().useLsp4ij
 
     override fun apply() {
         val settings = WowLuaSettings.getInstance()
-        settings.serverPath = pathField?.text.orEmpty()
         val useLsp4ij = lsp4ijCheckBox?.isSelected ?: false
         settings.useLsp4ij = useLsp4ij
         // Explicitly selecting the LSP4IJ backend here is a stronger signal than a
@@ -74,13 +59,11 @@ class WowLuaSettingsConfigurable : Configurable {
     }
 
     override fun reset() {
-        pathField?.text = WowLuaSettings.getInstance().serverPath
         lsp4ijCheckBox?.isSelected = WowLuaSettings.getInstance().useLsp4ij
     }
 
     override fun disposeUIResources() {
         panel = null
-        pathField = null
         lsp4ijCheckBox = null
     }
 }

@@ -8,16 +8,11 @@ import com.intellij.openapi.components.Storage
 @State(name = "WowLuaLsSettings", storages = [Storage("wowlua-ls.xml")])
 class WowLuaSettings : PersistentStateComponent<WowLuaSettings.State> {
     class State {
-        var serverPath: String = ""
         var useLsp4ij: Boolean = false
         var lsp4ijServerDisabled: Boolean = false
     }
 
     private var state = State()
-
-    var serverPath: String
-        get() = state.serverPath
-        set(value) { state.serverPath = value }
 
     /** Backend selection: run the LSP4IJ backend instead of the built-in client. */
     var useLsp4ij: Boolean

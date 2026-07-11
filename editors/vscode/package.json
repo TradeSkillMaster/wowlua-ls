@@ -75,17 +75,6 @@
         }
       }
     ],
-    "configuration": {
-      "type": "object",
-      "title": "WoW Lua LS",
-      "properties": {
-        "wowluals.serverPath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to the wowlua_ls binary. If empty, uses the binary from the workspace's cargo target directory."
-        }
-      }
-    },
     "jsonValidation": [
       {
         "fileMatch": ".wowluarc.json",

@@ -54,12 +54,6 @@ Full documentation at **[tradeskillmaster.github.io/wowlua-ls](https://tradeskil
 - [Diagnostic List](https://tradeskillmaster.github.io/wowlua-ls/reference/diagnostics)
 - [Discord](https://discord.gg/XgqevqEqJK)
 
-## Settings
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| `wowluals.serverPath` | Path to the `wowlua_ls` binary. If empty, uses the bundled binary. | `""` |
-
 ## License
 
 GPL-3.0 - see [LICENSE](https://github.com/TradeSkillMaster/wowlua-ls/blob/main/LICENSE.md).

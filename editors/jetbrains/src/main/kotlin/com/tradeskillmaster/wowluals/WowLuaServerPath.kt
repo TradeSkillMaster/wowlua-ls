@@ -6,8 +6,7 @@ import java.nio.file.Files
 
 /**
  * Locates the wowlua_ls binary. Shared by both LSP backends (the built-in
- * client and LSP4IJ): settings override, then the plugin's bundled
- * per-platform binary, then PATH.
+ * client and LSP4IJ): the plugin's bundled per-platform binary, then PATH.
  */
 object WowLuaServerPath {
     fun resolve(): String {
@@ -21,9 +20,6 @@ object WowLuaServerPath {
             osName.contains("mac") -> if (arch == "aarch64") "darwin-arm64" else "darwin-x64"
             else -> "linux-x64"
         }
-
-        val configured = WowLuaSettings.getInstance().serverPath
-        if (configured.isNotBlank()) return configured
 
         // Resolve <pluginPath>/server/<platform>/ from this plugin's own dist directory.
         // PluginPathManager.getPluginResource is public API; it avoids the now-internal
