@@ -262,8 +262,11 @@ cargo run --release -- profile /path/to/addon
 
 ## Editor Extensions
 
+### JetBrains plugin: dual LSP backend
+The JetBrains plugin (`editors/jetbrains/`) supports two LSP clients behind optional plugin dependencies: the IDE's built-in client (`lsp.xml`, default) and LSP4IJ (`lsp4ij.xml`, opt-in via settings; automatic fallback on IDEs without `com.intellij.modules.lsp`). `WowLuaBackend` decides which one runs (reflective availability probes — never import either API from always-loaded classes; backend classes may only be referenced from their own optional config file). Server binary resolution is shared in `WowLuaServerPath`. When changing server wiring or the `builtinConstant` semantic-token mapping, update **both** backends (`WowLuaLspServerSupportProvider` and `lsp4ij/WowLuaLanguageServerFactory`).
+
 ### Shared TextMate grammar
-Both the VS Code and JetBrains plugins use the same Lua TextMate grammar (`editors/vscode/syntaxes/lua.tmLanguage.json`). The JetBrains plugin vendors a copy at `editors/jetbrains/textmate/lua/syntaxes/lua.tmLanguage.json`. **When updating the grammar, copy it to both locations.**
+The VS Code grammars (`editors/vscode/syntaxes/{lua,toc}.tmLanguage.json`) are the source of truth. The JetBrains plugin vendors **generated** copies at `editors/jetbrains/textmate/*/syntaxes/` — **never edit or hand-copy them; run `python3 editors/jetbrains/textmate/sync_grammars.py` after any grammar change and commit both.** The script flattens `captures: {N: {patterns: [...]}}` to plain named captures because IntelliJ's TextMate engine (2025.2–2026.2 EAP, verified) loses the enclosing region's pop on that construct — long annotation runs (stub files) leak one scope per line until coloring dies mid-file. Never introduce a capture-with-nested-patterns where the flat fallback (`support.type.lua`) would be wrong without checking the script's mapping.
 
 ### VS Code Extension Development
 

@@ -18,6 +18,11 @@ dependencies {
     intellijPlatform {
         intellijIdeaUltimate("2025.2")
         bundledPlugin("org.jetbrains.plugins.textmate")
+        // Optional dependency (see plugin.xml lsp4ij.xml config); needed on the
+        // compile classpath and in the runIde sandbox. Do NOT add org.eclipse.lsp4j
+        // as a project dependency — LSP4IJ loads its own copy in its plugin
+        // classloader and a second copy causes ClassCastExceptions.
+        plugin("com.redhat.devtools.lsp4ij:0.20.1")
         pluginVerifier()
     }
 }

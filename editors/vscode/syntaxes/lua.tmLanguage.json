@@ -386,7 +386,7 @@
               "endCaptures": {
                 "1": {"name": "keyword.operator.lua"},
                 "2": {"name": "keyword.operator.lua"},
-                "3": {"patterns": [{"include": "#emmydoc.type"}]},
+                "3": {"name": "meta.type.annotation.lua", "patterns": [{"include": "#emmydoc.type"}]},
                 "4": {"name": "comment.block.documentation.lua"}
               },
               "patterns": [
@@ -399,7 +399,7 @@
               "captures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
-                "3": {"patterns": [{"include": "#emmydoc.type"}]},
+                "3": {"name": "meta.type.annotation.lua", "patterns": [{"include": "#emmydoc.type"}]},
                 "4": {"name": "comment.block.documentation.lua"}
               }
             },
@@ -425,7 +425,7 @@
               "captures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
-                "3": {"patterns": [{"include": "#emmydoc.type"}]},
+                "3": {"name": "meta.type.annotation.lua", "patterns": [{"include": "#emmydoc.type"}]},
                 "4": {"name": "comment.block.documentation.lua"}
               }
             },
@@ -456,7 +456,7 @@
               "endCaptures": {
                 "1": {"name": "keyword.operator.lua"},
                 "2": {"name": "keyword.operator.lua"},
-                "3": {"patterns": [{"include": "#emmydoc.type"}]},
+                "3": {"name": "meta.type.annotation.lua", "patterns": [{"include": "#emmydoc.type"}]},
                 "4": {"name": "comment.block.documentation.lua"}
               },
               "patterns": [
@@ -695,7 +695,7 @@
             "1": {"name": "keyword.operator.lua"},
             "2": {"name": "keyword.operator.lua"},
             "3": {"name": "keyword.operator.lua"},
-            "4": {"patterns": [{"include": "#emmydoc.type"}]},
+            "4": {"name": "meta.type.annotation.lua", "patterns": [{"include": "#emmydoc.type"}]},
             "5": {"name": "comment.block.documentation.lua"}
           },
           "patterns": [
@@ -716,7 +716,7 @@
           "endCaptures": {
             "1": {"name": "keyword.operator.lua"},
             "2": {"name": "keyword.operator.lua"},
-            "3": {"patterns": [{"include": "#emmydoc.type"}]},
+            "3": {"name": "meta.type.annotation.lua", "patterns": [{"include": "#emmydoc.type"}]},
             "4": {"name": "comment.block.documentation.lua"}
           },
           "patterns": [
@@ -727,7 +727,7 @@
           "comment": "Type with parenthesized group (e.g. Type|(fun(): R, T)). Limited to one level of paren nesting; deeper nesting like (fun(x: (A|B)): R) may mis-split the description boundary.",
           "match": "\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`\\-]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?!\"'`\\-]*)(?:\\s+(.+))?",
           "captures": {
-            "1": {"patterns": [{"include": "#emmydoc.type"}]},
+            "1": {"name": "meta.type.annotation.lua", "patterns": [{"include": "#emmydoc.type"}]},
             "2": {"name": "comment.block.documentation.lua"}
           }
         },
@@ -735,7 +735,7 @@
           "comment": "{…} table literal type with description (one level of brace nesting)",
           "match": "\\s+(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})(?:\\s+(.+))?",
           "captures": {
-            "1": {"patterns": [{"include": "#emmydoc.type"}]},
+            "1": {"name": "meta.type.annotation.lua", "patterns": [{"include": "#emmydoc.type"}]},
             "2": {"name": "comment.block.documentation.lua"}
           }
         },
@@ -743,7 +743,7 @@
           "comment": "Simple/union type with optional description (allows spaces around | and &, and ...M variadic generic types). Delegates to emmydoc.type for rich sub-tokenization of operators and type names.",
           "match": "\\s+((?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*(?:\\s*[|&]\\s*(?:\\.\\.\\.|[a-zA-Z_*\"'`])[a-zA-Z0-9_.*<>,\\[\\]?!\"'`\\-]*)*)(?:\\s+(.+))?",
           "captures": {
-            "1": {"patterns": [{"include": "#emmydoc.type"}]},
+            "1": {"name": "meta.type.annotation.lua", "patterns": [{"include": "#emmydoc.type"}]},
             "2": {"name": "comment.block.documentation.lua"}
           }
         }

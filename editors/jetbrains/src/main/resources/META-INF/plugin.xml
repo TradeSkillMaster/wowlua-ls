@@ -28,10 +28,15 @@
     <h3>Setup</h3>
     <p>Install the <code>wowlua_ls</code> binary and either add it to your PATH or configure
     the path in <b>Settings > Tools > WoW Lua LS</b>.</p>
+    <p>On IDEs without the built-in LSP client (Community-based IDEs), install the
+    <a href="https://plugins.jetbrains.com/plugin/23257-lsp4ij">LSP4IJ</a> plugin — it is then
+    used as the LSP backend automatically. On other IDEs you can optionally switch to the
+    LSP4IJ backend in <b>Settings > Tools > WoW Lua LS</b>.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
     <depends optional="true" config-file="lsp.xml">com.intellij.modules.lsp</depends>
+    <depends optional="true" config-file="lsp4ij.xml">com.redhat.devtools.lsp4ij</depends>
     <depends optional="true" config-file="textmate.xml">org.jetbrains.plugins.textmate</depends>
 
     <extensions defaultExtensionNs="com.intellij">
@@ -43,6 +48,9 @@
 
         <applicationService
                 serviceImplementation="com.tradeskillmaster.wowluals.WowLuaSettings"/>
+
+        <pluginSuggestionProvider
+                implementation="com.tradeskillmaster.wowluals.WowLuaPluginSuggestionSuppressor"/>
     </extensions>
 
 </idea-plugin>

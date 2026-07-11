@@ -19,15 +19,21 @@ All features are provided by the `wowlua_ls` language server:
 
 The plugin adds:
 
-- Lua syntax highlighting (keywords, strings, comments, numbers)
-- Comment toggling (Ctrl+/ / Cmd+/)
-- Brace matching
+- Lua and TOC syntax highlighting via the shared TextMate grammar (same grammar as the VS Code extension)
+- LSP client wiring with a choice of two backends (see [LSP backends](#lsp-backends))
 
 ## Requirements
 
-- A JetBrains IDE with LSP support, 2024.1 or newer
-- JDK 17+ (for building)
+- A JetBrains IDE 2025.2 or newer. IDEs without the built-in LSP client (Community-based IDEs) additionally need the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin.
+- JDK 21+ (for building)
 - `wowlua_ls` binary ([releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release` from the repo root)
+
+## LSP backends
+
+The plugin can drive the language server through either of two LSP clients:
+
+- **Built-in (default):** the IDE's native LSP client (`com.intellij.modules.lsp`, available in paid IDEs).
+- **LSP4IJ:** Red Hat's [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin, when installed. Opt in via **Settings → Tools → WoW Lua LS**; takes effect after an IDE restart. On IDEs without the built-in client, LSP4IJ is used automatically — no toggle needed. Compared to the built-in client, LSP4IJ serves files outside the project content (e.g. go-to-definition targets inside WoW API stubs) and scopes servers strictly per project.
 
 ## Setup
 
@@ -70,8 +76,8 @@ If `wowlua_ls` is not on your PATH, configure the binary location:
 
 ## Notes
 
-- This plugin registers the `.lua` file extension. If you have another Lua plugin installed (EmmyLua, Luanalysis), the IDE will ask you to choose which one handles `.lua` files.
-- Code folding and structure view come from the LSP server, not the plugin's own parser.
+- The plugin does not register a `.lua` file type or language of its own — syntax coloring comes from TextMate bundles, and all analysis comes from the LSP server. It coexists with other Lua plugins at the file-type level, though running two language servers on the same files is not recommended.
+- Code folding and structure view come from the LSP server, not from an IDE-side parser.
 
 ## Development
 
@@ -88,23 +94,18 @@ This launches a fresh IntelliJ instance with the plugin loaded. Open any directo
 ```
 src/main/
 ├── kotlin/com/tradeskillmaster/wowluals/
-│   ├── WowLuaLanguage.kt            # Language singleton
-│   ├── WowLuaFileType.kt            # File type for .lua
-│   ├── WowLuaFile.kt                # PSI file
-│   ├── WowLuaIcons.kt               # Icon constants
-│   ├── WowLuaTokenTypes.kt          # Lexer token types
-│   ├── WowLuaLexer.kt               # Lua lexer for syntax highlighting
-│   ├── WowLuaParser.kt              # Minimal pass-through parser
-│   ├── WowLuaParserDefinition.kt    # Parser definition
-│   ├── WowLuaSyntaxHighlighter.kt   # Syntax highlighter + factory
-│   ├── WowLuaLspServerSupportProvider.kt # LSP server support provider (native IntelliJ LSP API)
-│   ├── WowLuaSettings.kt            # Persistent settings (server path)
-│   ├── WowLuaSettingsConfigurable.kt # Settings UI
-│   ├── WowLuaCommenter.kt           # Comment toggling
-│   └── WowLuaBraceMatcher.kt        # Brace matching
-└── resources/
-    ├── META-INF/plugin.xml           # Plugin descriptor
-    └── icons/
-        ├── lua.svg                   # File type icon
-        └── pluginIcon.svg            # Plugin marketplace icon
+│   ├── WowLuaLspServerSupportProvider.kt  # Built-in LSP backend (com.intellij.platform.lsp)
+│   ├── lsp4ij/
+│   │   └── WowLuaLanguageServerFactory.kt # LSP4IJ backend (loads only when LSP4IJ is installed)
+│   ├── WowLuaBackend.kt                   # Backend availability probing + selection
+│   ├── WowLuaServerPath.kt                # Shared wowlua_ls binary resolution
+│   ├── WowLuaTextMateBundleProvider.kt    # Registers the bundled TextMate grammars
+│   ├── WowLuaPluginSuggestionSuppressor.kt # Suppresses the plugin-advertiser banner for .lua/.toc
+│   ├── WowLuaSettings.kt                  # Persistent settings (server path, backend toggle)
+│   └── WowLuaSettingsConfigurable.kt      # Settings UI
+└── resources/META-INF/
+    ├── plugin.xml                         # Plugin descriptor (optional deps per backend)
+    ├── lsp.xml                            # Built-in LSP registration (needs com.intellij.modules.lsp)
+    ├── lsp4ij.xml                         # LSP4IJ registration (needs com.redhat.devtools.lsp4ij)
+    └── textmate.xml                       # TextMate bundle registration
 ```
