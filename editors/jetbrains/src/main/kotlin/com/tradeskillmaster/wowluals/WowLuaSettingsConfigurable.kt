@@ -1,6 +1,10 @@
 package com.tradeskillmaster.wowluals
 
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.application.ex.ApplicationManagerEx
 import com.intellij.openapi.options.Configurable
+import com.intellij.openapi.ui.Messages
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.FormBuilder
@@ -51,11 +55,37 @@ class WowLuaSettingsConfigurable : Configurable {
     override fun apply() {
         val settings = WowLuaSettings.getInstance()
         val useLsp4ij = lsp4ijCheckBox?.isSelected ?: false
+        val changed = settings.useLsp4ij != useLsp4ij
         settings.useLsp4ij = useLsp4ij
         // Explicitly selecting the LSP4IJ backend here is a stronger signal than a
         // lingering server-level disable from LSP4IJ's own UI; clear it so the
         // server actually starts rather than staying silently off.
         if (useLsp4ij) settings.lsp4ijServerDisabled = false
+        // The backend is chosen when a file opens (and the LSP4IJ server is
+        // registered at plugin load), so a running IDE keeps serving files with
+        // the old client until it restarts. Defer the prompt until the Settings
+        // dialog has closed rather than stacking a modal on top of it.
+        if (changed) {
+            ApplicationManager.getApplication().invokeLater({ promptRestart() }, ModalityState.nonModal())
+        }
+    }
+
+    /**
+     * Ask the user to restart so the new backend takes effect. Mirrors the
+     * platform convention for restart-required settings: the button reads
+     * "Restart" when the IDE can relaunch itself and "Shut Down" otherwise.
+     */
+    private fun promptRestart() {
+        val app = ApplicationManagerEx.getApplicationEx()
+        val actionLabel = if (app.isRestartCapable) "Restart" else "Shut Down"
+        val choice = Messages.showYesNoDialog(
+            "Switching the WoW Lua LS backend takes effect after the IDE restarts.",
+            "Restart Required",
+            "$actionLabel Now",
+            "Later",
+            Messages.getQuestionIcon(),
+        )
+        if (choice == Messages.YES) app.restart(true)
     }
 
     override fun reset() {

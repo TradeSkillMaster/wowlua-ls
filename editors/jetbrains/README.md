@@ -33,7 +33,7 @@ The plugin adds:
 The plugin can drive the language server through either of two LSP clients:
 
 - **Built-in (default):** the IDE's native LSP client (`com.intellij.modules.lsp`, available in paid IDEs).
-- **LSP4IJ:** Red Hat's [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin, when installed. Opt in via **Settings → Tools → WoW Lua LS**; takes effect after an IDE restart. On IDEs without the built-in client, LSP4IJ is used automatically — no toggle needed. Compared to the built-in client, LSP4IJ serves files outside the project content (e.g. go-to-definition targets inside WoW API stubs) and scopes servers strictly per project.
+- **LSP4IJ:** Red Hat's [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin, when installed. Opt in via **Settings → Tools → WoW Lua LS**; the change takes effect after an IDE restart, which the plugin offers to do for you when you apply it. On IDEs without the built-in client, LSP4IJ is used automatically — no toggle needed. Compared to the built-in client, LSP4IJ serves files outside the project content (e.g. go-to-definition targets inside WoW API stubs) and scopes servers strictly per project.
 
 ## Setup
 
