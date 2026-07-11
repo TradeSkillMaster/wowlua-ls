@@ -94,7 +94,6 @@ src/main/
 │   ├── WowLuaBackend.kt                   # Backend availability probing + selection
 │   ├── WowLuaServerPath.kt                # Shared wowlua_ls binary resolution
 │   ├── WowLuaTextMateBundleProvider.kt    # Registers the bundled TextMate grammars
-│   ├── WowLuaPluginSuggestionSuppressor.kt # Suppresses the plugin-advertiser banner for .lua/.toc
 │   ├── WowLuaSettings.kt                  # Persistent settings (backend toggle)
 │   └── WowLuaSettingsConfigurable.kt      # Settings UI
 └── resources/META-INF/

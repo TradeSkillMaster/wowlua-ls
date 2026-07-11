@@ -48,9 +48,6 @@
 
         <applicationService
                 serviceImplementation="com.tradeskillmaster.wowluals.WowLuaSettings"/>
-
-        <pluginSuggestionProvider
-                implementation="com.tradeskillmaster.wowluals.WowLuaPluginSuggestionSuppressor"/>
     </extensions>
 
 </idea-plugin>
