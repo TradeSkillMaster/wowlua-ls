@@ -137,6 +137,43 @@ impl<'a> BuildOnStubsContext<'a> {
         !path.is_empty() && self.class_globals.contains(name)
     }
 
+    /// Resolve `name` to the table it names via the built-in stub scope-0 symbols
+    /// (`scope0_symbols`, then the FrameXML-only `framexml_scope0_symbols`): the
+    /// symbol's resolved type when it is `Table(Some(idx))`, else `None`. Covers
+    /// stub namespace tables (`Settings`, `C_Timer`) and stub globals typed as a
+    /// class instance alike — callers needing to exclude the latter check `class_name`.
+    fn scope0_table_idx(&self, name: &str) -> Option<TableIndex> {
+        let id = SymbolIdentifier::Name(name.to_string());
+        let &sym_idx = self.scope0_symbols.get(&id)
+            .or_else(|| self.framexml_scope0_symbols.get(&id))?;
+        match self.symbols[sym_idx.ext_offset()].versions.last()?.resolved_type.as_ref()? {
+            ValueType::Table(Some(idx)) => Some(*idx),
+            _ => None,
+        }
+    }
+
+    /// If `name` is a built-in stub scope-0 global whose resolved type is a plain
+    /// *namespace* table (`Settings`, `C_Timer`, …) — not a `@class` (those live in
+    /// `self.classes`) and not a class instance — return that stub table's index.
+    ///
+    /// Workspace/library `function Name.Method()` and `Name.Field = …` definitions
+    /// on a stub namespace must merge onto the real stub table. Fabricating a fresh
+    /// shadow table instead leaves it orphaned (the name still resolves to the stub
+    /// table), so hover/completion never see the library members and go-to-definition
+    /// can't offer the library site alongside the stub one.
+    fn stub_namespace_table(&self, name: &str) -> Option<TableIndex> {
+        self.scope0_table_idx(name)
+            .filter(|idx| self.tables[idx.ext_offset()].class_name.is_none())
+    }
+
+    /// True when `name`'s existing scope-0 symbol already resolves to exactly
+    /// `table_idx` — i.e. it is a reused stub namespace table (see
+    /// [`Self::stub_namespace_table`]), not a freshly created workspace one that
+    /// still needs a scope-0 symbol.
+    fn scope0_resolves_to(&self, name: &str, table_idx: TableIndex) -> bool {
+        self.scope0_table_idx(name) == Some(table_idx)
+    }
+
     fn resolve_annotation(&self, at: &AnnotationType) -> Option<ValueType> {
         PreResolvedGlobals::resolve_annotation(at, &self.classes, &self.aliases, &self.parameterized_aliases)
     }
@@ -303,6 +340,15 @@ impl<'a> BuildOnStubsContext<'a> {
                 _ => continue,
             };
             if self.classes.contains_key(target_name) || self.non_class_tables.contains_key(target_name) {
+                continue;
+            }
+            // Prefer merging onto an existing stub namespace table (e.g. library
+            // methods/fields on `Settings`) over a fresh shadow table nothing
+            // resolves the name to. Registering it as a non-class table routes the
+            // Method/TableField handlers (and the go-to-def alt-location bridge in
+            // `build_on_stubs`) at the real stub table.
+            if let Some(stub_idx) = self.stub_namespace_table(target_name) {
+                self.non_class_tables.insert(target_name.clone(), stub_idx);
                 continue;
             }
             let table_idx = TableIndex(EXT_BASE + self.tables.len());
@@ -731,6 +777,12 @@ impl<'a> BuildOnStubsContext<'a> {
         let nct_entries: Vec<(String, TableIndex)> = self.non_class_tables.iter()
             .map(|(name, &idx)| (name.clone(), idx)).collect();
         for (name, table_idx) in nct_entries {
+            // A reused stub namespace table already owns its scope-0 symbol (from the
+            // stubs); re-registering would push a fresh symbol and orphan the stub's
+            // location and flavor data. Only genuinely new workspace tables need one.
+            if self.scope0_resolves_to(&name, table_idx) {
+                continue;
+            }
             let sym_idx = self.register_global(&name, Some(ValueType::Table(Some(table_idx))));
             if let Some(loc) = self.table_source_locations.get(&name) {
                 self.symbol_locations.insert(sym_idx, loc.clone());
@@ -879,18 +931,10 @@ impl<'a> BuildOnStubsContext<'a> {
                 let source_table_idx = self.non_class_tables.get(&ref_chain[0])
                     .or_else(|| self.classes.get(&ref_chain[0]))
                     .or_else(|| self.sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), ref_chain[0].clone())))
-                    .or_else(|| {
-                        // Fall back to scope0 symbols (e.g. stub tables like C_Spell)
-                        let sym_id = SymbolIdentifier::Name(ref_chain[0].clone());
-                        let sym_idx = self.scope0_symbols.get(&sym_id)
-                            .or_else(|| self.framexml_scope0_symbols.get(&sym_id))?;
-                        let sym = &self.symbols[sym_idx.ext_offset()];
-                        match sym.versions.last()?.resolved_type.as_ref()? {
-                            ValueType::Table(Some(idx)) => Some(idx),
-                            _ => None,
-                        }
-                    });
-                if let Some(&mut_src_idx) = source_table_idx {
+                    .copied()
+                    // Fall back to scope0 symbols (e.g. stub tables like C_Spell)
+                    .or_else(|| self.scope0_table_idx(&ref_chain[0]));
+                if let Some(mut_src_idx) = source_table_idx {
                     let mut current = mut_src_idx;
                     let mut resolved = None;
                     for (i, name) in ref_chain[1..].iter().enumerate() {

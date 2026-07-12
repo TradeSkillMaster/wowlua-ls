@@ -37,3 +37,10 @@ end
 local reg = nil
 reg:GenerateCallbackEvents({})
 --  ^ defs: 2
+
+-- Same overlap case, but for a method on a stub *namespace* table rather than a
+-- @class: `Settings` is a plain scope-0 global table in the built-in stubs, and
+-- framexml_namespace.lua redefines Settings.RegisterVerticalLayoutCategory.
+-- Go-to-definition must offer both the stub and the workspace site.
+Settings.RegisterVerticalLayoutCategory("x")
+--       ^ defs: 2

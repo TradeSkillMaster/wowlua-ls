@@ -237,7 +237,9 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_lens = extract_field(annotation, "lens:");
 
         if expected_hover.is_none() && expected_doc.is_none() && expected_def.is_none()
-            && expected_typedef.is_none() && expected_sig.is_none() && expected_diag.is_none()
+            && expected_defs.is_none()
+            && expected_typedef.is_none() && expected_typedefs.is_none() && expected_sig.is_none()
+            && expected_diag.is_none()
             && expected_refs.is_none() && expected_linked.is_none()
             && expected_comp.is_none() && expected_tok.is_none()
             && expected_highlight.is_none() && expected_hint.is_none()
