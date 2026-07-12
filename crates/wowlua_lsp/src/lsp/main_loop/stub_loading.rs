@@ -17,6 +17,114 @@ pub(super) fn stubs_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Directory where embedded stub files are materialized on disk so editors can
+/// open them for go-to-definition (see `resolve_external_location`).
+///
+/// Defaults to `<temp>/wowlua-ls-stubs`, but an editor plugin can redirect it
+/// via the `WOWLUA_LS_STUB_DIR` environment variable. The JetBrains plugin does
+/// this, pointing it at a directory it also watches and loads into the VFS:
+/// LSP4IJ resolves go-to-definition targets through IntelliJ's VFS
+/// (`VirtualFileManager.findFileByUrl`, non-refreshing), which never sees files
+/// written under an unwatched temp directory, so navigation silently fell back
+/// to "find usages". A watched directory is refreshed into the VFS, making the
+/// materialized stub files navigable.
+///
+/// The path is scoped by the precomputed-blob version so a server upgrade that
+/// regenerates the stubs writes into a *fresh* subdirectory instead of serving a
+/// previous build's files: unlike the old temp default, the plugin-provided
+/// directory is persistent and shared across versions. Because a given
+/// `(dir, relative path)` therefore maps to immutable content, the size-based
+/// skip in [`materialize_stub_file`] is an exact "already written" test.
+pub fn stub_materialize_dir() -> std::path::PathBuf {
+    stub_materialize_dir_from(std::env::var_os("WOWLUA_LS_STUB_DIR"))
+}
+
+/// Pure core of [`stub_materialize_dir`] (testable without mutating process env):
+/// the override base directory when set and non-empty, else
+/// `<temp>/wowlua-ls-stubs`, then version-scoped by the precomputed-blob version.
+fn stub_materialize_dir_from(override_dir: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    override_dir
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("wowlua-ls-stubs"))
+        .join(crate::pre_globals::BLOB_VERSION.to_string())
+}
+
+/// Write one embedded stub file to `dir/rel`, creating parent directories as
+/// needed, and return its full path. Shared by the eager
+/// ([`eager_materialize_stub_files`]) and lazy (`resolve_external_location`)
+/// materialization paths so the write/skip policy lives in one place.
+///
+/// Skips the write when the file already exists with the expected byte length.
+/// This is exact rather than heuristic because `dir` is version-scoped (see
+/// [`stub_materialize_dir`]): a given `(dir, rel)` always maps to the same
+/// content, so a matching length means the file is already current.
+pub(crate) fn materialize_stub_file(
+    dir: &std::path::Path,
+    rel: &str,
+    content: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    let path = dir.join(rel);
+    let up_to_date = std::fs::metadata(&path).is_ok_and(|m| m.len() == content.len() as u64);
+    if !up_to_date {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, content)?;
+    }
+    Ok(path)
+}
+
+/// Pre-warm the stub-file-contents blob and, when the materialize directory has
+/// been redirected by an editor plugin (`WOWLUA_LS_STUB_DIR` set), eagerly write
+/// every embedded stub file to it.
+///
+/// The JetBrains/LSP4IJ case is the reason this exists: LSP4IJ resolves
+/// go-to-definition targets through IntelliJ's VFS (`findFileByUrl`, which does
+/// *not* refresh), so a stub file written lazily on first navigation isn't yet in
+/// the VFS and navigation silently falls back to "find usages". By pre-writing
+/// all files into the plugin's watched directory at startup, IntelliJ's file
+/// watcher refreshes them into the VFS well before the user navigates, so the
+/// *first* go-to-definition on any stub resolves a real file. Files already present
+/// with the right size are skipped, keeping repeat startups to cheap stat calls.
+///
+/// When the env var is unset (VS Code / CLI) this only pre-warms the blob — those
+/// clients open `file://` targets directly and don't need pre-materialization.
+pub fn eager_materialize_stub_files() {
+    let contents = stub_file_contents();
+    if std::env::var_os("WOWLUA_LS_STUB_DIR").filter(|v| !v.is_empty()).is_none() {
+        return;
+    }
+    let dir = stub_materialize_dir();
+    remove_stale_version_dirs(&dir);
+    let mut failed = 0usize;
+    for (rel, content) in contents {
+        if materialize_stub_file(&dir, rel, content).is_err() {
+            failed += 1;
+        }
+    }
+    log::debug!(
+        "Materialized {} stub file(s) to {} ({failed} failed)",
+        contents.len(),
+        dir.display(),
+    );
+}
+
+/// Delete version-scoped stub directories left by previous server builds so the
+/// persistent (JetBrains) materialize location doesn't accumulate a full copy per
+/// version. Only sibling subdirectories of the current version dir are removed,
+/// and only when their name differs — the base directory (`WOWLUA_LS_STUB_DIR`)
+/// is owned exclusively by us, so nothing else lives there. Best-effort.
+fn remove_stale_version_dirs(current: &std::path::Path) {
+    let (Some(base), Some(keep)) = (current.parent(), current.file_name()) else { return };
+    let Ok(entries) = std::fs::read_dir(base) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name() != keep && entry.path().is_dir() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// Try to load the precomputed stubs blob.
 ///
 /// With `embedded-stubs` (default): reads from data baked into the binary.
@@ -154,8 +262,9 @@ pub(super) fn is_stub_path(uri: &lsp_types::Uri) -> bool {
             // time; harmless no-op if the path doesn't exist on the deployed
             // machine).
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stubs"),
-            // Temp directory where embedded stubs are extracted for go-to-def.
-            std::env::temp_dir().join("wowlua-ls-stubs"),
+            // Directory where embedded stubs are materialized for go-to-def
+            // (temp by default, or the plugin-provided watched dir).
+            stub_materialize_dir(),
         ];
         // Non-embedded-stubs deployments: stubs directory next to the executable.
         #[cfg(not(feature = "embedded-stubs"))]
@@ -214,4 +323,53 @@ pub(super) fn text_has_meta(text: &str) -> bool {
         let trimmed = line.trim();
         trimmed == "---@meta" || trimmed.starts_with("---@meta ")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pre_globals::BLOB_VERSION;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    #[test]
+    fn materialize_dir_defaults_to_temp() {
+        let expected = std::env::temp_dir()
+            .join("wowlua-ls-stubs")
+            .join(BLOB_VERSION.to_string());
+        assert_eq!(stub_materialize_dir_from(None), expected);
+        // An empty override is ignored (treated as unset).
+        assert_eq!(stub_materialize_dir_from(Some(OsString::new())), expected);
+    }
+
+    #[test]
+    fn materialize_dir_honors_override() {
+        // The JetBrains plugin points this at a directory it watches and loads into
+        // the VFS so IntelliJ can navigate into materialized stub files.
+        let dir = stub_materialize_dir_from(Some(OsString::from("/custom/stub/root")));
+        assert_eq!(dir, PathBuf::from("/custom/stub/root").join(BLOB_VERSION.to_string()));
+    }
+
+    #[test]
+    fn materialize_dir_is_version_scoped() {
+        // A blob-version bump must land in a distinct directory so the persistent,
+        // shared JetBrains materialize location never serves a previous build's
+        // files (a same-length content change would slip past the size check).
+        assert!(stub_materialize_dir_from(Some(OsString::from("/x"))).ends_with(BLOB_VERSION.to_string()));
+    }
+
+    #[test]
+    fn materialize_stub_file_writes_then_skips() {
+        let dir = std::env::temp_dir().join(format!("wowlua-mat-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // First call writes the file (and creates the nested parent).
+        let path = materialize_stub_file(&dir, "a/b/T.lua", "hello").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
+        // Same length → skipped (content left untouched even if it differs), proving
+        // the size check gates the write. Version-scoping is what makes this safe.
+        std::fs::write(&path, "world").unwrap();
+        materialize_stub_file(&dir, "a/b/T.lua", "HELLO").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "world");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

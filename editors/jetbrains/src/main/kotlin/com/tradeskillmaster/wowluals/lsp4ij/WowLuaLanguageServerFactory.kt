@@ -12,6 +12,7 @@ import com.redhat.devtools.lsp4ij.server.ProcessStreamConnectionProvider
 import com.redhat.devtools.lsp4ij.server.StreamConnectionProvider
 import com.tradeskillmaster.wowluals.WowLuaServerPath
 import com.tradeskillmaster.wowluals.WowLuaSettings
+import com.tradeskillmaster.wowluals.WowLuaStubDir
 
 /**
  * The plugin's LSP client. LSP4IJ is a required dependency, so this is the sole
@@ -21,8 +22,19 @@ import com.tradeskillmaster.wowluals.WowLuaSettings
  */
 class WowLuaLanguageServerFactory : LanguageServerFactory, LanguageServerEnablementSupport {
 
-    override fun createConnectionProvider(project: Project): StreamConnectionProvider =
-        object : ProcessStreamConnectionProvider(listOf(WowLuaServerPath.resolve()), project.basePath ?: ".") {}
+    override fun createConnectionProvider(project: Project): StreamConnectionProvider {
+        // Direct the server to materialize go-to-definition stub files into a
+        // directory we watch and load into the VFS (see WowLuaStubDir): otherwise
+        // LSP4IJ can't resolve the out-of-project target and go-to-definition on a
+        // stub falls back to "find usages".
+        WowLuaStubDir.ensureWatched()
+        val env = mapOf(WowLuaStubDir.ENV_VAR to WowLuaStubDir.path().toString())
+        return object : ProcessStreamConnectionProvider(
+            listOf(WowLuaServerPath.resolve()),
+            project.basePath ?: ".",
+            env,
+        ) {}
+    }
 
     override fun createClientFeatures(): LSPClientFeatures =
         LSPClientFeatures().setSemanticTokensFeature(object : LSPSemanticTokensFeature() {

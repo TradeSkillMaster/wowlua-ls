@@ -908,21 +908,17 @@ pub(super) fn resolve_external_location(
         let file_uri = abs_path_to_uri(&loc.path)?;
         (text, file_uri)
     } else {
-        // Fall back to lazily-loaded embedded stub content
+        // Fall back to lazily-loaded embedded stub content, materialized to a
+        // deterministic path so the editor can open the file. Defaults to a temp
+        // dir; the JetBrains plugin redirects it (via `WOWLUA_LS_STUB_DIR`) to a
+        // directory it watches and loads into the VFS so IntelliJ can navigate in.
         let rel_key = loc.path.to_string_lossy();
         let content = stub_file_contents().get(rel_key.as_ref())?;
-        // Write to a deterministic temp path so VS Code can open the file.
-        // Skip writing if the file already exists with the correct size.
-        let tmp_dir = std::env::temp_dir().join("wowlua-ls-stubs");
-        let tmp_path = tmp_dir.join(&*rel_key);
-        let needs_write = std::fs::metadata(&tmp_path)
-            .map_or(true, |m| m.len() != content.len() as u64);
-        if needs_write {
-            if let Some(parent) = tmp_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(&tmp_path, content);
-        }
+        let tmp_dir = crate::lsp::stub_materialize_dir();
+        // Best-effort: fall back to the computed path even if the write failed, so
+        // an editor that already has the file (or a later retry) can still open it.
+        let tmp_path = materialize_stub_file(&tmp_dir, &rel_key, content)
+            .unwrap_or_else(|_| tmp_dir.join(&*rel_key));
         let file_uri = abs_path_to_uri(&tmp_path)?;
         (content.clone(), file_uri)
     };

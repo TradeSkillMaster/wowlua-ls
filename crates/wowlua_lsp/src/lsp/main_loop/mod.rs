@@ -76,7 +76,7 @@ use state::*;
 use stub_loading::*;
 
 pub use scan::{scan_workspace, scan_workspace_with_stubs, scan_paths_with_overrides};
-pub use stub_loading::{load_precomputed_stubs};
+pub use stub_loading::{load_precomputed_stubs, stub_materialize_dir};
 pub use hierarchy::{search_workspace_symbols};
 pub use code_actions::{compute_quick_fixes, compute_code_actions, make_generate_annotation_stubs_source_action};
 
@@ -736,8 +736,10 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     let stubs_handle = std::thread::spawn(load_stubs);
     // Pre-warm the stub file contents blob (used by go-to-definition on external
     // symbols). Without this, the first go-to-definition pays a multi-second
-    // decompression penalty. The OnceLock inside handles synchronization.
-    std::thread::spawn(|| { stub_file_contents(); });
+    // decompression penalty. The OnceLock inside handles synchronization. When an
+    // editor plugin has redirected the materialize dir (JetBrains), this also
+    // eagerly writes every stub file there so the IDE can navigate into it.
+    std::thread::spawn(stub_loading::eager_materialize_stub_files);
 
     // Workspace scan Pass 1: file discovery + parse + annotation scan (no stubs dependency)
     let mut configs = crate::config::ProjectConfigs::default();
@@ -2065,10 +2067,10 @@ mod tests {
         let (connection, _client_conn) = Connection::memory();
         let client = ClientSupport::default();
 
-        // Write a stub file on disk under the temp stubs dir so `is_stub_path`
-        // recognizes it — mirroring what `resolve_external_location` does on the
-        // prior go-to-def that brought the user into the file.
-        let dir = std::env::temp_dir().join("wowlua-ls-stubs").join("synth_nav_test");
+        // Write a stub file on disk under the (version-scoped) materialize dir so
+        // `is_stub_path` recognizes it — mirroring what `resolve_external_location`
+        // does on the prior go-to-def that brought the user into the file.
+        let dir = stub_materialize_dir().join("synth_nav_test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Nav.lua");
         let text = "local x = 1\nlocal y = x\n";
@@ -2262,7 +2264,9 @@ mod tests {
 
     #[test]
     fn is_stub_path_detects_temp_stubs() {
-        let tmp_dir = std::env::temp_dir().join("wowlua-ls-stubs");
+        // Version-scoped materialize dir (matches what `resolve_external_location`
+        // hands the editor), not the bare `wowlua-ls-stubs` base.
+        let tmp_dir = stub_materialize_dir();
         let stub_file = tmp_dir
             .join("vendor")
             .join("Annotations")
