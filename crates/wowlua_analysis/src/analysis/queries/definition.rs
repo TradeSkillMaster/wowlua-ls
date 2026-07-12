@@ -131,13 +131,6 @@ impl AnalysisResult {
         let mut string_defs = Vec::new();
         string_defs.extend(self.keyof_string_definition_at(tree, offset));
         string_defs.extend(self.event_string_definition_at(tree, offset));
-        // Untyped-receiver fallback: when the receiver has no resolved type the
-        // typed paths above can't fire, so match a sibling `function RECV:<value>()`
-        // handler on the same receiver (e.g. `E:RegisterEvent("PLAYER_LEVEL_UP")`
-        // with `E` an `any`-typed addon object).
-        if string_defs.is_empty() {
-            string_defs.extend(self.sibling_handler_string_definitions_at(tree, offset));
-        }
         if !string_defs.is_empty() {
             return string_defs;
         }
