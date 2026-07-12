@@ -28,26 +28,32 @@
     <h3>Setup</h3>
     <p>The plugin bundles the <code>wowlua_ls</code> binary — no separate install needed. If no
     bundled binary ships for your platform, it falls back to a <code>wowlua_ls</code> on your PATH.</p>
-    <p>On IDEs without the built-in LSP client (Community-based IDEs), install the
-    <a href="https://plugins.jetbrains.com/plugin/23257-lsp4ij">LSP4IJ</a> plugin — it is then
-    used as the LSP backend automatically. On other IDEs you can optionally switch to the
-    LSP4IJ backend in <b>Settings > Tools > WoW Lua LS</b>.</p>
+    <p>The plugin drives the language server through the
+    <a href="https://plugins.jetbrains.com/plugin/23257-lsp4ij">LSP4IJ</a> plugin, which the
+    Marketplace installs automatically as a dependency.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
-    <depends optional="true" config-file="lsp.xml">com.intellij.modules.lsp</depends>
-    <depends optional="true" config-file="lsp4ij.xml">com.redhat.devtools.lsp4ij</depends>
+    <depends>com.redhat.devtools.lsp4ij</depends>
     <depends optional="true" config-file="textmate.xml">org.jetbrains.plugins.textmate</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <applicationConfigurable
-                parentId="tools"
-                instance="com.tradeskillmaster.wowluals.WowLuaSettingsConfigurable"
-                id="com.tradeskillmaster.wowluals.settings"
-                displayName="WoW Lua LS"/>
-
         <applicationService
                 serviceImplementation="com.tradeskillmaster.wowluals.WowLuaSettings"/>
+    </extensions>
+
+    <extensions defaultExtensionNs="com.redhat.devtools.lsp4ij">
+        <server id="wowlua-ls"
+                name="WoW Lua LS"
+                factoryClass="com.tradeskillmaster.wowluals.lsp4ij.WowLuaLanguageServerFactory">
+            <description><![CDATA[
+            Language server for World of Warcraft Lua addon development.
+            ]]></description>
+        </server>
+        <!-- Pattern mappings (not fileType/language) so TextMate keeps
+             providing the syntax coloration for .lua/.toc files. -->
+        <fileNamePatternMapping patterns="*.lua" serverId="wowlua-ls" languageId="lua"/>
+        <fileNamePatternMapping patterns="*.toc" serverId="wowlua-ls" languageId="toc"/>
     </extensions>
 
 </idea-plugin>

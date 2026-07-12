@@ -20,20 +20,17 @@ All features are provided by the `wowlua_ls` language server:
 The plugin adds:
 
 - Lua and TOC syntax highlighting via the shared TextMate grammar (same grammar as the VS Code extension)
-- LSP client wiring with a choice of two backends (see [LSP backends](#lsp-backends))
+- LSP client wiring via [LSP4IJ](#lsp-backend)
 
 ## Requirements
 
-- A JetBrains IDE 2025.2 or newer. IDEs without the built-in LSP client (Community-based IDEs) additionally need the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin.
+- A JetBrains IDE 2025.2 or newer, with the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin. LSP4IJ is a required dependency, so installing from the Marketplace pulls it in automatically.
 - JDK 21+ (for building)
 - `wowlua_ls` binary ([releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release` from the repo root)
 
-## LSP backends
+## LSP backend
 
-The plugin can drive the language server through either of two LSP clients:
-
-- **Built-in (default):** the IDE's native LSP client (`com.intellij.modules.lsp`, available in paid IDEs).
-- **LSP4IJ:** Red Hat's [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin, when installed. Opt in via **Settings → Tools → WoW Lua LS**; the change takes effect after an IDE restart, which the plugin offers to do for you when you apply it. On IDEs without the built-in client, LSP4IJ is used automatically — no toggle needed. Compared to the built-in client, LSP4IJ serves files outside the project content (e.g. go-to-definition targets inside WoW API stubs) and scopes servers strictly per project.
+The plugin drives the language server through Red Hat's [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) client on every IDE. LSP4IJ works across all JetBrains IDEs (including Community-based ones), serves files outside the project content (e.g. go-to-definition targets inside WoW API stubs), and scopes servers strictly per project. You can turn the server off without uninstalling the plugin from LSP4IJ's **Languages & Frameworks → Language Servers** settings.
 
 ## Setup
 
@@ -88,17 +85,12 @@ This launches a fresh IntelliJ instance with the plugin loaded. Open any directo
 ```
 src/main/
 ├── kotlin/com/tradeskillmaster/wowluals/
-│   ├── WowLuaLspServerSupportProvider.kt  # Built-in LSP backend (com.intellij.platform.lsp)
 │   ├── lsp4ij/
-│   │   └── WowLuaLanguageServerFactory.kt # LSP4IJ backend (loads only when LSP4IJ is installed)
-│   ├── WowLuaBackend.kt                   # Backend availability probing + selection
-│   ├── WowLuaServerPath.kt                # Shared wowlua_ls binary resolution
+│   │   └── WowLuaLanguageServerFactory.kt # LSP4IJ client wiring (server + enablement)
+│   ├── WowLuaServerPath.kt                # wowlua_ls binary resolution
 │   ├── WowLuaTextMateBundleProvider.kt    # Registers the bundled TextMate grammars
-│   ├── WowLuaSettings.kt                  # Persistent settings (backend toggle)
-│   └── WowLuaSettingsConfigurable.kt      # Settings UI
+│   └── WowLuaSettings.kt                  # Persistent settings (LSP4IJ server enable/disable)
 └── resources/META-INF/
-    ├── plugin.xml                         # Plugin descriptor (optional deps per backend)
-    ├── lsp.xml                            # Built-in LSP registration (needs com.intellij.modules.lsp)
-    ├── lsp4ij.xml                         # LSP4IJ registration (needs com.redhat.devtools.lsp4ij)
+    ├── plugin.xml                         # Plugin descriptor (LSP4IJ server registration)
     └── textmate.xml                       # TextMate bundle registration
 ```

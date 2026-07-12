@@ -31,7 +31,7 @@ Install **wowlua-ls** from the [VS Code Marketplace](https://marketplace.visuals
 
 ### JetBrains IDEs
 
-Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server) (or **Settings → Plugins → Marketplace**, search for "WoW Lua"). Requires a JetBrains IDE with LSP support, running 2024.1 or newer. The plugin bundles the language server binary — no separate install needed.
+Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server) (or **Settings → Plugins → Marketplace**, search for "WoW Lua"). Works in any JetBrains IDE 2025.2 or newer; it uses the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin as its LSP client, which the Marketplace installs automatically as a dependency. The plugin bundles the language server binary — no separate install needed.
 
 ### Neovim
 
