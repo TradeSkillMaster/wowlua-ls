@@ -318,32 +318,66 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
     let mut lua_files = Vec::new();
     collect_lua_paths(&interface_dir, &mut lua_files);
 
-    // Build class → declared field names map from pre_globals.
+    // Build class → declared field names maps from pre_globals.
     // Include own fields + direct parent fields (one level).  Grandparent+
     // fields are not walked — this is fine for the small data structures we
     // target (e.g. TooltipDataLine has no deep inheritance), and avoids the
     // complexity of a transitive closure over the full class hierarchy.
-    let class_field_map: HashMap<String, HashSet<String>> = {
-        let mut map: HashMap<String, HashSet<String>> = HashMap::new();
+    //
+    // Two maps are built:
+    //  - `class_field_map`: ALL declared field names (data + methods). Used only
+    //    to skip re-emitting a field the matched class already declares.
+    //  - `class_data_field_map`: only fields carrying an explicit type annotation
+    //    (`@field`), which excludes methods (`function C:M()` fields have no
+    //    annotation). Structural matching scores overlap against THIS map so a
+    //    variable's method-name accesses (`Enable`/`GetName`/`Show`/…) can't
+    //    match a behavioural class (e.g. a fictional `LibObj`) on generic
+    //    widget-method collisions and drag its whole field set — including real
+    //    typed methods like `RegisterEvent` — onto that class as `any?`.
+    // `builtin_method_names` collects every field name that is a method on some
+    // builtin class (a `function C:M()` field — no `@field` annotation). Emitting
+    // any of these as a discovered `@field M any?` would shadow the real typed
+    // method (e.g. degrading an inherited `RegisterEvent` to `any?`), so they are
+    // never emitted — a runtime field populated by C++ is data, never a method.
+    let mut builtin_method_names: HashSet<String> = HashSet::new();
+    let (class_field_map, class_data_field_map): (
+        HashMap<String, HashSet<String>>,
+        HashMap<String, HashSet<String>>,
+    ) = {
+        let mut all: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut data: HashMap<String, HashSet<String>> = HashMap::new();
+        // Collect one table's fields into both maps, gating the data map on an
+        // explicit type annotation and recording annotation-less fields (methods)
+        // in `builtin_method_names`.
+        let mut collect = |name: &str, table: &crate::types::TableInfo, methods: &mut HashSet<String>| {
+            let all_set = all.entry(name.to_string()).or_default();
+            for field_name in table.fields.keys() {
+                all_set.insert(field_name.clone());
+            }
+            let data_set = data.entry(name.to_string()).or_default();
+            for (field_name, fi) in &table.fields {
+                if fi.annotation.is_some() {
+                    data_set.insert(field_name.clone());
+                } else {
+                    methods.insert(field_name.clone());
+                }
+            }
+        };
         for (class_name, &table_idx) in &pre_globals.classes {
             let Some(table) = pre_globals.try_table(table_idx) else { continue };
-            let fields: &mut HashSet<String> = map.entry(class_name.clone()).or_default();
-            for field_name in table.fields.keys() {
-                fields.insert(field_name.clone());
-            }
+            collect(class_name, table, &mut builtin_method_names);
             // Include parent class fields (for structural matching accuracy)
             for &parent_idx in &table.parent_classes {
                 if !parent_idx.is_external() { continue; }
                 let Some(parent) = pre_globals.try_table(parent_idx) else { continue };
-                for field_name in parent.fields.keys() {
-                    fields.insert(field_name.clone());
-                }
+                collect(class_name, parent, &mut builtin_method_names);
             }
         }
-        map
+        (all, data)
     };
-    // Only consider classes with ≥ 3 declared fields (enough for meaningful matching)
-    let matchable_classes: Vec<(&String, &HashSet<String>)> = class_field_map.iter()
+    // Only consider classes with ≥ 3 declared DATA fields (enough for meaningful
+    // matching; method-only classes are never matched).
+    let matchable_classes: Vec<(&String, &HashSet<String>)> = class_data_field_map.iter()
         .filter(|(_, fields)| fields.len() >= 3)
         .collect();
 
@@ -441,7 +475,9 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
             if let Some((class_name, _overlap)) = best {
                 let declared = &class_field_map[class_name];
                 for field in accessed_fields {
-                    if !declared.contains(field) {
+                    // Never emit a real method name (would shadow the typed method)
+                    // or a field the class already declares.
+                    if !declared.contains(field) && !builtin_method_names.contains(field) {
                         discovered.entry(class_name.to_string())
                             .or_default()
                             .insert(field.clone());
@@ -459,7 +495,7 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
             let class = caps.get(1).unwrap().as_str();
             let field = caps.get(2).unwrap().as_str();
             let Some(declared) = class_field_map.get(class) else { continue };
-            if declared.contains(field) { continue; }
+            if declared.contains(field) || builtin_method_names.contains(field) { continue; }
             discovered.entry(class.to_string()).or_default().insert(field.to_string());
         }
 

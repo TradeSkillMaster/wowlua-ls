@@ -1,6 +1,143 @@
 use super::*;
 
 #[test]
+fn inferred_fields_ignores_method_name_overlap() {
+    // Regression: the structural runtime-field discovery used to score class
+    // overlap against ALL declared fields, including a class's METHODS (which
+    // carry no `@field` annotation). A behavioural library class (`LibObj`
+    // below) declares generic method names (`Enable`/`Disable`/`GetName`) that
+    // also exist on Blizzard widgets, so any widget variable calling those was
+    // misclassified as that class and had its ENTIRE field set — including real
+    // typed methods such as `RegisterEvent` — dumped onto the class as `any?`,
+    // shadowing the real methods.
+    //
+    // Two independent guards, both exercised here:
+    //  1. Overlap is scored on DATA fields only, so `LibObj` (matched in the old
+    //     code purely via its Enable/Disable/GetName method names) is never
+    //     matched by a widget variable.
+    //  2. A field whose name is a real method on any builtin class is never
+    //     emitted, so even a class matched legitimately via DATA overlap
+    //     (`DataStruct` below) never gets `RegisterEvent`/`Show` dumped onto it.
+    let stub_dir = std::env::temp_dir().join("wowlua-ls-test-inferred-fields-stub");
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    std::fs::write(
+        stub_dir.join("Lib.lua"),
+        r#"---@meta _
+-- A behavioural class: three real DATA fields, plus methods whose names
+-- collide with common widget methods.
+---@class LibObj
+---@field libName string
+---@field libData table
+---@field libFlag boolean
+local LibObj = {}
+function LibObj:Enable() end
+function LibObj:Disable() end
+function LibObj:GetName() end
+
+-- A pure DATA struct: matchable via its data-field names.
+---@class DataStruct
+---@field alpha string
+---@field bravo string
+---@field charlie string
+local DataStruct = {}
+
+-- A widget class supplying the builtin method names that must never be
+-- emitted as inferred fields.
+---@class FakeWidget
+local FakeWidget = {}
+function FakeWidget:RegisterEvent() end
+function FakeWidget:Show() end
+function FakeWidget:Hide() end
+"#,
+    )
+    .unwrap();
+
+    let paths = vec![stub_dir.join("Lib.lua")];
+    let scan = crate::lsp::scan_paths_with_overrides(
+        &paths,
+        &HashSet::new(),
+        None,
+        &[],
+        &[],
+        &crate::annotations::CreatesGlobalMap::new(),
+    );
+    let pg = crate::pre_globals::PreResolvedGlobals::build(
+        &scan.globals,
+        &scan.classes,
+        &scan.aliases,
+        false,
+        &HashMap::new(),
+        &HashSet::new(),
+    );
+    // Sanity: the methods attach to LibObj as (annotation-less) fields, so the
+    // pre-fix matcher WOULD have seen a 3-way overlap on Enable/Disable/GetName.
+    let libobj = pg.classes["LibObj"];
+    let libobj_fields = &pg.try_table(libobj).unwrap().fields;
+    assert!(libobj_fields.contains_key("Enable") && libobj_fields.contains_key("libName"));
+
+    let pre = std::sync::Arc::new(pg);
+
+    let ui = std::env::temp_dir().join("wowlua-ls-test-inferred-fields-ui");
+    let _ = std::fs::remove_dir_all(&ui);
+    let iface = ui.join("Interface/AddOns/Blizzard_Test");
+    std::fs::create_dir_all(&iface).unwrap();
+    std::fs::write(
+        iface.join("Widget.lua"),
+        r#"-- Guard 1: an untyped widget variable that calls the colliding generic
+-- methods AND a pile of real widget methods, but NONE of LibObj's data fields.
+function Blizzard_DoStuff(button)
+    button:Enable()
+    button:Disable()
+    button:GetName()
+    button:RegisterEvent("PLAYER_LOGIN")
+    button:SetPoint("CENTER")
+    button:Show()
+    button:Hide()
+    button:ClearAllPoints()
+    button:GetParent()
+    button:SetChecked(true)
+end
+
+-- Guard 2: an untyped variable that DOES match DataStruct via its data fields,
+-- but also calls widget methods and touches a genuine new data field.
+function Blizzard_UseData(rec)
+    print(rec.alpha, rec.bravo, rec.charlie, rec.newData)
+    rec:RegisterEvent("FOO")
+    rec:Show()
+end
+"#,
+    )
+    .unwrap();
+
+    let discovered = discover_runtime_fields(&ui, pre);
+
+    assert!(
+        !discovered.contains_key("LibObj"),
+        "LibObj must not be polluted by a widget that only overlaps its METHOD \
+         names; got fields {:?}",
+        discovered.get("LibObj"),
+    );
+
+    // DataStruct matches on data overlap and gains the genuine data field...
+    let data_fields = discovered
+        .get("DataStruct")
+        .expect("DataStruct should match on its data-field overlap");
+    assert!(
+        data_fields.contains("newData"),
+        "DataStruct should gain the genuine runtime data field `newData`; got {data_fields:?}",
+    );
+    // ...but must never gain a builtin method name.
+    assert!(
+        !data_fields.contains("RegisterEvent") && !data_fields.contains("Show"),
+        "DataStruct must not gain builtin method names as `any?` fields; got {data_fields:?}",
+    );
+
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    let _ = std::fs::remove_dir_all(&ui);
+}
+
+#[test]
 fn test_safe_constant_value() {
     // Self-contained literals/references are kept verbatim.
     assert_eq!(safe_constant_value("number", "5"), "5");
