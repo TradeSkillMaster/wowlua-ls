@@ -2379,6 +2379,50 @@ impl<'a> Analysis<'a> {
         self.try_narrows_arg(call, call_expr_id, scope_idx);
     }
 
+    /// If `sym_idx`'s pre-branch version `pre_ver` is a *live* alias of another
+    /// local — i.e. it was introduced by `local x = other` and `other` has not
+    /// been reassigned since — return that origin symbol.
+    ///
+    /// This lets guard narrowing recorded against `other` (e.g. the false path of
+    /// `if type(other) == "string"`) also refine `x` in the implicit-else merge,
+    /// since `x` still holds `other`'s value there. The version-equality check is
+    /// what makes it sound: if `other` were reassigned between the alias and the
+    /// guard, the guard would narrow a value `x` no longer holds.
+    ///
+    /// Must be evaluated *before* this scope's BranchMerge versions are pushed:
+    /// those carry `created_in_scope == scope_idx`, so if `other` is itself merged
+    /// its merge version would satisfy `version_for_scope_ancestors_only` and
+    /// corrupt the equality baseline. The call site snapshots all origins up front.
+    fn pre_branch_alias_origin(&self, sym_idx: SymbolIndex, pre_ver: usize, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
+        let src = self.ir.symbols[sym_idx.val()].versions.get(pre_ver)?.type_source?;
+        let &Expr::SymbolRef(origin, origin_ver) = self.ir.try_expr(src)? else { return None };
+        if origin.is_external() || origin == sym_idx {
+            return None;
+        }
+        (origin_ver == self.ir.version_for_scope_ancestors_only(origin, scope_idx)).then_some(origin)
+    }
+
+    /// Mirror guard narrowing recorded against `alias_origin` onto its alias
+    /// `sym_idx`, for a branch `bs` where the alias is neither reassigned nor
+    /// directly narrowed. A positive guard (`type(origin) == "T"`) filters the
+    /// alias to `T`; the negated (else) side strips `T`. Returns the narrowed
+    /// contribution expr, or `None` when there's no live alias or the origin
+    /// isn't narrowed in `bs`.
+    fn push_alias_branch_narrowing(&mut self, sym_idx: SymbolIndex, pre_ver: usize, bs: ScopeIndex, alias_origin: Option<SymbolIndex>) -> Option<ExprId> {
+        let origin = alias_origin?;
+        if let Some(gt) = self.narrowing.type_filtered_symbols.get(&bs)
+            .and_then(|m| m.get(&origin)).cloned() {
+            let pre_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, pre_ver));
+            return Some(self.ir.push_expr(Expr::TypeFilter(pre_ref, gt)));
+        }
+        if let Some(gt) = self.narrowing.type_stripped.get(&bs)
+            .and_then(|m| m.get(&NarrowTarget::Symbol(origin))).cloned() {
+            let pre_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, pre_ver));
+            return Some(self.ir.push_expr(Expr::CastRemove(pre_ref, gt)));
+        }
+        None
+    }
+
     /// Process pending branch merges whose parent scope is `scope_idx`: for each
     /// if/elseif/else chain that finished, create merged symbol versions in the
     /// parent scope so code after the chain sees the union type. See the call site
@@ -2425,6 +2469,23 @@ impl<'a> Analysis<'a> {
                 // (no explicit else block) where the implicit path contributes nil.
                 let mut correlated_group: Vec<SymbolIndex> = Vec::new();
 
+                // Snapshot each merged symbol's live alias origin BEFORE the loop
+                // below starts pushing BranchMerge versions. Computed mid-loop this
+                // is non-deterministic: the loop pushes one merge version per symbol
+                // with created_in_scope == scope_idx, which
+                // version_for_scope_ancestors_only would then return for an origin
+                // that is itself merged (reassigned in a branch) — so
+                // pre_branch_alias_origin's liveness check would depend on HashMap
+                // iteration order. Taken up front, every origin still shows its
+                // pre-branch version.
+                let alias_origins: HashMap<SymbolIndex, SymbolIndex> = sym_branch_vers
+                    .keys()
+                    .filter_map(|&s| {
+                        let pv = self.ir.version_for_scope_ancestors_only(s, scope_idx);
+                        self.pre_branch_alias_origin(s, pv, scope_idx).map(|o| (s, o))
+                    })
+                    .collect();
+
                 for (sym_idx, branch_vers) in &sym_branch_vers {
                     let assigned_scopes: HashSet<ScopeIndex> = branch_vers.iter().map(|(s, _)| *s).collect();
 
@@ -2439,6 +2500,12 @@ impl<'a> Analysis<'a> {
 
                     // Find the pre-branch version excluding child scope versions.
                     let pre_ver = self.ir.version_for_scope_ancestors_only(*sym_idx, scope_idx);
+                    // If the pre-branch version aliases another local (`local x =
+                    // other`), guard narrowing on that origin refines x too — in any
+                    // branch where x isn't itself reassigned/narrowed, and in the
+                    // implicit-else path below. Read from the pre-loop snapshot so the
+                    // liveness check isn't perturbed by merge versions this loop pushes.
+                    let alias_origin = alias_origins.get(sym_idx).copied();
                     let mut merge_exprs = Vec::new();
                     for &bs in branch_scopes {
                         if branch_vers.iter().any(|(s, _)| *s == bs) {
@@ -2462,6 +2529,11 @@ impl<'a> Analysis<'a> {
                                 let stripped = self.ir.push_expr(Expr::StripNil(pre_ref));
                                 merge_exprs.push(stripped);
                             }
+                        } else if let Some(narrowed) =
+                            self.push_alias_branch_narrowing(*sym_idx, pre_ver, bs, alias_origin) {
+                            // Branch narrows the aliased origin but not x itself: x
+                            // still holds the origin's value, so mirror the narrowing.
+                            merge_exprs.push(narrowed);
                         } else {
                             // Branch neither assigns nor narrows: use the raw
                             // pre-branch version (the variable is unchanged).
@@ -2475,9 +2547,15 @@ impl<'a> Analysis<'a> {
                     // types since those conditions were all false.
                     if merge.has_implicit_else {
                         let mut pre_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, pre_ver));
+                        // All branch conditions were false in the implicit-else path,
+                        // so strip each branch's positive guard type — for x itself
+                        // and, when x aliases another local, for that origin too.
                         for &bs in branch_scopes {
-                            if let Some(gt) = self.narrowing.type_filtered_symbols.get(&bs)
-                                .and_then(|m| m.get(sym_idx)).cloned() {
+                            let filtered = self.narrowing.type_filtered_symbols.get(&bs);
+                            let gt = filtered.and_then(|m| m.get(sym_idx))
+                                .or_else(|| alias_origin.and_then(|o| filtered.and_then(|m| m.get(&o))))
+                                .cloned();
+                            if let Some(gt) = gt {
                                 pre_ref = self.ir.push_expr(Expr::CastRemove(pre_ref, gt));
                             }
                         }

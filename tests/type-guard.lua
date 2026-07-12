@@ -399,3 +399,99 @@ local function testElseifTypeGuardEarlyExitStrip(x)
     end
 end
 _consume(testElseifTypeGuardEarlyExitStrip)
+
+-- ── Alias narrows through the implicit-else merge ──────────────────────
+-- A local initialised from another (`local ng = src`) is a live alias, so a
+-- `type(src)` guard that reassigns ng inside the branch also refines ng in the
+-- fall-through path: the post-if type drops the guarded member (no false
+-- `field-type-mismatch` at `nameGetter = ng`, where ng must be `fun(): string`).
+
+---@class NgExpandData
+---@field nameGetter fun(): string
+
+---@param sectionName string | fun(): string
+local function testAliasImplicitElseMerge(sectionName)
+    local ng = sectionName
+    if type(sectionName) == "string" then
+        ng = function() return sectionName end
+    end
+    local out = ng
+    --    ^ hover: (local) out: fun(): string
+    ---@type NgExpandData
+    local data = { nameGetter = ng }
+    _consume(data)
+end
+_consume(testAliasImplicitElseMerge)
+
+-- Three-way union: only the guarded member (string) is stripped from the alias.
+---@param sectionName string | number | fun(): string
+local function testAliasImplicitElsePartial(sectionName)
+    local ng = sectionName
+    if type(sectionName) == "string" then
+        ng = function() return "x" end
+    end
+    local out = ng
+    --    ^ hover: (local) out: fun(): string | number
+end
+_consume(testAliasImplicitElsePartial)
+
+-- Explicit (empty) else: the else branch narrows the origin, and ng — still an
+-- alias there — is refined to drop the guarded member just like implicit-else.
+---@param sectionName string | fun(): string
+local function testAliasExplicitElse(sectionName)
+    local ng = sectionName
+    if type(sectionName) == "string" then
+        ng = function() return sectionName end
+    else
+        _consume(ng)
+    end
+    local out = ng
+    --    ^ hover: (local) out: fun(): string
+end
+_consume(testAliasExplicitElse)
+
+-- elseif: the alias is filtered to the elseif's guard type in that branch.
+---@param sectionName string | number | fun(): string
+local function testAliasElseifChain(sectionName)
+    local ng = sectionName
+    if type(sectionName) == "string" then
+        ng = function() return "x" end
+    elseif type(sectionName) == "number" then
+        _consume(ng)
+    end
+    local out = ng
+    --    ^ hover: (local) out: fun(): string | number
+end
+_consume(testAliasElseifChain)
+
+-- Soundness: if the origin is reassigned before the guard, the alias is dead —
+-- the guard narrows a value ng no longer holds, so the pre-if member survives.
+---@param sectionName string | fun(): string
+---@param other string | fun(): string
+local function testAliasDeadAfterReassign(sectionName, other)
+    local ng = sectionName
+    sectionName = other
+    if type(sectionName) == "string" then
+        ng = function() return "x" end
+    end
+    local out = ng
+    --    ^ hover: (local) out: fun(): string | string
+end
+_consume(testAliasDeadAfterReassign)
+
+-- Determinism: the origin is *also* reassigned inside the branch, so it too gets
+-- a merge version. The alias-liveness check must observe the origin's pre-branch
+-- version regardless of merge-processing order (snapshotted before the merge
+-- loop), so this resolves to `fun(): string` on every run — never the imprecise
+-- `fun(): string | string` that a race would sometimes produce.
+---@param sectionName string | fun(): string
+local function testAliasOriginAlsoMerged(sectionName)
+    local ng = sectionName
+    if type(sectionName) == "string" then
+        ng = function() return "x" end
+        sectionName = "literal"
+    end
+    local out = ng
+    --    ^ hover: (local) out: fun(): string
+end
+_consume(testAliasOriginAlsoMerged)
