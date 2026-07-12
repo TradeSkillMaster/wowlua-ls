@@ -251,6 +251,13 @@ payload parameters typed automatically. A string handler name — or the omitted
 form, where the event name doubles as the method — instead resolves to a method on the
 receiver via [`keyof self`](/reference/annotations#keyof-t).
 
+When the receiver has **no resolved type** — the common `local E = unpack(ns)` addon
+pattern, where `E` is `any` and the `keyof self` machinery can't engage —
+**go-to-definition** on the handler string still works: it navigates to a sibling
+`function E:<name>()` method defined on the same receiver in the file. This is a
+navigation aid only; typing and diagnostics are unaffected (annotate the receiver, e.g.
+`---@class MyAddon : AceEvent-3.0`, to get full hover, completion, and checking).
+
 #### Typing a named handler method's parameters
 
 When the handler is passed **by name** (a string naming a method on the receiver), that

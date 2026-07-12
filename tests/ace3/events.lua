@@ -60,3 +60,14 @@ function Addon:OnConflictedVararg(event, ...)
 end
 Addon:RegisterEvent("ADDON_LOADED", "OnConflictedVararg")
 Addon:RegisterEvent("BAG_UPDATE", "OnConflictedVararg")
+
+-- Untyped receiver: an `any`-typed addon object (the ubiquitous
+-- `local E = unpack(ns)` pattern) can't drive the typed `keyof self` path, so the
+-- event-name string has no typed resolution. Go-to-definition still navigates to
+-- the sibling handler method `function RECV:<event>()` defined on the same
+-- receiver, matched syntactically.
+---@type any
+local Eng
+function Eng:CUSTOM_READY() end
+Eng:RegisterEvent("CUSTOM_READY")
+--                  ^ def: local 71:10
