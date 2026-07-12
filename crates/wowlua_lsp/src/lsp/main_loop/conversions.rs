@@ -1,9 +1,11 @@
 use super::*;
 
-pub(super) fn uri_to_path(uri: &lsp_types::Uri, workspace_root: &Option<PathBuf>) -> Option<PathBuf> {
+/// URI → path, but only for files inside the workspace. In a multi-folder
+/// workspace a file may live under any root (e.g. an attached project), so the
+/// path is accepted if it is under **any** of `workspace_roots`.
+pub(super) fn uri_to_path(uri: &lsp_types::Uri, workspace_roots: &[PathBuf]) -> Option<PathBuf> {
     let path = uri_to_abs_path(uri)?;
-    let root = workspace_root.as_ref()?;
-    if path.starts_with(root) { Some(path) } else { None }
+    workspace_roots.iter().any(|root| path.starts_with(root)).then_some(path)
 }
 
 pub(super) fn defnode_to_range(def: crate::types::DefNode, numbers: &crate::lsp::SafeLinePositions) -> Range {

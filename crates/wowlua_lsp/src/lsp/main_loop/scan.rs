@@ -383,6 +383,13 @@ pub(super) fn collect_lua_paths_filtered(
     }
 }
 
+/// Remove duplicate paths in place, preserving first-occurrence order (which is
+/// scan-order-sensitive — see `collect_lua_paths_filtered`'s sort rationale).
+fn dedup_paths_in_place(paths: &mut Vec<PathBuf>) {
+    let mut seen = HashSet::new();
+    paths.retain(|p| seen.insert(p.clone()));
+}
+
 pub(super) struct LuaFileScanResult {
     pub scan: ScanResult,
     pub file_globals: Vec<ExternalGlobal>,
@@ -847,21 +854,35 @@ pub(super) fn scan_lua_file_cached(path: &Path, correlated_returns: CorrelatedRe
 }
 
 /// Pass 1: file discovery, XML scan, and Lua parse+scan. No stubs dependency.
+/// Accepts multiple workspace roots (a multi-folder workspace) — every root is
+/// walked so cross-file types resolve in each folder.
 pub(super) fn scan_directory_pass1(
-    dir: &Path,
+    dirs: &[PathBuf],
     configs: &mut crate::config::ProjectConfigs,
 ) -> ScanPass1Result {
     use rayon::prelude::*;
 
     let mut paths = Vec::new();
     let mut xml_paths = Vec::new();
-    collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
+    for dir in dirs {
+        if dir.is_dir() {
+            collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
+        }
+    }
     // Scan external library directories (absolute paths in `library` config)
     for lib_dir in configs.external_library_dirs() {
         if lib_dir.is_dir() {
             collect_lua_paths_filtered(&lib_dir, &mut paths, &mut xml_paths, configs);
         }
     }
+    // Workspace roots themselves no longer overlap (`resolve_workspace_roots`
+    // prunes nested roots), but a `library` config dir can sit inside a root and
+    // be collected by both walks. Dedup so such a file isn't *parsed* twice.
+    // (This dedups only the path lists; the extra library-dir walk can still
+    // push a duplicate `(dir, config)` entry via the non-idempotent
+    // `configs.try_load`, which is benign — consumers match the nearest entry.)
+    dedup_paths_in_place(&mut paths);
+    dedup_paths_in_place(&mut xml_paths);
 
     // XML pass: scan XML files for frame/template declarations
     let xml_results: Vec<_> = xml_paths.par_iter()
@@ -1073,13 +1094,13 @@ pub(super) fn collect_all_dynamic_prefixes(file_prefixes: &HashMap<PathBuf, Vec<
 }
 
 pub(super) fn scan_directory_tracked(
-    dir: &Path,
+    dirs: &[PathBuf],
     configs: &mut crate::config::ProjectConfigs,
     stub_classes: &[ClassDecl],
     stub_globals: &[ExternalGlobal],
     creates_global_specs: &crate::annotations::CreatesGlobalMap,
 ) -> DirectoryScanResult {
-    let pass1 = scan_directory_pass1(dir, configs);
+    let pass1 = scan_directory_pass1(dirs, configs);
     let result = complete_directory_scan(pass1, stub_classes, stub_globals, creates_global_specs, configs);
     let all_prefixes: Vec<String> = collect_all_dynamic_prefixes(&result.file_dynamic_prefixes);
     if !all_prefixes.is_empty() {

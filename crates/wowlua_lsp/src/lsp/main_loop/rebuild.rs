@@ -250,7 +250,7 @@ impl RebuildScope {
 pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode<'_>, ws: &mut WorkspaceState) -> RebuildScope {
     use crate::annotations::scan_defclass_calls;
 
-    let file_path = match uri_to_path(uri, &ws.root) {
+    let file_path = match uri_to_path(uri, &ws.roots) {
         Some(p) => p,
         None => return RebuildScope::None,
     };

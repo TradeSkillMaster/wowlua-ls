@@ -368,6 +368,7 @@ impl WorkspaceState {
     #[cfg(test)]
     pub(super) fn for_test(root: Option<PathBuf>) -> Self {
         Self {
+            roots: root.iter().cloned().collect(),
             root,
             configs: Arc::new(crate::config::ProjectConfigs::default()),
             stub_globals: Vec::new(),

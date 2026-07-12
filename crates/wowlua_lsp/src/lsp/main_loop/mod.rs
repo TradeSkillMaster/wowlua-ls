@@ -164,7 +164,13 @@ type CachedWsDiagnostics = (u64, Vec<(String, Vec<lsp_types::Diagnostic>)>);
 type CrossfileDiagnostics = HashMap<String, Vec<lsp_types::Diagnostic>>;
 
 struct WorkspaceState {
+    /// Primary workspace root (first of `roots`), used for URI↔path resolution
+    /// and single-root config lookups. `None` only when the client sent no root.
     root: Option<PathBuf>,
+    /// All workspace roots to scan (the union of `rootUri` and `workspaceFolders`).
+    /// A multi-folder workspace scans every entry so cross-file types resolve in
+    /// each folder; the full-rescan path (`rescan_workspace_from_disk`) reuses this.
+    roots: Vec<PathBuf>,
     // Shared via Arc so background warm workers can hold a cheap clone without
     // deep-copying the (potentially large) per-directory config map. Mutated only
     // during full scans (init / config reload) by building a fresh value and
@@ -449,6 +455,50 @@ fn end_warm_progress(connection: &Connection, token_slot: &mut Option<NumberOrSt
     }
 }
 
+/// Resolve every workspace root directory from the client's initialize params.
+///
+/// `rootUri` is deprecated (LSP 3.6+) in favor of `workspaceFolders`, and a
+/// workspace can legitimately have **several** folders (the IntelliJ platform
+/// attaches additional projects as extra `workspaceFolders`, and a file in an
+/// unscanned folder gets every cross-file type reported undefined). Return the
+/// union of `rootUri` and all `workspaceFolders`, deduplicated, with the primary
+/// (`rootUri`, else the first folder) first so it can serve as `ws.root` for
+/// path resolution. Roots nested inside another root are pruned (see
+/// [`prune_nested_roots`]). An empty result means the client sent neither.
+fn resolve_workspace_roots(
+    root_uri: Option<&lsp_types::Uri>,
+    workspace_folders: Option<&[lsp_types::WorkspaceFolder]>,
+) -> Vec<PathBuf> {
+    let candidates = root_uri
+        .and_then(uri_to_abs_path)
+        .into_iter()
+        .chain(
+            workspace_folders
+                .into_iter()
+                .flatten()
+                .filter_map(|folder| uri_to_abs_path(&folder.uri)),
+        );
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for path in candidates {
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    }
+    prune_nested_roots(roots)
+}
+
+/// Drop any root nested inside another root. The ancestor's recursive scan
+/// already covers the nested subtree, and `uri_to_path` still matches a nested
+/// file against the retained ancestor — so pruning avoids walking (and re-running
+/// the non-idempotent `configs.try_load`/`try_load_toc` on) the overlapping
+/// subtree twice. Order of the surviving roots is preserved.
+fn prune_nested_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    let all = roots.clone();
+    let mut pruned = roots;
+    pruned.retain(|r| !all.iter().any(|other| other != r && r.starts_with(other)));
+    pruned
+}
+
 pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     log::info!("Starting wowlua_ls");
     // Create the transport. Includes the stdio (stdin and stdout) versions but this could
@@ -660,9 +710,26 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         }));
     }
 
-    // Workspace root from client
+    // Workspace roots from client. `rootUri` is deprecated (LSP 3.6+) in favor of
+    // `workspaceFolders`, and a workspace may have several folders — the IntelliJ
+    // platform LSP client (PhpStorm) attaches additional projects as extra
+    // `workspaceFolders`. Scanning only one root leaves every cross-file type in
+    // the other folders reported as undefined, so scan them all. `workspace_root`
+    // is the primary (first) root, kept for path resolution.
     #[allow(deprecated)]
-    let workspace_root: Option<PathBuf> = init_params.root_uri.as_ref().and_then(uri_to_abs_path);
+    let workspace_roots: Vec<PathBuf> = resolve_workspace_roots(
+        init_params.root_uri.as_ref(),
+        init_params.workspace_folders.as_deref(),
+    );
+    let workspace_root: Option<PathBuf> = workspace_roots.first().cloned();
+    if workspace_roots.is_empty() {
+        log::warn!(
+            "No workspace root resolved from rootUri or workspaceFolders; \
+             cross-file analysis (classes, globals) will be unavailable"
+        );
+    } else if workspace_roots.len() > 1 {
+        log::info!("Scanning {} workspace folders: {:?}", workspace_roots.len(), workspace_roots);
+    }
 
     // Overlap stubs loading with workspace scan Pass 1 (parse + scan).
     // Pass 1 doesn't need stubs; only Pass 2 (defclass/built-name) does.
@@ -675,7 +742,11 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // Workspace scan Pass 1: file discovery + parse + annotation scan (no stubs dependency)
     let mut configs = crate::config::ProjectConfigs::default();
     let scan_start = std::time::Instant::now();
-    let scan_pass1 = workspace_root.as_ref().map(|root| scan_directory_pass1(root, &mut configs));
+    let scan_pass1 = if workspace_roots.is_empty() {
+        None
+    } else {
+        Some(scan_directory_pass1(&workspace_roots, &mut configs))
+    };
 
     // Join stubs (should be done or nearly done — Pass 1 overlapped with stubs load)
     let (stub_classes, stub_globals, stub_pre_globals, stubs_have_defclass, stubs_have_built_name) =
@@ -708,6 +779,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let mut ws = WorkspaceState {
         root: workspace_root,
+        roots: workspace_roots,
         configs: Arc::new(configs),
         stub_globals, stub_classes,
         stub_pre_globals,
@@ -1716,6 +1788,81 @@ mod tests {
         RawSemanticToken { start, length, token_type: 0, modifiers: 0 }
     }
 
+    // Regression: clients that send only `workspaceFolders` and omit the
+    // deprecated `rootUri` (the IntelliJ platform LSP client / PhpStorm), or that
+    // attach a second project as an extra folder, must still get every root
+    // scanned. Without this the startup scan covered zero or only one root and
+    // cross-file classes/types in the unscanned folders were reported undefined.
+    #[test]
+    fn workspace_roots_union_root_uri_and_folders() {
+        let folder = |p: &str| lsp_types::WorkspaceFolder {
+            uri: lsp_types::Uri::from_str(&format!("file://{p}")).unwrap(),
+            name: p.rsplit('/').next().unwrap().to_string(),
+        };
+        let pb = PathBuf::from;
+
+        // rootUri absent, one folder -> that folder is the single root.
+        let folders = vec![folder("/tmp/MyAddon")];
+        assert_eq!(resolve_workspace_roots(None, Some(&folders)), vec![pb("/tmp/MyAddon")]);
+
+        // Multiple folders (attached project) -> all scanned, order preserved.
+        let two = vec![folder("/tmp/MyAddon"), folder("/tmp/OtherAddon")];
+        assert_eq!(
+            resolve_workspace_roots(None, Some(&two)),
+            vec![pb("/tmp/MyAddon"), pb("/tmp/OtherAddon")],
+        );
+
+        // rootUri present -> primary (first), then any additional folders, deduped
+        // (the folder equal to rootUri is not repeated).
+        let root_uri = lsp_types::Uri::from_str("file:///tmp/MyAddon").unwrap();
+        assert_eq!(
+            resolve_workspace_roots(Some(&root_uri), Some(&two)),
+            vec![pb("/tmp/MyAddon"), pb("/tmp/OtherAddon")],
+        );
+
+        // rootUri not among the folders -> it leads, folders follow.
+        let other_root = lsp_types::Uri::from_str("file:///tmp/Root").unwrap();
+        assert_eq!(
+            resolve_workspace_roots(Some(&other_root), Some(&folders)),
+            vec![pb("/tmp/Root"), pb("/tmp/MyAddon")],
+        );
+
+        // A folder nested inside the rootUri ancestor is pruned — the ancestor's
+        // scan covers it and uri_to_path still matches its files. Prevents walking
+        // the overlapping subtree (and re-running configs.try_load) twice.
+        let nested = vec![folder("/tmp/Root/Sub")];
+        assert_eq!(
+            resolve_workspace_roots(Some(&other_root), Some(&nested)),
+            vec![pb("/tmp/Root")],
+        );
+        // Sibling-prefix paths are NOT nested (component-wise, not string prefix).
+        let sibling = vec![folder("/tmp/RootTwo")];
+        assert_eq!(
+            resolve_workspace_roots(Some(&other_root), Some(&sibling)),
+            vec![pb("/tmp/Root"), pb("/tmp/RootTwo")],
+        );
+
+        // Neither set -> no roots.
+        assert!(resolve_workspace_roots(None, None).is_empty());
+    }
+
+    // A file under any workspace root must resolve, so the incremental rebuild
+    // (`maybe_rebuild_workspace`) fires for edits in an attached second folder.
+    #[test]
+    fn uri_to_path_accepts_any_workspace_root() {
+        let roots = vec![PathBuf::from("/tmp/FirstAddon"), PathBuf::from("/tmp/SecondAddon")];
+        let in_second = abs_path_to_uri(&PathBuf::from("/tmp/SecondAddon/Config/config.lua")).unwrap();
+        assert_eq!(
+            uri_to_path(&in_second, &roots),
+            Some(PathBuf::from("/tmp/SecondAddon/Config/config.lua")),
+        );
+        // Outside every root -> rejected.
+        let outside = abs_path_to_uri(&PathBuf::from("/tmp/Elsewhere/x.lua")).unwrap();
+        assert_eq!(uri_to_path(&outside, &roots), None);
+        // No roots -> nothing resolves.
+        assert_eq!(uri_to_path(&in_second, &[]), None);
+    }
+
     #[test]
     fn encode_delta_same_line_and_across_newlines() {
         //  col:   0         1
@@ -2418,6 +2565,30 @@ mod tests {
         assert!(!scope2.is_rebuild(), "identical source must not trigger rebuild");
         assert!(matches!(scope2, RebuildScope::None), "no change must yield RebuildScope::None");
         assert_eq!(ws.ws_generation, gen_before, "ws_generation must not change");
+    }
+
+    /// Regression: in a multi-folder workspace, an edit to a file in a
+    /// NON-primary root must still trigger a workspace rebuild. Before the fix
+    /// `uri_to_path` only accepted files under the single primary root, so
+    /// `maybe_rebuild_workspace` returned `None` for attached-project files and
+    /// their cross-file classes never refreshed on edit.
+    #[test]
+    fn edit_in_secondary_workspace_root_triggers_rebuild() {
+        let lua_source = "---@class SecondFolderClass\nlocal C = {}\n";
+        let tree = crate::syntax::parser::parse(lua_source);
+        let root = crate::syntax::SyntaxNode::new_root(&tree);
+
+        // Primary root is /primary; the edited file is under the attached /secondary.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/primary")));
+        ws.roots = vec![PathBuf::from("/primary"), PathBuf::from("/secondary")];
+
+        let uri: lsp_types::Uri = "file:///secondary/types.lua".parse().unwrap();
+        let scope = maybe_rebuild_workspace(&uri, root, &mut ws);
+        assert!(scope.is_rebuild(), "edit in a secondary workspace root must trigger a rebuild");
+        assert!(
+            ws.ws_file_classes.contains_key(&PathBuf::from("/secondary/types.lua")),
+            "the secondary-root file's classes must be registered",
+        );
     }
 
     /// Regression: files with no @event annotations must not trigger an infinite

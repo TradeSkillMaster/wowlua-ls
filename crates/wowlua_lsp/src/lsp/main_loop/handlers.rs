@@ -1465,7 +1465,7 @@ pub(super) fn rescan_workspace_with_progress(
     ws: &mut WorkspaceState,
     analysis_token: &Option<NumberOrString>,
 ) {
-    if ws.root.is_none() {
+    if ws.roots.is_empty() {
         return;
     }
     log::debug!("rescanning workspace from disk (config, XML, or TOC change)");
@@ -1492,7 +1492,7 @@ pub(super) fn rescan_workspace_from_disk(
     documents: &mut HashMap<String, Document>,
     ws: &mut WorkspaceState,
 ) {
-    let Some(ref root) = ws.root else { return };
+    if ws.roots.is_empty() { return; }
     // Build a fresh config locally (scan mutates it), then swap in a new Arc.
     let mut new_configs = crate::config::ProjectConfigs::default();
     let DirectoryScanResult {
@@ -1509,7 +1509,7 @@ pub(super) fn rescan_workspace_from_disk(
         file_callback_registries,
         file_string_consts,
         xml_bound_names: _,
-    } = scan_directory_tracked(root, &mut new_configs, &ws.stub_classes, &ws.stub_globals, ws.stub_pre_globals.creates_global_specs());
+    } = scan_directory_tracked(&ws.roots, &mut new_configs, &ws.stub_classes, &ws.stub_globals, ws.stub_pre_globals.creates_global_specs());
     ws.configs = Arc::new(new_configs);
     ws.ws_file_globals = file_globals;
     ws.ws_file_classes = file_classes;
