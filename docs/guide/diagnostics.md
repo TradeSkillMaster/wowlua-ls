@@ -6,8 +6,8 @@ wowlua-ls ships 55+ diagnostics covering type safety, annotation correctness, co
 
 Diagnostics run automatically as you type. They're grouped by severity:
 
-- **Warning** — likely a bug or an annotation problem
-- **Hint** — code quality suggestions, unused variables, style issues
+- **Warning**: likely a bug or an annotation problem
+- **Hint**: code quality suggestions, unused variables, style issues
 
 Each diagnostic has a **code** (like `type-mismatch` or `unused-local`) that you use to suppress or configure it.
 
@@ -68,7 +68,7 @@ For compatibility with LuaLS suppress comments, these aliases are accepted:
 
 ## Type safety diagnostics
 
-These catch type errors — the most valuable diagnostics for finding real bugs.
+These catch type errors - the most valuable diagnostics for finding real bugs.
 
 ### `type-mismatch` <Badge type="warning" text="Warning" />
 
@@ -271,7 +271,7 @@ Reference to an unresolved global name:
 print(MyUnknownGlobal) -- undefined-global
 ```
 
-Suppress with `globals.read` in `.wowluarc.json` for known external globals. Dynamic global patterns like `_G["PREFIX" .. key] = value` are detected automatically — reads matching the prefix won't trigger this diagnostic.
+Suppress with `globals.read` in `.wowluarc.json` for known external globals. Dynamic global patterns like `_G["PREFIX" .. key] = value` are detected automatically: reads matching the prefix won't trigger this diagnostic.
 
 ### `undefined-field` <Badge type="warning" text="Warning" />
 
@@ -286,7 +286,7 @@ local p = {}
 print(p.level) -- undefined-field
 ```
 
-A field read used as a **defensive existence check** is not flagged — it is
+A field read used as a **defensive existence check** is not flagged - it is
 probing whether the field exists, not assuming it does. This covers the left
 operand of `and`/`or`, the condition of an `if`/`while`, and the access that such
 a guard protects:
@@ -294,7 +294,7 @@ a guard protects:
 ```lua
 local nodeID = button.GetNodeID and button:GetNodeID() -- no undefined-field
 if frame.SetBackdrop then
-    frame:SetBackdrop(nil) -- guarded by the condition — no undefined-field
+    frame:SetBackdrop(nil) -- guarded by the condition: no undefined-field
 end
 local cache = obj.Custom or obj.Fallback -- the `or` fallback idiom
 ```
@@ -468,7 +468,7 @@ Accessing a private or protected field from outside its visibility scope.
 
 ## Strict typing diagnostics <Badge type="tip" text="Hint" />
 
-These are off by default. They fire when the LS can't determine a type — enable them to find gaps in your annotation coverage:
+These are off by default. They fire when the LS can't determine a type - enable them to find gaps in your annotation coverage:
 
 | Code | Fires when |
 |---|---|

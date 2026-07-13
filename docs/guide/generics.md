@@ -60,7 +60,7 @@ function CreateObject(name) return {} end
 local dog = CreateObject("Dog") -- T resolves to the Dog class
 ```
 
-This is how WoW's `CreateFrame` works — the first argument is a string like `"Frame"` or `"Button"`, and the return type matches.
+This is how WoW's `CreateFrame` works. The first argument is a string like `"Frame"` or `"Button"`, and the return type matches.
 
 Because the string literal names a type, typing inside the quotes offers **class-name completions**. When the generic is constrained, only classes that satisfy the constraint are suggested:
 
@@ -74,7 +74,7 @@ Because the string literal names a type, typing inside the quotes offers **class
 ---@return T
 function New(elementType) end
 
-New("")  -- suggests Button, Element, Slider — but never an unrelated class
+New("")  -- suggests Button, Element, Slider - but never an unrelated class
 ```
 
 An unconstrained `` `T` `` (a bare `@generic T`) offers every known class, so adding a constraint (`@generic T: Base`) is the way to keep the suggestions focused on the relevant subtree.
@@ -106,7 +106,7 @@ local n = names:Get()   -- n: string
 names.items             -- string[]
 ```
 
-Methods on a parameterized class automatically inherit the class-level type parameters — no need to redeclare them with `@generic`:
+Methods on a parameterized class automatically inherit the class-level type parameters - no need to redeclare them with `@generic`:
 
 ```lua
 -- Just use T directly
@@ -118,7 +118,7 @@ function MyClass:Set(value) end
 
 When an argument and parameter are the same parameterized class (or the argument is
 a subclass that forwards the type parameter, e.g. `Child<T> : Parent<T>`), the type
-arguments are compared too — not just the class itself:
+arguments are compared too, not just the class itself:
 
 ```lua
 ---@param c Container<boolean>
@@ -202,7 +202,7 @@ local e = getField(cfg, "enabled") -- e: boolean
 getField(cfg, "bogus")  -- generic-constraint-mismatch: "bogus" is not a field of Config
 ```
 
-The LS also provides string literal completions for keyof-constrained parameters — typing `getField(cfg, "")` will suggest `enabled`, `name`, `value`.
+The LS also provides string literal completions for keyof-constrained parameters - typing `getField(cfg, "")` will suggest `enabled`, `name`, `value`.
 
 This pattern is useful for WoW addon code that needs to safely access fields by name:
 
@@ -241,9 +241,9 @@ w:Dispatch("Hide")   -- ok
 w:Dispatch("Nope")   -- generic-constraint-mismatch: "Nope" is not a method of Widget
 ```
 
-For subclasses, the receiver's full surface (own + inherited methods) satisfies the constraint, and completions, references, and rename all see the resolved set. `keyof self` only fires for method calls (`:` syntax) — a direct function call where `self` is passed explicitly won't enforce the constraint.
+For subclasses, the receiver's full surface (own + inherited methods) satisfies the constraint, and completions, references, and rename all see the resolved set. `keyof self` only fires for method calls (`:` syntax). A direct function call where `self` is passed explicitly won't enforce the constraint.
 
-`keyof self` / `keyof ClassName` is also usable directly as a parameter type (no generic needed), and composes in overloads and intersections — see [`keyof T`](/reference/annotations#keyof-t) in the annotation reference. That is how the built-in AceEvent-3.0 stub types its handler arguments, so `self:RegisterEvent("PLAYER_LOGIN")` navigates to and checks `self:PLAYER_LOGIN`.
+`keyof self` / `keyof ClassName` is also usable directly as a parameter type (no generic needed), and composes in overloads and intersections - see [`keyof T`](/reference/annotations#keyof-t) in the annotation reference. That is how the built-in AceEvent-3.0 stub types its handler arguments, so `self:RegisterEvent("PLAYER_LOGIN")` navigates to and checks `self:PLAYER_LOGIN`.
 
 ### Bracket-index fields
 
@@ -344,7 +344,7 @@ local result = Mixin(f, Draggable, Resizable, Scrollable)
 -- result: Frame & Draggable & Resizable & Scrollable
 ```
 
-There's no limit on the number of arguments — they all flow into the intersection.
+There's no limit on the number of arguments - they all flow into the intersection.
 
 A variadic generic can also be the only generic parameter:
 
@@ -364,10 +364,10 @@ When no excess arguments are provided, the variadic generic stays unbound and is
 
 The LS infers generic bindings from multiple sources:
 
-1. **Direct argument types** — if `@param x T`, and you pass a `string`, T = string
-2. **Structural matching** — `T[]` extracts T from an array's element type; `table<K,V>` extracts from map types
-3. **Backtick resolution** — `` `T` `` resolves a string literal as a class name
-4. **Function-type extraction** — `fun(): T` extracts T from a callback's return type
-5. **Receiver type_args** — for `@class Foo<T>`, calling a method on `---@type Foo<string>` binds T from the receiver
+1. **Direct argument types**: if `@param x T`, and you pass a `string`, T = string
+2. **Structural matching**: `T[]` extracts T from an array's element type; `table<K,V>` extracts from map types
+3. **Backtick resolution**: `` `T` `` resolves a string literal as a class name
+4. **Function-type extraction**: `fun(): T` extracts T from a callback's return type
+5. **Receiver type_args**: for `@class Foo<T>`, calling a method on `---@type Foo<string>` binds T from the receiver
 
-Inference runs per-call and doesn't persist — each call site resolves its own bindings independently.
+Inference runs per-call and doesn't persist. Each call site resolves its own bindings independently.

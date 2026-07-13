@@ -1,6 +1,6 @@
 # Configuration
 
-wowlua-ls is configured via `.wowluarc.json` files placed in your project directories. No configuration is required to get started — the defaults work for most addons.
+wowlua-ls is configured via `.wowluarc.json` files placed in your project directories. No configuration is required to get started. The defaults work for most addons.
 
 ## File placement
 
@@ -21,14 +21,14 @@ MyAddon/
 
 How settings combine depends on whether they affect diagnostics:
 
-- **Anything that affects diagnostics is *isolated*** — a file's effective value comes solely from its single nearest ancestor config. Keys that config doesn't set fall back to their **default**, *not* to a parent's value. This covers `ignore`, `diagnostics.*`, `globals.*`, `framexml`, `flavors`, `inference.*`, and `plugins`. The point is that a check run from a subdirectory produces the same results as one run from the project root.
-- **Editor-experience settings are *inherited*** — `hint.*`, `codeLens.*`, `editor.*`, and `completion.*` use the deepest config that sets the key, falling back to ancestors and then the default.
-- **`library` is *inherited downward*** — once any ancestor marks a subtree as a library, every file beneath it has diagnostics suppressed, and a nested config inside that subtree cannot opt back in.
+- **Anything that affects diagnostics is *isolated***: a file's effective value comes solely from its single nearest ancestor config. Keys that config doesn't set fall back to their **default**, *not* to a parent's value. This covers `ignore`, `diagnostics.*`, `globals.*`, `framexml`, `flavors`, `inference.*`, and `plugins`. The point is that a check run from a subdirectory produces the same results as one run from the project root.
+- **Editor-experience settings are *inherited***: `hint.*`, `codeLens.*`, `editor.*`, and `completion.*` use the deepest config that sets the key, falling back to ancestors and then the default.
+- **`library` is *inherited downward***: once any ancestor marks a subtree as a library, every file beneath it has diagnostics suppressed, and a nested config inside that subtree cannot opt back in.
 
 `ignore` and `library` patterns are always relative to the config file's directory. For the full per-setting policy table, see the [Configuration reference](/reference/configuration#hierarchy-behavior).
 
 ::: warning Isolated settings do not inherit
-If a subdirectory has its own `.wowluarc.json`, any isolated setting it does **not** restate reverts to the default — it does *not* pick up the parent's value. A child config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` unless it repeats them.
+If a subdirectory has its own `.wowluarc.json`, any isolated setting it does **not** restate reverts to the default. It does *not* pick up the parent's value. A child config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` unless it repeats them.
 :::
 
 ## Full reference
@@ -88,7 +88,7 @@ Array of path prefixes to exclude from scanning. Relative to the config file's d
 
 Use this for vendored libraries, generated code, or anything you don't want diagnostics on.
 
-Files starting with a shebang (`#!/usr/bin/lua`) are always skipped automatically — no `ignore` entry needed.
+Files starting with a shebang (`#!/usr/bin/lua`) are always skipped automatically - no `ignore` entry needed.
 
 ### `library`
 
@@ -100,12 +100,12 @@ Array of paths to scan for type information but with all diagnostics **suppresse
 
 This differs from `ignore` in an important way:
 
-- **`ignore`** skips the files entirely — no scanning, no types, no diagnostics.
-- **`library`** fully scans and analyzes the files — their `@class`, `@alias`, global functions, and other type information flow to the rest of your workspace — but no diagnostics are reported on the library files themselves.
+- **`ignore`** skips the files entirely: no scanning, no types, no diagnostics.
+- **`library`** fully scans and analyzes the files (their `@class`, `@alias`, global functions, and other type information flow to the rest of your workspace) but no diagnostics are reported on the library files themselves.
 
-Relative entries use the same pattern syntax as `ignore`. Absolute paths are supported, as are relative paths that point *outside* the workspace (e.g. `../shared`) — these are resolved against the config file's directory and scanned as extra external directories, so a library doesn't have to live inside your workspace. Prefer a relative `../` path over an absolute one for libraries checked into version control, since it stays portable across machines.
+Relative entries use the same pattern syntax as `ignore`. Absolute paths are supported, as are relative paths that point *outside* the workspace (e.g. `../shared`). These are resolved against the config file's directory and scanned as extra external directories, so a library doesn't have to live inside your workspace. Prefer a relative `../` path over an absolute one for libraries checked into version control, since it stays portable across machines.
 
-Marking a directory as a library suppresses diagnostics for the **whole subtree**. Unlike the isolated diagnostics settings, this is inherited downward: a vendored library that ships its own `.wowluarc.json` cannot re-enable diagnostics for itself — the ancestor's `library` declaration wins. See the [reference](/reference/configuration#library) for the full hierarchy semantics.
+Marking a directory as a library suppresses diagnostics for the **whole subtree**. Unlike the isolated diagnostics settings, this is inherited downward: a vendored library that ships its own `.wowluarc.json` cannot re-enable diagnostics for itself. The ancestor's `library` declaration wins. See the [reference](/reference/configuration#library) for the full hierarchy semantics.
 
 ### `framexml`
 
@@ -140,8 +140,8 @@ Declare external globals that shouldn't trigger diagnostics:
 }
 ```
 
-- **`read`** — global names that may be accessed without `undefined-global`
-- **`write`** — global names that may be created/assigned without `create-global`
+- **`read`**: global names that may be accessed without `undefined-global`
+- **`write`**: global names that may be created/assigned without `create-global`
 
 Use `read` for globals provided by other addons or libraries not in stubs. Use `write` for globals your addon intentionally exports.
 
@@ -151,7 +151,7 @@ Globals matching `BINDING_HEADER_*` and `BINDING_NAME_*` (keybinding label defin
 
 Dynamic global prefixes are also detected automatically. When a file writes globals through a pattern like `_G["PREFIX" .. key] = value` (or `_G[name .. "SUFFIX"]`), the language server registers a wildcard entry (`PREFIX*` or `*SUFFIX`) so that reads of those globals in other files don't trigger `undefined-global`. This is common in localization code that exports translation strings (e.g. `_G["MYADDON_L_" .. key] = value`).
 
-`SavedVariables` and `SavedVariablesPerCharacter` from `.toc` files are automatically added to both lists — you don't need to configure them manually.
+`SavedVariables` and `SavedVariablesPerCharacter` from `.toc` files are automatically added to both lists - you don't need to configure them manually.
 
 ### `inference`
 
@@ -179,11 +179,11 @@ Set `implicit_protected_prefix` to `true` if your project follows the `_`-prefix
 
 ### `hint`
 
-Configure inlay hints — inline annotations the editor shows next to your code. Hints are **enabled by default**.
+Configure inlay hints, inline annotations the editor shows next to your code. Hints are **enabled by default**.
 
 | Setting | Default | Description |
 |---|---|---|
-| `enable` | `true` | Master switch — set to `false` to disable all hints |
+| `enable` | `true` | Master switch: set to `false` to disable all hints |
 | `parameterNames` | `true` | Parameter names at call sites |
 | `variableTypes` | `true` | Inferred types on `local` declarations |
 | `functionReturnTypes` | `false` | Inferred return types on function definitions |
@@ -232,9 +232,9 @@ Fine-grained control over which diagnostics fire and at what severity:
 }
 ```
 
-- **`disable`** — suppress these diagnostic codes
-- **`enable`** — opt into diagnostics that are off by default, or counteract a `disable` entry in the same config
-- **`severity`** — override severity: `"warning"`, `"info"`, `"hint"`
+- **`disable`**: suppress these diagnostic codes
+- **`enable`**: opt into diagnostics that are off by default, or counteract a `disable` entry in the same config
+- **`severity`**: override severity: `"warning"`, `"info"`, `"hint"`
 
 #### Diagnostics disabled by default
 
@@ -254,7 +254,7 @@ workspace/
 │   ├── .wowluarc.json     ← { "addon_root": true }
 │   ├── Core.lua
 │   └── Libs/
-│       └── LibStub/        ← no addon_root — part of AddonA
+│       └── LibStub/        ← no addon_root - part of AddonA
 └── AddonB/
     ├── .wowluarc.json     ← { "addon_root": true }
     └── Main.lua
@@ -264,7 +264,7 @@ workspace/
 { "addon_root": true }
 ```
 
-Lua globals remain shared across addon roots — only the addon namespace table is isolated. If addon roots are nested, the deepest one wins.
+Lua globals remain shared across addon roots. Only the addon namespace table is isolated. If addon roots are nested, the deepest one wins.
 
 Not needed for single-addon projects (the default behavior is unchanged).
 

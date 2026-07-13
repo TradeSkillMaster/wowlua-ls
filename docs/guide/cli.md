@@ -1,8 +1,8 @@
 # CLI Tools
 
-wowlua-ls includes command-line tools for linting and documentation generation outside an editor — useful for CI pipelines and batch analysis.
+wowlua-ls includes command-line tools for linting and documentation generation outside an editor, useful for CI pipelines and batch analysis.
 
-## `check` — Lint a project
+## `check`: Lint a project
 
 Scan an addon directory and report all diagnostics:
 
@@ -24,7 +24,7 @@ Exit code is `1` if any diagnostics are found, making it suitable for CI:
   run: wowlua_ls check . --severity warning
 ```
 
-## `dump-stubs` — Dump global stub types
+## `dump-stubs`: Dump global stub types
 
 Output every global name from the precomputed stubs and its resolved type, one per line (tab-separated). Useful for diffing before and after stub regeneration:
 
@@ -35,7 +35,7 @@ wowlua_ls dump-stubs > after.txt
 diff before.txt after.txt
 ```
 
-## `doc` — Generate API documentation
+## `doc`: Generate API documentation
 
 Generate markdown API documentation snippets from annotated Lua source:
 
@@ -43,7 +43,7 @@ Generate markdown API documentation snippets from annotated Lua source:
 wowlua_ls doc path/to/addon --out-dir docs/api
 ```
 
-This scans the project for `@class` definitions and produces one `.md` snippet per class plus an `index.md` in the output directory. Classes from WoW API stubs are excluded — only classes defined within the scanned directory are included.
+This scans the project for `@class` definitions and produces one `.md` snippet per class plus an `index.md` in the output directory. Classes from WoW API stubs are excluded. Only classes defined within the scanned directory are included.
 
 ### Using with VitePress
 

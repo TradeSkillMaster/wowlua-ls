@@ -4,7 +4,7 @@ WoW addon events carry typed payloads, and knowing the payload shape is critical
 
 - **Hover info** on event names in `RegisterEvent` calls
 - **Typed handler params** in `SetScript("OnEvent", handler)` callbacks
-- **Per-event vararg narrowing** — narrow `event` to a string literal and `...` resolves to that event's payload types
+- **Per-event vararg narrowing**: narrow `event` to a string literal and `...` resolves to that event's payload types
 
 ## SetScript handler typing
 
@@ -34,13 +34,13 @@ end)
 
 ### What gets typed
 
-1. **`self`** — typed as the receiver's actual type. If you call `myButton:SetScript(...)` where `myButton` is a `Button`, `self` is `Button`, not the generic `Frame` from the overload declaration.
+1. **`self`**: typed as the receiver's actual type. If you call `myButton:SetScript(...)` where `myButton` is a `Button`, `self` is `Button`, not the generic `Frame` from the overload declaration.
 
-2. **`event`** — typed as `string` (the `FrameEvent` alias).
+2. **`event`**: typed as `string` (the `FrameEvent` alias).
 
-3. **Varargs (`...`)** — when you narrow `event` to a specific string literal with `if event == "X" then`, all `...` expressions inside that branch resolve to the event's declared payload types.
+3. **Varargs (`...`)**: when you narrow `event` to a specific string literal with `if event == "X" then`, all `...` expressions inside that branch resolve to the event's declared payload types.
 
-4. **Named params** — if your callback declares named parameters beyond `event` (e.g. `function(self, event, encounterID, encounterName)`), those params also get typed when `event` is narrowed.
+4. **Named params**: if your callback declares named parameters beyond `event` (e.g. `function(self, event, encounterID, encounterName)`), those params also get typed when `event` is narrowed.
 
 ### Other script types
 
@@ -64,15 +64,15 @@ f:SetScript("OnShow", function(self)
 end)
 ```
 
-No annotations needed in your code — this comes from the built-in stubs.
+No annotations needed in your code - this comes from the built-in stubs.
 
 ### How it works
 
 SetScript handler typing uses three mechanisms together:
 
-1. **Overload-based string dispatch** — the stub declares one `@overload` per script type with the exact handler signature
-2. **Contextual callback typing** — when an overload matches (by the string literal), its `fun(...)` parameter types propagate into the inline function's params
-3. **`params<FrameEvent>` projection** — the `OnEvent` overload uses `...params<FrameEvent>` to connect vararg types to the event payload registry
+1. **Overload-based string dispatch**: the stub declares one `@overload` per script type with the exact handler signature
+2. **Contextual callback typing**: when an overload matches (by the string literal), its `fun(...)` parameter types propagate into the inline function's params
+3. **`params<FrameEvent>` projection**: the `OnEvent` overload uses `...params<FrameEvent>` to connect vararg types to the event payload registry
 
 ## Built-in WoW events
 
@@ -89,7 +89,7 @@ frame:RegisterEvent("ENCOUNTER_END")
 --                     )
 ```
 
-This works automatically with the built-in stubs — no configuration needed.
+This works automatically with the built-in stubs - no configuration needed.
 
 ## How event hover works
 
@@ -102,7 +102,7 @@ function Frame:RegisterEvent(eventName) end
 
 When hovering `"ENCOUNTER_END"` in `frame:RegisterEvent("ENCOUNTER_END")`, the LS sees that the parameter type is `FrameEvent`, looks up `ENCOUNTER_END` in the `FrameEvent` event registry, and shows the payload.
 
-Event type names like `FrameEvent` resolve to `string` for type-checking purposes — they're regular strings at runtime, but carry extra semantic information for the LS.
+Event type names like `FrameEvent` resolve to `string` for type-checking purposes; they're regular strings at runtime, but carry extra semantic information for the LS.
 
 ## Declaring custom events (`@event`)
 
@@ -183,8 +183,8 @@ The `...params<MyAddonEvent>` projection tells the LS: "the varargs of this call
 ### Register-by-name with `@generic E: EventType`
 
 The overload approach above relies on an in-body `if event == "X"` comparison to narrow the
-varargs. For a register-by-name API — where the caller passes a single event name and a
-callback dedicated to that event — bind a generic to the event name and project it into the
+varargs. For a register-by-name API (where the caller passes a single event name and a
+callback dedicated to that event) bind a generic to the event name and project it into the
 callback's varargs directly:
 
 ```lua
@@ -195,7 +195,7 @@ callback's varargs directly:
 function Event.Register(event, callback) end
 ```
 
-Calling with a string-literal event name types the callback's `...` from that event's payload —
+Calling with a string-literal event name types the callback's `...` from that event's payload -
 no in-body comparison needed:
 
 ```lua
@@ -215,7 +215,7 @@ name passed in (`"BAG_UPDATE"`), and `...params<E>` resolves to that event's dec
 If the event name is not a string literal, or names an event with no payload, the varargs
 degrade to `?`.
 
-The callback may also declare **named parameters** instead of `...` — they are typed
+The callback may also declare **named parameters** instead of `...`; they are typed
 positionally from the payload:
 
 ```lua
@@ -228,7 +228,7 @@ Extra named parameters beyond the payload length remain untyped (`?`); if fewer 
 declared, only those are typed.
 
 The callback signature may also carry a **leading parameter typed as the event type**
-before the payload — `fun(event: FrameEvent, ...params<E>)`. The event-typed parameter
+before the payload: `fun(event: FrameEvent, ...params<E>)`. The event-typed parameter
 resolves to the event name (a `string`), and the payload maps onto the parameters after
 it:
 
@@ -247,14 +247,14 @@ end)
 This is the shape the built-in **AceEvent-3.0** stub uses. Because a registered handler
 is invoked as `handler(event, ...)`, an inline function passed to
 `self:RegisterEvent("BAG_UPDATE", function(event, ...) end)` gets its `event` and
-payload parameters typed automatically. A string handler name — or the omitted-callback
-form, where the event name doubles as the method — instead resolves to a method on the
+payload parameters typed automatically. A string handler name (or the omitted-callback
+form, where the event name doubles as the method) instead resolves to a method on the
 receiver via [`keyof self`](/reference/annotations#keyof-t).
 
 #### Typing a named handler method's parameters
 
 When the handler is passed **by name** (a string naming a method on the receiver), that
-method's own parameters are typed from the event payload too — the method is dispatched
+method's own parameters are typed from the event payload too; the method is dispatched
 exactly like the inline callback, so it receives `(self, event, ...payload)`:
 
 ```lua
@@ -298,8 +298,8 @@ Or with inline parameters:
 ---@event TypeName "EVENT_NAME" -> paramName: type, optionalParam?: type
 ```
 
-- **TypeName** — the event type name (e.g. `FrameEvent`, `MyAddonEvent`). Becomes a type that resolves to `string`.
-- **EVENT_NAME** — the event name as a quoted string literal.
+- **TypeName**: the event type name (e.g. `FrameEvent`, `MyAddonEvent`). Becomes a type that resolves to `string`.
+- **EVENT_NAME**: the event name as a quoted string literal.
 - Parameters can be declared either with subsequent `@param` lines (same syntax as function `@param` annotations, including `?` for nilable) or inline after `->` with comma-separated `name: type` pairs.
 
 ### Batch events
@@ -323,4 +323,4 @@ Or with inline parameters:
 2. When that parameter is narrowed to a string literal (via `==` comparison), the LS looks up the corresponding event payload
 3. All `...` expressions in the narrowed scope resolve to the payload's declared types
 
-When the projected name is a declared `@generic` constrained to an event type (e.g. `@generic E: FrameEvent`), and the generic is bound to a string-literal event name at the call site, the callback's varargs are projected from that event's payload directly — see [Register-by-name with `@generic E: EventType`](#register-by-name-with-generic-e-eventtype). Otherwise, when the projected name is a generic bound to a function, the standard function-projection behavior applies.
+When the projected name is a declared `@generic` constrained to an event type (e.g. `@generic E: FrameEvent`), and the generic is bound to a string-literal event name at the call site, the callback's varargs are projected from that event's payload directly. See [Register-by-name with `@generic E: EventType`](#register-by-name-with-generic-e-eventtype). Otherwise, when the projected name is a generic bound to a function, the standard function-projection behavior applies.

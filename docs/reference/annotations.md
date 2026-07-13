@@ -9,7 +9,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@param name type` | Parameter type. `name?` for optional. | [Basic Annotations](/guide/basic-annotations) |
 | `@return type [name]` | Return type. Use multiple lines or one comma-separated line (`@return A, B`) for multi-return. | [Basic Annotations](/guide/basic-annotations) |
 | `@return (A, B) \| (C, D)` | Tuple-union return with correlated narrowing. | [Multi-Return](/guide/multi-return) |
-| `@return ...T` | Variadic return — fills remaining positions with T. | [Multi-Return](/guide/multi-return) |
+| `@return ...T` | Variadic return: fills remaining positions with T. | [Multi-Return](/guide/multi-return) |
 | `@type type` | Variable type annotation. | [Basic Annotations](/guide/basic-annotations) |
 | `@as type` | Inline expression type assertion (`--[[@as T]]`). | [Basic Annotations](/guide/basic-annotations) |
 | `@cast var [+\|-]type` | Change variable type: replace, add (`+`), remove (`-`). | [Basic Annotations](/guide/basic-annotations) |
@@ -26,8 +26,8 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@class (partial) Name` | Accepted for compatibility (currently ignored). | [Classes](/guide/classes#partial-classes) |
 | `@class Name<T>` | Parameterized class. | [Generics](/guide/generics) |
 | `@class Name<T: Constraint>` | Parameterized class with type constraint. | [Generics](/guide/generics) |
-| `@enum Name` | Enum type — bidirectionally compatible with `number` or `string` (inferred from values). | [Classes](/guide/classes#enum-types-enum) |
-| `@enum (key) Name` | Key-based enum — creates a string enum from table keys instead of values. | [Classes](/guide/classes#key-based-enums-enum-key) |
+| `@enum Name` | Enum type: bidirectionally compatible with `number` or `string` (inferred from values). | [Classes](/guide/classes#enum-types-enum) |
+| `@enum (key) Name` | Key-based enum: creates a string enum from table keys instead of values. | [Classes](/guide/classes#key-based-enums-enum-key) |
 | `@event TypeName "EVENT_NAME"` | Declare an event with typed payload (hover + handler param narrowing). | [Events](/guide/events) |
 | `@event TypeName` + `---\|` | Batch event declarations with inline params. | [Events](/guide/events#batch-declarations-with) |
 | `@field name type` | Class field declaration. | [Classes](/guide/classes) |
@@ -42,9 +42,9 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 |---|---|---|
 | `@generic T` | Generic type parameter on a function. | [Generics](/guide/generics) |
 | `@generic T: Class` | Constrained generic. | [Generics](/guide/generics) |
-| `@generic T, K: keyof T` | Key-constrained generic — K must be a field name of T. | [Generics](/guide/generics#keyof-constraints) |
-| `@generic K: keyof self` | Method receiver key constraint — K must be a field name of the call's receiver. | [Generics](/guide/generics#keyof-constraints) |
-| `@generic T, ...M` | Variadic generic — collects excess arguments into an intersection. | [Generics](/guide/generics#variadic-generics) |
+| `@generic T, K: keyof T` | Key-constrained generic: K must be a field name of T. | [Generics](/guide/generics#keyof-constraints) |
+| `@generic K: keyof self` | Method receiver key constraint: K must be a field name of the call's receiver. | [Generics](/guide/generics#keyof-constraints) |
+| `@generic T, ...M` | Variadic generic: collects excess arguments into an intersection. | [Generics](/guide/generics#variadic-generics) |
 | `@requires T: Constraint` | Method is only callable when the receiver's class type parameter `T` satisfies the constraint. | [Generics](/guide/generics) |
 | `` @param name `T` `` | Resolve string argument as a class name. | [Generics](/guide/generics) |
 | `@overload fun(...)` | Function overload signature. | [Generics](/guide/generics) |
@@ -80,18 +80,18 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@alias Name type` | Type alias. Supports parameters: `@alias Name<K,V> V[]`, including constrained parameters: `@alias Box<T: Frame> { value: T }`. Use `@alias (opaque) Name type` for a nominally distinct type (see below). |
 | `@deprecated` | Mark as deprecated. |
 | `@nodiscard` | Warn if return value is ignored. |
-| `@meta` | Declaration-only file. Suppresses runtime/behavior diagnostics, but annotation-integrity checks still fire — a malformed, misplaced, or dangling annotation is a real error even in a stub. This covers undefined type/class references ([`undefined-doc-name`](/reference/diagnostics), [`undefined-doc-class`](/reference/diagnostics)), malformed annotations, `@field`/`@param` not attached to a `@class`/function ([`doc-field-no-class`](/reference/diagnostics), [`doc-func-no-function`](/reference/diagnostics)), invalid `@diagnostic` codes, and `nil` table-key types. |
+| `@meta` | Declaration-only file. Suppresses runtime/behavior diagnostics, but annotation-integrity checks still fire: a malformed, misplaced, or dangling annotation is a real error even in a stub. This covers undefined type/class references ([`undefined-doc-name`](/reference/diagnostics), [`undefined-doc-class`](/reference/diagnostics)), malformed annotations, `@field`/`@param` not attached to a `@class`/function ([`doc-field-no-class`](/reference/diagnostics), [`doc-func-no-function`](/reference/diagnostics)), invalid `@diagnostic` codes, and `nil` table-key types. |
 | `@diagnostic disable:code` | Suppress a diagnostic inline. |
 | `@see symbol` | Cross-reference shown in hover. |
 | `@constructor` | Mark a method as the class constructor. |
 | `@accessor name [visibility]` | Set visibility for methods defined through a sub-table accessor. [Guide](/guide/classes#accessor-visibility-accessor) |
 | `@creates-global N` | Calling this function with a string literal at param `N` creates a named global. The global's type is taken from the call's return type. |
 | `@generates-events N [Field]` | Calling this method with an array table at param `N` synthesizes an enum-like `Field` table (default `Event`) on the receiver class, one member per array entry. |
-| `@callback-event-arg N` | Marks a callback-registry consumer method (`RegisterCallback`/`TriggerEvent`/…) whose argument `N` is an event name — enables event-name completion and the `unknown-callback-event` diagnostic. |
+| `@callback-event-arg N` | Marks a callback-registry consumer method (`RegisterCallback`/`TriggerEvent`/…) whose argument `N` is an event name, enabling event-name completion and the `unknown-callback-event` diagnostic. |
 
 ### `@creates-global N`
 
-Some functions create a global as a side effect of being called — for example
+Some functions create a global as a side effect of being called - for example
 World of Warcraft's `CreateFrame("Frame", "MyFrame")` defines `_G.MyFrame`. Mark
 such a function so that reading the created name in another file does not produce
 a false [`undefined-global`](/reference/diagnostics) diagnostic:
@@ -99,7 +99,7 @@ a false [`undefined-global`](/reference/diagnostics) diagnostic:
 - `N` (1-based) is the parameter whose **string-literal** argument names the
   created global.
 
-The created global's **type is the call's actual return type** — you don't
+The created global's **type is the call's actual return type**; you don't
 specify it. This means a call carrying a template/mixin gets the full type: a
 `CreateFrame("Frame", "MyFrame", parent, "MyTemplate")` global is typed
 `Frame & MyTemplate`, not a bare `Frame`.
@@ -150,7 +150,7 @@ The receiver must be a single-name class (e.g. `ScrollBoxListMixin`, not a dotte
 chain). Each array entry contributes one `string` member: string literals use
 their value, and field references (`SomeEvents.OnFoo`) use the leaf name `OnFoo`,
 matching the value-equals-name convention. Accessing an event that isn't in the
-array still resolves leniently — the synthesized table is not closed.
+array still resolves leniently: the synthesized table is not closed.
 
 ```lua
 ScrollBoxListMixin:GenerateCallbackEvents({
@@ -187,7 +187,7 @@ function CallbackRegistryMixin:RegisterCallback(event, func, owner, ...) end
 ```
 
 The registry receiver is matched by name (a global, a class, or an
-`addonTable.X` namespace field — the addon-namespace alias is normalized so the
+`addonTable.X` namespace field; the addon-namespace alias is normalized so the
 declaration and the call sites agree across files, and scoped by addon so separate
 addons in one workspace don't share an event set). When a registry's event set
 can't be fully determined, validation is suppressed for it so no false positives
@@ -239,11 +239,11 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `A \| B` | Union |
 | `A & B` | Intersection |
 | `T[]` | Array |
-| `T[K]` | Indexed access — field type of K on T |
+| `T[K]` | Indexed access: field type of K on T |
 | `keyof T` | A string that is one of `T`'s field/method names (see below) |
-| `[T1, T2]` | Tuple — fixed-shape table (`{ [1]: T1, [2]: T2 }`) |
+| `[T1, T2]` | Tuple: fixed-shape table (`{ [1]: T1, [2]: T2 }`) |
 | `T?` | Optional (`T \| nil`) |
-| `?T` | Optional, prefix form — same as `T?` |
+| `?T` | Optional, prefix form (same as `T?`) |
 | `T!` | Non-nil / lateinit |
 | `table<K, V>` | Map type |
 | `fun(a: T): R` | Function type |
@@ -252,9 +252,9 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `true`, `false` | Boolean literal types |
 | `0`, `-1`, `0xFF` | Number literal types (e.g. a `\| (0, nil, nil)` tuple-union case) |
 | `params<F>` | Function parameter projection (vararg only) |
-| `params<EventType>` | Event payload projection — types varargs per-event |
+| `params<EventType>` | Event payload projection: types varargs per-event |
 | `returns<F>` | Function return type projection |
-| `expression<C>` | Expression string type — fields of class C become variables |
+| `expression<C>` | Expression string type: fields of class C become variables |
 | `expression<C, R>` | Expression string with return type constraint R |
 | `expression<C, R>` (R is `@generic`) | Result type R inferred from the expression and propagated to the return |
 | `expression<C & F>` | Expression string with additional functions/fields from F |
@@ -269,7 +269,7 @@ call site. On such an argument the language server:
 - **completes** the receiver's member names inside the string,
 - **go-to-definition** and **hover** jump to / show the named member, and
 - reports a [`type-mismatch`](/reference/diagnostics) when the literal isn't a
-  member — a closed set, unlike an open `"a"|"b"` string enum.
+  member: a closed set, unlike an open `"a"|"b"` string enum.
 
 It composes in overloads and intersections, which is what libraries like
 **AceEvent-3.0** need: a handler is dispatched as a method on the receiver, and the
@@ -285,4 +285,4 @@ function AceEvent:RegisterEvent(event, callback, arg) end
 So `self:RegisterEvent("PLAYER_LOGIN")` navigates to `self:PLAYER_LOGIN` (and the
 game event), `self:RegisterEvent("EVT", "OnEvt")` navigates to `self:OnEvt`, and a
 handler the receiver doesn't define is flagged. Also usable as a `@generic`
-constraint (`@generic K: keyof self`) — see the [generics guide](/guide/generics#keyof-constraints).
+constraint (`@generic K: keyof self`); see the [generics guide](/guide/generics#keyof-constraints).

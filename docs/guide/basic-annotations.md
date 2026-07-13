@@ -2,7 +2,7 @@
 
 Annotations are special comments that tell the language server about your code's types. They use the `---@` prefix (three dashes, then `@`), which is the same syntax as LuaLS. If you've used LuaLS before, everything you know still works.
 
-## `@param` — Parameter types
+## `@param`: Parameter types
 
 Declare what a function expects:
 
@@ -19,7 +19,7 @@ The `?` suffix makes a parameter optional (its type becomes `T | nil`). Callers 
 
 ### When to use it
 
-Annotate parameters on functions that are called from other files or that form your addon's API. For small local helpers, the LS can often infer parameter types from how they're used in the body — see [backward inference](#backward-inference) below.
+Annotate parameters on functions that are called from other files or that form your addon's API. For small local helpers, the LS can often infer parameter types from how they're used in the body - see [backward inference](#backward-inference) below.
 
 ### Common patterns
 
@@ -37,7 +37,7 @@ function forEach(handler) end
 function configure(opts) end
 ```
 
-## `@return` — Return types
+## `@return`: Return types
 
 Declare what a function returns:
 
@@ -61,7 +61,7 @@ local name, level = getInfo()
 -- name: string, level: number
 ```
 
-The names after the type (`name`, `level`) are labels — they show in hover and signature help but don't affect type checking.
+The names after the type (`name`, `level`) are labels - they show in hover and signature help but don't affect type checking.
 
 ### Labeled tuple syntax
 
@@ -88,7 +88,7 @@ end
 
 The caller sees `string | nil` and the LS will enforce nil checks if `need-check-nil` is enabled.
 
-## `@type` — Variable types
+## `@type`: Variable types
 
 Force a variable's type:
 
@@ -101,7 +101,7 @@ local cachedValue = nil
 ```
 
 ::: tip When to use `@type`
-`@type` is most useful when the LS can't infer the type from the right-hand side — empty tables, `nil` initializers, or values from external APIs. For simple assignments like `local x = 5`, the LS already knows the type, so the annotation is optional.
+`@type` is most useful when the LS can't infer the type from the right-hand side: empty tables, `nil` initializers, or values from external APIs. For simple assignments like `local x = 5`, the LS already knows the type, so the annotation is optional.
 :::
 
 ### Inline `@as` casts
@@ -115,7 +115,7 @@ doSomething(value --[[@as string]])
 
 `@as` is an escape hatch. It tells the LS "trust me, this is the type." Use it when you know more than the LS can infer, but prefer fixing the root cause (adding annotations upstream) when possible.
 
-### `@cast` — Modify a variable's type
+### `@cast`: Modify a variable's type
 
 `@cast` changes a variable's type from that point forward. It supports three modes:
 
@@ -128,7 +128,7 @@ local x = getValue()
 ---@cast x -nil            -- remove: strip nil from x
 ```
 
-`@cast` is useful after runtime checks that the LS can't follow — for example, after a custom validation function that you know guarantees a type.
+`@cast` is useful after runtime checks that the LS can't follow - for example, after a custom validation function that you know guarantees a type.
 
 ## Type syntax
 
@@ -139,8 +139,8 @@ Annotations use a rich type syntax for describing values:
 | `string`, `number`, `boolean`, `nil`, `any` | Primitive types |
 | `table` | Any table |
 | `function` | Any function |
-| `A \| B` | Union — value is A or B |
-| `A & B` | Intersection — value is both A and B |
+| `A \| B` | Union: value is A or B |
+| `A & B` | Intersection: value is both A and B |
 | `T[]` | Array of T |
 | `T?` | Shorthand for `T \| nil` |
 | `T!` | Non-nil assertion / lateinit (see [Nil Safety](/guide/nil-safety)) |
@@ -164,7 +164,7 @@ function greet(name)
 end
 ```
 
-Intersections represent WoW's mixin pattern — a value that has the fields and methods of multiple types combined. The most common case is frames created with templates:
+Intersections represent WoW's mixin pattern: a value that has the fields and methods of multiple types combined. The most common case is frames created with templates:
 
 ```lua
 ---@param widget Frame & BackdropTemplate
@@ -174,7 +174,7 @@ function setupWidget(widget)
 end
 ```
 
-`CreateFrame("Frame", nil, nil, "BackdropTemplate")` automatically returns `Frame & BackdropTemplate` — no annotation needed at the call site. See [Mixins and Templates](/guide/classes#mixins-and-templates) for more.
+`CreateFrame("Frame", nil, nil, "BackdropTemplate")` automatically returns `Frame & BackdropTemplate` - no annotation needed at the call site. See [Mixins and Templates](/guide/classes#mixins-and-templates) for more.
 
 ### Anonymous table shapes
 
@@ -202,14 +202,14 @@ function filter(callback) end
 local getValues
 ```
 
-Parameter names in function types are for documentation — they show in hover and signature help.
+Parameter names in function types are for documentation - they show in hover and signature help.
 
 ## Backward inference {#backward-inference}
 
 wowlua-ls can often figure out parameter types without annotations by analyzing how parameters are used in the function body. This is called **backward inference**.
 
 ```lua
--- No annotations needed — the LS infers x is number from the arithmetic
+-- No annotations needed: the LS infers x is number from the arithmetic
 local function double(x)
     return x * 2
 end

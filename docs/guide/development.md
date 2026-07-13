@@ -48,7 +48,7 @@ src/
 │   ├── mod.rs           # DiagnosticDef catalog, DiagnosticPass trait, run_all()
 │   └── *.rs             # 39 diagnostic pass modules (60 diagnostic codes)
 ├── pre_globals/
-│   ├── mod.rs           # PreResolvedGlobals — WoW API stubs, shared across files
+│   ├── mod.rs           # PreResolvedGlobals: WoW API stubs, shared across files
 │   └── build_on_stubs.rs      # Workspace incremental builds on precomputed stubs
 ├── syntax/
 │   ├── parser.rs        # Recursive descent + Pratt parser
@@ -72,17 +72,17 @@ Imports external classes and aliases from the shared `PreResolvedGlobals`, then 
 ### Phase 1: Build IR (`build_ir.rs`)
 
 Walks the AST and creates the intermediate representation:
-- **Scopes** — nested lexical scopes tracking variable visibility
-- **Symbols** — local variables, parameters, globals (with version tracking for reassignment)
-- **Functions** — parameter/return annotations, overloads, generic constraints
-- **Tables** — fields, class names, parent classes, metatable links
-- **Expressions** — lowered to `Expr` nodes by `lower_expression.rs` (symbol refs, field access, function calls, literals, etc.)
+- **Scopes**: nested lexical scopes tracking variable visibility
+- **Symbols**: local variables, parameters, globals (with version tracking for reassignment)
+- **Functions**: parameter/return annotations, overloads, generic constraints
+- **Tables**: fields, class names, parent classes, metatable links
+- **Expressions**: lowered to `Expr` nodes by `lower_expression.rs` (symbol refs, field access, function calls, literals, etc.)
 
 Type narrowing from control flow (nil guards, type checks, flavor filtering) is handled by `narrowing.rs` during this phase.
 
 ### Phase 2: Resolve types (`resolve.rs`)
 
-A fixpoint loop that iterates until no more types change. Each iteration resolves expressions by walking their dependencies — if a symbol's type depends on a function call, the function's return type must be resolved first. The loop handles:
+A fixpoint loop that iterates until no more types change. Each iteration resolves expressions by walking their dependencies: if a symbol's type depends on a function call, the function's return type must be resolved first. The loop handles:
 
 - Function call return types (via `resolve_call.rs`)
 - Metatable `__index` chains
@@ -95,9 +95,9 @@ A fixpoint loop that iterates until no more types change. Each iteration resolve
 
 After type resolution, `run_all()` in `src/diagnostics/mod.rs` orchestrates all diagnostic passes. Passes are organized into three groups that run sequentially:
 
-1. **`run` passes** — walk the IR to check resolved types (type mismatches, undefined globals, missing fields, etc.)
-2. **`visit_node` passes** — walk the AST for syntax-level checks (empty blocks, `not` precedence, unused varargs)
-3. **`run_inject` passes** — the type-mismatch → inject-field pipeline, where type mismatch passes produce excess field info and `inject_field` consumes it last
+1. **`run` passes**: walk the IR to check resolved types (type mismatches, undefined globals, missing fields, etc.)
+2. **`visit_node` passes**: walk the AST for syntax-level checks (empty blocks, `not` precedence, unused varargs)
+3. **`run_inject` passes**: the type-mismatch → inject-field pipeline, where type mismatch passes produce excess field info and `inject_field` consumes it last
 
 All 60 diagnostic codes are defined as `DiagnosticDef` constants in `mod.rs`. Each pass module implements the `DiagnosticPass` trait, emitting diagnostics via `CONSTANT_NAME.emit(diags, message, start, end)`. See [Adding a Diagnostic](./adding-diagnostics) for the full walkthrough.
 
@@ -160,7 +160,7 @@ cargo +nightly fuzz run fuzz_analysis fuzz/corpus/fuzz_analysis
 cargo +nightly fuzz run fuzz_analysis fuzz/corpus/fuzz_analysis -- -max_total_time=600
 ```
 
-Run `fuzz_analysis` after changes to the parser or analysis pipeline — it covers the most code and is most likely to find issues. The lexer and parser targets are useful after changes to `lexer.rs` or `parser.rs` specifically.
+Run `fuzz_analysis` after changes to the parser or analysis pipeline; it covers the most code and is most likely to find issues. The lexer and parser targets are useful after changes to `lexer.rs` or `parser.rs` specifically.
 
 ### When it finds something
 
@@ -178,7 +178,7 @@ Hand-written seed files live in `fuzz/corpus/<target>/` (small `.lua` files cove
 
 ## The two-tier index space
 
-External globals (WoW API stubs) use indices ≥ `EXT_BASE` (1,000,000). Per-file locals use indices below that. This means lookups like `sym()`, `func()`, and `table()` route through an `idx >= EXT_BASE` check — external data lives in the shared `PreResolvedGlobals` while local data is on the per-file `Analysis`.
+External globals (WoW API stubs) use indices ≥ `EXT_BASE` (1,000,000). Per-file locals use indices below that. This means lookups like `sym()`, `func()`, and `table()` route through an `idx >= EXT_BASE` check: external data lives in the shared `PreResolvedGlobals` while local data is on the per-file `Analysis`.
 
 This avoids cloning ~9,000 external symbols per file, and external indices are stable across files, which is what makes workspace-wide find-references and rename work.
 
@@ -186,9 +186,9 @@ This avoids cloning ~9,000 external symbols per file, and external indices are s
 
 Before any files are analyzed, the LS runs four scanning passes to collect cross-file information:
 
-1. **Pass 1** — Scan annotations and file-level globals (`@class`, `@alias`, top-level functions)
-2. **Pass 2** — Discover `@defclass` factory calls and extract constructor fields
-3. **Pass 3** — Discover `@built-name` classes from builder-pattern call sites
-4. **Pass 4** — Scan colon-method bodies for typed `self.field` assignments
+1. **Pass 1**: Scan annotations and file-level globals (`@class`, `@alias`, top-level functions)
+2. **Pass 2**: Discover `@defclass` factory calls and extract constructor fields
+3. **Pass 3**: Discover `@built-name` classes from builder-pattern call sites
+4. **Pass 4**: Scan colon-method bodies for typed `self.field` assignments
 
 This feeds into `PreResolvedGlobals::build()`, which runs five phases of its own to register classes, populate fields, build methods, resolve inheritance (fixpoint loop for deep hierarchies), and set up global functions.

@@ -1,6 +1,6 @@
 # Nil Safety and Narrowing
 
-Most runtime crashes in WoW addons are nil errors. A function returns `nil` on failure, a field is unset, a table lookup misses — and your addon throws `attempt to index a nil value` in the middle of a raid. wowlua-ls is built to catch these at edit time.
+Most runtime crashes in WoW addons are nil errors. A function returns `nil` on failure, a field is unset, a table lookup misses, and your addon throws `attempt to index a nil value` in the middle of a raid. wowlua-ls is built to catch these at edit time.
 
 ## The `need-check-nil` diagnostic
 
@@ -24,7 +24,7 @@ This diagnostic is **off by default** because it can be noisy on unannotated cod
 ```
 
 ::: tip Enable it early
-`need-check-nil` is the single most valuable diagnostic for catching real bugs. Enable it as soon as your core types are annotated. The false positives it produces are usually signals that your annotations are incomplete — fixing them improves your type coverage everywhere.
+`need-check-nil` is the single most valuable diagnostic for catching real bugs. Enable it as soon as your core types are annotated. The false positives it produces are usually signals that your annotations are incomplete. Fixing them improves your type coverage everywhere.
 :::
 
 ## Narrowing
@@ -147,7 +147,7 @@ if name then
 end
 ```
 
-You checked `name`, but `level` also narrowed to non-nil. This works because the tuple-union `@return` tells the LS that `name` and `level` always come together — if one is non-nil, the other must be too.
+You checked `name`, but `level` also narrowed to non-nil. This works because the tuple-union `@return` tells the LS that `name` and `level` always come together: if one is non-nil, the other must be too.
 
 This eliminates a huge class of false positives. Without correlated narrowing, you'd either need to check every return value individually or suppress the warnings.
 
@@ -254,11 +254,11 @@ if not tradeType then return end
 -- money is also narrowed to number
 ```
 
-No annotation needed — the LS detects the pattern automatically.
+No annotation needed. The LS detects the pattern automatically.
 
 ## Guard implications
 
-An early-exit guard that combines two variables establishes a relationship the LS remembers for the rest of the function. A guard of the form `if a and not b then return end` says "if `a` is set, then `b` must also be set" — so later, whenever `a` is narrowed truthy, `b` is narrowed non-nil too:
+An early-exit guard that combines two variables establishes a relationship the LS remembers for the rest of the function. A guard of the form `if a and not b then return end` says "if `a` is set, then `b` must also be set", so later, whenever `a` is narrowed truthy, `b` is narrowed non-nil too:
 
 ```lua
 ---@param itemString string?

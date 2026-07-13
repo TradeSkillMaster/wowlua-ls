@@ -1,14 +1,14 @@
 # Builder Pattern
 
-Some WoW addons define data schemas through method-chaining builders — each call adds a typed field, and a final call returns the accumulated type. wowlua-ls tracks these chains and gives you full completion and type checking on the result.
+Some WoW addons define data schemas through method-chaining builders: each call adds a typed field, and a final call returns the accumulated type. wowlua-ls tracks these chains and gives you full completion and type checking on the result.
 
 ## Basic builder
 
 Three annotations power the builder pattern:
 
-- `@builds-field <param_idx> <type>` — this method adds a field whose name is the string at parameter position `param_idx`
-- `@return self` — the method returns the same receiver (for chaining)
-- `@return built` — returns the accumulated type with all added fields
+- `@builds-field <param_idx> <type>`: this method adds a field whose name is the string at parameter position `param_idx`
+- `@return self`: the method returns the same receiver (for chaining)
+- `@return built`: returns the accumulated type with all added fields
 
 ```lua
 ---@class Schema
@@ -57,7 +57,7 @@ local state = MY_SCHEMA:Build()
 -- state has type PlayerState { name: string, level: number? }
 ```
 
-The name `PlayerState` is registered globally — you can reference it in `@param` and `@type` annotations across files:
+The name `PlayerState` is registered globally. You can reference it in `@param` and `@type` annotations across files:
 
 ```lua
 ---@param state PlayerState
@@ -92,7 +92,7 @@ inst.name       -- string (inherited from BaseState)
 inst.level      -- number (inherited from BaseState)
 ```
 
-Multi-level extension works — grandchild inherits from child and base.
+Multi-level extension works. Grandchild inherits from child and base.
 
 ## Lateinit fields (`T!`)
 

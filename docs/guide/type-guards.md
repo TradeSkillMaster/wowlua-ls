@@ -4,7 +4,7 @@ wowlua-ls narrows types automatically for built-in patterns like `if x then`, `t
 
 ## Index-based form
 
-`@type-narrows <target_param> <classname_param>` — both are 1-based call-site argument positions:
+`@type-narrows <target_param> <classname_param>`: both are 1-based call-site argument positions:
 
 ```lua
 ---@param element UIElement
@@ -43,13 +43,13 @@ end
 ```
 
 The `classname` argument can be either a string literal (e.g. `"ScrollFrame"`) or
-a single-name identifier that matches a known `@class` (e.g. `ScrollFrame` — the
+a single-name identifier that matches a known `@class` (e.g. `ScrollFrame`, the
 class table itself). Dotted names like `MyLib.Dog` are not supported. This matches
 idiomatic class-library patterns like `obj:isA(Class)`.
 
 ## Method-style form
 
-`@type-narrows ClassName` — narrows `self` to a fixed class. Useful for boolean predicate methods:
+`@type-narrows ClassName`: narrows `self` to a fixed class. Useful for boolean predicate methods:
 
 ```lua
 ---@class AuctionRow
@@ -75,7 +75,7 @@ end
 
 ## Return-value class guard (`@returns-class-name`) {#returns-class-name}
 
-Some methods return a *string naming the receiver's runtime class* rather than a boolean. WoW's `FrameScriptObject:GetObjectType()` is the canonical example — it returns `"Button"`, `"FontString"`, etc. Mark such a method with `@returns-class-name` and comparing its result to a class-name literal narrows the receiver:
+Some methods return a *string naming the receiver's runtime class* rather than a boolean. WoW's `FrameScriptObject:GetObjectType()` is the canonical example. It returns `"Button"`, `"FontString"`, etc. Mark such a method with `@returns-class-name` and comparing its result to a class-name literal narrows the receiver:
 
 ```lua
 ---@returns-class-name
@@ -129,7 +129,7 @@ Mixin(frame, DraggableMixin)
 frame:StartDragging() -- no warning
 ```
 
-The index is 1-based and refers to call-site argument position (not counting `self`). Only bare function call statements trigger the narrowing — assignments like `local x = Mixin(f, M)` use the return type instead.
+The index is 1-based and refers to call-site argument position (not counting `self`). Only bare function call statements trigger the narrowing - assignments like `local x = Mixin(f, M)` use the return type instead.
 
 The narrowed argument can be a **field** as well as a local. A common pattern is creating a frame, storing it on a field, and mixing it in:
 
@@ -144,7 +144,7 @@ function MyPanelMixin:Refresh()
 end
 ```
 
-The field's type becomes `Frame & SplitterMixin`, so the mixin's methods resolve on every read of `self.Splitter` — including from other methods of the same table. The same works for a field on a plain local table (`obj.x = ...; Mixin(obj.x, M)`).
+The field's type becomes `Frame & SplitterMixin`, so the mixin's methods resolve on every read of `self.Splitter`, including from other methods of the same table. The same works for a field on a plain local table (`obj.x = ...; Mixin(obj.x, M)`).
 
 ## Literal boolean discrimination
 
@@ -169,7 +169,7 @@ function handle(row)
 end
 ```
 
-No `@type-narrows` needed — the literal boolean return types are enough. Requirements:
+No `@type-narrows` needed - the literal boolean return types are enough. Requirements:
 - All union members must define the method
 - Every return must be literal `true` or literal `false` (not generic `boolean`)
 - At least one of each
@@ -225,4 +225,4 @@ end
 - A field is "required" if it exists on the class and is non-optional (no `?` suffix)
 - A field is "absent or optional" if the class doesn't define it, or defines it with `?`
 - If all union members have the field as required, no narrowing occurs (can't discriminate)
-- Works with unions of 2+ members — narrows to whichever subset has the field
+- Works with unions of 2+ members - narrows to whichever subset has the field

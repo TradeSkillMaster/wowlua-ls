@@ -1,6 +1,6 @@
 # Diagnostic Plugins
 
-wowlua-ls supports custom diagnostic plugins written in Lua. Plugins can query analysis results — local variables, field accesses, method calls — and emit their own diagnostics. This lets you enforce project-specific conventions that the built-in diagnostics don't cover.
+wowlua-ls supports custom diagnostic plugins written in Lua. Plugins can query analysis results (local variables, field accesses, method calls) and emit their own diagnostics. This lets you enforce project-specific conventions that the built-in diagnostics don't cover.
 
 ## Quick start
 
@@ -35,7 +35,7 @@ A plugin file must return a table with two fields:
 | `code` | `string` | Unique diagnostic code. Used in `@diagnostic disable: my-code`. |
 | `run` | `fun(ctx: FileContext)` | Called once per file. Use `ctx` to query analysis and emit diagnostics. |
 
-The return table can be annotated with `---@type wowlua.plugin.Plugin` for IDE support — completions, hover, and type checking on the plugin's own keys.
+The return table can be annotated with `---@type wowlua.plugin.Plugin` for IDE support: completions, hover, and type checking on the plugin's own keys.
 
 ## FileContext API
 
@@ -57,8 +57,8 @@ Find local variables declared at file scope.
 ---@return LocalVar[]
 ```
 
-- **`name`** — only return variables with this exact name
-- **`init`** — only return variables whose initializer is a table constructor, function call, or function definition
+- **`name`**: only return variables with this exact name
+- **`init`**: only return variables whose initializer is a table constructor, function call, or function definition
 
 ### `ctx:find_event_declarations(type_name?)`
 
@@ -69,7 +69,7 @@ Find `@event` declarations from the workspace. Returns all events aggregated acr
 ---@return EventDecl[]
 ```
 
-- **`type_name`** — only return events of this type (e.g. `"WowEvent"`, `"FrameEvent"`)
+- **`type_name`**: only return events of this type (e.g. `"WowEvent"`, `"FrameEvent"`)
 
 ### Emitting diagnostics
 
@@ -162,7 +162,7 @@ The right-hand side of a `local` declaration.
 | `name` | `string` | Parameter name |
 | `index` | `integer` | 1-based parameter index |
 | `type_name` | `string?` | Annotation type name from `@param` (e.g. `"ActionType"`), or nil if untyped. Always nil for the implicit `self` parameter |
-| `nilable` | `boolean` | `true` if declared as `@param name?` or the type contains nil (e.g. `string|nil`). Untyped parameters (no `@param`) report `false` — check `type_name` to distinguish untyped from typed-non-nilable |
+| `nilable` | `boolean` | `true` if declared as `@param name?` or the type contains nil (e.g. `string|nil`). Untyped parameters (no `@param`) report `false` - check `type_name` to distinguish untyped from typed-non-nilable |
 
 | Method | Returns | Description |
 |---|---|---|
@@ -294,11 +294,11 @@ Plugin diagnostics can be suppressed with `@diagnostic`, just like built-in diag
 local x = something()
 ```
 
-The LS recognizes plugin diagnostic codes automatically — no `unknown-diag-code` warning.
+The LS recognizes plugin diagnostic codes automatically - no `unknown-diag-code` warning.
 
 ## Limitations
 
-- Plugins only see **file-scope local variables**. Inner locals, upvalues, and globals are not queryable. (`find_event_declarations` is the exception — it returns workspace-wide event metadata.)
+- Plugins only see **file-scope local variables**. Inner locals, upvalues, and globals are not queryable. (`find_event_declarations` is the exception - it returns workspace-wide event metadata.)
 - Plugins cannot access **resolved types**. They work with structural patterns (field names, method calls, literal values), not the type system.
-- The Lua VM is **shared across files** within a session. Global assignments inside `run()` persist across calls. Avoid polluting the global scope — use `local` for all variables.
+- The Lua VM is **shared across files** within a session. Global assignments inside `run()` persist across calls. Avoid polluting the global scope - use `local` for all variables.
 - Plugin files are loaded at startup. **Editing a plugin requires restarting the language server** to pick up changes.

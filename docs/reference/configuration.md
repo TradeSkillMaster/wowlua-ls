@@ -86,7 +86,7 @@ Not needed for single-addon projects.
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Paths to Lua diagnostic plugin scripts. Relative to the config file's directory. Isolated per file: only the plugins declared by a file's nearest config run against it — plugin lists are not inherited from parent configs. See the [Diagnostic Plugins guide](/guide/plugins) for the full API.
+Paths to Lua diagnostic plugin scripts. Relative to the config file's directory. Isolated per file: only the plugins declared by a file's nearest config run against it. Plugin lists are not inherited from parent configs. See the [Diagnostic Plugins guide](/guide/plugins) for the full API.
 
 ```json
 { "plugins": [".wowlua-ls/my-check.lua"] }
@@ -104,7 +104,7 @@ Path prefixes to exclude from scanning. Relative to the config file's directory.
 ```
 
 ::: tip Built-in default
-`.github/` directories are **always** skipped, no configuration needed. They hold GitHub repository metadata and CI/build tooling (build scripts run by the standalone Lua interpreter, where `io`/`os`/etc. are real standard-library globals), never addon code that ships in-game — so analyzing them as WoW Lua would only produce spurious diagnostics. Anything you add to `ignore` is excluded *in addition* to this default.
+`.github/` directories are **always** skipped - no configuration needed. They hold GitHub repository metadata and CI/build tooling (build scripts run by the standalone Lua interpreter, where `io`/`os`/etc. are real standard-library globals), never addon code that ships in-game, so analyzing them as WoW Lua would only produce spurious diagnostics. Anything you add to `ignore` is excluded *in addition* to this default.
 :::
 
 ### `library`
@@ -112,17 +112,17 @@ Path prefixes to exclude from scanning. Relative to the config file's directory.
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Paths to scan for type information but with all diagnostics suppressed. Useful for third-party libraries where you want classes, globals, and type information available to the rest of your project, but can't fix any diagnostic issues in the library code. Relative entries use the same pattern syntax as `ignore`. Absolute paths — and relative paths that point *outside* the workspace (for example `../shared`) — are also supported for libraries that live next to your addon rather than inside it.
+Paths to scan for type information but with all diagnostics suppressed. Useful for third-party libraries where you want classes, globals, and type information available to the rest of your project, but can't fix any diagnostic issues in the library code. Relative entries use the same pattern syntax as `ignore`. Absolute paths, and relative paths that point *outside* the workspace (for example `../shared`), are also supported for libraries that live next to your addon rather than inside it.
 
 ```json
 { "library": ["Libs/", "../shared-libs", "/home/user/shared-libs/"] }
 ```
 
-Unlike `ignore` (which skips files entirely), `library` files are fully scanned and analyzed — their `@class`, `@alias`, global functions, and other type information are available throughout the workspace. Only diagnostic output is suppressed.
+Unlike `ignore` (which skips files entirely), `library` files are fully scanned and analyzed: their `@class`, `@alias`, global functions, and other type information are available throughout the workspace. Only diagnostic output is suppressed.
 
-External library directories are automatically added as extra scan directories, so libraries don't need to be inside your workspace. A relative entry that escapes the workspace root (one containing `..`) is resolved against the directory holding the `.wowluarc.json` and scanned as an external directory — prefer this over an absolute path for libraries checked into version control, since it stays portable across machines.
+External library directories are automatically added as extra scan directories, so libraries don't need to be inside your workspace. A relative entry that escapes the workspace root (one containing `..`) is resolved against the directory holding the `.wowluarc.json` and scanned as an external directory. Prefer this over an absolute path for libraries checked into version control, since it stays portable across machines.
 
-Marking a directory as a library suppresses diagnostics for the **whole subtree**, including any nested `.wowluarc.json` files inside it. A vendored library that ships its own `.wowluarc.json` (for example one pulled in via a symlink) cannot re-enable diagnostics for itself — the parent's `library` declaration wins. See [Hierarchy behavior](#hierarchy-behavior) for how this differs from other settings.
+Marking a directory as a library suppresses diagnostics for the **whole subtree**, including any nested `.wowluarc.json` files inside it. A vendored library that ships its own `.wowluarc.json` (for example one pulled in via a symlink) cannot re-enable diagnostics for itself. The parent's `library` declaration wins. See [Hierarchy behavior](#hierarchy-behavior) for how this differs from other settings.
 
 ### `framexml`
 
@@ -139,9 +139,9 @@ Whether FrameXML API globals are available. Set to `false` to treat FrameXML-spe
 
 WoW flavor names the project targets. Enables `wrong-flavor-api` diagnostic when non-empty.
 
-> **Note:** Flavor filtering can also be derived automatically from `.toc` file listings — see the [Flavor Filtering guide](/guide/flavor-filtering). When both sources are present, the effective flavor for each file is the intersection of the project-level `flavors` and the TOC-derived per-file flavor.
+> **Note:** Flavor filtering can also be derived automatically from `.toc` file listings - see the [Flavor Filtering guide](/guide/flavor-filtering). When both sources are present, the effective flavor for each file is the intersection of the project-level `flavors` and the TOC-derived per-file flavor.
 
-> **Note:** The `deprecated` diagnostic is also flavor-aware — a retail-only deprecation (e.g. `GetMerchantItemInfo`) isn't flagged in an addon that targets Classic, where the API is still live. It derives the addon's targeted flavors from this setting, else a flavor-specific `.toc`, else the `.toc` `## Interface:` versions (so it works even without a `flavors` config). See [Flavor-aware deprecation](/guide/flavor-filtering#flavor-aware-deprecation).
+> **Note:** The `deprecated` diagnostic is also flavor-aware: a retail-only deprecation (e.g. `GetMerchantItemInfo`) isn't flagged in an addon that targets Classic, where the API is still live. It derives the addon's targeted flavors from this setting, else a flavor-specific `.toc`, else the `.toc` `## Interface:` versions (so it works even without a `flavors` config). See [Flavor-aware deprecation](/guide/flavor-filtering#flavor-aware-deprecation).
 
 ### `globals.read`
 
@@ -154,7 +154,7 @@ Global names that may be accessed without triggering `undefined-global`. Entries
 { "globals": { "read": ["LibStub", "MyAddon*Mixin"] } }
 ```
 
-> **Tip:** `SavedVariables` and `SavedVariablesPerCharacter` declared in `.toc` files are automatically added to both `globals.read` and `globals.write` — no manual configuration needed.
+> **Tip:** `SavedVariables` and `SavedVariablesPerCharacter` declared in `.toc` files are automatically added to both `globals.read` and `globals.write` - no manual configuration needed.
 
 ### `globals.write`
 
@@ -306,7 +306,7 @@ Emit snippet completions (`InsertTextFormat.Snippet`). This covers both function
 - **Type:** `boolean`
 - **Default:** `true`
 
-Auto-fill a function's parameters when you complete a function name — e.g. completing `strmatch` inserts `strmatch(${1:s}, ${2:pattern})` with the cursor on the first parameter. Set to `false` to insert just the function name (`strmatch`) and let you type the call yourself. This is independent of [`completion.snippets`](#completion-snippets): annotation-tag snippets still work when only `callSnippets` is disabled.
+Auto-fill a function's parameters when you complete a function name, e.g. completing `strmatch` inserts `strmatch(${1:s}, ${2:pattern})` with the cursor on the first parameter. Set to `false` to insert just the function name (`strmatch`) and let you type the call yourself. This is independent of [`completion.snippets`](#completion-snippets): annotation-tag snippets still work when only `callSnippets` is disabled.
 
 ```json
 { "completion": { "callSnippets": false } }
@@ -337,25 +337,25 @@ Override severity for specific diagnostic codes.
 
 When `.wowluarc.json` files are nested, settings combine according to one of these policies:
 
-- **Isolated** — the single **nearest** ancestor config fully determines the setting. Keys it does not set fall back to their **default**, *not* to a parent config's value. This applies to everything that affects diagnostics, so that running a check from a subdirectory produces the same results as running it from the project root (configs above the scan root are never consulted).
-- **Inherited** — the deepest config that sets the key wins, falling back to ancestor configs and then the default. This applies to editor-experience settings that do not affect diagnostics.
-- **Inherited downward** — the `library` setting alone uses this: once any ancestor config marks a subtree as a library, every file beneath it has diagnostics suppressed, and a nested config inside that subtree cannot opt back in. (Whether a subtree *is* a library still affects only diagnostics, so this is the one diagnostics setting that is not isolated — its entire purpose is to silence a whole vendored subtree, including any config files that subtree carries.)
+- **Isolated**: the single **nearest** ancestor config fully determines the setting. Keys it does not set fall back to their **default**, *not* to a parent config's value. This applies to everything that affects diagnostics, so that running a check from a subdirectory produces the same results as running it from the project root (configs above the scan root are never consulted).
+- **Inherited**: the deepest config that sets the key wins, falling back to ancestor configs and then the default. This applies to editor-experience settings that do not affect diagnostics.
+- **Inherited downward**: the `library` setting alone uses this: once any ancestor config marks a subtree as a library, every file beneath it has diagnostics suppressed, and a nested config inside that subtree cannot opt back in. (Whether a subtree *is* a library still affects only diagnostics, so this is the one diagnostics setting that is not isolated. Its entire purpose is to silence a whole vendored subtree, including any config files that subtree carries.)
 
 | Setting | Policy |
 |---|---|
-| `diagnostics.disable` | **Isolated** — nearest config's `disable` only |
-| `diagnostics.enable` | **Isolated** — applied after the nearest config's `disable` |
-| `diagnostics.severity` | **Isolated** — nearest config's severity map only |
-| `globals.read` | **Isolated** — nearest config only (includes that directory's `.toc` `SavedVariables`) |
-| `globals.write` | **Isolated** — nearest config only |
+| `diagnostics.disable` | **Isolated**: nearest config's `disable` only |
+| `diagnostics.enable` | **Isolated**: applied after the nearest config's `disable` |
+| `diagnostics.severity` | **Isolated**: nearest config's severity map only |
+| `globals.read` | **Isolated**: nearest config only (includes that directory's `.toc` `SavedVariables`) |
+| `globals.write` | **Isolated**: nearest config only |
 | `globals.allow_slash_commands` | **Isolated** |
 | `globals.allow_binding_globals` | **Isolated** |
 | `framexml` | **Isolated** |
 | `flavors` | **Isolated** (then intersected with any TOC-derived per-file mask) |
 | `inference.*` | **Isolated** |
-| `ignore` | **Isolated** — nearest config's patterns, relative to its directory |
-| `library` | **Inherited downward** — any ancestor config that marks a subtree as a library suppresses diagnostics for that whole subtree, and a nested config inside it cannot un-mark itself; absolute library directories are scanned workspace-wide |
-| `plugins` | **Isolated** — only the nearest config's plugins run against a file |
+| `ignore` | **Isolated**: nearest config's patterns, relative to its directory |
+| `library` | **Inherited downward**: any ancestor config that marks a subtree as a library suppresses diagnostics for that whole subtree, and a nested config inside it cannot un-mark itself; absolute library directories are scanned workspace-wide |
+| `plugins` | **Isolated**: only the nearest config's plugins run against a file |
 | `hint.*` | Inherited |
 | `codeLens.*` | Inherited |
 | `editor.*` | Inherited |
@@ -363,7 +363,7 @@ When `.wowluarc.json` files are nested, settings combine according to one of the
 | `addon_root` | Nearest (deepest) `addon_root: true` wins (structural) |
 
 ::: warning Isolated settings do not inherit
-If a nested directory has its own `.wowluarc.json`, it only inherits the **inherited** settings above. Any **isolated** setting it does not restate reverts to its default — it does *not* pick up the parent's value. For example, a subdirectory config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` settings unless it repeats them. This also applies to auto-discovered TOC `SavedVariables` globals — they are merged into the config entry for the directory containing the `.toc` file, so a child config in a subdirectory will not see them.
+If a nested directory has its own `.wowluarc.json`, it only inherits the **inherited** settings above. Any **isolated** setting it does not restate reverts to its default. It does *not* pick up the parent's value. For example, a subdirectory config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` settings unless it repeats them. This also applies to auto-discovered TOC `SavedVariables` globals. They are merged into the config entry for the directory containing the `.toc` file, so a child config in a subdirectory will not see them.
 
 The one exception is [`library`](#library), which is inherited downward.
 :::

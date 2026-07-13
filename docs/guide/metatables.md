@@ -1,6 +1,6 @@
 # Metatable Inference
 
-WoW addon OOP is built on metatables. wowlua-ls understands `setmetatable`, `__index` chains, `__call`, operator metamethods, and `getmetatable` — often without any annotations at all.
+WoW addon OOP is built on metatables. wowlua-ls understands `setmetatable`, `__index` chains, `__call`, operator metamethods, and `getmetatable` - often without any annotations at all.
 
 ## `setmetatable` + `__index`
 
@@ -82,7 +82,7 @@ w:Show() -- resolved
 
 ### Statement form
 
-`setmetatable` doesn't need to be in an assignment — it mutates the table in place:
+`setmetatable` doesn't need to be in an assignment - it mutates the table in place:
 
 ```lua
 local t = {}
@@ -190,5 +190,5 @@ The LS resolves a lot from metatables alone, but there are cases where annotatio
 | Simple `mt.__index = mt` | Inference handles it |
 | Factory returning `setmetatable({}, self)` | Add `@return ClassName` for clarity |
 | Complex multi-file class | Use `@class` + `@field` |
-| Dynamic `__index` function | Inference may not follow — use `@class` |
+| Dynamic `__index` function | Inference may not follow - use `@class` |
 | `__index` from another file | Needs `@class` on the target for cross-file |

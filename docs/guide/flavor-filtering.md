@@ -1,10 +1,10 @@
 # Flavor Filtering
 
-WoW ships three game versions — retail, classic, and classic era — and their APIs differ. If your addon targets more than one, calling an API that doesn't exist in one of your targets is a runtime error you won't catch until someone reports it. wowlua-ls catches it at edit time.
+WoW ships three game versions (retail, classic, and classic era) and their APIs differ. If your addon targets more than one, calling an API that doesn't exist in one of your targets is a runtime error you won't catch until someone reports it. wowlua-ls catches it at edit time.
 
 ## Setup
 
-There are two ways to configure flavor filtering: manually via `.wowluarc.json`, or automatically from your `.toc` files. Both can be used together — when they are, the effective flavor for each file is the **intersection** of the two.
+There are two ways to configure flavor filtering: manually via `.wowluarc.json`, or automatically from your `.toc` files. Both can be used together - when they are, the effective flavor for each file is the **intersection** of the two.
 
 ### Option 1: `.wowluarc.json` (project-wide)
 
@@ -64,7 +64,7 @@ SharedCode.lua
 
 The directive may follow the file path (the form the WoW client documents, shown above) or precede it (`[AllowLoadGameType mainline] RetailUI.lua`). These intersect with the TOC's suffix flavor, further restricting which flavors a file is loaded for.
 
-Other per-line conditions (`[AllowLoadTextLocale ...]`, `[AllowLoad ...]`) and path variables (`[Family]`, `[Game]`, `[TextLocale]`) are recognized in either position, but only `AllowLoadGameType` affects flavor — the rest are parsed so they don't corrupt the file path. See the [TOC file guide](./toc-files.md#per-line-directives) for the full list.
+Other per-line conditions (`[AllowLoadTextLocale ...]`, `[AllowLoad ...]`) and path variables (`[Family]`, `[Game]`, `[TextLocale]`) are recognized in either position, but only `AllowLoadGameType` affects flavor: the rest are parsed so they don't corrupt the file path. See the [TOC file guide](./toc-files.md#per-line-directives) for the full list.
 
 **Path variables (`[Family]` and `[Game]`):**
 
@@ -94,7 +94,7 @@ With flavors configured, the LS warns when you call an API that isn't available 
 ```lua
 -- This function only exists in retail
 AbbreviateLargeNumbers(100)
--- warning: wrong-flavor-api — not available in classic
+-- warning: wrong-flavor-api: not available in classic
 ```
 
 Hovering over a WoW API function shows its availability: `Flavors: Retail, Classic`.
@@ -104,21 +104,21 @@ Hovering over a WoW API function shows its availability: `Flavors: Retail, Class
 WoW API deprecations are retail-side: many functions Blizzard marks `@deprecated`
 (e.g. `GetMerchantItemInfo`, replaced on retail by `C_MerchantFrame.GetItemInfo`)
 remain the live, correct API on Classic and Classic Era. The `deprecated`
-diagnostic accounts for this — it won't flag a call when the API is still live in
+diagnostic accounts for this. It won't flag a call when the API is still live in
 a flavor your addon targets (and the editor won't strike the call through
-either — the semantic-token "deprecated" styling follows the same rule):
+either: the semantic-token "deprecated" styling follows the same rule):
 
 ```lua
 -- In a Classic Era addon (or a multi-flavor addon that includes Classic):
 local _, _, price = GetMerchantItemInfo(index)  -- no `deprecated` warning here
 
 -- In a retail-only addon, the same call IS flagged:
--- warning: deprecated — 'GetMerchantItemInfo' is deprecated
+-- warning: deprecated: 'GetMerchantItemInfo' is deprecated
 ```
 
 The addon's targeted flavors are taken from your `.wowluarc.json` `flavors`, else
 a flavor-specific `.toc` (suffix / `AllowLoadGameType`), else the `.toc`
-`## Interface:` version line — so a config-less multi-version addon
+`## Interface:` version line, so a config-less multi-version addon
 (`## Interface: 120005, 50503, 11508`) is still recognized as targeting Classic.
 If there is no flavor signal at all, the warning fires as before. Unlike
 `wrong-flavor-api`, this never requires a `flavors` config and the `## Interface:`
@@ -195,4 +195,4 @@ end
 
 Flavor filtering is most valuable for addons that ship a single codebase across retail and classic. Without it, you won't know about missing APIs until a classic player reports a Lua error.
 
-If your addon only targets one flavor, you don't need to configure `flavors` — the diagnostic is disabled when no flavors are declared.
+If your addon only targets one flavor, you don't need to configure `flavors` - the diagnostic is disabled when no flavors are declared.

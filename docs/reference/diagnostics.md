@@ -6,7 +6,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 
 | Code | Description |
 |---|---|
-| `deprecated` | Usage of `@deprecated` symbols (flavor-aware — suppressed when the API is still live in a flavor the addon targets; see [Flavor Filtering](/guide/flavor-filtering#flavor-aware-deprecation)) |
+| `deprecated` | Usage of `@deprecated` symbols (flavor-aware: suppressed when the API is still live in a flavor the addon targets; see [Flavor Filtering](/guide/flavor-filtering#flavor-aware-deprecation)) |
 | `discard-returns` | Ignoring `@nodiscard` return values |
 | `type-mismatch` | Argument type vs `@param` mismatch (including generic type arguments, e.g. `Container<number>` vs `Container<boolean>`, and string-literal unions, e.g. `"x"` against `"A"\|"B"\|"C"`) |
 | `return-mismatch` | Return type vs `@return` mismatch |
@@ -89,7 +89,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 
 ### `missing-param-annotation` / `missing-return-annotation`
 
-Flag functions that lack `@param` / `@return` documentation. Both are off by default — enable them when you want every public function fully documented:
+Flag functions that lack `@param` / `@return` documentation. Both are off by default. Enable them when you want every public function fully documented:
 
 ```json
 {
@@ -101,7 +101,7 @@ Flag functions that lack `@param` / `@return` documentation. Both are off by def
 
 `missing-param-annotation` fires once per source parameter without a matching `@param` (the implicit `self` of a colon method and the conventional `_` throwaway are skipped). `missing-return-annotation` fires once on a function whose body returns a value but has no `@return`.
 
-**Scope — only functions reachable beyond their file are checked.** Checked:
+**Scope: only functions reachable beyond their file are checked.** Checked:
 
 - ✅ Global functions: `function GlobalFn() end`
 - ✅ Methods/fields on a global table: `function GlobalApi.Run() end`
@@ -116,7 +116,7 @@ Skipped:
 - ❌ Bare `function foo()` that reassigns a forward-declared `local foo`
 - ❌ **Methods on a file-private local table** (`local cache = {}; function cache.get() end`) that never escapes the file
 
-The escape test for table methods reuses the workspace global scan — a method is "reachable" exactly when the language server registers it as a cross-file symbol, so this stays consistent with go-to-definition and find-references.
+The escape test for table methods reuses the workspace global scan: a method is "reachable" exactly when the language server registers it as a cross-file symbol, so this stays consistent with go-to-definition and find-references.
 
 This differs from `incomplete-signature-doc`, which fires only when a signature is *partially* annotated (and regardless of where the function lives). `missing-*-annotation` fires even on a completely undocumented function, but only for non-file-local ones. The two can be enabled together; a partially-annotated global will then report under both.
 
@@ -124,13 +124,13 @@ This differs from `incomplete-signature-doc`, which fires only when a signature 
 
 Flags `if`/`elseif`/`while`/`repeat...until` conditions that are provably always true or always false. Detected patterns:
 
-- **Always-truthy/falsy type** — the condition's resolved type is guaranteed truthy (e.g. `table`, `number`) or guaranteed falsy (`nil`).
-- **Negation of a constant** — `not expr` where `expr` is itself always truthy or always falsy (e.g. `if not tbl` where `tbl` is a table).
-- **Type-incompatible equality** — `==`/`~=` between values whose types can never match at runtime (e.g. `num == "hello"`, `nonNilVar == nil`).
-- **Literal-union miss** — `x == "c"` where `x` is typed as `"a"|"b"` and `"c"` is not a member.
-- **Two-literal comparison** — both sides are concrete literals (e.g. `1 == 2`, `"a" == "a"`, `3 < 2`).
-- **Self-comparison** — `x < x` or `x > x` (always false; NaN-safe). `<=`/`>=`/`==`/`~=` self-comparisons are excluded because NaN breaks them.
-- **Redundant `type()` guard** — `type(x) == "number"` where `x` is already known to be a `number` (always true) or can never be a `number` (always false).
+- **Always-truthy/falsy type**: the condition's resolved type is guaranteed truthy (e.g. `table`, `number`) or guaranteed falsy (`nil`).
+- **Negation of a constant**: `not expr` where `expr` is itself always truthy or always falsy (e.g. `if not tbl` where `tbl` is a table).
+- **Type-incompatible equality**: `==`/`~=` between values whose types can never match at runtime (e.g. `num == "hello"`, `nonNilVar == nil`).
+- **Literal-union miss**: `x == "c"` where `x` is typed as `"a"|"b"` and `"c"` is not a member.
+- **Two-literal comparison**: both sides are concrete literals (e.g. `1 == 2`, `"a" == "a"`, `3 < 2`).
+- **Self-comparison**: `x < x` or `x > x` (always false; NaN-safe). `<=`/`>=`/`==`/`~=` self-comparisons are excluded because NaN breaks them.
+- **Redundant `type()` guard**: `type(x) == "number"` where `x` is already known to be a `number` (always true) or can never be a `number` (always false).
 
 Loop idioms (`while true`, `repeat...until false`) are not flagged. Conditions referencing variables reassigned inside loops are suppressed to avoid false positives.
 
@@ -141,14 +141,14 @@ Flags function definitions that are never referenced anywhere in the workspace. 
 **What counts as "used":**
 
 - Called directly via `call_resolutions` (handles deep type inference, self-calls, etc.)
-- Referenced as a value (e.g. passed as a callback, stored in a variable) — detected via field-access token resolution with inheritance
+- Referenced as a value (e.g. passed as a callback, stored in a variable) - detected via field-access token resolution with inheritance
 
 **What is skipped (not flagged):**
 
 - Functions whose name starts with `_` (convention for intentionally unused)
 - Functions defined in library files (directories marked with `library` in `.wowluarc.json`)
-- Interface methods — if 2+ distinct tables define the same method name, the method is assumed to be a framework callback pattern (duck-typing dispatch)
-- Inherited methods — if a parent class's field is referenced, child overrides are also considered used
+- Interface methods: if 2+ distinct tables define the same method name, the method is assumed to be a framework callback pattern (duck-typing dispatch)
+- Inherited methods: if a parent class's field is referenced, child overrides are also considered used
 
 **Cross-file behavior:**
 
@@ -177,6 +177,6 @@ These diagnostics apply to `.toc` files only. See the [TOC Files guide](/guide/t
 
 Diagnostic codes that LuaLS defines but wowlua_ls has no equivalent for (e.g.
 `lowercase-global`, `cast-type-mismatch`, `unused-label`) are accepted silently
-in `---@diagnostic` directives — they suppress nothing here, but won't trip
+in `---@diagnostic` directives - they suppress nothing here, but won't trip
 `unknown-diag-code`, so a project that also runs LuaLS can keep its suppressions
 without noise.

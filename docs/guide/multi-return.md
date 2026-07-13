@@ -1,6 +1,6 @@
 # Multi-Return Functions
 
-Lua functions can return multiple values, and WoW addon code uses this constantly — `pcall` returns `ok, result`, lookup functions return `value, error`, iterators return `key, value`. wowlua-ls has first-class support for typing multi-return functions, including correlated narrowing across return positions.
+Lua functions can return multiple values, and WoW addon code uses this constantly: `pcall` returns `ok, result`, lookup functions return `value, error`, iterators return `key, value`. wowlua-ls has first-class support for typing multi-return functions, including correlated narrowing across return positions.
 
 ## Tuple-union returns
 
@@ -20,7 +20,7 @@ Each parenthesized group is a **case**. The `|` separates cases. The LS derives 
 - Position 0: `string | nil`
 - Position 1: `number | nil`
 
-But it also knows the cases are correlated — when you narrow one position, the incompatible cases are filtered and the other positions narrow too.
+But it also knows the cases are correlated: when you narrow one position, the incompatible cases are filtered and the other positions narrow too.
 
 ### Labels
 
@@ -120,7 +120,7 @@ if total > 1 then
 end
 ```
 
-Number literals decay to plain `number` under arithmetic — they only model
+Number literals decay to plain `number` under arithmetic - they only model
 distinct values for case discrimination, not numeric ranges.
 
 ## The `grouped-return-mismatch` diagnostic
@@ -136,7 +136,7 @@ function example()
 end
 ```
 
-The partial return `"hello", nil` doesn't match either case — it's likely a bug where you forgot to return the second value.
+The partial return `"hello", nil` doesn't match either case. It's likely a bug where you forgot to return the second value.
 
 ## Inline uses
 
@@ -195,12 +195,12 @@ The legacy multi-line `@return` syntax still works:
 function getInfo() end
 ```
 
-Don't mix legacy `@return` lines with tuple-union syntax on the same function — the LS will emit `malformed-annotation`.
+Don't mix legacy `@return` lines with tuple-union syntax on the same function. The LS will emit `malformed-annotation`.
 
 ## Comma-separated returns
 
 A single `@return` line may list several comma-separated types (LuaLS-style),
-each with an optional name — equivalent to writing one `@return` line per value:
+each with an optional name, equivalent to writing one `@return` line per value:
 
 ```lua
 ---@return string name, number level

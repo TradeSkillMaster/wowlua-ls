@@ -1,6 +1,6 @@
 # Classes and Inheritance
 
-Lua doesn't have classes, but WoW addons use them everywhere — via metatables, factory libraries, or just convention. wowlua-ls gives you a way to tell it about your class structures so it can provide completion, type checking, and cross-file intelligence.
+Lua doesn't have classes, but WoW addons use them everywhere - via metatables, factory libraries, or just convention. wowlua-ls gives you a way to tell it about your class structures so it can provide completion, type checking, and cross-file intelligence.
 
 ## Defining a class
 
@@ -76,9 +76,9 @@ Fields have three visibility levels:
 ---@field private _lock boolean      -- private: this class only
 ```
 
-- **public** — accessible from anywhere (the default)
-- **protected** — accessible from the class and its subclasses
-- **private** — accessible only within the class itself
+- **public**: accessible from anywhere (the default)
+- **protected**: accessible from the class and its subclasses
+- **private**: accessible only within the class itself
 
 ### Implicit protected for `_` prefixes
 
@@ -100,13 +100,13 @@ With this enabled, data fields starting with `_` are **implicitly protected** wi
 ---@field public _id number -- explicit public overrides the convention
 ```
 
-This only applies to data fields discovered at runtime (assignments, constructor fields), not to explicit `@field` declarations without a visibility keyword — those default to public since the author had the chance to write `protected`.
+This only applies to data fields discovered at runtime (assignments, constructor fields), not to explicit `@field` declarations without a visibility keyword; those default to public since the author had the chance to write `protected`.
 
 Methods are **not** affected by the `_` convention. A method named `_helper` stays public. Use `@private` or `@protected` explicitly for methods.
 
 ### Accessor visibility (`@accessor`)
 
-Some addons group methods under a sub-table to signal visibility — for example, `function MyClass.__p:DoSomething()` where `__p` is a private accessor. The `@accessor` annotation tells the LS that methods defined through that sub-table should inherit its visibility:
+Some addons group methods under a sub-table to signal visibility - for example, `function MyClass.__p:DoSomething()` where `__p` is a private accessor. The `@accessor` annotation tells the LS that methods defined through that sub-table should inherit its visibility:
 
 ```lua
 ---@class MyClass
@@ -127,7 +127,7 @@ function MyClass:PublicMethod()
 end
 ```
 
-The accessor name (`__p`, `__pt`) is transparent — the methods are placed directly on the class, not on a sub-table. The accessor only controls visibility. Calling `obj:InternalUpdate()` from outside the class triggers an `access-private` diagnostic.
+The accessor name (`__p`, `__pt`) is transparent: the methods are placed directly on the class, not on a sub-table. The accessor only controls visibility. Calling `obj:InternalUpdate()` from outside the class triggers an `access-private` diagnostic.
 
 ## Inheritance
 
@@ -155,7 +155,7 @@ end
 
 ### Multiple parents {#multiple-parents}
 
-A class can inherit from multiple parents. Use commas or `&` — both are equivalent:
+A class can inherit from multiple parents. Use commas or `&`; both are equivalent:
 
 ```lua
 ---@class CellMixin
@@ -263,7 +263,7 @@ end
 
 ## Mixins and templates {#mixins-and-templates}
 
-WoW uses mixins extensively — `Mixin()` copies fields from one or more tables onto a target, and frame templates apply mixin behaviors to frames. In the type system, this is an **intersection type** (`A & B`): a value that has the fields and methods of both types.
+WoW uses mixins extensively. `Mixin()` copies fields from one or more tables onto a target, and frame templates apply mixin behaviors to frames. In the type system, this is an **intersection type** (`A & B`): a value that has the fields and methods of both types.
 
 ### Frame templates
 
@@ -277,7 +277,7 @@ frame:SetPoint("CENTER")  -- Frame method
 frame:SetBackdrop({})     -- BackdropTemplate method
 ```
 
-No annotation needed — the `CreateFrame` stub handles this.
+No annotation needed; the `CreateFrame` stub handles this.
 
 ### Mixin(), CreateFromMixins(), CreateAndInitFromMixin()
 
@@ -288,7 +288,7 @@ local frame = Mixin(CreateFrame("Frame"), DraggableMixin, TooltipMixin, Scrollab
 -- frame: Frame & DraggableMixin & TooltipMixin & ScrollableMixin
 ```
 
-`Mixin()` also supports bare calls via `@narrows-arg` — the first argument's type is updated in-place:
+`Mixin()` also supports bare calls via `@narrows-arg`: the first argument's type is updated in-place:
 
 ```lua
 ---@type Frame
@@ -353,7 +353,7 @@ end
 
 ## Partial classes
 
-The `(partial)` and `(exact)` modifiers are accepted by the parser for compatibility, but are currently ignored — they have no effect on diagnostics. This means code using `@class (partial)` won't cause parse errors, but the class is still treated as exact.
+The `(partial)` and `(exact)` modifiers are accepted by the parser for compatibility, but are currently ignored: they have no effect on diagnostics. This means code using `@class (partial)` won't cause parse errors, but the class is still treated as exact.
 
 ```lua
 ---@class (partial) AddonState  -- parsed, but treated the same as @class AddonState
@@ -373,7 +373,7 @@ When you construct a class instance via a table literal, the LS checks that all 
 ---@type Config
 local cfg = {
     name = "MyAddon",
-    -- warning: missing-fields — 'debug' is required
+    -- warning: missing-fields: 'debug' is required
 }
 ```
 
@@ -381,7 +381,7 @@ Optional fields (those with `?` or `nil` in their type) don't trigger the warnin
 
 ## Enum types (`@enum`)
 
-Use `@enum` instead of `@class` to declare an enum type — a named table whose values are bidirectionally compatible with their value type (`number` or `string`):
+Use `@enum` instead of `@class` to declare an enum type: a named table whose values are bidirectionally compatible with their value type (`number` or `string`):
 
 ```lua
 ---@enum Priority
@@ -399,7 +399,7 @@ setPriority(2)             -- OK, enums accept plain numbers
 setPriority("high")        -- warning: type-mismatch
 ```
 
-String-valued enums work the same way — values are interchangeable with `string`:
+String-valued enums work the same way: values are interchangeable with `string`:
 
 ```lua
 ---@enum Status
@@ -417,11 +417,11 @@ setStatus("custom")      -- OK, string enums accept plain strings
 setStatus(42)            -- warning: type-mismatch
 ```
 
-The enum's value type is inferred automatically from the field values. All values must be the same type — mixing numbers and strings in the same enum produces a `mixed-enum-values` warning.
+The enum's value type is inferred automatically from the field values. All values must be the same type; mixing numbers and strings in the same enum produces a `mixed-enum-values` warning.
 
 ### Key-based enums (`@enum (key)`)
 
-By default, `@enum` creates a type from the table's **values**. Use `@enum (key)` to create an enum from the table's **keys** instead — useful when a table's keys represent a fixed set of valid string identifiers:
+By default, `@enum` creates a type from the table's **values**. Use `@enum (key)` to create an enum from the table's **keys** instead, useful when a table's keys represent a fixed set of valid string identifiers:
 
 ```lua
 ---@enum (key) Settings
@@ -438,7 +438,7 @@ getSetting("unknown")     -- OK (string-compatible, like all string enums)
 getSetting(42)            -- warning: type-mismatch
 ```
 
-Key enums are always string enums (since Lua table constructor keys are identifiers). The `mixed-enum-values` diagnostic does not apply to key enums — their values can be any type.
+Key enums are always string enums (since Lua table constructor keys are identifiers). The `mixed-enum-values` diagnostic does not apply to key enums; their values can be any type.
 
 WoW's built-in `Enum.*` types (like `Enum.PowerType`, `Enum.UnitSex`) are automatically treated as number enums, so `UnitPower("player", 0)` doesn't produce a type-mismatch warning.
 

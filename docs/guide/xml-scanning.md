@@ -8,8 +8,8 @@ WoW addon XML files define UI frames, templates, and child elements. Without XML
 
 When wowlua-ls scans an XML file, it extracts:
 
-- **Virtual templates** (`virtual="true"`) become `@class` declarations — available for `@type` annotations and inheritance
-- **Non-virtual named frames** become both a class and a global variable — no `undefined-global` warning
+- **Virtual templates** (`virtual="true"`) become `@class` declarations: available for `@type` annotations and inheritance
+- **Non-virtual named frames** become both a class and a global variable: no `undefined-global` warning
 - **`parentKey` children** become typed fields on the parent frame's class
 - **`KeyValue` elements** become fields with their declared types (string, number, boolean)
 - **`inherits` and `mixin`** attributes populate the parent class chain
@@ -131,10 +131,10 @@ The scanner recognizes all standard WoW frame types:
 
 ## Limitations
 
-- **Dotted `parentKey` paths** — A `parentKey` like `"IconHitBox.IconBorder"` sets a field on a nested child frame rather than the direct parent. These are silently skipped.
-- **`childKey`** — The `childKey` attribute (the inverse of `parentKey` — sets a field on the child pointing back to the parent) is not currently supported.
-- **Inline `<Script>` code** — Lua code embedded inside XML `<Script>` blocks is not parsed. Globals defined there (e.g. `STANDARD_TEXT_FONT`) won't be discovered unless they also appear in a `.lua` file.
-- **`<FontFamily>` details** — `<FontFamily>` elements create a `Font` class, but their `<Member>` children and font file references are not modeled.
+- **Dotted `parentKey` paths**: A `parentKey` like `"IconHitBox.IconBorder"` sets a field on a nested child frame rather than the direct parent. These are silently skipped.
+- **`childKey`**: The `childKey` attribute (the inverse of `parentKey` - sets a field on the child pointing back to the parent) is not currently supported.
+- **Inline `<Script>` code**: Lua code embedded inside XML `<Script>` blocks is not parsed. Globals defined there (e.g. `STANDARD_TEXT_FONT`) won't be discovered unless they also appear in a `.lua` file.
+- **`<FontFamily>` details**: `<FontFamily>` elements create a `Font` class, but their `<Member>` children and font file references are not modeled.
 
 ## No configuration needed
 

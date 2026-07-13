@@ -15,13 +15,13 @@ pub(crate) const MY_NEW_CHECK: DiagnosticDef = DiagnosticDef {
 
 Also add it to the `CATALOG` array in the same file so it's recognized by the suppression and validation systems.
 
-The `code` string is what users reference in `@diagnostic disable:my-new-check` and in `.wowluarc.json` — suppression works automatically by matching this string.
+The `code` string is what users reference in `@diagnostic disable:my-new-check` and in `.wowluarc.json` - suppression works automatically by matching this string.
 
 ## 2. Create the module
 
-Create `src/diagnostics/my_new_check.rs`. The `DiagnosticPass` trait has three methods — implement whichever fits your diagnostic:
+Create `src/diagnostics/my_new_check.rs`. The `DiagnosticPass` trait has three methods - implement whichever fits your diagnostic:
 
-### `run()` — full-analysis pass
+### `run()`: full-analysis pass
 
 Best for diagnostics that walk the IR (symbols, functions, expressions) after type resolution:
 
@@ -49,7 +49,7 @@ impl DiagnosticPass for MyNewCheck {
 }
 ```
 
-### `visit_node()` — AST walk pass
+### `visit_node()`: AST walk pass
 
 Best for diagnostics that check syntax patterns. Called once per AST node during a shared tree walk:
 
@@ -69,7 +69,7 @@ impl DiagnosticPass for MyNewCheck {
 }
 ```
 
-### `run_inject()` — inject-field pipeline
+### `run_inject()`: inject-field pipeline
 
 For diagnostics that participate in the type-mismatch → inject-field pipeline. Used by `type_mismatch`, `return_mismatch`, `field_type_mismatch`, `assign_type_mismatch`, and `inject_field`. You probably don't need this unless your diagnostic feeds the inject-field system.
 
@@ -79,9 +79,9 @@ In `src/diagnostics/mod.rs`:
 
 1. Add `mod my_new_check;` to the module declarations at the top
 2. Add your pass to the appropriate list in `run_all()`:
-   - `run_passes` — for `run()` implementations (most diagnostics)
-   - `node_passes` — for `visit_node()` implementations (AST walks)
-   - `inject_passes` — for `run_inject()` implementations (type-mismatch pipeline)
+   - `run_passes`: for `run()` implementations (most diagnostics)
+   - `node_passes`: for `visit_node()` implementations (AST walks)
+   - `inject_passes`: for `run_inject()` implementations (type-mismatch pipeline)
 
 ```rust
 let run_passes: &[&dyn DiagnosticPass] = &[
@@ -125,4 +125,4 @@ Examples: `need-check-nil`, `implicit-nil-return`, `unknown-param-type`.
 
 ## Hybrid modules
 
-Some diagnostic modules are "hybrid" — they implement `DiagnosticPass` for the post-analysis phase AND export `pub(crate)` helper functions called from `build_ir.rs` or `resolve.rs` during IR construction. Both roles share the same `DiagnosticDef` constants from the catalog. This is used when a diagnostic needs to emit during IR construction (e.g. when specific AST context is available) and also during post-analysis passes.
+Some diagnostic modules are "hybrid" - they implement `DiagnosticPass` for the post-analysis phase AND export `pub(crate)` helper functions called from `build_ir.rs` or `resolve.rs` during IR construction. Both roles share the same `DiagnosticDef` constants from the catalog. This is used when a diagnostic needs to emit during IR construction (e.g. when specific AST context is available) and also during post-analysis passes.

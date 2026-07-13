@@ -64,7 +64,7 @@ Tests are organized by feature. Each file tests one area:
 
 ## Per-directory config
 
-Test subdirectories can include a `.wowluarc.json` to control behavior — typically to enable default-off diagnostics:
+Test subdirectories can include a `.wowluarc.json` to control behavior, typically to enable default-off diagnostics:
 
 ```json
 {
@@ -108,6 +108,6 @@ A partial `--scan-dir` misses cross-file classes, defclass calls, and inherited 
 
 ## Writing good tests
 
-When fixing a bug, always add a regression test covering the fix. When adding a feature, test both the happy path and edge cases — cover what should work and what should produce diagnostics.
+When fixing a bug, always add a regression test covering the fix. When adding a feature, test both the happy path and edge cases: cover what should work and what should produce diagnostics.
 
 Tests that rely on default-off diagnostic codes (`need-check-nil`, `implicit-nil-return`, etc.) must live in a subdirectory with a `.wowluarc.json` that enables them.

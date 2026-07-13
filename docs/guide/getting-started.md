@@ -4,15 +4,15 @@
 
 ### VS Code
 
-Install the **wowlua-ls** extension from the VS Code marketplace. It bundles the language server binary — no separate install needed.
+Install the **wowlua-ls** extension from the VS Code marketplace. It bundles the language server binary - no separate install needed.
 
 ### JetBrains IDEs
 
-Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server) (or **Settings → Plugins → Marketplace**, search for "WoW Lua"). Works in any JetBrains IDE 2025.2 or newer; it uses the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin as its LSP client, which the Marketplace installs automatically as a dependency. The plugin bundles the language server binary — no separate install needed.
+Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server) (or **Settings → Plugins → Marketplace**, search for "WoW Lua"). Works in any JetBrains IDE 2025.2 or newer; it uses the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin as its LSP client, which the Marketplace installs automatically as a dependency. The plugin bundles the language server binary - no separate install needed.
 
 ### Neovim
 
-Neovim has built-in LSP client support — no plugin required, just configuration.
+Neovim has built-in LSP client support - no plugin required, just configuration.
 
 **1. Get the binary.** Either download a release from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases), or build from source:
 
@@ -126,9 +126,9 @@ For project-specific settings, create a `.wowluarc.json` in your addon's root di
 
 This tells wowlua-ls:
 
-- **Skip `Libs/`** — don't analyze third-party library code
-- **Target retail and classic** — warn about flavor-specific APIs
-- **Enable nil checking** — report `need-check-nil` warnings (off by default)
+- **Skip `Libs/`**: don't analyze third-party library code
+- **Target retail and classic**: warn about flavor-specific APIs
+- **Enable nil checking**: report `need-check-nil` warnings (off by default)
 
 See [Configuration](/guide/configuration) for the full reference.
 
@@ -168,7 +168,7 @@ Now `AuctionEntry` is a named type. You can reference it in `@param` and `@retur
 
 ### When to use `@type`
 
-`@type` forces a variable's type. It's most useful when the LS can't infer what you need. For cases where the LS already has the answer, it's up to you — the annotation won't hurt, but you can save yourself the effort:
+`@type` forces a variable's type. It's most useful when the LS can't infer what you need. For cases where the LS already has the answer, it's up to you: the annotation won't hurt, but you can save yourself the effort:
 
 ```lua
 -- Useful: tells the LS what this empty table will hold

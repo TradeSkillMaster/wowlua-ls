@@ -1,6 +1,6 @@
 # TOC File Support
 
-wowlua-ls provides full language server features for WoW `.toc` files — syntax highlighting, hover documentation, completions, go-to-definition, and diagnostics.
+wowlua-ls provides full language server features for WoW `.toc` files: syntax highlighting, hover documentation, completions, go-to-definition, and diagnostics.
 
 ## What it does
 
@@ -8,11 +8,11 @@ Every WoW addon has a `.toc` file that declares metadata (title, dependencies, s
 
 With TOC support enabled, you get:
 
-- **Syntax highlighting** — Header keys, values, comments, directives, and file paths are colorized
-- **Hover documentation** — Hover any standard field name to see what it does, or hover an Interface version to see which expansion it maps to
-- **Completions** — Type `## ` and get suggestions for all standard fields; type a value and get context-aware options (game types, boolean values, file paths)
-- **Go-to-definition** — Click a file path to jump directly to that `.lua` or `.xml` file
-- **Diagnostics** — Catch common mistakes before you reload your addon
+- **Syntax highlighting**: Header keys, values, comments, directives, and file paths are colorized
+- **Hover documentation**: Hover any standard field name to see what it does, or hover an Interface version to see which expansion it maps to
+- **Completions**: Type `## ` and get suggestions for all standard fields; type a value and get context-aware options (game types, boolean values, file paths)
+- **Go-to-definition**: Click a file path to jump directly to that `.lua` or `.xml` file
+- **Diagnostics**: Catch common mistakes before you reload your addon
 
 ## Example
 
@@ -37,7 +37,7 @@ UI/MainFrame.lua
 
 Hovering `Interface` shows its documentation. Hovering `110100` shows "The War Within 11.1.x". Hovering `mainline` shows "Retail (The War Within, etc.)".
 
-Completions after `## ` suggest `Title`, `Notes`, `Author`, `SavedVariables`, etc. — filtered to exclude fields you've already declared.
+Completions after `## ` suggest `Title`, `Notes`, `Author`, `SavedVariables`, etc., filtered to exclude fields you've already declared.
 
 ## Supported fields
 
@@ -67,14 +67,14 @@ wowlua-ls recognizes all standard TOC fields:
 | `Secure` | Blizzard-signed secure code marker |
 
 Additionally:
-- **`X-*` fields** — Custom addon metadata (e.g. `X-Website`, `X-Curse-Project-ID`) are recognized and won't trigger unknown-field warnings
-- **Locale suffixes** — Fields like `Title-deDE`, `Notes-enUS`, `Category-enUS` are recognized as localized variants
+- **`X-*` fields**: Custom addon metadata (e.g. `X-Website`, `X-Curse-Project-ID`) are recognized and won't trigger unknown-field warnings
+- **Locale suffixes**: Fields like `Title-deDE`, `Notes-enUS`, `Category-enUS` are recognized as localized variants
 
 ## Per-line directives
 
 TOC files support two kinds of bracketed tokens on file lines: **load conditions**
 that restrict when a file loads, and **path variables** that expand inline within
-the path. Conditions may appear before, after, or between path segments — the WoW
+the path. Conditions may appear before, after, or between path segments - the WoW
 client's documented form places them after the path:
 
 ```

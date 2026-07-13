@@ -1,6 +1,6 @@
 # Expression Strings
 
-Some addons embed Lua expressions inside string literals — for example, [LibTSMReactive](https://github.com/TradeSkillMaster/LibTSMReactive) evaluates expressions against state fields when dependencies change. wowlua-ls supports the `expression<C, R>` type to bring full language server features into these embedded expressions:
+Some addons embed Lua expressions inside string literals. For example, [LibTSMReactive](https://github.com/TradeSkillMaster/LibTSMReactive) evaluates expressions against state fields when dependencies change. wowlua-ls supports the `expression<C, R>` type to bring full language server features into these embedded expressions:
 
 - **Hover** on identifiers inside expression strings
 - **Completions** for available fields
@@ -36,7 +36,7 @@ Identifiers inside the expression string resolve against the fields of `ScanStat
 
 ## `expression<self>`
 
-Use `expression<self>` to resolve fields from the receiver's actual class at the call site. This is how LibTSMReactive's `Publisher` method works — the same method supports any state schema:
+Use `expression<self>` to resolve fields from the receiver's actual class at the call site. This is how LibTSMReactive's `Publisher` method works - the same method supports any state schema:
 
 ```lua
 ---@class ReactiveState
@@ -88,7 +88,7 @@ Without the second parameter (`expression<C>`), any return type is accepted.
 
 ## Inferring the result type with a generic
 
-When the second type parameter is a `@generic`, it is **inferred** from the expression body rather than checked against it — and the inferred type flows into the method's return type. This lets a single method return a result type that depends on what the caller's expression evaluates to:
+When the second type parameter is a `@generic`, it is **inferred** from the expression body rather than checked against it, and the inferred type flows into the method's return type. This lets a single method return a result type that depends on what the caller's expression evaluates to:
 
 ```lua
 ---@class ReactivePublisherSchema<R>
@@ -139,7 +139,7 @@ state:Publisher([[min(baseItemBagQuantity, maxItemStack)]])
 
 You can intersect any number of classes: `expression<State & Builtins & MoreStuff>`.
 
-All identifiers in the expression — including function call names — must be declared in one of the context classes, or they will produce an `undefined-field` warning.
+All identifiers in the expression (including function call names) must be declared in one of the context classes, or they will produce an `undefined-field` warning.
 
 ## What counts as an expression
 
@@ -188,8 +188,8 @@ state:Publisher([=[scanProgress == 1]=])     -- level-1 long brackets
 
 Expression strings reuse existing diagnostic codes:
 
-- **`undefined-field`** — identifier not found in the expression class's fields
-- **`type-mismatch`** — expression return type doesn't match the declared constraint
+- **`undefined-field`**: identifier not found in the expression class's fields
+- **`type-mismatch`**: expression return type doesn't match the declared constraint
 
 Both can be suppressed with `@diagnostic disable:code` as usual.
 
