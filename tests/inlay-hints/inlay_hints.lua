@@ -220,6 +220,29 @@ for _, v in pairs(tagMap) do
 --      ^ hint: : boolean
 end
 
+-- Transparent @alias key type: the hint shows the alias NAME, not the alias's
+-- inline expansion. A concise key hint also keeps the editor's per-line inlay-
+-- hint length budget from dropping the adjacent value hint.
+---@alias ThemeRampKey "NEUTRAL" | "PRIMARY" | "SECONDARY" | "SUCCESS" | "WARNING" | "DANGER"
+---@class ColorRamp
+---@field base string
+---@type table<ThemeRampKey, ColorRamp>
+local defaultRamps = {}
+for rampKey, ramp in pairs(defaultRamps) do
+--         ^ hint: : ThemeRampKey
+--               ^ hint: : ColorRamp
+end
+
+-- Inline anonymous literal union (no alias name to recover): widen to the base
+-- primitive so the hint stays short instead of listing every literal.
+---@type table<"a" | "b" | "c" | "d" | "e", number>
+local wideMap = {}
+for wideKey, wideVal in pairs(wideMap) do
+--         ^ hint: : string
+--                  ^ hint: : number
+end
+
+
 -- ── Parameter type hints ─────────────────────────────────────────────────────
 
 -- Annotated params: no hint (user already wrote the type)

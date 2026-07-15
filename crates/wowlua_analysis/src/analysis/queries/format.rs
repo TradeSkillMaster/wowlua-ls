@@ -949,6 +949,24 @@ impl AnalysisResult {
         if self.is_anon_shape_table(vt) {
             return "table".to_string();
         }
+        // A union of many string/number literals — typically a transparent
+        // `@alias` (e.g. `@alias ThemeRampKey "A" | "B" | ...`) expanded inline —
+        // formats into a very long hint. That can exhaust the editor's per-line
+        // inlay-hint budget and suppress adjacent hints (e.g. the value hint on a
+        // `for k, v in pairs(...)` header). Shorten it: prefer the name of the
+        // alias the type came from, otherwise widen to the base primitive. Small
+        // unions keep their literals — they're short, more informative, and
+        // matching them to an alias by expansion risks a misleading rename.
+        if let ValueType::Union(members) = vt
+            && literal_union_is_long(members)
+        {
+            if let Some(name) = self.alias_name_for_type(vt) {
+                return name;
+            }
+            if let Some(base) = widen_literal_union(members) {
+                return base;
+            }
+        }
         if let ValueType::Union(members) = vt
             && members.iter().any(|m| self.is_anon_shape_table(m))
         {
@@ -968,6 +986,18 @@ impl AnalysisResult {
             return collapsed.join(" | ");
         }
         self.format_type_depth(vt, 1)
+    }
+
+    /// Reverse-lookup: the name of a (transparent) `@alias` whose resolved type
+    /// equals `vt`. Used to present an inlay hint as the alias name instead of
+    /// its inline expansion. Deterministic across runs — `aliases` is a `HashMap`
+    /// with random iteration order, so tie-break on the lexicographically-smallest
+    /// name. Returns `None` when nothing matches.
+    pub(super) fn alias_name_for_type(&self, vt: &ValueType) -> Option<String> {
+        self.ir.aliases.iter()
+            .filter(|(_, av)| *av == vt)
+            .map(|(name, _)| name.clone())
+            .min()
     }
 
     pub(super) fn is_anon_shape_table(&self, vt: &ValueType) -> bool {
@@ -2232,6 +2262,48 @@ impl AnalysisResult {
             format!("fun({}): {}", args.join(", "), join_returns(&rets))
         }
     }
+}
+
+/// Whether a union carries enough string/number literal members to make a long
+/// hint. Shares the count threshold (3) with `format_value_type_depth`'s
+/// `MAX_STRING_LITERALS`, but note the two predicates differ: that truncation
+/// counts only `String(Some(_))` (so number-literal unions are never shortened
+/// to `… | (N more)` there), whereas this also counts `NumberLiteral(_)` — a
+/// long number-literal union has no inline-truncation path and relies on the
+/// widen step below to stay short.
+fn literal_union_is_long(members: &[ValueType]) -> bool {
+    const MAX_LITERALS: usize = 3;
+    let literal_count = members.iter()
+        .filter(|m| matches!(m, ValueType::String(Some(_)) | ValueType::NumberLiteral(_)))
+        .count();
+    literal_count > MAX_LITERALS
+}
+
+/// Widen a union whose members are all literal/primitive scalars to its base
+/// primitive(s), e.g. `"A" | "B" | "C" | "D"` → `string`. Returns `None` if any
+/// member is a richer type, so a union carrying a real type keeps its detail.
+fn widen_literal_union(members: &[ValueType]) -> Option<String> {
+    let (mut has_string, mut has_number, mut has_boolean, mut has_nil) = (false, false, false, false);
+    for m in members {
+        match m {
+            ValueType::String(_) => has_string = true,
+            ValueType::NumberLiteral(_) | ValueType::Number => has_number = true,
+            ValueType::Boolean(_) => has_boolean = true,
+            ValueType::Nil => has_nil = true,
+            _ => return None,
+        }
+    }
+    let mut bases: Vec<&str> = Vec::new();
+    if has_string { bases.push("string"); }
+    if has_number { bases.push("number"); }
+    if has_boolean { bases.push("boolean"); }
+    if bases.is_empty() { return None; }
+    let base = bases.join(" | ");
+    Some(match (bases.len(), has_nil) {
+        (_, false) => base,
+        (1, true) => format!("{}?", base),
+        (_, true) => format!("({})?", base),
+    })
 }
 
 #[cfg(test)]
