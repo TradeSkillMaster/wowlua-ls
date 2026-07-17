@@ -1404,6 +1404,15 @@ pub struct ResolvedCallArg {
     /// `(class_table_idx, resolved_type_args)` for a `Class<...>` annotation
     /// (directly or as a union member). Empty for non-parameterized params.
     pub expected_parameterized: Vec<(TableIndex, Vec<ValueType>)>,
+    /// Skip the parameter-name inlay hint for this argument. Set for a trailing
+    /// call/`...` argument that is followed by at least one more *named* parameter:
+    /// its (possibly multiple) return values may fan out across those later params,
+    /// so a single `name:` label could misrepresent the mapping. Conservative
+    /// structural heuristic — the call's actual return arity is *not* checked, so a
+    /// single-return call in this position (already an arity error) is also flagged;
+    /// a trailing value flowing only into a vararg is not (varargs are never hinted).
+    /// Purely a hint concern; type-checking is unaffected.
+    pub suppress_param_name_hint: bool,
 }
 
 // ── Expression IR ──────────────────────────────────────────────────────────────

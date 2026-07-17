@@ -218,7 +218,7 @@ Master switch for inlay hints. When `false`, no inlay hints are shown regardless
 - **Type:** `boolean`
 - **Default:** `true`
 
-Show parameter name hints at call sites (e.g. `foo(/*name:*/ "hello")`). Suppressed when the argument text already matches the parameter name.
+Show parameter name hints at call sites (e.g. `foo(/*name:*/ "hello")`). Suppressed when the argument text already matches the parameter name, and on a trailing call/`...` argument that sits before another named parameter (e.g. `foo(unpack(t))` where `foo` takes two params) — its values may fan out across those later params, so a single name label would misrepresent the mapping.
 
 ### `hint.variableTypes`
 

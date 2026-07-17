@@ -73,6 +73,12 @@ impl AnalysisResult {
             }
 
             for arg in &cr.expected_args {
+                // A trailing call/`...` argument sitting before another named param
+                // may fan out across those params; a single param-name label there
+                // would misrepresent the mapping (set in build_resolved_call_args).
+                if arg.suppress_param_name_hint {
+                    continue;
+                }
                 let name = &arg.param_name;
                 if name.is_empty() || name == "?" || name == "self" || name == "..." {
                     continue;

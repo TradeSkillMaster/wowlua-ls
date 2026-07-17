@@ -1019,10 +1019,25 @@ impl<'a> Analysis<'a> {
                         .map(|ann| self.param_parameterized_constraints(ann, generic_subs))
                         .unwrap_or_default()
                 };
+                // A trailing call/`...` argument that is followed by another *named*
+                // parameter may fan its (possibly multiple) values out across those
+                // later params, leaving them conspicuously unhinted — so a lone `a:`
+                // label misrepresents the mapping. Flag it for the hint collector to
+                // skip. This is a structural heuristic: the call's actual return arity
+                // isn't checked, so a single-return call here (already an arity error)
+                // is also flagged. A trailing value flowing only into a *vararg* is
+                // deliberately left alone — the vararg is unnamed and never hinted, so
+                // the leading param's hint stays accurate. Overload matches keep the
+                // simpler per-position behavior.
+                let suppress_param_name_hint = matching_overload.is_none()
+                    && i + 1 == args.len()
+                    && matches!(self.expr(*arg_expr_id),
+                        Expr::FunctionCall { .. } | Expr::VarArgs(..))
+                    && func_args.get(i + self_offset + 1).is_some();
                 resolved_call_args.push(ResolvedCallArg {
                     expected_type, arg_expr: *arg_expr_id, param_name,
                     skip_if_nil, primary_param_type, start, end,
-                    actual_type_args, expected_parameterized,
+                    actual_type_args, expected_parameterized, suppress_param_name_hint,
                 });
             }
         }

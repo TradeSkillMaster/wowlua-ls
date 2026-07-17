@@ -107,6 +107,40 @@ local a, b, c = myselect(1, GetItemInfo("sword"))
 --                          ^ hint: none
 --                                      ^ hint: itemInfo:
 
+-- Trailing call/`...` argument positioned before another NAMED param: no
+-- parameter-name hint. `pair()` fans its two returns out across both `a` and
+-- `b`, so labelling it `a:` would misrepresent the mapping — and `b`, a named
+-- param, would otherwise sit conspicuously unhinted.
+---@return number
+---@return number
+local function pair()
+    return 1, 2
+end
+
+---@param a number
+---@param b number
+local function takesTwo(a, b)
+end
+
+takesTwo(pair())
+--       ^ hint: none
+
+-- A trailing call filling exactly ONE param keeps its hint: no named param
+-- follows, so the mapping is an unambiguous 1:1.
+---@param only number
+local function takesOne(only)
+end
+
+takesOne(pair())
+--       ^ hint: only:
+
+-- A trailing call whose extra returns flow only into a VARARG keeps its hint:
+-- the named `index` genuinely binds the call's first value and the remainder
+-- spills into the unnamed `...` (never hinted), so `index:` stays accurate.
+-- (Contrast takesTwo above, where the remainder lands on a named param.)
+myselect(pair())
+--       ^ hint: index:
+
 -- ── Variable type hints ───────────────────────────────────────────────────────
 
 local count = 42
