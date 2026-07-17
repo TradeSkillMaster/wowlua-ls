@@ -78,6 +78,25 @@ fn extract_field_name_from_annotation(text: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name.to_string()) }
 }
 
+/// Given the type-expression text preceding the cursor, return the trailing
+/// partial type name being typed — the run of identifier characters after the
+/// last structural delimiter of a type expression (union `|`, intersection `&`,
+/// generic `<` / `,`, function/table shape `(` `{` `:`, whitespace, and the
+/// matching closers). `.` is kept so namespaced type names still complete.
+///
+/// e.g. `table<Theme` → `Theme`, `table<string, Th` → `Th`, `A|B` → `B`.
+fn trailing_type_ident(region: &str) -> &str {
+    let mut start = region.len();
+    for (i, c) in region.char_indices().rev() {
+        if c.is_alphanumeric() || c == '_' || c == '.' {
+            start = i;
+        } else {
+            break;
+        }
+    }
+    &region[start..]
+}
+
 pub(super) fn collect_type_name_completions<'a>(
     names: impl Iterator<Item = &'a String>,
     prefix: &str,
@@ -2174,10 +2193,14 @@ impl AnalysisResult {
     pub(super) fn try_type_completions(&self, after_at: &str) -> Option<Vec<lsp_types::CompletionItem>> {
         use lsp_types::{CompletionItem, CompletionItemKind};
 
-        let type_prefix = self.extract_type_prefix_from_annotation(after_at)?;
+        let type_region = self.extract_type_prefix_from_annotation(after_at)?;
 
-        // Handle pipe-separated union types: take only the part after the last '|'
-        let type_prefix = type_prefix.rsplit('|').next().unwrap_or(type_prefix).trim();
+        // The type region can be a compound type expression: unions (`A|B`),
+        // generics (`table<K, V>`), intersections (`A & B`), or function/table
+        // shapes. Completion targets the single type name being typed at the
+        // cursor, so take the trailing run of type-name characters after the last
+        // structural delimiter (`|`, `<`, `,`, `&`, `(`, `{`, `:`, whitespace…).
+        let type_prefix = trailing_type_ident(type_region);
 
         let mut items = Vec::new();
         let mut seen = HashSet::new();

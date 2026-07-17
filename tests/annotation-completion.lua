@@ -108,6 +108,37 @@ function typeTest2() return "" end
 --        ^ comp: boolean
 local typeTestVar
 
+-- ── Type completions inside generic/compound type expressions ────────────────
+
+---@class TcTheme
+---@class TcThemeManager
+
+-- Inside table<...> value position (single arg): partial "TcThe"
+---@type table<TcThe
+--                 ^ comp: TcTheme, TcThemeManager
+local tcGenericVal
+
+-- Inside table<K, V> value position (after comma): partial "TcThe"
+---@type table<string, TcThe
+--                          ^ comp: TcTheme, TcThemeManager
+local tcGenericKV
+
+-- Inside a fun(...) parameter type: partial "TcThe"
+---@type fun(cb: TcThe
+--                   ^ comp: TcTheme, TcThemeManager
+local tcFunParam
+
+-- Inside an intersection type: partial "TcThe"
+---@type TcTheme & TcThe
+--                     ^ comp: TcTheme, TcThemeManager
+local tcIntersection
+
+-- @param with a generic table type: partial "TcThe"
+---@diagnostic disable-next-line: malformed-annotation
+---@param registry table<string, TcThe
+--                                    ^ comp: TcTheme, TcThemeManager
+function tcParamGeneric(registry) end
+
 -- ── Dot/colon completions with partial names ───────────────────────────────
 
 ---@class CompTestTable
