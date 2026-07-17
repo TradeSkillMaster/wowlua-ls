@@ -52,8 +52,11 @@ getObj().someField = true
 function tbl.create() return {} end
 tbl.create().result = "ok"
 
--- Should NOT warn: field assignment on unknown/unresolved table's method return
-UnknownAddon[1]:GetModule("Misc").SOME_FIELD = 1
+-- Should NOT warn: field assignment on an allowed global's unresolved method
+-- return. `AllowedReadGlobal` is a configured global, so indexing it as the base
+-- (`[1]`) does not fire undefined-global, and the unresolved `:GetModule(...)`
+-- return leaves the trailing `.SOME_FIELD = 1` write unwarned.
+AllowedReadGlobal[1]:GetModule("Misc").SOME_FIELD = 1
 
 -- Should NOT warn: field assignment with bracket key containing a call
 local data = {}

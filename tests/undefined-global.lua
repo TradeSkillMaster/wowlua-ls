@@ -122,10 +122,23 @@ tbl[tbl[undefinedNested]] = 1
 local obj = {} ---@type UGTestObj
 obj.sub[undefinedDeep] = 1
 --      ^ diag: undefined-global
--- The base of the bracket access is still an assignment target (no warning):
+-- The base of a bracket write is *read* to index into it, so an undefined base
+-- fires undefined-global — writing `x[k]` requires `x` to already exist, exactly
+-- like the read-position `local v = x[k]`. (A plain `x = ...` instead creates the
+-- global and reports create-global; only the element-write forms read the base.)
+undefinedBracketBase[2] = 5
+-- ^ diag: undefined-global
+-- A defined base (the local `tbl`, the built-in `print` index) writes an element
+-- and warns on neither:
 tbl[print] = 2
 -- Known local used as nested bracket index — no warning:
 tbl[tbl[k]] = 3
+-- An undefined bracket base inside a function body warns too (the descendants
+-- pass must not register it as a phantom global):
+local function _bracketWrite()
+    undefinedInFuncBase[1] = 9
+    -- ^ diag: undefined-global
+end
 
 -- ── Runtime/legacy frame globals from stubs/overrides/RuntimeMissingGlobals.lua ─
 -- These frames are absent from EVERY published wow-ui-source branch (removed or

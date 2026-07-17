@@ -921,6 +921,13 @@ pub fn scan_file_globals_with_synth(
                             }
                         }
                         if names.len() == 1 {
+                            // Skip bracket-element writes on a bare name (`asdf[2] = 2`):
+                            // these write to an element OF `asdf`, not to `asdf` itself, so
+                            // they do NOT create the global `asdf` (indexing it reads it,
+                            // erroring at runtime if nil). Registering it here would mask the
+                            // `undefined-global` on the base read. Mirrors the `>= 2` branch's
+                            // identical skip for `ns.field[123] = true`.
+                            if idents[0].has_non_string_bracket_tail() { continue; }
                             let range = assign.syntax().text_range();
                             let effective = unwrap_logical_chain(exprs[0]);
                             // A bare global assigned a function literal

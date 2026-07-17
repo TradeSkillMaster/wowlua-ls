@@ -14,7 +14,9 @@ impl DiagnosticPass for UndefinedGlobal {
         for node in root.descendants() {
             if node.kind() != SyntaxKind::NameRef { continue; }
             // Skip NameRefs in assignment-target positions (assignment LHS, local-decl
-            // name list), but not bracket-index expressions within those targets.
+            // name list), but not names read under a bracket access within those
+            // targets: in `base[k] = v` neither the base (read to index into it) nor
+            // the index `k` is the write target, so both are still checked as reads.
             if is_assignment_target_position(&node) { continue; }
             let Some(token) = node.children_with_tokens()
                 .filter_map(|t| t.into_token())

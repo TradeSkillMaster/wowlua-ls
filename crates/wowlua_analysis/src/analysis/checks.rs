@@ -507,8 +507,10 @@ impl AnalysisResult {
 }
 
 /// True when `node` is in an assignment-target position (inside `VariableList` or
-/// `NameList`), but NOT when it's a bracket-index value expression within an
-/// assignment target chain (e.g. `key` in `tbl[key] = val`).
+/// `NameList`), but NOT when it sits under a bracket access within an assignment
+/// target chain — neither the index (`key` in `tbl[key] = val`) nor the base
+/// (`tbl` in `tbl[k] = val`) is the write target: the base is read to index into
+/// it, so it must still be checked as a global read.
 pub fn is_assignment_target_position(node: &SyntaxNode) -> bool {
     let mut cur = *node;
     loop {
@@ -516,15 +518,13 @@ pub fn is_assignment_target_position(node: &SyntaxNode) -> bool {
         match parent.kind() {
             SyntaxKind::VariableList | SyntaxKind::NameList => return true,
             SyntaxKind::BracketAccess => {
-                // If `cur` appears after the `[` token it is in the index
-                // (value-expression) position, not the base/target position.
-                let cur_start = cur.text_range().start();
-                let in_index = parent.children_with_tokens()
-                    .filter_map(|c| c.into_token())
-                    .any(|t| t.kind() == SyntaxKind::LeftSquareBracket && cur_start > t.text_range().start());
-                if in_index {
-                    return false;
-                }
+                // A NameRef anywhere under a bracket access — whether the index
+                // (`t[key] = v`) or the base (`base[k] = v`) — is *read*, not an
+                // assignment target: `key` is an ordinary value expression, and
+                // writing `base[k]` reads `base` to index into it (a runtime error
+                // if `base` is nil). The write target is the *element*, not `base`,
+                // so neither name is skipped — both are checked as reads.
+                return false;
             }
             _ => {}
         }
