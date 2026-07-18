@@ -17,7 +17,7 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
 
 ```json
 {
-  "addon_root": false,
+  "addonRoot": false,
   "ignore": ["string"],
   "library": ["string"],
   "framexml": true,
@@ -25,13 +25,13 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
   "globals": {
     "read": ["string"],
     "write": ["string"],
-    "allow_slash_commands": true,
-    "allow_binding_globals": true
+    "allowSlashCommands": true,
+    "allowBindingGlobals": true
   },
   "inference": {
-    "backward_param_types": true,
-    "correlated_return_overloads": true,
-    "implicit_protected_prefix": false
+    "backwardParamTypes": true,
+    "correlatedReturnOverloads": true,
+    "implicitProtectedPrefix": false
   },
   "hint": {
     "enable": true,
@@ -66,9 +66,13 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
 }
 ```
 
+::: info Key naming
+Multi-word keys are `camelCase` (e.g. `addonRoot`, `backwardParamTypes`). The former `snake_case` spellings (`addon_root`, `backward_param_types`, …) are still accepted for backward compatibility — the JSON Schema marks them deprecated, so editors flag them with a strikethrough rather than as invalid — but the camelCase form is canonical and recommended.
+:::
+
 ## Fields
 
-### `addon_root`
+### `addonRoot`
 
 - **Type:** `boolean`
 - **Default:** `false`
@@ -76,7 +80,7 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
 Marks this directory as a separate addon root. In multi-addon workspaces, each addon root gets its own isolated addon namespace table (`local _, ns = ...`), so fields defined in one addon aren't visible in another. Lua globals remain shared across all addon roots.
 
 ```json
-{ "addon_root": true }
+{ "addonRoot": true }
 ```
 
 Not needed for single-addon projects.
@@ -167,14 +171,14 @@ Global names that may be created/assigned without triggering `create-global`. En
 { "globals": { "write": ["MyAddon*", "SavedVar*"] } }
 ```
 
-### `globals.allow_slash_commands`
+### `globals.allowSlashCommands`
 
 - **Type:** `boolean`
 - **Default:** `true`
 
 Automatically treat globals matching `SLASH_*` as allowed write/read globals. WoW slash commands are defined by assigning `SLASH_COMMANDNAME1`, `SLASH_COMMANDNAME2`, etc. to global variables, so these are always intentional. Set to `false` to require explicit listing in `globals.write`.
 
-### `globals.allow_binding_globals`
+### `globals.allowBindingGlobals`
 
 - **Type:** `boolean`
 - **Default:** `true`
@@ -185,21 +189,21 @@ Automatically treat globals matching `BINDING_HEADER_*` and `BINDING_NAME_*` as 
 In addition to the settings above, the language server automatically detects dynamic global creation via `_G["PREFIX" .. key] = value` (or `_G[name .. "SUFFIX"]`) patterns in your workspace. When detected, a wildcard glob (e.g. `PREFIX*`) is registered so reads of those globals don't trigger `undefined-global`. This requires no configuration. The prefix/suffix must be at least 3 characters to avoid overly broad matching.
 :::
 
-### `inference.backward_param_types`
+### `inference.backwardParamTypes`
 
 - **Type:** `boolean`
 - **Default:** `true`
 
 Infer parameter types from body usage (arithmetic, concatenation, typed-function argument calls).
 
-### `inference.correlated_return_overloads`
+### `inference.correlatedReturnOverloads`
 
 - **Type:** `boolean`
 - **Default:** `true`
 
 Infer correlated return patterns (all-set-or-all-nil) for automatic sibling narrowing.
 
-### `inference.implicit_protected_prefix`
+### `inference.implicitProtectedPrefix`
 
 - **Type:** `boolean`
 - **Default:** `false`
@@ -348,8 +352,8 @@ When `.wowluarc.json` files are nested, settings combine according to one of the
 | `diagnostics.severity` | **Isolated**: nearest config's severity map only |
 | `globals.read` | **Isolated**: nearest config only (includes that directory's `.toc` `SavedVariables`) |
 | `globals.write` | **Isolated**: nearest config only |
-| `globals.allow_slash_commands` | **Isolated** |
-| `globals.allow_binding_globals` | **Isolated** |
+| `globals.allowSlashCommands` | **Isolated** |
+| `globals.allowBindingGlobals` | **Isolated** |
 | `framexml` | **Isolated** |
 | `flavors` | **Isolated** (then intersected with any TOC-derived per-file mask) |
 | `inference.*` | **Isolated** |
@@ -360,7 +364,7 @@ When `.wowluarc.json` files are nested, settings combine according to one of the
 | `codeLens.*` | Inherited |
 | `editor.*` | Inherited |
 | `completion.*` | Inherited |
-| `addon_root` | Nearest (deepest) `addon_root: true` wins (structural) |
+| `addonRoot` | Nearest (deepest) `addonRoot: true` wins (structural) |
 
 ::: warning Isolated settings do not inherit
 If a nested directory has its own `.wowluarc.json`, it only inherits the **inherited** settings above. Any **isolated** setting it does not restate reverts to its default. It does *not* pick up the parent's value. For example, a subdirectory config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` settings unless it repeats them. This also applies to auto-discovered TOC `SavedVariables` globals. They are merged into the config entry for the directory containing the `.toc` file, so a child config in a subdirectory will not see them.

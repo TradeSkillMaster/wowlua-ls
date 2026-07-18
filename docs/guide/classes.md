@@ -87,7 +87,7 @@ If your project follows the `_`-prefix convention for internal fields, you can o
 ```json
 {
   "inference": {
-    "implicit_protected_prefix": true
+    "implicitProtectedPrefix": true
   }
 }
 ```

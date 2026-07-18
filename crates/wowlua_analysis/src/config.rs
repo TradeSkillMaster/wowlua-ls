@@ -744,7 +744,11 @@ impl ProjectConfigs {
     }
 }
 
+// Config keys are camelCase. `#[serde(alias = "…")]` on the multi-word keys keeps
+// the pre-camelCase snake_case spelling working so existing `.wowluarc.json` files
+// don't silently break.
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct RawConfig {
     ignore: Option<Vec<String>>,
     library: Option<Vec<String>>,
@@ -754,22 +758,23 @@ struct RawConfig {
     flavors: Option<Vec<String>>,
     inference: Option<RawInferenceConfig>,
     hint: Option<RawHintConfig>,
-    #[serde(rename = "codeLens")]
     code_lens: Option<RawCodeLensConfig>,
     completion: Option<RawCompletionConfig>,
+    #[serde(alias = "addon_root")]
     addon_root: Option<bool>,
     plugins: Option<Vec<String>>,
     editor: Option<RawEditorConfig>,
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct RawCompletionConfig {
     snippets: Option<bool>,
-    #[serde(rename = "callSnippets")]
     call_snippets: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct RawDiagnosticsConfig {
     disable: Option<Vec<String>>,
     enable: Option<Vec<String>>,
@@ -777,17 +782,24 @@ struct RawDiagnosticsConfig {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct RawGlobalsConfig {
     read: Option<Vec<String>>,
     write: Option<Vec<String>>,
+    #[serde(alias = "allow_slash_commands")]
     allow_slash_commands: Option<bool>,
+    #[serde(alias = "allow_binding_globals")]
     allow_binding_globals: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct RawInferenceConfig {
+    #[serde(alias = "backward_param_types")]
     backward_param_types: Option<bool>,
+    #[serde(alias = "correlated_return_overloads")]
     correlated_return_overloads: Option<bool>,
+    #[serde(alias = "implicit_protected_prefix")]
     implicit_protected_prefix: Option<bool>,
 }
 
@@ -804,6 +816,7 @@ struct RawHintConfig {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct RawCodeLensConfig {
     enable: Option<bool>,
     references: Option<bool>,
@@ -1882,7 +1895,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".wowluarc.json"), r#"{
-            "inference": { "backward_param_types": false }
+            "inference": { "backwardParamTypes": false }
         }"#).unwrap();
 
         let mut configs = ProjectConfigs::default();
@@ -1904,7 +1917,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".wowluarc.json"), r#"{
-            "inference": { "correlated_return_overloads": false }
+            "inference": { "correlatedReturnOverloads": false }
         }"#).unwrap();
 
         let mut configs = ProjectConfigs::default();
@@ -1990,7 +2003,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".wowluarc.json"), r#"{
-            "inference": { "implicit_protected_prefix": true }
+            "inference": { "implicitProtectedPrefix": true }
         }"#).unwrap();
 
         let mut configs = ProjectConfigs::default();
@@ -2008,10 +2021,10 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
 
         std::fs::write(root.join(".wowluarc.json"), r#"{
-            "inference": { "implicit_protected_prefix": true }
+            "inference": { "implicitProtectedPrefix": true }
         }"#).unwrap();
         std::fs::write(sub.join(".wowluarc.json"), r#"{
-            "inference": { "implicit_protected_prefix": false }
+            "inference": { "implicitProtectedPrefix": false }
         }"#).unwrap();
 
         let mut configs = ProjectConfigs::default();
@@ -2022,6 +2035,68 @@ mod tests {
         assert!(!configs.implicit_protected_prefix_for(&sub.join("main.lua")));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_camel_case_keys_parse() {
+        // The canonical config spelling for multi-word keys is camelCase.
+        let dir = std::env::temp_dir().join("wowlua_ls_test_camel_keys");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "addonRoot": true,
+            "globals": {
+                "allowSlashCommands": false,
+                "allowBindingGlobals": false
+            },
+            "inference": {
+                "backwardParamTypes": false,
+                "correlatedReturnOverloads": false,
+                "implicitProtectedPrefix": true
+            }
+        }"#).unwrap();
+
+        let config = load(&dir);
+        assert!(config.addon_root);
+        assert_eq!(config.allow_slash_commands, Some(false));
+        assert_eq!(config.allow_binding_globals, Some(false));
+        assert_eq!(config.backward_param_types, Some(false));
+        assert_eq!(config.correlated_return_overloads, Some(false));
+        assert_eq!(config.implicit_protected_prefix, Some(true));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_legacy_snake_case_keys_still_parse() {
+        // The schema switched from snake_case to camelCase for multi-word keys.
+        // `#[serde(alias = "…")]` keeps the old spelling working so existing
+        // `.wowluarc.json` files don't silently stop applying.
+        let dir = std::env::temp_dir().join("wowlua_ls_test_legacy_snake");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "addon_root": true,
+            "globals": {
+                "allow_slash_commands": false,
+                "allow_binding_globals": false
+            },
+            "inference": {
+                "backward_param_types": false,
+                "correlated_return_overloads": false,
+                "implicit_protected_prefix": true
+            }
+        }"#).unwrap();
+
+        let config = load(&dir);
+        assert!(config.addon_root);
+        assert_eq!(config.allow_slash_commands, Some(false));
+        assert_eq!(config.allow_binding_globals, Some(false));
+        assert_eq!(config.backward_param_types, Some(false));
+        assert_eq!(config.correlated_return_overloads, Some(false));
+        assert_eq!(config.implicit_protected_prefix, Some(true));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -189,7 +189,7 @@ if id then
 end
 ```
 
-This inference is on by default (`inference.correlated_return_overloads: true`). It requires:
+This inference is on by default (`inference.correlatedReturnOverloads: true`). It requires:
 - No `@return` annotations on the function
 - At least 2 return statements with matching arity
 - Every return is either all-nil or has no nil positions

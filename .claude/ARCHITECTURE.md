@@ -327,7 +327,7 @@ A parameter named `self` can be **implicit** (colon syntax: `function Foo:bar(x)
 3. **Call-site `self_offset`** (`resolve_call.rs`) — Offset by 1 when `is_method_call` (colon call) AND the function has any first param (whether named `self` or not, including stored function fields). Plain calls pass all args explicitly, so offset must be 0 regardless of the param name.
 
 ## Backward param-type inference
-`Analysis::infer_backward_param_types()` in `resolve_call.rs` sets `resolved_type` on unannotated local function parameters based on how they're used in the body. Runs inside the fixpoint loop's fallback branch (same branch that handles `@built-name` late resolution), gated by the `backward_param_types` flag (Analysis field, populated from `inference.backward_param_types` in `.wowluarc.json`; default `true`).
+`Analysis::infer_backward_param_types()` in `resolve_call.rs` sets `resolved_type` on unannotated local function parameters based on how they're used in the body. Runs inside the fixpoint loop's fallback branch (same branch that handles `@built-name` late resolution), gated by the `backward_param_types` flag (Analysis field, populated from `inference.backwardParamTypes` in `.wowluarc.json`; default `true`).
 
 **Hints are treated as upper bounds and intersected.** Each use site implies a constraint that the param value must be assignable to; the inferred type is the narrowest type satisfying every constraint (`intersect_hints`/`intersect_pair` in `resolve_call.rs`). Empty intersection (genuinely conflicting constraints) leaves the param untyped. A hint of `any` causes the pass to bail for that param — `any` is a no-information constraint that shouldn't combine with specific hints, and loose stub annotations like `tostring(v: any)` would otherwise coerce real hints away.
 
@@ -353,7 +353,7 @@ Skipped cases: `self` params, params already annotated (`param_annotations[i]` n
 Because the pass runs inside the fixpoint fallback, expressions using the param re-resolve naturally on the next iteration via the existing cache-clear + pending-calls repopulation logic.
 
 ## Correlated return-only overload inference
-`Analysis::synthesize_correlated_return_overloads()` in `narrowing.rs` adds synthetic return-only `ResolvedOverload` entries to a function whose return statements form a clear all-set-or-all-nil pattern. On by default; gated by `correlated_return_overloads` (Analysis field, populated from `inference.correlated_return_overloads` in `.wowluarc.json`; default `true`).
+`Analysis::synthesize_correlated_return_overloads()` in `narrowing.rs` adds synthetic return-only `ResolvedOverload` entries to a function whose return statements form a clear all-set-or-all-nil pattern. On by default; gated by `correlated_return_overloads` (Analysis field, populated from `inference.correlatedReturnOverloads` in `.wowluarc.json`; default `true`).
 
 Trigger point: invoked from the `stack.pop()` handler in `build_ir()` when the popped frame's `func_id` differs from the new top-of-stack's `func_id` (i.e. the function body completed, not just a nested if/do block within it). Doing this BEFORE later statements that call the function is critical — `narrow_siblings` checks `is_return_only` at call sites, so the synthesized overloads must be in place before any later narrowing-triggering reference fires.
 
@@ -380,7 +380,7 @@ Four HINT-severity, default-disabled diagnostics fire at sites whose `resolved_t
 All four are implemented as `DiagnosticPass` trait implementations in their respective modules under `src/diagnostics/`, running as post-analysis passes via `run_all()`. Param emission walks AST Parameter tokens (mirrors `incomplete_signature_doc`) since the param symbol's `def_node` points at the whole function, not the param name.
 
 ## Implicit protected for `_`-prefixed names
-Runtime-discovered data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. **This behavior is configurable and disabled by default.** Set `inference.implicit_protected_prefix: true` in `.wowluarc.json` to enable it. This does **not** apply to explicit `@field` declarations — those default to `Public` since the author had the opportunity to write `@field protected`. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes the implicit protected logic and takes an `implicit_protected_prefix: bool` parameter. It is called from:
+Runtime-discovered data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. **This behavior is configurable and disabled by default.** Set `inference.implicitProtectedPrefix: true` in `.wowluarc.json` to enable it. This does **not** apply to explicit `@field` declarations — those default to `Public` since the author had the opportunity to write `@field protected`. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes the implicit protected logic and takes an `implicit_protected_prefix: bool` parameter. It is called from:
 - Table constructor fields in `build_ir.rs`
 - All FieldInfo construction sites in `pre_globals.rs` and `prescan.rs`
 - `self._foo` assignments inside class methods (the class is defining its own field)

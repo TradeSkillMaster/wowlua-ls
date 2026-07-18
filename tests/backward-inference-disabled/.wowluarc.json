@@ -1,5 +1,5 @@
 {
     "inference": {
-        "backward_param_types": false
+        "backwardParamTypes": false
     }
 }

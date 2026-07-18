@@ -35,7 +35,7 @@ If a subdirectory has its own `.wowluarc.json`, any isolated setting it does **n
 
 ```json
 {
-  "addon_root": false,
+  "addonRoot": false,
   "ignore": ["Libs/", "External/"],
   "library": ["Vendor/", "../shared-libs"],
   "framexml": false,
@@ -54,9 +54,9 @@ If a subdirectory has its own `.wowluarc.json`, any isolated setting it does **n
     "chainedReturnTypes": false
   },
   "inference": {
-    "backward_param_types": true,
-    "correlated_return_overloads": true,
-    "implicit_protected_prefix": false
+    "backwardParamTypes": true,
+    "correlatedReturnOverloads": true,
+    "implicitProtectedPrefix": false
   },
   "plugins": [".wowlua-ls/my-check.lua"],
   "diagnostics": {
@@ -145,9 +145,9 @@ Declare external globals that shouldn't trigger diagnostics:
 
 Use `read` for globals provided by other addons or libraries not in stubs. Use `write` for globals your addon intentionally exports.
 
-Globals matching `SLASH_*` (slash command definitions like `SLASH_MYADDON1 = "/myaddon"`) are automatically allowed by default. Set `"allow_slash_commands": false` inside `globals` to disable this.
+Globals matching `SLASH_*` (slash command definitions like `SLASH_MYADDON1 = "/myaddon"`) are automatically allowed by default. Set `"allowSlashCommands": false` inside `globals` to disable this.
 
-Globals matching `BINDING_HEADER_*` and `BINDING_NAME_*` (keybinding label definitions like `BINDING_HEADER_MYADDON = "MyAddon"`) are also automatically allowed. Set `"allow_binding_globals": false` inside `globals` to disable this.
+Globals matching `BINDING_HEADER_*` and `BINDING_NAME_*` (keybinding label definitions like `BINDING_HEADER_MYADDON = "MyAddon"`) are also automatically allowed. Set `"allowBindingGlobals": false` inside `globals` to disable this.
 
 Dynamic global prefixes are also detected automatically. When a file writes globals through a pattern like `_G["PREFIX" .. key] = value` (or `_G[name .. "SUFFIX"]`), the language server registers a wildcard entry (`PREFIX*` or `*SUFFIX`) so that reads of those globals in other files don't trigger `undefined-global`. This is common in localization code that exports translation strings (e.g. `_G["MYADDON_L_" .. key] = value`).
 
@@ -159,23 +159,23 @@ Control the LS's type inference behavior:
 
 | Setting | Default | Description |
 |---|---|---|
-| `backward_param_types` | `true` | Infer parameter types from body usage (arithmetic, concatenation, typed-function args) |
-| `correlated_return_overloads` | `true` | Infer correlated return patterns for sibling narrowing |
-| `implicit_protected_prefix` | `false` | Treat `_`-prefixed data fields as implicitly `protected` |
+| `backwardParamTypes` | `true` | Infer parameter types from body usage (arithmetic, concatenation, typed-function args) |
+| `correlatedReturnOverloads` | `true` | Infer correlated return patterns for sibling narrowing |
+| `implicitProtectedPrefix` | `false` | Treat `_`-prefixed data fields as implicitly `protected` |
 
 ```json
 {
   "inference": {
-    "backward_param_types": false
+    "backwardParamTypes": false
   }
 }
 ```
 
-Set `backward_param_types` to `false` in strict-typing projects where you want unannotated parameters to stay visible as unknown types.
+Set `backwardParamTypes` to `false` in strict-typing projects where you want unannotated parameters to stay visible as unknown types.
 
-Set `correlated_return_overloads` to `false` if the inferred narrowing suppresses `need-check-nil` warnings you actually want.
+Set `correlatedReturnOverloads` to `false` if the inferred narrowing suppresses `need-check-nil` warnings you actually want.
 
-Set `implicit_protected_prefix` to `true` if your project follows the `_`-prefix convention for internal fields and you want `access-protected` diagnostics on external access. See [Implicit protected for `_` prefixes](/guide/classes#implicit-protected-for-prefixes).
+Set `implicitProtectedPrefix` to `true` if your project follows the `_`-prefix convention for internal fields and you want `access-protected` diagnostics on external access. See [Implicit protected for `_` prefixes](/guide/classes#implicit-protected-for-prefixes).
 
 ### `hint`
 
@@ -242,26 +242,26 @@ These diagnostics are off unless you explicitly enable them:
 
 `need-check-nil`, `nil-index`, `implicit-nil-return`, `invalid-op`, `unused-vararg`, `unused-function`, `incomplete-signature-doc`, `missing-param-annotation`, `missing-return-annotation`, `redundant-or`, `redundant-and`, `redundant-condition`, `unknown-param-type`, `unknown-return-type`, `unknown-local-type`, `unknown-field-type`
 
-### `addon_root`
+### `addonRoot`
 
 Marks this directory as a separate addon root for namespace isolation. Default: `false`.
 
-When your workspace contains multiple addons side by side, the addon namespace (`local _, ns = ...`) is shared across all files by default. Setting `addon_root: true` in each addon's `.wowluarc.json` isolates their namespace tables so fields defined in one addon aren't visible in another.
+When your workspace contains multiple addons side by side, the addon namespace (`local _, ns = ...`) is shared across all files by default. Setting `addonRoot: true` in each addon's `.wowluarc.json` isolates their namespace tables so fields defined in one addon aren't visible in another.
 
 ```
 workspace/
 ├── AddonA/
-│   ├── .wowluarc.json     ← { "addon_root": true }
+│   ├── .wowluarc.json     ← { "addonRoot": true }
 │   ├── Core.lua
 │   └── Libs/
-│       └── LibStub/        ← no addon_root - part of AddonA
+│       └── LibStub/        ← no addonRoot - part of AddonA
 └── AddonB/
-    ├── .wowluarc.json     ← { "addon_root": true }
+    ├── .wowluarc.json     ← { "addonRoot": true }
     └── Main.lua
 ```
 
 ```json
-{ "addon_root": true }
+{ "addonRoot": true }
 ```
 
 Lua globals remain shared across addon roots. Only the addon namespace table is isolated. If addon roots are nested, the deepest one wins.

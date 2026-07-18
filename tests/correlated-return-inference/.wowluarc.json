@@ -1,5 +1,5 @@
 {
     "inference": {
-        "correlated_return_overloads": true
+        "correlatedReturnOverloads": true
     }
 }

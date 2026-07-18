@@ -26,7 +26,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `nil-index` | Bracket-indexing a table with a possibly-nil key **(off by default)** |
 | `nil-table-key` | Table key type annotation includes nil (`table<string?, V>`) |
 | `access-private` | Accessing `@field private` from outside |
-| `access-protected` | Accessing `@field protected` from outside hierarchy (also `_`-prefixed fields when `implicit_protected_prefix` is enabled) |
+| `access-protected` | Accessing `@field protected` from outside hierarchy (also `_`-prefixed fields when `implicitProtectedPrefix` is enabled) |
 | `duplicate-index` | Duplicate keys in table constructors |
 | `redundant-value` | Extra values in assignments |
 | `unbalanced-assignments` | More variables than values in assignments, including when a function call returns fewer values than variables assigned |

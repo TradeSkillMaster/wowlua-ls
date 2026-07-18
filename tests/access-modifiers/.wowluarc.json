@@ -1,5 +1,5 @@
 {
   "inference": {
-    "implicit_protected_prefix": true
+    "implicitProtectedPrefix": true
   }
 }

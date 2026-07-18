@@ -10,10 +10,16 @@
       "type": "string",
       "description": "Path or URL to the JSON Schema for editor support."
     },
-    "addon_root": {
+    "addonRoot": {
       "type": "boolean",
       "default": false,
       "description": "Marks this directory as a separate addon root. In multi-addon workspaces, each addon root gets its own isolated addon namespace table (local _, ns = ...), so fields defined in one addon aren't visible in another. Lua globals remain shared."
+    },
+    "addon_root": {
+      "type": "boolean",
+      "default": false,
+      "deprecated": true,
+      "description": "Deprecated alias for addonRoot, kept for backward compatibility. Use addonRoot instead."
     },
     "ignore": {
       "type": "array",
@@ -58,15 +64,27 @@
           "default": [],
           "description": "Global names that may be created/assigned without triggering create-global. Supports glob wildcards: * and ?. SavedVariables from .toc files are automatically included."
         },
-        "allow_slash_commands": {
+        "allowSlashCommands": {
           "type": "boolean",
           "default": true,
           "description": "Automatically treat globals matching SLASH_* as allowed read/write globals. Set to false to require explicit listing."
         },
-        "allow_binding_globals": {
+        "allowBindingGlobals": {
           "type": "boolean",
           "default": true,
           "description": "Automatically treat globals matching BINDING_HEADER_* and BINDING_NAME_* as allowed read/write globals. Set to false to require explicit listing."
+        },
+        "allow_slash_commands": {
+          "type": "boolean",
+          "default": true,
+          "deprecated": true,
+          "description": "Deprecated alias for allowSlashCommands, kept for backward compatibility. Use allowSlashCommands instead."
+        },
+        "allow_binding_globals": {
+          "type": "boolean",
+          "default": true,
+          "deprecated": true,
+          "description": "Deprecated alias for allowBindingGlobals, kept for backward compatibility. Use allowBindingGlobals instead."
         }
       }
     },
@@ -75,20 +93,38 @@
       "additionalProperties": false,
       "description": "Control type inference behavior.",
       "properties": {
-        "backward_param_types": {
+        "backwardParamTypes": {
           "type": "boolean",
           "default": true,
           "description": "Infer parameter types from body usage (arithmetic, concatenation, typed-function argument calls)."
         },
-        "correlated_return_overloads": {
+        "correlatedReturnOverloads": {
           "type": "boolean",
           "default": true,
           "description": "Infer correlated return patterns (all-set-or-all-nil) for automatic sibling narrowing."
         },
-        "implicit_protected_prefix": {
+        "implicitProtectedPrefix": {
           "type": "boolean",
           "default": false,
           "description": "Treat runtime-discovered data fields starting with _ as implicitly @protected. Does not affect explicit @field declarations or methods."
+        },
+        "backward_param_types": {
+          "type": "boolean",
+          "default": true,
+          "deprecated": true,
+          "description": "Deprecated alias for backwardParamTypes, kept for backward compatibility. Use backwardParamTypes instead."
+        },
+        "correlated_return_overloads": {
+          "type": "boolean",
+          "default": true,
+          "deprecated": true,
+          "description": "Deprecated alias for correlatedReturnOverloads, kept for backward compatibility. Use correlatedReturnOverloads instead."
+        },
+        "implicit_protected_prefix": {
+          "type": "boolean",
+          "default": false,
+          "deprecated": true,
+          "description": "Deprecated alias for implicitProtectedPrefix, kept for backward compatibility. Use implicitProtectedPrefix instead."
         }
       }
     },
