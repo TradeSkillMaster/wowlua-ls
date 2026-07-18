@@ -2821,6 +2821,42 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Authoritative per-addon namespace field *types*. The combined
+        // `__addon_ns__` table holds one `FieldInfo` per field name and
+        // `field_locations` records one source location per name, so a standard
+        // namespace field (`ns.Util`, `ns.Main`, …) written as a differently-typed
+        // `@class` local in each addon collapses to a single type — which then
+        // leaks onto every *other* addon's `XXX_NS` class (via the copy below and
+        // `merge_addon_ns_into_classes`' single-location routing). Recover each
+        // addon's own field type from its own ns-field global's explicit annotation
+        // (`@class`/`@type`/class-typed RHS → `g.returns[0]`), resolved here —
+        // before the mutable arena borrows below — into owned `ValueType`s keyed by
+        // (addon root, field name).
+        let mut addon_field_types: HashMap<&Path, HashMap<String, ValueType>> = HashMap::new();
+        for g in all_globals {
+            use crate::annotations::ExternalGlobalKind::TableField;
+            if g.name != crate::annotations::ADDON_NS_NAME || g.returns.is_empty() { continue; }
+            let Some(src) = &g.source_path else { continue };
+            // Only whole-field data writes (`ns.Field = <typed>`); a deep
+            // `ns.A.Field = …` types the leaf, not the top-level field. A `Method`
+            // kind (`function ns:Foo()` / `ns.foo = function() end`) is excluded:
+            // its `returns` holds the method's RETURN type, not the field type, so
+            // treating it here would re-type the field to its return type.
+            let field = match &g.kind {
+                TableField(path, name, _) if path.is_empty() => name,
+                _ => continue,
+            };
+            let Some(vt) = Self::resolve_annotation(
+                &g.returns[0], &self.classes, &self.aliases, &self.parameterized_aliases,
+            ) else { continue };
+            for root in &addon_roots {
+                if src.starts_with(root) {
+                    addon_field_types.entry(*root).or_default()
+                        .entry(field.clone()).or_insert_with(|| vt.clone());
+                }
+            }
+        }
+
         // A `@class` on the `ns` local retypes `ns` to the class table itself, so
         // that table must also be free of cross-addon leaks. When only one addon
         // in the workspace annotates its ns with a `@class`, the build-time
@@ -2889,7 +2925,19 @@ impl PreResolvedGlobals {
 
             for (field_name, field_info) in &combined_fields {
                 if !owned_set.contains(field_name) { continue; }
-                table.fields.insert(field_name.clone(), field_info.clone());
+                // Prefer this addon's own explicit write type over the combined
+                // table's cross-addon-merged type (see `addon_field_types`).
+                let fi = if let Some(vt) = addon_field_types.get(*addon_root).and_then(|m| m.get(field_name)) {
+                    let expr_idx = ExprId(EXT_BASE + self.exprs.len());
+                    self.exprs.push(Expr::Literal(vt.clone()));
+                    let mut fi = field_info.clone();
+                    fi.expr = expr_idx;
+                    fi.annotation = Some(vt.clone());
+                    fi
+                } else {
+                    field_info.clone()
+                };
+                table.fields.insert(field_name.clone(), fi);
                 // Copy field locations to the per-addon table too
                 if let Some(loc) = combined_field_locs.get(field_name) {
                     self.field_locations
@@ -2918,13 +2966,24 @@ impl PreResolvedGlobals {
                     for (name, fi) in class_fields {
                         self.tables[addon_local].fields.entry(name).or_insert(fi);
                     }
-                    // Forward: namespace fields → class (@type access sees runtime fields)
+                    // Forward: namespace fields → class (@type access sees runtime fields).
+                    // For a field this addon writes with its own explicit type,
+                    // OVERWRITE any cross-addon-leaked type already folded onto this
+                    // shared-by-name class table (a sibling addon's `XXX_Util` routed
+                    // here by `merge_addon_ns_into_classes`' single-location match).
+                    // A genuine `@field` of the class still wins (never overwritten).
+                    let genuine = self.addon_ns_class_own_fields.get(class_name.as_str()).cloned().unwrap_or_default();
+                    let authoritative = addon_field_types.get(*addon_root);
                     let addon_fields: Vec<(String, FieldInfo)> = self.tables[addon_local]
                         .fields.iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
                     for (name, fi) in addon_fields {
-                        self.tables[class_local].fields.entry(name).or_insert(fi);
+                        if !genuine.contains(&name) && authoritative.is_some_and(|m| m.contains_key(&name)) {
+                            self.tables[class_local].fields.insert(name, fi);
+                        } else {
+                            self.tables[class_local].fields.entry(name).or_insert(fi);
+                        }
                     }
                 }
             }

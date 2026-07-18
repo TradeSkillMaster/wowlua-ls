@@ -4414,6 +4414,54 @@ fn multi_addon_namespace_isolation_shared_q() {
     });
 }
 
+// Two `@class`-annotated namespaces (`U_NS`/`V_NS`) each assign a same-named
+// `Util` field a differently-typed `@class` local (`U_Util`/`V_Util`). The
+// combined addon-ns table collapses a field NAME to a single type; the per-addon
+// build must instead take each addon's OWN write type so `ns.Util` resolves to
+// its own `X_Util` on the `X_NS` class (not the sibling's). The `_u` file also
+// covers that a namespace *method* with a `@return` keeps its function field
+// type (not re-typed to its return type by the isolation pass).
+#[test]
+fn multi_addon_ns_field_type_isolation_u() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-nsfield/AddonU/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-nsfield"),
+    });
+}
+
+#[test]
+fn multi_addon_ns_field_type_isolation_v() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-nsfield/AddonV/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-nsfield"),
+    });
+}
+
+// The `ns.Util = Util` assignment (the `field-type-mismatch` regression) lives in
+// the `shared.lua` files, not `user.lua` — and `run_annotation_tests` only
+// diagnostic-checks its `lua_file`. Target the `shared.lua` files directly so a
+// re-leaked sibling type would fire `field-type-mismatch` there and fail (the
+// harness checks diagnostics exhaustively; these files assert none).
+#[test]
+fn multi_addon_ns_field_type_isolation_shared_u() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-nsfield/AddonU/shared.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-nsfield"),
+    });
+}
+
+#[test]
+fn multi_addon_ns_field_type_isolation_shared_v() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-nsfield/AddonV/shared.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon-nsfield"),
+    });
+}
+
 // A pure `@class`/`@field` addon (no runtime `ns.x = ...` writes) emits no
 // global, so its root must be seeded into the per-addon set from the declared
 // class names — otherwise it gets no isolated table and re-leaks the combined one.
