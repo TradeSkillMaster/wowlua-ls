@@ -1597,6 +1597,24 @@ fn ace3_locale_default_newlocale_non_nil() {
 }
 
 #[test]
+fn ace3_locale_ns_field_not_global_getlocale() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace3/locale_ns.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ace3"),
+    });
+}
+
+#[test]
+fn coarse_scan_anonymous_callee_no_defclass_hint() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/coarse-anon-callee/main.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/coarse-anon-callee"),
+    });
+}
+
+#[test]
 fn callbackhandler_field_chained_generic_call() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/callbackhandler-field/callbackhandler.lua",

@@ -42,6 +42,54 @@ fn first_string_literal_arg(call: &FunctionCall<'_>) -> Option<String> {
     })
 }
 
+/// The canonicalized callee name-chain AND the defclass string-arg hint to record
+/// for a `field = call(...)` / `X = call(...)` RHS. Both are empty/`None` when the
+/// receiver is itself a call (`LibStub("X"):M()`, `Foo():M()`) or the callee has
+/// no name identifier (`(cond and F1 or F2)(...)`).
+///
+/// For a chained receiver `ident.names()` collapses to just the trailing method
+/// name, dropping the receiver — that bare name then mis-resolves in
+/// `resolve_funcall_chain` as a *global* function of the same name (e.g. the WoW
+/// API global `GetLocale()` shadowing an AceLocale `:GetLocale()` method,
+/// yielding a bogus `string`). An anonymous callee has no usable name at all.
+/// Either way an empty chain makes `resolve_funcall_chain` bail, so the field
+/// falls to the refineable table placeholder and per-file resolution supplies the
+/// precise type.
+///
+/// The string-arg hint (`first_string_literal_arg`, the `DefineClass("X")`
+/// class-name heuristic) is paired here so it is returned ONLY alongside a
+/// non-empty chain: `first_string_literal_arg`'s own guard suppresses chained
+/// receivers but NOT the anonymous-callee case, so returning it unconditionally
+/// would let `(cond and F1 or F2)("Class")` mis-type the field to `Class` via the
+/// class-name fallback in `build_on_stubs`. A genuine named-defclass call
+/// (`DefineClass("X")`) keeps its hint.
+///
+/// The chain root is canonicalized to the addon-namespace sentinel / declared
+/// class / local-type name so cross-file resolution can find it.
+fn scan_funcall_callee(
+    call: &FunctionCall<'_>,
+    addon_ns_var: Option<&str>,
+    class_vars: &HashMap<String, String>,
+    local_type_vars: &HashMap<String, String>,
+) -> (Vec<String>, Option<String>) {
+    if funcall_has_chained_receiver(call) {
+        return (Vec::new(), None);
+    }
+    let mut names = call.identifier().map(|ident| ident.names()).unwrap_or_default();
+    if names.is_empty() {
+        return (Vec::new(), None);
+    }
+    if addon_ns_var == Some(names[0].as_str()) {
+        names[0] = ADDON_NS_NAME.to_string();
+    } else if let Some(cn) = class_vars.get(&names[0]) {
+        names[0] = cn.clone();
+    } else if let Some(tn) = local_type_vars.get(&names[0]) {
+        names[0] = tn.clone();
+    }
+    let first_string_arg = first_string_literal_arg(call);
+    (names, first_string_arg)
+}
+
 /// Unwrap `and`/`or` chains to the effective operand for type inference.
 /// `a and b` evaluates to `b` when `a` is truthy, so the effective type is `b`.
 /// `a or b` evaluates to `b` when `a` is falsy (the defensive-init pattern
@@ -754,19 +802,14 @@ pub fn scan_file_globals_with_synth(
                             if let Some(ret_type) = func_return_types.get(&func_key) {
                                 local_return_types.insert(names[0].clone(), ret_type.clone());
                             } else {
-                                // Return type not known from same-file definitions;
-                                // store the call origin so build_on_stubs can resolve it.
-                                let mut callee_chain = call_names;
-                                if !callee_chain.is_empty() {
-                                    if addon_ns_var.as_deref() == Some(callee_chain[0].as_str()) {
-                                        callee_chain[0] = ADDON_NS_NAME.to_string();
-                                    } else if let Some(cn) = class_vars.get(&callee_chain[0]) {
-                                        callee_chain[0] = cn.clone();
-                                    } else if let Some(tn) = local_type_vars.get(&callee_chain[0]) {
-                                        callee_chain[0] = tn.clone();
-                                    }
-                                }
-                                let first_string_arg = first_string_literal_arg(call);
+                                // Return type not known from same-file definitions; store the
+                                // call origin so build_on_stubs can resolve it. `scan_funcall_callee`
+                                // empties the chain (and drops the string-arg hint) for a chained
+                                // receiver (`local x = LibStub("X"):M()`) so the forwarded origin
+                                // can't mis-resolve as a same-named global.
+                                let (callee_chain, first_string_arg) = scan_funcall_callee(
+                                    call, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
+                                );
                                 local_call_origins.insert(names[0].clone(), (callee_chain, first_string_arg));
                             }
                         }
@@ -976,30 +1019,14 @@ pub fn scan_file_globals_with_synth(
                                     }
                                 }
                                 Expression::FunctionCall(call) => {
-                                    if let Some(call_ident) = call.identifier() {
-                                        let mut callee_names = call_ident.names();
-                                        if !callee_names.is_empty() {
-                                            if addon_ns_var.as_deref() == Some(callee_names[0].as_str()) {
-                                                callee_names[0] = ADDON_NS_NAME.to_string();
-                                            } else if let Some(class_name) = class_vars.get(&callee_names[0]) {
-                                                callee_names[0] = class_name.clone();
-                                            } else if let Some(type_name) = local_type_vars.get(&callee_names[0]) {
-                                                callee_names[0] = type_name.clone();
-                                            }
-                                        }
-                                        let first_string_arg = call.arguments().and_then(|al| {
-                                            let args = al.expressions();
-                                            if let Some(Expression::Literal(lit)) = args.first() {
-                                                lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
-                                            } else {
-                                                None
-                                            }
-                                        });
-                                        let mp = extract_mixin_parents(call, &callee_names, &class_vars);
-                                        (ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee_names, first_string_arg)), None, None, mp)
-                                    } else {
-                                        (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None, Vec::new())
-                                    }
+                                    // Empty chain / no string-arg hint for a chained receiver
+                                    // (`LibStub("X"):M()`) or anonymous callee, so neither can
+                                    // mis-resolve as a same-named global (see scan_funcall_callee).
+                                    let (callee_names, first_string_arg) = scan_funcall_callee(
+                                        call, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
+                                    );
+                                    let mp = extract_mixin_parents(call, &callee_names, &class_vars);
+                                    (ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee_names, first_string_arg)), None, None, mp)
                                 }
                                 Expression::BinaryExpression(bin) => {
                                     let vk = match bin.kind() {
@@ -1105,30 +1132,19 @@ pub fn scan_file_globals_with_synth(
                                 Expression::TableConstructor(tc) => FieldValueKind::Table(extract_table_field_kinds(tc)),
                                 Expression::Function(_) => FieldValueKind::Function,
                                 Expression::FunctionCall(call) => {
-                                    if let Some(ident) = call.identifier() {
-                                        let mut callee_names = ident.names();
-                                        // Canonicalize root of callee chain
-                                        if !callee_names.is_empty() {
-                                            if addon_ns_var.as_deref() == Some(callee_names[0].as_str()) {
-                                                callee_names[0] = ADDON_NS_NAME.to_string();
-                                            } else if let Some(class_name) = class_vars.get(&callee_names[0]) {
-                                                callee_names[0] = class_name.clone();
-                                            } else if let Some(type_name) = local_type_vars.get(&callee_names[0]) {
-                                                callee_names[0] = type_name.clone();
-                                            }
-                                        }
-                                        // `first_string_literal_arg` yields the defclass class-name
-                                        // hint (`DefineClass("X")`) but suppresses it for chained
-                                        // receivers, where the outer method transforms the type and
-                                        // the inner string names the receiver, not the field's
-                                        // class. Genuine builder chains rooted at a named object
-                                        // (`Schema:AddField("x"):...`) still resolve via the callee
-                                        // chain through `resolve_funcall_chain`/the fixpoint.
-                                        let first_string_arg = first_string_literal_arg(call);
-                                        FieldValueKind::FunctionCall(callee_names, first_string_arg)
-                                    } else {
-                                        FieldValueKind::Unknown
-                                    }
+                                    // `scan_funcall_callee` drops the chain (and the defclass
+                                    // string-arg hint) for a chained receiver
+                                    // (`LibStub("X"):GetLocale(...)`) or an anonymous callee
+                                    // (`(cond and F1 or F2)("Class")`), either of which would
+                                    // otherwise mis-resolve as a same-named global / mis-type the
+                                    // field to the string-named class. A genuine named-defclass
+                                    // call (`DefineClass("X")`) keeps its hint; builder chains
+                                    // rooted at a named object (`Schema:AddField("x"):...`) still
+                                    // resolve via the callee chain through the fixpoint.
+                                    let (callee_names, first_string_arg) = scan_funcall_callee(
+                                        call, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
+                                    );
+                                    FieldValueKind::FunctionCall(callee_names, first_string_arg)
                                 }
                                 Expression::Identifier(ident) => {
                                     let mut rhs_names = ident.names();
