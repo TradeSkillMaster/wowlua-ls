@@ -1611,6 +1611,15 @@ fn ace3_locale_default_newlocale_non_nil() {
 }
 
 #[test]
+fn ace3_db_new_threads_typed_defaults() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace3/db.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ace3"),
+    });
+}
+
+#[test]
 fn ace3_locale_ns_field_not_global_getlocale() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/ace3/locale_ns.lua",

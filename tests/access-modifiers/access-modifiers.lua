@@ -163,3 +163,33 @@ _consume(ahit._declared)
 ahit._adhocField = "hello"
 -- ^ diag: inject-field
 _consume(ahit._adhocField)
+
+-- ── Visibility on an intersection member (`A & B`) is judged per-member ──
+-- Completion over an intersection-typed receiver gathers fields from every
+-- member, but a private/protected field on a *secondary* member must be judged
+-- against that member — not the primary. So it stays hidden from inside the
+-- primary member's class and is offered only from inside the secondary's own.
+
+---@class IsectPrimary
+---@field pubP number
+local IsectPrimary = {}
+
+---@class IsectSecondary
+---@field pubS number
+---@field private secretS number
+---@field protected protS number
+local IsectSecondary = {}
+
+function IsectPrimary:Method()
+    ---@type IsectPrimary & IsectSecondary
+    local both
+    local _p = both.pubP
+--                  ^ comp: Method, pubP, pubS
+end
+
+function IsectSecondary:Method()
+    ---@type IsectPrimary & IsectSecondary
+    local both
+    local _s = both.pubS
+--                  ^ comp: Method, protS, pubP, pubS, secretS
+end

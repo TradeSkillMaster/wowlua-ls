@@ -339,15 +339,16 @@ impl AnalysisResult {
         };
 
         let table_idx = table_idx?;
-        let table = self.table(table_idx);
         let is_colon = prev_char == b':';
-        // When the receiver is a simple local/global whose type is an
-        // `Intersection` carrying an inline `TableShape` (cross-file injected
-        // fields, e.g. `dropdown: Frame & { DropDown: ... }`), surface those
-        // shape fields too. Guarded by matching the resolved `table_idx` so a
-        // mis-resolved receiver (dotted chain reusing a local name) can't leak
-        // unrelated completions.
-        let receiver_shape_type: Option<ValueType> = if token.kind() == SyntaxKind::Name {
+        // Re-resolve the receiver's full type (guarded to match the primary
+        // `table_idx` so a mis-resolved dotted chain reusing a local name can't
+        // leak unrelated completions). Reused below to surface (a) inline
+        // `TableShape` members carried by the receiver (cross-file injected
+        // fields, e.g. `dropdown: Frame & { DropDown: ... }`) and (b) the other
+        // class-table members of an `Intersection` — so an `AceDB:New` result
+        // typed `Defaults & AceDBObject-3.0` completes both the typed defaults
+        // sections and the AceDBObject methods, not just the first member.
+        let receiver_full_type: Option<ValueType> = if token.kind() == SyntaxKind::Name {
             self.scope_at_offset(text_size)
                 .and_then(|s| self.get_symbol(&SymbolIdentifier::Name(token.text().to_string()), s))
                 .and_then(|si| self.sym(si).versions.last().and_then(|v| v.resolved_type.clone()))
@@ -366,47 +367,74 @@ impl AnalysisResult {
         // this file, protected fields are accessible at file scope (the module
         // file is the class's own implementation). Without this, inherited
         // `@protected` methods (e.g. a module's `OnModuleLoad`) are wrongly
-        // hidden from completion even though calling them is allowed.
-        let receiver_is_own_defclass = self.defclass_vars
-            .get(token.text())
-            .is_some_and(|&dc_table| self.is_subclass_of(dc_table, table_idx));
+        // hidden from completion even though calling them is allowed. Kept as the
+        // raw defclass table so visibility below can test it against the specific
+        // intersection member a field came from, not just the primary receiver.
+        let receiver_defclass: Option<TableIndex> = self.defclass_vars.get(token.text()).copied();
         // _G global-environment redirect: show all globals as completions
         if self.ir.is_global_env(table_idx) {
             return Some(self.complete_global_env_members(offset, member_prefix_lower, is_colon, call_snippets));
         }
 
-        // Collect all fields: base table + overlay + inherited from parent_classes
-        let overlay = self.ir.overlay_fields.get(&table_idx);
-        let mut seen_fields: HashSet<&String> = table.fields.keys().collect();
-        let mut all_fields: Vec<(&String, &FieldInfo)> = table.fields.iter().collect();
-        if let Some(ov) = overlay {
-            for (name, fi) in ov.iter() {
-                if seen_fields.insert(name) {
-                    all_fields.push((name, fi));
+        // The table members whose fields to offer, primary first. For an
+        // intersection receiver that's every member (the value IS each of them);
+        // restricted to intersections because a union receiver is only *one*
+        // member, so offering all members' fields would over-offer.
+        let mut member_indices = vec![table_idx];
+        if let Some(ft @ ValueType::Intersection(_)) = &receiver_full_type {
+            for mi in Self::extract_all_table_indices(ft) {
+                if !member_indices.contains(&mi) {
+                    member_indices.push(mi);
                 }
             }
         }
-        // Add inherited fields from parent classes
-        for &parent_idx in &table.parent_classes {
-            let parent_table = self.table(parent_idx);
-            for (name, fi) in &parent_table.fields {
+
+        // Collect all fields from every member of the receiver (own + overlay +
+        // inherited from parent_classes), primary member first. `member_indices`
+        // holds each table member of an intersection receiver, else just the
+        // primary. Each field is tagged with the member table it was viewed
+        // through, so the visibility filter below judges private/protected
+        // accessibility against *that* member — not always the primary. Dedup
+        // keeps the first (primary-member) field, matching intersection
+        // first-match precedence.
+        let mut seen_fields: HashSet<&String> = HashSet::new();
+        let mut all_fields: Vec<(&String, &FieldInfo, TableIndex)> = Vec::new();
+        for &mi in &member_indices {
+            let member_table = self.table(mi);
+            for (name, fi) in &member_table.fields {
                 if seen_fields.insert(name) {
-                    all_fields.push((name, fi));
+                    all_fields.push((name, fi, mi));
+                }
+            }
+            if let Some(ov) = self.ir.overlay_fields.get(&mi) {
+                for (name, fi) in ov.iter() {
+                    if seen_fields.insert(name) {
+                        all_fields.push((name, fi, mi));
+                    }
+                }
+            }
+            for &parent_idx in &member_table.parent_classes {
+                let parent_table = self.table(parent_idx);
+                for (name, fi) in &parent_table.fields {
+                    if seen_fields.insert(name) {
+                        all_fields.push((name, fi, mi));
+                    }
                 }
             }
         }
         let mut items: Vec<CompletionItem> = all_fields.iter()
-            .filter_map(|(name, field_info)| {
-                // Filter out inaccessible private/protected fields
+            .filter_map(|&(name, field_info, owning_idx)| {
+                // Filter out inaccessible private/protected fields, judged against
+                // the member table the field came from.
                 let vis = field_info.visibility;
                 if vis != crate::annotations::Visibility::Public {
                     let accessible = match vis {
                         crate::annotations::Visibility::Private => {
-                            enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
+                            enclosing_class.is_some_and(|ec| self.same_class(ec, owning_idx))
                         }
                         crate::annotations::Visibility::Protected => {
-                            receiver_is_own_defclass
-                                || enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
+                            receiver_defclass.is_some_and(|dc| self.is_subclass_of(dc, owning_idx))
+                                || enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, owning_idx))
                         }
                         crate::annotations::Visibility::Public => true,
                     };
@@ -460,7 +488,7 @@ impl AnalysisResult {
             })
             .collect();
         // Append inline `TableShape` fields carried by the receiver type.
-        if let Some(rt) = &receiver_shape_type {
+        if let Some(rt) = &receiver_full_type {
             let existing: HashSet<String> = items.iter().map(|i| i.label.clone()).collect();
             let mut names: Vec<String> = Vec::new();
             rt.collect_shape_field_names(&mut names);

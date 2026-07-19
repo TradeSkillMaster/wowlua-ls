@@ -65,11 +65,12 @@ Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments 
 
 ### 6. Local overrides
 
-Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (42 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
+Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (43 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
 
 | File | Purpose |
 |------|---------|
 | `AceAddon-3.0.lua` | AceAddon library stubs; the library class inherits the embeddable `AceAddon` prototype so `---@class Foo : AceAddon-3.0` resolves `NewModule`/`GetModule`/… |
+| `AceDB-3.0.lua` | AceDB library stubs; `AceDB:New`/`db:RegisterNamespace` are generic over the `defaults` table, returning `Defaults & AceDBObject-3.0` so the declared default sections/fields are typed on the DB object while its methods stay available. Sections are non-nil `table` so indexing them doesn't trip `need-check-nil` |
 | `AceEvent-3.0.lua` | AceEvent library stubs; `RegisterEvent`/`RegisterMessage` type the handler as `keyof self` so the handler string navigates to (and is checked against) the method on `self` |
 | `AceGUI-3.0.lua` | AceGUI library stubs |
 | `AceLocale-3.0.lua` | AceLocale library stubs; default-locale `NewLocale(app, locale, true)` returns a non-nil table so the `L[key] = true` idiom doesn't trip `need-check-nil` |

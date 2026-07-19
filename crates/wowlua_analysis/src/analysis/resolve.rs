@@ -3195,6 +3195,7 @@ impl<'a> Analysis<'a> {
         if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
         // Unwrap opaque aliases — field access works on the inner type
         let table_type = table_type.into_strip_opaque();
+        let receiver_is_intersection = matches!(table_type, ValueType::Intersection(_));
         let table_indices: Vec<TableIndex> = match &table_type {
             ValueType::Table(Some(idx)) => vec![*idx],
             ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
@@ -3346,6 +3347,19 @@ impl<'a> Analysis<'a> {
         let all_placeholder = !field_types.is_empty()
             && field_types.iter().all(|vt| matches!(vt, ValueType::Table(None)));
         if !field_types.is_empty() && !all_placeholder {
+            // Field access on an intersection *narrows* across members: a member
+            // typed generic `table` for this field must not widen a sibling
+            // member's specific table shape. Drop the generic `table`
+            // contributions when a specific one is present — the dual of
+            // `make_union`'s `table | T → table` widening. This is what threads a
+            // typed `defaults` shape through `AceDB:New`'s `Defaults &
+            // AceDBObject-3.0` return into a copied section (`local p = db.profile`).
+            if receiver_is_intersection
+                && field_types.iter().any(|t| matches!(t, ValueType::Table(Some(_))))
+                && field_types.iter().any(|t| matches!(t, ValueType::Table(None)))
+            {
+                field_types.retain(|t| !matches!(t, ValueType::Table(None)));
+            }
             return Some(ValueType::make_union(field_types));
         }
         // Field exists but type is unresolvable or only Table(None) placeholder.
