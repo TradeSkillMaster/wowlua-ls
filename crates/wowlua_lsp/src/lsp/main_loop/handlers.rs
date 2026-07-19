@@ -816,6 +816,13 @@ pub(super) fn handle_request(
                 send_response(connection, id, &result);
             }
         }
+        // Code-lens commands (`wowlua-ls.showReferences`, `wowlua-ls.showSuperDefinition`)
+        // are client-side: they are NOT declared in `executeCommandProvider`, so the
+        // editor must contribute a handler for each. The VS Code extension registers
+        // them in `editors/vscode/extension.js`; the JetBrains plugin registers them
+        // as `<action>`s in `editors/jetbrains/.../plugin.xml` (LSP4IJ dispatches a
+        // code-lens command to the IntelliJ action whose id equals the command). When
+        // adding a new `wowlua-ls.*` command below, update both editor clients.
         "textDocument/codeLens" => {
             if let Ok((id, params)) = cast_req::<request::CodeLensRequest>(req) {
                 let uri = params.text_document.uri;
@@ -1691,4 +1698,59 @@ pub(super) fn handle_workspace_symbol(
     ws: &WorkspaceState,
 ) -> Option<WorkspaceSymbolResponse> {
     Some(WorkspaceSymbolResponse::Flat(search_workspace_symbols(query, &ws.pre_globals)))
+}
+
+#[cfg(test)]
+mod codelens_command_tests {
+    use std::path::PathBuf;
+
+    /// The `wowlua-ls.*` code-lens Commands emitted below are client-side (not in
+    /// `executeCommandProvider`), so every editor client must contribute a handler
+    /// for each — otherwise clicking the lens shows a "missing command" error (this
+    /// happened in IntelliJ for `wowlua-ls.showReferences`). This guards against
+    /// adding a new code-lens command without wiring up both editors.
+    #[test]
+    fn every_codelens_command_registered_in_both_editors() {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = crate_dir.join("../..");
+
+        let handlers = std::fs::read_to_string(crate_dir.join("src/lsp/main_loop/handlers.rs"))
+            .expect("read handlers.rs");
+        let plugin_xml =
+            std::fs::read_to_string(repo_root.join("editors/jetbrains/src/main/resources/META-INF/plugin.xml"))
+                .expect("read JetBrains plugin.xml");
+        let vscode_ext = std::fs::read_to_string(repo_root.join("editors/vscode/extension.js"))
+            .expect("read VS Code extension.js");
+
+        // Collect the `wowlua-ls.*` ids the server assigns to code-lens command
+        // fields. Splitting on the field's opening quote (spelled as an escaped
+        // literal, below) avoids matching this test's own source.
+        let mut commands: Vec<String> = Vec::new();
+        for tail in handlers.split("command: \"").skip(1) {
+            let Some(end) = tail.find('"') else { continue };
+            let id = &tail[..end];
+            if id.starts_with("wowlua-ls.") && !commands.iter().any(|c| c == id) {
+                commands.push(id.to_string());
+            }
+        }
+        assert!(
+            !commands.is_empty(),
+            "expected to find `command: \"wowlua-ls.*\"` code-lens emissions in handlers.rs",
+        );
+
+        for cmd in &commands {
+            // JetBrains: LSP4IJ dispatches a code-lens command to the <action> whose
+            // id equals the command string.
+            assert!(
+                plugin_xml.contains(&format!("id=\"{cmd}\"")),
+                "JetBrains plugin.xml has no <action id=\"{cmd}\"> — clicking this code lens \
+                 shows a \"missing command\" error in IntelliJ",
+            );
+            // VS Code: extension.js registers the command wrapper.
+            assert!(
+                vscode_ext.contains(&format!("\"{cmd}\"")),
+                "VS Code extension.js does not register command `{cmd}`",
+            );
+        }
+    }
 }

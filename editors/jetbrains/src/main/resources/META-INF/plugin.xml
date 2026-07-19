@@ -56,4 +56,21 @@
         <fileNamePatternMapping patterns="*.toc" serverId="wowlua-ls" languageId="toc"/>
     </extensions>
 
+    <!-- The server emits code-lens Commands using these ids (matching the VS Code
+         extension's registered commands). LSP4IJ executes a code-lens command by
+         looking up an IntelliJ action whose id equals the command string, so each
+         one must be contributed here — otherwise clicking a "N usages" /
+         "N implementations" / "overrides X" lens shows a "missing command" error.
+         Keep in sync with the wowlua-ls.* commands emitted in the server's
+         codeLens handlers and the VS Code extension's command registrations. -->
+    <actions>
+        <!-- "N usages" and "N implementations": args are [uri, position, locations].
+             LSP4IJ's built-in ShowReferencesAction reads the locations (arg 2). -->
+        <action id="wowlua-ls.showReferences"
+                class="com.redhat.devtools.lsp4ij.commands.editor.ShowReferencesAction"/>
+        <!-- "overrides X": args are [uri, position]. -->
+        <action id="wowlua-ls.showSuperDefinition"
+                class="com.tradeskillmaster.wowluals.lsp4ij.WowLuaGoToDefinitionAction"/>
+    </actions>
+
 </idea-plugin>
