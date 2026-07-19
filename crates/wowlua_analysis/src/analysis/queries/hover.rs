@@ -80,7 +80,20 @@ impl AnalysisResult {
                         // Lateinit fields use compact format so "!" appears cleanly after the type name
                         (self.format_field_type(field_info, 0), resolved_type.clone(), true)
                     } else if let Some(ref ann) = field_info.annotation {
-                        (self.format_type_accessible(ann, enclosing_class), Some(ann.clone()), true)
+                        // An `Any` field annotation is a placeholder (scan-injected
+                        // existence-only self-field, inherited-parent `Any`). Refine
+                        // it from the field's own assignment exprs — matching the
+                        // diagnostics engine — so hover shows the concrete assigned
+                        // type instead of a bare `any`. (Can't use `resolved_type`
+                        // here: resolve_field_chain_at reports the field's placeholder
+                        // definition expr, which is the `Any` itself.)
+                        if matches!(ann, ValueType::Any)
+                            && let Some(refined) = self.refine_any_field_type(field_info)
+                        {
+                            (self.format_type_accessible(&refined, enclosing_class), Some(refined), false)
+                        } else {
+                            (self.format_type_accessible(ann, enclosing_class), Some(ann.clone()), true)
+                        }
                     } else {
                         let has_extras = !field_info.extra_exprs.is_empty();
                         let skip_primary = has_extras

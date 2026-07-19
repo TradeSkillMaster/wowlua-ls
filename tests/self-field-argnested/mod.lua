@@ -9,8 +9,11 @@
 -- it and the field resolves to its precise scalar type instead of `any`.
 --
 -- A genuinely-chained receiver (`Make():Build()`, a call on a call's result)
--- must STILL be detected as chained and parked existence-only as `any` — the
--- disjoint-coverage boundary `funcall_has_chained_receiver` draws.
+-- is still detected as chained and parked by the bare scanner as an
+-- existence-only `any` placeholder — the disjoint-coverage boundary
+-- `funcall_has_chained_receiver` draws. But the query-time resolver refines
+-- that `any` placeholder from the in-file assignment when it's resolvable, so
+-- hover/completion show the concrete type (matching the diagnostics engine).
 ---@diagnostic disable: unused-local
 
 ---@class ArgNestHost
@@ -27,8 +30,10 @@ function Host:Setup()
     -- projects one — so these resolve to scalars, not bare `table`.
     self.classId = select(3, UnitClass("player"))
     self.classTag = select(2, UnitClass("player"))
-    -- Genuinely chained (a call on a call's result): bare scanner -> `any`
-    -- (existence-only; the coarse scan can't resolve the chain's return type).
+    -- Genuinely chained (a call on a call's result): the bare scanner parks
+    -- this as an existence-only `any` placeholder (the coarse scan can't
+    -- resolve the chain), but the query-time resolver refines it from this
+    -- write — Make() -> ArgNestHost, :Build() -> self -> ArgNestHost.
     self.chained = Make():Build()
 end
 
@@ -38,6 +43,6 @@ function Host:Use()
     local b = self.classTag
     --              ^ hover: (field) classTag: string
     local c = self.chained
-    --              ^ hover: (field) chained: any
+    --              ^ hover: (field) chained: ArgNestHost {
     return a, b, c
 end

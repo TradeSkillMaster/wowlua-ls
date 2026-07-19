@@ -1810,6 +1810,23 @@ fn self_field_argnested() {
 }
 
 #[test]
+fn self_field_chained_class() {
+    // Regression: a chained-receiver self-field (`self.db = GetLib(..):New()`)
+    // inside a method of a local `@class` is parked by the workspace scan as an
+    // existence-only `any` placeholder on the class. The query-time resolver
+    // (hover/completion/definition) must refine that placeholder from the in-file
+    // assignment — matching the diagnostics engine — so it resolves to the
+    // chain's concrete return class instead of `any`. Before the fix the `@class`
+    // on the receiver degraded the field to `any`; a plain local table resolved
+    // it correctly. The two paths are now consistent.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/self-field-chained-class/mod.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/self-field-chained-class"),
+    });
+}
+
+#[test]
 fn crossfile_class_field_gets() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/class_field_gets_user.lua",

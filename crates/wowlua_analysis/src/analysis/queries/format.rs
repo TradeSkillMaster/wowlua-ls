@@ -110,6 +110,49 @@ pub fn dedup_return_types(ir: &Ir, rets: &[SymbolIndex]) -> Vec<Option<ValueType
 /// Maximum recursion depth for read-only expression resolution.
 const MAX_QUERY_RESOLVE_DEPTH: usize = 200;
 
+/// Refine an `Any`-annotated field to the concrete type(s) of its own assignment
+/// expressions, appending them to `out`. An `Any` field annotation is a
+/// placeholder — a scan-injected existence-only self-field (`self.x =
+/// LibStub(..):New()`, whose chained RHS the coarse workspace scan can't type),
+/// or an `Any` inherited from a parent class — so the field's real type is
+/// whatever its `expr`/`extra_exprs` resolve to. Resolves those, ignoring the
+/// `Any`/`Nil` placeholders themselves, and re-adds `Any` to `out` iff nothing
+/// more specific resolved OR a reassignment was unresolvable while a specific
+/// type did (the field could still hold any type). Returns whether a specific
+/// (non-`Any`/`Nil`) type was found. Mirrors resolve.rs's FieldAccess `is_any`.
+///
+/// Single source of truth for the two query-side `Any`-field callers:
+/// `resolve_expr_type_impl` (passes the live `visited`/`depth`) and
+/// `AnalysisResult::refine_any_field_type` (passes a fresh set at depth 0).
+/// resolve.rs keeps its own copy — it runs on the mutable fixpoint resolver
+/// (`self.resolve_expr`), not this read-only `resolve_expr_type_impl`.
+fn refine_any_field_exprs(
+    ir: &Ir,
+    resolved_expr_cache: &[Option<ValueType>],
+    fi: &FieldInfo,
+    out: &mut Vec<ValueType>,
+    visited: &mut HashSet<ExprId>,
+    depth: usize,
+) -> bool {
+    let mut found_specific = false;
+    let mut has_unresolvable = false;
+    for eid in std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied()) {
+        match resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1) {
+            Some(vt) if !matches!(vt, ValueType::Any | ValueType::Nil) => {
+                if !out.contains(&vt) { out.push(vt); }
+                found_specific = true;
+            }
+            Some(_) => {}
+            None => has_unresolvable = true,
+        }
+    }
+    let keep_any = !found_specific || (has_unresolvable && !fi.extra_exprs.is_empty());
+    if keep_any && !out.contains(&ValueType::Any) {
+        out.push(ValueType::Any);
+    }
+    found_specific
+}
+
 /// Shared implementation for read-only expression type resolution.
 /// Both `Analysis::resolve_expr_type` and `AnalysisResult::resolve_expr_type` delegate here.
 pub(super) fn resolve_expr_type_impl(
@@ -206,7 +249,15 @@ pub(super) fn resolve_expr_type_impl(
                     let primary = fi.expr;
                     let extras: Vec<ExprId> = fi.extra_exprs.clone();
                     let annotation = fi.annotation.clone();
-                    if let Some(ann) = annotation {
+                    if matches!(annotation, Some(ValueType::Any)) {
+                        // An `Any` field annotation is a placeholder (scan-injected
+                        // existence-only self-field, or an `Any` inherited from a
+                        // parent class) — resolve the field's own assignment exprs
+                        // instead, so completion/hover match the diagnostics engine.
+                        // Shares refine_any_field_exprs (live visited/depth here) with
+                        // refine_any_field_type; see there for the exact keep-`Any` rule.
+                        refine_any_field_exprs(ir, resolved_expr_cache, fi, &mut field_types, visited, depth);
+                    } else if let Some(ann) = annotation {
                         if !field_types.contains(&ann) {
                             field_types.push(ann);
                         }
@@ -675,10 +726,34 @@ impl AnalysisResult {
         resolve_expr_type_impl(&self.ir, &self.resolved_expr_cache, expr_id, &mut visited, 0)
     }
 
+    /// A field whose declared type is the bare `Any` placeholder — e.g. a
+    /// scan-injected existence-only self-field (`self.x = LibStub(..):New()`,
+    /// whose chained RHS the coarse workspace scan can't type) or an `Any`
+    /// inherited from a parent class — should still resolve to the concrete type
+    /// of its in-file assignment when one is available. Returns that concrete
+    /// union, or `None` — caller keeps `Any` — when nothing more specific
+    /// resolves. See `refine_any_field_exprs` for the shared resolution rule.
+    pub(super) fn refine_any_field_type(&self, fi: &FieldInfo) -> Option<ValueType> {
+        let mut types: Vec<ValueType> = Vec::new();
+        let mut visited = HashSet::new();
+        let found_specific = refine_any_field_exprs(
+            &self.ir, &self.resolved_expr_cache, fi, &mut types, &mut visited, 0,
+        );
+        if !found_specific {
+            return None;
+        }
+        Some(ValueType::make_union(self.ir.collapse_subset_tables(types)))
+    }
+
     /// Resolve a field's type considering annotation, primary expr, and extra_exprs.
     /// Skips nil primary when extras exist (matches reassignment semantics).
     pub fn resolve_field_type(&self, fi: &FieldInfo) -> Option<ValueType> {
         if let Some(ref ann) = fi.annotation {
+            // A placeholder `Any` annotation is refined from the field's in-file
+            // assignment when possible; a concrete annotation wins outright.
+            if matches!(ann, ValueType::Any) {
+                return Some(self.refine_any_field_type(fi).unwrap_or_else(|| ann.clone()));
+            }
             return Some(ann.clone());
         }
         let mut types: Vec<ValueType> = Vec::new();
@@ -1033,7 +1108,14 @@ impl AnalysisResult {
             return text.clone();
         }
         if let Some(ref ann) = field_info.annotation {
-            let base = self.format_type_depth(ann, depth + 1);
+            // Refine a placeholder `Any` annotation from the field's assignment
+            // exprs so displayed field types match the diagnostics engine.
+            let refined = if matches!(ann, ValueType::Any) {
+                self.refine_any_field_type(field_info)
+            } else {
+                None
+            };
+            let base = self.format_type_depth(refined.as_ref().unwrap_or(ann), depth + 1);
             return if field_info.lateinit { format!("{}!", base) } else { base };
         }
         // Union original expr with any reassignment exprs.
