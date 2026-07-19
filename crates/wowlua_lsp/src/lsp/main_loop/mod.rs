@@ -657,6 +657,17 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     connection.initialize_finish(id, initialize_data)?;
 
+    // Decouple from stdin backpressure NOW, before the synchronous workspace scan
+    // below — not just before `main_loop`. That scan (Pass 1 + Pass 2 + rebuild) is
+    // single-threaded and, on a large workspace or a slow network FS (e.g. a Windows
+    // client scanning WSL files over `\\wsl.localhost`), runs for tens of seconds
+    // during which the main thread calls neither `recv()` nor anything else — so
+    // without the pump draining stdin the client eventually deadlocks and the editor
+    // freezes for the whole scan (see `buffered_input_connection` for the mechanism).
+    // Safe here because everything between the handshake and `main_loop` only *sends*
+    // on `connection.sender`; nothing reads the receiver until `main_loop`.
+    let connection = buffered_input_connection(connection);
+
     let supports_watched_files = client_capabilities.workspace
         .as_ref()
         .and_then(|w| w.did_change_watched_files.as_ref())
@@ -867,10 +878,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         .and_then(|ci| ci.snippet_support)
         .unwrap_or(false);
 
-    // Decouple the main loop from stdin backpressure before entering it (see
-    // `buffered_input_connection`): a long single-threaded analysis must never
-    // stop draining stdin, or the client deadlocks writing to us.
-    let connection = buffered_input_connection(connection);
+    // Stdin backpressure was already decoupled right after the handshake (see
+    // `buffered_input_connection`), so the initial scan above ran without stalling
+    // the client. The main loop just keeps reading from that same buffered receiver.
     main_loop(connection, ws, ClientSupport {
         progress: supports_progress,
         code_lens_refresh: supports_code_lens_refresh,
@@ -3612,5 +3622,44 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The stdin pump (`buffered_input_connection`) must keep draining its upstream
+    /// receiver even while nothing reads the buffered side — otherwise a producer on
+    /// a zero-capacity rendezvous channel (which is what `Connection::stdio()` uses
+    /// to hand off each message) blocks after the first send. That backpressure is
+    /// what froze IntelliJ during the initial workspace scan when the pump was
+    /// installed *after* the scan instead of right after the handshake. This guards
+    /// the non-blocking-drain contract the fix relies on.
+    #[test]
+    fn buffered_input_pump_drains_rendezvous_without_backpressure() {
+        use std::time::Duration;
+
+        // bounded(0) mirrors the stdio reader's rendezvous handoff: each send blocks
+        // until someone recv()s. The `sender` half is unused by the pump input path.
+        let (real_tx, real_rx) = crossbeam_channel::bounded::<Message>(0);
+        let (dummy_tx, _dummy_rx) = crossbeam_channel::unbounded::<Message>();
+        let buffered = buffered_input_connection(Connection { sender: dummy_tx, receiver: real_rx });
+
+        // Send several messages WITHOUT reading the buffered receiver. If the pump is
+        // draining, every send completes promptly; if it stalls, send_timeout reports
+        // the regression instead of hanging the test forever.
+        for i in 0..5 {
+            let msg = Message::Notification(Notification {
+                method: "test/ping".to_string(),
+                params: serde_json::json!({ "i": i }),
+            });
+            real_tx
+                .send_timeout(msg, Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!("pump stopped draining input at message {i}"));
+        }
+        drop(real_tx);
+
+        // All five must now be buffered and readable in order.
+        let mut got = Vec::new();
+        while let Ok(Message::Notification(n)) = buffered.receiver.recv_timeout(Duration::from_secs(5)) {
+            got.push(n.params["i"].as_i64().unwrap());
+        }
+        assert_eq!(got, vec![0, 1, 2, 3, 4], "pump must forward every message in order");
     }
 }
