@@ -518,3 +518,31 @@ local Animal = MyLib:NewClass("Animal")
 local Dog = MyLib:NewClass("Dog", Animal)
 Dog.__super -- typed as Animal
 ```
+
+### Embedding libraries via varargs
+
+Some factories mix additional classes into the object they create, named by
+extra string arguments — the Ace3 idiom `NewAddon(name, "AceEvent-3.0", …)`, where
+each trailing library name is embedded (its methods become available on the addon).
+
+Give the `...` vararg a **backtick** type to model this: each string-literal
+argument past the class-name position is added as a parent (mixin) of the created
+class.
+
+```lua
+---@generic T: AceAddon
+---@defclass T : AceAddon
+---@param name `T`
+---@param ... `T` @ library names to embed
+---@return T
+function AceAddon:NewAddon(name, ...) end
+
+local Addon = AceAddon:NewAddon("MyAddon", "AceEvent-3.0", "AceConsole-3.0")
+Addon:RegisterEvent("PLAYER_LOGIN", "OnLogin") -- from AceEvent-3.0
+Addon:Print("hello")                           -- from AceConsole-3.0
+```
+
+`MyAddon` is created inheriting `AceAddon` **and** `AceEvent-3.0` and
+`AceConsole-3.0`, so their instance methods resolve on the addon object (and on
+`self` inside its methods) without hand-writing `---@class MyAddon : AceEvent-3.0, …`.
+This is built into the bundled Ace3 typings for `NewAddon` and `NewModule`.

@@ -29,6 +29,11 @@ struct DefclassFuncInfo {
     /// Includes the position from the primary signature plus positions derived from each
     /// `@overload` (with the implicit `self` param stripped so indices match call-site args).
     backtick_param_positions: Vec<usize>,
+    /// True when the `...` vararg param is backtick-typed (`` @param ... `T` ``). Each
+    /// string-literal argument past the class-name position then names an existing class
+    /// to add as a parent of the created class — the Ace `NewAddon(name, "AceEvent-3.0", …)`
+    /// / `NewModule(name, prototype, …)` library-embedding idiom.
+    vararg_parents: bool,
 }
 
 /// Pre-built lookup tables for defclass scanning, constructed once from all_globals/all_classes
@@ -121,9 +126,11 @@ impl DefclassContext {
                 }
             }
             let backtick_param_positions: Vec<usize> = backtick_seen.into_iter().collect();
+            let vararg_parents = g.params.iter()
+                .any(|p| p.name == "..." && matches!(&p.typ, AnnotationType::Backtick(_)));
             defclass_funcs.insert(fp, DefclassFuncInfo {
                 parents, parent_param_idx, values_param_idx, constraint_type_args,
-                parent_generic_name, index_sig_type, backtick_param_positions,
+                parent_generic_name, index_sig_type, backtick_param_positions, vararg_parents,
             });
         }
 
@@ -236,14 +243,28 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
             let class_name_str = info.backtick_param_positions.iter().find_map(|&pos| {
                 if let Some(Expression::Literal(lit)) = call_args.get(pos) {
                     lit.get_string()
-                        .map(|s| s.trim_matches(|c: char| c == '"' || c == '\'').to_string())
+                        .map(|s| (s.trim_matches(|c: char| c == '"' || c == '\'').to_string(), pos))
                 } else {
                     None
                 }
             });
-            if let Some(name) = class_name_str {
+            if let Some((name, name_pos)) = class_name_str {
                     let mut parents = info.parents.clone();
                     let mut constraint_type_arg_subs = Vec::new();
+                    // Backtick vararg (`` @param ... `T` ``): every string-literal argument
+                    // past the class-name position names an existing class to embed as a
+                    // parent — Ace `NewAddon(name, "AceEvent-3.0", …)` library mixins.
+                    if info.vararg_parents {
+                        for arg in call_args.iter().skip(name_pos + 1) {
+                            if let Expression::Literal(lit) = arg
+                                && let Some(s) = lit.get_string() {
+                                    let lib = s.trim_matches(|c| c == '"' || c == '\'').to_string();
+                                    if !lib.is_empty() && !parents.contains(&lib) {
+                                        parents.push(lib);
+                                    }
+                                }
+                        }
+                    }
                     // Extract specific parent from the call argument
                     if let Some(idx) = info.parent_param_idx
                         && let Some(parent_name) = call_args.get(idx).and_then(|arg| {
@@ -1063,6 +1084,67 @@ mod tests {
         g.returns = vec![AnnotationType::Simple("T".into())];
         g.defclass = Some("T".to_string());
         g
+    }
+
+    // A @defclass factory whose `...` vararg is backtick-typed embeds each
+    // string-literal argument (past the class-name position) as a parent of the
+    // created class — the Ace `NewAddon(name, "AceEvent-3.0", …)` mixin idiom.
+    fn make_defclass_vararg_global() -> ExternalGlobal {
+        let mut g = ExternalGlobal::for_test("DefineClass", ExternalGlobalKind::Function);
+        g.params = vec![
+            ParamInfo {
+                name: "name".into(),
+                typ: AnnotationType::Backtick(Box::new(AnnotationType::Simple("T".into()))),
+                optional: false,
+                description: None,
+            },
+            ParamInfo {
+                name: "...".into(),
+                typ: AnnotationType::Backtick(Box::new(AnnotationType::Simple("T".into()))),
+                optional: false,
+                description: None,
+            },
+        ];
+        g.returns = vec![AnnotationType::Simple("T".into())];
+        g.defclass = Some("T".to_string());
+        g
+    }
+
+    #[test]
+    fn defclass_backtick_vararg_embeds_parents() {
+        let globals = vec![make_defclass_vararg_global()];
+        let classes = vec![ClassDecl::for_test("LibX"), ClassDecl::for_test("LibY")];
+        // Class name at position 0; the two trailing string literals are mixins.
+        let src = "local Obj = DefineClass(\"MyClass\", \"LibX\", \"LibY\")\n";
+        let tree = crate::syntax::parser::parse(src);
+        let root = SyntaxNode::new_root(&tree);
+        let result = scan_defclass_calls(root, &globals, &classes, false);
+
+        let my = result.iter().find(|c| c.name == "MyClass")
+            .expect("should discover MyClass from defclass call");
+        assert!(my.parents.contains(&"LibX".to_string()),
+            "LibX should be embedded as a parent, got {:?}", my.parents);
+        assert!(my.parents.contains(&"LibY".to_string()),
+            "LibY should be embedded as a parent, got {:?}", my.parents);
+    }
+
+    // A non-string vararg (e.g. a table prototype) is skipped: only string
+    // literals name embeddable classes. Mirrors `NewModule(name, {}, "AceEvent-3.0")`.
+    #[test]
+    fn defclass_backtick_vararg_skips_non_string_args() {
+        let globals = vec![make_defclass_vararg_global()];
+        let classes = vec![ClassDecl::for_test("LibX")];
+        let src = "local Obj = DefineClass(\"MyClass\", {}, \"LibX\")\n";
+        let tree = crate::syntax::parser::parse(src);
+        let root = SyntaxNode::new_root(&tree);
+        let result = scan_defclass_calls(root, &globals, &classes, false);
+
+        let my = result.iter().find(|c| c.name == "MyClass")
+            .expect("should discover MyClass from defclass call");
+        assert!(my.parents.contains(&"LibX".to_string()),
+            "LibX should be embedded, got {:?}", my.parents);
+        assert!(my.parents.iter().all(|p| p != "{}"),
+            "the table-literal arg must not become a parent, got {:?}", my.parents);
     }
 
     // Regression: class-level static fields (ClassName.FIELD = expr) discovered via

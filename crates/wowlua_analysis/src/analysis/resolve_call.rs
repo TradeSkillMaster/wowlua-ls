@@ -656,6 +656,41 @@ impl<'a> Analysis<'a> {
                 }
             }
 
+            // `@defclass` + backtick vararg (`` @param ... `T` ``): each string-literal
+            // argument in the vararg region names an existing class embedded as a
+            // parent of the created class — Ace's `NewAddon(name, "AceEvent-3.0", …)`
+            // / `NewModule(name, prototype, …)` library-mixin idiom. The `` name: `T` ``
+            // param already auto-created (or looked up) and bound the defclass class;
+            // here we splice the mixin libraries onto its parent chain so
+            // `self:RegisterEvent(…)`, hover, and completion see the embedded methods.
+            if let Some(dc_name) = defclass.as_ref()
+                && matches!(self.func(func_idx).vararg_annotation, Some(crate::annotations::AnnotationType::Backtick(_)))
+                && let Some(&ValueType::Table(Some(class_idx))) = generic_subs.get(dc_name)
+                && !class_idx.is_external()
+            {
+                // Locate the class-name argument (the string literal promoted to
+                // this class) and embed every string-literal argument after it.
+                // Matching on the class name — rather than a fixed positional
+                // offset — handles the table-first overload (`NewAddon(obj, name, …)`)
+                // and NewModule's prototype-or-lib slot uniformly.
+                let class_name = self.table(class_idx).class_name.clone();
+                if let Some(name_pos) = class_name.and_then(|cn| args.iter().position(|a| {
+                    self.ir.string_literals.get(a).is_some_and(|s| s.as_str() == cn.as_str())
+                })) {
+                    let lib_names: Vec<String> = args.iter()
+                        .skip(name_pos + 1)
+                        .filter_map(|a| self.ir.string_literals.get(a).cloned())
+                        .collect();
+                    for lib in lib_names {
+                        if let Some(parent_idx) = self.ir.classes.get(lib.as_str()).copied()
+                            .or_else(|| self.ir.ext.classes.get(lib.as_str()).copied())
+                        {
+                            self.embed_class_parent(class_idx, parent_idx);
+                        }
+                    }
+                }
+            }
+
             // Bind generic from vararg projection (returns<F>): when the vararg
             // has a Return projection and F is not yet bound, look at the last
             // vararg argument — if it's a function call, bind F to that callee.
@@ -711,6 +746,49 @@ impl<'a> Analysis<'a> {
             {
                 generic_subs.insert(name, ValueType::Any);
             }
+        }
+    }
+
+    /// Splice `parent_idx` onto `class_idx`'s parent chain and inherit its
+    /// *transitively-flattened* fields and accessors (idempotent, nearest member
+    /// wins). Embeds an Ace library class named by a `@defclass` backtick-vararg
+    /// call into the created class. `class_idx` must be a local (non-external)
+    /// table; `parent_idx` may be a stub class — `self.table()` routes external
+    /// parents fine. The transitive copy is what lets completion/hover (which read
+    /// the class's own `fields` map) see methods the parent *itself* inherits —
+    /// e.g. `AceEvent-3.0`'s methods live on its `AceEvent` parent, not on it.
+    fn embed_class_parent(&mut self, class_idx: TableIndex, parent_idx: TableIndex) {
+        if class_idx == parent_idx
+            || self.ir.tables[class_idx.val()].parent_classes.contains(&parent_idx)
+        {
+            return;
+        }
+        self.ir.tables[class_idx.val()].parent_classes.push(parent_idx);
+        // Collect the parent's own plus all transitively-inherited members
+        // (cycle-safe, nearest-wins) before touching the class, so the immutable
+        // walk borrows release before the mutable inserts below.
+        let mut fields: HashMap<String, crate::types::FieldInfo> = HashMap::new();
+        let mut accessors: HashMap<String, crate::annotations::Visibility> = HashMap::new();
+        let mut visited: HashSet<TableIndex> = HashSet::new();
+        let mut stack = vec![parent_idx];
+        while let Some(idx) = stack.pop() {
+            if !visited.insert(idx) { continue; }
+            let t = self.table(idx);
+            for (k, v) in &t.fields {
+                fields.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            for (k, v) in &t.accessors {
+                accessors.entry(k.clone()).or_insert(*v);
+            }
+            for &p in &t.parent_classes {
+                stack.push(p);
+            }
+        }
+        for (k, v) in fields {
+            self.ir.tables[class_idx.val()].fields.entry(k).or_insert(v);
+        }
+        for (k, v) in accessors {
+            self.ir.tables[class_idx.val()].accessors.entry(k).or_insert(v);
         }
     }
 
@@ -887,11 +965,18 @@ impl<'a> Analysis<'a> {
                         .and_then(|ver| ver.resolved_type.clone())
                 })
             } else if let Some(va) = self.func(func_idx).vararg_annotation.clone() {
-                let raw_generics = self.func(func_idx).generic_constraints_raw.clone();
-                // Skip variadic generics (`...M`): the bound type represents the
-                // combined type of ALL excess args, not each individual one.
-                self.resolve_annotation_type_gen(&va, &raw_generics)
-                    .filter(|vt| !matches!(vt, ValueType::TypeVariable(n) if n.starts_with("...")))
+                // A backtick vararg (`` ...: `T` ``) accepts any string (it names a
+                // type — the Ace `NewAddon(name, "AceEvent-3.0", …)` embed idiom), so
+                // don't type-check each vararg against the promoted class.
+                if matches!(va, crate::annotations::AnnotationType::Backtick(_)) {
+                    None
+                } else {
+                    let raw_generics = self.func(func_idx).generic_constraints_raw.clone();
+                    // Skip variadic generics (`...M`): the bound type represents the
+                    // combined type of ALL excess args, not each individual one.
+                    self.resolve_annotation_type_gen(&va, &raw_generics)
+                        .filter(|vt| !matches!(vt, ValueType::TypeVariable(n) if n.starts_with("...")))
+                }
             } else {
                 None
             };

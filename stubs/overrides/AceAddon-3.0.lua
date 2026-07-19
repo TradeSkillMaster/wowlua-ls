@@ -11,9 +11,9 @@ local AceAddonLib = {}
 
 ---@generic T: AceAddon
 ---@defclass T : AceAddon
----@overload fun(self, object: table, name: `T`, ...: string): T
+---@overload fun(self, object: table, name: `T`, ...: `T`): T
 ---@param name `T`
----@param ... string @ Ace library names to embed
+---@param ... `T` @ Ace library names — each is embedded as a parent (mixin) of the addon
 ---@return T
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-addon-3-0#title-2)
 function AceAddonLib:NewAddon(name, ...) end
@@ -57,7 +57,7 @@ local AceAddon = {}
 ---@defclass T : AceModule
 ---@param name `T`
 ---@param prototype? table|string @ prototype table, or the first Ace library name to embed
----@param ... string @ Ace library names to embed
+---@param ... `T` @ Ace library names — each is embedded as a parent (mixin) of the module
 ---@return T
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-addon-3-0#title-8)
 function AceAddon:NewModule(name, prototype, ...) end

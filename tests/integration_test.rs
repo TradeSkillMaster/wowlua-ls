@@ -1570,6 +1570,20 @@ fn ace3_addon_inherits_instance_methods() {
 }
 
 #[test]
+fn ace3_newaddon_embeds_library_varargs() {
+    // scan_dir is None (per-file, full stubs in pre_globals): the harness feeds
+    // the workspace scan *empty* stub globals, so a defclass factory like NewAddon
+    // isn't recognized at scan time — the embedding is exercised by the per-file
+    // engine (resolve-time Path A) against the real AceAddon stub. The cross-file
+    // scan path is covered by scan_defclass.rs's unit tests.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace3/newaddon_embed.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn ace3_register_event_handler_typing() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/ace3/events.lua",

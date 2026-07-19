@@ -199,6 +199,43 @@ local s = AccThing:Secret()
 --    ^ hover: (local) s: number
 --                 ^ diag: access-private
 
+-- ── @defclass with backtick vararg: embed extra parent classes ──────────
+-- A `@defclass` factory whose `...` vararg is backtick-typed (`` @param ... `T` ``)
+-- treats each string-literal argument as an existing class embedded as a parent
+-- of the created class — the Ace `NewAddon(name, "AceEvent-3.0", …)` mixin idiom.
+
+---@class EmbedBase
+---@field baseField string
+
+---@class EmbedMixinA
+local EmbedMixinA = {}
+function EmbedMixinA:mixinA() end
+
+---@class EmbedMixinB
+local EmbedMixinB = {}
+function EmbedMixinB:mixinB() end
+
+---@generic T: EmbedBase
+---@defclass T : EmbedBase
+---@param name `T`
+---@param ... `T` @ class names to embed
+---@return T
+---@diagnostic disable-next-line: missing-return
+local function makeEmbedded(name, ...) end
+
+local Embedded = makeEmbedded("Embedded", "EmbedMixinA", "EmbedMixinB")
+local ef = Embedded.baseField
+--    ^ hover: (local) ef: string
+-- Both embedded mixins' methods resolve (an unresolved call would surface as
+-- undefined-field and fail the exhaustive diagnostic check).
+Embedded:mixinA()
+Embedded:mixinB()
+
+function Embedded:useMixins()
+    self:mixinA()
+    self:mixinB()
+end
+
 -- ── Backtick generic from variable with string literal type ──────────────
 
 ---@class BtAlpha

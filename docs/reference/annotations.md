@@ -55,6 +55,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 |---|---|---|
 | `@defclass T` | Class factory function. | [Classes](/guide/classes) |
 | `@defclass T : P` | Class factory with parent parameter. | [Classes](/guide/classes) |
+| `` @param ... `T` `` (on a `@defclass` fn) | Embed each string-literal vararg as a parent (Ace `NewAddon(name, "AceEvent-3.0", …)`). | [Classes](/guide/classes#embedding-libraries-via-varargs) |
 | `@builds-field idx type` | Builder method adds a field. | [Builder Pattern](/guide/builder-pattern) |
 | `@return built` | Return the accumulated built type. | [Builder Pattern](/guide/builder-pattern) |
 | `@return built : Parent` | Built type with parent class. | [Builder Pattern](/guide/builder-pattern) |

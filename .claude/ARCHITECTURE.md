@@ -87,6 +87,11 @@ Substitution happens in two places:
 - **Per-file**: `prescan.rs:substitute_class_type_params()` for local defclass calls
 - **Workspace-wide**: `pre_globals.rs` pass 3b for `scan_defclass_calls()`-discovered classes, using `ClassDecl.constraint_type_arg_subs`
 
+### `@defclass` backtick-vararg library embedding
+A `@defclass` factory whose `...` vararg param is **backtick-typed** (`` @param ... `T` ``) embeds each string-literal argument *past the class-name position* as a parent (mixin) of the created class. This models the Ace3 `NewAddon(name, "AceEvent-3.0", …)` / `NewModule(name, prototype, …)` idiom (marked in `stubs/overrides/AceAddon-3.0.lua`) — the addon inherits `AceAddon` **and** each named library, so `RegisterEvent`/`Print`/… resolve on the addon object and on `self` inside its methods without a hand-written `---@class Foo : AceEvent-3.0, …`. Never hard-code `NewAddon`/`NewModule` in the engine — the marker is the backtick vararg. Two coordinated sites (both gated on the vararg being `AnnotationType::Backtick`):
+- **Cross-file** (`scan_defclass.rs`): `DefclassFuncInfo.vararg_parents` is set from the `...` param's type; `find_defclass_in_chain` appends every string-literal call arg after the matched class-name position to the `ClassDecl.parents` list. Non-string args (a table prototype) are skipped.
+- **Resolve-time** (`resolve_call.rs::infer_call_generic_subs`, after the variadic-generic block): once the `` name: `T` `` param has auto-created/bound the defclass class, locate the class-name argument *by matching the class name* (robust across the table-first `NewAddon(obj, name, …)` overload and NewModule's prototype-or-lib slot) and `embed_class_parent()` each subsequent string-literal that resolves to a known class — pushing it onto `parent_classes` and inheriting its (flattened) fields/accessors. Guarded to local (non-external) class indices; the external cross-file copy already carries the parents from the scan.
+
 ## Generic argument inference (call-site `@generic T` binding)
 Binding `@generic T` from call-site arguments happens in three layers in `resolve_call.rs` around `resolve_function_call`:
 
