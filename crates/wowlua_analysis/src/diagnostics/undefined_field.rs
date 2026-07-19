@@ -168,6 +168,39 @@ fn base_chain_is_open_mixin(analysis: &AnalysisResult, mut expr: ExprId) -> bool
     false
 }
 
+/// A `string`-typed receiver whose string-ness is reliable enough to flag
+/// unknown field reads on. Narrowing / grouping wrappers are peeled to the
+/// underlying receiver, which must then be a *direct* string value: a literal, a
+/// local / parameter reference, or a concatenation. Anything else — a
+/// table-member read (`ns.field`, `t[k]`) or a call result — is excluded,
+/// because its type can be mis-collapsed to `string` by lossy cross-file /
+/// addon-namespace field inference or unresolved-call heuristics (e.g. a module
+/// field colliding with a same-named localized-string constant), which would
+/// false-positive on real objects. This mirrors the closed-record path's
+/// distrust of cross-file / EXT-space tables. The default is conservative: an
+/// unrecognized base (including a future wrapper variant) is treated as
+/// unreliable and simply not flagged.
+fn reliable_string_receiver(analysis: &AnalysisResult, base: ExprId) -> bool {
+    let mut e = base;
+    loop {
+        match analysis.ir.expr(e) {
+            // Peel narrowing / grouping wrappers to the receiver they refine.
+            Expr::Grouped(inner)
+            | Expr::StripNil(inner)
+            | Expr::StripFalsy(inner)
+            | Expr::StripTruthy(inner)
+            | Expr::AssignNarrow { inner, .. }
+            | Expr::OverloadNarrow { inner, .. }
+            | Expr::CastAdd(inner, _)
+            | Expr::CastRemove(inner, _)
+            | Expr::TypeFilter(inner, _) => e = *inner,
+            // Direct, locally-known string sources.
+            Expr::Literal(_) | Expr::SymbolRef(..) | Expr::BinaryOp { .. } => return true,
+            _ => return false,
+        }
+    }
+}
+
 /// Collect field-name-token start offsets that sit in a defensive
 /// "membership-test" position — a field read whose purpose is to probe whether
 /// the field *exists* before using it — so `undefined-field` is suppressed there.
@@ -473,7 +506,13 @@ impl DiagnosticPass for UndefinedField {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let pure_records = collect_pure_record_symbols(analysis, tree);
         let membership_suppressed = collect_membership_suppressions(tree);
-        for (_, expr) in analysis.local_exprs() {
+        // Field-access exprs that are the callee of a call (`recv:m()` / `recv.m()`):
+        // the method-name lookup lowers to a `FieldAccess` used as the call's `func`.
+        // Only consulted for `string` receivers (the `ValueType::String` arm), so it
+        // is built lazily on first use — files with no string-typed receivers (the
+        // vast majority) never pay for the extra pass + allocation.
+        let mut call_func_exprs: Option<HashSet<ExprId>> = None;
+        for (expr_id, expr) in analysis.local_exprs() {
             let Expr::FieldAccess { table, field, field_range } = expr else { continue };
             let Some((start, end)) = field_range else { continue };
             let Some(table_type) = analysis.resolve_expr_type(*table) else { continue };
@@ -485,7 +524,44 @@ impl DiagnosticPass for UndefinedField {
             let mut table_indices: Vec<TableIndex> = Vec::new();
             match &table_type {
                 ValueType::Table(Some(idx)) => table_indices.push(*idx),
-                ValueType::Union(_) => super::collect_class_indices(&table_type, &mut table_indices),
+                ValueType::Union(_) => {
+                    super::collect_class_indices(&table_type, &mut table_indices);
+                    // A `string` union member indexes into the `string` library via its
+                    // metatable, so add that library table to the permissive multi-member
+                    // field check — but *additively only*: when the union already has a
+                    // class member to drive the emit. A classless string-union
+                    // (`string | nil`, e.g. an optional `@field x string?`) must never
+                    // independently trigger a diagnostic — it would bypass the
+                    // string-receiver gates in the `ValueType::String` arm below and
+                    // false-positive on mis-collapsed field types and on method calls.
+                    if !table_indices.is_empty() {
+                        analysis.ir.collect_library_table_indices(&table_type, &mut table_indices);
+                    }
+                }
+                // In Lua a string value indexes into the `string` library through its
+                // metatable, so a `string`-typed receiver's valid fields are exactly the
+                // string-library members — reading a field that isn't one (`s.bar`)
+                // yields nil, a silent typo. Two gates keep this precise on real addons:
+                //  - `reliable_string_receiver`: only a directly-string value (not a
+                //    table-member read whose type may be mis-collapsed to `string` by
+                //    cross-file inference) is trusted.
+                //  - not a *call*: only a field *read* is flagged. Addons routinely
+                //    extend the string metatable with custom methods we can't see
+                //    (`("x"):Colorize()`), and a genuinely-missing method errors loudly
+                //    at runtime anyway — so calls on strings are left alone.
+                ValueType::String(_) => {
+                    if !reliable_string_receiver(analysis, *table) { continue; }
+                    let call_funcs = call_func_exprs.get_or_insert_with(|| {
+                        analysis.local_exprs()
+                            .filter_map(|(_, e)| match e {
+                                Expr::FunctionCall { func, .. } => Some(*func),
+                                _ => None,
+                            })
+                            .collect()
+                    });
+                    if call_funcs.contains(&expr_id) { continue; }
+                    analysis.ir.collect_library_table_indices(&table_type, &mut table_indices);
+                }
                 _ => continue,
             }
             if table_indices.is_empty() { continue; }
@@ -511,8 +587,8 @@ impl DiagnosticPass for UndefinedField {
                 }
             }
             // Only emit when at least one table is a @class.
-            let Some(class_name) = table_indices.iter()
-                .find_map(|&idx| analysis.table(idx).class_name.clone())
+            let Some((named_idx, class_name)) = table_indices.iter()
+                .find_map(|&idx| analysis.table(idx).class_name.clone().map(|n| (idx, n)))
             else {
                 // Closed-record fallback: a plain file-local table whose entire
                 // field set is statically known (the `local private = {}; function
@@ -534,6 +610,19 @@ impl DiagnosticPass for UndefinedField {
             // has a fully-known field set that can't grow at runtime, so an unknown
             // field there is always a typo, even inside a condition.
             if membership_suppressed.contains(start) { continue; }
+            // Name the primitive `string` type rather than the internal `stringlib`
+            // class for a string-*value* receiver: a `String` type, or a `string`-bearing
+            // union that resolved to the library table. A direct read on the `string`
+            // library *table* itself (`string.X`) is the ordinary `@class` path, untouched
+            // by this feature, and keeps the `stringlib` class name (its pre-existing form).
+            let receiver = if matches!(table_type, ValueType::String(_))
+                || (matches!(table_type, ValueType::Union(_))
+                    && analysis.ir.library_table_for_type(&ValueType::String(None)) == Some(named_idx))
+            {
+                "type 'string'".to_string()
+            } else {
+                format!("class '{class_name}'")
+            };
             // Related info: point to the @class declaration if it's in the current file.
             let related = analysis.ir.class_def_ranges.get(&class_name)
                 .map(|&(cs, ce)| vec![RelatedInfo {
@@ -543,7 +632,7 @@ impl DiagnosticPass for UndefinedField {
                     message: "Class declared here".to_string(),
                 }])
                 .unwrap_or_default();
-            super::UNDEFINED_FIELD.emit_with_related(diags, format!("undefined field '{}' on class '{}'", field, class_name), *start as usize, *end as usize, related);
+            super::UNDEFINED_FIELD.emit_with_related(diags, format!("undefined field '{field}' on {receiver}"), *start as usize, *end as usize, related);
         }
     }
 }

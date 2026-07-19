@@ -1360,3 +1360,86 @@ local _waypoint = UiMapPoint.CreateFromCoordinates(84, 0.5, 0.5)
 C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(84, 0.5, 0.5))
 C_Map.SetUserWaypoint(UiMapPoint.CreateFromVector2D(84, CreateVector2D(0.5, 0.5)))
 C_Map.SetUserWaypoint(UiMapPoint.CreateFromVector3D(84, CreateVector3D(0.5, 0.5, 0)))
+
+-- ── String receiver field access (undefined-field) ──────────────────────────
+-- A `string`-typed value indexes into the `string` library through its
+-- metatable, so its only valid fields are the string-library members. Reading a
+-- field that isn't one yields nil — a silent typo, flagged. Requires the real
+-- `string` stub (this maps `string` → the `stringlib` library table at scope 0).
+-- Only a directly-string RECEIVER and only a field READ are flagged (see the two
+-- gates in undefined_field.rs); calls on strings are deliberately left alone.
+local strVal = "foo"
+
+-- Known library field / method / literal receiver: no diagnostic.
+local _su = strVal.upper
+local _sm = strVal:upper()
+local _sl = ("literal"):byte()
+
+-- Unknown field READ on a string: flagged (dot access, various string sources).
+local _sb1 = strVal.bogus
+--                  ^ diag: undefined-field
+local _sb2 = ("literal").missing
+--                       ^ diag: undefined-field
+
+-- Explicitly-typed string local is flagged the same way.
+---@type string
+local typedStr = "bar"
+local _sb3 = typedStr.notAField
+--                    ^ diag: undefined-field
+
+-- Concatenation yields a string, so an unknown field READ on the result is flagged.
+local concatStr = "a" .. "b"
+local _sb4 = concatStr.gone
+--                     ^ diag: undefined-field
+
+-- NEGATIVE: a *call* on a string is NOT flagged. Addons routinely extend the
+-- string metatable with custom methods we can't see (`("x"):Colorize()`), and a
+-- genuinely missing method errors loudly at runtime — so unknown method/function
+-- calls on strings are left alone (unlike the silent field reads above).
+local _nc1 = strVal:nope()
+local _nc2 = ("literal"):missing()
+
+-- Membership probe on a string field is a defensive existence check: suppressed.
+if strVal.maybe then
+    local _guarded = 1
+end
+
+-- NEGATIVE: a table field can be mis-collapsed to `string` by lossy cross-file /
+-- addon-namespace field inference (a module field colliding with a same-named
+-- localized-string constant) or an unresolved-call heuristic. Field access on a
+-- *table-member* string receiver is therefore NOT flagged, to avoid false
+-- positives on real objects. (Exhaustive diag checking asserts the absence of
+-- undefined-field on each line below.)
+---@class StrFieldHost
+---@field label string
+local strHost = {} ---@type StrFieldHost
+local _sh1 = strHost.label.someMethodThatWouldBeStringlib
+-- The same via a method call, through post-assignment (AssignNarrow) refinement
+-- — the exact shape of the reported false positive (`E.Minimap:Method()`).
+strHost.label = "text"
+local _sh2 = strHost.label:someMethodThatWouldBeStringlib()
+
+-- NEGATIVE: a *classless* string-union receiver (`string | nil`, the type of any
+-- optional `@field x string?` or an unnarrowed value) must NOT independently drive
+-- the check — the string-library table is added to a union only additively (when a
+-- class member is already present). Neither the field read nor the method call below
+-- is flagged (both would false-positive otherwise: the union bypasses the pure-string
+-- gates).
+---@class OptStrHost
+---@field opt string?
+local optHost = {} ---@type OptStrHost
+local optLocal = optHost.opt
+local _ou1 = optLocal.bogusField
+local _ou2 = optLocal:someCustomMethod()
+
+-- POSITIVE (additive union): a `string | <class>` receiver suppresses valid members
+-- of EITHER side (a string-library field and a class field), but a field on neither
+-- is still flagged — named after the class, never the internal `stringlib`.
+---@class StrUnionMember
+---@field member number
+---@type string | StrUnionMember
+local strUnion = nil
+local _uu1 = strUnion.upper   -- string-library field: suppressed
+local _uu2 = strUnion.member  -- class field: suppressed
+local _uu3 = strUnion.nowhere
+--                    ^ diag: undefined-field
