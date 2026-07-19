@@ -123,16 +123,22 @@ fn eval_condition_constant(analysis: &AnalysisResult, expr_id: ExprId) -> Option
 fn eval_type_truthiness(analysis: &AnalysisResult, expr_id: ExprId) -> Option<Verdict> {
     let cond_type = analysis.resolve_expr_type(expr_id)?;
     if is_type_permissive(&cond_type) { return None; }
+    // A verdict is only produced for a wholly-truthy or wholly-falsy type; any
+    // other type yields `None` regardless of the uncertainty guard below. Decide
+    // that with the cheap predicates first and bail early, so the expensive
+    // `is_expr_truthiness_uncertain` (nine sub-checks) runs only for the few
+    // conditions that could actually be flagged — not every `if x` in the file.
+    let truthy = cond_type.is_guaranteed_truthy();
+    let falsy = cond_type.is_guaranteed_falsy();
+    if !truthy && !falsy { return None; }
     // Skip expressions whose truthiness can't be reliably determined from
     // static types (lateinit fields, unannotated fields, dynamic indices,
     // unannotated parameters).
     if is_expr_truthiness_uncertain(analysis, expr_id) { return None; }
-    if cond_type.is_guaranteed_truthy() {
+    if truthy {
         Some(Verdict::Truthy(cond_type))
-    } else if cond_type.is_guaranteed_falsy() {
-        Some(Verdict::Falsy(cond_type))
     } else {
-        None
+        Some(Verdict::Falsy(cond_type))
     }
 }
 
@@ -152,33 +158,40 @@ fn eval_equality(analysis: &AnalysisResult, op: Operator, lhs: ExprId, rhs: Expr
         return Some(v);
     }
 
+    let lt = resolve_enum_runtime_type(analysis, effective_type(analysis, lhs)?);
+    let rt = resolve_enum_runtime_type(analysis, effective_type(analysis, rhs)?);
+    if is_type_permissive(&lt) || is_type_permissive(&rt) { return None; }
+
+    // Decide whether this comparison could be flagged at all using only the cheap
+    // structural type checks. Only then pay for `is_expr_truthiness_uncertain`
+    // (~hundreds of µs per operand) — the vast majority of comparisons compare
+    // two non-disjoint, non-singleton types and can never be flagged, so running
+    // that guard on them was pure overhead that dominated this pass.
+    let disjoint = types_disjoint(&lt, &rt);
+    let singleton = !disjoint && same_singleton_literal(&lt, &rt);
+    if !disjoint && !singleton { return None; }
+
     // Don't trust operands whose static type may diverge from runtime reality.
     if is_expr_truthiness_uncertain(analysis, lhs) || is_expr_truthiness_uncertain(analysis, rhs) {
         return None;
     }
 
-    let lt = resolve_enum_runtime_type(analysis, effective_type(analysis, lhs)?);
-    let rt = resolve_enum_runtime_type(analysis, effective_type(analysis, rhs)?);
-    if is_type_permissive(&lt) || is_type_permissive(&rt) { return None; }
-
-    if types_disjoint(&lt, &rt) {
+    if disjoint {
         return Some(verdict_eq(op, false));
     }
-    if same_singleton_literal(&lt, &rt) {
-        // Negative narrowing may strip an open literal-union param
-        // (`@param x "A"|"B"|"C"`) down to a single remaining member along an
-        // if/elseif chain, making the final `x == "C"` look "always true". But
-        // the annotation is an open contract — the caller could pass an unlisted
-        // value — so this comparison is genuinely meaningful and must not be
-        // flagged. This applies *only* when the narrowed value came from stripping
-        // members of the union, not from a positive assignment/filter to a literal
-        // (e.g. `x = "A"; if x == "A"`), which is genuinely redundant.
-        if operand_is_stripped_open_union(analysis, lhs) || operand_is_stripped_open_union(analysis, rhs) {
-            return None;
-        }
-        return Some(verdict_eq(op, true));
+    // same singleton literal on both sides.
+    // Negative narrowing may strip an open literal-union param
+    // (`@param x "A"|"B"|"C"`) down to a single remaining member along an
+    // if/elseif chain, making the final `x == "C"` look "always true". But
+    // the annotation is an open contract — the caller could pass an unlisted
+    // value — so this comparison is genuinely meaningful and must not be
+    // flagged. This applies *only* when the narrowed value came from stripping
+    // members of the union, not from a positive assignment/filter to a literal
+    // (e.g. `x = "A"; if x == "A"`), which is genuinely redundant.
+    if operand_is_stripped_open_union(analysis, lhs) || operand_is_stripped_open_union(analysis, rhs) {
+        return None;
     }
-    None
+    Some(verdict_eq(op, true))
 }
 
 /// True when `expr_id` references an open literal-union symbol *and* the

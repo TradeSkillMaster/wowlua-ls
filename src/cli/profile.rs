@@ -68,6 +68,10 @@ pub fn run(dir: PathBuf) -> CliResult {
     let mut total_parse = std::time::Duration::ZERO;
     let mut total_analysis = std::time::Duration::ZERO;
     let mut total_diagnostics = 0usize;
+    let mut total_build = std::time::Duration::ZERO;
+    let mut total_resolve = std::time::Duration::ZERO;
+    let mut total_into = std::time::Duration::ZERO;
+    let mut total_diag = std::time::Duration::ZERO;
 
     for (i, path) in lua_files.iter().enumerate() {
         let text = match std::fs::read_to_string(path) {
@@ -84,15 +88,30 @@ pub fn run(dir: PathBuf) -> CliResult {
 
         let at = std::time::Instant::now();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let t0 = std::time::Instant::now();
             let mut analysis = Analysis::new_with_tree(&tree2, Arc::clone(&pre_globals), AnalysisConfig::default());
+            let d_build = t0.elapsed();
+            let t1 = std::time::Instant::now();
             analysis.resolve_types();
+            let d_resolve = t1.elapsed();
+            let t2 = std::time::Instant::now();
             let ar = analysis.into_result();
-            ar.run_diagnostics(&tree2).len()
+            let d_into = t2.elapsed();
+            let t3 = std::time::Instant::now();
+            let n = ar.run_diagnostics(&tree2).len();
+            let d_diag = t3.elapsed();
+            (n, d_build, d_resolve, d_into, d_diag)
         }));
         let analysis_dur = at.elapsed();
 
         match result {
-            Ok(count) => total_diagnostics += count,
+            Ok((count, d_build, d_resolve, d_into, d_diag)) => {
+                total_diagnostics += count;
+                total_build += d_build;
+                total_resolve += d_resolve;
+                total_into += d_into;
+                total_diag += d_diag;
+            }
             Err(_) => {
                 let name = path.strip_prefix(&dir).unwrap_or(path);
                 error!("PANIC: {}", name.display());
@@ -107,6 +126,8 @@ pub fn run(dir: PathBuf) -> CliResult {
 
     info!("analyze all files: {:>8.1?}  (parse: {:.1?}, analysis: {:.1?}, {} diagnostics)",
         analyze_dur, total_parse, total_analysis, total_diagnostics);
+    info!("  breakdown: build_ir={:.1?}  resolve_types={:.1?}  into_result={:.1?}  diagnostics={:.1?}",
+        total_build, total_resolve, total_into, total_diag);
     info!("─────────────────────────────");
     info!("TOTAL:             {:>8.1?}", total_start.elapsed());
 

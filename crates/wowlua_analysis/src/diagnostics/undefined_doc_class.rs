@@ -66,7 +66,16 @@ impl DiagnosticPass for UndefinedDocClass {
                     continue;
                 }
 
-                if analysis.ir.classes.contains_key(parent_name.as_str()) { continue; }
+                // Known class — local OR cross-file (workspace/stub). The `ext`
+                // check is load-bearing for perf: without it, every class whose
+                // parent is defined in another file falls through to the
+                // `find_nth_annotation_comment_range` full-tree walk below and
+                // emits an undefined-doc-class that the post-pass `retain` then
+                // discards (because the name IS in `ext.classes`). On large
+                // cross-file-inheritance workspaces that wasted walk dominated the
+                // whole diagnostic phase. Mirrors the parametrized-parent check above.
+                if analysis.ir.classes.contains_key(parent_name.as_str())
+                    || analysis.ir.ext.classes.contains_key(parent_name.as_str()) { continue; }
 
                 // Aliases that resolve to non-table types cannot be inherited from.
                 let alias_type = analysis.ir.aliases.get(parent_name.as_str())
@@ -99,23 +108,35 @@ impl DiagnosticPass for UndefinedDocClass {
 
         // ── circle-doc-class: detect circular inheritance chains ──
         {
-            let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
+            // Parent relationships declared in THIS file. The declared parents win
+            // over the resolved IR (a file's own `@class Foo : Bar` takes priority),
+            // matching the original precedence.
+            let mut scan_parent_map: HashMap<&str, &Vec<String>> = HashMap::new();
             for class in &scan.classes {
                 if !class.parents.is_empty() {
-                    parent_map.insert(class.name.clone(), class.parents.clone());
+                    scan_parent_map.insert(class.name.as_str(), &class.parents);
                 }
             }
-            for (class_name, table_idx) in &analysis.ir.classes {
-                let t = analysis.ir.table(*table_idx);
-                if !t.parent_classes.is_empty() && !parent_map.contains_key(class_name.as_str()) {
-                    let parents: Vec<String> = t.parent_classes.iter()
+
+            // Resolve a class name to its parent class names. Prefer this file's
+            // declared parents; otherwise consult the resolved IR class table.
+            // Looking this up lazily during the walk — rather than eagerly
+            // materializing a map over every class in `ir.classes` — is essential:
+            // `ir.classes` holds the entire stub+workspace class universe (tens of
+            // thousands of entries), and iterating all of it once per file
+            // dominated the whole diagnostics phase on large workspaces. The BFS
+            // only ever needs the few ancestors reachable from this file's classes.
+            let parents_of = |name: &str| -> Vec<String> {
+                if let Some(p) = scan_parent_map.get(name) {
+                    return (*p).clone();
+                }
+                if let Some(&ti) = analysis.ir.classes.get(name) {
+                    return analysis.ir.table(ti).parent_classes.iter()
                         .filter_map(|&pi| analysis.ir.table(pi).class_name.clone())
                         .collect();
-                    if !parents.is_empty() {
-                        parent_map.insert(class_name.clone(), parents);
-                    }
                 }
-            }
+                Vec::new()
+            };
 
             let mut reported: HashSet<String> = HashSet::new();
             for class in &scan.classes {
@@ -128,10 +149,8 @@ impl DiagnosticPass for UndefinedDocClass {
                         break;
                     }
                     if visited.contains(&ancestor) { continue; }
-                    visited.push(ancestor.clone());
-                    if let Some(parents) = parent_map.get(&ancestor) {
-                        queue.extend(parents.iter().cloned());
-                    }
+                    queue.extend(parents_of(&ancestor));
+                    visited.push(ancestor);
                 }
                 if found_cycle && reported.insert(class.name.clone())
                     && let Some((start, end)) = class.def_range
@@ -153,7 +172,12 @@ impl DiagnosticPass for UndefinedDocClass {
                 generics_with_type_params.push((tp.clone(), None));
             }
             for (field_name, annotation_type, _) in &class.fields {
-                if let Some((start, end)) = Analysis::find_field_comment_range(root, &class.name, field_name, false) {
+                // The comment range for each `@field` is captured during the scan
+                // above (`class.field_ranges`). Prefer it over a fresh
+                // `find_field_comment_range` full-tree walk per field: the latter is
+                // O(fields × tree_size) and dominated diagnostic time on large,
+                // heavily-annotated workspaces.
+                if let Some(&(start, end)) = class.field_ranges.get(field_name) {
                     analysis.ir.check_annotation_type_names(annotation_type, &generics_with_type_params, start as usize, end as usize, diags);
                 }
             }
@@ -161,7 +185,9 @@ impl DiagnosticPass for UndefinedDocClass {
 
         // ── undefined-doc-name on alias type annotations ──
         for alias in &scan.aliases {
-            if let Some((start, end)) = Analysis::find_nth_annotation_comment_range(root, "---@alias", &alias.name, 1) {
+            // `alias.def_range` is the `---@alias` comment range captured during the
+            // scan above — reuse it instead of a fresh per-alias full-tree walk.
+            if let Some((start, end)) = alias.def_range {
                 let generics: Vec<(String, Option<String>)> = alias.type_params.iter()
                     .map(|tp| (tp.clone(), None))
                     .collect();

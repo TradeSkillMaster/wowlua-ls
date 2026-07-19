@@ -162,6 +162,22 @@ impl DiagnosticPass for RedundantLogical {
 
             let Some(lhs_type) = analysis.resolve_expr_type(lhs) else { continue };
 
+            // Fast path: the match at the end of the loop only emits when the LHS
+            // is guaranteed truthy (`or`/`and`) or guaranteed falsy (`and`). Every
+            // check between here and there is a *suppression* guard that can only
+            // prevent an emit, never cause one. So when the LHS is neither
+            // guaranteed-truthy nor guaranteed-falsy — the overwhelmingly common
+            // case (a plain nilable `x or default`) — no arm can fire, and running
+            // the expensive guards (`is_expr_truthiness_uncertain`'s nine
+            // sub-checks, the symbol-history/loop-body walks) would only reach a
+            // no-op. On large workspaces ~96% of sites land here, and these guards
+            // dominated the pass. Skip straight to the next site.
+            let lhs_truthy = lhs_type.is_guaranteed_truthy();
+            let lhs_falsy = lhs_type.is_guaranteed_falsy();
+            if !lhs_truthy && !lhs_falsy { continue; }
+            // `or` has only a truthy-LHS arm, so a falsy-LHS `or` can't fire either.
+            if matches!(op, Operator::Or) && !lhs_truthy { continue; }
+
             if is_type_permissive(&lhs_type) { continue; }
 
             // Skip the Lua ternary idiom `x and y or z`: the `or z` is the

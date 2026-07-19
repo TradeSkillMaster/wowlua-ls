@@ -835,6 +835,29 @@ fn is_annotation_comment(text: &str) -> bool {
     rest.starts_with('@') || rest.starts_with('|')
 }
 
+/// True if `text` contains `@<tag>` immediately followed by whitespace, e.g.
+/// `@alias`. Used for both declaration grouping and `def_range` capture in
+/// `scan_all_annotations`. Deliberately whitespace-agnostic: the annotation
+/// parsers split a tag's payload on any `is_whitespace()` (space OR tab), so a
+/// plain `text.contains("@tag ")` silently misses tab-separated forms like
+/// `---@alias<TAB>Name<TAB>Type`, leaving `def_range` unset and dropping the
+/// declaration from any consumer that relies on that range.
+fn has_annotation_tag(text: &str, tag: &str) -> bool {
+    let mut from = 0;
+    while let Some(pos) = text[from..].find(tag) {
+        let start = from + pos;
+        // Require the tag to be immediately preceded by `@` and followed by
+        // whitespace (its payload), matching how the parsers recognize it.
+        if text[..start].ends_with('@')
+            && text[start + tag.len()..].starts_with(char::is_whitespace)
+        {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
 /// Convert `[text](command:extension.lua.doc?["path"])` links to real Lua manual URLs.
 /// Other `command:` links are stripped (standalone ones become empty, inline ones keep text).
 fn strip_command_links(s: &str) -> String {
@@ -889,8 +912,8 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
             let text = tok.text();
             if is_annotation_comment(text) {
                 if !current_group.is_empty() {
-                    let starts_new_decl = text.contains("@class ") || text.contains("@enum ") || text.contains("@alias ") || text.contains("@event ");
-                    let group_has_decl = starts_new_decl && current_group.iter().any(|(l, _, _)| l.contains("@class ") || l.contains("@enum ") || l.contains("@alias ") || l.contains("@event "));
+                    let starts_new_decl = has_annotation_tag(text, "class") || has_annotation_tag(text, "enum") || has_annotation_tag(text, "alias") || has_annotation_tag(text, "event");
+                    let group_has_decl = starts_new_decl && current_group.iter().any(|(l, _, _)| has_annotation_tag(l, "class") || has_annotation_tag(l, "enum") || has_annotation_tag(l, "alias") || has_annotation_tag(l, "event"));
                     if group_has_decl {
                         flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
                         current_group.clear();
@@ -899,15 +922,15 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
                         current_event_range = None;
                     }
                 }
-                if (text.contains("@class ") || text.contains("@enum ")) && current_class_range.is_none() {
+                if (has_annotation_tag(text, "class") || has_annotation_tag(text, "enum")) && current_class_range.is_none() {
                     let r = tok.text_range();
                     current_class_range = Some((u32::from(r.start()), u32::from(r.end())));
                 }
-                if text.contains("@alias ") && current_alias_range.is_none() {
+                if has_annotation_tag(text, "alias") && current_alias_range.is_none() {
                     let r = tok.text_range();
                     current_alias_range = Some((u32::from(r.start()), u32::from(r.end())));
                 }
-                if text.contains("@event ") && current_event_range.is_none() {
+                if has_annotation_tag(text, "event") && current_event_range.is_none() {
                     let r = tok.text_range();
                     current_event_range = Some((u32::from(r.start()), u32::from(r.end())));
                 }
@@ -1938,6 +1961,37 @@ mod tests {
     fn field_description_simple() {
         let block = parse(&["---@class Foo", "---@field count number The item count."]);
         assert_eq!(block.field_descriptions.get("count").map(String::as_str), Some("The item count."));
+    }
+
+    #[test]
+    fn def_range_captured_for_tab_separated_tags() {
+        // Regression: `def_range` capture in `scan_all_annotations` used a
+        // space-sensitive `text.contains("@alias ")`. A tab-separated
+        // declaration — `---@alias<TAB>Name<TAB>Type`, which the parser still
+        // accepts (it splits the tag payload on any `is_whitespace()`) — left
+        // `def_range` as `None`, so downstream consumers that reuse the range
+        // (e.g. the undefined-doc-name check on alias bodies in
+        // `undefined_doc_class`) silently skipped the declaration. The capture
+        // must match any whitespace after the tag, like the parser.
+        let src = "---@alias\tTabAlias\tstring\n\
+                   ---@alias SpaceAlias string\n\
+                   ---@class\tTabClass\n\
+                   ---@class SpaceClass\n";
+        let tree = crate::syntax::parser::parse(src);
+        let root = SyntaxNode::new_root(&tree);
+        let result = scan_all_annotations(root);
+
+        let alias_range = |name: &str| result.aliases.iter()
+            .find(|a| a.name == name)
+            .unwrap_or_else(|| panic!("alias `{name}` was not scanned")).def_range;
+        assert!(alias_range("TabAlias").is_some(), "tab-separated @alias must capture def_range");
+        assert!(alias_range("SpaceAlias").is_some(), "space-separated @alias must capture def_range");
+
+        let class_range = |name: &str| result.classes.iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("class `{name}` was not scanned")).def_range;
+        assert!(class_range("TabClass").is_some(), "tab-separated @class must capture def_range");
+        assert!(class_range("SpaceClass").is_some(), "space-separated @class must capture def_range");
     }
 
     #[test]
