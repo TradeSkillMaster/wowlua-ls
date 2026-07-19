@@ -1013,6 +1013,28 @@ local fmtResult = ("|T%s:%d|t"):format("icon", 16)
 local upperResult = "hello":upper()
 --                          ^ hover: (method) function stringlib:upper(s: string | number)  def: external
 
+-- ── String method COMPLETION on non-literal receivers ────────────────────────
+-- Regression: string-typed variables/params/fields lost `:method` completion.
+-- Only literal receivers resolved to the string library; identifier receivers
+-- fell through extract_table_idx (a string is not a table) and returned nothing.
+-- The completion path now mirrors hover (collect_library_table_indices).
+local _cvar = strVar:upper()
+--                    ^ comp: upper
+---@param sparam string
+local function _useStrParam(sparam)
+    local _cparam = sparam:reverse()
+    --                        ^ comp: reverse
+    return _cparam
+end
+-- string|nil union receiver also resolves through the string library.
+local _cunion = optStr:upper()
+--                      ^ comp: upper
+-- string-typed field receiver: exercises the dot-chain walk in
+-- resolve_identifier_to_type (distinct from the simple-name cases above).
+local _rec = { label = "hi" }
+local _cfield = _rec.label:upper()
+--                          ^ comp: upper
+
 -- ── Enum value hover should show literal values ────────────────────────────
 local _mana = Enum.PowerType.Mana
 --                           ^ hover: (field) Mana: number = 0

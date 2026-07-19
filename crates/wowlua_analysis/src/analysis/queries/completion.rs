@@ -297,9 +297,7 @@ impl AnalysisResult {
             } else if let Some(grouped) = token.parent().filter(|p| p.kind() == SyntaxKind::GroupedExpression) {
                 // ("str"). or ("str"):  — grouped expression containing a string literal
                 let vt = Self::resolve_literal_receiver_type(&grouped)?;
-                let mut indices = Vec::new();
-                self.ir.collect_library_table_indices(&vt, &mut indices);
-                Some(*indices.first()?)
+                Some(self.ir.first_library_table_index(&vt)?)
             } else {
                 return None;
             }
@@ -312,22 +310,29 @@ impl AnalysisResult {
             Some(self.resolve_identifier_to_table(&bracket_node, text_size)?)
         } else if token.kind() == SyntaxKind::String {
             // "str". or "str":  — bare string literal
-            let vt = ValueType::String(None);
-            let mut indices = Vec::new();
-            self.ir.collect_library_table_indices(&vt, &mut indices);
-            Some(*indices.first()?)
+            Some(self.ir.first_library_table_index(&ValueType::String(None))?)
         } else if token.kind() != SyntaxKind::Name {
             return None;
         } else if let Some(parent) = token.parent() {
             if parent.kind().is_identifier() {
-                Some(self.resolve_identifier_to_table(&parent, text_size)?)
+                // Fall back to a primitive's implicit-metatable library table
+                // (string → string library) when the receiver isn't itself a
+                // table, so `s:` on a string-typed variable completes string
+                // methods. Mirrors the hover/references path
+                // (resolve_receiver_to_all_tables).
+                self.resolve_identifier_to_table(&parent, text_size)
+                    .or_else(|| {
+                        let resolved = self.resolve_identifier_to_type(&parent, text_size)?;
+                        self.ir.first_library_table_index(&resolved)
+                    })
             } else {
                 let name = token.text().to_string();
                 let scope_idx = self.scope_at_offset(text_size)?;
                 let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)?;
                 let ver = self.sym(symbol_idx).versions.last()?;
                 let resolved = ver.resolved_type.as_ref()?;
-                Some(Self::extract_table_idx(resolved)?)
+                Self::extract_table_idx(resolved)
+                    .or_else(|| self.ir.first_library_table_index(resolved))
             }
         } else {
             return None;

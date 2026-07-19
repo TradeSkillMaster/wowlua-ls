@@ -797,9 +797,7 @@ impl AnalysisResult {
                 self.resolve_identifier_to_table(&ident_node, scope_offset)?
             } else if let Some(vt) = Self::resolve_literal_receiver_type(node) {
                 // String literal receiver: "str":method() or ("str"):method()
-                let mut indices = Vec::new();
-                self.ir.collect_library_table_indices(&vt, &mut indices);
-                *indices.first()?
+                self.ir.first_library_table_index(&vt)?
             } else {
                 return None;
             };

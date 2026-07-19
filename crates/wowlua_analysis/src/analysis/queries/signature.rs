@@ -46,10 +46,7 @@ impl AnalysisResult {
             && Self::resolve_literal_receiver_type(&call_node).is_some()
         {
             let method_name = &names[0];
-            let vt = ValueType::String(None);
-            let mut indices = Vec::new();
-            self.ir.collect_library_table_indices(&vt, &mut indices);
-            indices.first().and_then(|&table_idx| {
+            self.ir.first_library_table_index(&ValueType::String(None)).and_then(|table_idx| {
                 let field_expr = self.get_field(table_idx, method_name)?.expr;
                 let ft = self.resolve_expr_type(field_expr)?;
                 match ft {

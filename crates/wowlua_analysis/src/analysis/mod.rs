@@ -977,6 +977,22 @@ impl Ir {
         }
     }
 
+    /// The first library table index for a type (unions/intersections handled),
+    /// without the throwaway `Vec` of [`collect_library_table_indices`]. Used by
+    /// receiver resolution when a primitive with an implicit metatable
+    /// (string → string library) must resolve to its library table for
+    /// hover/signature/completion lookups.
+    ///
+    /// [`collect_library_table_indices`]: Self::collect_library_table_indices
+    pub fn first_library_table_index(&self, vt: &ValueType) -> Option<TableIndex> {
+        match vt {
+            ValueType::Union(types) | ValueType::Intersection(types) => {
+                types.iter().find_map(|t| self.library_table_for_type(t))
+            }
+            other => self.library_table_for_type(other),
+        }
+    }
+
     pub fn push_expr(&mut self, expr: Expr) -> ExprId {
         self.exprs.push(expr);
         ExprId(self.exprs.len() - 1)
