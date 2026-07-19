@@ -1609,8 +1609,12 @@ pub(super) fn try_batch_analyze(
         let ipp = file_path.as_ref()
             .map(|fp| ws.configs.implicit_protected_prefix_for(fp))
             .unwrap_or(false);
-        let (new_globals, _addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, None, crate::annotations::CorrelatedReturns::from_enabled(synth), crate::annotations::ProtectedPrefix::from_enabled(ipp), ws.stub_pre_globals.creates_global_specs());
+        let (mut new_globals, _addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, None, crate::annotations::CorrelatedReturns::from_enabled(synth), crate::annotations::ProtectedPrefix::from_enabled(ipp), ws.stub_pre_globals.creates_global_specs());
         let scan = scan_all_annotations(root);
+        // Mark `@meta` globals to match the stored (marked) globals — otherwise the
+        // `globals_match` below always mismatches for a `@meta` file, spuriously
+        // forcing `would_rebuild` and defeating batch parallelism for the batch.
+        super::scan::mark_meta_globals(&mut new_globals, scan.has_meta);
         let would_rebuild = file_path.as_ref().is_some_and(|fp| {
             let globals_changed = ws.ws_file_globals.get(fp)
                 .is_none_or(|old| !globals_match(old, &new_globals));

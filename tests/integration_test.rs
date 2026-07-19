@@ -1507,6 +1507,15 @@ fn multi_definition() {
 }
 
 #[test]
+fn stub_override() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/stub-override/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/stub-override"),
+    });
+}
+
+#[test]
 fn callback_registry_generates_events() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/callback-events/defs.lua",

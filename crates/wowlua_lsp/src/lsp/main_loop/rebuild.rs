@@ -28,6 +28,11 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.callback_event_arg == y.callback_event_arg
         && x.mixin_parents == y.mixin_parents
         && x.returns_class_name == y.returns_class_name
+        // `@meta` status gates stub overriding (build_on_stubs), so toggling
+        // `---@meta` on a file must re-run the cross-file build. Unlike
+        // path-derived `is_override`, `is_meta` is content-derived and can change
+        // on an edit.
+        && x.is_meta == y.is_meta
 }
 
 pub(super) fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
@@ -257,7 +262,7 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
 
     let synth = ws.configs.correlated_return_overloads_for(&file_path);
     let ipp = ws.configs.implicit_protected_prefix_for(&file_path);
-    let (new_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), crate::annotations::CorrelatedReturns::from_enabled(synth), crate::annotations::ProtectedPrefix::from_enabled(ipp), ws.stub_pre_globals.creates_global_specs());
+    let (mut new_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), crate::annotations::CorrelatedReturns::from_enabled(synth), crate::annotations::ProtectedPrefix::from_enabled(ipp), ws.stub_pre_globals.creates_global_specs());
     if let Some(name) = addon_ns_class {
         ws.ws_file_addon_ns_class.insert(file_path.clone(), name);
     } else {
@@ -279,6 +284,9 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
     }
 
     let mut scan = scan_all_annotations(root);
+    // Mark `@meta`-declaration globals (matches what scan_lua_file does) so an
+    // annotated method in an edited `@meta` file keeps overriding the built-in stub.
+    super::scan::mark_meta_globals(&mut new_globals, scan.has_meta);
     // Attach file path to classes/aliases so class_locations/alias_locations
     // are populated during rebuild (matches what scan_lua_file does).
     for class in &mut scan.classes {

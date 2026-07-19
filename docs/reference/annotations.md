@@ -81,7 +81,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@alias Name type` | Type alias. Supports parameters: `@alias Name<K,V> V[]`, including constrained parameters: `@alias Box<T: Frame> { value: T }`. Use `@alias (opaque) Name type` for a nominally distinct type (see below). |
 | `@deprecated` | Mark as deprecated. |
 | `@nodiscard` | Warn if return value is ignored. |
-| `@meta` | Declaration-only file. Suppresses runtime/behavior diagnostics, but annotation-integrity checks still fire: a malformed, misplaced, or dangling annotation is a real error even in a stub. This covers undefined type/class references ([`undefined-doc-name`](/reference/diagnostics), [`undefined-doc-class`](/reference/diagnostics)), malformed annotations, `@field`/`@param` not attached to a `@class`/function ([`doc-field-no-class`](/reference/diagnostics), [`doc-func-no-function`](/reference/diagnostics)), invalid `@diagnostic` codes, and `nil` table-key types. |
+| `@meta` | Declaration-only file. Suppresses runtime/behavior diagnostics, but annotation-integrity checks still fire: a malformed, misplaced, or dangling annotation is a real error even in a stub. This covers undefined type/class references ([`undefined-doc-name`](/reference/diagnostics), [`undefined-doc-class`](/reference/diagnostics)), malformed annotations, `@field`/`@param` not attached to a `@class`/function ([`doc-field-no-class`](/reference/diagnostics), [`doc-func-no-function`](/reference/diagnostics)), invalid `@diagnostic` codes, and `nil` table-key types. An annotated declaration here can also [override a built-in stub](#meta-and-overriding-built-in-stubs) of the same name. |
 | `@diagnostic disable:code` | Suppress a diagnostic inline. |
 | `@see symbol` | Cross-reference shown in hover. |
 | `@constructor` | Mark a method as the class constructor. |
@@ -193,6 +193,40 @@ declaration and the call sites agree across files, and scoped by addon so separa
 addons in one workspace don't share an event set). When a registry's event set
 can't be fully determined, validation is suppressed for it so no false positives
 are reported.
+
+### `@meta` and overriding built-in stubs
+
+A `@meta` file is a declaration-only stub — the workspace analogue of the
+built-in WoW API stubs. Besides suppressing runtime diagnostics, a `@meta` file
+can **override** a built-in stub: an annotated method declared in a `@meta` file
+that reuses a built-in class + method name replaces the stub's signature, so
+hover, signature help, and completion use your declaration. Go-to-definition
+still offers both sites (your override and the original stub).
+
+This is how you correct or refine a bundled library annotation. For example, to
+give `AceDB-3.0:New` your own signature, put it in a `types.lua`:
+
+```lua
+---@meta
+
+---@class AceDB-3.0
+local AceDB = {}
+
+---@param name string
+---@return MyDatabase
+function AceDB:New(name) end
+```
+
+Rules:
+
+- **`@meta` only.** An annotated method in an ordinary (non-`@meta`) workspace
+  file does **not** override a stub — it merges additively, keeping the stub's
+  type. This keeps normal addon code that happens to reuse a built-in method name
+  from silently clobbering the stub, and leaves a vendored *copy* of a library's
+  real source (which is not `@meta`) additive.
+- **Annotated only.** A bare (unannotated) method in a `@meta` file leaves the
+  richer stub in place — a typeless declaration never downgrades a typed stub.
+- A colliding `@class` field (`---@field New fun(...)`) overrides the same way.
 
 ## Opaque aliases
 

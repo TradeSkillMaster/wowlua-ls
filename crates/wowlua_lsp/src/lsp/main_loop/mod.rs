@@ -2205,6 +2205,7 @@ mod tests {
                 string_value: None,
                 number_value: None,
                 is_override: false,
+                is_meta: false,
                 see: Vec::new(),
                 flavors: 0,
                 flavor_guard: 0,
@@ -2622,8 +2623,9 @@ mod tests {
 
         // Pre-populate globals/classes/aliases so only the events path is tested.
         // (Without this, globals_changed is true because the file isn't in the map yet.)
-        let (globals, _) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), crate::annotations::CorrelatedReturns::Skip, crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::new());
+        let (mut globals, _) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), crate::annotations::CorrelatedReturns::Skip, crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::new());
         let scan_pre = crate::annotations::scan_all_annotations(root);
+        super::scan::mark_meta_globals(&mut globals, scan_pre.has_meta);
         ws.ws_file_globals.insert(file_path.clone(), globals);
         ws.ws_file_classes.insert(file_path.clone(), scan_pre.classes);
         ws.ws_file_aliases.insert(file_path.clone(), scan_pre.aliases);
@@ -2697,6 +2699,7 @@ mod tests {
             string_value: None,
             number_value: None,
             is_override: false,
+            is_meta: false,
             see: Vec::new(),
             flavors: 0,
             flavor_guard: 0,

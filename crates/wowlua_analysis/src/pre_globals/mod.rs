@@ -1144,6 +1144,23 @@ fn duplicate_def_arity_conflicts(
     dup_arity != existing_arity || dup_vararg != existing.is_vararg
 }
 
+/// True when a workspace method/function global carries explicit type
+/// information — at least one non-empty parameter type or a concrete
+/// (non-`any`/`nil`) return. A bare definition (`function X:M() end` with no
+/// annotations) adds no type info, so it neither synthesizes an overload from a
+/// duplicate nor overrides a colliding built-in stub field.
+fn global_has_type_annotations(g: &crate::annotations::ExternalGlobal) -> bool {
+    let has_typed_params = g.params.iter().any(|p| {
+        !matches!(&p.typ, AnnotationType::Simple(s) if s.is_empty())
+    });
+    let has_typed_returns = g.returns.iter().any(|r| match r {
+        AnnotationType::Simple(s) if s == "any" || s == "nil" => false,
+        AnnotationType::VarArgs(inner) => !matches!(inner.as_ref(), AnnotationType::Simple(s) if s == "any" || s == "nil"),
+        _ => true,
+    });
+    has_typed_params || has_typed_returns
+}
+
 struct BuildContext {
     // Core IR (becomes PreResolvedGlobals fields)
     scopes: Vec<Scope>,
@@ -3779,6 +3796,45 @@ mod tests {
         let c_parents = &result.tables[c_idx.ext_offset()].parent_classes;
         assert!(c_parents.contains(&b_idx), "C should have B as parent");
         assert!(c_parents.contains(&a_idx), "C should have A as ancestor");
+    }
+
+    #[test]
+    fn build_on_stubs_meta_override_wins_regardless_of_scan_order() {
+        // Regression: a `@meta` method override must win even when a non-`@meta`
+        // declaration of the same (class, method) is scanned FIRST. Without the
+        // `method_order` prioritization + duplicate-drop, the first-scanned decl
+        // claims the field via `seen_methods` and the `@meta` one is demoted to a
+        // mere overload, making the outcome depend on scan/file order.
+        use crate::annotations::{ExternalGlobal, ExternalGlobalKind};
+        let stubs_base = PreResolvedGlobals::empty();
+        let ws_classes = vec![make_class("Widget", &[], &[])];
+
+        let method = |ret: &str, is_meta: bool| {
+            let mut g = ExternalGlobal::for_test(
+                "Widget", ExternalGlobalKind::Method(vec![], "Render".to_string(), true));
+            g.returns = vec![AnnotationType::Simple(ret.to_string())];
+            g.is_meta = is_meta;
+            g
+        };
+        // Non-`@meta` declaration deliberately FIRST — the previously order-dependent case.
+        let ws_globals = vec![method("number", false), method("boolean", true)];
+        let result = PreResolvedGlobals::build_on_stubs(
+            &stubs_base, &ws_globals, &ws_classes, &[], false, &HashMap::new(), &HashSet::new(),
+        );
+
+        let widget_idx = result.classes["Widget"];
+        let field = result.tables[widget_idx.ext_offset()].fields.get("Render")
+            .expect("Widget should have a Render method");
+        let Expr::FunctionDef(func_idx) = result.exprs[field.expr.ext_offset()] else {
+            panic!("Render should resolve to a FunctionDef");
+        };
+        let func = &result.functions[func_idx.ext_offset()];
+        assert!(matches!(func.return_annotations.first(), Some(ValueType::Boolean(_))),
+            "the @meta override (boolean) must be the primary signature regardless of scan order, got {:?}",
+            func.return_annotations);
+        assert!(func.overloads.is_empty(),
+            "the non-@meta duplicate must be dropped, not added as an overload (got {} overloads)",
+            func.overloads.len());
     }
 
     #[test]

@@ -318,6 +318,14 @@ pub struct ExternalGlobal {
     pub number_value: Option<String>,
     /// Global from `stubs/overrides/` — takes priority over vendor definitions
     pub is_override: bool,
+    /// This global was scanned from a `---@meta` declaration file. Such a file is
+    /// a deliberate type-declaration stub (the workspace analogue of the built-in
+    /// WoW API stubs), so an annotated method here is allowed to *override* a
+    /// colliding built-in stub method (see `build_on_stubs`). Runtime-only:
+    /// `#[serde(skip)]` because it is per-scan and never read back from the blob
+    /// (stub globals are re-scanned, workspace globals are freshly scanned).
+    #[serde(skip)]
+    pub is_meta: bool,
     /// `@see <target>` — cross-reference link(s) to related symbols or URLs. Doc-only.
     #[serde(default)]
     pub see: Vec<String>,
@@ -422,6 +430,7 @@ impl ExternalGlobal {
             string_value: None,
             number_value: None,
             is_override: false,
+            is_meta: false,
             see: Vec::new(),
             flavors: 0,
             flavor_guard: 0,
@@ -960,7 +969,7 @@ pub fn scan_method_funcall_self_fields(
                 builds_field: None, built_name: None, built_extends: false,
                 type_narrows: None, type_narrows_class: None,
                 string_value: None, number_value: None,
-                is_override: false, see: Vec::new(), flavors: 0, flavor_guard: 0,
+                is_override: false, is_meta: false, see: Vec::new(), flavors: 0, flavor_guard: 0,
                 implicit_nil_return: false,
                 narrows_arg: None,
                 creates_global: None,

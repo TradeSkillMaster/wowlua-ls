@@ -397,6 +397,21 @@ pub(super) struct LuaFileScanResult {
     pub dynamic_global_prefixes: Vec<String>,
 }
 
+/// Mark a file's freshly-scanned globals as originating from a `---@meta`
+/// declaration file when `has_meta` (from the file's [`ScanResult`]). A `@meta`
+/// file's annotated methods may override a colliding built-in stub method
+/// (`build_on_stubs`), and `is_meta` participates in `global_semantic_eq`. Every
+/// site that scans workspace globals via `scan_file_globals_with_synth` must run
+/// this so the flag is consistent — otherwise a stored (marked) global compares
+/// unequal to a freshly re-scanned (unmarked) one, spuriously forcing a rebuild.
+pub(super) fn mark_meta_globals(globals: &mut [ExternalGlobal], has_meta: bool) {
+    if has_meta {
+        for g in globals {
+            g.is_meta = true;
+        }
+    }
+}
+
 pub(super) fn scan_lua_file(path: &Path, correlated_returns: CorrelatedReturns, protected_prefix: ProtectedPrefix, creates_global_specs: &crate::annotations::CreatesGlobalMap) -> Option<LuaFileScanResult> {
     let text = std::fs::read_to_string(path).ok()?;
     if crate::has_shebang(&text) { return None; }
@@ -418,7 +433,8 @@ pub(super) fn scan_lua_file(path: &Path, correlated_returns: CorrelatedReturns, 
             event.def_path = Some(path.to_path_buf());
         }
     }
-    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), correlated_returns, protected_prefix, creates_global_specs);
+    let (mut file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), correlated_returns, protected_prefix, creates_global_specs);
+    mark_meta_globals(&mut file_globals, scan.has_meta);
     let dynamic_global_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
     Some(LuaFileScanResult { scan, file_globals, addon_ns_class, dynamic_global_prefixes })
 }
@@ -848,7 +864,8 @@ pub(super) fn scan_lua_file_cached(path: &Path, correlated_returns: CorrelatedRe
     // Pass 1 runs without stubs (overlapped with stub loading), so the
     // `@creates-global` spec map is empty here; those named globals are detected
     // later in `complete_directory_scan` (pass 2) where stubs are available.
-    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), correlated_returns, protected_prefix, &crate::annotations::CreatesGlobalMap::new());
+    let (mut file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), correlated_returns, protected_prefix, &crate::annotations::CreatesGlobalMap::new());
+    mark_meta_globals(&mut file_globals, scan.has_meta);
     let dynamic_global_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
     Some(CachedFileScan { tree, scan, file_globals, addon_ns_class, dynamic_global_prefixes })
 }

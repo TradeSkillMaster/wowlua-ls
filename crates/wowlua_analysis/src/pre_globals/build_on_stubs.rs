@@ -63,6 +63,11 @@ struct BuildOnStubsContext<'a> {
     conflicting_arity_funcs: HashSet<FunctionIndex>,
     // `@creates-global` side-effect globals: scope0 symbol → creating-call location.
     deferred_call_globals: HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
+    // Workspace methods that override a built-in stub method of the same name:
+    // (workspace `FunctionIndex`, displaced stub definition location). Recorded as
+    // alternate go-to-definition sites in `build_on_stubs` after `finish`, so
+    // navigation offers both the workspace override and the original stub.
+    method_stub_overrides: Vec<(FunctionIndex, ExternalLocation)>,
 
     // Config
     implicit_protected_prefix: bool,
@@ -123,6 +128,7 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_returns: HashSet::new(),
             conflicting_arity_funcs: HashSet::new(),
             deferred_call_globals: HashMap::new(),
+            method_stub_overrides: Vec::new(),
             implicit_protected_prefix,
         }
     }
@@ -397,8 +403,34 @@ impl<'a> BuildOnStubsContext<'a> {
             "name in both classes and non_class_tables"
         );
 
+        // Process `@meta`-annotated method overrides before any other declaration
+        // of the same (class, method) key. The `seen_methods` dedup below routes
+        // every occurrence after the first into overload synthesis, and only the
+        // first reaches the stub-override path — so without this, whether a `@meta`
+        // override displaces the built-in stub would depend on scan/file order: a
+        // non-`@meta` declaration iterated first (e.g. a vendored `Libs/AceDB-3.0/…`
+        // ahead of an alphabetically-later `types.lua`) would claim the field and
+        // demote the override to a plain overload. Stable sort, gated on presence,
+        // so the common no-override case keeps its original order exactly.
+        fn is_meta_method_override(g: &crate::annotations::ExternalGlobal) -> bool {
+            matches!(&g.kind, crate::annotations::ExternalGlobalKind::Method(..))
+                && g.is_meta
+                && super::global_has_type_annotations(g)
+        }
+        let mut method_order: Vec<usize> = (0..ws_globals.len()).collect();
+        if ws_globals.iter().any(is_meta_method_override) {
+            method_order.sort_by_key(|&i| !is_meta_method_override(&ws_globals[i]));
+        }
+
         let mut seen_methods: HashSet<(String, String)> = HashSet::new();
-        for g in ws_globals {
+        // (table, method) pairs claimed by a `@meta` override (processed first via
+        // `method_order`). A `@meta` override is authoritative, so a later duplicate
+        // of the same method is *dropped* rather than added as an overload — an
+        // overload would let call resolution pick the displaced signature and defeat
+        // the override at call sites.
+        let mut meta_overridden_methods: HashSet<(TableIndex, String)> = HashSet::new();
+        for &gi in &method_order {
+            let g = &ws_globals[gi];
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
                 let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
                 let is_non_class_table = self.non_class_tables.contains_key(&g.name);
@@ -425,20 +457,12 @@ impl<'a> BuildOnStubsContext<'a> {
                     // the duplicate so both signatures participate in resolution.
                     // Skip unannotated duplicates: they carry no additional type
                     // info and would just produce a spurious `-> any`/`-> nil` overload.
-                    let has_typed_params = g.params.iter().any(|p| {
-                        !matches!(&p.typ, AnnotationType::Simple(s) if s.is_empty())
-                    });
-                    let has_typed_returns = g.returns.iter().any(|r| match r {
-                        AnnotationType::Simple(s) if s == "any" || s == "nil" => false,
-                        AnnotationType::VarArgs(inner) => !matches!(inner.as_ref(), AnnotationType::Simple(s) if s == "any" || s == "nil"),
-                        _ => true,
-                    });
                     let local_idx = target_idx.ext_offset();
                     let existing_func_idx = self.tables[local_idx].fields.get(method_name)
                         .and_then(|field| {
                             if let Expr::FunctionDef(fi) = self.exprs[field.expr.ext_offset()] { Some(fi) } else { None }
                         });
-                    if !has_typed_params && !has_typed_returns {
+                    if !super::global_has_type_annotations(g) {
                         // Unannotated duplicate — dropped (no extra type info). Before
                         // dropping it, record an arity disagreement so `call_arity`
                         // doesn't flag the other flavor's call sites against the one
@@ -451,6 +475,12 @@ impl<'a> BuildOnStubsContext<'a> {
                                 self.conflicting_arity_funcs.insert(existing_func_idx);
                             }
                         }
+                        continue;
+                    }
+                    // A `@meta` override owns this method (it was processed first):
+                    // drop the duplicate instead of overloading, so the override's
+                    // signature is the sole one at call sites.
+                    if meta_overridden_methods.contains(&(target_idx, method_name.clone())) {
                         continue;
                     }
                     if let Some(existing_func_idx) = existing_func_idx {
@@ -531,7 +561,30 @@ impl<'a> BuildOnStubsContext<'a> {
                     vis
                 } else { None };
                 let visibility = accessor_vis.unwrap_or(g.visibility);
-                self.tables[local_idx].fields.entry(method_name.clone()).or_insert(FieldInfo {
+                // An annotated method declared in a workspace `---@meta` file OVERRIDES a
+                // colliding built-in *stub* method of the same name (the reported "let my
+                // types.lua win over the vendored stub" case, e.g. redefining
+                // `AceDB-3.0:New`). We replace the stub field so hover/signature/completion
+                // use the workspace signature, and record the displaced stub site as an
+                // alternate go-to-definition location (`finish` → `func_alt_locations`), so
+                // navigation still offers both. The `@meta` gate scopes this to deliberate
+                // type-declaration files: a vendored *real* library source (e.g. an addon's
+                // own copy of Ace3) is not `@meta`, so it stays additive and never churns
+                // the stub types. A bare (unannotated) method leaves the richer stub in
+                // place (`or_insert`), and only a *stub*-owned `FunctionDef` field is
+                // displaced — a prior workspace field (a same-file `@field`, an earlier
+                // `@class` method) is never clobbered.
+                let displaced_stub = if g.is_meta && super::global_has_type_annotations(g) {
+                    self.tables[local_idx].fields.get(method_name)
+                        .and_then(|fi| match self.exprs[fi.expr.ext_offset()] {
+                            Expr::FunctionDef(existing)
+                                if existing.ext_offset() < self.stubs_base.stub_functions_end => Some(existing),
+                            _ => None,
+                        })
+                } else {
+                    None
+                };
+                let new_field = FieldInfo {
                     expr: expr_id,
                     visibility,
                     annotation: None,
@@ -543,7 +596,25 @@ impl<'a> BuildOnStubsContext<'a> {
                     flavor_guard: 0,
                     description: None,
                     from_scan: false,
-                });
+                };
+                let claimed_field = if let Some(stub_func) = displaced_stub {
+                    if let Some(stub_loc) = self.function_locations.get(&stub_func).cloned() {
+                        self.method_stub_overrides.push((func_idx, stub_loc));
+                    }
+                    self.tables[local_idx].fields.insert(method_name.clone(), new_field);
+                    true
+                } else {
+                    // `or_insert` only writes when the field is absent; we own it iff
+                    // there was nothing there before.
+                    let was_absent = !self.tables[local_idx].fields.contains_key(method_name);
+                    self.tables[local_idx].fields.entry(method_name.clone()).or_insert(new_field);
+                    was_absent
+                };
+                // When a `@meta` override owns the method, later duplicates are dropped
+                // (see the duplicate branch) so its signature stays authoritative.
+                if claimed_field && g.is_meta && super::global_has_type_annotations(g) {
+                    meta_overridden_methods.insert((target_idx, method_name.clone()));
+                }
                 if g.constructor || constructor_method_names.contains(method_name.as_str()) {
                     self.functions[func_idx.ext_offset()].constructor = true;
                     self.tables[local_idx].constructors.insert(method_name.clone());
@@ -1217,6 +1288,9 @@ impl PreResolvedGlobals {
         apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, ws_globals);
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(ws_globals);
+        // Take the stub-override list out before `finish` consumes the context; its
+        // alternate go-to-definition sites are recorded onto `pg` below.
+        let method_stub_overrides = std::mem::take(&mut ctx.method_stub_overrides);
         let mut pg = ctx.finish(ws_classes);
         // Record every workspace definition site per global/alias name (independent
         // of the name-dedup that registration applies) so go-to-definition can
@@ -1269,6 +1343,17 @@ impl PreResolvedGlobals {
             let entry = pg.func_alt_locations.entry(winner).or_default();
             push_distinct_location(entry, &winner_loc);
             push_distinct_location(entry, &ws_loc);
+        }
+        // A workspace method that OVERRODE a built-in stub method (see
+        // `build_methods_and_table_fields`) now owns the field, so the block above —
+        // which keys alternates off the field's winning function — records nothing for
+        // it. Record both sites against the winning (workspace) function directly so
+        // go-to-definition still offers the displaced stub site alongside the override.
+        for (ws_func, stub_loc) in method_stub_overrides {
+            let Some(ws_loc) = pg.function_locations.get(&ws_func).cloned() else { continue };
+            let entry = pg.func_alt_locations.entry(ws_func).or_default();
+            push_distinct_location(entry, &ws_loc);
+            push_distinct_location(entry, &stub_loc);
         }
         // Two merge passes: (1) sub-table methods → class tables, (2) top-level ns fields → ns-class
         pg.merge_addon_ns_subtable_methods();
