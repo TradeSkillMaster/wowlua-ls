@@ -227,9 +227,24 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
         if func_names.is_empty() { return None; }
         let func_path = func_names.join(".");
 
+        // A method call whose receiver is an expression rather than a name chain
+        // (e.g. `LibStub("AceAddon-3.0"):NewAddon(…)` — the canonical Ace3 idiom)
+        // collapses to just the bare method name: `names()` can't extract a name
+        // from the `LibStub(…)` call receiver, so `func_names == ["NewAddon"]`. The
+        // dotted `.<leaf>` match below then misses it. Match such calls by leaf
+        // method name. Gated on `MethodCall` (the colon) so a plain
+        // `NewAddon("x")` call to a same-named local helper doesn't spuriously fire.
+        let bare_method_leaf = (call.syntax().kind() == SyntaxKind::MethodCall
+            && func_names.len() == 1)
+            .then(|| func_names[0].as_str());
+
         // Check if this call itself is a defclass function
         let matched = defclass_funcs.iter().find_map(|(dc, info)| {
-            if func_path == *dc || func_path.ends_with(&format!(".{}", dc.split('.').next_back().unwrap_or(""))) {
+            let dc_leaf = dc.split('.').next_back().unwrap_or("");
+            if func_path == *dc
+                || func_path.ends_with(&format!(".{dc_leaf}"))
+                || bare_method_leaf == Some(dc_leaf)
+            {
                 Some(info)
             } else {
                 None
@@ -1145,6 +1160,77 @@ mod tests {
             "LibX should be embedded, got {:?}", my.parents);
         assert!(my.parents.iter().all(|p| p != "{}"),
             "the table-literal arg must not become a parent, got {:?}", my.parents);
+    }
+
+    // A @defclass factory registered as a *method* on a library object
+    // (`AceLib:NewAddon`, so its `func_path` is the dotted `AceLib.NewAddon`),
+    // carrying a base parent via `@generic T: AceAddon`. Mirrors the real
+    // AceAddon-3.0 stub, whose `NewAddon` is a Method on the LibStub-returned lib.
+    fn make_defclass_method_global() -> ExternalGlobal {
+        let mut g = ExternalGlobal::for_test(
+            "AceLib",
+            ExternalGlobalKind::Method(Vec::new(), "NewAddon".into(), true),
+        );
+        g.params = vec![
+            ParamInfo {
+                name: "name".into(),
+                typ: AnnotationType::Backtick(Box::new(AnnotationType::Simple("T".into()))),
+                optional: false,
+                description: None,
+            },
+            ParamInfo {
+                name: "...".into(),
+                typ: AnnotationType::Backtick(Box::new(AnnotationType::Simple("T".into()))),
+                optional: false,
+                description: None,
+            },
+        ];
+        g.returns = vec![AnnotationType::Simple("T".into())];
+        g.defclass = Some("T".to_string());
+        // `@generic T: AceAddon` / `@defclass T : AceAddon` — the base parent.
+        g.generics = vec![("T".into(), Some("AceAddon".into()))];
+        g
+    }
+
+    // Regression: the canonical Ace3 idiom creates the addon through an expression
+    // receiver — `LibStub("AceAddon-3.0"):NewAddon("MyAddon", "AceEvent-3.0")`.
+    // The call identifier collapses to the bare method name `NewAddon` (the
+    // receiver is a function call, not a name chain), so the dotted `.NewAddon`
+    // match misses. The scan must recognize the call by leaf method name;
+    // otherwise the base `@defclass ... : AceAddon` parent AND the mixin libraries
+    // are both dropped, and a global addon with methods resolves to a bare class.
+    #[test]
+    fn defclass_backtick_vararg_embeds_parents_chained_receiver() {
+        let globals = vec![make_defclass_method_global()];
+        let classes = vec![ClassDecl::for_test("AceEvent-3.0")];
+        // Receiver is a function call (`GetLib("x")`), mirroring `LibStub("…")`.
+        let src = "local A = GetLib(\"x\"):NewAddon(\"MyAddon\", \"AceEvent-3.0\")\n";
+        let tree = crate::syntax::parser::parse(src);
+        let root = SyntaxNode::new_root(&tree);
+        let result = scan_defclass_calls(root, &globals, &classes, false);
+
+        let my = result.iter().find(|c| c.name == "MyAddon")
+            .expect("should discover MyAddon from a chained-receiver defclass method call");
+        assert!(my.parents.contains(&"AceAddon".to_string()),
+            "base @defclass parent AceAddon should be present, got {:?}", my.parents);
+        assert!(my.parents.contains(&"AceEvent-3.0".to_string()),
+            "the mixin library AceEvent-3.0 should be embedded, got {:?}", my.parents);
+    }
+
+    // The bare-leaf match stays gated on a *method* (`:`) call: a plain
+    // `NewAddon("MyAddon", …)` call to a same-named local helper collapses to the
+    // same bare identifier, but must NOT be mistaken for the dotted library factory.
+    #[test]
+    fn defclass_bare_leaf_only_matches_method_calls() {
+        let globals = vec![make_defclass_method_global()];
+        let classes = vec![ClassDecl::for_test("AceEvent-3.0")];
+        let src = "local A = NewAddon(\"MyAddon\", \"AceEvent-3.0\")\n";
+        let tree = crate::syntax::parser::parse(src);
+        let root = SyntaxNode::new_root(&tree);
+        let result = scan_defclass_calls(root, &globals, &classes, false);
+        assert!(result.iter().all(|c| c.name != "MyAddon"),
+            "a plain (non-method) call must not match the dotted-path factory by leaf name, got {:?}",
+            result.iter().map(|c| &c.name).collect::<Vec<_>>());
     }
 
     // Regression: class-level static fields (ClassName.FIELD = expr) discovered via
