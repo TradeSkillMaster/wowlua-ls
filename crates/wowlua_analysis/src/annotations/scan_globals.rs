@@ -42,13 +42,57 @@ fn first_string_literal_arg(call: &FunctionCall<'_>) -> Option<String> {
     })
 }
 
+/// For the `Ident("Name"):Method(...)` idiom — a plain (non-colon) call on a
+/// string literal, itself invoked with a colon method — return `(Name, Method)`.
+/// This is the ubiquitous LibStub / registry-accessor pattern
+/// (`LibStub("AceLocale-3.0"):GetLocale(...)`): the receiver `Lib("Name")` is the
+/// class named by its string-literal argument, so the field's type is `Method`'s
+/// return on class `Name`. Returning `[Name, Method]` lets `resolve_funcall_chain`
+/// walk class `Name` to method `Method` and recover the precise return type — and
+/// because the chain *starts from the string* (never a global function name), it
+/// sidesteps the trailing-method-name-shadows-a-global mis-resolution that makes
+/// the general chained-receiver case unrecoverable.
+///
+/// Tightly shaped to that idiom: the receiver must be the *direct* receiver of the
+/// outer method call AND itself a bare `Ident(...)` call (no colon, no further
+/// nested receiver) with a string-literal first argument. Any other chained form
+/// (`Foo():M()`, `A:B("x"):M()`, `Lib("x").field:M()`, `Lib("x")[k]:M()`) returns
+/// `None` and stays unresolvable: for the wrapped-navigation forms the field's type
+/// is `M`'s return on the type of `x.field` / `x[k]` (often unknown), NOT on the
+/// library, so resolving it as `Lib("x"):M()` would assert a wrong concrete type.
+/// A bogus `Name` (not actually a class) simply fails the chain walk and falls to
+/// the refineable placeholder.
+fn string_keyed_receiver_method(call: &FunctionCall<'_>) -> Option<(String, String)> {
+    let ident = call.identifier()?;
+    if !ident.is_call_to_self() {
+        return None;
+    }
+    let method = ident.names().last()?.clone();
+    // The receiver is the first non-argument child of the outer MethodCall node. It
+    // must cast *directly* to a `FunctionCall` — do NOT use `nested_receiver_call`,
+    // whose fallback descends through a wrapping `DotAccess`/`BracketAccess` to an
+    // inner call and would silently drop the navigation (mis-resolving
+    // `Lib("x").field:M()` as `Lib("x"):M()`). A `DotAccess`/`BracketAccess` prefix
+    // fails the cast and bails.
+    let recv = ident.syntax().children()
+        .find(|child| ExpressionList::cast(*child).is_none())
+        .and_then(FunctionCall::cast)?;
+    let recv_ident = recv.identifier()?;
+    if recv_ident.is_call_to_self() || nested_receiver_call(&recv).is_some() {
+        return None;
+    }
+    let recv_class = extract_first_string_arg(&recv)?;
+    Some((recv_class, method))
+}
+
 /// The canonicalized callee name-chain AND the defclass string-arg hint to record
 /// for a `field = call(...)` / `X = call(...)` RHS. Both are empty/`None` when the
-/// receiver is itself a call (`LibStub("X"):M()`, `Foo():M()`) or the callee has
-/// no name identifier (`(cond and F1 or F2)(...)`).
+/// receiver is itself a call (`Foo():M()`) or the callee has no name identifier
+/// (`(cond and F1 or F2)(...)`) — except the `Lib("Name"):Method(...)` idiom, which
+/// resolves to the chain `[Name, Method]` (see [`string_keyed_receiver_method`]).
 ///
-/// For a chained receiver `ident.names()` collapses to just the trailing method
-/// name, dropping the receiver — that bare name then mis-resolves in
+/// For a general chained receiver `ident.names()` collapses to just the trailing
+/// method name, dropping the receiver — that bare name then mis-resolves in
 /// `resolve_funcall_chain` as a *global* function of the same name (e.g. the WoW
 /// API global `GetLocale()` shadowing an AceLocale `:GetLocale()` method,
 /// yielding a bogus `string`). An anonymous callee has no usable name at all.
@@ -73,6 +117,12 @@ fn scan_funcall_callee(
     local_type_vars: &HashMap<String, String>,
 ) -> (Vec<String>, Option<String>) {
     if funcall_has_chained_receiver(call) {
+        // The `Lib("Name"):Method(...)` idiom is recoverable: emit `[Name, Method]`
+        // so build_on_stubs walks class `Name` to `Method`. All other chained
+        // receivers stay unresolvable (empty chain → refineable placeholder).
+        if let Some((recv_class, method)) = string_keyed_receiver_method(call) {
+            return (vec![recv_class, method], None);
+        }
         return (Vec::new(), None);
     }
     let mut names = call.identifier().map(|ident| ident.names()).unwrap_or_default();
@@ -1020,8 +1070,9 @@ pub fn scan_file_globals_with_synth(
                                     }
                                 }
                                 Expression::FunctionCall(call) => {
-                                    // Empty chain / no string-arg hint for a chained receiver
-                                    // (`LibStub("X"):M()`) or anonymous callee, so neither can
+                                    // The `Lib("Name"):Method(...)` idiom resolves to `[Name, Method]`;
+                                    // any other chained receiver (`Foo():M()`) or anonymous callee
+                                    // yields an empty chain / no string-arg hint, so neither can
                                     // mis-resolve as a same-named global (see scan_funcall_callee).
                                     let (callee_names, first_string_arg) = scan_funcall_callee(
                                         call, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
@@ -1134,9 +1185,10 @@ pub fn scan_file_globals_with_synth(
                                 Expression::TableConstructor(tc) => FieldValueKind::Table(extract_table_field_kinds(tc)),
                                 Expression::Function(_) => FieldValueKind::Function,
                                 Expression::FunctionCall(call) => {
-                                    // `scan_funcall_callee` drops the chain (and the defclass
-                                    // string-arg hint) for a chained receiver
-                                    // (`LibStub("X"):GetLocale(...)`) or an anonymous callee
+                                    // `scan_funcall_callee` resolves the `Lib("Name"):Method(...)`
+                                    // idiom to the `[Name, Method]` chain, but drops the chain (and
+                                    // the defclass string-arg hint) for any other chained receiver
+                                    // (`Foo():M()`) or an anonymous callee
                                     // (`(cond and F1 or F2)("Class")`), either of which would
                                     // otherwise mis-resolve as a same-named global / mis-type the
                                     // field to the string-named class. A genuine named-defclass

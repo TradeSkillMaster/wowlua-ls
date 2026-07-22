@@ -883,7 +883,7 @@ impl<'a> BuildOnStubsContext<'a> {
             if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg)) = &g.kind {
                 if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
-                let Some((table_idx, leaf_parent_name)) = walk_deep_path(
+                let Some((table_idx, _leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
@@ -919,28 +919,26 @@ impl<'a> BuildOnStubsContext<'a> {
                 }).or_else(|| {
                     self.classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
                 }).or_else(|| {
+                    // Last resort: the named call resolved to nothing — an unresolvable
+                    // callee (a chained/wrapped receiver, a file-local factory the
+                    // cross-file scan can't follow, a generic whose return was filtered
+                    // out) with no string-arg / field-name class match.
                     if g.name == crate::annotations::ADDON_NS_NAME {
-                        let sub_idx = TableIndex(EXT_BASE + self.tables.len());
-                        self.tables.push(TableInfo { placeholder: true, ..TableInfo::default() });
-                        self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
-                        Some(ValueType::Table(Some(sub_idx)))
+                        // Honest `any`, NOT a bogus `table`: the call can return anything,
+                        // and a concrete `table` leaks into reads — calling the field
+                        // false-positives `cannot-call`, and passing it to a typed param
+                        // false-positives `type-mismatch (got table)`. Matches the
+                        // self-field scanner's empirically-validated `any`-over-`table`
+                        // policy. Left unannotated (below) so a per-file/deferred
+                        // re-resolution can still refine it where a real type exists.
+                        Some(ValueType::Any)
                     } else {
-                        // Last resort: the named call resolved to nothing — an
-                        // unresolvable callee (a file-local factory the cross-file scan
-                        // can't follow, a generic whose return was filtered out) with no
-                        // string-arg / field-name class match. This is the assume-table
-                        // *heuristic*, NOT a value known to be a table: it can fire for a
-                        // scalar-returning call too. It is deliberately a bare `Table(None)`
-                        // placeholder, NOT `any`: a same-file or deferred re-resolution of
-                        // the assignment refines `Table(None)` to the precise type where the
-                        // coarse scan couldn't (e.g. `select(3, UnitClass(...))` -> number,
-                        // a defclass static field), whereas `any` is authoritative and would
-                        // block that refinement — empirically regressing those reads to `any`
-                        // (`tests/self-field-argnested`, `tests/crossfile/defclass_static_field`).
-                        // The residual cost is a genuinely-unresolvable non-table call read
-                        // *cross-file* off a known-table root, which mis-displays as `table`
-                        // — a narrow, accepted limitation (the self-field/Unknown placeholders
-                        // this commit moved to `any` had no such refinement to preserve).
+                        // Non-namespace root: keep the bare `Table(None)` placeholder.
+                        // Unlike `any`, the deferred resolver (resolve.rs) refines a
+                        // `Table(None)` field from a same-file assignment the coarse scan
+                        // couldn't follow (e.g. `select(3, UnitClass(...))` -> number, a
+                        // defclass static field) — `tests/self-field-argnested`,
+                        // `tests/crossfile/defclass_static_field`.
                         Some(ValueType::Table(None))
                     }
                 });

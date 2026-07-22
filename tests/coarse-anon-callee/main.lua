@@ -3,7 +3,8 @@
 -- `(cond and F1 or F2)("Class")` — must NOT be mis-typed to the string-named
 -- `@class`. The coarse scan's `first_string_literal_arg` defclass hint is paired
 -- with a non-empty callee chain, and an anonymous callee yields an empty chain,
--- so the hint is dropped and the field settles on a neutral `table` placeholder.
+-- so the hint is dropped and the field settles on the honest `any` placeholder
+-- (the call's return is genuinely unresolvable cross-file — NOT a known table).
 -- A genuine NAMED-defclass call (`F1("Widget")`) keeps its class-name hint.
 ---@diagnostic disable: unused-local, missing-return
 local name, ns = ...
@@ -21,9 +22,9 @@ local function F2(key) end
 ---@type boolean
 local cond
 
--- Anonymous callee: empty chain -> hint suppressed -> neutral placeholder.
+-- Anonymous callee: empty chain -> hint suppressed -> honest `any` placeholder.
 ns.anon = (cond and F1 or F2)("Widget")
--- ^ hover: (field) anon: table
+-- ^ hover: (field) anon: any
 
 -- Named callee: the defclass class-name hint still applies.
 ns.named = F1("Widget")
