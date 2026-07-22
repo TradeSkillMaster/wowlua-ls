@@ -9,12 +9,18 @@ impl AnalysisResult {
         // end up on the variable-backed table, not the prescan class table.
         // Use function_owner_class to associate methods with classes.
         let mut class_methods: HashMap<&str, HashSet<&str>> = HashMap::new();
+        // (class, method) → the method's defining expr, used to resolve the
+        // overridden (parent) method's location for the "overrides X" lens. Same
+        // iteration order/source as `class_methods`, so any name in the latter has
+        // an entry here; first writer wins (local definitions before external).
+        let mut method_exprs: HashMap<(&str, &str), ExprId> = HashMap::new();
         for table in &self.ir.tables {
             for (field_name, field) in &table.fields {
                 if let Some(func_idx) = self.field_func_idx(field)
                     && let Some(cn) = self.function_owner_class.get(&func_idx)
                 {
                     class_methods.entry(cn.as_str()).or_default().insert(field_name.as_str());
+                    method_exprs.entry((cn.as_str(), field_name.as_str())).or_insert(field.expr);
                 }
             }
         }
@@ -27,6 +33,7 @@ impl AnalysisResult {
                         && matches!(self.ir.try_expr(field.expr), Some(Expr::FunctionDef(_))));
                 if is_func {
                     class_methods.entry(name.as_str()).or_default().insert(field_name.as_str());
+                    method_exprs.entry((name.as_str(), field_name.as_str())).or_insert(field.expr);
                 }
             }
         }
@@ -82,11 +89,19 @@ impl AnalysisResult {
                 };
                 if self.table(class_table_idx).parent_classes.is_empty() { continue; }
                 if let Some(parent_name) = self.find_overridden_parent(class_table_idx, field_name, &class_methods) {
+                    // Resolve the overridden (parent) method's definition so the
+                    // "overrides X" lens navigates straight to the parent.
+                    let parent_defs = method_exprs
+                        .get(&(parent_name.as_str(), field_name.as_str()))
+                        .and_then(|&expr| self.definition_for_expr(expr))
+                        .into_iter()
+                        .collect();
                     results.push(CodeLensData {
                         range_start: func.def_node.start,
                         range_end: func.def_node.end,
                         kind: CodeLensKind::Overrides {
                             parent_class: parent_name,
+                            parent_defs,
                         },
                     });
                 }

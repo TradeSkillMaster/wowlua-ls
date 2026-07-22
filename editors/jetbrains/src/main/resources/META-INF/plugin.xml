@@ -68,9 +68,12 @@
              LSP4IJ's built-in ShowReferencesAction reads the locations (arg 2). -->
         <action id="wowlua-ls.showReferences"
                 class="com.redhat.devtools.lsp4ij.commands.editor.ShowReferencesAction"/>
-        <!-- "overrides X": args are [uri, position]. -->
+        <!-- "overrides X": args are [uri, position, locations]. The server resolves
+             the overridden definition and embeds its Location(s), so LSP4IJ's
+             built-in GoToLocationsAction navigates to them (arg 2, default mode
+             "goto") — no internal LSP4IJ API needed on the client. -->
         <action id="wowlua-ls.showSuperDefinition"
-                class="com.tradeskillmaster.wowluals.lsp4ij.WowLuaGoToDefinitionAction"/>
+                class="com.redhat.devtools.lsp4ij.commands.editor.GoToLocationsAction"/>
     </actions>
 
 </idea-plugin>

@@ -285,7 +285,7 @@ Show "N implementations" lenses on `@class` declarations.
 - **Type:** `boolean`
 - **Default:** `true`
 
-Show "overrides Parent" lenses on methods that override a parent class method.
+Show "overrides Parent" lenses on methods that override a parent class method. Clicking the lens navigates to the overridden (parent) method's definition.
 
 ### `editor.autoInsertEnd`
 

@@ -38,20 +38,16 @@ pub(super) fn folding_ranges_for_doc(doc: &Document) -> Option<Vec<FoldingRange>
     }
 }
 
-/// Convert a list of definition results into a `GotoDefinitionResponse`. Local
-/// results resolve against the current document; external results against their
-/// source file (or embedded stub content). Identical `(uri, range)` pairs are
+/// Convert a list of definition results into LSP `Location`s. Local results
+/// resolve against the current document; external results against their source
+/// file (or embedded stub content). Identical `(uri, range)` pairs are
 /// deduplicated — this collapses the current file appearing both as a live local
-/// result and as a workspace-scan external result. Returns `None` when nothing
-/// resolves so the caller can fall back to an empty array.
-fn definition_results_to_response(
+/// result and as a workspace-scan external result.
+fn definition_results_to_locations(
     defs: &[DefinitionResult],
     uri: &lsp_types::Uri,
     doc_text: &str,
-) -> Option<GotoDefinitionResponse> {
-    if defs.is_empty() {
-        return None;
-    }
+) -> Vec<Location> {
     let numbers = crate::lsp::SafeLinePositions::new(doc_text);
     let mut locs: Vec<Location> = Vec::with_capacity(defs.len());
     for def in defs {
@@ -73,11 +69,106 @@ fn definition_results_to_response(
             locs.push(loc);
         }
     }
+    locs
+}
+
+/// Convert a list of definition results into a `GotoDefinitionResponse`. Returns
+/// `None` when nothing resolves so the caller can fall back to an empty array.
+fn definition_results_to_response(
+    defs: &[DefinitionResult],
+    uri: &lsp_types::Uri,
+    doc_text: &str,
+) -> Option<GotoDefinitionResponse> {
+    let mut locs = definition_results_to_locations(defs, uri, doc_text);
     match locs.len() {
         0 => None,
         1 => Some(GotoDefinitionResponse::Scalar(locs.pop().unwrap())),
         _ => Some(GotoDefinitionResponse::Array(locs)),
     }
+}
+
+/// Build the code lenses for a document. Three kinds: "N usages" and
+/// "N implementations" are emitted unresolved (their command/locations are filled
+/// in by `codeLens/resolve`); "overrides Parent" is resolved here — the overridden
+/// definition's `Location`(s) are embedded in the command args so the client
+/// navigates via a built-in "go to locations" action (LSP4IJ's / VS Code's), with
+/// no need to re-issue a definition request (LSP4IJ's request API is internal).
+/// Free function so this command wiring is unit-testable.
+fn build_code_lenses(
+    uri: &lsp_types::Uri,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+    doc_text: &str,
+    cl_config: &crate::types::CodeLensConfig,
+) -> Vec<CodeLens> {
+    let numbers = crate::lsp::SafeLinePositions::new(doc_text);
+    let mut lenses = Vec::new();
+
+    // "N usages" lenses (unresolved — resolved via codeLens/resolve)
+    if cl_config.references {
+        for t in analysis.code_lens_targets(tree) {
+            let pos = numbers.lsp_position(t.def_start as usize, use_utf8());
+            let range = Range { start: pos, end: pos };
+            lenses.push(CodeLens {
+                range,
+                command: None,
+                data: Some(serde_json::json!({
+                    "uri": uri.to_string(),
+                    "name": t.name,
+                    "nameOffset": t.name_offset,
+                })),
+            });
+        }
+    }
+
+    // "N implementations" / "overrides Parent" lenses
+    if cl_config.implementations || cl_config.overrides {
+        for e in analysis.code_lens() {
+            let range = numbers.lsp_range(e.range_start as usize, e.range_end as usize, use_utf8());
+            match &e.kind {
+                crate::types::CodeLensKind::Implementations { class_name, .. } if cl_config.implementations => {
+                    // Two-stage resolve: locations computed in codeLens/resolve
+                    lenses.push(CodeLens {
+                        range,
+                        command: None,
+                        data: Some(serde_json::json!({
+                            "kind": "implementations",
+                            "uri": uri.to_string(),
+                            "className": class_name,
+                        })),
+                    });
+                }
+                crate::types::CodeLensKind::Overrides { parent_class, parent_defs } if cl_config.overrides => {
+                    let title = format!("overrides {}", parent_class);
+                    // The parent (overridden) method's definition site(s) were resolved
+                    // when the lens was built; embed them as command args so both editor
+                    // clients navigate via a built-in "go to locations" action rather than
+                    // re-issuing a definition request (LSP4IJ's request API is
+                    // @ApiStatus.Internal).
+                    let locations = definition_results_to_locations(parent_defs, uri, doc_text);
+                    let args = vec![
+                        serde_json::to_value(uri.to_string()).unwrap(),
+                        serde_json::to_value(range.start).unwrap(),
+                        serde_json::to_value(locations).unwrap(),
+                    ];
+                    lenses.push(CodeLens {
+                        range,
+                        command: Some(Command {
+                            title,
+                            command: "wowlua-ls.showSuperDefinition".to_string(),
+                            arguments: Some(args),
+                        }),
+                        data: None,
+                    });
+                }
+                // Skipped: disabled by config
+                crate::types::CodeLensKind::Implementations { .. }
+                | crate::types::CodeLensKind::Overrides { .. } => {}
+            }
+        }
+    }
+
+    lenses
 }
 
 /// Analyze a Lua source string from scratch. Returns a `(SyntaxTree, AnalysisResult)`.
@@ -838,67 +929,7 @@ pub(super) fn handle_request(
                     .and_then(|doc| {
                         let tree = doc.tree.as_ref()?;
                         let analysis = doc.analysis.as_ref()?;
-                        let numbers = crate::lsp::SafeLinePositions::new(doc.text.as_str());
-                        let mut lenses = Vec::new();
-
-                        // "N usages" lenses (unresolved — resolved via codeLens/resolve)
-                        if cl_config.references {
-                            for t in analysis.code_lens_targets(tree) {
-                                let pos = numbers.lsp_position(t.def_start as usize, use_utf8());
-                                let range = Range { start: pos, end: pos };
-                                lenses.push(CodeLens {
-                                    range,
-                                    command: None,
-                                    data: Some(serde_json::json!({
-                                        "uri": uri.to_string(),
-                                        "name": t.name,
-                                        "nameOffset": t.name_offset,
-                                    })),
-                                });
-                            }
-                        }
-
-                        // "N implementations" / "overrides Parent" lenses
-                        if cl_config.implementations || cl_config.overrides {
-                            for e in analysis.code_lens() {
-                                let range = numbers.lsp_range(e.range_start as usize, e.range_end as usize, use_utf8());
-                                match &e.kind {
-                                    crate::types::CodeLensKind::Implementations { class_name, .. } if cl_config.implementations => {
-                                        // Two-stage resolve: locations computed in codeLens/resolve
-                                        lenses.push(CodeLens {
-                                            range,
-                                            command: None,
-                                            data: Some(serde_json::json!({
-                                                "kind": "implementations",
-                                                "uri": uri.to_string(),
-                                                "className": class_name,
-                                            })),
-                                        });
-                                    }
-                                    crate::types::CodeLensKind::Overrides { parent_class, .. } if cl_config.overrides => {
-                                        let title = format!("overrides {}", parent_class);
-                                        let args = vec![
-                                            serde_json::to_value(uri.to_string()).unwrap(),
-                                            serde_json::to_value(range.start).unwrap(),
-                                        ];
-                                        lenses.push(CodeLens {
-                                            range,
-                                            command: Some(Command {
-                                                title,
-                                                command: "wowlua-ls.showSuperDefinition".to_string(),
-                                                arguments: Some(args),
-                                            }),
-                                            data: None,
-                                        });
-                                    }
-                                    // Skipped: disabled by config
-                                    crate::types::CodeLensKind::Implementations { .. }
-                                    | crate::types::CodeLensKind::Overrides { .. } => {}
-                                }
-                            }
-                        }
-
-                        Some(lenses)
+                        Some(build_code_lenses(&uri, tree, analysis, doc.text.as_str(), &cl_config))
                     });
                 send_response(connection, id, &result);
             }
@@ -1756,5 +1787,59 @@ mod codelens_command_tests {
                 "VS Code extension.js does not register command `{cmd}`",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod code_lens_build_tests {
+    use super::*;
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    /// The "overrides Parent" code lens must embed the resolved definition
+    /// `Location`(s) as command argument index 2. The editor clients navigate by
+    /// reading that argument (JetBrains `GoToLocationsAction` / VS Code
+    /// `editor.action.goToLocations`) rather than re-issuing a `textDocument/definition`
+    /// request — LSP4IJ's request API is `@ApiStatus.Internal`. A bare
+    /// `[uri, position]` command (the old shape) would make the lens a silent no-op.
+    #[test]
+    fn overrides_lens_embeds_resolved_definition_location() {
+        let text = "\
+---@class Animal
+local Animal = {}
+function Animal:GetName() return \"a\" end
+---@class Dog : Animal
+local Dog = {}
+function Dog:GetName() return \"d\" end
+";
+        let uri = lsp_types::Uri::from_str("file:///test.lua").unwrap();
+        let pre = Arc::new(PreResolvedGlobals::empty());
+        let configs = crate::config::ProjectConfigs::default();
+        let (tree, result) = analyze_lua(&uri, text, &pre, &configs);
+
+        let cl_config = crate::types::CodeLensConfig {
+            references: false,
+            implementations: false,
+            overrides: true,
+        };
+        let lenses = build_code_lenses(&uri, &tree, &result, text, &cl_config);
+
+        let cmd = lenses
+            .iter()
+            .filter_map(|l| l.command.as_ref())
+            .find(|c| c.command == "wowlua-ls.showSuperDefinition")
+            .expect("expected an `overrides` lens carrying a showSuperDefinition command");
+
+        let args = cmd.arguments.as_ref().expect("command carries arguments");
+        assert_eq!(
+            args.len(),
+            3,
+            "showSuperDefinition must carry [uri, position, locations], got {args:?}",
+        );
+        let locations = args[2].as_array().expect("argument index 2 is a locations array");
+        assert!(
+            !locations.is_empty(),
+            "the overridden definition must resolve to at least one Location",
+        );
     }
 }

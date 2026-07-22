@@ -169,6 +169,7 @@ pub struct ExternalLocation {
     pub name_end: u32,
 }
 
+#[derive(Debug, Clone)]
 pub enum DefinitionResult {
     Local(crate::syntax::TextRange),
     External(ExternalLocation),
@@ -216,7 +217,11 @@ impl DocumentSymbolEntry {
 #[derive(Debug, Clone)]
 pub enum CodeLensKind {
     Implementations { count: usize, class_name: String },
-    Overrides { parent_class: String },
+    /// A method that overrides `parent_class`'s method of the same name.
+    /// `parent_defs` are the overridden (parent) method's definition site(s),
+    /// resolved at lens-build time so the "overrides X" lens navigates straight
+    /// to the parent — empty if the parent method's location can't be resolved.
+    Overrides { parent_class: String, parent_defs: Vec<DefinitionResult> },
 }
 
 #[derive(Debug, Clone)]
