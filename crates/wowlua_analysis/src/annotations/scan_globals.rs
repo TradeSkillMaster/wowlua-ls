@@ -62,7 +62,7 @@ fn first_string_literal_arg(call: &FunctionCall<'_>) -> Option<String> {
 /// library, so resolving it as `Lib("x"):M()` would assert a wrong concrete type.
 /// A bogus `Name` (not actually a class) simply fails the chain walk and falls to
 /// the refineable placeholder.
-fn string_keyed_receiver_method(call: &FunctionCall<'_>) -> Option<(String, String)> {
+pub(crate) fn string_keyed_receiver_method(call: &FunctionCall<'_>) -> Option<(String, String)> {
     let ident = call.identifier()?;
     if !ident.is_call_to_self() {
         return None;

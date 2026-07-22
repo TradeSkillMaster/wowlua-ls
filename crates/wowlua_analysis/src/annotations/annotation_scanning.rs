@@ -9,6 +9,7 @@ use super::{
     default_visibility_for_name,
 };
 use super::annotation_types::{parse_type, OverloadSig};
+use super::scan_globals::string_keyed_receiver_method;
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
 
@@ -1016,25 +1017,41 @@ fn scan_funcall_self_fields_inner(
                             }
                             // Only handle function call expressions
                             let Some(Expression::FunctionCall(call)) = exprs.get(i) else { continue };
-                            // A chained-receiver call (`LibStub("X"):New(...)`) has no
-                            // resolvable named callee — leave it to the bare scanner,
-                            // which registers it existence-only as `any`.
-                            if funcall_has_chained_receiver(call) { continue; }
-                            let Some(call_ident) = call.identifier() else { continue };
-                            let mut callee_names = call_ident.names();
-                            if callee_names.is_empty() { continue; }
-                            // Canonicalize `self` → class name in callee chain
-                            if callee_names[0] == "self" {
-                                callee_names[0] = class_name.to_string();
-                            }
-                            let first_string_arg = call.arguments().and_then(|al| {
-                                let args = al.expressions();
-                                if let Some(Expression::Literal(lit)) = args.first() {
-                                    lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
-                                } else {
-                                    None
+                            // Determine the callee chain + defclass string-arg hint. A
+                            // chained-receiver call collapses `call.identifier().names()`
+                            // to just the trailing method, dropping the receiver —
+                            // unresolvable in general — EXCEPT the `Lib("Name"):Method(...)`
+                            // idiom (the ubiquitous LibStub pattern, e.g.
+                            // `self.db = LibStub("AceDB-3.0"):New(...)`), which resolves to
+                            // the `[Name, Method]` chain so build_on_stubs walks class
+                            // `Name` to `Method`. Mirrors scan_globals' `scan_funcall_callee`.
+                            // Any other chained receiver is left to the bare scanner, which
+                            // registers it existence-only as `any` (that bare entry is
+                            // dropped by `merge_self_field_results` whenever this funcall
+                            // entry covers the same field).
+                            let (callee_names, first_string_arg) = if funcall_has_chained_receiver(call) {
+                                match string_keyed_receiver_method(call) {
+                                    Some((recv_class, method)) => (vec![recv_class, method], None),
+                                    None => continue,
                                 }
-                            });
+                            } else {
+                                let Some(call_ident) = call.identifier() else { continue };
+                                let mut callee_names = call_ident.names();
+                                if callee_names.is_empty() { continue; }
+                                // Canonicalize `self` → class name in callee chain
+                                if callee_names[0] == "self" {
+                                    callee_names[0] = class_name.to_string();
+                                }
+                                let first_string_arg = call.arguments().and_then(|al| {
+                                    let args = al.expressions();
+                                    if let Some(Expression::Literal(lit)) = args.first() {
+                                        lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+                                    } else {
+                                        None
+                                    }
+                                });
+                                (callee_names, first_string_arg)
+                            };
                             let field_range = ident.syntax().children_with_tokens()
                                 .filter_map(|c| c.into_token())
                                 .find(|t| t.kind() == SyntaxKind::Name && t.text() != "self")

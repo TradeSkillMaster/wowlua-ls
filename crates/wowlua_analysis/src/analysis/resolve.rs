@@ -3252,6 +3252,8 @@ impl<'a> Analysis<'a> {
                 // Extract what we need before releasing the borrow on self.ir
                 let ann_vt = fi.annotation.clone();
                 let is_any = matches!(ann_vt, Some(ValueType::Any));
+                let field_primary = fi.expr;
+                let field_extras: Vec<ExprId> = fi.extra_exprs.clone();
                 if let Some(ref ann_vt) = ann_vt {
                     if is_any {
                         // When the annotation is Any (inherited from a parent
@@ -3287,7 +3289,18 @@ impl<'a> Analysis<'a> {
                             field_types.push(ann_vt.clone());
                         }
                     } else if !field_types.contains(ann_vt) {
-                        field_types.push(ann_vt.clone());
+                        // Enrich a class annotation from the field's own local
+                        // assignment via the shared `enriched_class_field` rule: in the
+                        // defining file a `self.field = Lib("X"):New(...)` idiom field
+                        // binds the generic (`Defaults & AceDBObject-3.0` — the typed
+                        // default sections), while other files keep the base class the
+                        // funcall scanner registered. This is the fixpoint (mutable-
+                        // resolver) twin of the query-side `enrich_class_field_from_local`,
+                        // restoring the in-file richness the pre-funcall-scanner `any`
+                        // placeholder used to expose.
+                        let exprs = std::iter::once(field_primary).chain(field_extras.iter().copied());
+                        let enriched = super::enriched_class_field(ann_vt, exprs, |e| self.resolve_expr(e));
+                        field_types.push(enriched.unwrap_or_else(|| ann_vt.clone()));
                     }
                 } else {
                     let primary = fi.expr;

@@ -349,9 +349,20 @@ impl AnalysisResult {
         // typed `Defaults & AceDBObject-3.0` completes both the typed defaults
         // sections and the AceDBObject methods, not just the first member.
         let receiver_full_type: Option<ValueType> = if token.kind() == SyntaxKind::Name {
-            self.scope_at_offset(text_size)
+            // Simple local/global receiver: look the symbol up directly.
+            let by_symbol = self.scope_at_offset(text_size)
                 .and_then(|s| self.get_symbol(&SymbolIdentifier::Name(token.text().to_string()), s))
-                .and_then(|si| self.sym(si).versions.last().and_then(|v| v.resolved_type.clone()))
+                .and_then(|si| self.sym(si).versions.last().and_then(|v| v.resolved_type.clone()));
+            // Dotted-chain receiver (`self.db`): the final token (`db`) isn't a
+            // standalone symbol, so resolve the whole identifier chain to its full
+            // (intersection-aware) type. Without this, an `AceDB:New`-typed
+            // self-field (`Defaults & AceDBObject-3.0`) would surface only the
+            // first member's fields (the typed defaults), dropping the
+            // AceDBObject methods — so `self.db:` completed to nothing.
+            by_symbol
+                .or_else(|| token.parent()
+                    .filter(|p| p.kind().is_identifier())
+                    .and_then(|p| self.resolve_identifier_to_type(&p, text_size)))
                 .filter(|t| Self::extract_table_idx(t) == Some(table_idx))
         } else {
             None

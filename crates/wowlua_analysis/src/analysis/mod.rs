@@ -134,6 +134,40 @@ pub fn ancestor_scopes(scopes: &[Scope], start: ScopeIndex) -> impl Iterator<Ite
     })
 }
 
+/// Enrichment rule for a class-annotated self-field. When the field's own LOCAL
+/// (non-external) assignment resolves to an intersection that still contains the
+/// class annotation `ann`, return that richer intersection — it is assignable to
+/// `ann` (never a contradiction), only more specific. This threads `AceDB:New`'s
+/// generic `Defaults & AceDBObject-3.0` (the typed default-section shapes) through
+/// the *defining* file, while other files keep the base `AceDBObject-3.0` the
+/// cross-file funcall scanner registered. Returns `None` when the field isn't a
+/// class annotation, has no local assignment, or no local expr resolves to a
+/// containing intersection.
+///
+/// Resolver-agnostic so the two engines share one rule: `exprs` is the field's
+/// assignment exprs (primary + extras) and `resolve` is the caller's own resolver
+/// — the mutable fixpoint `Analysis::resolve_expr` or the read-only
+/// `resolve_expr_type_impl`. The non-external gate lets pure cross-file reads
+/// short-circuit before resolving anything.
+pub(crate) fn enriched_class_field(
+    ann: &ValueType,
+    mut exprs: impl Iterator<Item = ExprId> + Clone,
+    mut resolve: impl FnMut(ExprId) -> Option<ValueType>,
+) -> Option<ValueType> {
+    if !matches!(ann, ValueType::Table(Some(_))) {
+        return None;
+    }
+    if !exprs.clone().any(|e| !e.is_external()) {
+        return None;
+    }
+    exprs.find_map(|e| match resolve(e) {
+        Some(ValueType::Intersection(members)) if members.contains(ann) => {
+            Some(ValueType::Intersection(members))
+        }
+        _ => None,
+    })
+}
+
 fn scope_set_contains<T: Eq + std::hash::Hash>(
     map: &HashMap<ScopeIndex, HashSet<T>>,
     scopes: &[Scope],

@@ -153,6 +153,25 @@ fn refine_any_field_exprs(
     found_specific
 }
 
+/// Query-side (read-only) entry to the shared [`crate::analysis::enriched_class_field`]
+/// rule: enrich a self-field's concrete class annotation from its own local
+/// assignment (`AceDB:New`'s generic binding, carried only in the defining file).
+/// Resolves each expr through the read-only `resolve_expr_type_impl`; the fixpoint
+/// resolver calls `enriched_class_field` directly with `Analysis::resolve_expr`.
+fn enrich_class_field_from_local(
+    ir: &Ir,
+    resolved_expr_cache: &[Option<ValueType>],
+    fi: &FieldInfo,
+    ann: &ValueType,
+    visited: &mut HashSet<ExprId>,
+    depth: usize,
+) -> Option<ValueType> {
+    let exprs = std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied());
+    crate::analysis::enriched_class_field(ann, exprs, |e| {
+        resolve_expr_type_impl(ir, resolved_expr_cache, e, visited, depth + 1)
+    })
+}
+
 /// Shared implementation for read-only expression type resolution.
 /// Both `Analysis::resolve_expr_type` and `AnalysisResult::resolve_expr_type` delegate here.
 pub(super) fn resolve_expr_type_impl(
@@ -258,8 +277,11 @@ pub(super) fn resolve_expr_type_impl(
                         // refine_any_field_type; see there for the exact keep-`Any` rule.
                         refine_any_field_exprs(ir, resolved_expr_cache, fi, &mut field_types, visited, depth);
                     } else if let Some(ann) = annotation {
-                        if !field_types.contains(&ann) {
-                            field_types.push(ann);
+                        let chosen = enrich_class_field_from_local(
+                            ir, resolved_expr_cache, fi, &ann, visited, depth,
+                        ).unwrap_or(ann);
+                        if !field_types.contains(&chosen) {
+                            field_types.push(chosen);
                         }
                     } else {
                         // Skip nil primary when there are reassignments
@@ -745,14 +767,28 @@ impl AnalysisResult {
         Some(ValueType::make_union(self.ir.collapse_subset_tables(types)))
     }
 
+    /// Method wrapper over [`enrich_class_field_from_local`] for the query-side
+    /// callers (`resolve_field_type`, hover). See that free function for the rule.
+    pub(super) fn enrich_class_field(&self, fi: &FieldInfo, ann: &ValueType) -> Option<ValueType> {
+        let mut visited = HashSet::new();
+        enrich_class_field_from_local(&self.ir, &self.resolved_expr_cache, fi, ann, &mut visited, 0)
+    }
+
     /// Resolve a field's type considering annotation, primary expr, and extra_exprs.
     /// Skips nil primary when extras exist (matches reassignment semantics).
     pub fn resolve_field_type(&self, fi: &FieldInfo) -> Option<ValueType> {
         if let Some(ref ann) = fi.annotation {
             // A placeholder `Any` annotation is refined from the field's in-file
-            // assignment when possible; a concrete annotation wins outright.
+            // assignment when possible; a concrete annotation wins outright —
+            // except a class annotation the cross-file funcall scanner gave a
+            // `self.field = Lib("X"):New(...)` idiom field, which the defining
+            // file enriches to the generic's bound intersection (see
+            // `enrich_class_field_from_local`).
             if matches!(ann, ValueType::Any) {
                 return Some(self.refine_any_field_type(fi).unwrap_or_else(|| ann.clone()));
+            }
+            if let Some(enriched) = self.enrich_class_field(fi, ann) {
+                return Some(enriched);
             }
             return Some(ann.clone());
         }

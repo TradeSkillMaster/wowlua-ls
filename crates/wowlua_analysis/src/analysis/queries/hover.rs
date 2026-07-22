@@ -91,6 +91,12 @@ impl AnalysisResult {
                             && let Some(refined) = self.refine_any_field_type(field_info)
                         {
                             (self.format_type_accessible(&refined, enclosing_class), Some(refined), false)
+                        } else if let Some(enriched) = self.enrich_class_field(field_info, ann) {
+                            // A class annotation the cross-file funcall scanner gave a
+                            // `self.field = Lib("X"):New(...)` idiom field; in the
+                            // defining file, enrich to the generic's bound intersection
+                            // (typed default-section shapes) — see `enrich_class_field`.
+                            (self.format_type_accessible(&enriched, enclosing_class), Some(enriched), false)
                         } else {
                             (self.format_type_accessible(ann, enclosing_class), Some(ann.clone()), true)
                         }

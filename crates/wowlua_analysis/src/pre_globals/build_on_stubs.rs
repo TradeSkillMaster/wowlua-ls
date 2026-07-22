@@ -910,8 +910,8 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                     continue;
                 }
-                let return_type = resolve_funcall_chain(callee_chain, &self.global_lookup_ctx());
-                let return_type = return_type.filter(|vt| !vt.contains_type_variable());
+                let return_type = resolve_funcall_chain(callee_chain, &self.global_lookup_ctx())
+                    .and_then(strip_unbound_type_vars);
                 let vt = return_type.or_else(|| {
                     first_string_arg.as_ref()
                         .and_then(|name| self.classes.get(name.as_str()))
@@ -1367,4 +1367,33 @@ fn push_distinct_location(locs: &mut Vec<ExternalLocation>, loc: &ExternalLocati
     if !locs.iter().any(|l| l.path == loc.path && l.start == loc.start) {
         locs.push(loc.clone());
     }
+}
+
+/// Reduce a `resolve_funcall_chain` return type for cross-file field typing when
+/// the callee is generic. A generic method like `AceDB:New` returns
+/// `Defaults & AceDBObject-3.0`, where `Defaults` is an unbound type variable the
+/// coarse cross-file scan can't bind (there's no per-file argument analysis here).
+/// Rather than discard the whole type — which drops the useful concrete
+/// `AceDBObject-3.0` and leaves the field an unannotated `Table(None)` placeholder
+/// that the cross-file `@class` overlay import then deletes (→ `undefined-field`)
+/// — strip the type-variable members from an *intersection* and keep the concrete
+/// remainder. Any other type-variable-bearing shape (a bare `T`, a `T | U` union
+/// where dropping a member would be unsound) stays unrecoverable → `None`,
+/// preserving the previous `contains_type_variable()` filter behavior.
+fn strip_unbound_type_vars(vt: ValueType) -> Option<ValueType> {
+    if let ValueType::Intersection(members) = &vt {
+        let concrete: Vec<ValueType> = members.iter()
+            .filter(|m| !m.contains_type_variable())
+            .cloned()
+            .collect();
+        return match concrete.len() {
+            0 => None,
+            1 => concrete.into_iter().next(),
+            _ => Some(ValueType::Intersection(concrete)),
+        };
+    }
+    if vt.contains_type_variable() {
+        return None;
+    }
+    Some(vt)
 }

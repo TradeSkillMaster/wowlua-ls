@@ -1629,6 +1629,15 @@ fn ace3_db_new_threads_typed_defaults() {
 }
 
 #[test]
+fn ace3_db_self_field_completion_gathers_all_members() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace3/self_db.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ace3"),
+    });
+}
+
+#[test]
 fn ace3_locale_ns_field_not_global_getlocale() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/ace3/locale_ns.lua",
@@ -1796,6 +1805,24 @@ fn crossfile_self_field_chain() {
         lua_file: "tests/crossfile/self_field_chain_user.lua",
         with_stubs: false,
         scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_self_field_libstub_idiom() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/self-field-libstub-crossfile/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/self-field-libstub-crossfile"),
+    });
+}
+
+#[test]
+fn self_field_libstub_idiom_defining_file_keeps_typed_defaults() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/self-field-libstub-crossfile/lib.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/self-field-libstub-crossfile"),
     });
 }
 
