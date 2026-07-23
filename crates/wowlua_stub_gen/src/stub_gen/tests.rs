@@ -198,6 +198,28 @@ fn test_infer_rhs_type() {
 }
 
 #[test]
+fn test_references_synthetic_generic() {
+    // Synthesized pass-through generics (`T1`, `T2`, …) must be detected so the
+    // inferred-return generator skips the (unbindable) stub.
+    assert!(references_synthetic_generic("T1"));
+    assert!(references_synthetic_generic("T1?"));
+    assert!(references_synthetic_generic("number | T1"));
+    assert!(references_synthetic_generic("T1 | T2"));
+    assert!(references_synthetic_generic("fun(table: table, index: T1): T1?, any?"));
+    assert!(references_synthetic_generic("fun(_, equipSlotIndex: T1): T1?, ItemLocation?"));
+    assert!(references_synthetic_generic("Foo<T1>")); // type-arg position
+    // No synthesized generic — must NOT be skipped.
+    assert!(!references_synthetic_generic("number"));
+    assert!(!references_synthetic_generic("string | table"));
+    assert!(!references_synthetic_generic("fun(table: table, index: number): number?, any?"));
+    assert!(!references_synthetic_generic("ItemLocation?"));
+    assert!(!references_synthetic_generic("Table")); // 'T' not followed by a digit
+    assert!(!references_synthetic_generic("T"));      // bare 'T', no digit
+    assert!(!references_synthetic_generic("T3D"));    // digit followed by identifier char
+    assert!(!references_synthetic_generic("TT1"));    // 'T1' embedded in a longer identifier
+}
+
+#[test]
 fn test_scan_framexml_lua_fields_in_memory() {
     // Create a temporary directory with Lua files to test scanning
     let tmp = std::env::temp_dir().join("wowlua-ls-test-scan-fields");

@@ -1752,7 +1752,15 @@ impl<'a> Analysis<'a> {
         for tuple in &mut tuples {
             for entry in tuple.iter_mut() {
                 if let (ValueType::Any, Some(expr_id)) = entry
-                    && let Expr::SymbolRef(sym_idx, _) = self.ir.expr(*expr_id)
+                    && let Expr::SymbolRef(sym_idx, version) = self.ir.expr(*expr_id)
+                    // Only a genuine pass-through — the parameter's *incoming*
+                    // value (version 0). A reassigned param (`p = p - 1; return p`)
+                    // returns the new value, not the caller's argument, so it is
+                    // not generic in the argument type (e.g. Blizzard's
+                    // `Enumerator(t, index)` returns `index - 1`, a number — not a
+                    // free `T`). Emitting a `T` here would leak an unbindable type
+                    // variable into inferred-return stubs.
+                    && *version == 0
                     && func_args.contains(sym_idx)
                     && !annotated_params.contains(sym_idx)
                 {

@@ -39,6 +39,22 @@ pub(in crate::stub_gen) fn get_functions_with_return(dir: &Path) -> HashSet<Stri
 
 /// Extract return types and parameter names from a resolved function.
 /// Returns `None` if inference produced nothing useful (empty, all any/nil).
+/// True if a formatted inferred type references a synthesized generic type
+/// variable (`T1`, `T2`, …), emitted by the analysis engine for pass-through
+/// parameters. `generate_inferred_return_stubs` cannot emit a matching
+/// `@generic` declaration, so shipping such a reference produces an UNBINDABLE
+/// type variable that resolves to `never`/unknown at every use site (e.g. a
+/// leaked `fun(): T1?` iterator turning `for i in it()` into `i: never`). The
+/// honest choice is to emit no inferred return for that function.
+pub(in crate::stub_gen) fn references_synthetic_generic(s: &str) -> bool {
+    // Split on identifier boundaries and check each token is `T` followed by
+    // one-or-more digits and nothing else — matching `T1` / `T1?` / `Foo<T1>`
+    // while rejecting `Table`, `T`, `T3D`, and `TT1`.
+    s.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter_map(|tok| tok.strip_prefix('T'))
+        .any(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
 pub(in crate::stub_gen) fn extract_inferred_return(
     ar: &crate::analysis::AnalysisResult,
     func: &crate::types::Function,
@@ -64,6 +80,13 @@ pub(in crate::stub_gen) fn extract_inferred_return(
     if return_types.is_empty()
         || return_types.iter().all(|t| t == "any" || t == "?" || t == "nil")
     {
+        return None;
+    }
+
+    // An inferred return that carries a synthesized generic (`T1`, …) cannot be
+    // expressed as a stub — the generator emits no `@generic`, so the reference
+    // would be unbindable. Skip rather than ship a `never`-producing stub.
+    if return_types.iter().any(|t| references_synthetic_generic(t)) {
         return None;
     }
 

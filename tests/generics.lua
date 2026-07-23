@@ -1063,6 +1063,26 @@ for _, val in ReverseIPairs(mixedUnion) do
 --        ^ hover: (local) captured: number  def: local
 end
 
+-- ── Reassigned parameter is NOT a pass-through generic ────────────────────────
+-- Regression: a param returned *after reassignment* (`idx = idx - 1; return idx`)
+-- returns the new value, not the caller's argument, so it must not synthesize an
+-- implicit generic `T`. Blizzard's `ipairs_reverse` Enumerator did exactly this;
+-- the bogus `index: T1` leaked into an inferred-return stub as an unbindable type
+-- variable, so `for i in ipairs_reverse(...)` showed `i: never`. `idx` must infer
+-- as `number` (proven by `idx - 1`), not a free type variable.
+local function reverseStep(arr, idx)
+    idx = idx - 1
+--  ^ hover: (param) idx: number
+    local value = arr[idx]
+    if value ~= nil then
+        return idx, value
+    end
+end
+
+local ri, rv = reverseStep({ 1, 2, 3 }, 3)
+--    ^ hover: (local) ri: number?
+--        ^ hover: (local) rv: any?
+
 -- ── Method hover substitutes class type vars from parameterized receiver ──────
 -- Regression: hovering a method whose @param/@return uses the class type
 -- variable T should display the concrete bound type (e.g. `string`) when the

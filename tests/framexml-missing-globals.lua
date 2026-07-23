@@ -12,10 +12,10 @@
 --     global, registered by discover_runtime_fields (src/stub_gen/framexml.rs).
 --   * Frame:SetMinResize/SetMaxResize — wiki {{widgetmethod removed=10.0.0}} pages
 --     (src/stub_gen/wiki.rs), emitted Classic-flavored.
---   * frame.Child parentKey fields (e.g. WardrobeTransmogFrame.ToggleSecondary-
---     AppearanceCheckbox) — harvested from XML structure via xml_scan
---     (src/stub_gen/xml_frames.rs); the child's base widget type is kept so it
---     resolves even when an inherits= template is unavailable in the stubs.
+--   * frame.Child parentKey fields (e.g. HelpFrame.CloseButton) — harvested from
+--     XML structure via xml_scan (src/stub_gen/xml_frames.rs); the child's base
+--     widget type is kept so it resolves even when an inherits= template is
+--     unavailable in the stubs.
 --
 -- Intentionally NOT closed (no fix is correct), so they are only mentioned here, not
 -- referenced as code: AccountBankPanel and InterfaceOptionsFramePanelContainer are
@@ -44,5 +44,5 @@ fr:SetMinResize(1, 1)
 fr:SetMaxResize(2, 2)
 
 -- ── parentKey child field harvested from XML (frame.Child), base type resolves ─
-local cb = WardrobeTransmogFrame.ToggleSecondaryAppearanceCheckbox
-local checked = WardrobeTransmogFrame.ToggleSecondaryAppearanceCheckbox:GetChecked()
+local cb = HelpFrame.CloseButton
+local cbParent = HelpFrame.CloseButton:GetParent()

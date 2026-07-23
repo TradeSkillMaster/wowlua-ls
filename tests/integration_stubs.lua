@@ -230,6 +230,18 @@ for ni, nv in ipairs(nestedArr) do
 --                 ^ hover: (local) nv: string[]
 end
 
+-- Blizzard `ipairs_reverse` (TableUtil): its generated iterator stub must yield a
+-- concrete numeric index and an untyped element. Regression for an undeclared
+-- type variable `T1` in the inferred-return stub (`fun(table, index: T1): T1?`),
+-- which made the index strip to an empty union (`ri: never`). `rv` is honestly
+-- `any?` — Blizzard's source does not type the array element.
+for ri, rv in ipairs_reverse(numArr) do
+    local _useri = ri
+--                 ^ hover: (local) ri: number
+    local _userv = rv
+--                 ^ hover: (local) rv: any?
+end
+
 -- ── for-in with `next, tbl` (multi-expression generic for protocol) ─────────
 
 for nk, nv in next, kvTable do
