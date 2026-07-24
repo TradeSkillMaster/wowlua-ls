@@ -24,5 +24,5 @@ Steps:
    - Do NOT include a version heading at the top of the release notes — GitHub already displays the tag name as the release title, so a heading would be redundant.
 7. If the user provided extra context or arguments, incorporate them.
 8. Update the workspace name to "Release notes for vX.Y.Z" (using the determined version number) by calling the `update_workspace` MCP tool.
-9. Present the draft to the user for review. Ask if they want any changes.
+9. Present the draft to the user for review. Show **only** the release-notes bullets followed by a single short line asking if they want changes. Do not explain your categorization, clustering, or version choices, and do not add any commentary before or after the notes — keep it tight. If a decision genuinely needs the user's input, ask it in that one closing line.
 10. Once approved, replace the contents of `RELEASE_NOTES.md` at the repo root with only the new release's notes (do not keep previous releases).
