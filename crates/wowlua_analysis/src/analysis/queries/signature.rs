@@ -62,7 +62,7 @@ impl AnalysisResult {
             idx
         } else if names.len() == 1 {
             // Simple function call: foo()
-            let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+            let symbol_idx = self.get_symbol_at(&SymbolIdentifier::Name(names[0].clone()), scope_idx, u32::from(text_size))?;
             let ver = self.sym(symbol_idx).versions.iter().rev()
                 .find_map(|v| v.resolved_type.as_ref())?;
             match ver {
@@ -84,7 +84,7 @@ impl AnalysisResult {
             }
         } else {
             // Method/field call: obj.method() or obj:method()
-            let root_sym = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+            let root_sym = self.get_symbol_at(&SymbolIdentifier::Name(names[0].clone()), scope_idx, u32::from(text_size))?;
             let ver = self.sym(root_sym).versions.iter().rev()
                 .find_map(|v| v.resolved_type.as_ref())?;
             let mut table_idx = Self::extract_table_idx(ver)?;

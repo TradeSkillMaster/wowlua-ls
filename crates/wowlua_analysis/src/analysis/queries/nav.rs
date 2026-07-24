@@ -81,7 +81,9 @@ impl AnalysisResult {
         let token_start = u32::from(token.text_range().start());
         let name = token.text().to_string();
         let scope_idx = self.scope_at_offset(text_size)?;
-        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx)?;
+        // Position-aware: a name read *before* a same-name local declaration
+        // resolves to the outer/global binding (or nothing), not the later local.
+        let symbol_idx = self.get_symbol_at(&SymbolIdentifier::Name(name.clone()), scope_idx, token_start)?;
 
         // In `local x = x`, the RHS `x` should resolve to the outer/global
         // binding, not the freshly-defined local. During IR build, the RHS is
@@ -504,7 +506,7 @@ impl AnalysisResult {
         let scope_idx = self.scope_at_offset(text_size)?;
         // Check if grandparent has a FunctionCall: for `func().a.b`, cursor is on "b" and
         // names = ["a", "b"] in the inner Identifier, with "a" as root but not a symbol.
-        let mut table_idx = if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+        let mut table_idx = if let Some(symbol_idx) = self.get_symbol_at(&SymbolIdentifier::Name(root_name.clone()), scope_idx, u32::from(text_size)) {
             let ver = self.sym(symbol_idx).versions.last()?;
             let resolved = ver.resolved_type.as_ref()?;
             Self::extract_table_idx(resolved)?
@@ -824,7 +826,7 @@ impl AnalysisResult {
                 } else if names.len() >= 2 {
                     let root_name = names[0].text().to_string();
                     let scope_idx = self.scope_at_offset(scope_offset)?;
-                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+                    let symbol_idx = self.get_symbol_at(&SymbolIdentifier::Name(root_name), scope_idx, u32::from(scope_offset))?;
                     let ver = self.sym(symbol_idx).versions.last()?;
                     let resolved = ver.resolved_type.as_ref()?;
                     let mut idx = Self::extract_table_idx(resolved)?;
@@ -862,7 +864,7 @@ impl AnalysisResult {
                     // Simple dot chain with no nested nodes (old parser)
                     let root_name = names[0].text().to_string();
                     let scope_idx = self.scope_at_offset(scope_offset)?;
-                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+                    let symbol_idx = self.get_symbol_at(&SymbolIdentifier::Name(root_name), scope_idx, u32::from(scope_offset))?;
                     let ver = self.sym(symbol_idx).versions.last()?;
                     let resolved = ver.resolved_type.as_ref()?;
                     let mut idx = Self::extract_table_idx(resolved)?;
@@ -887,7 +889,7 @@ impl AnalysisResult {
             // Simple function call: func(args)
             let root_name = names[0].text().to_string();
             let scope_idx = self.scope_at_offset(scope_offset)?;
-            let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+            let symbol_idx = self.get_symbol_at(&SymbolIdentifier::Name(root_name), scope_idx, u32::from(scope_offset))?;
             let ver = self.sym(symbol_idx).versions.last()?;
             let resolved = ver.resolved_type.as_ref()?;
             match resolved {
@@ -995,7 +997,7 @@ impl AnalysisResult {
             // Simple dot chain
             let root_name = first.text().to_string();
             let scope_idx = self.scope_at_offset(scope_offset)?;
-            let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+            let symbol_idx = self.get_symbol_at(&SymbolIdentifier::Name(root_name), scope_idx, u32::from(scope_offset))?;
             let ver = self.sym(symbol_idx).versions.last()?;
             let resolved = ver.resolved_type.as_ref()?;
             // Apply type narrowing (e.g. from @type-narrows guards) so field lookups
@@ -1059,7 +1061,7 @@ impl AnalysisResult {
         }
         let root_name = root_names[0].text().to_string();
         let scope_idx = self.scope_at_offset(scope_offset)?;
-        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+        let symbol_idx = self.get_symbol_at(&SymbolIdentifier::Name(root_name), scope_idx, u32::from(scope_offset))?;
         // Select the version active at the root token's position. Without this,
         // a symbol with later narrowed/cast/merge versions (e.g. `task` cast to
         // a subclass inside a subsequent if-branch) would pick `versions.last()`

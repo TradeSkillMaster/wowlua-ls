@@ -165,3 +165,34 @@ _consume(InterfaceOptionsFramePanelContainer)
 -- registered. They are now emitted as `Name = nil` carrying `---@type table`.
 _consume(LFG_EYE_TEXTURES["default"])
 --       ^ hover: (global) LFG_EYE_TEXTURES: table
+
+-- ── Forward-declared locals (a local's scope begins after its `local`) ──────
+-- A name read *before* a same-name `local` declaration is not yet in scope, so
+-- it must NOT resolve to that later local. With no matching global the read is
+-- `undefined-global`, and the later local is genuinely unused.
+_consume(fwdOnlyLocal)
+--       ^ diag: undefined-global
+---@diagnostic disable-next-line: unused-local
+local fwdOnlyLocal = 5
+
+-- The WoW localization idiom `local X = X`: the read *before* the declaration
+-- falls through to the *global* (never the not-yet-declared local), so it must
+-- not false-positive as undefined-global.
+_consume(GetTime)
+--       ^ hover: (global) function GetTime()  def: external
+local GetTime = GetTime
+_consume(GetTime())
+
+-- Shadowing: an outer local read *before* an inner same-name `local` resolves
+-- to the OUTER local (which IS in scope), not the inner shadow declared later.
+-- The field `outerField` only exists on the outer table, so its hover resolving
+-- proves the base did not bind to the inner `{ innerField }` shadow.
+local ugOuter = { outerField = 1 }
+local function _ugUseShadow()
+    _consume(ugOuter.outerField)
+    --       ^ def: local 190:1
+    --               ^ hover: (field) outerField: number
+    ---@diagnostic disable-next-line: shadowed-local
+    local ugOuter = { innerField = 2 }
+    return ugOuter.innerField
+end

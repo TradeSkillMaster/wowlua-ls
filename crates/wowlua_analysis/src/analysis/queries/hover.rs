@@ -479,7 +479,7 @@ impl AnalysisResult {
         // Resolve root symbol to a table
         let root_name = names[0].text().to_string();
         let scope_idx = self.scope_at_offset(text_size)?;
-        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+        let symbol_idx = self.get_symbol_at(&SymbolIdentifier::Name(root_name), scope_idx, u32::from(text_size))?;
         let ver = self.sym(symbol_idx).versions.last()?;
         let mut table_idx = Self::extract_table_idx(ver.resolved_type.as_ref()?)?;
 

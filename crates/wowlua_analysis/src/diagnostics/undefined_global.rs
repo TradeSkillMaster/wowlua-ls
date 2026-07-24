@@ -37,7 +37,11 @@ impl DiagnosticPass for UndefinedGlobal {
             let r = token.text_range();
             let offset = u32::from(r.start());
             let scope_idx = analysis.scope_at_offset(offset).unwrap_or(ScopeIndex(0));
-            if analysis.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_some() { continue; }
+            // Position-aware: a local declared *later* in the file is not yet in
+            // scope at this read, so it does not suppress the warning (Lua's rule
+            // that a local's scope begins after its `local` statement). Forward
+            // references to globals assigned later stay legal.
+            if analysis.get_symbol_at(&SymbolIdentifier::Name(name.clone()), scope_idx, offset).is_some() { continue; }
             super::UNDEFINED_GLOBAL.emit(
                 diags,
                 format!("undefined global '{}'", name),

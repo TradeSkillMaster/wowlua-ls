@@ -473,6 +473,15 @@ pub struct Ir {
     /// `@param` annotations (an open contract: caller can pass unlisted values),
     /// excluding `@type` annotations on locals (a closed assertion).
     pub param_symbols: HashSet<SymbolIndex>,
+    /// Symbols introduced by a lexical binding statement (`local` declaration,
+    /// `local function`, for-loop variable, function parameter) — as opposed to
+    /// implicit globals, which are created by [`Self::insert_or_version_symbol`].
+    /// A lexical local's scope begins *after* its declaring statement, so
+    /// [`Self::get_symbol_at`] hides such a symbol from reads that textually
+    /// precede its declaration (a forward reference resolves to the outer/global
+    /// binding, or is `undefined-global`). Implicit globals are excluded so a
+    /// forward reference to a global assigned later in the file stays legal.
+    pub local_decl_symbols: HashSet<SymbolIndex>,
     /// Source ranges for local @alias declarations (alias name → (start, end) byte offsets).
     pub alias_def_ranges: HashMap<String, (u32, u32)>,
     /// Monotonic counter for ordering scope and version creation. Used to prevent
@@ -944,6 +953,22 @@ impl Ir {
     }
 
     fn get_symbol_impl(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex, exclude: Option<SymbolIndex>) -> Option<SymbolIndex> {
+        self.get_symbol_where(id, scope_idx, |sym| exclude != Some(sym))
+    }
+
+    /// Shared scope-chain walk backing [`Self::get_symbol_impl`] and
+    /// [`Self::get_symbol_at`]. Walks from `scope_idx` up the parent chain and
+    /// returns the first symbol bound to `id` in a scope for which `accept`
+    /// returns true; at scope 0 it also falls back to external globals
+    /// (`ext.scope0_symbols`, then framexml). `accept` gates only the per-scope
+    /// local match — the external scope-0 fallbacks are never filtered, since in
+    /// both callers `accept` only ever rejects local (non-external) symbols.
+    fn get_symbol_where(
+        &self,
+        id: &SymbolIdentifier,
+        scope_idx: ScopeIndex,
+        accept: impl Fn(SymbolIndex) -> bool,
+    ) -> Option<SymbolIndex> {
         let mut scope_idx = Some(scope_idx);
         while let Some(si) = scope_idx {
             let scope_obj = if si.is_external() {
@@ -952,7 +977,7 @@ impl Ir {
                 self.scopes.get(si.val())?
             };
             if let Some(&sym) = scope_obj.symbols.get(id)
-                && exclude != Some(sym) {
+                && accept(sym) {
                     return Some(sym);
             }
             // At scope 0 (global), also check external globals
@@ -968,6 +993,33 @@ impl Ir {
             scope_idx = scope_obj.parent;
         }
         None
+    }
+
+    /// Position-aware variant of [`Self::get_symbol`]. A lexical local whose
+    /// declaring statement textually *follows* `offset` is not yet in scope, so
+    /// it is skipped and the lookup continues up the parent chain — matching
+    /// Lua's rule that a local's scope begins after its `local` statement. This
+    /// makes a name read *before* a same-name local declaration resolve to the
+    /// outer/global binding (or nothing, i.e. `undefined-global`) rather than the
+    /// later local. Globals and external symbols are never position-filtered: a
+    /// forward reference to a global assigned later in the file is legal.
+    pub fn get_symbol_at(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex, offset: u32) -> Option<SymbolIndex> {
+        self.get_symbol_where(id, scope_idx, |sym| !self.local_declared_after(sym, offset))
+    }
+
+    /// True when `sym` is a lexical local (see [`Ir::local_decl_symbols`]) whose
+    /// earliest declaration begins strictly after `offset` — i.e. the local is
+    /// not yet in scope at a read positioned at `offset`.
+    fn local_declared_after(&self, sym: SymbolIndex, offset: u32) -> bool {
+        if sym.is_external() || !self.local_decl_symbols.contains(&sym) {
+            return false;
+        }
+        self.sym(sym)
+            .versions
+            .iter()
+            .map(|v| v.def_node.start)
+            .min()
+            .is_some_and(|start| start > offset)
     }
 
     /// Look up the library table for a primitive type.
@@ -1303,6 +1355,15 @@ impl Ir {
                 flavors: 0,
             });
             let symbol_idx = SymbolIndex(self.symbols.len() - 1);
+            // Lexical local: its scope begins after this declaring statement, so
+            // `get_symbol_at` can hide it from earlier reads. (`insert_or_version_symbol`'s
+            // implicit-global path deliberately does not record here — forward global
+            // references are legal.) Restricted to `Name` symbols: `insert_symbol`
+            // also mints synthetic `FunctionRet` return slots, which are never
+            // name-resolved and don't belong to the lexical-local set.
+            if matches!(id, SymbolIdentifier::Name(_)) {
+                self.local_decl_symbols.insert(symbol_idx);
+            }
             let current_scope = self.scopes.get_mut(scope_idx.val()).unwrap();
             current_scope.symbols.insert(id, symbol_idx);
             symbol_idx
@@ -2239,6 +2300,7 @@ impl AnalysisResult {
     #[inline] pub fn local_exprs(&self) -> impl Iterator<Item = (ExprId, &Expr)> { self.ir.local_exprs() }
     #[inline] pub fn type_contains_type_variable_deep(&self, vt: &ValueType) -> bool { self.ir.type_contains_type_variable_deep(vt) }
     #[inline] pub fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> { self.ir.get_symbol(id, scope_idx) }
+    #[inline] pub fn get_symbol_at(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex, offset: u32) -> Option<SymbolIndex> { self.ir.get_symbol_at(id, scope_idx, offset) }
     #[inline] pub fn get_symbol_excluding(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex, exclude: SymbolIndex) -> Option<SymbolIndex> { self.ir.get_symbol_excluding(id, scope_idx, exclude) }
     #[inline] pub fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> { self.ir.get_field(table_idx, field_name) }
     #[inline] pub fn scope_at_offset(&self, offset: impl Into<u32>) -> Option<ScopeIndex> { self.ir.scope_at_offset(offset) }
@@ -2640,6 +2702,7 @@ impl<'a> Analysis<'a> {
                 class_table_by_offset: HashMap::new(),
                 class_def_symbols: HashSet::new(),
                 param_symbols: HashSet::new(),
+                local_decl_symbols: HashSet::new(),
                 alias_def_ranges: HashMap::new(),
                 next_creation_order: 0,
                 g_table_idx,
