@@ -383,11 +383,111 @@ pub(super) fn collect_lua_paths_filtered(
     }
 }
 
-/// Remove duplicate paths in place, preserving first-occurrence order (which is
-/// scan-order-sensitive — see `collect_lua_paths_filtered`'s sort rationale).
+/// Remove duplicate paths in place, keying on each file's real filesystem identity
+/// (device + inode, or the Windows volume-serial + file-index equivalent) so a
+/// library reachable through several workspace paths — e.g. one that is both its own
+/// workspace folder *and* symlinked (or hardlinked) into `Addon/Libs/LibFoo` — is
+/// analyzed exactly once instead of once per alias. Without this, each alias scans
+/// as a distinct file: its `@class`/globals register N times, go-to-definition
+/// returns N sites, and every alias caches its own (divergent) analysis.
+///
+/// Identity is a single `fs::metadata` stat per file (`metadata` follows
+/// symlinks/junctions), so symlinks, hardlinks, and junctions all collapse while two
+/// genuinely separate on-disk copies stay distinct; a file whose identity can't be
+/// read falls back to its literal path (kept, never mis-merged). Among aliases of one
+/// file, a copy NOT reached through a symlinked directory is preferred, so navigation
+/// lands in the real source rather than a vendored alias; ties keep the first-seen
+/// path (scan-order-stable — see `collect_lua_paths_filtered`).
 fn dedup_paths_in_place(paths: &mut Vec<PathBuf>) {
-    let mut seen = HashSet::new();
-    paths.retain(|p| seen.insert(p.clone()));
+    // filesystem-identity key -> index of the chosen representative in `paths`.
+    let mut chosen: HashMap<FileKey, usize> = HashMap::new();
+    for (i, p) in paths.iter().enumerate() {
+        let key = file_identity(p)
+            .map_or_else(|| FileKey::Path(p.clone()), |(dev, ino)| FileKey::Id(dev, ino));
+        match chosen.get(&key).copied() {
+            None => {
+                chosen.insert(key, i);
+            }
+            Some(j) => {
+                // Replace the current pick only if it is a symlink alias and the new
+                // candidate is not — otherwise keep the earlier (stable) one.
+                if traverses_symlink_below_common(&paths[j], p)
+                    && !traverses_symlink_below_common(p, &paths[j])
+                {
+                    chosen.insert(key, i);
+                }
+            }
+        }
+    }
+    let keep: HashSet<usize> = chosen.into_values().collect();
+    let mut idx = 0usize;
+    paths.retain(|_| {
+        let keep_it = keep.contains(&idx);
+        idx += 1;
+        keep_it
+    });
+}
+
+/// Dedup key: a file's real filesystem identity, or its literal path when identity
+/// is unavailable (so such a file is kept rather than mis-merged).
+#[derive(PartialEq, Eq, Hash)]
+enum FileKey {
+    Id(u64, u64),
+    Path(PathBuf),
+}
+
+/// A file's `(device, inode)` identity — the Windows volume-serial + file-index pair
+/// maps to the same shape. `metadata` follows symlinks/junctions, so aliases of one
+/// file share an identity; hardlinks do too (same inode). `None` when the platform
+/// can't supply it (caller falls back to literal-path dedup).
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.dev(), m.ino()))
+}
+
+#[cfg(windows)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::windows::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((u64::from(m.volume_serial_number()?), m.file_index()?))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity(_path: &Path) -> Option<(u64, u64)> {
+    None
+}
+
+/// Whether `p` reaches its file through a symlinked component lying *below* the
+/// deepest directory it shares with `other`. Only the diverging tail is inspected,
+/// so a symlink *above* the workspace (a WSL/9P mount, a git worktree) doesn't flag
+/// both aliases and erase the real-source preference. The file itself being a
+/// symlink counts too. Called only for actual duplicates, so the extra `lstat`s are
+/// rare.
+fn traverses_symlink_below_common(p: &Path, other: &Path) -> bool {
+    let common = common_prefix_len(p, other);
+    for ancestor in p.ancestors() {
+        // Stop once we have climbed to (or above) the shared ancestor.
+        if ancestor.components().count() <= common {
+            break;
+        }
+        if std::fs::symlink_metadata(ancestor)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Number of leading path components `a` and `b` share.
+fn common_prefix_len(a: &Path, b: &Path) -> usize {
+    a.components()
+        .zip(b.components())
+        .take_while(|(x, y)| x == y)
+        .count()
 }
 
 pub(super) struct LuaFileScanResult {
@@ -823,6 +923,10 @@ pub fn scan_workspace_with_stubs(
             collect_lua_paths_filtered(&lib_dir, &mut paths, &mut xml_paths, configs);
         }
     }
+    // Collapse aliases of the same physical file (symlinked vendored libraries)
+    // so each is scanned once — mirrors `scan_directory_pass1`.
+    dedup_paths_in_place(&mut paths);
+    dedup_paths_in_place(&mut xml_paths);
     let mut result = scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs), stub_globals, stub_classes, creates_global_specs);
     scan_xml_paths_into(&xml_paths, &mut result);
     // Apply detected dynamic global prefixes to configs so that reads of

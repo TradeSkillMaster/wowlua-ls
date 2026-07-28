@@ -2982,6 +2982,87 @@ mod tests {
         assert!(inputs_full.prior.is_none());
     }
 
+    /// Remove `dir` on drop so a panic mid-test never leaks the temp workspace.
+    #[cfg(unix)]
+    struct TempDirGuard(PathBuf);
+    #[cfg(unix)]
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A library reachable both as its own folder and via a symlink into an addon's
+    /// `Libs/` must be scanned exactly once — not once per alias — and navigation
+    /// must land in the real source, not the vendored symlink. Regression for the
+    /// duplicate-definition / divergent-cache reports on symlinked vendored libraries.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_library_scanned_once() {
+        use std::os::unix::fs::symlink;
+
+        // Per-process-unique name: concurrent worktree runs share /tmp.
+        let root = std::env::temp_dir()
+            .join(format!("wowlua_ls_test_symlink_dedup_{}", std::process::id()));
+        let _guard = TempDirGuard(root.clone());
+        let _ = std::fs::remove_dir_all(&root);
+
+        let lib = root.join("LibFoo");
+        let addon_libs = root.join("AddonA").join("Libs");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&addon_libs).unwrap();
+        std::fs::write(lib.join("LibFoo.lua"), "---@class FooLib\nFooLib = {}\n").unwrap();
+        // AddonA/Libs/LibFoo -> ../../LibFoo (vendoring-by-symlink, as reported).
+        symlink(&lib, addon_libs.join("LibFoo")).unwrap();
+
+        let mut configs = crate::config::ProjectConfigs::default();
+        let scan = crate::lsp::scan_workspace(std::slice::from_ref(&root), &mut configs);
+
+        let foo: Vec<_> = scan.classes.iter().filter(|c| c.name == "FooLib").collect();
+        assert_eq!(
+            foo.len(),
+            1,
+            "symlinked library must register its @class once, not once per alias"
+        );
+        // The retained copy is the real file, not the symlinked alias.
+        let def_path = foo[0].def_path.as_ref().expect("class carries a def_path");
+        assert_eq!(
+            def_path,
+            &lib.join("LibFoo.lua"),
+            "navigation should resolve to the real source, not the vendored symlink"
+        );
+    }
+
+    /// Hardlinked (rather than symlinked) duplicate library files must also collapse
+    /// to a single scan — identity keys on device+inode, which hardlinks share.
+    #[cfg(unix)]
+    #[test]
+    fn hardlinked_library_scanned_once() {
+        let root = std::env::temp_dir()
+            .join(format!("wowlua_ls_test_hardlink_dedup_{}", std::process::id()));
+        let _guard = TempDirGuard(root.clone());
+        let _ = std::fs::remove_dir_all(&root);
+
+        let lib = root.join("LibFoo");
+        let addon_libs = root.join("AddonB").join("Libs").join("LibFoo");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&addon_libs).unwrap();
+        let real = lib.join("LibFoo.lua");
+        std::fs::write(&real, "---@class FooLib\nFooLib = {}\n").unwrap();
+        // AddonB/Libs/LibFoo/LibFoo.lua is a hardlink to the real file (same inode).
+        std::fs::hard_link(&real, addon_libs.join("LibFoo.lua")).unwrap();
+
+        let mut configs = crate::config::ProjectConfigs::default();
+        let scan = crate::lsp::scan_workspace(std::slice::from_ref(&root), &mut configs);
+
+        let foo: Vec<_> = scan.classes.iter().filter(|c| c.name == "FooLib").collect();
+        assert_eq!(
+            foo.len(),
+            1,
+            "hardlinked library must register its @class once, not once per link"
+        );
+    }
+
     fn setup_unused_function_fixture() -> (Vec<PathBuf>, Arc<PreResolvedGlobals>, Arc<crate::config::ProjectConfigs>) {
         let scan_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/unused-function");
         let mut configs = crate::config::ProjectConfigs::default();

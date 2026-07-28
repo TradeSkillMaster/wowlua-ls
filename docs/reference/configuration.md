@@ -128,6 +128,10 @@ External library directories are automatically added as extra scan directories, 
 
 Marking a directory as a library suppresses diagnostics for the **whole subtree**, including any nested `.wowluarc.json` files inside it. A vendored library that ships its own `.wowluarc.json` (for example one pulled in via a symlink) cannot re-enable diagnostics for itself. The parent's `library` declaration wins. See [Hierarchy behavior](#hierarchy-behavior) for how this differs from other settings.
 
+#### Symlinked or duplicated library paths are scanned once
+
+If the same physical library is reachable through several workspace paths — for example a library that is both its own workspace folder *and* symlinked into each addon's `Libs/` — the language server detects the shared filesystem identity (device + inode) and analyzes it a single time. Go-to-definition, find-references, and code-lens counts resolve to the real source rather than a vendored alias, and you do **not** need to `ignore` the extra copies to avoid duplicate definitions. This applies to symlinks, hardlinks, and Windows junctions; two genuinely separate copies of a library on disk (each a real file with its own inode) are still analyzed independently.
+
 ### `framexml`
 
 - **Type:** `boolean`
