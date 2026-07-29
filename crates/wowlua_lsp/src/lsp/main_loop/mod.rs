@@ -2983,9 +2983,10 @@ mod tests {
     }
 
     /// Remove `dir` on drop so a panic mid-test never leaks the temp workspace.
-    #[cfg(unix)]
+    /// Used only by the symlink/hardlink dedup tests, which are `unix`/`windows`-gated.
+    #[cfg(any(unix, windows))]
     struct TempDirGuard(PathBuf);
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     impl Drop for TempDirGuard {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
@@ -3034,8 +3035,12 @@ mod tests {
     }
 
     /// Hardlinked (rather than symlinked) duplicate library files must also collapse
-    /// to a single scan — identity keys on device+inode, which hardlinks share.
-    #[cfg(unix)]
+    /// to a single scan — identity keys on the file's real device+inode (Unix) /
+    /// volume-serial+file-index (Windows), which hardlinks share. Runs on both
+    /// families (the fix that made this build on stable Windows lives on that path) —
+    /// but not others: off unix/windows `file_identity` returns `None` and the two
+    /// hardlink paths would key by literal path and register the class twice.
+    #[cfg(any(unix, windows))]
     #[test]
     fn hardlinked_library_scanned_once() {
         let root = std::env::temp_dir()

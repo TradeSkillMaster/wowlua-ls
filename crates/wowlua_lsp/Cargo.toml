@@ -22,6 +22,7 @@ zstd = "0.13"
 url = "2"
 log = "0.4"
 mlua = { version = "0.10", features = ["lua51", "vendored", "send"] }
+file-id = "0.2.3"
 
 [dev-dependencies]
 # main_loop tests build ClassDecl via the test-util construction helper, gated

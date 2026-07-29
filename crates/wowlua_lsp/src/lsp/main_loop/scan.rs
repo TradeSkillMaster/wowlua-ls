@@ -391,7 +391,7 @@ pub(super) fn collect_lua_paths_filtered(
 /// as a distinct file: its `@class`/globals register N times, go-to-definition
 /// returns N sites, and every alias caches its own (divergent) analysis.
 ///
-/// Identity is a single `fs::metadata` stat per file (`metadata` follows
+/// Identity is a single filesystem-identity lookup per file (following
 /// symlinks/junctions), so symlinks, hardlinks, and junctions all collapse while two
 /// genuinely separate on-disk copies stay distinct; a file whose identity can't be
 /// read falls back to its literal path (kept, never mis-merged). Among aliases of one
@@ -402,8 +402,7 @@ fn dedup_paths_in_place(paths: &mut Vec<PathBuf>) {
     // filesystem-identity key -> index of the chosen representative in `paths`.
     let mut chosen: HashMap<FileKey, usize> = HashMap::new();
     for (i, p) in paths.iter().enumerate() {
-        let key = file_identity(p)
-            .map_or_else(|| FileKey::Path(p.clone()), |(dev, ino)| FileKey::Id(dev, ino));
+        let key = file_identity(p).map_or_else(|| FileKey::Path(p.clone()), FileKey::Id);
         match chosen.get(&key).copied() {
             None => {
                 chosen.insert(key, i);
@@ -432,30 +431,25 @@ fn dedup_paths_in_place(paths: &mut Vec<PathBuf>) {
 /// is unavailable (so such a file is kept rather than mis-merged).
 #[derive(PartialEq, Eq, Hash)]
 enum FileKey {
-    Id(u64, u64),
+    Id(file_id::FileId),
     Path(PathBuf),
 }
 
-/// A file's `(device, inode)` identity — the Windows volume-serial + file-index pair
-/// maps to the same shape. `metadata` follows symlinks/junctions, so aliases of one
-/// file share an identity; hardlinks do too (same inode). `None` when the platform
-/// can't supply it (caller falls back to literal-path dedup).
-#[cfg(unix)]
-fn file_identity(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.dev(), m.ino()))
-}
-
-#[cfg(windows)]
-fn file_identity(path: &Path) -> Option<(u64, u64)> {
-    use std::os::windows::fs::MetadataExt;
-    let m = std::fs::metadata(path).ok()?;
-    Some((u64::from(m.volume_serial_number()?), m.file_index()?))
+/// A file's real filesystem identity, unified behind `file_id`'s `Copy` key:
+/// `(device, inode)` on Unix, the volume-serial + file-index pair on Windows. The
+/// lookup follows symlinks/junctions, so aliases of one file share an identity;
+/// hardlinks do too. `None` when the platform can't supply it (caller falls back to
+/// literal-path dedup).
+///
+/// Via the `file-id` crate, not `std::os::windows::fs::MetadataExt`, whose
+/// `volume_serial_number`/`file_index` are still nightly-only (`windows_by_handle`).
+#[cfg(any(unix, windows))]
+fn file_identity(path: &Path) -> Option<file_id::FileId> {
+    file_id::get_file_id(path).ok()
 }
 
 #[cfg(not(any(unix, windows)))]
-fn file_identity(_path: &Path) -> Option<(u64, u64)> {
+fn file_identity(_path: &Path) -> Option<file_id::FileId> {
     None
 }
 
