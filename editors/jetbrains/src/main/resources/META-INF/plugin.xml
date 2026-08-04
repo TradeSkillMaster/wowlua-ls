@@ -40,6 +40,13 @@
     <extensions defaultExtensionNs="com.intellij">
         <applicationService
                 serviceImplementation="com.tradeskillmaster.wowluals.WowLuaSettings"/>
+        <!-- Runs after LSP4IJ's order="first" handler: when the server resolves no
+             definition for a token (e.g. `{}`), it returns a no-op target at the
+             caret so IntelliJ doesn't fall back to jumping to the top of the file.
+             See WowLuaGotoDeclarationHandler for the full rationale. -->
+        <gotoDeclarationHandler
+                order="last"
+                implementation="com.tradeskillmaster.wowluals.lsp4ij.WowLuaGotoDeclarationHandler"/>
     </extensions>
 
     <extensions defaultExtensionNs="com.redhat.devtools.lsp4ij">
