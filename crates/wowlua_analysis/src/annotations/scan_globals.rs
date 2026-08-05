@@ -210,6 +210,41 @@ fn collect_all_local_names(root: &SyntaxNode<'_>) -> HashSet<String> {
     locals
 }
 
+/// Collect the full dotted paths of every *named table-constructor key* assigned
+/// to a namespace/field path in the file — e.g. `NS.sel = { encounterIndex = 1 }`
+/// yields `"NS.sel.encounterIndex"`. A field listed here has a *structural data
+/// definition* (it's a key in its receiver's constructor), so a later
+/// forwarded-identifier write to it (`NS.sel.encounterIndex = param`) must NOT be
+/// promoted to callable-or-unknown (`function & table`): that would clobber the
+/// real (data) type and cause spurious `return-mismatch`/`type-mismatch`. Only
+/// the constructor's top-level keys are recorded (a deeper nested key falls back
+/// to the callable-or-unknown default, unchanged). Mirrors the in-function scan's
+/// `_G.` redirect so the two path spaces line up.
+fn collect_ctor_key_paths(root: &SyntaxNode<'_>, local_vars: &HashSet<String>) -> HashSet<String> {
+    let mut paths: HashSet<String> = HashSet::new();
+    for node in root.descendants() {
+        let Some(Statement::Assign(assign)) = Statement::cast(node) else { continue };
+        let Some(var_list) = assign.variable_list() else { continue };
+        let rhs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
+        for (i, ident) in var_list.identifiers().iter().enumerate() {
+            let Some(Expression::TableConstructor(tc)) = rhs.get(i) else { continue };
+            if ident.has_non_string_bracket_tail() || ident.has_prefix_expr_base() { continue; }
+            let mut names = ident.names();
+            if names.len() >= 2 && names[0] == "_G" && !local_vars.contains(&names[0]) {
+                names.remove(0);
+            }
+            if names.is_empty() { continue; }
+            let base = names.join(".");
+            for field in tc.fields() {
+                if let Some(crate::ast::FieldKind::Named { name, .. }) = field.kind() {
+                    paths.insert(format!("{base}.{name}"));
+                }
+            }
+        }
+    }
+    paths
+}
+
 /// Extract named field kinds from a table constructor for `FieldValueKind::Table`.
 fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>) -> Vec<(String, FieldValueKind)> {
     let mut fields = Vec::new();
@@ -1410,6 +1445,11 @@ pub fn scan_file_globals_with_synth(
     // typed/bare self-field scanners use to gate a colon method's receiver.
     // Built lazily only when a deeply-nested `self.field = ...` needs it.
     let mut self_field_var_to_class: Option<HashMap<String, String>> = None;
+    // Dotted paths of table-constructor keys (`NS.sel = { encounterIndex = … }`),
+    // used to keep a forwarded-identifier write to such a structurally-defined
+    // data field from being promoted to callable-or-unknown. Built lazily on the
+    // first non-`self` identifier-RHS field write.
+    let mut ctor_key_paths: Option<HashSet<String>> = None;
     for node in root.descendants() {
         let Some(Statement::Assign(assign)) = Statement::cast(node) else { continue };
         let Some(var_list) = assign.variable_list() else { continue };
@@ -1602,7 +1642,26 @@ pub fn scan_file_globals_with_synth(
             let root_is_self = root_name.as_str() == "self";
             let field_value_kind = match rhs_exprs.get(target_idx) {
                 Some(Expression::Function(_)) => FieldValueKind::Function,
-                Some(Expression::Identifier(_)) if !root_is_self => FieldValueKind::MaybeCallable,
+                Some(Expression::Identifier(_)) if !root_is_self => {
+                    // A leaf that is *also* a named key in its receiver's table
+                    // constructor (`NS.sel = { encounterIndex = … }`) is a data
+                    // field with a structural definition; a forwarded-identifier
+                    // write to it (`NS.sel.encounterIndex = data.index`) must stay
+                    // existence-only, NOT be promoted to callable-or-unknown
+                    // (`function & table`) — that clobbers the real (data) type and
+                    // false-positives `return-mismatch`/`type-mismatch`. Fields
+                    // with no such structural definition (a genuine forwarded
+                    // callback like `ns.OnClick = handler`) keep the callable-or-
+                    // unknown default.
+                    let is_ctor_data_field = ctor_key_paths
+                        .get_or_insert_with(|| collect_ctor_key_paths(&root, &local_vars))
+                        .contains(&names.join("."));
+                    if is_ctor_data_field {
+                        FieldValueKind::Unknown
+                    } else {
+                        FieldValueKind::MaybeCallable
+                    }
+                }
                 _ => FieldValueKind::Unknown,
             };
             let range = assign.syntax().text_range();
@@ -1889,4 +1948,53 @@ pub fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor<'_>) -
         }
     }
     if fields.is_empty() { None } else { Some(AnnotationType::TableLiteral(fields)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A forwarded-identifier write to a namespace field that is *also* a named
+    /// key in its receiver's table constructor (a structural data field) must
+    /// register existence-only (`Unknown`), NOT callable-or-unknown
+    /// (`MaybeCallable` → `function & table`): the speculative callable type would
+    /// clobber the real data type and false-positive `return-mismatch`/
+    /// `type-mismatch` on later reads. A forwarded write to a field with *no*
+    /// constructor key (a genuine callback holder like `ns.OnClick = handler`)
+    /// keeps `MaybeCallable`. Regression for the AddonProfiler `function & table`
+    /// report on `ns.currentHistorySelection.encounterIndex`.
+    #[test]
+    fn ctor_key_field_forwarded_write_is_not_callable() {
+        let src = "\
+local _, ns = ...
+ns.sel = { encounterIndex = SENTINEL, combatIndex = SENTINEL }
+function ns.setup(data)
+    ns.sel.encounterIndex = data.index
+    ns.OnClick = data.handler
+end
+";
+        let tree = crate::syntax::parser::parse(src);
+        let root = SyntaxNode::new_root(&tree);
+        let globals = scan_file_globals(root, None);
+
+        let field_kind = |field: &str| -> Option<&FieldValueKind> {
+            globals.iter().find_map(|g| match &g.kind {
+                ExternalGlobalKind::TableField(_, name, kind) if name == field => Some(kind),
+                _ => None,
+            })
+        };
+
+        assert!(
+            matches!(field_kind("encounterIndex"), Some(FieldValueKind::Unknown)),
+            "a constructor-key data field re-assigned via a forwarded identifier \
+             must stay existence-only (Unknown), got {:?}",
+            field_kind("encounterIndex"),
+        );
+        assert!(
+            matches!(field_kind("OnClick"), Some(FieldValueKind::MaybeCallable)),
+            "a forwarded-identifier field with no constructor key must stay \
+             callable-or-unknown (MaybeCallable), got {:?}",
+            field_kind("OnClick"),
+        );
+    }
 }
