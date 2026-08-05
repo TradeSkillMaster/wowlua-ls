@@ -295,7 +295,7 @@ pub(super) fn handle_document_diagnostic(
         // Not open: read from disk, parse, and analyze on demand.
         if is_toc_extension(&path) {
             // TOC file not currently open — parse as TOC and run TOC diagnostics.
-            match std::fs::read_to_string(&path) {
+            match crate::syntax::read_source_file(&path) {
                 Ok(text) => {
                     let toc = crate::toc::parse_toc(&text);
                     let toc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
@@ -305,7 +305,7 @@ pub(super) fn handle_document_diagnostic(
                 Err(_) => Vec::new(),
             }
         } else {
-            match std::fs::read_to_string(&path) {
+            match crate::syntax::read_source_file(&path) {
                 Ok(text) => {
                     if crate::has_shebang(&text) {
                         Vec::new()

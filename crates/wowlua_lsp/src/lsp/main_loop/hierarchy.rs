@@ -123,7 +123,7 @@ pub(super) fn find_references_across_workspace(
             let (analyzed, fresh) = if let Some(a) = cached.get(path) {
                 (Arc::clone(a), false)
             } else {
-                let text = std::fs::read_to_string(path).ok()?;
+                let text = crate::syntax::read_source_file(path).ok()?;
                 if crate::has_shebang(&text) { return None; }
                 // Files lacking the name can't match. Skip without parsing; they
                 // stay uncached (a fresh read off the OS page cache is cheap).
@@ -211,7 +211,7 @@ pub(super) fn find_implementations_across_workspace(
             let text = if let Some(doc) = documents.get(&uri_str) {
                 doc.text.as_str()
             } else {
-                owned_text = match std::fs::read_to_string(path) {
+                owned_text = match crate::syntax::read_source_file(path) {
                     Ok(t) => t,
                     Err(_) => continue,
                 };
@@ -248,7 +248,7 @@ pub(super) fn build_type_hierarchy_item_for_class(
             let text = if let Some(doc) = documents.get(&uri_str) {
                 doc.text.as_str()
             } else {
-                owned_text = std::fs::read_to_string(path).ok()?;
+                owned_text = crate::syntax::read_source_file(path).ok()?;
                 owned_text.as_str()
             };
             let numbers = crate::lsp::SafeLinePositions::new(text);
@@ -274,7 +274,7 @@ pub(super) fn build_type_hierarchy_item_for_class(
         if let Some((start, end)) = class.def_range
             && let Some(path) = class.def_path.as_ref()
             && let Some(uri) = abs_path_to_uri(path)
-            && let Ok(text) = std::fs::read_to_string(path)
+            && let Ok(text) = crate::syntax::read_source_file(path)
         {
             let numbers = crate::lsp::SafeLinePositions::new(text.as_str());
             let range = Range {
@@ -296,7 +296,7 @@ pub(super) fn build_type_hierarchy_item_for_class(
     // Fall back to pre_globals class locations (external stubs without ClassDecl).
     if let Some(loc) = ws.pre_globals.class_locations.get(class_name) {
         let uri = abs_path_to_uri(&loc.path)?;
-        let text = std::fs::read_to_string(&loc.path).ok()?;
+        let text = crate::syntax::read_source_file(&loc.path).ok()?;
         let numbers = crate::lsp::SafeLinePositions::new(text.as_str());
         let range = Range {
             start: pos_from_numbers(&numbers, loc.start),
@@ -432,7 +432,7 @@ pub(super) fn build_call_hierarchy_item_for_external(
     loc: &crate::types::ExternalLocation,
 ) -> Option<CallHierarchyItem> {
     let ext_uri = abs_path_to_uri(&loc.path)?;
-    let text = std::fs::read_to_string(&loc.path).ok()?;
+    let text = crate::syntax::read_source_file(&loc.path).ok()?;
     let numbers = crate::lsp::SafeLinePositions::new(text.as_str());
     let range = Range {
         start: pos_from_numbers(&numbers, loc.start),
@@ -545,7 +545,7 @@ pub(super) fn handle_incoming_calls(
         let disk_results: Vec<DiskResult> = unopened
             .par_iter()
             .filter_map(|&path| {
-                let text = std::fs::read_to_string(path).ok()?;
+                let text = crate::syntax::read_source_file(path).ok()?;
                 if crate::has_shebang(&text) { return None; }
                 if !text.contains(&func_name) { return None; }
                 let tree = crate::syntax::parser::parse(&text);
@@ -783,7 +783,7 @@ pub fn search_workspace_symbols(
                       cache: &mut HashMap<PathBuf, Option<String>>| -> Option<Location> {
         if !loc.path.is_absolute() { return None; }
         let text = cache.entry(loc.path.clone()).or_insert_with(|| {
-            std::fs::read_to_string(&loc.path).ok()
+            crate::syntax::read_source_file(&loc.path).ok()
         });
         let text = text.as_ref()?;
         let numbers = crate::lsp::SafeLinePositions::new(text);
@@ -904,7 +904,7 @@ pub(super) fn resolve_external_location(
 
     // Try reading the file on disk first (works in dev mode with stubs checkout)
     let (text, file_uri) = if loc.path.exists() {
-        let text = std::fs::read_to_string(&loc.path).ok()?;
+        let text = crate::syntax::read_source_file(&loc.path).ok()?;
         let file_uri = abs_path_to_uri(&loc.path)?;
         (text, file_uri)
     } else {

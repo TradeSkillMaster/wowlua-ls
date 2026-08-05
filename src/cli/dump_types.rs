@@ -31,7 +31,7 @@ pub fn run(dir: PathBuf, with_stubs: bool) -> CliResult {
 
     // Analyze every file and dump hover types for all Name tokens
     for path in &lua_files {
-        let text = match std::fs::read_to_string(path) {
+        let text = match syntax::read_source_file(path) {
             Ok(t) => t,
             Err(_) => continue,
         };

@@ -74,7 +74,7 @@ pub fn run(dir: PathBuf) -> CliResult {
     let mut total_diag = std::time::Duration::ZERO;
 
     for (i, path) in lua_files.iter().enumerate() {
-        let text = match std::fs::read_to_string(path) {
+        let text = match syntax::read_source_file(path) {
             Ok(t) => t,
             Err(_) => continue,
         };
@@ -143,7 +143,7 @@ pub fn run(dir: PathBuf) -> CliResult {
     // Simulate interactive editing: measure per-edit cost
     info!("── Interactive edit simulation ──");
     let slowest = &file_times[0].0;
-    let slowest_text = std::fs::read_to_string(slowest).unwrap();
+    let slowest_text = syntax::read_source_file(slowest).unwrap();
     let slowest_name = slowest.strip_prefix(&dir).unwrap_or(slowest);
 
     let all_globals: Vec<_> = stub_globals.iter().chain(ws_globals.iter()).cloned().collect();

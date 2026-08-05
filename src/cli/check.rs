@@ -75,7 +75,7 @@ fn analyze_one_file(
     include_hints: bool,
 ) -> FileResult {
     let mut fr = FileResult::default();
-    let text = match std::fs::read_to_string(path) {
+    let text = match syntax::read_source_file(path) {
         Ok(t) => t,
         Err(_) => return fr,
     };
@@ -315,7 +315,7 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
             let file_disabled = project_configs.disabled_diagnostics_for(fpath);
             if file_disabled.contains("unused-function") { continue; }
             let file_severity = project_configs.severity_overrides_for(fpath);
-            let text = match std::fs::read_to_string(fpath) {
+            let text = match syntax::read_source_file(fpath) {
                 Ok(t) => t,
                 Err(_) => continue,
             };

@@ -417,7 +417,17 @@ impl<'a> Lexer<'a> {
             }
         };
         let ch = s.chars().next().unwrap();
-        if ch.is_alphabetic() {
+        // A leading UTF-8 BOM (U+FEFF) isn't classified as Unicode whitespace,
+        // so without this it would lex to an Invalid token and the parser would
+        // report a spurious "unexpected token" at offset 0. Skip it as trivia,
+        // matching Lua's own `skipBOM`. Both editors (before `didOpen`) and our
+        // disk reads (`read_source_file`) normally strip the BOM first; this is
+        // the fallback for text that reaches the lexer unstripped. Keeping it as
+        // a position-occupying token preserves byte offsets.
+        if start == 0 && ch == '\u{FEFF}' {
+            self.pos = start + ch.len_utf8() as u32;
+            Token::new(SK::Whitespace, start, self.pos)
+        } else if ch.is_alphabetic() {
             // Non-ASCII identifier — scan remaining alphanumeric/underscore chars
             self.pos = start + ch.len_utf8() as u32;
             while self.pos < self.len() {

@@ -265,7 +265,7 @@ pub(super) fn ensure_stub_doc_analyzed(
         // there is nothing to send afterwards.
         if is_stub_path(uri)
             && let Some(path) = uri_to_abs_path(uri)
-            && let Ok(text) = std::fs::read_to_string(&path)
+            && let Ok(text) = crate::syntax::read_source_file(&path)
         {
             let (tree, analysis) = analyze_lua(uri, &text, &ws.pre_globals, &ws.configs);
             documents.insert(uri_key, Document {
@@ -1399,7 +1399,7 @@ pub(super) fn handle_notification(
                     // Re-analyze from disk to pick up the saved changes.
                     uri_to_abs_path(&params.text_document.uri)
                         .and_then(|path| {
-                            let text = std::fs::read_to_string(&path).ok()?;
+                            let text = crate::syntax::read_source_file(&path).ok()?;
                             if is_toc_extension(&path) {
                                 let toc = crate::toc::parse_toc(&text);
                                 let toc_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();

@@ -93,7 +93,7 @@ pub(super) fn compute_ws_diagnostics(
             if should_cancel() {
                 return None;
             }
-            let text = std::fs::read_to_string(path).ok()?;
+            let text = crate::syntax::read_source_file(path).ok()?;
             if crate::has_shebang(&text) {
                 return None;
             }
@@ -507,7 +507,7 @@ pub(super) fn mark_meta_globals(globals: &mut [ExternalGlobal], has_meta: bool) 
 }
 
 pub(super) fn scan_lua_file(path: &Path, correlated_returns: CorrelatedReturns, protected_prefix: ProtectedPrefix, creates_global_specs: &crate::annotations::CreatesGlobalMap) -> Option<LuaFileScanResult> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::syntax::read_source_file(path).ok()?;
     if crate::has_shebang(&text) { return None; }
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -604,7 +604,7 @@ pub fn scan_paths_with_overrides(
             let defclass_ctx = DefclassContext::new(&all_globals, &all_classes);
             let defclass_classes: Vec<ClassDecl> = paths.par_iter()
                 .filter_map(|p| {
-                    let text = std::fs::read_to_string(p).ok()?;
+                    let text = crate::syntax::read_source_file(p).ok()?;
                     if crate::has_shebang(&text) { return None; }
                     let tree = crate::syntax::parser::parse(&text);
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -632,7 +632,7 @@ pub fn scan_paths_with_overrides(
             let built_ctx = BuiltNameContext::new(&all_globals);
             let built_classes: Vec<ClassDecl> = paths.par_iter()
                 .filter_map(|p| {
-                    let text = std::fs::read_to_string(p).ok()?;
+                    let text = crate::syntax::read_source_file(p).ok()?;
                     if crate::has_shebang(&text) { return None; }
                     let tree = crate::syntax::parser::parse(&text);
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -711,7 +711,7 @@ pub fn scan_paths_with_overrides(
         if !known_classes.is_empty() {
             let per_file: Vec<_> = paths.par_iter()
                 .filter_map(|p| {
-                    let text = std::fs::read_to_string(p).ok()?;
+                    let text = crate::syntax::read_source_file(p).ok()?;
                     if crate::has_shebang(&text) { return None; }
                     let tree = crate::syntax::parser::parse(&text);
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -797,7 +797,7 @@ pub fn scan_paths_with_overrides(
         } else {
             let cfg = configs;
             let scanned: Vec<_> = paths.par_iter().filter_map(|p| {
-                let text = std::fs::read_to_string(p).ok()?;
+                let text = crate::syntax::read_source_file(p).ok()?;
                 if crate::has_shebang(&text) { return None; }
                 let tree = crate::syntax::parser::parse(&text);
                 let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -939,7 +939,7 @@ pub fn scan_workspace_with_stubs(
 /// Scan a Lua file, returning its source text and parsed tree alongside scan results.
 /// Used by scan_directory_tracked to cache parse results for the defclass/built-name pass.
 pub(super) fn scan_lua_file_cached(path: &Path, correlated_returns: CorrelatedReturns, protected_prefix: ProtectedPrefix) -> Option<CachedFileScan> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::syntax::read_source_file(path).ok()?;
     if crate::has_shebang(&text) { return None; }
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);

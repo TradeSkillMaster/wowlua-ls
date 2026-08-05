@@ -1132,6 +1132,20 @@ mod tests {
         assert!(dump.contains("\"5\""), "tree:\n{}", dump);
     }
 
+    /// Regression: a file saved with a leading UTF-8 BOM (common for non-ASCII
+    /// locale files on Windows) must parse cleanly. The BOM char U+FEFF isn't
+    /// Unicode-whitespace, so it previously lexed to an Invalid token at offset
+    /// 0 and the parser reported a spurious "unexpected token". Byte offsets
+    /// must stay put — the `local` statement still starts at byte 3.
+    #[test]
+    fn test_leading_bom_is_skipped() {
+        let tree = parse("\u{FEFF}local L = 5");
+        assert!(tree.errors.is_empty(), "errors: {:?}", tree.errors);
+        let dump = dump_tree(&tree);
+        assert!(dump.contains("LocalAssignStatement"), "tree:\n{}", dump);
+        assert!(dump.contains("\"L\""), "tree:\n{}", dump);
+    }
+
     #[test]
     fn test_function_def() {
         let tree = parse("function foo(x, y) return x + y end");

@@ -261,7 +261,7 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
         .and_then(|docs| docs.get(path).cloned());
     let text = match text {
         Some(t) => t,
-        None => match std::fs::read_to_string(path) {
+        None => match crate::syntax::read_source_file(path) {
             Ok(t) => t,
             Err(_) => return,
         },
@@ -411,7 +411,7 @@ fn harvest_call_globals_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
         .and_then(|docs| docs.get(path).cloned());
     let text = match text {
         Some(t) => t,
-        None => match std::fs::read_to_string(path) {
+        None => match crate::syntax::read_source_file(path) {
             Ok(t) => t,
             Err(_) => return,
         },
@@ -519,7 +519,7 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
         .and_then(|docs| docs.get(path).cloned());
     let text = match text {
         Some(t) => t,
-        None => match std::fs::read_to_string(path) {
+        None => match crate::syntax::read_source_file(path) {
             Ok(t) => t,
             Err(_) => return,
         },

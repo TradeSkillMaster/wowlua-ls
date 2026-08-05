@@ -33,7 +33,7 @@ fn dump_node_debug(tree: &syntax::tree::SyntaxTree, id: syntax::tree::NodeId, in
 }
 
 pub fn run(file: PathBuf, with_stubs: bool, rest: &[String]) -> CliResult {
-    let s = std::fs::read_to_string(&file)?;
+    let s = syntax::read_source_file(&file)?;
     let numbers = line_numbers::LinePositions::from(s.as_str());
 
     let syntax_before = std::time::Instant::now();

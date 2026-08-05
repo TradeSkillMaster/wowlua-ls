@@ -164,7 +164,7 @@ fn build_related_information(
     for ri in related {
         let (rel_uri, rel_text_opt): (Uri, Option<String>) = if let Some(ref path) = ri.file_path {
             let Some(uri) = super::uri::abs_path_to_uri(path) else { continue };
-            let text = std::fs::read_to_string(path).ok();
+            let text = crate::syntax::read_source_file(path).ok();
             (uri, text)
         } else {
             (current_uri.clone(), Some(current_text.to_owned()))
