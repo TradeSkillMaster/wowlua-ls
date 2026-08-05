@@ -3441,7 +3441,7 @@ impl<'a> Analysis<'a> {
                     if is_inline { break; }
                 }
                 let text = token.text();
-                if Analysis::comment_is_tag(text, "---@cast") || text.starts_with("--[[@cast") {
+                if crate::annotations::is_cast_comment(text) {
                     cast_lines.push(text.to_string());
                 }
                 tok = token.prev_token();
@@ -3502,7 +3502,7 @@ impl<'a> Analysis<'a> {
             // rarely contains interleaved plain comments with @cast lines.
             if kind == SyntaxKind::Comment {
                 let text = token.text();
-                if Analysis::comment_is_tag(text, "---@cast") || text.starts_with("--[[@cast") {
+                if crate::annotations::is_cast_comment(text) {
                     cast_lines.push(text.to_string());
                     newlines_since_cast = 0;
                     tok = token.prev_token();
@@ -3517,24 +3517,8 @@ impl<'a> Analysis<'a> {
 
     fn apply_cast_lines(&mut self, cast_lines: &[String], scope_idx: ScopeIndex) {
         for line in cast_lines {
-            // Parse both ---@cast and --[[@cast forms
-            let content = if let Some(rest) = line.strip_prefix("---@cast") {
-                rest.trim()
-            } else if let Some(rest) = line.strip_prefix("--[[@cast") {
-                rest.trim().trim_end_matches("]]").trim()
-            } else {
-                continue;
-            };
-            let Some((var_name, type_str)) = content.split_once(char::is_whitespace) else { continue };
-            let type_str = type_str.trim();
-            let (mode, type_str) = if let Some(s) = type_str.strip_prefix('+') {
-                (CastMode::Add, s.trim())
-            } else if let Some(s) = type_str.strip_prefix('-') {
-                (CastMode::Remove, s.trim())
-            } else {
-                (CastMode::Replace, type_str)
-            };
-            if type_str.is_empty() { continue; }
+            // Parse ---@cast, --- @cast (spaced), and --[[@cast forms.
+            let Some((var_name, mode, type_str)) = crate::annotations::parse_cast_comment(line) else { continue };
             let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(var_name.to_string()), scope_idx) else { continue };
             if sym_idx.is_external() { continue; }
             let ann_type = crate::annotations::parse_type(type_str);
@@ -3609,7 +3593,8 @@ impl<'a> Analysis<'a> {
                     if is_inline { break; }
                 }
                 let text = token.text();
-                if let Some(rest) = text.strip_prefix("---@correlated")
+                if let Some(rest) = crate::annotations::strip_line_annotation_prefix(text)
+                    .and_then(|b| b.strip_prefix("correlated"))
                     .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace)) {
                     let names: Vec<&str> = rest.split(',')
                         .map(|s| s.trim())
@@ -3717,11 +3702,13 @@ impl<'a> Analysis<'a> {
     /// Supports both `--[[@as Type]]` and `--[=[@as Type[]]=]` (equal-sign block comments for array types).
     pub(super) fn extract_inline_as(expr_node: SyntaxNode<'_>) -> Option<AnnotationType> {
         let last_token = expr_node.last_token()?;
-        // First try: scan forward from the last token (comment is outside the node)
+        // First try: scan forward from the last token (comment is outside the node).
+        // A trailing statement-terminator `;` is skipped so `local x = e; --[[@as T]]`
+        // still binds the cast to `e` (a `)`/keyword still stops over-reach).
         let mut tok = last_token.next_token();
         while let Some(t) = tok {
             match t.kind() {
-                SyntaxKind::Whitespace => {
+                SyntaxKind::Whitespace | SyntaxKind::Semicolon => {
                     tok = t.next_token();
                 }
                 SyntaxKind::Comment => {

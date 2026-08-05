@@ -29,8 +29,12 @@ impl DiagnosticPass for AnnotationMetadata {
             continue;
         }
         let text = tok.text();
+        // Route through the spaced-aware prefix stripper so the doc-comment style
+        // `--- @class`/`--- @field`/… is tracked for duplicate detection too, not
+        // just the tight `---@class` form.
+        let Some(after_at) = crate::annotations::strip_line_annotation_prefix(text) else { continue };
 
-        let after = text.strip_prefix("---@class ").or_else(|| text.strip_prefix("---@enum "));
+        let after = after_at.strip_prefix("class ").or_else(|| after_at.strip_prefix("enum "));
         if let Some(after) = after {
             let after = crate::annotations::strip_class_modifier(after);
             let name = after.split(|c: char| c.is_whitespace() || c == '<' || c == ':')
@@ -41,7 +45,7 @@ impl DiagnosticPass for AnnotationMetadata {
             continue;
         }
 
-        if let Some(rest) = text.strip_prefix("---@constructor") {
+        if let Some(rest) = after_at.strip_prefix("constructor") {
             let rest = rest.trim();
             if !rest.is_empty()
                 && let Some(ref class_name) = current_class
@@ -60,7 +64,7 @@ impl DiagnosticPass for AnnotationMetadata {
             continue;
         }
 
-        if let Some(rest) = text.strip_prefix("---@alias ") {
+        if let Some(rest) = after_at.strip_prefix("alias ") {
             let rest = rest.strip_prefix("(opaque)").map(|r| r.trim_start()).unwrap_or(rest);
             let name = rest.split(|c: char| c.is_whitespace() || c == '<' || c == ':')
                 .next().unwrap_or("");
@@ -75,7 +79,7 @@ impl DiagnosticPass for AnnotationMetadata {
             continue;
         }
 
-        if let Some(rest) = text.strip_prefix("---@field ") {
+        if let Some(rest) = after_at.strip_prefix("field ") {
             if let Some(ref class_name) = current_class {
                 let rest = rest.strip_prefix("private ").or_else(|| rest.strip_prefix("protected "))
                     .or_else(|| rest.strip_prefix("public ")).unwrap_or(rest);

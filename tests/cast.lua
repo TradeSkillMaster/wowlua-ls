@@ -372,3 +372,60 @@ local castBlankVal = "hello"
 -- unrelated section header
 print(castBlankVal)
 --    ^ hover: (local) castBlankVal: string = "hello"
+
+-- ── @cast spaced line comment '--- @cast' (regression) ──────────────────────
+-- A space after the leading dashes (`--- @cast`, the common doc-comment style)
+-- must apply the cast identically to the tight `---@cast` form. Previously the
+-- scan recognized the spaced form but the apply path dropped it, so the cast
+-- silently had no effect.
+
+---@type string|number|nil
+local spacedCast = nil
+
+--- @cast spacedCast string
+print(spacedCast)
+--    ^ hover: (local) spacedCast: string  def: local
+
+-- ── @cast spaced block comment '--[[ @cast ... ]]' (regression) ─────────────
+-- The block form tolerates inner spaces too.
+
+---@type any
+local spacedBlock = nil
+
+--[[ @cast spacedBlock number ]]
+print(spacedBlock)
+--    ^ hover: (local) spacedBlock: number
+
+-- ── @cast spaced +add / -remove forms ───────────────────────────────────────
+
+---@type string
+local spacedAdd = "hi"
+
+--- @cast spacedAdd +number
+print(spacedAdd)
+--    ^ hover: (local) spacedAdd: string | number  def: local
+
+---@type string|number|nil
+local spacedRem = nil
+
+--- @cast spacedRem -nil
+print(spacedRem)
+--    ^ hover: (local) spacedRem: string | number  def: local
+
+-- ── @cast spaced form with unknown type (undefined-doc-name) ────────────────
+-- The type-name validation must also see the spaced form.
+
+---@type any
+local spacedUnknown = nil
+
+--- @cast spacedUnknown NoSuchTypeHere
+--^ diag: undefined-doc-name
+print(spacedUnknown)
+
+-- ── @as after a trailing semicolon (regression) ────────────────────────────────
+-- A `;` statement terminator between the expression and the `--[[@as]]` comment
+-- must not block the cast.
+
+local semiAs = nil; --[[@as string]]
+print(semiAs)
+--    ^ hover: (local) semiAs: string  def: local

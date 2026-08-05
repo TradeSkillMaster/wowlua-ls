@@ -66,7 +66,7 @@ impl DiagnosticPass for MalformedAnnotation {
             // isn't mis-parsed as this annotation's content (e.g. a `@class`
             // parent without a `:` separator).
             let text = crate::annotations::strip_trailing_diagnostic_directive(tok.text());
-            let Some(after_at) = text.strip_prefix("---@") else { continue };
+            let Some(after_at) = crate::annotations::strip_line_annotation_prefix(text) else { continue };
             // Skip @diagnostic — handled by unknown_diag_code::run
             if after_at.starts_with("diagnostic") { continue; }
 
@@ -78,7 +78,9 @@ impl DiagnosticPass for MalformedAnnotation {
             if tag.is_empty() { continue; }
 
             if !KNOWN_TAGS.contains(&tag) {
-                let tag_start = tok_start + 4;
+                // `after_at` is a suffix of `text` (which shares `tok`'s start), so
+                // its byte offset works for both `---@tag` and spaced `--- @tag`.
+                let tag_start = tok_start + (text.len() - after_at.len());
                 let tag_end = tag_start + tag.len();
                 check(diags, format!("unknown annotation '@{}'", tag), tag_start, tag_end);
                 continue;

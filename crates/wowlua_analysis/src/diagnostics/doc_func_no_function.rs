@@ -31,9 +31,7 @@ impl DiagnosticPass for DocFuncNoFunction {
             let kind = tok.kind();
             if kind == SyntaxKind::Comment {
                 let text = tok.text();
-                if let Some(after_at) = text.strip_prefix("---@")
-                    .or_else(|| text.strip_prefix("---").and_then(|s| s.trim_start().strip_prefix('@')))
-                {
+                if let Some(after_at) = crate::annotations::strip_line_annotation_prefix(text) {
                     let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
                     if tag == "class" {
                         has_class = true;

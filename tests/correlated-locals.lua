@@ -666,3 +666,24 @@ local function guardImplicationPartialAntecedent(a, b, c)
     return false
 end
 _consume(guardImplicationPartialAntecedent)
+
+-- ── Spaced '--- @correlated' honored (regression) ────────────────────────
+-- The spaced doc-comment style must register the correlation group exactly
+-- like the tight `---@correlated` form, so narrowing one sibling narrows the
+-- other.
+
+---@type number?
+local spCount = nil
+---@type number?
+local spOffset = nil
+--- @correlated spCount, spOffset
+for _j = 1, 10 do
+    if not spCount then
+        spCount = _j
+        spOffset = 0
+    elseif spOffset < spCount then
+--         ^ hover: (local) spOffset: number
+        spOffset = spOffset + 1
+    end
+end
+_consume(spCount, spOffset)

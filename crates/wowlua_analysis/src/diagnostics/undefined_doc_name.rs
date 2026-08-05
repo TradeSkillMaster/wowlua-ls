@@ -79,24 +79,9 @@ impl DiagnosticPass for UndefinedDocName {
             let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
-            let cast_content = if let Some(rest) = text.strip_prefix("---@cast") {
-                rest.trim()
-            } else if let Some(rest) = text.strip_prefix("--[[@cast") {
-                rest.trim().trim_end_matches("]]").trim()
-            } else {
-                continue;
-            };
-            // Parse: "varname TYPE" or "varname +TYPE" or "varname -TYPE"
-            let Some((_, type_str)) = cast_content.split_once(char::is_whitespace) else { continue };
-            let type_str = type_str.trim();
-            let type_str = if let Some(s) = type_str.strip_prefix('+') {
-                s.trim()
-            } else if let Some(s) = type_str.strip_prefix('-') {
-                s.trim()
-            } else {
-                type_str
-            };
-            if type_str.is_empty() { continue; }
+            // Recognizes ---@cast, --- @cast (spaced), and --[[@cast forms and
+            // strips any +/- add/remove prefix from the type.
+            let Some((_, _, type_str)) = crate::annotations::parse_cast_comment(text) else { continue };
             let r = tok.text_range();
             let start = u32::from(r.start()) as usize;
             let end = u32::from(r.end()) as usize;

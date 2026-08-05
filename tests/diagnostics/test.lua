@@ -4261,3 +4261,31 @@ _diagHolder.name = 42
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function
+
+-- ── Spaced doc-comment style '--- @tag' honored (regression) ─────────────
+-- A space after the leading dashes (`--- @tag`) must behave exactly like the
+-- tight `---@tag` form for duplicate detection and malformed-annotation checks.
+
+--- @class SpacedDupField
+--- @field hp number
+--- @field hp string
+-- ^ diag: duplicate-doc-field
+
+--- @alias SpacedDupAlias string
+--- @alias SpacedDupAlias number
+-- ^ diag: duplicate-doc-alias
+
+--- @class SpacedDupCtor
+--- @constructor fun(): SpacedDupCtor
+--- @constructor fun(x: number): SpacedDupCtor
+-- ^ diag: duplicate-constructor
+
+--- @retrun number
+-- ^ diag: malformed-annotation
+local spacedMalformed = 1
+_consume(spacedMalformed)
+
+--- @class
+-- ^ diag: malformed-annotation
+local spacedMalformed2 = {}
+_consume(spacedMalformed2)

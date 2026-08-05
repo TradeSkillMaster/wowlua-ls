@@ -417,6 +417,82 @@ pub enum CastMode {
     Remove,   // ---@cast x -string
 }
 
+/// Parse a `@cast` comment into `(var_name, mode, type_str)`.
+///
+/// Accepts every form the comment scanners recognize: the tight line comment
+/// (`---@cast x T`), the spaced line comment (`--- @cast x T`), and the block
+/// comment (`--[[@cast x T]]` / `--[[ @cast x T ]]`). Returns `None` when the
+/// text isn't a well-formed cast directive. Locating the tag past the comment
+/// delimiter (rather than stripping a fixed `---@cast` prefix) is what keeps the
+/// spaced variant from being silently dropped by downstream consumers. The
+/// spaced form is exactly one optional space, matching [`strip_line_annotation_prefix`].
+pub fn parse_cast_comment(text: &str) -> Option<(&str, CastMode, &str)> {
+    let body = if let Some(rest) = text.strip_prefix("--[[") {
+        rest.trim_end_matches("]]")
+    } else {
+        text.strip_prefix("---")?
+    };
+    let after = body.strip_prefix(' ').unwrap_or(body).strip_prefix("@cast")?;
+    // Require a boundary after the tag so `@casting`/`@castfoo` don't match.
+    if after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    let content = after.trim_end_matches("]]").trim();
+    let (var_name, type_str) = content.split_once(char::is_whitespace)?;
+    let type_str = type_str.trim();
+    let (mode, type_str) = if let Some(s) = type_str.strip_prefix('+') {
+        (CastMode::Add, s.trim())
+    } else if let Some(s) = type_str.strip_prefix('-') {
+        (CastMode::Remove, s.trim())
+    } else {
+        (CastMode::Replace, type_str)
+    };
+    if type_str.is_empty() {
+        return None;
+    }
+    Some((var_name, mode, type_str))
+}
+
+/// Strip a line doc-comment opener (`---` plus an optional single space) and the
+/// `@`, returning the annotation body (e.g. `class Foo` for both `---@class Foo`
+/// and `--- @class Foo`). Returns `None` for non-annotation comments. This is the
+/// canonical spaced-aware prefix stripper: the tight `---@tag` and spaced
+/// `--- @tag` doc-comment styles must behave identically everywhere a `@tag` is
+/// recognized, so line-comment tag scanners should route through here rather
+/// than stripping a fixed `---@` prefix (which silently drops the spaced form).
+///
+/// Leniency is deliberately exactly one space — the same as `comment_is_tag`
+/// and the `--- @class ` class-discovery / `find_field_comment_range` literals — so
+/// recognition stays uniform. Widening this to arbitrary whitespace would let a
+/// pass detect `---  @field` (two spaces) that the range/discovery sites can't
+/// locate, making detection and reporting disagree.
+pub fn strip_line_annotation_prefix(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("---")?;
+    rest.strip_prefix(' ').unwrap_or(rest).strip_prefix('@')
+}
+
+/// Whether a comment token is a `@cast` directive — the tight/spaced line forms
+/// (`---@cast`, `--- @cast`) or the block form (`--[[@cast`, `--[[ @cast`) —
+/// regardless of whether its body is well-formed. Recognition-only companion to
+/// [`parse_cast_comment`] (a proper superset: every string the parser accepts is
+/// recognized here), used by the comment scanners to decide what to collect.
+pub fn is_cast_comment(text: &str) -> bool {
+    let body = if let Some(rest) = text.strip_prefix("--[[") {
+        rest
+    } else if let Some(rest) = text.strip_prefix("---") {
+        rest
+    } else {
+        return false;
+    };
+    // One optional space after the opener, matching `parse_cast_comment`.
+    let body = body.strip_prefix(' ').unwrap_or(body);
+    match body.strip_prefix("@cast") {
+        // A boundary after the tag rules out `@casting`/`@castfoo`.
+        Some(rest) => !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'),
+        None => false,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClassDecl {
     pub name: String,
@@ -2097,5 +2173,44 @@ mod tests {
 
     fn empty_class_for_test(name: &str) -> ClassDecl {
         ClassDecl::for_test(name)
+    }
+
+    #[test]
+    fn strip_line_annotation_prefix_single_space_only() {
+        // Tight and single-space forms are equivalent.
+        assert_eq!(strip_line_annotation_prefix("---@class Foo"), Some("class Foo"));
+        assert_eq!(strip_line_annotation_prefix("--- @class Foo"), Some("class Foo"));
+        // Leniency is exactly one space — no more. This matches
+        // `comment_is_tag` and the `--- @class ` discovery/range literals, so
+        // detection and reporting can't disagree for 2+ spaces/tabs.
+        assert_eq!(strip_line_annotation_prefix("---  @class Foo"), None); // two spaces
+        assert_eq!(strip_line_annotation_prefix("---\t@class Foo"), None); // tab
+        // Non-annotations.
+        assert_eq!(strip_line_annotation_prefix("--- plain text"), None);
+        assert_eq!(strip_line_annotation_prefix("-- @class Foo"), None); // only two dashes
+        assert_eq!(strip_line_annotation_prefix("----@class Foo"), None); // four dashes
+    }
+
+    #[test]
+    fn cast_comment_single_space_only() {
+        // Recognition + parse agree, and both accept tight / single-space line
+        // and block forms — but not two spaces.
+        for form in ["---@cast x Foo", "--- @cast x Foo", "--[[@cast x Foo]]", "--[[ @cast x Foo ]]"] {
+            assert!(is_cast_comment(form), "should recognize: {form:?}");
+            assert_eq!(
+                parse_cast_comment(form),
+                Some(("x", CastMode::Replace, "Foo")),
+                "should parse: {form:?}",
+            );
+        }
+        // Two spaces / tab are not the spaced style.
+        assert!(!is_cast_comment("---  @cast x Foo"));
+        assert_eq!(parse_cast_comment("---  @cast x Foo"), None);
+        assert!(!is_cast_comment("---\t@cast x Foo"));
+        // +add / -remove modes still parse in the spaced form.
+        assert_eq!(parse_cast_comment("--- @cast x +Foo"), Some(("x", CastMode::Add, "Foo")));
+        assert_eq!(parse_cast_comment("--- @cast x -nil"), Some(("x", CastMode::Remove, "nil")));
+        // The tag boundary rules out `@casting`.
+        assert!(!is_cast_comment("---@casting x Foo"));
     }
 }

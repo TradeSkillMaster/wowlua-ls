@@ -66,7 +66,7 @@ fn collect_field_names_in_direction(start: Option<SyntaxToken>, forward: bool) -
 
 /// Extract a field name from a `---@field [visibility] name type` annotation comment.
 fn extract_field_name_from_annotation(text: &str) -> Option<String> {
-    let content = text.strip_prefix("---@field")?;
+    let content = crate::annotations::strip_line_annotation_prefix(text)?.strip_prefix("field")?;
     if !content.starts_with(' ') && !content.starts_with('\t') {
         return None;
     }
@@ -1548,7 +1548,11 @@ impl AnalysisResult {
         token: &SyntaxToken,
         snippets: bool,
     ) -> Option<Vec<lsp_types::CompletionItem>> {
+        // Allow one optional space after the dashes so the spaced doc-comment
+        // style `--- @` reaches tag completion the same as the tight `---@`
+        // (single space, matching `strip_line_annotation_prefix`).
         let after_dashes = prefix.trim_start_matches('-');
+        let after_dashes = after_dashes.strip_prefix(' ').unwrap_or(after_dashes);
 
         if !after_dashes.starts_with('@') {
             // Bare `---` with no `@` yet — offer "generate annotations" for the function below.
@@ -1699,9 +1703,7 @@ impl AnalysisResult {
             if kind == SyntaxKind::Comment {
                 let text = t.text();
                 if text.starts_with("---") {
-                    if let Some(after_at) = text.strip_prefix("---@")
-                        .or_else(|| text.strip_prefix("---").and_then(|s| s.trim_start().strip_prefix('@')))
-                    {
+                    if let Some(after_at) = crate::annotations::strip_line_annotation_prefix(text) {
                         let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
                         match tag {
                             "param" | "return" | "generic" | "builds-field" | "built-name"
@@ -2087,9 +2089,7 @@ impl AnalysisResult {
             if kind == SyntaxKind::Comment {
                 let text = t.text();
                 if text.starts_with("---") {
-                    if let Some(after_at) = text.strip_prefix("---@")
-                        .or_else(|| text.strip_prefix("---").and_then(|s| s.trim_start().strip_prefix('@')))
-                    {
+                    if let Some(after_at) = crate::annotations::strip_line_annotation_prefix(text) {
                         let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
                         match tag {
                             "param" | "return" | "generic" | "overload" => return true,
