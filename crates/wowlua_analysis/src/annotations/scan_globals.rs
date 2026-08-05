@@ -1141,22 +1141,35 @@ pub fn scan_file_globals_with_synth(
                             } else {
                                 annotations.var_type.into_iter().collect()
                             };
-                            let (ns, ne) = idents[0].syntax().children_with_tokens()
-                                .find_map(|c| match c {
+                            // Name-token range for precise navigation. Uses the LAST
+                            // Name token so a redirected `_G.X = ...` points at the
+                            // trailing `X`, not the leading `_G`; a bare `X = ...` has a
+                            // single Name token, so this is unchanged. When the write
+                            // was redirected from `_G.X`, narrow the def range to the
+                            // same span so go-to-definition / find-usages lands on `X`
+                            // rather than on `_G` at the start of the statement.
+                            let (ns, ne) = idents[0].syntax().descendants_with_tokens()
+                                .filter_map(|c| match c {
                                     NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
                                         let r = t.text_range();
                                         Some((u32::from(r.start()), u32::from(r.end())))
                                     }
                                     _ => None,
                                 })
+                                .last()
                                 .unwrap_or((u32::from(range.start()), u32::from(range.end())));
+                            let (def_s, def_e) = if was_g_redirect {
+                                (ns, ne)
+                            } else {
+                                (u32::from(range.start()), u32::from(range.end()))
+                            };
                             globals.push(ExternalGlobal {
                                 name: names[0].clone(), kind,
                                 params: Vec::new(), returns, return_names: Vec::new(), return_descriptions: Vec::new(), overloads: Vec::new(),
                                 doc: None, deprecated: false, nodiscard: false, constructor: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
-                                def_start: u32::from(range.start()), def_end: u32::from(range.end()),
+                                def_start: def_s, def_end: def_e,
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
                                 string_value, number_value,
                                 is_override: false,
@@ -1509,6 +1522,13 @@ pub fn scan_file_globals_with_synth(
                 let (ns, ne) = last_name_range
                     .map(|r| (u32::from(r.start()), u32::from(r.end())))
                     .unwrap_or((u32::from(range.start()), u32::from(range.end())));
+                // A `_G.X = ...` redirect defines `X`; narrow the def range to the
+                // `X` name token so navigation lands there, not on the leading `_G`.
+                let (def_s, def_e) = if was_g_redirect {
+                    (ns, ne)
+                } else {
+                    (u32::from(range.start()), u32::from(range.end()))
+                };
                 globals.push(ExternalGlobal {
                     name: name.clone(),
                     kind: ExternalGlobalKind::Variable(FieldValueKind::Unknown),
@@ -1516,7 +1536,7 @@ pub fn scan_file_globals_with_synth(
                     doc: None, deprecated: false, nodiscard: false, constructor: false,
                     visibility: Visibility::Public, generics: Vec::new(),
                     defclass: None, defclass_parent: None, source_path: owned_path.clone(),
-                    def_start: u32::from(range.start()), def_end: u32::from(range.end()),
+                    def_start: def_s, def_end: def_e,
                     builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
                     string_value: None, number_value: None,
                     is_override: false,
@@ -1996,5 +2016,48 @@ end
              callable-or-unknown (MaybeCallable), got {:?}",
             field_kind("OnClick"),
         );
+    }
+
+    fn scan(src: &str) -> Vec<super::ExternalGlobal> {
+        let tree = crate::syntax::parser::parse(src);
+        let root = SyntaxNode::new_root(&tree);
+        scan_file_globals(root, Some(Path::new("test.lua")))
+    }
+
+    // A `_G.X = ...` explicit-global write records its definition (and name)
+    // range at the trailing `X` token, not the whole `_G.X = ...` statement
+    // (which starts at `_G`). Otherwise go-to-definition / find-usages resolves
+    // to `_G` at offset 0 — the IntelliJ bug where navigation jumped to the top
+    // of the file / showed `_G`'s usages instead of the global's.
+    #[test]
+    fn g_dot_global_def_range_is_the_name_token() {
+        // `_G.` occupies bytes 0..3, `Thingy` bytes 3..9.
+        let g = scan("_G.Thingy = {}\n");
+        let g = g.iter().find(|g| g.name == "Thingy").expect("global Thingy");
+        assert_eq!((g.def_start, g.def_end), (3, 9), "def range = `Thingy` token");
+        assert_eq!((g.name_start, g.name_end), (3, 9), "name range = `Thingy` token");
+    }
+
+    // The same narrowing applies to a `_G.X = ...` write nested in a function
+    // body, which is registered (existence-only) by the descendants pass rather
+    // than the main statement loop.
+    #[test]
+    fn g_dot_global_in_function_def_range_is_the_name_token() {
+        // `function f() ` is bytes 0..13, `_G.` bytes 13..16, `Thingy` bytes 16..22.
+        let g = scan("function f() _G.Thingy = {} end\n");
+        let g = g.iter().find(|g| g.name == "Thingy").expect("global Thingy");
+        assert_eq!((g.def_start, g.def_end), (16, 22), "def range = `Thingy` token");
+        assert_eq!((g.name_start, g.name_end), (16, 22), "name range = `Thingy` token");
+    }
+
+    // A bare `X = ...` global is unchanged: its name already sits at the
+    // statement start, so the def range stays the whole statement.
+    #[test]
+    fn bare_global_def_range_unchanged() {
+        // `Thingy` bytes 0..6, statement `Thingy = {}` bytes 0..11.
+        let g = scan("Thingy = {}\n");
+        let g = g.iter().find(|g| g.name == "Thingy").expect("global Thingy");
+        assert_eq!((g.def_start, g.def_end), (0, 11), "def range = whole statement");
+        assert_eq!((g.name_start, g.name_end), (0, 6), "name range = `Thingy` token");
     }
 }

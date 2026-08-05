@@ -1391,6 +1391,10 @@ impl<'a> Analysis<'a> {
                 // _G[var] = v   → silently allow (dynamic key, no diagnostics)
                 // _G.field = v  → treat as `field = v`
                 let mut g_redirected = false;
+                // Byte range of the redirected field-name token (`X` in `_G.X`), so
+                // the resulting global's def points at `X` rather than the whole
+                // `_G.X = ...` statement (which starts at `_G`). `None` for bare writes.
+                let mut g_redirect_name_range: Option<(u32, u32)> = None;
                 if names.first().map(|s| s.as_str()) == Some("_G") && self.is_g_external(scope_idx) {
                     let ident_kind = ident.syntax().kind();
                     if ident_kind == SyntaxKind::BracketAccess {
@@ -1406,6 +1410,15 @@ impl<'a> Analysis<'a> {
                         }
                     } else if ident_kind == SyntaxKind::DotAccess && names.len() == 2 {
                         let field_name = names.remove(1);
+                        g_redirect_name_range = ident.syntax().descendants_with_tokens()
+                            .filter_map(|c| match c {
+                                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
+                                    let r = t.text_range();
+                                    Some((u32::from(r.start()), u32::from(r.end())))
+                                }
+                                _ => None,
+                            })
+                            .last();
                         names = vec![field_name];
                         g_redirected = true;
                     }
@@ -1445,7 +1458,17 @@ impl<'a> Analysis<'a> {
                     } else if ident.is_indexed_expression() && !g_redirected {
                         self.build_assign_bracket_index(ctx, target, &mut cached_multi_ret_call);
                     } else {
-                        self.build_assign_simple(ctx, target, stack, &mut multi_return_group, &mut cached_multi_ret_call);
+                        // For a `_G.X` redirect, point the symbol's def range at the
+                        // `X` name token (keeping the assign node_id so annotation
+                        // diagnostics still resolve the statement).
+                        let simple_ctx = match g_redirect_name_range {
+                            Some((s, e)) => AssignCtx {
+                                node: DefNode { start: s, end: e, node_id: ctx.node.node_id },
+                                ..ctx
+                            },
+                            None => ctx,
+                        };
+                        self.build_assign_simple(simple_ctx, target, stack, &mut multi_return_group, &mut cached_multi_ret_call);
                     }
                 } else if ident.is_indexed_expression() {
                     // Bracket-indexed assignment with no direct name tokens

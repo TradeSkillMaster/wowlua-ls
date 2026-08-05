@@ -44,3 +44,15 @@ reg:GenerateCallbackEvents({})
 -- Go-to-definition must offer both the stub and the workspace site.
 Settings.RegisterVerticalLayoutCategory("x")
 --       ^ defs: 2
+
+-- A global declared via `_G.X = ...` in two files (defs_a + defs_b) yields two
+-- definition sites, each pointing at the `X` name token.
+local e = SharedExplicitGlobal
+--        ^ defs: 2
+
+-- A `_G.X = ...` write in THIS file records its definition at the `X` name
+-- token (column 4), NOT at `_G` / the statement start (column 1). Regression
+-- for the IntelliJ go-to-definition that jumped to `_G` / the top of the file.
+_G.SameFileExplicit = {}
+local s = SameFileExplicit
+--        ^ def: local 56:4

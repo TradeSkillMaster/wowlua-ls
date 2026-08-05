@@ -8,7 +8,7 @@ pub(super) use std::sync::{Arc, OnceLock};
 pub(super) use std::time::{Duration, Instant};
 pub(super) use lsp_types::{
     notification, request, ClientCapabilities, GotoDefinitionResponse, InitializeParams,
-    Hover, HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, Position,
+    Hover, HoverContents, Location, LocationLink, MarkupContent, MarkupKind, NumberOrString, Position,
     ProgressParams, Range, ServerCapabilities, SignatureHelp, SignatureInformation,
     ParameterInformation, ParameterLabel, WorkDoneProgress, WorkDoneProgressBegin,
     WorkDoneProgressEnd, WorkDoneProgressReport,
@@ -877,6 +877,16 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         .and_then(|c| c.completion_item.as_ref())
         .and_then(|ci| ci.snippet_support)
         .unwrap_or(false);
+    let definition_link_support = client_capabilities.text_document
+        .as_ref()
+        .and_then(|td| td.definition.as_ref())
+        .and_then(|d| d.link_support)
+        .unwrap_or(false);
+    let type_definition_link_support = client_capabilities.text_document
+        .as_ref()
+        .and_then(|td| td.type_definition.as_ref())
+        .and_then(|d| d.link_support)
+        .unwrap_or(false);
 
     // Stdin backpressure was already decoupled right after the handshake (see
     // `buffered_input_connection`), so the initial scan above ran without stalling
@@ -888,6 +898,8 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         inlay_hint_refresh: supports_inlay_hint_refresh,
         diagnostic_refresh: supports_diagnostic_refresh,
         snippets: client_snippet_support,
+        definition_link_support,
+        type_definition_link_support,
     })
 }
 
@@ -938,6 +950,15 @@ struct ClientSupport {
     inlay_hint_refresh: bool,
     diagnostic_refresh: bool,
     snippets: bool,
+    /// The client accepts `LocationLink[]` (not just `Location[]`) for
+    /// `textDocument/definition` — its `definition.linkSupport` capability. When
+    /// set, go-to-definition returns links carrying an `originSelectionRange`.
+    /// IntelliJ/LSP4IJ needs that origin span to resolve the source reference on
+    /// our structureless `.lua` PSI; without it, a multi-target result stops
+    /// re-showing the picker on repeated Ctrl-clicks (matches sumneko's shape).
+    definition_link_support: bool,
+    /// As [`Self::definition_link_support`], for `textDocument/typeDefinition`.
+    type_definition_link_support: bool,
 }
 
 fn main_loop(

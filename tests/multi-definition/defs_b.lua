@@ -15,3 +15,6 @@ end
 
 -- The second assignment of the SharedVar global variable.
 SharedVar = 2
+
+-- The second `_G.X` explicit-global declaration (definition B).
+_G.SharedExplicitGlobal = {}

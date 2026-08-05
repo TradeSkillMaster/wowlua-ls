@@ -46,9 +46,8 @@ pub(super) fn folding_ranges_for_doc(doc: &Document) -> Option<Vec<FoldingRange>
 fn definition_results_to_locations(
     defs: &[DefinitionResult],
     uri: &lsp_types::Uri,
-    doc_text: &str,
+    numbers: &crate::lsp::SafeLinePositions,
 ) -> Vec<Location> {
-    let numbers = crate::lsp::SafeLinePositions::new(doc_text);
     let mut locs: Vec<Location> = Vec::with_capacity(defs.len());
     for def in defs {
         let loc = match def {
@@ -78,13 +77,58 @@ fn definition_results_to_response(
     defs: &[DefinitionResult],
     uri: &lsp_types::Uri,
     doc_text: &str,
+    link_support: bool,
+    tree: &SyntaxTree,
+    offset: u32,
 ) -> Option<GotoDefinitionResponse> {
-    let mut locs = definition_results_to_locations(defs, uri, doc_text);
+    let numbers = crate::lsp::SafeLinePositions::new(doc_text);
+    let mut locs = definition_results_to_locations(defs, uri, &numbers);
+    if locs.is_empty() {
+        return None;
+    }
+    // When the client accepts `LocationLink[]`, return links carrying the source
+    // token as `originSelectionRange`. IntelliJ/LSP4IJ needs that origin span to
+    // resolve the source reference on our structureless `.lua` PSI; without it a
+    // multi-target result stops re-showing the picker after the first Ctrl-click
+    // (plain `Location[]`). `targetRange` and `targetSelectionRange` are the same
+    // span — the definition's name token. Mirrors sumneko's response shape. The
+    // origin is computed here (not by the caller) so it is skipped entirely for
+    // non-link clients and zero-result queries, reusing the line index above.
+    if link_support {
+        let origin = origin_selection_range(tree, offset, &numbers);
+        let links = locs.into_iter().map(|l| LocationLink {
+            origin_selection_range: origin,
+            target_uri: l.uri,
+            target_range: l.range,
+            target_selection_range: l.range,
+        }).collect();
+        return Some(GotoDefinitionResponse::Link(links));
+    }
     match locs.len() {
-        0 => None,
         1 => Some(GotoDefinitionResponse::Scalar(locs.pop().unwrap())),
         _ => Some(GotoDefinitionResponse::Array(locs)),
     }
+}
+
+/// The identifier/word token range at `offset`, used as a `LocationLink`'s
+/// `originSelectionRange` (the underlined source span for go-to-definition).
+/// Prefers a `Name` over adjacent punctuation when the caret sits on a token
+/// boundary (e.g. just before `Thingy` in `print(Thingy)`). `None` when there is
+/// no token (empty document / past EOF). Takes the caller's line index so it can
+/// share the one already built for the target locations.
+fn origin_selection_range(
+    tree: &SyntaxTree,
+    offset: u32,
+    numbers: &crate::lsp::SafeLinePositions,
+) -> Option<Range> {
+    use crate::syntax::{SyntaxKind, SyntaxNode, TextSize, TokenAtOffset};
+    let tok = match SyntaxNode::new_root(tree).token_at_offset(TextSize::from(offset)) {
+        TokenAtOffset::Single(t) => t,
+        TokenAtOffset::Between(l, r) => if r.kind() == SyntaxKind::Name { r } else { l },
+        TokenAtOffset::None => return None,
+    };
+    let r = tok.text_range();
+    Some(numbers.lsp_range(u32::from(r.start()) as usize, u32::from(r.end()) as usize, use_utf8()))
 }
 
 /// Build the code lenses for a document. Three kinds: "N usages" and
@@ -145,7 +189,7 @@ fn build_code_lenses(
                     // clients navigate via a built-in "go to locations" action rather than
                     // re-issuing a definition request (LSP4IJ's request API is
                     // @ApiStatus.Internal).
-                    let locations = definition_results_to_locations(parent_defs, uri, doc_text);
+                    let locations = definition_results_to_locations(parent_defs, uri, &numbers);
                     let args = vec![
                         serde_json::to_value(uri.to_string()).unwrap(),
                         serde_json::to_value(range.start).unwrap(),
@@ -375,9 +419,10 @@ pub(super) fn handle_request(
                     send_response(connection, id, &result);
                     return;
                 }
+                let link = client.definition_link_support;
                 let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
                     let defs = analysis.definitions_at(tree, offset);
-                    definition_results_to_response(&defs, &uri, doc.text.as_str())
+                    definition_results_to_response(&defs, &uri, doc.text.as_str(), link, tree, offset)
                 }).unwrap_or(GotoDefinitionResponse::Array(Vec::new()));
                 send_response(connection, id, &result);
             }
@@ -386,9 +431,10 @@ pub(super) fn handle_request(
             if let Ok((id, params)) = cast_req::<request::GotoTypeDefinition>(req) {
                 let uri = params.text_document_position_params.text_document.uri;
                 let position = params.text_document_position_params.position;
+                let link = client.type_definition_link_support;
                 let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
                     let defs = analysis.type_definitions_at(tree, offset);
-                    definition_results_to_response(&defs, &uri, doc.text.as_str())
+                    definition_results_to_response(&defs, &uri, doc.text.as_str(), link, tree, offset)
                 }).unwrap_or(GotoDefinitionResponse::Array(Vec::new()));
                 send_response(connection, id, &result);
             }
@@ -1881,5 +1927,76 @@ function Dog:GetName() return \"d\" end
             !locations.is_empty(),
             "the overridden definition must resolve to at least one Location",
         );
+    }
+}
+
+#[cfg(test)]
+mod definition_response_tests {
+    use super::*;
+    use crate::syntax::{TextRange, TextSize};
+    use std::str::FromStr;
+
+    fn local_def(start: u32, end: u32) -> DefinitionResult {
+        DefinitionResult::Local(TextRange::new(TextSize::from(start), TextSize::from(end)))
+    }
+
+    // With `definition.linkSupport`, go-to-definition returns `LocationLink[]`
+    // carrying the source token as `originSelectionRange` — the shape IntelliJ /
+    // LSP4IJ needs to keep re-showing the multi-target picker on repeated
+    // Ctrl-clicks over our structureless `.lua` PSI (matches sumneko). Without
+    // it, the classic `Location[]` (`Scalar` for a single result) is returned.
+    #[test]
+    fn link_support_toggles_location_link_vs_location() {
+        let uri = lsp_types::Uri::from_str("file:///test.lua").unwrap();
+        let doc = "print(Thingy)\n";
+        let tree = parse_lua(doc);
+        let offset = 6; // caret on `Thingy`
+        // The origin is computed from the tree at `offset` — the `Thingy` token.
+        let want_origin = Some(Range {
+            start: Position { line: 0, character: 6 },
+            end: Position { line: 0, character: 12 },
+        });
+        // Two distinct same-file def sites (e.g. two `_G.Thingy = {}` writes).
+        let defs = vec![local_def(0, 5), local_def(6, 12)];
+
+        // linkSupport on → Link, origin on every entry, target ranges paired.
+        match definition_results_to_response(&defs, &uri, doc, true, &tree, offset) {
+            Some(GotoDefinitionResponse::Link(links)) => {
+                assert_eq!(links.len(), 2);
+                assert!(links.iter().all(|l| l.origin_selection_range == want_origin));
+                assert!(links.iter().all(|l| l.target_range == l.target_selection_range));
+            }
+            other => panic!("expected Link, got {other:?}"),
+        }
+        // linkSupport on, single def → still a one-element Link.
+        match definition_results_to_response(&defs[..1], &uri, doc, true, &tree, offset) {
+            Some(GotoDefinitionResponse::Link(links)) => assert_eq!(links.len(), 1),
+            other => panic!("expected Link, got {other:?}"),
+        }
+        // linkSupport off → legacy Array for many, Scalar for one.
+        match definition_results_to_response(&defs, &uri, doc, false, &tree, offset) {
+            Some(GotoDefinitionResponse::Array(locs)) => assert_eq!(locs.len(), 2),
+            other => panic!("expected Array, got {other:?}"),
+        }
+        match definition_results_to_response(&defs[..1], &uri, doc, false, &tree, offset) {
+            Some(GotoDefinitionResponse::Scalar(_)) => {}
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+        // No defs → None regardless of link support.
+        assert!(definition_results_to_response(&[], &uri, doc, true, &tree, offset).is_none());
+        assert!(definition_results_to_response(&[], &uri, doc, false, &tree, offset).is_none());
+    }
+
+    // `origin_selection_range` returns the identifier token under the caret,
+    // preferring the `Name` over adjacent punctuation at a token boundary — the
+    // caret sits just before `Thingy` in `print(Thingy)` (offset 6).
+    #[test]
+    fn origin_selection_range_is_the_identifier_token() {
+        let doc = "print(Thingy)\n";
+        let tree = parse_lua(doc);
+        let numbers = crate::lsp::SafeLinePositions::new(doc);
+        let r = origin_selection_range(&tree, 6, &numbers).expect("origin range");
+        assert_eq!(r.start, Position { line: 0, character: 6 });
+        assert_eq!(r.end, Position { line: 0, character: 12 });
     }
 }
