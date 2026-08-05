@@ -2,6 +2,30 @@
 
 Annotations are special comments that tell the language server about your code's types. They use the `---@` prefix (three dashes, then `@`), which is the same syntax as LuaLS. If you've used LuaLS before, everything you know still works.
 
+## Documentation comments
+
+A plain `---` comment (three dashes, **no** `@`) directly above a declaration becomes its documentation, shown in the hover and signature help.
+
+Your line structure is preserved: each line stays on its own line, and a blank `---` line becomes a paragraph break. To split a tooltip across multiple lines, just write multiple `---` lines:
+
+```lua
+---Gets the locale table.
+---Loaded lazily on first access.
+---
+---Keys are lowercase locale codes.
+---@return table<string, string>
+function Locale.GetTable() end
+```
+
+The hover renders as:
+
+> Gets the locale table.<br>
+> Loaded lazily on first access.
+>
+> Keys are lowercase locale codes.
+
+Doc comments are rendered as Markdown, so you can also use `**bold**`, lists, inline `` `code` ``, and links. The doc block must sit directly above the declaration — a truly blank line (one with no `---`) between them detaches it.
+
 ## `@param`: Parameter types
 
 Declare what a function expects:

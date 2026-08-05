@@ -3816,6 +3816,50 @@ fn event_hover() {
     });
 }
 
+#[test]
+fn hover_doc_preserves_line_breaks() {
+    // Regression: a multi-line `---` doc comment must keep the author's line
+    // structure in the (Markdown) hover instead of collapsing onto one line.
+    // Adjacent lines get a Markdown hard break ("  \n"); a blank `---` line
+    // becomes a paragraph break ("\n\n").
+    let src = "\
+local Locale = {}
+---Gets the locale table.
+---Test 2
+---
+---Test 3
+---@return table
+function Locale.GetTable() end
+";
+    let (tree, result) = analyze_source_with_tree(src);
+    let offset = src.find("GetTable").unwrap() as u32;
+    let hover = result.hover_at(&tree, offset).expect("hover on GetTable");
+    assert_eq!(
+        hover.doc.as_deref(),
+        Some("Gets the locale table.  \nTest 2  \n\nTest 3"),
+    );
+}
+
+#[test]
+fn hover_doc_drops_command_link_only_line() {
+    // A doc line that is *only* a (non-lua-doc) command: link strips to empty
+    // and must drop out entirely, not leave a spurious paragraph break — so the
+    // two real lines stay adjacent. (Authored blank `---` lines, keyed off the
+    // pre-strip content, are still kept as paragraph breaks.)
+    let src = "\
+local M = {}
+---First line.
+---[click](command:foo.bar)
+---Second line.
+---@return number
+function M.f() end
+";
+    let (tree, result) = analyze_source_with_tree(src);
+    let offset = src.find("M.f").unwrap() as u32 + 2; // the `f`
+    let hover = result.hover_at(&tree, offset).expect("hover on M.f");
+    assert_eq!(hover.doc.as_deref(), Some("First line.  \nSecond line."));
+}
+
 /// Build per-addon namespace tables from scanned globals when addon roots are configured.
 /// Mirrors the logic in WorkspaceState::rebuild() for the test harness.
 fn build_per_addon_tables_from_globals(

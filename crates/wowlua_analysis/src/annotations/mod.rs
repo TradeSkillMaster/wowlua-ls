@@ -814,12 +814,29 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
     let mut block = parse_annotation_lines(&annotation_lines);
     block.class_comment_start = class_comment_start;
 
-    // Build doc string, stripping editor-specific command: links
-    let doc_lines: Vec<String> = doc_lines.iter()
-        .map(|s| strip_command_links(s))
-        .filter(|s| !s.is_empty())
-        .collect();
-    let doc_text = doc_lines.join("\n").trim().to_string();
+    // Build the doc string, stripping editor-specific command: links, and
+    // preserve the author's line structure so a multi-line doc comment renders
+    // as multiple lines in the (Markdown) hover: a blank `---` line becomes a
+    // paragraph break, and every other line gets a Markdown hard break ("  ")
+    // since CommonMark otherwise collapses a lone "\n" into a space. Matches the
+    // `  \n` convention already used for `.toc` hovers (toc/queries.rs). The
+    // blank-vs-drop decision keys off the *pre-strip* line: an authored blank
+    // `---` line is kept (paragraph break), but a line that was *only* a
+    // command: link (stripped to "") drops out instead of leaving a break.
+    let doc_text = doc_lines
+        .iter()
+        .filter_map(|line| {
+            let stripped = strip_command_links(line);
+            if stripped.is_empty() {
+                line.trim().is_empty().then(String::new)
+            } else {
+                Some(format!("{stripped}  "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
     block.doc = if doc_text.is_empty() { None } else { Some(doc_text) };
 
     block
