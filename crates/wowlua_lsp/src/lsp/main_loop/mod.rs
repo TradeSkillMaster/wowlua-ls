@@ -978,6 +978,14 @@ fn main_loop(
     // completion keeps the same span) and ended only once no warm is in flight.
     let mut warm_progress_token: Option<NumberOrString> = None;
 
+    // Coalesced server→client `workspace/*/refresh` requests (see `OwedRefresh`).
+    // A workspace-rebuild storm on project load cascades through several Phase 4
+    // cycles, each of which would otherwise fire its own refresh burst. LSP4IJ
+    // (IntelliJ) submits one non-blocking read action per open editor for every
+    // refresh and errors once 32 pile up, so we merge the burst and flush it once
+    // the workspace goes idle (below).
+    let mut owed_refresh = OwedRefresh::default();
+
     // Background stub-file analysis channel. Stub files are parsed + analyzed
     // off the main thread so large generated files (e.g. ClassicGlobals.lua,
     // 2.4 MB) don't block the LSP loop. Results are drained at the top of
@@ -1025,10 +1033,7 @@ fn main_loop(
                     ws.cached_crossfile_diagnostics = crossfile;
                 }
                 if client.diagnostic_refresh {
-                    send_refresh_requests(
-                        &connection, &mut progress_counter,
-                        false, false, false, true,
-                    );
+                    queue_refresh(&mut owed_refresh, false, false, false, true);
                 }
             } else {
                 log::debug!(
@@ -1116,7 +1121,7 @@ fn main_loop(
                 // Pull-model clients (VS Code) re-request textDocument/diagnostic
                 // on a refresh; the initial post-didOpen pull returned nothing
                 // because analysis wasn't ready yet.
-                send_refresh_requests(&connection, &mut progress_counter, false, false, false, true);
+                queue_refresh(&mut owed_refresh, false, false, false, true);
             } else {
                 // Push-only clients (Neovim) get an explicit publish.
                 for uri in &drained_meta_uris {
@@ -1128,6 +1133,21 @@ fn main_loop(
         }
 
         let has_dirty = documents.values().any(|d| d.dirty);
+
+        // Flush coalesced refresh requests once the workspace is idle — no dirty
+        // docs remain to re-analyze, so the (re)analysis storm that queued them
+        // has drained and the server can promptly answer the resulting re-pulls.
+        // Holding refreshes until this point collapses a rebuild storm's several
+        // Phase 4 bursts into a single set of workspace/*/refresh requests, which
+        // keeps LSP4IJ (IntelliJ) from piling up >32 concurrent per-editor read
+        // actions. See `OwedRefresh` / `queue_refresh`.
+        if !has_dirty && owed_refresh.any() {
+            let owed = std::mem::take(&mut owed_refresh);
+            send_refresh_requests(
+                &connection, &mut progress_counter,
+                owed.code_lens, owed.semantic_tokens, owed.inlay_hint, owed.diagnostic,
+            );
+        }
 
         // If documents need re-analysis, compute how long to wait based on when
         // the last change arrived. This ensures the debounce timer resets on every
@@ -1575,25 +1595,27 @@ fn main_loop(
                 }));
             }
 
-            // Always ask the editor to re-pull diagnostics, inlay hints,
-            // and semantic tokens after Phase 4 reanalysis.  Inlay hints
-            // are shifted and semantic tokens are suppressed while the
-            // document has pending edits (to prevent stale positions
-            // causing visual jumps / wrong highlights), so a refresh is
-            // needed to restore them once re-analysis completes.  Code
-            // lenses only need a refresh after workspace rebuilds
-            // (cross-file state).
+            // Ask the editor to re-pull diagnostics, inlay hints, and semantic
+            // tokens after Phase 4 reanalysis.  Inlay hints are shifted and
+            // semantic tokens are suppressed while the document has pending edits
+            // (to prevent stale positions causing visual jumps / wrong
+            // highlights), so a refresh is needed to restore them once
+            // re-analysis completes.  Code lenses only need a refresh after
+            // workspace rebuilds (cross-file state).  These are queued, not sent
+            // now: the loop flushes the merged set once no dirty docs remain
+            // (see the idle-flush above) so a rebuild storm collapses to one
+            // refresh burst.
             if had_workspace_rebuild {
-                send_refresh_requests(
-                    &connection, &mut progress_counter,
+                queue_refresh(
+                    &mut owed_refresh,
                     client.code_lens_refresh,
                     client.semantic_tokens_refresh,
                     client.inlay_hint_refresh,
                     client.diagnostic_refresh,
                 );
             } else {
-                send_refresh_requests(
-                    &connection, &mut progress_counter,
+                queue_refresh(
+                    &mut owed_refresh,
                     false, client.semantic_tokens_refresh,
                     client.inlay_hint_refresh,
                     client.diagnostic_refresh,
@@ -1623,6 +1645,43 @@ fn main_loop(
         }
     }
     Ok(())
+}
+
+/// Server→client `workspace/*/refresh` requests owed to the editor, coalesced so
+/// a burst collapses into a single set of requests. LSP4IJ (IntelliJ) submits one
+/// non-blocking read action per open editor for *each* refresh and errors ("Too
+/// many non-blocking read actions submitted at once") once 32 pile up, so firing
+/// several refreshes back-to-back — as a workspace-rebuild storm on project load
+/// did — is what triggered that error. The kinds are merged here and flushed once
+/// the workspace goes idle, bounding the concurrent read-action count.
+#[derive(Default, Clone, Copy)]
+struct OwedRefresh {
+    code_lens: bool,
+    semantic_tokens: bool,
+    inlay_hint: bool,
+    diagnostic: bool,
+}
+
+impl OwedRefresh {
+    fn any(self) -> bool {
+        self.code_lens || self.semantic_tokens || self.inlay_hint || self.diagnostic
+    }
+}
+
+/// Merge refresh kinds into the owed set. The main loop flushes them (via
+/// [`send_refresh_requests`]) the next time no dirty documents remain, so several
+/// bursts queued during a re-analysis storm collapse into one. See [`OwedRefresh`].
+fn queue_refresh(
+    owed: &mut OwedRefresh,
+    code_lens: bool,
+    semantic_tokens: bool,
+    inlay_hint: bool,
+    diagnostic: bool,
+) {
+    owed.code_lens |= code_lens;
+    owed.semantic_tokens |= semantic_tokens;
+    owed.inlay_hint |= inlay_hint;
+    owed.diagnostic |= diagnostic;
 }
 
 /// Send workspace refresh requests (server→client) so the editor re-requests
@@ -1873,6 +1932,36 @@ mod tests {
         assert_eq!(uri_to_path(&outside, &roots), None);
         // No roots -> nothing resolves.
         assert_eq!(uri_to_path(&in_second, &[]), None);
+    }
+
+    // Regression: refresh requests must *merge* into one owed set, not overwrite.
+    // A workspace-rebuild storm queues several bursts across consecutive Phase 4
+    // cycles (rebuild path: code-lens+semantic+inlay+diag; non-rebuild path:
+    // semantic+inlay+diag; warm/meta path: diag only). The loop flushes
+    // `owed_refresh` exactly once when the workspace goes idle, so every kind
+    // queued during the storm has to survive in that single set — collapsing what
+    // would otherwise be N separate refresh bursts and keeping LSP4IJ (IntelliJ)
+    // from piling up >32 concurrent per-editor read actions.
+    #[test]
+    fn queue_refresh_merges_into_single_owed_set() {
+        // A kind never queued stays unset (no spurious refresh).
+        let mut only_diag = OwedRefresh::default();
+        queue_refresh(&mut only_diag, false, false, false, true);
+        assert!(only_diag.diagnostic);
+        assert!(!only_diag.code_lens && !only_diag.semantic_tokens && !only_diag.inlay_hint);
+
+        // Several bursts across a rebuild storm accumulate into one owed set.
+        let mut owed = OwedRefresh::default();
+        assert!(!owed.any(), "nothing queued yet");
+        queue_refresh(&mut owed, false, true, true, true); // non-rebuild Phase 4
+        queue_refresh(&mut owed, false, false, false, true); // warm completion
+        queue_refresh(&mut owed, true, true, true, true); // rebuild Phase 4 adds code lens
+        assert!(owed.code_lens && owed.semantic_tokens && owed.inlay_hint && owed.diagnostic);
+
+        // The idle flush drains the set; the next storm starts clean.
+        let flushed = std::mem::take(&mut owed);
+        assert!(flushed.any());
+        assert!(!owed.any(), "owed reset after flush");
     }
 
     #[test]
