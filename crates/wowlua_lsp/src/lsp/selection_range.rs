@@ -19,8 +19,138 @@ pub fn compute_selection_ranges(
         .collect()
 }
 
+/// TOC-file variant of [`compute_selection_ranges`]. `.toc` files are not Lua and
+/// carry no syntax tree, so selection ranges are built from the parsed TOC line
+/// structure (`## Key: Value` headers, file paths, `[...]` directives). Without
+/// this the LSP handler returns no range for a `.toc` document and JetBrains/LSP4IJ
+/// — which disables the native word selectioner — falls back to selecting the whole
+/// file on a double-click.
+pub fn compute_toc_selection_ranges(
+    toc: &crate::toc::TocDocument,
+    text: &str,
+    positions: &[Position],
+) -> Vec<SelectionRange> {
+    let utf8 = super::main_loop::use_utf8();
+    let numbers = super::SafeLinePositions::new(text);
+    positions
+        .iter()
+        .map(|pos| {
+            let offset = super::lsp_position_to_offset(text, pos.line, pos.character, utf8);
+            build_toc_chain(toc, text, &numbers, offset, utf8)
+        })
+        .collect()
+}
+
 fn make_range(numbers: &super::SafeLinePositions, utf8: bool, start: u32, end: u32) -> Range {
     numbers.lsp_range(start as usize, end as usize, utf8)
+}
+
+/// Fold a span list — innermost first (`spans[0]`), outermost last — into a nested
+/// [`SelectionRange`] with the innermost range at the top. Iterates outermost-inward
+/// so each range becomes the parent of the next. Falls back to a zero-width range at
+/// `offset` when `spans` is empty. Callers run their own `spans.dedup()` first.
+fn spans_to_selection_range(
+    numbers: &super::SafeLinePositions,
+    utf8: bool,
+    offset: u32,
+    spans: &[(u32, u32)],
+) -> SelectionRange {
+    let mut result: Option<SelectionRange> = None;
+    for &(start, end) in spans.iter().rev() {
+        result = Some(SelectionRange {
+            range: make_range(numbers, utf8, start, end),
+            parent: result.map(Box::new),
+        });
+    }
+    result.unwrap_or_else(|| {
+        let range = make_range(numbers, utf8, offset, offset);
+        SelectionRange { range, parent: None }
+    })
+}
+
+/// Byte range of the whole line a [`crate::toc::TocLine`] occupies.
+fn toc_line_range(line: &crate::toc::TocLine) -> (u32, u32) {
+    use crate::toc::TocLine;
+    match line {
+        TocLine::Header { line_range, .. }
+        | TocLine::Comment { line_range }
+        | TocLine::FilePath { line_range, .. }
+        | TocLine::Empty { line_range } => *line_range,
+    }
+}
+
+/// The most specific structural span of a TOC line that contains `offset`: a header
+/// key or value, a file path, or a `[...]` directive bracket. Returns `None` when the
+/// caret sits on structural punctuation (`## `, the `:`, a `#` comment lead) or a
+/// blank line, and for zero-width spans (e.g. an empty header value) — the caller
+/// then falls back to the whole line. Bounds are inclusive so a caret on either edge
+/// of a span still counts as inside it.
+fn toc_feature_span_at(line: &crate::toc::TocLine, offset: u32) -> Option<(u32, u32)> {
+    use crate::toc::TocLine;
+    let within = |(lo, hi): (u32, u32)| lo < hi && offset >= lo && offset <= hi;
+    match line {
+        TocLine::Header { key_range, value_range, .. } => {
+            if within(*key_range) {
+                Some(*key_range)
+            } else if within(*value_range) {
+                Some(*value_range)
+            } else {
+                None
+            }
+        }
+        TocLine::FilePath { directives, path_range, .. } => {
+            for d in directives {
+                if within(d.range) {
+                    return Some(d.range);
+                }
+            }
+            within(*path_range).then_some(*path_range)
+        }
+        TocLine::Comment { .. } | TocLine::Empty { .. } => None,
+    }
+}
+
+fn build_toc_chain(
+    toc: &crate::toc::TocDocument,
+    text: &str,
+    numbers: &super::SafeLinePositions,
+    offset: u32,
+    utf8: bool,
+) -> SelectionRange {
+    let mut spans: Vec<(u32, u32)> = Vec::new();
+
+    if let Some(line) = crate::toc::line_at_offset(toc, offset) {
+        let line_range = toc_line_range(line);
+        // The tightest structural feature under the cursor (key / value / path /
+        // directive), or `None` on punctuation or a blank line.
+        let feature = toc_feature_span_at(line, offset);
+
+        // Innermost span: the word under the cursor, clamped to the feature span
+        // (or the whole line when there's no enclosing feature). A run of non-word
+        // characters — e.g. a `## X-Curse-Project-ID: -------` placeholder value —
+        // has no word, so the feature span (the whole value) becomes the innermost
+        // selection, which is exactly what a double-click on the dashes should grab.
+        let (word_lo, word_hi) = feature.unwrap_or(line_range);
+        if let Some(word) = word_span_at(text, offset, word_lo, word_hi)
+            && Some(word) != feature
+            && word != line_range
+        {
+            spans.push(word);
+        }
+
+        if let Some(feature) = feature
+            && feature != line_range
+        {
+            spans.push(feature);
+        }
+
+        spans.push(line_range);
+    }
+
+    // Outermost: the whole file (mirrors the Lua path's root span).
+    spans.push((0, text.len() as u32));
+    spans.dedup();
+    spans_to_selection_range(numbers, utf8, offset, &spans)
 }
 
 /// Byte range of the "word" containing (or immediately before) `offset`, clamped
@@ -132,22 +262,7 @@ fn build_chain(
 
     // Remove consecutive identical spans (e.g. a node that wraps a single token).
     spans.dedup();
-
-    // Build the nested SelectionRange chain.
-    // spans[0] is innermost, spans.last() is outermost.
-    // Iterate from outermost inward so the final result has the innermost range at top.
-    let mut result: Option<SelectionRange> = None;
-    for &(start, end) in spans.iter().rev() {
-        result = Some(SelectionRange {
-            range: make_range(numbers, utf8,start, end),
-            parent: result.map(Box::new),
-        });
-    }
-
-    result.unwrap_or_else(|| {
-        let range = make_range(numbers, utf8,offset, offset);
-        SelectionRange { range, parent: None }
-    })
+    spans_to_selection_range(numbers, utf8, offset, &spans)
 }
 
 #[cfg(test)]
@@ -293,6 +408,85 @@ mod tests {
         assert_eq!(word_span_at(text, 8, 0, hi), Some((3, 8)), "on trailing space");
         // Caret on a separator with no adjacent word char yields nothing.
         assert_eq!(word_span_at(text, 2, 0, hi), None, "on leading space");
+    }
+
+    /// Selection-range chain for a position in a `.toc` document, innermost first.
+    fn sel_toc(text: &str, line: u32, ch: u32) -> Vec<(u32, u32, u32, u32)> {
+        let toc = crate::toc::parse_toc(text);
+        let pos = Position { line, character: ch };
+        let ranges = compute_toc_selection_ranges(&toc, text, &[pos]);
+        let mut chain = Vec::new();
+        let mut cur = ranges.into_iter().next();
+        while let Some(r) = cur {
+            chain.push((
+                r.range.start.line,
+                r.range.start.character,
+                r.range.end.line,
+                r.range.end.character,
+            ));
+            cur = r.parent.map(|b| *b);
+        }
+        chain
+    }
+
+    #[test]
+    fn toc_placeholder_value_double_click_selects_value_not_file() {
+        // Regression: `## X-Curse-Project-ID: -------` — double-clicking the dashes
+        // (a placeholder value with no word chars) must select just the `-------`,
+        // not the whole TOC file. Before the fix `.toc` docs had no syntax tree, so
+        // the server returned no range and JetBrains selected the entire file.
+        let text = "## X-Curse-Project-ID: -------\n";
+        // Cursor on a dash (value starts at offset 23).
+        let chain = sel_toc(text, 0, 25);
+        assert_eq!(chain[0], (0, 23, 0, 30), "innermost = the `-------` value");
+        // The whole file is reachable as the outermost ancestor (spanning the
+        // trailing newline into line 1), but must not be the innermost selection.
+        let last = chain.last().unwrap();
+        assert_eq!((last.0, last.1), (0, 0), "outermost starts at file start");
+        assert_ne!(chain[0], *last, "innermost must not be the whole file");
+    }
+
+    #[test]
+    fn toc_header_value_word_is_innermost() {
+        // Double-clicking a word-shaped value selects the word, then the value.
+        let text = "## Interface: 110002\n";
+        let chain = sel_toc(text, 0, 16); // inside "110002" (starts at offset 14)
+        assert_eq!(chain[0], (0, 14, 0, 20), "innermost = the value word");
+    }
+
+    #[test]
+    fn toc_header_key_word_then_key_then_line() {
+        // Double-clicking a sub-word of a dashed key selects the word; Ctrl+W then
+        // expands to the whole key, then the line.
+        let text = "## X-Curse-Project-ID: -------\n";
+        let chain = sel_toc(text, 0, 6); // inside "Curse" within the key
+        assert_eq!(chain[0], (0, 5, 0, 10), "innermost = 'Curse' word");
+        assert!(chain.contains(&(0, 3, 0, 21)), "whole key is an ancestor, got {chain:?}");
+        assert!(chain.contains(&(0, 0, 0, 30)), "whole line is an ancestor, got {chain:?}");
+    }
+
+    #[test]
+    fn toc_file_path_segment_then_path() {
+        // Double-clicking a path segment selects the segment, then the full path.
+        let text = "Core/Init.lua\n";
+        let chain = sel_toc(text, 0, 6); // inside "Init"
+        assert_eq!(chain[0], (0, 5, 0, 9), "innermost = 'Init' segment");
+        assert!(chain.contains(&(0, 0, 0, 13)), "full path is an ancestor, got {chain:?}");
+    }
+
+    #[test]
+    fn toc_every_parent_contains_child() {
+        let text = "## X-Curse-Project-ID: -------\n";
+        let chain = sel_toc(text, 0, 25);
+        assert!(chain.len() >= 2);
+        for w in chain.windows(2) {
+            let (inner, outer) = (&w[0], &w[1]);
+            assert!(
+                (outer.0, outer.1) <= (inner.0, inner.1)
+                    && (outer.2, outer.3) >= (inner.2, inner.3),
+                "outer {outer:?} should contain inner {inner:?}"
+            );
+        }
     }
 
     #[test]

@@ -738,6 +738,18 @@ pub(super) fn handle_request(
                 let positions = params.positions;
                 let result: Option<Vec<SelectionRange>> = documents.get(&uri.to_string())
                     .and_then(|doc| {
+                        // `.toc` files have no Lua syntax tree; select over the TOC
+                        // line structure instead. Without this the handler returns
+                        // no range and JetBrains/LSP4IJ (which disables native word
+                        // selection) falls back to selecting the whole file on a
+                        // double-click.
+                        if let Some(toc) = doc.toc.as_ref() {
+                            return Some(crate::lsp::selection_range::compute_toc_selection_ranges(
+                                toc,
+                                &doc.text,
+                                &positions,
+                            ));
+                        }
                         let tree = doc.tree.as_ref()?;
                         Some(crate::lsp::selection_range::compute_selection_ranges(
                             tree,
