@@ -11,6 +11,31 @@ Diagnostics run automatically as you type. They're grouped by severity:
 
 Each diagnostic has a **code** (like `type-mismatch` or `unused-local`) that you use to suppress or configure it.
 
+## Quick fixes
+
+Many diagnostics offer **quick fixes** (code actions — the lightbulb / <kbd>Ctrl</kbd>+<kbd>.</kbd> in most editors). Every diagnostic also always offers the three suppression actions (disable on this line / for this line above / for this file), and codes with two or more fixable instances get a "Fix all in this file" batch action.
+
+| Diagnostic | Quick fix |
+| --- | --- |
+| `undefined-global` | Add `local` declaration · Add to allowed **read** globals in `.wowluarc.json` |
+| `create-global` | Add `local` declaration · Add to allowed **write** globals in `.wowluarc.json` |
+| `undefined-field` / `inject-field` | Add `---@field` to the class |
+| `missing-fields` | Fill required fields with placeholders |
+| `missing-parameter` | Add a `nil` argument |
+| `redundant-parameter` | Remove the extra argument(s) |
+| `redundant-return` | Remove the redundant `return` |
+| `redundant-value` / `redundant-return-value` | Remove the surplus value(s) |
+| `not-precedence` | Add parentheses (around the comparison, or around `not`) |
+| `count-down-loop` | Add an explicit `-1` step |
+| `wrong-flavor-api` | Wrap in a `WOW_PROJECT_ID` flavor guard |
+| `invalid-op` | Provide an `or 0` / `or ""` fallback for a possibly-nil operand |
+| type-mismatch family | Insert an `--[[@as T]]` cast |
+| `unused-local` | Prefix the name with `_` |
+| `incomplete-signature-doc` | Generate the missing `@param` / `@return` annotations |
+| `trailing-space` | Remove the trailing whitespace |
+
+The config-editing fixes (`undefined-global`, `create-global`) only appear when a `.wowluarc.json` governs the file. The `wrong-flavor-api` guard is offered only when the API is available on a single flavor with an unambiguous `WOW_PROJECT_*` constant (Retail or Classic Era).
+
 ## Suppressing diagnostics
 
 ### Inline

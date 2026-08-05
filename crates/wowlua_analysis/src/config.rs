@@ -730,6 +730,14 @@ impl ProjectConfigs {
         self.nearest_entry(file_path).map(|(_, config)| config)
     }
 
+    /// The directory of the nearest ancestor `.wowluarc.json` for `file_path`
+    /// (i.e. the directory that *contains* the config file, not the file itself).
+    /// `None` when no config governs the path. Used by the "add to allowed
+    /// globals" quick fix to locate the config file to edit.
+    pub fn nearest_config_dir(&self, file_path: &Path) -> Option<&Path> {
+        self.nearest_entry(file_path).map(|(dir, _)| dir.as_path())
+    }
+
     /// The nearest ancestor config entry (directory + config) for a path.
     fn nearest_entry(&self, file_path: &Path) -> Option<&(PathBuf, ProjectConfig)> {
         self.entries.iter()

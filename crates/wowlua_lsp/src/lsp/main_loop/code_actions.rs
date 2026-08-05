@@ -1,11 +1,24 @@
 use super::*;
 
+/// Context for quick fixes that edit the project's `.wowluarc.json` (e.g. "add to
+/// allowed globals"). The code-action handler resolves the nearest config file
+/// for the document being edited and passes its URI + current contents here;
+/// `None` when no config governs the file, in which case those fixes aren't offered.
+pub struct ConfigEditContext {
+    /// URI of the target `.wowluarc.json`.
+    pub uri: lsp_types::Uri,
+    /// Current contents of the config file (from the open document if it's open,
+    /// otherwise read from disk). Edits are computed against this text.
+    pub existing_text: String,
+}
+
 pub fn compute_code_actions(
     uri: &lsp_types::Uri,
     text: &str,
     range: lsp_types::Range,
     context_diagnostics: &[lsp_types::Diagnostic],
     tree_and_analysis: Option<(&SyntaxTree, &AnalysisResult)>,
+    config_ctx: Option<&ConfigEditContext>,
 ) -> Vec<CodeActionOrCommand> {
     let mut actions: Vec<CodeActionOrCommand> = Vec::new();
 
@@ -25,7 +38,7 @@ pub fn compute_code_actions(
         }
 
         // Quick fixes (shown before suppression actions)
-        let quick_fixes = compute_quick_fixes(uri, text, diag, tree_and_analysis);
+        let quick_fixes = compute_quick_fixes(uri, text, diag, tree_and_analysis, config_ctx);
 
         // Record the edits from the *first* fix action that targets this file.
         // Iterating further would count alternative fixes as extra occurrences.
@@ -173,6 +186,7 @@ pub fn compute_quick_fixes(
     text: &str,
     diag: &lsp_types::Diagnostic,
     tree_and_analysis: Option<(&SyntaxTree, &AnalysisResult)>,
+    config_ctx: Option<&ConfigEditContext>,
 ) -> Vec<CodeActionOrCommand> {
     let code_str = match &diag.code {
         Some(NumberOrString::String(s)) => s.as_str(),
@@ -189,6 +203,12 @@ pub fn compute_quick_fixes(
                 .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
                 .unwrap_or_default()
         }
+        "undefined-field" => {
+            let Some((_, analysis)) = tree_and_analysis else { return vec![] };
+            make_add_field_from_undefined_read(uri, text, diag, analysis)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
         "incomplete-signature-doc" => {
             let Some((tree, analysis)) = tree_and_analysis else { return vec![] };
             make_generate_annotations_action(uri, text, diag, tree, analysis)
@@ -196,7 +216,75 @@ pub fn compute_quick_fixes(
                 .unwrap_or_default()
         }
         "undefined-global" => {
-            make_add_local_declaration_action(uri, text, diag)
+            // Two complementary fixes: declare it as a `local` in this file, or
+            // add it to the project's allowed read-globals (when a config exists).
+            let mut acts = Vec::new();
+            if let Some(a) = make_add_local_declaration_action(uri, text, diag) {
+                acts.push(CodeActionOrCommand::CodeAction(a));
+            }
+            if let Some(ctx) = config_ctx
+                && let Some(name) = parse_quoted(&diag.message, "undefined global '")
+                && let Some(a) = make_add_allowed_global_action(diag, ctx, name, "read")
+            {
+                acts.push(CodeActionOrCommand::CodeAction(a));
+            }
+            acts
+        }
+        "create-global" => {
+            // The write-side analog: either localize it, or record it as an
+            // intentional global in the config's allowed write-globals.
+            let mut acts = Vec::new();
+            if let Some(name) = parse_quoted(&diag.message, "implicit global creation '") {
+                if let Some(a) = make_add_local_for_name(uri, text, diag, name) {
+                    acts.push(CodeActionOrCommand::CodeAction(a));
+                }
+                if let Some(ctx) = config_ctx
+                    && let Some(a) = make_add_allowed_global_action(diag, ctx, name, "write")
+                {
+                    acts.push(CodeActionOrCommand::CodeAction(a));
+                }
+            }
+            acts
+        }
+        "trailing-space" => {
+            vec![CodeActionOrCommand::CodeAction(make_remove_trailing_space_action(uri, diag))]
+        }
+        "redundant-parameter" => {
+            let Some((_, analysis)) = tree_and_analysis else { return vec![] };
+            make_remove_redundant_args_action(uri, text, diag, analysis)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
+        "missing-parameter" => {
+            let Some((_, analysis)) = tree_and_analysis else { return vec![] };
+            make_add_nil_argument_action(uri, text, diag, analysis)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
+        "redundant-return" => {
+            make_remove_redundant_return_action(uri, text, diag)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
+        "redundant-value" | "redundant-return-value" => {
+            let Some((tree, _)) = tree_and_analysis else { return vec![] };
+            make_remove_extra_values_action(uri, text, diag, tree)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
+        "not-precedence" => {
+            let Some((tree, _)) = tree_and_analysis else { return vec![] };
+            make_not_precedence_actions(uri, text, diag, tree)
+        }
+        "count-down-loop" => {
+            let Some((tree, _)) = tree_and_analysis else { return vec![] };
+            make_count_down_loop_action(uri, text, diag, tree)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
+        "wrong-flavor-api" => {
+            let Some((tree, _)) = tree_and_analysis else { return vec![] };
+            make_flavor_guard_action(uri, text, diag, tree)
                 .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
                 .unwrap_or_default()
         }
@@ -261,13 +349,6 @@ pub(super) fn make_add_field_action(
     let (field_name, rest) = after.split_once("' into class '")?;
     let class_name = rest.strip_suffix('\'')?;
 
-    // Only offer the fix when the class is defined in this file.
-    let &(class_start, _) = analysis.ir.class_def_ranges.get(class_name)?;
-
-    // Convert class annotation start to line number.
-    let numbers = crate::lsp::SafeLinePositions::new(text);
-    let (class_line, _) = numbers.line_col(class_start as usize);
-
     // Try to infer the field type from the matching FieldAssignment.
     let byte_offset = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, use_utf8());
     let field_type_str = analysis.ir.field_assignments.iter()
@@ -276,6 +357,50 @@ pub(super) fn make_add_field_action(
         .filter(|vt| !matches!(vt, ValueType::Any))
         .map(|vt| analysis.format_type_depth(&vt, 1))
         .unwrap_or_else(|| "any".to_string());
+
+    make_add_field_edit(uri, text, analysis, class_name, field_name, &field_type_str, diag)
+}
+
+/// Quick fix for `undefined-field` read on a class defined in this file: insert a
+/// `---@field name any` declaration for the missing field. Only offered when the
+/// receiver is a `class 'X'` whose declaration lives in the current file (the same
+/// gate as `inject-field`); reads on primitive/stub receivers get no fix.
+pub(super) fn make_add_field_from_undefined_read(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    analysis: &AnalysisResult,
+) -> Option<CodeAction> {
+    // Parse from message: "undefined field 'NAME' on class 'CLASS'".
+    // The `on class '…'` shape (vs `on 'var'` / `on type 'string'`) is what marks
+    // a `@class` receiver whose field set we can extend.
+    let msg = diag.message.as_str();
+    let after = msg.strip_prefix("undefined field '")?;
+    let (field_name, rest) = after.split_once("' on class '")?;
+    let class_name = rest.strip_suffix('\'')?;
+    make_add_field_edit(uri, text, analysis, class_name, field_name, "any", diag)
+}
+
+/// Shared core for the `inject-field` / `undefined-field` quick fixes: insert a
+/// `---@field <name> <type>` line directly beneath the `---@class <class>`
+/// declaration, when that class is declared in the current file. Returns `None`
+/// for classes defined elsewhere (external stubs, other workspace files).
+#[allow(clippy::mutable_key_type)]
+pub(super) fn make_add_field_edit(
+    uri: &lsp_types::Uri,
+    text: &str,
+    analysis: &AnalysisResult,
+    class_name: &str,
+    field_name: &str,
+    field_type_str: &str,
+    diag: &lsp_types::Diagnostic,
+) -> Option<CodeAction> {
+    // Only offer the fix when the class is defined in this file.
+    let &(class_start, _) = analysis.ir.class_def_ranges.get(class_name)?;
+
+    // Convert class annotation start to line number.
+    let numbers = crate::lsp::SafeLinePositions::new(text);
+    let (class_line, _) = numbers.line_col(class_start as usize);
 
     // Insert `---@field name type` on the line immediately after the `---@class` annotation.
     let insert_pos = Position { line: class_line.0 + 1, character: 0 };
@@ -630,19 +755,33 @@ pub(super) fn make_combine_returns_action(
     })
 }
 
+/// Extract a single-quoted name that follows `prefix` in `msg`, e.g.
+/// `parse_quoted("undefined global 'Foo'", "undefined global '") == Some("Foo")`.
+pub(super) fn parse_quoted<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
+    msg.strip_prefix(prefix)?.strip_suffix('\'')
+}
+
 /// Quick fix for `undefined-global`: insert `local` before the first assignment to the name.
-#[allow(clippy::mutable_key_type)]
 pub(super) fn make_add_local_declaration_action(
     uri: &lsp_types::Uri,
     text: &str,
     diag: &lsp_types::Diagnostic,
 ) -> Option<CodeAction> {
     // Parse global name from message: "undefined global 'NAME'"
-    let name = diag.message
-        .strip_prefix("undefined global '")?
-        .strip_suffix('\'')?;
+    let name = parse_quoted(&diag.message, "undefined global '")?;
+    make_add_local_for_name(uri, text, diag, name)
+}
 
-    // Find the first assignment `NAME = ` in the file.
+/// Shared core: insert `local ` before the first assignment `name = …` in the
+/// file. Powers both the `undefined-global` and `create-global` "declare as local"
+/// fixes. Returns `None` when the name has no assignment (nothing to localize).
+#[allow(clippy::mutable_key_type)]
+pub(super) fn make_add_local_for_name(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    name: &str,
+) -> Option<CodeAction> {
     let (assign_line, assign_col) = find_first_assignment_line(text, name)?;
 
     let insert_pos = Position { line: assign_line, character: assign_col };
@@ -663,6 +802,493 @@ pub(super) fn make_add_local_declaration_action(
         }),
         ..Default::default()
     })
+}
+
+/// Quick fix for `trailing-space`: delete the trailing whitespace. The diagnostic
+/// range already spans exactly the offending run of spaces/tabs, so clearing that
+/// range is the whole fix. Because each occurrence yields its own delete edit, the
+/// "Fix all in this file" batch action falls out of the shared merge path for free.
+pub(super) fn make_remove_trailing_space_action(
+    uri: &lsp_types::Uri,
+    diag: &lsp_types::Diagnostic,
+) -> CodeAction {
+    let edit = lsp_types::TextEdit {
+        range: diag.range,
+        new_text: String::new(),
+    };
+    single_edit_quickfix(uri, diag, "Remove trailing whitespace".to_string(), edit)
+}
+
+/// Quick fix that adds `name` to `globals.<key>` (`"read"` / `"write"`) in the
+/// project's `.wowluarc.json`. Powers both the `undefined-global` (read) and
+/// `create-global` (write) fixes: use it for globals genuinely provided by
+/// another addon / the environment (read) or intentionally defined by this addon
+/// (write), rather than a local typo. Only offered when a config file governs the
+/// edited document (`config_ctx` is `Some`) and the name isn't already allowed.
+pub(super) fn make_add_allowed_global_action(
+    diag: &lsp_types::Diagnostic,
+    config_ctx: &ConfigEditContext,
+    name: &str,
+    key: &str,
+) -> Option<CodeAction> {
+    let (byte_offset, insert_text) = add_global_edit(&config_ctx.existing_text, name, key)?;
+
+    let numbers = crate::lsp::SafeLinePositions::new(&config_ctx.existing_text);
+    let pos = numbers.lsp_position(byte_offset, use_utf8());
+    let edit = lsp_types::TextEdit {
+        range: Range { start: pos, end: pos },
+        new_text: insert_text,
+    };
+    Some(single_edit_quickfix(
+        &config_ctx.uri,
+        diag,
+        format!("Add `{}` to allowed {} globals in `.wowluarc.json`", name, key),
+        edit,
+    ))
+}
+
+/// Compute a minimal insertion — `(byte_offset, insert_text)` — that adds `name`
+/// to `globals.<key>` (`key` is `"read"` or `"write"`) of a `.wowluarc.json` whose
+/// contents are `text`.
+///
+/// Returns `None` when `name` is already allowed (listed under `globals.read` or
+/// `globals.write` — either grants access), when `text` isn't valid JSON, or when
+/// the root isn't a JSON object. The edit splices in only the new element / key so
+/// the rest of the file's formatting and key order are preserved (a full
+/// reserialize would reorder keys and reflow arrays).
+pub(super) fn add_global_edit(text: &str, name: &str, key: &str) -> Option<(usize, String)> {
+    let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
+    let root = parsed.as_object()?;
+
+    // Already allowed under read or write → nothing to add.
+    for k in ["read", "write"] {
+        let already = parsed.get("globals")
+            .and_then(|g| g.get(k))
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(name)));
+        if already { return None; }
+    }
+
+    let elem = format!("\"{name}\"");
+    let globals_span = find_json_value_span(text, "globals", 0, b'{', b'}');
+
+    // Case 1: `globals.<key>` already exists — splice the element into its array.
+    if let Some((g_open, g_close)) = globals_span
+        && let Some((r_open, r_close)) = find_json_value_span(text, key, g_open + 1, b'[', b']')
+        && r_open < g_close
+    {
+        let inner = text.get(r_open + 1..r_close)?;
+        let insert = if inner.trim().is_empty() {
+            elem
+        } else {
+            format!("{elem}, ")
+        };
+        return Some((r_open + 1, insert));
+    }
+
+    // Case 2: a `globals` object exists but has no `<key>` key — add the key.
+    if let Some((g_open, g_close)) = globals_span {
+        let inner = text.get(g_open + 1..g_close)?;
+        let insert = if inner.trim().is_empty() {
+            format!("\"{key}\": [{elem}]")
+        } else {
+            format!("\"{key}\": [{elem}], ")
+        };
+        return Some((g_open + 1, insert));
+    }
+
+    // Case 3: no `globals` object — add one to the root object.
+    let root_open = text.find('{')?;
+    let insert = if root.is_empty() {
+        format!("\"globals\": {{ \"{key}\": [{elem}] }}")
+    } else {
+        format!("\"globals\": {{ \"{key}\": [{elem}] }}, ")
+    };
+    Some((root_open + 1, insert))
+}
+
+/// Locate the JSON object/array value associated with the object key `"<key>"` at
+/// or after byte offset `from`, returning the byte indices of its opening and
+/// closing delimiters (`open_ch`/`close_ch`, e.g. `[` / `]`). Nesting- and
+/// string-aware, and only matches `"<key>"` when it is used as a key (immediately
+/// followed by `:`) — never a string *value* that happens to equal it.
+fn find_json_value_span(text: &str, key: &str, from: usize, open_ch: u8, close_ch: u8) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let needle = format!("\"{key}\"");
+    let is_ws = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r');
+    let mut search = from;
+    loop {
+        let key_end = search + text.get(search..)?.find(&needle)? + needle.len();
+        // Confirm this occurrence is a key: the next non-space char must be ':'.
+        let mut j = key_end;
+        while j < bytes.len() && is_ws(bytes[j]) { j += 1; }
+        if bytes.get(j) != Some(&b':') {
+            search = key_end;
+            continue;
+        }
+        // Advance past ':' to the opening delimiter (only whitespace may precede it).
+        let mut i = j + 1;
+        while i < bytes.len() && bytes[i] != open_ch {
+            if !is_ws(bytes[i]) { return None; }
+            i += 1;
+        }
+        if i >= bytes.len() { return None; }
+        let open = i;
+        let mut depth = 0i32;
+        let mut in_str = false;
+        let mut esc = false;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if in_str {
+                if esc { esc = false; }
+                else if c == b'\\' { esc = true; }
+                else if c == b'"' { in_str = false; }
+            } else if c == b'"' {
+                in_str = true;
+            } else if c == open_ch {
+                depth += 1;
+            } else if c == close_ch {
+                depth -= 1;
+                if depth == 0 { return Some((open, i)); }
+            }
+            i += 1;
+        }
+        return None;
+    }
+}
+
+/// Build a quick-fix `CodeAction` carrying a single text edit against `uri`.
+#[allow(clippy::mutable_key_type)]
+fn single_edit_quickfix(
+    uri: &lsp_types::Uri,
+    diag: &lsp_types::Diagnostic,
+    title: String,
+    edit: lsp_types::TextEdit,
+) -> CodeAction {
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+    CodeAction {
+        title,
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Given the byte ranges of a comma-separated list's items and the index `k` of
+/// the first item to drop, return the `(start, end)` span to delete so items
+/// `k..` — plus the comma before item `k` — are removed. `None` if `items` is
+/// empty. For `k == 0` the whole content span (first item start → last item end)
+/// is returned, leaving the surrounding delimiters intact.
+fn remove_trailing_list_items(items: &[(u32, u32)], k: usize) -> Option<(u32, u32)> {
+    let last_end = items.last()?.1;
+    let del_start = if k >= 1 { items[k - 1].1 } else { items.first()?.0 };
+    Some((del_start, last_end))
+}
+
+/// Quick fix for `redundant-parameter`: drop the extra trailing argument(s). The
+/// diagnostic flags the *first* redundant argument; we find the IR call whose
+/// argument list contains that exact range and delete from it through the last
+/// argument (including the preceding comma).
+pub(super) fn make_remove_redundant_args_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    analysis: &AnalysisResult,
+) -> Option<CodeAction> {
+    let utf8 = use_utf8();
+    let ds = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, utf8);
+    let de = crate::lsp::lsp_position_to_offset(text, diag.range.end.line, diag.range.end.character, utf8);
+
+    let (arg_ranges, k) = analysis.ir.local_exprs().find_map(|(_, e)| {
+        let crate::types::Expr::FunctionCall { arg_ranges, .. } = e else { return None };
+        let k = arg_ranges.iter().position(|&(s, en)| s == ds && en == de)?;
+        Some((arg_ranges.clone(), k))
+    })?;
+    let (del_start, del_end) = remove_trailing_list_items(&arg_ranges, k)?;
+
+    let numbers = crate::lsp::SafeLinePositions::new(text);
+    let edit = lsp_types::TextEdit {
+        range: numbers.lsp_range(del_start as usize, del_end as usize, utf8),
+        new_text: String::new(),
+    };
+    let title = if arg_ranges.len() - k == 1 {
+        "Remove redundant argument".to_string()
+    } else {
+        "Remove redundant arguments".to_string()
+    };
+    Some(single_edit_quickfix(uri, diag, title, edit))
+}
+
+/// Quick fix for `missing-parameter`: insert a `nil` argument into the call. The
+/// diagnostic range is the whole call; we insert before the closing `)`, adding a
+/// leading comma when the call already has arguments.
+pub(super) fn make_add_nil_argument_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    analysis: &AnalysisResult,
+) -> Option<CodeAction> {
+    let utf8 = use_utf8();
+    let ds = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, utf8);
+    let de = crate::lsp::lsp_position_to_offset(text, diag.range.end.line, diag.range.end.character, utf8);
+
+    let arg_count = analysis.ir.local_exprs().find_map(|(_, e)| {
+        let crate::types::Expr::FunctionCall { call_range, arg_ranges, .. } = e else { return None };
+        (call_range.0 == ds && call_range.1 == de).then_some(arg_ranges.len())
+    })?;
+
+    // The call's exclusive end sits just past `)`, so `)` is at `de - 1`.
+    let insert_byte = (de as usize).checked_sub(1)?;
+    if text.as_bytes().get(insert_byte) != Some(&b')') { return None; }
+
+    let new_text = if arg_count == 0 { "nil".to_string() } else { ", nil".to_string() };
+    let numbers = crate::lsp::SafeLinePositions::new(text);
+    let pos = numbers.lsp_position(insert_byte, utf8);
+    let edit = lsp_types::TextEdit { range: Range { start: pos, end: pos }, new_text };
+
+    let title = match parse_quoted(&diag.message, "missing argument for parameter '") {
+        Some(name) => format!("Add `nil` argument for `{}`", name),
+        None => "Add `nil` argument".to_string(),
+    };
+    Some(single_edit_quickfix(uri, diag, title, edit))
+}
+
+/// Quick fix for `redundant-return`: delete the trailing bare `return`. When the
+/// statement is alone on its line, the whole line (and its newline) is removed;
+/// otherwise just the `return` span is cleared.
+pub(super) fn make_remove_redundant_return_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+) -> Option<CodeAction> {
+    let utf8 = use_utf8();
+    let ds = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, utf8) as usize;
+    let de = crate::lsp::lsp_position_to_offset(text, diag.range.end.line, diag.range.end.character, utf8) as usize;
+    if de > text.len() || ds > de { return None; }
+
+    let line_start = text[..ds].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end = text[de..].find('\n').map(|p| de + p + 1).unwrap_or(text.len());
+    let alone = text[line_start..ds].trim().is_empty() && text[de..line_end].trim().is_empty();
+    let (del_start, del_end) = if alone { (line_start, line_end) } else { (ds, de) };
+
+    let numbers = crate::lsp::SafeLinePositions::new(text);
+    let edit = lsp_types::TextEdit {
+        range: numbers.lsp_range(del_start, del_end, utf8),
+        new_text: String::new(),
+    };
+    Some(single_edit_quickfix(uri, diag, "Remove redundant return".to_string(), edit))
+}
+
+/// Quick fix for `redundant-value` / `redundant-return-value`: drop the surplus
+/// value(s). The diagnostic flags the first extra expression; we find the AST
+/// expression list containing it and delete from that position to the list end.
+pub(super) fn make_remove_extra_values_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    tree: &SyntaxTree,
+) -> Option<CodeAction> {
+    let utf8 = use_utf8();
+    let ds = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, utf8);
+
+    let root = crate::syntax::tree::SyntaxNode::new_root(tree);
+    let (ranges, k) = root.descendants().find_map(|n| {
+        if n.kind() != SyntaxKind::ExpressionList { return None; }
+        let el = crate::ast::ExpressionList::cast(n)?;
+        let ranges: Vec<(u32, u32)> = el.expressions().iter()
+            .map(|e| {
+                let r = e.syntax().text_range();
+                (u32::from(r.start()), u32::from(r.end()))
+            })
+            .collect();
+        let k = ranges.iter().position(|&(s, _)| s == ds)?;
+        Some((ranges, k))
+    })?;
+    // Nothing to trim if the flagged expression is the sole list member.
+    if ranges.len() < 2 { return None; }
+    let (del_start, del_end) = remove_trailing_list_items(&ranges, k)?;
+
+    let numbers = crate::lsp::SafeLinePositions::new(text);
+    let edit = lsp_types::TextEdit {
+        range: numbers.lsp_range(del_start as usize, del_end as usize, utf8),
+        new_text: String::new(),
+    };
+    let title = if ranges.len() - k == 1 {
+        "Remove extra value".to_string()
+    } else {
+        "Remove extra values".to_string()
+    };
+    Some(single_edit_quickfix(uri, diag, title, edit))
+}
+
+/// Quick fix(es) for `not-precedence`: clarify `not a == b` with parentheses.
+/// Offers both readings — wrapping the comparison (`not (a == b)`, the usually
+/// intended one, marked preferred) and wrapping the `not` (`(not a) == b`, which
+/// makes the current behavior explicit).
+pub(super) fn make_not_precedence_actions(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    tree: &SyntaxTree,
+) -> Vec<CodeActionOrCommand> {
+    let utf8 = use_utf8();
+    let ds = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, utf8);
+    let de = crate::lsp::lsp_position_to_offset(text, diag.range.end.line, diag.range.end.character, utf8);
+
+    let Some(full) = text.get(ds as usize..de as usize) else { return vec![] };
+    // Locate the binary node so we can split the LHS (`not a`) from the rest.
+    let root = crate::syntax::tree::SyntaxNode::new_root(tree);
+    let lhs_end = root.descendants().find(|n| {
+        n.kind() == SyntaxKind::BinaryExpression
+            && u32::from(n.text_range().start()) == ds
+            && u32::from(n.text_range().end()) == de
+    }).and_then(BinaryExpression::cast)
+      .and_then(|bin| bin.get_terms().first().map(|t| u32::from(t.syntax().text_range().end())));
+
+    let mut out = Vec::new();
+    if let Some(inner) = full.strip_prefix("not") {
+        let inner = inner.trim_start();
+        let edit = lsp_types::TextEdit {
+            range: diag.range,
+            new_text: format!("not ({})", inner),
+        };
+        let mut ca = single_edit_quickfix(uri, diag, "Add parentheses around comparison".to_string(), edit);
+        ca.is_preferred = Some(true);
+        out.push(CodeActionOrCommand::CodeAction(ca));
+    }
+    if let Some(lhs_end) = lhs_end
+        && let (Some(lhs), Some(rest)) = (text.get(ds as usize..lhs_end as usize), text.get(lhs_end as usize..de as usize))
+    {
+        let edit = lsp_types::TextEdit {
+            range: diag.range,
+            new_text: format!("({}){}", lhs, rest),
+        };
+        out.push(CodeActionOrCommand::CodeAction(
+            single_edit_quickfix(uri, diag, "Add parentheses around `not`".to_string(), edit),
+        ));
+    }
+    out
+}
+
+/// Quick fix for `count-down-loop`: add an explicit `-1` step to a numeric `for`
+/// whose bounds count down but omit the step. Only offered for that implicit-step
+/// case (the message names it); step-0 and explicit-wrong-step loops have no
+/// single unambiguous fix.
+pub(super) fn make_count_down_loop_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    tree: &SyntaxTree,
+) -> Option<CodeAction> {
+    if !diag.message.contains("implicit step is 1; use -1") { return None; }
+    let utf8 = use_utf8();
+    let ds = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, utf8);
+    let de = crate::lsp::lsp_position_to_offset(text, diag.range.end.line, diag.range.end.character, utf8);
+
+    let root = crate::syntax::tree::SyntaxNode::new_root(tree);
+    let exprs = root.descendants()
+        .find(|n| n.kind() == SyntaxKind::ForCountLoop
+            && u32::from(n.text_range().start()) == ds
+            && u32::from(n.text_range().end()) == de)
+        .and_then(crate::ast::ForCountLoop::cast)
+        .and_then(|f| f.expression_list())
+        .map(|el| el.expressions())?;
+    if exprs.len() != 2 { return None; }
+    let end_val_end = u32::from(exprs[1].syntax().text_range().end());
+
+    let numbers = crate::lsp::SafeLinePositions::new(text);
+    let pos = numbers.lsp_position(end_val_end as usize, utf8);
+    let edit = lsp_types::TextEdit {
+        range: Range { start: pos, end: pos },
+        new_text: ", -1".to_string(),
+    };
+    Some(single_edit_quickfix(uri, diag, "Add `-1` step".to_string(), edit))
+}
+
+/// Walk up from `offset` to the *block-level* statement containing it — the
+/// ancestor whose parent is a `Block`. Unlike `find_enclosing_statement_range`
+/// (which stops at the innermost statement-kind node, and so returns a nested call
+/// sub-expression like the `f()` inside `local x = f()`), this returns the whole
+/// enclosing statement, which is what a wrap needs to see (e.g. the leading
+/// `local`). Returns `None` if no block ancestor is found.
+fn enclosing_block_statement(tree: &SyntaxTree, offset: u32) -> Option<(u32, u32)> {
+    let token_id = tree.token_at_offset(offset).right_biased()?;
+    let mut node_id = tree.token_parent(token_id);
+    loop {
+        let parent_id = tree.node_parent(node_id)?;
+        if tree.node(parent_id).kind == SyntaxKind::Block {
+            let node = tree.node(node_id);
+            return (node.start != u32::MAX).then_some((node.start, node.end));
+        }
+        node_id = parent_id;
+    }
+}
+
+/// Quick fix for `wrong-flavor-api`: wrap the enclosing statement in a
+/// `if WOW_PROJECT_ID == WOW_PROJECT_* then … end` guard so the call only runs on
+/// the flavor where the API exists. Only offered when the API is available on a
+/// single flavor with an unambiguous `WOW_PROJECT_*` constant (Retail or Classic
+/// Era) — the rolling Classic flavor spans several expansion constants, so no one
+/// guard is correct there.
+pub(super) fn make_flavor_guard_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    tree: &SyntaxTree,
+) -> Option<CodeAction> {
+    // Message tail: "… (available in: <flavors>)".
+    let available = diag.message.rsplit_once("(available in: ")?.1.strip_suffix(')')?;
+    let const_name = match available.trim() {
+        "Retail" => "WOW_PROJECT_MAINLINE",
+        "Classic Era" => "WOW_PROJECT_CLASSIC",
+        _ => return None,
+    };
+
+    let utf8 = use_utf8();
+    let ds = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, utf8);
+    let (stmt_start, stmt_end) = enclosing_block_statement(tree, ds)?;
+    let (stmt_start, stmt_end) = (stmt_start as usize, stmt_end as usize);
+    if stmt_end > text.len() || stmt_start > stmt_end { return None; }
+
+    let stmt_text = text.get(stmt_start..stmt_end)?;
+    // Don't offer the guard for a `local` declaration: wrapping it in an `if`
+    // block moves the declared name into that block's scope, breaking every later
+    // reference. The correct transform hoists the `local` above the guard, which
+    // is beyond a mechanical wrap.
+    if stmt_text.trim_start().strip_prefix("local").is_some_and(|r| r.starts_with(char::is_whitespace)) {
+        return None;
+    }
+
+    let line_start = text[..stmt_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_prefix = &text[line_start..stmt_start];
+
+    // Only the leading whitespace of the statement's line may be swept into the
+    // wrap. When another statement shares the line (`doStuff(); C_Foo.Bar()`),
+    // `find_enclosing_statement_range` returns just this statement's node — wrap it
+    // inline so the preceding code isn't duplicated. Otherwise wrap the whole line,
+    // keeping its indent and pushing the body one level deeper.
+    let (range_start, new_text) = if line_prefix.trim().is_empty() {
+        let block = text.get(line_start..stmt_end)?;
+        let reindented = block.split('\n')
+            .map(|l| if l.trim().is_empty() { l.to_string() } else { format!("    {}", l) })
+            .collect::<Vec<_>>()
+            .join("\n");
+        (line_start, format!("{line_prefix}if WOW_PROJECT_ID == {const_name} then\n{reindented}\n{line_prefix}end"))
+    } else {
+        (stmt_start, format!("if WOW_PROJECT_ID == {const_name} then {stmt_text} end"))
+    };
+
+    let numbers = crate::lsp::SafeLinePositions::new(text);
+    let edit = lsp_types::TextEdit {
+        range: numbers.lsp_range(range_start, stmt_end, utf8),
+        new_text,
+    };
+    Some(single_edit_quickfix(uri, diag, format!("Guard with `{}` check", const_name), edit))
 }
 
 /// Quick fix for type-mismatch family: insert `--[[@as TYPE]]` after the expression.
@@ -1211,5 +1837,103 @@ mod tests {
         // A multibyte char earlier on the same line before the assignment match.
         let text = "tbl.field = \"© sym\"\nmyVar = 5";
         assert_eq!(find_first_assignment_line(text, "myVar"), Some((1, 0)));
+    }
+
+    /// Apply an `add_global_edit` (read) result to `cfg` and return the new text.
+    fn apply_global_edit(cfg: &str, name: &str) -> String {
+        let (off, ins) = add_global_edit(cfg, name, "read")
+            .unwrap_or_else(|| panic!("expected an edit for {name} in {cfg:?}"));
+        format!("{}{}{}", &cfg[..off], ins, &cfg[off..])
+    }
+
+    /// Assert the edited config is valid JSON and lists `name` under globals.read.
+    fn assert_read_contains(out: &str, name: &str) {
+        let v: serde_json::Value = serde_json::from_str(out)
+            .unwrap_or_else(|e| panic!("edited config is not valid JSON ({e}): {out}"));
+        let read = v["globals"]["read"].as_array()
+            .unwrap_or_else(|| panic!("globals.read missing/not an array: {out}"));
+        assert!(read.iter().any(|x| x == name), "globals.read should contain {name}: {out}");
+    }
+
+    #[test]
+    fn add_global_into_existing_inline_array() {
+        let cfg = "{\n    \"globals\": {\n        \"read\": [\"A\", \"B\"]\n    }\n}\n";
+        let out = apply_global_edit(cfg, "New");
+        assert!(out.contains("[\"New\", \"A\", \"B\"]"), "prepends element inline: {out}");
+        assert_read_contains(&out, "New");
+    }
+
+    #[test]
+    fn add_global_into_empty_array() {
+        let cfg = "{ \"globals\": { \"read\": [] } }";
+        let out = apply_global_edit(cfg, "New");
+        assert!(out.contains("[\"New\"]"), "fills empty array: {out}");
+        assert_read_contains(&out, "New");
+    }
+
+    #[test]
+    fn add_global_when_globals_has_no_read() {
+        // globals exists (with a `write` list) but no `read` key yet.
+        let cfg = "{\n    \"globals\": {\n        \"write\": [\"W\"]\n    }\n}\n";
+        let out = apply_global_edit(cfg, "New");
+        assert_read_contains(&out, "New");
+        // The pre-existing write list must survive untouched.
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["globals"]["write"][0], "W");
+    }
+
+    #[test]
+    fn add_global_when_no_globals_key() {
+        // A config with unrelated keys and no `globals` object at all.
+        let cfg = "{\n    \"diagnostics\": { \"enable\": [\"need-check-nil\"] }\n}\n";
+        let out = apply_global_edit(cfg, "New");
+        assert_read_contains(&out, "New");
+        // Unrelated config must be preserved.
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["diagnostics"]["enable"][0], "need-check-nil");
+    }
+
+    #[test]
+    fn add_global_into_empty_root() {
+        let out = apply_global_edit("{}", "New");
+        assert_read_contains(&out, "New");
+    }
+
+    #[test]
+    fn add_global_noop_when_already_allowed() {
+        // Present under read → no edit.
+        let cfg = "{ \"globals\": { \"read\": [\"Existing\"] } }";
+        assert!(add_global_edit(cfg, "Existing", "read").is_none());
+        // Present under write → also treated as allowed (undefined-global checks both).
+        let cfg = "{ \"globals\": { \"write\": [\"Existing\"] } }";
+        assert!(add_global_edit(cfg, "Existing", "read").is_none());
+    }
+
+    #[test]
+    fn add_global_write_key_targets_write_list() {
+        let cfg = "{ \"globals\": { \"write\": [\"W\"] } }";
+        let (off, ins) = add_global_edit(cfg, "New", "write").unwrap();
+        let out = format!("{}{}{}", &cfg[..off], ins, &cfg[off..]);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let write = v["globals"]["write"].as_array().unwrap();
+        assert!(write.iter().any(|x| x == "New"), "added under write: {out}");
+    }
+
+    #[test]
+    fn add_global_bails_on_invalid_json() {
+        assert!(add_global_edit("not json", "New", "read").is_none());
+        // A JSON array root (not an object) is uneditable here.
+        assert!(add_global_edit("[]", "New", "read").is_none());
+    }
+
+    #[test]
+    fn add_global_ignores_string_value_named_read() {
+        // A `write` entry literally named "read" must not be mistaken for the
+        // `read` *key*; the fix should create a real read key instead.
+        let cfg = "{ \"globals\": { \"write\": [\"read\"] } }";
+        let out = apply_global_edit(cfg, "New");
+        assert_read_contains(&out, "New");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["globals"]["write"][0], "read");
     }
 }

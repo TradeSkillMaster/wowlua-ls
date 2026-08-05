@@ -312,6 +312,25 @@ pub(super) fn ensure_stub_doc_analyzed(
 }
 
 /// Handle an LSP request using the cached Analysis from documents.
+/// Resolve the `.wowluarc.json` that governs `uri` and load its current contents
+/// (preferring an open editor buffer over the on-disk copy) into a
+/// `ConfigEditContext` for the "add to allowed globals" quick fix. Returns `None`
+/// when no config file governs the document.
+fn build_config_edit_context(
+    documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
+    uri: &lsp_types::Uri,
+) -> Option<ConfigEditContext> {
+    let file_path = uri_to_abs_path(uri)?;
+    let config_dir = ws.configs.nearest_config_dir(&file_path)?;
+    let config_path = config_dir.join(".wowluarc.json");
+    let config_uri = abs_path_to_uri(&config_path)?;
+    let existing_text = documents.get(&config_uri.to_string())
+        .map(|d| d.text.clone())
+        .or_else(|| std::fs::read_to_string(&config_path).ok())?;
+    Some(ConfigEditContext { uri: config_uri, existing_text })
+}
+
 pub(super) fn handle_request(
     connection: &Connection,
     documents: &mut HashMap<String, Document>,
@@ -657,10 +676,19 @@ pub(super) fn handle_request(
         "textDocument/codeAction" => {
             if let Ok((id, params)) = cast_req::<request::CodeActionRequest>(req) {
                 let uri = params.text_document.uri;
+                // Only resolve the config file when a diagnostic whose fix edits
+                // `.wowluarc.json` is in context (undefined-global → read list,
+                // create-global → write list), avoiding a filesystem read on every
+                // other code-action request.
+                let config_ctx = params.context.diagnostics.iter()
+                    .any(|d| matches!(&d.code, Some(NumberOrString::String(s))
+                        if s == "undefined-global" || s == "create-global"))
+                    .then(|| build_config_edit_context(documents, ws, &uri))
+                    .flatten();
                 let result: Option<Vec<CodeActionOrCommand>> = documents.get(&uri.to_string())
                     .map(|doc| {
                         let ta = doc.tree.as_ref().zip(doc.analysis.as_ref());
-                        compute_code_actions(&uri, &doc.text, params.range, &params.context.diagnostics, ta)
+                        compute_code_actions(&uri, &doc.text, params.range, &params.context.diagnostics, ta, config_ctx.as_ref())
                     });
                 send_response(connection, id, &result);
             }

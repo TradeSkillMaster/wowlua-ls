@@ -4940,7 +4940,7 @@ fn first_quick_fix_edit(
 ) -> Option<lsp_types::TextEdit> {
     use lsp_types::{CodeActionOrCommand, Uri};
     let uri: Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_quick_fixes(&uri, src, diag, Some((tree, analysis)));
+    let actions = lsp::compute_quick_fixes(&uri, src, diag, Some((tree, analysis)), None);
     let action = actions.into_iter().find_map(|a| {
         if let CodeActionOrCommand::CodeAction(ca) = a { Some(ca) } else { None }
     })?;
@@ -5018,7 +5018,7 @@ fn quick_fix_add_local_declaration() {
         ..Default::default()
     };
     let uri: Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)));
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
     let action = actions.into_iter().find_map(|a| {
         if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a { Some(ca) } else { None }
     }).expect("expected a quick fix action");
@@ -5027,6 +5027,262 @@ fn quick_fix_add_local_declaration() {
     assert_eq!(edits.len(), 1);
     let result = apply_text_edit(src, &edits[0]);
     assert!(result.contains("local myVar"), "should insert 'local' before the assignment");
+}
+
+#[test]
+fn quick_fix_remove_trailing_space() {
+    let src = "local _x = 1   \n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "trailing-space")
+        .expect("expected trailing-space diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    assert_eq!(apply_text_edit(src, &edit), "local _x = 1\n",
+        "should delete the trailing whitespace run");
+}
+
+#[test]
+fn quick_fix_add_field_from_undefined_read() {
+    // Reading an undeclared field on a locally-declared @class instance offers to
+    // add the missing `---@field`. The field type is `any` (a read gives no RHS to
+    // infer from), and the annotation lands right under the `---@class` line.
+    let src = "---@class QFReadBox\n---@field id? number\nlocal QFReadBox = {}\n---@type QFReadBox\nlocal box = {}\nlocal _v = box.missing\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "undefined-field")
+        .expect("expected undefined-field diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("---@field missing any"),
+        "should insert `---@field missing any`, got: {result:?}");
+    // The new @field must sit immediately after the ---@class line.
+    let class_line_idx = result.lines().position(|l| l.trim_start().starts_with("---@class QFReadBox"))
+        .expect("---@class QFReadBox not found");
+    assert!(result.lines().nth(class_line_idx + 1).unwrap_or("").starts_with("---@field missing"),
+        "new @field should be on the line right after ---@class");
+}
+
+#[test]
+fn quick_fix_add_allowed_global_to_config() {
+    use lsp_types::{CodeActionOrCommand, DiagnosticSeverity, NumberOrString, Position, Range, Uri};
+    let src = "local _x = SomeAddonGlobal\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    // Synthetic undefined-global diagnostic (the empty test stubs carry no config).
+    let diag = lsp_types::Diagnostic {
+        range: Range {
+            start: Position { line: 0, character: 11 },
+            end:   Position { line: 0, character: 25 },
+        },
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("undefined-global".to_string())),
+        source: Some("wowlua_ls".to_string()),
+        message: "undefined global 'SomeAddonGlobal'".to_string(),
+        ..Default::default()
+    };
+    let config_uri: Uri = "file:///proj/.wowluarc.json".parse().unwrap();
+    let ctx = lsp::ConfigEditContext {
+        uri: config_uri.clone(),
+        existing_text: "{\n    \"globals\": {\n        \"read\": [\"Existing\"]\n    }\n}\n".to_string(),
+    };
+    let uri: Uri = "file:///proj/test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), Some(&ctx));
+
+    // The config fix targets the .wowluarc.json URI (not the .lua file).
+    let config_edit = actions.iter().find_map(|a| {
+        let CodeActionOrCommand::CodeAction(ca) = a else { return None };
+        let edits = ca.edit.as_ref()?.changes.as_ref()?.get(&config_uri)?;
+        edits.first().cloned()
+    }).expect("expected a quick fix editing the config file");
+
+    // (JSON validity across all config shapes is covered by the code_actions.rs
+    // unit tests; here we just confirm the wiring produces the expected splice.)
+    let result = apply_text_edit(&ctx.existing_text, &config_edit);
+    assert!(result.contains("\"SomeAddonGlobal\", \"Existing\""),
+        "global prepended to the read list, existing entry preserved: {result}");
+}
+
+#[test]
+fn quick_fix_remove_redundant_argument() {
+    let src = "local function f(a) return a end\nf(1, 2)\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "redundant-parameter")
+        .expect("expected redundant-parameter diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag).expect("expected a quick fix");
+    assert_eq!(apply_text_edit(src, &edit), "local function f(a) return a end\nf(1)\n",
+        "should delete the extra argument and its comma");
+}
+
+#[test]
+fn quick_fix_add_nil_argument() {
+    let src = "---@param a number\nlocal function f(a) return a end\nf()\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "missing-parameter")
+        .expect("expected missing-parameter diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag).expect("expected a quick fix");
+    assert_eq!(apply_text_edit(src, &edit), "---@param a number\nlocal function f(a) return a end\nf(nil)\n",
+        "should insert a nil argument into the empty call");
+}
+
+#[test]
+fn quick_fix_remove_redundant_return() {
+    let src = "local function f()\n    return\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "redundant-return")
+        .expect("expected redundant-return diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag).expect("expected a quick fix");
+    assert_eq!(apply_text_edit(src, &edit), "local function f()\nend\n",
+        "should remove the whole redundant-return line");
+}
+
+#[test]
+fn quick_fix_remove_extra_values_assignment() {
+    let src = "local _x = 1, 2\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "redundant-value")
+        .expect("expected redundant-value diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag).expect("expected a quick fix");
+    assert_eq!(apply_text_edit(src, &edit), "local _x = 1\n",
+        "should drop the surplus value and its comma");
+}
+
+#[test]
+fn quick_fix_remove_extra_return_values() {
+    let src = "---@return number\nlocal function f() return 1, 2 end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "redundant-return-value")
+        .expect("expected redundant-return-value diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag).expect("expected a quick fix");
+    assert_eq!(apply_text_edit(src, &edit), "---@return number\nlocal function f() return 1 end\n",
+        "should drop the surplus return value");
+}
+
+#[test]
+fn quick_fix_not_precedence_offers_both_parenthesizations() {
+    let src = "local _x = not 1 == 2\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "not-precedence")
+        .expect("expected not-precedence diagnostic");
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
+    let cmp = find_action_edit(&actions, "comparison").expect("wrap-comparison action");
+    assert_eq!(apply_text_edit(src, cmp), "local _x = not (1 == 2)\n");
+    let not = find_action_edit(&actions, "around `not`").expect("wrap-not action");
+    assert_eq!(apply_text_edit(src, not), "local _x = (not 1) == 2\n");
+}
+
+#[test]
+fn quick_fix_count_down_loop_adds_step() {
+    let src = "for i = 10, 1 do local _ = i end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "count-down-loop")
+        .expect("expected count-down-loop diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag).expect("expected a quick fix");
+    assert_eq!(apply_text_edit(src, &edit), "for i = 10, 1, -1 do local _ = i end\n",
+        "should insert an explicit -1 step");
+}
+
+#[test]
+fn quick_fix_create_global_local_and_config() {
+    use lsp_types::{CodeActionOrCommand, Uri};
+    let src = "MyNewGlobal = 5\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "create-global")
+        .expect("expected create-global diagnostic");
+    let config_uri: Uri = "file:///proj/.wowluarc.json".parse().unwrap();
+    let ctx = lsp::ConfigEditContext { uri: config_uri.clone(), existing_text: "{}\n".to_string() };
+    let uri: Uri = "file:///proj/test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), Some(&ctx));
+
+    // Fix 1: localize the assignment (targets the .lua file).
+    let local_edit = actions.iter().find_map(|a| {
+        let CodeActionOrCommand::CodeAction(ca) = a else { return None };
+        ca.edit.as_ref()?.changes.as_ref()?.get(&uri)?.first().cloned()
+    }).expect("expected a local-declaration fix");
+    assert_eq!(apply_text_edit(src, &local_edit), "local MyNewGlobal = 5\n");
+
+    // Fix 2: record it as an allowed write-global (targets the config file).
+    let config_edit = actions.iter().find_map(|a| {
+        let CodeActionOrCommand::CodeAction(ca) = a else { return None };
+        ca.edit.as_ref()?.changes.as_ref()?.get(&config_uri)?.first().cloned()
+    }).expect("expected a config write-global fix");
+    let out = apply_text_edit(&ctx.existing_text, &config_edit);
+    assert!(out.contains("\"write\"") && out.contains("MyNewGlobal"),
+        "should add to globals.write: {out}");
+}
+
+#[test]
+fn quick_fix_wrong_flavor_api_wraps_in_guard() {
+    use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range, Uri};
+    // wrong-flavor-api needs flavored stubs + project flavors to fire naturally,
+    // which the empty test harness lacks; drive make_flavor_guard_action with a
+    // synthetic diagnostic (it only needs the tree + message).
+    let src = "C_Foo.Bar()\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = lsp_types::Diagnostic {
+        range: Range {
+            start: Position { line: 0, character: 0 },
+            end:   Position { line: 0, character: 11 },
+        },
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("wrong-flavor-api".to_string())),
+        source: Some("wowlua_ls".to_string()),
+        message: "API 'C_Foo.Bar' not available in flavor 'Classic' (available in: Retail)".to_string(),
+        ..Default::default()
+    };
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
+    let edit = find_action_edit(&actions, "Guard with").expect("expected a flavor guard fix");
+    assert_eq!(apply_text_edit(src, edit),
+        "if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then\n    C_Foo.Bar()\nend\n");
+}
+
+#[test]
+fn quick_fix_wrong_flavor_api_shared_line_wraps_inline() {
+    use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range, Uri};
+    // Another statement shares the line: the flagged call must be wrapped inline
+    // so the preceding `doStuff()` is neither duplicated nor pulled into the guard.
+    let src = "doStuff(); C_Foo.Bar()\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = lsp_types::Diagnostic {
+        range: Range {
+            start: Position { line: 0, character: 11 },
+            end:   Position { line: 0, character: 22 },
+        },
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("wrong-flavor-api".to_string())),
+        source: Some("wowlua_ls".to_string()),
+        message: "API 'C_Foo.Bar' not available in flavor 'Classic' (available in: Retail)".to_string(),
+        ..Default::default()
+    };
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
+    let edit = find_action_edit(&actions, "Guard with").expect("expected a flavor guard fix");
+    assert_eq!(apply_text_edit(src, edit),
+        "doStuff(); if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then C_Foo.Bar() end\n");
+}
+
+#[test]
+fn quick_fix_wrong_flavor_api_skips_local_declaration() {
+    use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range, Uri};
+    // Wrapping a `local` declaration would move `x` into the guard's scope and
+    // break later references, so the guard fix is withheld here.
+    let src = "local x = C_Foo.Bar()\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = lsp_types::Diagnostic {
+        range: Range {
+            start: Position { line: 0, character: 10 },
+            end:   Position { line: 0, character: 21 },
+        },
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("wrong-flavor-api".to_string())),
+        source: Some("wowlua_ls".to_string()),
+        message: "API 'C_Foo.Bar' not available in flavor 'Classic' (available in: Retail)".to_string(),
+        ..Default::default()
+    };
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
+    assert!(find_action_edit(&actions, "Guard with").is_none(),
+        "should not offer a flavor guard for a local declaration");
 }
 
 #[test]
@@ -5193,7 +5449,7 @@ fn fix_all_unused_local_two_instances() {
 
     use lsp_types::Uri;
     let uri: Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &all_diags, Some((&tree, &analysis)));
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &all_diags, Some((&tree, &analysis)), None);
 
     // There should be a "Fix all 'unused-local'" bulk action.
     let bulk = actions.iter().find_map(|a| {
@@ -5224,7 +5480,7 @@ fn fix_all_unused_local_one_instance_no_bulk() {
 
     use lsp_types::Uri;
     let uri: Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &all_diags, Some((&tree, &analysis)));
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &all_diags, Some((&tree, &analysis)), None);
 
     let bulk = actions.iter().find(|a| {
         if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a {
@@ -5245,7 +5501,7 @@ fn fix_all_type_mismatch_two_instances() {
 
     use lsp_types::Uri;
     let uri: Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &all_diags, Some((&tree, &analysis)));
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &all_diags, Some((&tree, &analysis)), None);
 
     let bulk = actions.iter().find_map(|a| {
         if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a {
@@ -5281,7 +5537,7 @@ fn combine_returns_edit_at(
         start: Position { line, character: col },
         end:   Position { line, character: col },
     };
-    let actions = lsp::compute_code_actions(&uri, src, range, &[], Some((tree, analysis)));
+    let actions = lsp::compute_code_actions(&uri, src, range, &[], Some((tree, analysis)), None);
     let action = actions.into_iter().find_map(|a| {
         if let CodeActionOrCommand::CodeAction(ca) = a
             && ca.title == "Combine into single-line tuple return" { return Some(ca); }
@@ -6045,7 +6301,7 @@ fn disable_line_merges_into_existing_directive() {
     let src = "local x = foo.bar ---@diagnostic disable-line: undefined-field\n";
     let diag = make_lsp_diag("redundant-or", 0, 10, 0, 17);
     let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None, None);
     let edit = find_action_edit(&actions, "Disable `redundant-or` on this line")
         .expect("should have disable-line action");
     let result = apply_text_edit(src, edit);
@@ -6065,7 +6321,7 @@ fn disable_line_no_duplicate_when_code_already_present() {
     let src = "local x = foo.bar ---@diagnostic disable-line: undefined-field\n";
     let diag = make_lsp_diag("undefined-field", 0, 10, 0, 17);
     let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None, None);
     let edit = find_action_edit(&actions, "Disable `undefined-field` on this line")
         .expect("should have disable-line action");
     let result = apply_text_edit(src, edit);
@@ -6078,7 +6334,7 @@ fn disable_next_line_merges_into_existing_directive() {
     let src = "---@diagnostic disable-next-line: undefined-field\nlocal x = foo.bar\n";
     let diag = make_lsp_diag("redundant-or", 1, 10, 1, 17);
     let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None, None);
     let edit = find_action_edit(&actions, "Disable `redundant-or` for this line (above)")
         .expect("should have disable-next-line action");
     let result = apply_text_edit(src, edit);
@@ -6098,7 +6354,7 @@ fn disable_next_line_no_duplicate_when_code_already_present() {
     let src = "---@diagnostic disable-next-line: undefined-field\nlocal x = foo.bar\n";
     let diag = make_lsp_diag("undefined-field", 1, 10, 1, 17);
     let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None, None);
     let edit = find_action_edit(&actions, "Disable `undefined-field` for this line (above)")
         .expect("should have disable-next-line action");
     let result = apply_text_edit(src, edit);
@@ -6110,7 +6366,7 @@ fn disable_next_line_merges_indented_directive() {
     let src = "function foo()\n    ---@diagnostic disable-next-line: undefined-field\n    local x = bar.baz\nend\n";
     let diag = make_lsp_diag("redundant-or", 2, 14, 2, 21);
     let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None, None);
     let edit = find_action_edit(&actions, "Disable `redundant-or` for this line (above)")
         .expect("should have disable-next-line action");
     let result = apply_text_edit(src, edit);
@@ -6129,7 +6385,7 @@ fn disable_file_merges_into_existing_directive() {
     let src = "---@diagnostic disable: unused-local\nlocal x = foo.bar\n";
     let diag = make_lsp_diag("undefined-field", 1, 10, 1, 17);
     let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None, None);
     let edit = find_action_edit(&actions, "Disable `undefined-field` for this file")
         .expect("should have disable-file action");
     let result = apply_text_edit(src, edit);
@@ -6149,7 +6405,7 @@ fn disable_file_merges_directive_after_comment_header() {
     let src = "--- My addon module\n--- License: MIT\n---@diagnostic disable: unused-local\nlocal x = foo.bar\n";
     let diag = make_lsp_diag("undefined-field", 3, 10, 3, 17);
     let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None, None);
     let edit = find_action_edit(&actions, "Disable `undefined-field` for this file")
         .expect("should have disable-file action");
     let result = apply_text_edit(src, edit);
@@ -6171,7 +6427,7 @@ fn disable_file_skips_directive_inside_code() {
     let src = "local x = 1\n---@diagnostic disable: unused-local\nlocal y = foo.bar\n";
     let diag = make_lsp_diag("undefined-field", 2, 10, 2, 17);
     let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None, None);
     let edit = find_action_edit(&actions, "Disable `undefined-field` for this file")
         .expect("should have disable-file action");
     let result = apply_text_edit(src, edit);
@@ -6192,7 +6448,7 @@ fn disable_file_no_duplicate_when_code_already_present() {
     let src = "---@diagnostic disable: undefined-field\nlocal x = foo.bar\n";
     let diag = make_lsp_diag("undefined-field", 1, 10, 1, 17);
     let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
-    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None);
+    let actions = lsp::compute_code_actions(&uri, src, Default::default(), &[diag], None, None);
     let edit = find_action_edit(&actions, "Disable `undefined-field` for this file")
         .expect("should have disable-file action");
     let result = apply_text_edit(src, edit);

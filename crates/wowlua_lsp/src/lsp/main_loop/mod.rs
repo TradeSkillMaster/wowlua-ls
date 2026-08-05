@@ -78,7 +78,7 @@ use stub_loading::*;
 pub use scan::{scan_workspace, scan_workspace_with_stubs, scan_paths_with_overrides};
 pub use stub_loading::{load_precomputed_stubs, stub_materialize_dir};
 pub use hierarchy::{search_workspace_symbols};
-pub use code_actions::{compute_quick_fixes, compute_code_actions, make_generate_annotation_stubs_source_action};
+pub use code_actions::{compute_quick_fixes, compute_code_actions, make_generate_annotation_stubs_source_action, ConfigEditContext};
 
 /// Whether the negotiated position encoding is UTF-8 (byte offsets).
 /// Set once during initialization; defaults to false (UTF-16) if not set.

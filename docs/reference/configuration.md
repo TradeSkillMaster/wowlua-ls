@@ -164,6 +164,8 @@ Global names that may be accessed without triggering `undefined-global`. Entries
 
 > **Tip:** `SavedVariables` and `SavedVariablesPerCharacter` declared in `.toc` files are automatically added to both `globals.read` and `globals.write` - no manual configuration needed.
 
+> **Quick fix:** Hovering an `undefined-global` warning offers **"Add `<name>` to allowed globals in `.wowluarc.json`"**, which appends the name to this list in the nearest config file (alongside the alternative "Add `local` declaration" fix).
+
 ### `globals.write`
 
 - **Type:** `string[]`
@@ -174,6 +176,8 @@ Global names that may be created/assigned without triggering `create-global`. En
 ```json
 { "globals": { "write": ["MyAddon*", "SavedVar*"] } }
 ```
+
+> **Quick fix:** A `create-global` warning offers **"Add `<name>` to allowed write globals in `.wowluarc.json`"** (alongside "Add `local` declaration"), appending the name to this list.
 
 ### `globals.allowSlashCommands`
 
