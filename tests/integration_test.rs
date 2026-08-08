@@ -1892,6 +1892,18 @@ fn crossfile_class_ctor_fields() {
 }
 
 #[test]
+fn crossfile_local_table_shape() {
+    // Test that a plain local data table built up via scattered `C.x = ...` writes
+    // and assigned to a @class field (`data.constants = C`) carries its accumulated
+    // shape cross-file instead of degrading to a bare `table`.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/local_table_shape_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_defclass() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/defclass_user.lua",

@@ -257,6 +257,42 @@ fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>) -> Vec<(Stri
     fields
 }
 
+/// Like [`classify_expression_value_kind`], but resolves a bare single-name
+/// identifier leaf to a known local scalar's kind (`lfr = TIER_LFR` with
+/// `local TIER_LFR = 1` → `Number`) via `scalars`, and recurses into nested table
+/// constructors doing the same. Used to capture the accumulated shape of a plain
+/// local data table (`local C = {}` then `C.tiers = { lfr = TIER_LFR }`) so it
+/// survives cross-file instead of collapsing to a bare `table`.
+fn classify_value_kind_resolving_scalars(
+    expr: &Expression<'_>,
+    scalars: &HashMap<String, FieldValueKind>,
+) -> FieldValueKind {
+    if let Some(kind) = classify_literal_value_kind(expr) {
+        return kind;
+    }
+    match expr {
+        Expression::TableConstructor(tc) => {
+            let mut fields = Vec::new();
+            for field in tc.fields() {
+                if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
+                    fields.push((name, classify_value_kind_resolving_scalars(&value, scalars)));
+                }
+            }
+            FieldValueKind::Table(fields)
+        }
+        Expression::Identifier(ident) => {
+            let names = ident.names();
+            if names.len() == 1
+                && let Some(kind) = scalars.get(&names[0])
+            {
+                return kind.clone();
+            }
+            FieldValueKind::Unknown
+        }
+        _ => classify_expression_value_kind(expr),
+    }
+}
+
 /// Classify a literal expression (including negated number literals) into a `FieldValueKind`,
 /// preserving literal values (string text, number text) when available.
 fn classify_literal_value_kind(expr: &Expression<'_>) -> Option<FieldValueKind> {
@@ -740,6 +776,10 @@ pub fn scan_file_globals_with_synth(
     // Track locals with @type annotations so field assignments on them are emitted
     // under the annotated class name (cross-file overlay tracking).
     let mut local_type_vars: HashMap<String, String> = HashMap::new();
+    // Track locals assigned a scalar literal (`local MONK = 10`) so enum-style field
+    // values referencing them (`classes = { MONK = MONK }`) resolve to the scalar
+    // kind when capturing a plain local table's cross-file shape below.
+    let mut local_scalar_kinds: HashMap<String, FieldValueKind> = HashMap::new();
     for stmt in &all_stmts {
         if let Statement::LocalAssign(assign) = stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
@@ -762,6 +802,9 @@ pub fn scan_file_globals_with_synth(
                     }
                     if matches!(&exprs[0], Expression::Function(_)) {
                         local_functions.insert(names[0].clone());
+                    }
+                    if let Some(kind) = classify_literal_value_kind(&exprs[0]) {
+                        local_scalar_kinds.insert(names[0].clone(), kind);
                     }
                 }
 
@@ -848,6 +891,49 @@ pub fn scan_file_globals_with_synth(
                     }
                 }
             }
+    }
+
+    // Capture the accumulated shape of plain local data tables (`local C = {}` then
+    // `C.tiers = {...}; C.classes = {...}` — often inside a `do ... end`) so that
+    // assigning such a table to a typed/namespace field (`data.constants = C`) carries
+    // C's fields cross-file instead of degrading to a bare `table`. Only plain locals
+    // are captured: a local annotated `@class`/`@type` (or the addon ns) already crosses
+    // files as its named type via the `returns` path at the field-assignment site, so its
+    // `Table` value-kind is never consulted. Nested inline constructors recurse; a
+    // single-name scalar-constant leaf resolves through `local_scalar_kinds`.
+    let mut local_table_field_kinds: HashMap<String, Vec<(String, FieldValueKind)>> = HashMap::new();
+    for stmt in &all_stmts {
+        if let Statement::Assign(assign) = stmt
+            && let (Some(var_list), Some(expr_list)) = (assign.variable_list(), assign.expression_list())
+        {
+            let idents = var_list.identifiers();
+            let exprs = expr_list.expressions();
+            if idents.len() != 1 || exprs.len() != 1 { continue; }
+            // Skip element writes (`C.items[i] = x`) and parenthesized-base writes:
+            // `names()` drops a non-string bracket key, so `C.items[1] = "foo"` would
+            // otherwise be mis-recorded as a scalar write to the field `items` itself,
+            // clobbering its real `table` type cross-file. Mirrors the guard in
+            // `collect_ctor_key_paths`. String-bracket writes (`C["items"] = x`) are
+            // not dropped and stay captured.
+            if idents[0].has_non_string_bracket_tail() || idents[0].has_prefix_expr_base() { continue; }
+            let names = idents[0].names();
+            if names.len() != 2 { continue; }
+            let root = &names[0];
+            if !local_tables.contains(root)
+                || class_vars.contains_key(root)
+                || local_type_vars.contains_key(root)
+                || addon_ns_var.as_deref() == Some(root.as_str())
+            { continue; }
+            let field = names[1].clone();
+            let kind = classify_value_kind_resolving_scalars(&exprs[0], &local_scalar_kinds);
+            let entry = local_table_field_kinds.entry(root.clone()).or_default();
+            // Last write wins, preserving first-seen field order.
+            if let Some(slot) = entry.iter_mut().find(|(n, _)| *n == field) {
+                slot.1 = kind;
+            } else {
+                entry.push((field, kind));
+            }
+        }
     }
 
     // Track return types of same-file function definitions (e.g. `---@return Foo \n function X.bar()`)
@@ -1253,7 +1339,12 @@ pub fn scan_file_globals_with_synth(
                                     if rhs_names.len() == 1 && local_functions.contains(&rhs_names[0]) {
                                         FieldValueKind::Function
                                     } else if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
-                                        FieldValueKind::Table(vec![])
+                                        // Carry the local table's accumulated shape (captured
+                                        // above) so `data.constants = constants` exposes
+                                        // `constants`'s fields cross-file, not a bare `table`.
+                                        FieldValueKind::Table(
+                                            local_table_field_kinds.get(&rhs_names[0]).cloned().unwrap_or_default(),
+                                        )
                                     } else if rhs_names.len() == 1 {
                                         if let Some((callee_chain, first_string_arg)) = local_call_origins.get(&rhs_names[0]) {
                                             // Local was assigned from a function call whose return type
