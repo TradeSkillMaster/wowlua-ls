@@ -19,8 +19,12 @@
 //! value is lifted losslessly into an inline `ValueType::FunctionSig` carrying
 //! its signature, so cross-file callers see the precise `fun(...)` rather than a
 //! bare `function`. Everything else nameable (class instances, primitives,
-//! unions) is preserved; anonymous tables still decay to `any` (their arena
-//! index is meaningless cross-file). A returned class instance carrying injected
+//! unions) is preserved. An anonymous *array/map* table carries its element type
+//! inline as a `ValueType::TableShape` container (`T[]` / `table<K, V>`), read
+//! from the arena `TableInfo`'s `value_type`/`key_type`; an anonymous *record*
+//! table (named fields only) still decays to `any` here, since lifting its field
+//! types would need the resolved-expr cache this helper doesn't carry. A returned
+//! class instance carrying injected
 //! fields (`frame.DropDown = ...` on a `CreateFrame` result) is lifted into
 //! `Class & { DropDown: ... }` — an `Intersection` of its ext class with an
 //! inline `ValueType::TableShape` carrying the injected fields (narrowed to the
@@ -792,6 +796,36 @@ fn lift_local_type_to_ext_depth(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobal
                 && let Some(&ext_idx) = ext.classes.get(name)
             {
                 ValueType::Table(Some(ext_idx))
+            } else if let Some(vt) = &info.value_type {
+                // Anonymous array/map: carry its element type inline (arena-free)
+                // instead of decaying to `any`, so a body-derived cross-file
+                // return of `T[]` / `table<K, V>` stays precise. The element
+                // types live on the arena `TableInfo` (`value_type` / `key_type`
+                // / `is_explicit_map`), so no resolved-expr cache is needed here.
+                // Bounded by the same depth guard as the function-signature lift.
+                if depth >= LIFT_MAX_DEPTH {
+                    return ValueType::Table(None);
+                }
+                let lowered_val = lift_local_type_to_ext_depth(vt, ir, ext, depth + 1);
+                // Carry the key only for a genuine map — an explicit `table<K,V>`
+                // OR an *inferred* non-`Number` key (resolve.rs sets key_type on
+                // inferred maps WITHOUT setting is_explicit_map, so gating on that
+                // flag alone would drop the key and misrender `table<string,V>` as
+                // `V[]`). Plain arrays (no key / inferred `Number` key) lower with
+                // no key so they render as `V[]`, matching same-file display.
+                let lowered_key = if crate::analysis::queries::table_is_map(
+                    info.key_type.as_ref(),
+                    info.is_explicit_map,
+                ) {
+                    info.key_type.as_ref().map(|k| lift_local_type_to_ext_depth(k, ir, ext, depth + 1))
+                } else {
+                    None
+                };
+                ValueType::TableShape(Box::new(crate::types::TableShape::new_container(
+                    Vec::new(),
+                    lowered_key,
+                    lowered_val,
+                )))
             } else {
                 ValueType::Any
             }

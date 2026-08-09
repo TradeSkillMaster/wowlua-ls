@@ -89,6 +89,44 @@ fn query_return_type_at_slot(ir: &Ir, rets: &[SymbolIndex], slot: usize) -> Opti
     acc
 }
 
+/// Whether a table with this `(key_type, is_explicit_map)` renders and behaves
+/// as a map (`table<K, V>`) rather than an array (`V[]`). Single source of truth
+/// for the array-vs-map decision, shared by the type formatters and the
+/// cross-file deferred lift (which uses it to decide whether to carry the key on
+/// an inline `TableShape` container). A table is a map iff it was explicitly
+/// annotated `table<K, V>`, or its key type is a non-`Number` type; a `Number` or
+/// absent key without an explicit annotation is an array (integer-indexed).
+pub(crate) fn table_is_map(key_type: Option<&ValueType>, is_explicit_map: bool) -> bool {
+    match key_type {
+        None => false,
+        Some(ValueType::Number) => is_explicit_map,
+        Some(_) => true,
+    }
+}
+
+/// Render an array (`V[]`) or map (`table<K, V>`) from its element types, using
+/// `fmt` to format each element type. The array-vs-map choice goes through
+/// [`table_is_map`]; array-element parenthesization is decided *structurally*
+/// (only unions/intersections get parens), so every call site agrees byte-for-byte
+/// rather than each re-deriving the rule.
+pub(crate) fn render_array_or_map(
+    key: Option<&ValueType>,
+    val: &ValueType,
+    is_explicit_map: bool,
+    mut fmt: impl FnMut(&ValueType) -> String,
+) -> String {
+    let val_str = fmt(val);
+    if table_is_map(key, is_explicit_map) {
+        // `table_is_map` returns true only for a `Some` key.
+        let key_str = fmt(key.expect("table_is_map implies a key"));
+        format!("table<{}, {}>", key_str, val_str)
+    } else if matches!(val, ValueType::Union(_) | ValueType::Intersection(_)) {
+        format!("({})[]", val_str)
+    } else {
+        format!("{}[]", val_str)
+    }
+}
+
 /// Deduplicate `func.rets` by return position and union the resolved types.
 /// Multiple `return` statements in different scopes create separate symbols for
 /// the same position in `func.rets`. This function groups them by index and
@@ -1315,22 +1353,10 @@ impl AnalysisResult {
                         // value_type contains the same table, so cap early to avoid
                         // deep expansion before the general safety net kicks in.
                         if depth > 4 { return "table".to_string(); }
-                        let val_str = self.format_value_type_depth(val_vt, depth + 1);
-                        return match &table.key_type {
-                            Some(ValueType::Number) | None if !table.is_explicit_map => {
-                                if matches!(val_vt, ValueType::Union(_) | ValueType::Intersection(_)) {
-                                    format!("({})[]", val_str)
-                                } else {
-                                    format!("{}[]", val_str)
-                                }
-                            }
-                            Some(key_vt) => {
-                                let key_str = self.format_value_type_depth(key_vt, depth + 1);
-                                format!("table<{}, {}>", key_str, val_str)
-                            }
-                            // Defensive: explicit-map tables always have Some(key_type)
-                            None => format!("{}[]", val_str),
-                        };
+                        return render_array_or_map(
+                            table.key_type.as_ref(), val_vt, table.is_explicit_map,
+                            |t| self.format_value_type_depth(t, depth + 1),
+                        );
                     }
                 if let Some(ref class_name) = table.class_name {
                     let has_parents = !table.parent_classes.is_empty();
@@ -1471,6 +1497,18 @@ impl AnalysisResult {
                 // shows inline (`{ SetValue: fun… }`), a large one caps
                 // (`{... N fields}`), and each field still hovers/navigates on its
                 // own access.
+                // A container shape (an inline `T[]` / `table<K,V>`) with no named
+                // fields renders as an array/map, mirroring `Table(idx)`. The
+                // shape's key was already decided at lift time (`Some` ⟺ map — see
+                // `analysis::deferred`), so pass `is_explicit_map = true`, which
+                // makes `table_is_map` key purely off key presence.
+                if shape.fields.is_empty()
+                    && let Some(ref val_vt) = shape.value_type {
+                    return render_array_or_map(
+                        shape.key_type.as_deref(), val_vt, true,
+                        |t| self.format_value_type_depth(t, depth + 1),
+                    );
+                }
                 let field_count = shape.fields.len();
                 let has_methods = shape.fields.iter()
                     .any(|(_, t)| matches!(t, ValueType::Function(_) | ValueType::FunctionSig(_)));
@@ -1525,21 +1563,10 @@ impl AnalysisResult {
                     if depth > 4 {
                         return "table".to_string();
                     }
-                    let val_str = self.format_type_subst(val_vt, depth + 1, subs);
-                    return match &table.key_type {
-                        Some(ValueType::Number) | None if !table.is_explicit_map => {
-                            if matches!(val_vt, ValueType::Union(_) | ValueType::Intersection(_)) {
-                                format!("({})[]", val_str)
-                            } else {
-                                format!("{}[]", val_str)
-                            }
-                        }
-                        Some(key_vt) => {
-                            let key_str = self.format_type_subst(key_vt, depth + 1, subs);
-                            format!("table<{}, {}>", key_str, val_str)
-                        }
-                        None => format!("{}[]", val_str),
-                    };
+                    return render_array_or_map(
+                        table.key_type.as_ref(), val_vt, table.is_explicit_map,
+                        |t| self.format_type_subst(t, depth + 1, subs),
+                    );
                 }
                 // Named class tables collapse to their name at depth > 0, so the
                 // plain formatter is sufficient for nested class references.
@@ -2502,5 +2529,88 @@ mod factory_return_tests {
              function make() local t = { a = 1 }; return t end\n",
         );
         assert!(!ar.inferred_return_matches_class(global_func(&ar, "make"), "Nonexistent"));
+    }
+}
+
+/// Guards the `TableShape` container element rendering (`V[]` / `table<K, V>`).
+/// `TableShape::value_type` is populated by the deferred-return lift
+/// (`analysis::deferred`); this exercises the formatter by constructing the type
+/// directly rather than via a full cross-file fixture.
+#[cfg(test)]
+mod container_shape_tests {
+    use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
+    use crate::pre_globals::PreResolvedGlobals;
+    use crate::types::{TableShape, ValueType};
+    use std::sync::Arc;
+
+    fn empty_result() -> AnalysisResult {
+        let tree = crate::syntax::parser::Parser::new("").parse();
+        let pre = Arc::new(PreResolvedGlobals::empty());
+        let mut a = Analysis::new_with_tree(&tree, pre, AnalysisConfig::default());
+        a.resolve_types();
+        a.into_result()
+    }
+
+    #[test]
+    fn container_shape_renders_as_array_and_map() {
+        let ar = empty_result();
+        // No key → array display, matching a real `Table` array.
+        let arr = ValueType::TableShape(Box::new(TableShape::new_container(
+            vec![],
+            None,
+            ValueType::String(None),
+        )));
+        assert_eq!(ar.format_value_type_depth(&arr, 0), "string[]");
+        // Key present → map display.
+        let map = ValueType::TableShape(Box::new(TableShape::new_container(
+            vec![],
+            Some(ValueType::Number),
+            ValueType::String(None),
+        )));
+        assert_eq!(ar.format_value_type_depth(&map, 0), "table<number, string>");
+    }
+
+    #[test]
+    fn array_element_parenthesization_is_structural() {
+        let ar = empty_result();
+        // Union element → parenthesized (ambiguous otherwise).
+        let arr_union = ValueType::TableShape(Box::new(TableShape::new_container(
+            vec![],
+            None,
+            ValueType::make_union(vec![ValueType::Number, ValueType::String(None)]),
+        )));
+        assert_eq!(ar.format_value_type_depth(&arr_union, 0), "(number | string)[]");
+        // Nested map element → NOT parenthesized (structural rule; the old
+        // string-based `contains(' ')` heuristic wrongly wrapped it), matching the
+        // canonical `Table(idx)` / same-file rendering.
+        let inner_map = ValueType::TableShape(Box::new(TableShape::new_container(
+            vec![],
+            Some(ValueType::String(None)),
+            ValueType::Number,
+        )));
+        let arr_of_maps = ValueType::TableShape(Box::new(TableShape::new_container(
+            vec![],
+            None,
+            inner_map,
+        )));
+        assert_eq!(ar.format_value_type_depth(&arr_of_maps, 0), "table<string, number>[]");
+    }
+
+    #[test]
+    fn container_element_is_structural_for_eq() {
+        // The additive `value_type`/`key_type` participate in equality, so a
+        // record shape and an array-of-that-record shape are distinct types (the
+        // fixpoint convergence check relies on this).
+        let record = TableShape::new(vec![("x".into(), ValueType::Number)]);
+        let arr = TableShape::new_container(vec![], None, ValueType::Number);
+        assert_ne!(record, arr);
+        assert_eq!(
+            TableShape::new_container(vec![], None, ValueType::Number),
+            TableShape::new_container(vec![], None, ValueType::Number)
+        );
+        assert_ne!(
+            TableShape::new_container(vec![], None, ValueType::Number),
+            TableShape::new_container(vec![], Some(ValueType::String(None)), ValueType::Number)
+        );
     }
 }

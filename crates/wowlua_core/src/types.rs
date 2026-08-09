@@ -300,12 +300,37 @@ pub struct TableShape {
     pub fields: Vec<(String, ValueType)>,
     #[serde(default)]
     pub field_defs: Vec<(String, ExternalLocation)>,
+    /// Inline array element type (`T[]`) or map value type (`table<K, V>`) when
+    /// this shape carries a container element type. `None` for a pure record
+    /// shape. Without it, an anonymous `string[]` would decay to bare `table`
+    /// crossing a file boundary — a plain field list (like the coarse cross-file
+    /// channel) carries only named `(field, type)` pairs, never an array/map
+    /// element type.
+    ///
+    /// Runtime-only (`#[serde(skip)]`, matching the runtime-only fields on
+    /// `TableInfo`): a `TableShape` is constructed exclusively by the deferred
+    /// cross-file lift (`analysis::deferred`) and never by stub generation, so it
+    /// never round-trips through the precomputed-stub blob. Skipping (rather than
+    /// `serde(default)`) is deliberate: the blob is bincode — positional, not
+    /// self-describing — so `default` would NOT backfill a missing trailing field;
+    /// appending a serialized field would byte-shift-corrupt an old same-version
+    /// blob. `skip` keeps these out of the layout entirely, avoiding that footgun.
+    #[serde(skip)]
+    pub value_type: Option<Box<ValueType>>,
+    /// Map key type, paired with `value_type` for `table<K, V>`. `None` alongside
+    /// a set `value_type` renders as an array (`V[]`). Runtime-only; see
+    /// `value_type` for why this is `#[serde(skip)]`.
+    #[serde(skip)]
+    pub key_type: Option<Box<ValueType>>,
 }
 
 // Locations are navigation metadata, not part of the type's structural identity.
+// The container element types (`value_type`/`key_type`) ARE structural.
 impl PartialEq for TableShape {
     fn eq(&self, other: &Self) -> bool {
         self.fields == other.fields
+            && self.value_type == other.value_type
+            && self.key_type == other.key_type
     }
 }
 
@@ -323,7 +348,21 @@ impl TableShape {
     ) -> Self {
         fields.sort_by(|a, b| a.0.cmp(&b.0));
         field_defs.sort_by(|a, b| a.0.cmp(&b.0));
-        TableShape { fields, field_defs }
+        TableShape { fields, field_defs, value_type: None, key_type: None }
+    }
+
+    /// Build a container shape carrying an array/map element type (and optionally
+    /// named fields too). `key` is `None` for an array (`value[]`), `Some` for a
+    /// map (`table<key, value>`).
+    pub fn new_container(
+        fields: Vec<(String, ValueType)>,
+        key: Option<ValueType>,
+        value: ValueType,
+    ) -> Self {
+        let mut s = Self::new(fields);
+        s.value_type = Some(Box::new(value));
+        s.key_type = key.map(Box::new);
+        s
     }
 
     /// The declared type of `name`, if this shape carries it.

@@ -39,3 +39,16 @@ local cls, cfound = ns.Core.Classify("x")
 -- Parenthesized comparison
 local eq = ns.Core.CheckWrapped(1, 2)
 --    ^ hover: (local) eq: boolean  def: local
+
+-- Body-inferred array return carries its element type cross-file (was `any`).
+local items = ns.Core.GetItems()
+--    ^ hover: (local) items: string[]  def: local
+
+-- Body-inferred map return carries key/value element types cross-file.
+local lookup = ns.Core.GetLookup()
+--    ^ hover: (local) lookup: table<string, number>  def: local
+
+-- Inferred-key map (no `@type`): still carried as a map cross-file (regression:
+-- previously collapsed to `number[]` because the lift gated on is_explicit_map).
+local imap = ns.Core.GetInferredMap("a")
+--    ^ hover: (local) imap: table<string, number>  def: local
