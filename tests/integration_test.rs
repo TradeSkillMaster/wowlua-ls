@@ -1645,6 +1645,19 @@ fn ace3_db_self_field_completion_gathers_all_members() {
     });
 }
 
+// Two sibling addon roots (`addon_root: true`): a `ns.db.<sub>` write in one must
+// not leak into the other's `ns.db` sub-field completion (the shared combined
+// sub-table is keyed only by field name), and an `@type Foo[]` field written
+// `ns.x = {}` must keep its array type through per-addon table isolation.
+#[test]
+fn multi_addon_subfield_subtable_isolation() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon-subfield/AddonA/core.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/multi-addon-subfield"),
+    });
+}
+
 #[test]
 fn ace3_locale_ns_field_not_global_getlocale() {
     run_annotation_tests(&TestConfig {

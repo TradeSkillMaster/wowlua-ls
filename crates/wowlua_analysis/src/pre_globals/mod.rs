@@ -2874,10 +2874,44 @@ impl PreResolvedGlobals {
             let Some(vt) = Self::resolve_annotation(
                 &g.returns[0], &self.classes, &self.aliases, &self.parameterized_aliases,
             ) else { continue };
+            // A bare `table`/`any` is what an inferred `{}`/unknown RHS resolves to —
+            // not a meaningful *explicit* per-addon type. Capturing it would override
+            // the combined table's richer `@type`/`@class` annotation with a
+            // less-specific one (e.g. an `@type Foo[]` field written `ns.x = {}`
+            // degrading to bare `table`). Leave such fields to the combined-annotation
+            // copy in the else-branch below.
+            if matches!(vt, ValueType::Table(None) | ValueType::Any) { continue; }
             for root in &addon_roots {
                 if src.starts_with(root) {
                     addon_field_types.entry(*root).or_default()
                         .entry(field.clone()).or_insert_with(|| vt.clone());
+                }
+            }
+        }
+
+        // Per-addon go-to-definition location for each top-level namespace field,
+        // taken from that addon's OWN whole-field write (`ns.Field = ...`). The
+        // combined table records one shared location per field name, so without this
+        // an addon's `self.Field` navigates into whichever addon's write happened to
+        // be recorded (a sibling's file). Only empty-path writes qualify — a deep
+        // `ns.Field.sub = …` locates the sub-field, not `Field` itself.
+        let mut addon_field_locs: HashMap<&Path, HashMap<String, ExternalLocation>> = HashMap::new();
+        for g in all_globals {
+            use crate::annotations::ExternalGlobalKind::{Method, TableField};
+            if g.name != crate::annotations::ADDON_NS_NAME { continue; }
+            let Some(src) = &g.source_path else { continue };
+            if g.def_start == 0 && g.def_end == 0 { continue; }
+            let field = match &g.kind {
+                TableField(path, name, _) | Method(path, name, _) if path.is_empty() => name,
+                _ => continue,
+            };
+            for root in &addon_roots {
+                if src.starts_with(root) {
+                    addon_field_locs.entry(*root).or_default()
+                        .entry(field.clone())
+                        .or_insert_with(|| ExternalLocation {
+                            path: src.clone(), start: g.def_start, end: g.def_end, ..Default::default()
+                        });
                 }
             }
         }
@@ -2933,6 +2967,39 @@ impl PreResolvedGlobals {
             owned.get_mut(root).unwrap().extend(field_names);
         }
 
+        // Full owned field-path chains per addon root (`ns.<a>.<b>...` → `[a, b, …]`
+        // incl. the leaf). The combined table shares one sub-table per top-level
+        // field name across every addon (`sub_tables` is keyed only by field name),
+        // so `ns.db.*` writes from all addons pile into one `db` sub-table. To give
+        // each addon its own `db`, a per-addon copy must keep only the sub-paths that
+        // addon actually wrote — these chains drive that recursive filtering below.
+        let mut owned_paths: HashMap<&Path, HashSet<Vec<String>>> = addon_roots.iter()
+            .map(|r| (*r, HashSet::new()))
+            .collect();
+        for g in all_globals {
+            use crate::annotations::ExternalGlobalKind::{Method, TableField};
+            if g.name != crate::annotations::ADDON_NS_NAME { continue; }
+            let Some(src) = &g.source_path else { continue };
+            let chain: Vec<String> = match &g.kind {
+                TableField(path, name, _) | Method(path, name, _) => {
+                    let mut c = path.clone();
+                    c.push(name.clone());
+                    c
+                }
+                _ => continue,
+            };
+            for root in &addon_roots {
+                if src.starts_with(root) {
+                    owned_paths.get_mut(root).unwrap().insert(chain.clone());
+                }
+            }
+        }
+        // Union across all addons — a sub-field is *foreign* (safe to strip from an
+        // addon that didn't write it) only when some OTHER addon wrote it. Children
+        // no addon wrote at runtime (stub/`@field` shapes) are in neither set and are
+        // kept, never stripped.
+        let owned_all: HashSet<Vec<String>> = owned_paths.values().flatten().cloned().collect();
+
         let combined_local = combined_idx.ext_offset();
         let combined_fields: Vec<(String, FieldInfo)> = self.tables[combined_local]
             .fields.iter()
@@ -2946,7 +3013,12 @@ impl PreResolvedGlobals {
         for addon_root in &addon_roots {
             let owned_set = &owned[*addon_root];
             let table_idx = TableIndex(EXT_BASE + self.tables.len());
+            // Reserve this addon's table slot up front: `rebuild_owned_subtable`
+            // below pushes freshly-filtered sub-tables, which must land *after*
+            // `table_idx` so it stays the index we record. Filled in at the end.
+            self.tables.push(TableInfo::default());
             let mut table = TableInfo::default();
+            let paths_this = owned_paths.get(*addon_root);
 
             for (field_name, field_info) in &combined_fields {
                 if !owned_set.contains(field_name) { continue; }
@@ -2960,11 +3032,28 @@ impl PreResolvedGlobals {
                     fi.annotation = Some(vt.clone());
                     fi
                 } else {
-                    field_info.clone()
+                    let mut fi = field_info.clone();
+                    // If the field's value is a sub-table (`ns.db = {...}` accreted
+                    // from `ns.db.*` writes), rebuild a per-addon copy holding only
+                    // the sub-paths this addon wrote — otherwise a sibling addon's
+                    // `ns.db.foo` leaks into this addon's `self.db.` completion.
+                    let sub = self.field_subtable(&fi);
+                    if let (Some(paths_this), Some(sub)) = (paths_this, sub) {
+                        let new_sub = self.rebuild_owned_subtable(
+                            sub, std::slice::from_ref(field_name), paths_this, &owned_all, 0,
+                        );
+                        let new_expr = ExprId(EXT_BASE + self.exprs.len());
+                        self.exprs.push(Expr::Literal(ValueType::Table(Some(new_sub))));
+                        fi.expr = new_expr;
+                    }
+                    fi
                 };
                 table.fields.insert(field_name.clone(), fi);
-                // Copy field locations to the per-addon table too
-                if let Some(loc) = combined_field_locs.get(field_name) {
+                // Copy the field location to the per-addon table, preferring this
+                // addon's own write over the shared combined one.
+                let loc = addon_field_locs.get(*addon_root).and_then(|m| m.get(field_name))
+                    .or_else(|| combined_field_locs.get(field_name));
+                if let Some(loc) = loc {
                     self.field_locations
                         .entry(table_idx)
                         .or_default()
@@ -2972,7 +3061,7 @@ impl PreResolvedGlobals {
                 }
             }
 
-            self.tables.push(table);
+            self.tables[table_idx.ext_offset()] = table;
             self.addon_tables.insert(addon_root.to_path_buf(), table_idx);
 
             // Merge per-addon fields into that addon's @class (like merge_addon_ns_into_classes
@@ -3013,6 +3102,72 @@ impl PreResolvedGlobals {
                 }
             }
         }
+    }
+
+    /// Resolve a field's value to a sub-table index, when its expr is an external
+    /// `Table(Some(idx))` literal. Centralizes the direct `self.exprs` arena read
+    /// shared by the per-addon table build and `rebuild_owned_subtable`.
+    fn field_subtable(&self, fi: &FieldInfo) -> Option<TableIndex> {
+        if !fi.expr.is_external() {
+            return None;
+        }
+        match &self.exprs[fi.expr.ext_offset()] {
+            Expr::Literal(ValueType::Table(Some(s))) => Some(*s),
+            _ => None,
+        }
+    }
+
+    /// Clone a shared namespace sub-table (`ns.db` and below), keeping only the
+    /// sub-fields the current addon wrote and recursing into nested sub-tables.
+    /// A child is dropped only when a *foreign* addon wrote it and this one did
+    /// not; a child no addon wrote at runtime (a stub/`@field` shape) is kept
+    /// (`owned_all` distinguishes the two). Returns the new sub-table's index.
+    /// `prefix` is this sub-table's path under the namespace root (e.g. `["db"]`);
+    /// recursion is depth-bounded so a cyclic `Table` reference can't loop forever.
+    fn rebuild_owned_subtable(
+        &mut self,
+        combined_sub_idx: TableIndex,
+        prefix: &[String],
+        owned_this: &HashSet<Vec<String>>,
+        owned_all: &HashSet<Vec<String>>,
+        depth: u32,
+    ) -> TableIndex {
+        const MAX_DEPTH: u32 = 8;
+        let mut table = self.tables[combined_sub_idx.ext_offset()].clone();
+        let child_names: Vec<String> = table.fields.keys().cloned().collect();
+        for name in child_names {
+            let mut child_path = prefix.to_vec();
+            child_path.push(name.clone());
+            let this_owns = owned_this.iter().any(|p| p.starts_with(child_path.as_slice()));
+            if !this_owns {
+                // Strip the child only if a sibling addon claims it; keep
+                // otherwise (belongs to no addon → not cross-addon leakage).
+                if owned_all.iter().any(|p| p.starts_with(child_path.as_slice())) {
+                    table.fields.remove(&name);
+                }
+                continue;
+            }
+            if depth >= MAX_DEPTH { continue; }
+            let child_sub = table.fields.get(&name).and_then(|fi| self.field_subtable(fi));
+            if let Some(child_sub) = child_sub {
+                let new_child = self.rebuild_owned_subtable(child_sub, &child_path, owned_this, owned_all, depth + 1);
+                let new_expr = ExprId(EXT_BASE + self.exprs.len());
+                self.exprs.push(Expr::Literal(ValueType::Table(Some(new_child))));
+                table.fields.get_mut(&name).unwrap().expr = new_expr;
+            }
+        }
+        let new_idx = TableIndex(EXT_BASE + self.tables.len());
+        // Carry over go-to-definition locations for the fields we kept.
+        if let Some(locs) = self.field_locations.get(&combined_sub_idx).cloned() {
+            let kept: HashMap<String, ExternalLocation> = locs.into_iter()
+                .filter(|(k, _)| table.fields.contains_key(k))
+                .collect();
+            if !kept.is_empty() {
+                self.field_locations.insert(new_idx, kept);
+            }
+        }
+        self.tables.push(table);
+        new_idx
     }
 
     /// Look up the per-addon namespace table for a file, given its addon root.
