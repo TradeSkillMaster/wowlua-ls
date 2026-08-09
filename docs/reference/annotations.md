@@ -79,7 +79,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | Annotation | Description |
 |---|---|
 | `@alias Name type` | Type alias. Supports parameters: `@alias Name<K,V> V[]`, including constrained parameters: `@alias Box<T: Frame> { value: T }`. Use `@alias (opaque) Name type` for a nominally distinct type (see below). |
-| `@deprecated` | Mark as deprecated. |
+| `@deprecated [message]` | Mark a function/method as deprecated. Call sites are struck through and get a [`deprecated`](/reference/diagnostics) warning; the name shows a deprecation notice in hover and completion. Optional trailing text (e.g. the replacement API) is shown in the hover notice and appended to the warning. |
 | `@nodiscard` | Warn if return value is ignored. |
 | `@meta` | Declaration-only file. Suppresses runtime/behavior diagnostics, but annotation-integrity checks still fire: a malformed, misplaced, or dangling annotation is a real error even in a stub. This covers undefined type/class references ([`undefined-doc-name`](/reference/diagnostics), [`undefined-doc-class`](/reference/diagnostics)), malformed annotations, `@field`/`@param` not attached to a `@class`/function ([`doc-field-no-class`](/reference/diagnostics), [`doc-func-no-function`](/reference/diagnostics)), invalid `@diagnostic` codes, and `nil` table-key types. An annotated declaration here can also [override a built-in stub](#meta-and-overriding-built-in-stubs) of the same name. |
 | `@diagnostic disable:code` | Suppress a diagnostic inline. |

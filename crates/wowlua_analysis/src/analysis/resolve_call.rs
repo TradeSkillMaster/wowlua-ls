@@ -3759,6 +3759,7 @@ impl<'a> Analysis<'a> {
                     overloads: Vec::new(),
                     doc: None,
                     deprecated: false,
+                    deprecated_message: None,
                     nodiscard: false,
                     generics: Vec::new(),
                     generic_constraints_raw: Vec::new(),

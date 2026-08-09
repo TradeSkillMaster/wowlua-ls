@@ -2909,6 +2909,7 @@ impl<'a> Analysis<'a> {
             overloads: Vec::new(),
             doc: None,
             deprecated: false,
+            deprecated_message: None,
             nodiscard: false,
             generics: Vec::new(),
             generic_constraints_raw: Vec::new(),
@@ -3401,6 +3402,7 @@ impl<'a> Analysis<'a> {
         }
         if annotations.deprecated {
             self.ir.functions[func_idx.val()].deprecated = true;
+            self.ir.functions[func_idx.val()].deprecated_message = annotations.deprecated_message;
         }
         if annotations.nodiscard {
             self.ir.functions[func_idx.val()].nodiscard = true;

@@ -24,6 +24,9 @@ end
 
 ---@deprecated use SetLabel instead
 function Widget:SetName(name) end
+--       ^ tok: class
+--              ^ tok: method deprecated
+--              ^ doc: **Deprecated.** use SetLabel instead
 
 local w = Widget:SetLabel("hi")
 --    ^ tok: none

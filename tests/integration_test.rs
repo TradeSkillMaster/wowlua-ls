@@ -39,6 +39,7 @@ struct TestConfig<'a> {
 ///                       prefix match when actual is multi-line (class fields, return types).
 ///                       Use \n escapes in the assertion to write a full multi-line expectation.
 ///   doc: TEXT         — expected substring in the hover doc payload
+///                       (`doc: !TEXT` asserts the doc does NOT contain TEXT)
 ///   def: local|external|None — expected definition location
 ///   sig: LABEL        — expected active signature label (prefix match)
 ///   diag: CODE|none   — expected diagnostic code on the code line, or "none"
@@ -315,13 +316,20 @@ fn run_annotation_tests(config: &TestConfig) {
             }
         }
 
-        // Check hover doc payload (substring match)
+        // Check hover doc payload (substring match; `!` prefix = must NOT contain)
         if let Some(expected) = &expected_doc {
             let actual = match result.hover_at(&tree, offset) {
                 Some(hover) => hover.doc.unwrap_or_default(),
                 None => "<missing>".to_string(),
             };
-            if !actual.contains(expected) {
+            if let Some(negated) = expected.strip_prefix('!') {
+                if actual.contains(negated) {
+                    failures.push(format!(
+                        "  {}:{} (queried at {})\n    doc must NOT contain: {}\n    doc actual:   {}",
+                        config.lua_file, i + 1, location, negated, actual
+                    ));
+                }
+            } else if !actual.contains(expected) {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    doc expected: {}\n    doc actual:   {}",
                     config.lua_file, i + 1, location, expected, actual
@@ -6060,6 +6068,72 @@ fn snippet_omits_trailing_optional_params() {
     let snippet = greet.insert_text.as_ref().expect("should have snippet");
     // Only required param `x` should appear; optional `y` and `z` should be omitted
     assert_eq!(snippet, "greet(${1:x})", "trailing optional params should be omitted, got: {}", snippet);
+}
+
+#[test]
+fn completion_tags_deprecated_method() {
+    // A `@deprecated` method surfaces the LSP DEPRECATED completion tag so
+    // editors strike it through in the popup; a non-deprecated sibling does not.
+    let source = "\
+---@class AceHook-3.0
+AceHook = {}
+---@deprecated Use :SecureHookScript instead
+function AceHook:HookScript(frame, script, handler) end
+function AceHook:SecureHookScript(frame, script, handler) end
+AceHook:";
+    let cursor = source.len() as u32;
+
+    let tree = wowlua_ls::syntax::parser::parse(source);
+    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let items = result
+        .completions_at(&tree, cursor, source, Snippets::Disabled, CallSnippets::Disabled)
+        .unwrap();
+
+    let hook = items.iter().find(|c| c.label == "HookScript").expect("should find 'HookScript'");
+    assert_eq!(
+        hook.tags.as_deref(),
+        Some(&[lsp_types::CompletionItemTag::DEPRECATED][..]),
+        "deprecated method should carry the DEPRECATED completion tag"
+    );
+
+    let secure = items.iter().find(|c| c.label == "SecureHookScript").expect("should find 'SecureHookScript'");
+    assert!(
+        secure.tags.is_none(),
+        "non-deprecated method should not be tagged, got: {:?}",
+        secure.tags
+    );
+}
+
+#[test]
+fn completion_tags_deprecated_global_by_bare_name() {
+    // The DEPRECATED completion tag also applies to a deprecated global
+    // function completed by bare name (scope path), not just member access.
+    let source = "\
+---@deprecated
+local function oldHelper() end
+local function newHelper() end
+old";
+    let cursor = source.len() as u32;
+
+    let tree = wowlua_ls::syntax::parser::parse(source);
+    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let items = result
+        .completions_at(&tree, cursor, source, Snippets::Disabled, CallSnippets::Disabled)
+        .unwrap();
+    let old = items.iter().find(|c| c.label == "oldHelper").expect("should find 'oldHelper'");
+    assert_eq!(
+        old.tags.as_deref(),
+        Some(&[lsp_types::CompletionItemTag::DEPRECATED][..]),
+        "deprecated global function should carry the DEPRECATED completion tag"
+    );
 }
 
 #[test]

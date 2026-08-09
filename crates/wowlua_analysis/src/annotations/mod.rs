@@ -751,6 +751,9 @@ pub struct AnnotationBlock {
     pub overloads: Vec<String>,
     pub meta: bool,
     pub deprecated: bool,
+    /// Optional guidance text following `@deprecated` (e.g. the replacement API).
+    /// Shown in hover and appended to the `deprecated` diagnostic message.
+    pub deprecated_message: Option<String>,
     pub nodiscard: bool,
     pub constructor: bool,
     pub constructor_methods: Vec<String>,
@@ -1932,8 +1935,12 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if mask != 0 {
                 block.flavor_guard |= mask;
             }
-        } else if content.starts_with("@deprecated") {
+        } else if let Some(rest) = content.strip_prefix("@deprecated") {
             block.deprecated = true;
+            let msg = rest.trim();
+            if !msg.is_empty() {
+                block.deprecated_message = Some(msg.to_string());
+            }
         } else if content.starts_with("@nodiscard") {
             block.nodiscard = true;
         } else if let Some(rest) = content.strip_prefix("@constructor") {

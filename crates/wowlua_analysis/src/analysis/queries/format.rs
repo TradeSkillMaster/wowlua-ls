@@ -703,10 +703,25 @@ impl AnalysisResult {
         let func = self.func(func_idx);
         let has_descriptions = func.param_descriptions.iter().any(|d| d.is_some());
         let flavors_mask = func.flavors;
-        if func.doc.is_none() && !has_descriptions && func.see.is_empty() && flavors_mask == 0 {
+        // Flavor-aware: a WoW-stub `@deprecated` that is still the live API on a
+        // flavor the addon targets is not shown as deprecated — mirrors the gate
+        // on the `deprecated` diagnostic, semantic token, and completion tag.
+        let show_deprecated = func.deprecated
+            && !(self.ir.is_stub_function(func_idx)
+                && crate::flavor::deprecation_suppressed(self.addon_flavors, flavors_mask));
+        if func.doc.is_none() && !has_descriptions && func.see.is_empty()
+            && flavors_mask == 0 && !show_deprecated
+        {
             return None;
         }
         let mut parts = Vec::new();
+        // Prominent deprecation notice first, with the optional guidance message.
+        if show_deprecated {
+            parts.push(match &func.deprecated_message {
+                Some(msg) => format!("**Deprecated.** {}", msg),
+                None => "**Deprecated.**".to_string(),
+            });
+        }
         if let Some(ref doc) = func.doc {
             parts.push(doc.clone());
         }

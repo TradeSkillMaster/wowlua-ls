@@ -7,6 +7,9 @@
 -- Available on every flavor, but deprecated only on retail.
 local _name = GetItemInfo("item")
 --            ^ tok: function defaultLibrary
+-- Flavor-aware: the hover deprecation notice uses the same gate as the token and
+-- diagnostic, so `**Deprecated.**` must NOT appear under a Classic Era project.
+--            ^ doc: !**Deprecated.**
 
 -- Available on Classic / Classic Era (not retail), so neither `deprecated`
 -- nor `wrong-flavor-api` should fire under a Classic Era project.

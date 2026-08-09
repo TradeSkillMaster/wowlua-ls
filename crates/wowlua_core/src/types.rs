@@ -988,6 +988,12 @@ pub struct Function {
     pub overloads: Vec<ResolvedOverload>,
     pub doc: Option<String>,
     pub deprecated: bool,
+    /// Optional guidance text from `@deprecated <message>` (e.g. the replacement
+    /// API). Workspace-authored, display-only — `#[serde(skip)]` keeps it out of
+    /// the stub blob (WoW API stubs carry no deprecation messages), so no
+    /// BLOB_VERSION bump is needed.
+    #[serde(skip)]
+    pub deprecated_message: Option<String>,
     pub nodiscard: bool,
     pub generics: Vec<(String, Option<ValueType>)>,
     pub generic_constraints_raw: Vec<(String, Option<String>)>,

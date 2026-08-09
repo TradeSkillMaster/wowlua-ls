@@ -294,6 +294,11 @@ pub struct ExternalGlobal {
     pub overloads: Vec<OverloadSig>,
     pub doc: Option<String>,
     pub deprecated: bool,
+    /// Optional guidance text from `@deprecated <message>`. Workspace-only and
+    /// display-only — `#[serde(skip)]` keeps it out of the stub blob (WoW API
+    /// stubs carry no deprecation messages), so no `BLOB_VERSION` bump is needed.
+    #[serde(skip)]
+    pub deprecated_message: Option<String>,
     pub nodiscard: bool,
     pub constructor: bool,
     pub visibility: Visibility,
@@ -414,6 +419,7 @@ impl ExternalGlobal {
             overloads: Vec::new(),
             doc: None,
             deprecated: false,
+            deprecated_message: None,
             nodiscard: false,
             constructor: false,
             visibility: Visibility::Public,
@@ -962,7 +968,7 @@ pub fn scan_method_funcall_self_fields(
                     FieldValueKind::FunctionCall(callee_names, first_string_arg),
                 ),
                 params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(),
-                overloads: Vec::new(), doc: None, deprecated: false, nodiscard: false,
+                overloads: Vec::new(), doc: None, deprecated: false, deprecated_message: None, nodiscard: false,
                 constructor: false, visibility: vis,
                 generics: Vec::new(), defclass: None, defclass_parent: None,
                 source_path: source_path.clone(),

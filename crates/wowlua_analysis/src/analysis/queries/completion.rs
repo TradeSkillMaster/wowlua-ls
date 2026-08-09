@@ -487,12 +487,14 @@ impl AnalysisResult {
                 } else {
                     (None, None)
                 };
+                let tags = self.deprecated_tag(resolved.as_ref());
                 Some(CompletionItem {
                     label: name.to_string(),
                     kind: Some(kind),
                     sort_text: Some(sort_text),
                     insert_text,
                     insert_text_format,
+                    tags,
                     data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): offset})),
                     ..CompletionItem::default()
                 })
@@ -550,6 +552,21 @@ impl AnalysisResult {
         Some(items)
     }
 
+    /// A `[DEPRECATED]` completion tag when the resolved type is a deprecated
+    /// function, so editors render the item struck through in the popup. Applies
+    /// the same flavor-aware gate as the `deprecated` diagnostic and semantic
+    /// token: a WoW-stub `@deprecated` that is still live on a flavor the addon
+    /// targets is not struck.
+    fn deprecated_tag(&self, resolved: Option<&ValueType>) -> Option<Vec<lsp_types::CompletionItemTag>> {
+        let ValueType::Function(Some(fi)) = resolved? else { return None };
+        if !self.func(*fi).deprecated {
+            return None;
+        }
+        let flavor_suppressed = self.ir.is_stub_function(*fi)
+            && crate::flavor::deprecation_suppressed(self.addon_flavors, self.func(*fi).flavors);
+        (!flavor_suppressed).then(|| vec![lsp_types::CompletionItemTag::DEPRECATED])
+    }
+
     /// Build `_G` global-environment member completions (all globals as members of `_G`).
     fn complete_global_env_members(&self, offset: u32, member_prefix_lower: &str, is_colon: bool, call_snippets: bool) -> Vec<lsp_types::CompletionItem> {
         use lsp_types::{CompletionItem, CompletionItemKind};
@@ -604,6 +621,7 @@ impl AnalysisResult {
                     sort_text: Some(sort_text),
                     insert_text,
                     insert_text_format,
+                    tags: self.deprecated_tag(resolved),
                     data: Some(serde_json::json!({"member": true, "offset": offset, (DATA_REPLACE_START): offset})),
                     ..CompletionItem::default()
                 });
@@ -746,6 +764,7 @@ impl AnalysisResult {
                             sort_text: Some(sort_text),
                             insert_text,
                             insert_text_format,
+                            tags: self.deprecated_tag(resolved),
                             data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
                             ..CompletionItem::default()
                         });
@@ -806,6 +825,7 @@ impl AnalysisResult {
                             sort_text: Some(sort_text),
                             insert_text,
                             insert_text_format,
+                            tags: self.deprecated_tag(resolved),
                             data: Some(serde_json::json!({"scope": true, "offset": offset, (DATA_REPLACE_START): prefix_start})),
                             ..CompletionItem::default()
                         });

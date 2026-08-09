@@ -11,6 +11,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.returns == y.returns
         && x.overloads == y.overloads
         && x.deprecated == y.deprecated
+        && x.deprecated_message == y.deprecated_message
         && x.nodiscard == y.nodiscard
         && x.constructor == y.constructor
         && x.visibility == y.visibility

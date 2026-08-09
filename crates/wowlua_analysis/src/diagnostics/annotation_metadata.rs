@@ -288,9 +288,13 @@ impl DiagnosticPass for AnnotationMetadata {
         } else {
             Vec::new()
         };
+        let message = match &func.deprecated_message {
+            Some(msg) => format!("'{}' is deprecated: {}", name, msg),
+            None => format!("'{}' is deprecated", name),
+        };
         super::DEPRECATED.emit_with_related(
             diags,
-            format!("'{}' is deprecated", name),
+            message,
             call_range.0 as usize, call_range.1 as usize,
             related,
         );

@@ -151,11 +151,21 @@ impl AnalysisResult {
     /// root receiver's type is consulted; everything after a `.`/`:` is a field
     /// access and renders as a property.
     fn collect_function_def_name_tokens(&self, tree: &SyntaxTree, out: &mut Vec<RawSemanticToken>) {
+        // Def-nodes of deprecated local functions, so the header's defined-name
+        // segment (e.g. `HookScript` in `function AceHook:HookScript`) is struck
+        // through. Call sites get this from the `deprecated` diagnostic's tag;
+        // the definition header is not a call, so it needs the modifier here.
+        let deprecated_defs: HashSet<crate::syntax::tree::NodeId> = self
+            .local_functions()
+            .filter(|(_, f)| f.deprecated)
+            .filter_map(|(_, f)| f.def_node.node_id)
+            .collect();
         let root = SyntaxNode::new_root(tree);
         for node in root.descendants() {
             if node.kind() != SyntaxKind::FunctionDefinition {
                 continue;
             }
+            let is_deprecated_def = deprecated_defs.contains(&node.id);
             // The dotted/colon name is wrapped in a DotAccess node by
             // `parser::parse_function_name` (always DotAccess, even for colon
             // methods; MethodCall is kept as a defensive fallback).
@@ -198,11 +208,17 @@ impl AnalysisResult {
                 } else {
                     TT_PROPERTY
                 };
+                // Strike through the defined name when its function is deprecated.
+                let modifiers = if is_last && !is_root && is_deprecated_def {
+                    MOD_DEPRECATED
+                } else {
+                    0
+                };
                 out.push(RawSemanticToken {
                     start,
                     length: end - start,
                     token_type,
-                    modifiers: 0,
+                    modifiers,
                 });
             }
         }

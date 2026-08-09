@@ -4,3 +4,9 @@
 -- WoW API stubs.
 local _v = GlobalOldHelper()
 --         ^ diag: deprecated
+
+-- The `@deprecated <message>` guidance survives cross-file into both the
+-- caller's hover doc and the diagnostic message.
+local _w = GlobalOldHelperMsg()
+--         ^ diag: deprecated ~is deprecated: Use NewHelper instead
+--         ^ doc: **Deprecated.** Use NewHelper instead

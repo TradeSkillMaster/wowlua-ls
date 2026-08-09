@@ -7,3 +7,11 @@
 function GlobalOldHelper()
   return 1
 end
+
+-- Guidance text after `@deprecated` must survive cross-file: shown in the
+-- caller's hover doc and appended to the `deprecated` diagnostic message.
+---@deprecated Use NewHelper instead
+---@return number
+function GlobalOldHelperMsg()
+  return 2
+end
