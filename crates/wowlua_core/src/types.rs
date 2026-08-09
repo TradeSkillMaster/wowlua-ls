@@ -922,6 +922,15 @@ pub struct ResolvedOverloadParam {
 pub struct ResolvedOverload {
     pub params: Vec<ResolvedOverloadParam>,
     pub returns: Vec<ValueType>,
+    /// Raw `@overload` return annotations (pre-resolution), parallel to `returns`.
+    /// Preserves `Parameterized` type args (e.g. `FramePool<T, Tp>`) that `returns`
+    /// discards when resolving to a bare class table — needed so a call matching
+    /// this overload can propagate the concrete type args into `call_type_args`
+    /// for downstream method-call resolution. Empty when the overload was
+    /// synthesized (return-only / correlated returns) rather than parsed from a
+    /// literal `@overload` line. Mirrors `Function::return_annotations_raw`.
+    #[serde(default)]
+    pub returns_raw: Vec<crate::annotations::AnnotationType>,
     /// Return-only overloads (from a tuple-union `@return`) don't participate
     /// in arg-count matching. They are used for sibling narrowing at call sites.
     pub is_return_only: bool,

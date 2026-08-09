@@ -24,15 +24,15 @@ end
 local function SupportsQuesting() return true end
 
 -- Unguarded call to a retail-only API → warn.
-AbbreviateLargeNumbers(1)
+PlayerGetTimerunningSeasonID()
 -- ^ diag: wrong-flavor-api
 
 -- Single-flavor guard: then-branch narrows to retail.
 if IsRetail() then
-    AbbreviateLargeNumbers(2)
+    PlayerGetTimerunningSeasonID()
 else
     -- else-branch excludes retail → classic_era only.
-    AbbreviateLargeNumbers(3)
+    PlayerGetTimerunningSeasonID()
     -- ^ diag: wrong-flavor-api
 end
 
@@ -44,30 +44,30 @@ end
 
 -- Multi-flavor guard doesn't further narrow — unguarded call still warns.
 if SupportsQuesting() then
-    AbbreviateLargeNumbers(4)
+    PlayerGetTimerunningSeasonID()
     -- ^ diag: wrong-flavor-api
 end
 
 -- `and` short-circuit: LHS flavor guard narrows the RHS.
-if IsRetail() and AbbreviateLargeNumbers(5) then return end
+if IsRetail() and PlayerGetTimerunningSeasonID() then return end
 
 -- `and` short-circuit with dotted guard.
 if Env.IsNonRetail() and AbandonQuest() then return end
 
 -- `and` short-circuit: guard doesn't apply outside the `and`.
-if IsRetail() and AbbreviateLargeNumbers(6) then return end
-AbbreviateLargeNumbers(7)
+if IsRetail() and PlayerGetTimerunningSeasonID() then return end
+PlayerGetTimerunningSeasonID()
 -- ^ diag: wrong-flavor-api
 
 -- `and` chain: multiple conditions before the guarded call.
 local x = true
-if x and IsRetail() and AbbreviateLargeNumbers(8) then return end
+if x and IsRetail() and PlayerGetTimerunningSeasonID() then return end
 
 -- `and` short-circuit: guard doesn't suppress non-matching flavor.
-if Env.IsNonRetail() and AbbreviateLargeNumbers(9) then return end
+if Env.IsNonRetail() and PlayerGetTimerunningSeasonID() then return end
 --                       ^ diag: wrong-flavor-api
 
 -- Nested `and` within a scope-level flavor guard: both compose correctly.
 if IsRetail() then
-    if true and AbbreviateLargeNumbers(10) then return end
+    if true and PlayerGetTimerunningSeasonID() then return end
 end

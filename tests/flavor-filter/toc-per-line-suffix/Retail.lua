@@ -10,5 +10,5 @@
 -- (No `diag:` assertion here: the harness checks diagnostics exhaustively, so any
 -- stray wrong-flavor-api on this line fails the test. The `def:` gives the file
 -- the one annotation the harness requires to run.)
-AbbreviateLargeNumbers(100)
+PlayerGetTimerunningSeasonID()
 -- ^ def: external

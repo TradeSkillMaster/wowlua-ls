@@ -1,8 +1,8 @@
 -- TOC-based per-line flavor narrowing: test.lua has [AllowLoadGameType vanilla]
 -- in the base TOC, restricting it to Classic Era only.
 
--- AbbreviateLargeNumbers is retail-only — should warn.
-AbbreviateLargeNumbers(100)
+-- PlayerGetTimerunningSeasonID is retail-only — should warn.
+PlayerGetTimerunningSeasonID()
 -- ^ diag: wrong-flavor-api
 
 -- CreateFrame is available everywhere — no warning.

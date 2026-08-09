@@ -397,3 +397,30 @@ local count = select("#", "a", "b")
 local idx
 local picked = select(idx, "a", "b", "c")
 --    ^ hover: (local) picked: ?
+
+-- Regression: a generic factory whose matched @overload returns a parameterized
+-- class (Basket<X>) must propagate the bound type args to the returned object, so
+-- a later method call resolves the element type — was `?` because the matched-
+-- overload return path dropped the class's type args. (Same bug as the stub
+-- CreateFramePool("Button", ...):Acquire(), exercised here via a workspace @class.)
+---@class BasketItem
+local BasketItem = {}
+
+---@class Basket<E>
+local Basket = {}
+---@return E
+---@diagnostic disable-next-line: missing-return
+function Basket:First() end
+
+---@generic X
+---@overload fun(item: X): Basket<X>
+---@param item any
+---@return Basket
+---@diagnostic disable-next-line: missing-return
+local function makeBasket(item) end
+
+---@type BasketItem
+local basketSeed
+local itemBasket = makeBasket(basketSeed)
+local firstItem = itemBasket:First()
+--    ^ hover: (local) firstItem: BasketItem

@@ -165,7 +165,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 35;
+pub const BLOB_VERSION: u32 = 36;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -1102,11 +1102,16 @@ fn overload_from_duplicate_def(
             name: p.name.clone(), typ: vt, optional: p.optional,
         });
     }
-    let ovl_returns: Vec<ValueType> = returns.iter()
-        .filter_map(&resolve)
-        .collect();
+    // Build `returns` and `returns_raw` under ONE filter so they stay
+    // index-aligned (the consumer reads both by the same ret_index): a
+    // `to_vec` returns_raw would keep entries that `returns` dropped when
+    // `resolve` returned None, desyncing the vectors.
+    let (ovl_returns, ovl_returns_raw): (Vec<ValueType>, Vec<AnnotationType>) = returns.iter()
+        .filter_map(|at| resolve(at).map(|vt| (vt, at.clone())))
+        .unzip();
     ResolvedOverload {
         params: ovl_params, returns: ovl_returns,
+        returns_raw: ovl_returns_raw,
         is_return_only: false, description: None,
         has_vararg_tail: false, is_vararg,
         returns_self_type_args: None,
@@ -3536,9 +3541,13 @@ impl PreResolvedGlobals {
             }).collect();
             let (non_self_returns, returns_self_type_args) =
                 crate::annotations::extract_overload_self_return(&sig.returns);
-            let returns = non_self_returns.iter()
+            // Build `returns` and `returns_raw` under ONE filter so they stay
+            // index-aligned (the consumer reads both by the same ret_index).
+            // A `map`-only returns_raw would keep entries that `returns` dropped
+            // when resolution returned None, desyncing the vectors.
+            let (returns, returns_raw): (Vec<ValueType>, Vec<AnnotationType>) = non_self_returns.iter()
                 .filter_map(|at| {
-                    if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = at {
+                    let vt = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = at {
                         Some(Self::materialize_fun_type(
                             inner_params, inner_returns, *inner_vararg, generic_annotations,
                             dummy_node, ctx,
@@ -3554,13 +3563,14 @@ impl PreResolvedGlobals {
                         Some(if wraps_nil { ValueType::union(func_vt, ValueType::Nil) } else { func_vt })
                     } else {
                         Self::resolve_annotation_gen(at, ctx.classes, ctx.aliases, ctx.parameterized_aliases, generic_annotations, ctx.tables, ctx.exprs)
-                    }
+                    };
+                    vt.map(|v| (v, (*at).clone()))
                 })
-                .collect();
+                .unzip();
             let has_vararg_tail = matches!(
                 sig.returns.last(), Some(AnnotationType::VarArgs(_))
             );
-            ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail, is_vararg: sig.is_vararg, returns_self_type_args }
+            ResolvedOverload { params, returns, returns_raw, is_return_only: sig.is_return_only, description: None, has_vararg_tail, is_vararg: sig.is_vararg, returns_self_type_args }
         }).collect();
 
         // Append synthesized return-only overloads from tuple-union @return.

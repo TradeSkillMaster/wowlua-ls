@@ -1108,6 +1108,7 @@ impl<'a> Analysis<'a> {
                 new_overloads.push(ResolvedOverload {
                     params: Vec::new(),
                     returns,
+                    returns_raw: Vec::new(),
                     is_return_only: true,
                     description: callee_ovl.description.clone(),
                     has_vararg_tail: callee_ovl.has_vararg_tail,
@@ -1362,6 +1363,7 @@ impl<'a> Analysis<'a> {
                             new_overloads.push(ResolvedOverload {
                                 params: Vec::new(),
                                 returns: ret,
+                                returns_raw: Vec::new(),
                                 is_return_only: true,
                                 description: None,
                                 has_vararg_tail: false,

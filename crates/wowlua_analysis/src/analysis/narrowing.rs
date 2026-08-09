@@ -1822,6 +1822,7 @@ impl<'a> Analysis<'a> {
             self.ir.functions[func_id.val()].overloads.push(ResolvedOverload {
                 params: Vec::new(),
                 returns,
+                returns_raw: Vec::new(),
                 is_return_only: true,
                 description: None,
                 has_vararg_tail: false,

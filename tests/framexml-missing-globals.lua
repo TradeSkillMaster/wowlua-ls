@@ -38,11 +38,6 @@ local g = ContainerFrameUtil_ConvertFilterFlagsToList(1)
 local inst = EncounterJournal.instanceID
 local enc = EncounterJournal.encounterID
 
--- ── Classic-only Frame widget methods (removed from retail in 10.0.0) ────────
-local fr = CreateFrame("Frame")
-fr:SetMinResize(1, 1)
-fr:SetMaxResize(2, 2)
-
 -- ── parentKey child field harvested from XML (frame.Child), base type resolves ─
 local cb = HelpFrame.CloseButton
 local cbParent = HelpFrame.CloseButton:GetParent()

@@ -2,5 +2,5 @@
 -- restricting it to Classic + Classic Era. A retail-only API is genuinely
 -- unavailable on those flavors, so it must still warn — confirming the suffix
 -- directive narrows correctly (not just that it's stripped).
-AbbreviateLargeNumbers(100)
+PlayerGetTimerunningSeasonID()
 -- ^ diag: wrong-flavor-api

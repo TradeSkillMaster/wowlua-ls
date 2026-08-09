@@ -1,8 +1,8 @@
 -- TOC header restriction: _Classic.toc (classic + classic_era) with
 -- ## AllowLoadGameType: vanilla narrows to classic_era only.
 
--- AbbreviateLargeNumbers is retail-only — should warn.
-AbbreviateLargeNumbers(100)
+-- PlayerGetTimerunningSeasonID is retail-only — should warn.
+PlayerGetTimerunningSeasonID()
 -- ^ diag: wrong-flavor-api
 
 -- CreateFrame is available everywhere — no warning.

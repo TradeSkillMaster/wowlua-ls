@@ -1118,6 +1118,18 @@ local framePool
 local fpFrame, fpIsNew = framePool:Acquire()
 --             ^ hover: (local) fpIsNew: boolean
 
+-- Regression: pool factories INFER their element type from string-literal args
+-- (not just an explicit ---@type). A generic factory whose matched @overload
+-- returns a parameterized class (ObjectPool<T> / FramePool<T, Tp>) must propagate
+-- the bound type args, so Acquire() returns the frame type instead of `?`.
+-- (Was: the matched-overload return path dropped the class's type args.)
+local inferredObjPool = CreateFramePool("Button")
+local inferredBtn = inferredObjPool:Acquire()
+--    ^ hover: (local) inferredBtn: Button
+local inferredFramePool = CreateFramePool("Button", nil, "InsecureActionButtonTemplate")
+local inferredFrame = inferredFramePool:Acquire()
+--    ^ hover: (local) inferredFrame: InsecureActionButtonTemplate
+
 -- CreateFramePoolCollection returns a FramePoolCollection
 local poolColl = CreateFramePoolCollection()
 --    ^ hover: (local) poolColl: FramePoolCollection

@@ -373,6 +373,11 @@ where F: FnMut(&AnnotationType) -> Option<ValueType>,
             ResolvedOverload {
                 params: Vec::new(),
                 returns,
+                // Return-only overloads never become the `matching_overload`
+                // read by the type-args caching path, so raw returns are unused
+                // here — keep empty, matching the doc and the other synthesized
+                // sites (narrowing.rs, resolve.rs).
+                returns_raw: Vec::new(),
                 is_return_only: true,
                 description: description.clone(),
                 has_vararg_tail,

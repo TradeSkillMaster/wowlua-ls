@@ -451,6 +451,20 @@ impl<'a> Analysis<'a> {
         let return_overloads_may_nil = self.func(func_idx).return_overload_may_nil(ret_index);
 
         if let Some(rt) = self.try_overload_return_types(matching_overload, ret_index, &union_alt_func_indices, ambiguous_overload_ret_type, return_overloads_may_nil, &generic_subs) {
+            // When the matched overload's return is a parameterized class
+            // (e.g. `@overload fun(...): FramePool<T, Tp>`), the resolved `rt`
+            // is just the bare class table — the `<T, Tp>` args are dropped.
+            // Cache the concrete substituted type args under this call's ExprId
+            // (mirroring the non-overload path in `try_generic_return_type`) so
+            // a subsequent method call on the receiver (`pool:Acquire()`) can
+            // re-substitute the class's type parameters.
+            if ret_index == 0 && !generic_subs.is_empty()
+                && let Some(raw_ret) = matching_overload
+                    .and_then(|o| o.returns_raw.get(ret_index)).cloned()
+            {
+                let fn_generics = self.func(func_idx).generic_constraints_raw.clone();
+                self.cache_parameterized_return_type_args(expr_id, &raw_ret, &fn_generics, &generic_subs);
+            }
             return Some(rt);
         }
 
@@ -1714,26 +1728,11 @@ impl<'a> Analysis<'a> {
                 // call's ExprId. This lets `get_expr_type_args` return the
                 // concrete type arguments so subsequent method calls on the
                 // receiver can re-substitute T via the receiver-type_args path.
-                if ret_index == 0 {
-                    let raw_ret = self.func(func_idx).return_annotations_raw
-                        .get(ret_index).cloned();
-                    if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = raw_ret {
-                        // Pass the function's own generic names so that
-                        // `Simple("T")` resolves to `TypeVariable("T")`,
-                        // which `substitute_generics_deep` can then replace.
-                        let mut substituted_args: Vec<ValueType> = type_arg_anns.iter()
-                            .map(|ta| {
-                                self.resolve_annotation_type_mut_gen(ta, &fn_generics)
-                                    .unwrap_or(ValueType::Any)
-                            })
-                            .collect();
-                        for arg in &mut substituted_args {
-                            *arg = self.substitute_generics_deep(arg, generic_subs);
-                        }
-                        if !substituted_args.is_empty() {
-                            self.call_type_args.insert(expr_id, substituted_args);
-                        }
-                    }
+                if ret_index == 0
+                    && let Some(raw_ret) = self.func(func_idx).return_annotations_raw
+                        .get(ret_index).cloned()
+                {
+                    self.cache_parameterized_return_type_args(expr_id, &raw_ret, &fn_generics, generic_subs);
                 }
                 if return_overloads_may_nil && !substituted.contains_nil() && !matches!(substituted, ValueType::Any) {
                     return GenericReturn::Value(ValueType::make_union(vec![substituted, ValueType::Nil]));
@@ -1742,6 +1741,35 @@ impl<'a> Analysis<'a> {
             }
         }
         GenericReturn::Fallthrough
+    }
+
+    /// If `raw_ret` is a `Parameterized(_, type_args)` return annotation, resolve
+    /// its type arguments against the function's `fn_generics` (so `Simple("T")`
+    /// becomes `TypeVariable("T")`), substitute the call's bound generics, and
+    /// cache the concrete args under `expr_id` in `call_type_args`. A subsequent
+    /// method call on the returned object then re-substitutes the class's type
+    /// parameters via the receiver-type_args path (e.g. `CreateFramePool("Button",
+    /// …)` → `FramePool<Button, …>` so `pool:Acquire()` returns `Button`).
+    /// Shared by the generic-`@return` and matched-`@overload` return paths.
+    fn cache_parameterized_return_type_args(
+        &mut self,
+        expr_id: ExprId,
+        raw_ret: &crate::annotations::AnnotationType,
+        fn_generics: &[(String, Option<String>)],
+        generic_subs: &HashMap<String, ValueType>,
+    ) {
+        let crate::annotations::AnnotationType::Parameterized(_, type_arg_anns) = raw_ret else {
+            return;
+        };
+        let mut substituted_args: Vec<ValueType> = type_arg_anns.iter()
+            .map(|ta| self.resolve_annotation_type_mut_gen(ta, fn_generics).unwrap_or(ValueType::Any))
+            .collect();
+        for arg in &mut substituted_args {
+            *arg = self.substitute_generics_deep(arg, generic_subs);
+        }
+        if !substituted_args.is_empty() {
+            self.call_type_args.insert(expr_id, substituted_args);
+        }
     }
 
     /// Compute the final call return type from `@return` annotations, synthesized

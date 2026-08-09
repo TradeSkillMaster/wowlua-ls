@@ -3,36 +3,36 @@
 -- CreateFrame is available in all flavors — no warning.
 local _f = CreateFrame("Frame", "MyFrame")
 
--- AbbreviateLargeNumbers is retail-only — should warn in a Classic Era project.
-AbbreviateLargeNumbers(100)
+-- PlayerGetTimerunningSeasonID is retail-only — should warn in a Classic Era project.
+PlayerGetTimerunningSeasonID()
 -- ^ diag: wrong-flavor-api
 
 -- AbandonQuest is available in classic + classic_era, so no warning.
 AbandonQuest()
 
 -- Local shadow with `or` fallback — no warning.
-local MyAbbrev = AbbreviateLargeNumbers or function() end
-MyAbbrev(100)
+local MyAbbrev = PlayerGetTimerunningSeasonID or function() end
+MyAbbrev()
 
 -- Nil-guarded via `and` short-circuit — no warning.
-if AbbreviateLargeNumbers and AbbreviateLargeNumbers(100) then return end
+if PlayerGetTimerunningSeasonID and PlayerGetTimerunningSeasonID() then return end
 
 -- Nil-guarded via `if` — no warning.
-if AbbreviateLargeNumbers then
-    AbbreviateLargeNumbers(100)
+if PlayerGetTimerunningSeasonID then
+    PlayerGetTimerunningSeasonID()
 end
 
 -- Unguarded direct call — still warns.
-AbbreviateLargeNumbers(200)
+PlayerGetTimerunningSeasonID()
 -- ^ diag: wrong-flavor-api
 
 -- Chained `and` with multiple guards — no warning.
-local _r1, _r2 = AbbreviateLargeNumbers and AbbreviateLargeNumbers(300), 0
+local _r1, _r2 = PlayerGetTimerunningSeasonID and PlayerGetTimerunningSeasonID(), 0
 
 -- Guard on a DIFFERENT symbol does NOT suppress the diagnostic.
 local _other = true
 if _other then
-    AbbreviateLargeNumbers(400)
+    PlayerGetTimerunningSeasonID()
     --  ^ diag: wrong-flavor-api
 end
 

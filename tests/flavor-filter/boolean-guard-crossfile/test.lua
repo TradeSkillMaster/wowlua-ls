@@ -3,25 +3,25 @@
 local _, ns = ...
 
 -- Unguarded call warns.
-AbbreviateLargeNumbers(1)
+PlayerGetTimerunningSeasonID()
 -- ^ diag: wrong-flavor-api
 
 -- Cross-file boolean guard narrows to retail in then-branch.
 if ns.isRetail then
-    AbbreviateLargeNumbers(2)
+    PlayerGetTimerunningSeasonID()
 else
-    AbbreviateLargeNumbers(3)
+    PlayerGetTimerunningSeasonID()
     -- ^ diag: wrong-flavor-api
 end
 
 -- Cross-file classic_era guard.
 if ns.isClassicEra then
     AbandonQuest()
-    AbbreviateLargeNumbers(4)
+    PlayerGetTimerunningSeasonID()
     -- ^ diag: wrong-flavor-api
 end
 
 -- Cross-file flavor guard defined inside an if block (regression test).
 if ns.nestedRetail then
-    AbbreviateLargeNumbers(5)
+    PlayerGetTimerunningSeasonID()
 end

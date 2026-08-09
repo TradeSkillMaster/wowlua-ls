@@ -3373,13 +3373,19 @@ impl<'a> Analysis<'a> {
                     }).collect();
                     let (non_self_returns, returns_self_type_args) =
                         crate::annotations::extract_overload_self_return(&sig.returns);
-                    let returns = non_self_returns.iter()
-                        .filter_map(|at| self.resolve_annotation_type_mut_gen(at, generics))
-                        .collect();
+                    // Build `returns` and `returns_raw` under ONE filter so they stay
+                    // index-aligned (the consumer reads both by the same ret_index).
+                    // A `map`-only returns_raw would keep entries that `returns`
+                    // dropped when resolution returned None, desyncing the vectors.
+                    let (returns, returns_raw): (Vec<ValueType>, Vec<crate::annotations::AnnotationType>) =
+                        non_self_returns.iter()
+                            .filter_map(|at| self.resolve_annotation_type_mut_gen(at, generics)
+                                .map(|vt| (vt, (*at).clone())))
+                            .unzip();
                     let has_vararg_tail = matches!(
                         sig.returns.last(), Some(crate::annotations::AnnotationType::VarArgs(_))
                     );
-                    ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail, is_vararg: sig.is_vararg, returns_self_type_args }
+                    ResolvedOverload { params, returns, returns_raw, is_return_only: sig.is_return_only, description: None, has_vararg_tail, is_vararg: sig.is_vararg, returns_self_type_args }
                 })
                 .collect();
             self.ir.functions[func_idx.val()].overloads = overloads;

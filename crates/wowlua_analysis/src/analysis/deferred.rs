@@ -589,6 +589,9 @@ fn lift_overload_to_ext(o: &ResolvedOverload, ir: &Ir, ext: &PreResolvedGlobals)
             })
             .collect(),
         returns: o.returns.iter().map(|t| lift_local_type_to_ext(t, ir, ext)).collect(),
+        // AnnotationType is name-based (pre-resolution), so it carries no local
+        // table indices — clone through unchanged; names re-resolve against ext.
+        returns_raw: o.returns_raw.clone(),
         is_return_only: o.is_return_only,
         description: o.description.clone(),
         has_vararg_tail: o.has_vararg_tail,
