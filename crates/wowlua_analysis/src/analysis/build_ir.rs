@@ -410,36 +410,13 @@ impl<'a> Analysis<'a> {
                     );
                     if let Some((_, class_table_idx)) = effective_class {
                             // Merge runtime table fields into the class table.
-                            // Skip merge for external tables (>= EXT_BASE) as they are immutable.
-                            if !class_table_idx.is_external()
-                                && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
-                                    .versions.last()
-                                    .and_then(|v| v.type_source)
-                                    && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
-                                        && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external() {
-                                            let runtime_fields: Vec<(String, FieldInfo)> =
-                                                self.ir.tables[rhs_table_idx.val()].fields.iter()
-                                                    .map(|(k, v)| (k.clone(), v.clone()))
-                                                    .collect();
-                                            for (name, field_info) in runtime_fields {
-                                                match self.ir.tables[class_table_idx.val()].fields.entry(name) {
-                                                    std::collections::hash_map::Entry::Occupied(e) => {
-                                                        // Prescan-created fields don't have literals;
-                                                        // copy from the constructor field so hover can show
-                                                        // enum values like `= 0` or `= "value"`.
-                                                        if let Some(val) = self.ir.number_literals.get(&field_info.expr).cloned() {
-                                                            self.ir.number_literals.insert(e.get().expr, val);
-                                                        }
-                                                        if let Some(val) = self.ir.string_literals.get(&field_info.expr).cloned() {
-                                                            self.ir.string_literals.insert(e.get().expr, val);
-                                                        }
-                                                    }
-                                                    std::collections::hash_map::Entry::Vacant(e) => {
-                                                        e.insert(field_info);
-                                                    }
-                                                }
-                                            }
-                                        }
+                            if let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
+                                .versions.last()
+                                .and_then(|v| v.type_source)
+                                && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
+                            {
+                                self.merge_runtime_fields_into_class(class_table_idx, rhs_table_idx);
+                            }
                             // Only override the variable type when @type is absent;
                             // @type takes precedence (e.g. @class Foo + @type table<K,Foo>).
                             if annotations.var_type.is_none() {
@@ -1780,17 +1757,8 @@ impl<'a> Analysis<'a> {
             && let Some((_, class_table_idx)) = self.ir.resolve_class_annotation(
                 &assign_annotations.class, assign_annotations.class_comment_start, assign.syntax(),
             ).filter(|(_, idx)| !idx.is_external()) {
-                if let Some(rhs_table_idx) = self.ir.find_table_index(expr_id)
-                    && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external()
-                {
-                    let runtime_fields: Vec<(String, FieldInfo)> =
-                        self.ir.tables[rhs_table_idx.val()].fields.iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
-                    for (name, field_info) in runtime_fields {
-                        self.ir.tables[class_table_idx.val()].fields
-                            .entry(name).or_insert(field_info);
-                    }
+                if let Some(rhs_table_idx) = self.ir.find_table_index(expr_id) {
+                    self.merge_runtime_fields_into_class(class_table_idx, rhs_table_idx);
                 }
                 expr_id = self.ir.push_expr(Expr::Literal(
                     ValueType::Table(Some(class_table_idx))
@@ -2332,21 +2300,13 @@ impl<'a> Analysis<'a> {
                 && let Some((_, class_table_idx)) = self.ir.resolve_class_annotation(
                     &assign_annotations.class, assign_annotations.class_comment_start, assign.syntax(),
                 ) {
-                    if !class_table_idx.is_external()
-                        && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
-                            .versions.last()
-                            .and_then(|v| v.type_source)
-                            && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
-                                && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external() {
-                                    let runtime_fields: Vec<(String, FieldInfo)> =
-                                        self.ir.tables[rhs_table_idx.val()].fields.iter()
-                                            .map(|(k, v)| (k.clone(), v.clone()))
-                                            .collect();
-                                    for (name, field_info) in runtime_fields {
-                                        self.ir.tables[class_table_idx.val()].fields
-                                            .entry(name).or_insert(field_info);
-                                    }
-                                }
+                    if let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
+                        .versions.last()
+                        .and_then(|v| v.type_source)
+                        && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
+                    {
+                        self.merge_runtime_fields_into_class(class_table_idx, rhs_table_idx);
+                    }
                     let expr_id = self.ir.push_expr(Expr::Literal(
                         ValueType::Table(Some(class_table_idx))
                     ));
@@ -2383,6 +2343,61 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Merge a runtime table constructor's fields into the `@class`/`@enum` class
+    /// table it was annotated with. Author-declared (`@field`) or prescan-created
+    /// fields win, but enum literal values are copied onto the class field's expr
+    /// so hover can show `name = value`, and a placeholder `Any` enum member (the
+    /// scan couldn't infer a variable's type syntactically, so it registered the
+    /// member as `any`) is upgraded to point at the constructor's real value expr —
+    /// letting the member's type, and the enum's number/string kind
+    /// (`finalize_enum_kinds`), resolve from the actual assignment instead of
+    /// collapsing to `any`. New fields (not already on the class table) are
+    /// inserted wholesale.
+    fn merge_runtime_fields_into_class(&mut self, class_table_idx: TableIndex, rhs_table_idx: TableIndex) {
+        if class_table_idx.is_external()
+            || rhs_table_idx.is_external()
+            || rhs_table_idx == class_table_idx
+        {
+            return;
+        }
+        let is_enum = self.ir.tables[class_table_idx.val()].enum_kind.is_enum();
+        let runtime_fields: Vec<(String, FieldInfo)> =
+            self.ir.tables[rhs_table_idx.val()].fields.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+        for (name, field_info) in runtime_fields {
+            match self.ir.tables[class_table_idx.val()].fields.entry(name) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if is_enum && matches!(e.get().annotation, Some(ValueType::Any)) {
+                        // Upgrade a placeholder `Any` enum member to point at the
+                        // constructor's real value expr. Keeping the `Any`
+                        // annotation means the existing placeholder refinement
+                        // (hover / resolve_expr_type / refine_any_field_type)
+                        // resolves the member from that expr — number/string when
+                        // it resolves, gracefully falling back to `any` when it
+                        // doesn't — and `finalize_enum_kinds` reads the real value
+                        // for the kind. The constructor expr already carries its
+                        // own literals, so no literal copy is needed here.
+                        e.get_mut().expr = field_info.expr;
+                    } else {
+                        // Prescan-created fields don't have literals; copy from the
+                        // constructor field so hover can show enum values like
+                        // `= 0` or `= "value"`.
+                        let class_expr = e.get().expr;
+                        if let Some(val) = self.ir.number_literals.get(&field_info.expr).cloned() {
+                            self.ir.number_literals.insert(class_expr, val);
+                        }
+                        if let Some(val) = self.ir.string_literals.get(&field_info.expr).cloned() {
+                            self.ir.string_literals.insert(class_expr, val);
+                        }
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(field_info);
+                }
+            }
+        }
+    }
 
     fn build_stmt_function_call(&mut self, call: &FunctionCall<'a>, scope_idx: ScopeIndex) {
         let call_expr_id = self.lower_function_call(call, scope_idx, 0, true);

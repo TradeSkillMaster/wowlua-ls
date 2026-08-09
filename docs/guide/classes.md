@@ -417,7 +417,7 @@ setStatus("custom")      -- OK, string enums accept plain strings
 setStatus(42)            -- warning: type-mismatch
 ```
 
-The enum's value type is inferred automatically from the field values. All values must be the same type; mixing numbers and strings in the same enum produces a `mixed-enum-values` warning.
+The enum's value type is inferred automatically from the field values. Values may be literals or references to constants/variables — `Low = LOW_PRIORITY` is inferred just like `Low = 1`. All values must be the same type; mixing numbers and strings in the same enum produces a `mixed-enum-values` warning.
 
 ### Key-based enums (`@enum (key)`)
 

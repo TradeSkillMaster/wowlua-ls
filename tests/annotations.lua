@@ -1499,3 +1499,63 @@ local strategyVar ---@type SaveStrategy
 local function registerAtFrames(atFrames)
 --                              ^ hover: (param) atFrames: AtCommentedTable
 end
+
+-- ── Regression: @enum with variable (non-literal) member values ─────────────
+-- Members whose value is a variable (not an inline literal) must still resolve
+-- to the enum's value type, and the number/string kind must be classified from
+-- the resolved variable types — not collapsed to `any`/defaulted to number.
+local TIER_LFR = 1
+local TIER_NORMAL = 2
+local enumHost = {}
+---@enum TumTier
+enumHost.tiers = {
+    lfr = TIER_LFR,
+    normal = TIER_NORMAL,
+}
+local tierValue = enumHost.tiers.lfr
+--    ^ hover: (local) tierValue: number  def: local
+
+-- A string enum built from string-typed variables must classify as a String
+-- enum, so passing a number where the enum type is expected is a type-mismatch.
+local NAME_ALPHA = "alpha"
+local enumHost2 = {}
+---@enum VarKind
+enumHost2.kinds = {
+    alpha = NAME_ALPHA,
+}
+local kindValue = enumHost2.kinds.alpha
+--    ^ hover: (local) kindValue: string  def: local
+
+---@param k VarKind
+local function useKind(k) end
+useKind(2)
+--      ^ diag: type-mismatch
+useKind(enumHost2.kinds.alpha)
+
+-- Same upgrade must apply to the canonical `---@enum X` + `local X = {...}`
+-- local-declaration form (a different build_ir merge site than the field form).
+local RANK_MEMBER = 1
+local RANK_OFFICER = 2
+---@enum GuildRank
+local GuildRank = {
+    member = RANK_MEMBER,
+    officer = RANK_OFFICER,
+}
+local rankValue = GuildRank.member
+--    ^ hover: (local) rankValue: number  def: local
+
+-- ...and to a bare global `---@enum X` + `X = {...}` (a third merge site). Uses
+-- string variables, so the enum must classify as String and reject a number.
+local COLOR_RED = "red"
+---@enum GlobalColorKind
+GlobalColorKind = {
+    red = COLOR_RED,
+}
+local colorValue = GlobalColorKind.red
+--    ^ hover: (local) colorValue: string  def: local
+
+---@param c GlobalColorKind
+local function useColor(c) end
+useColor(7)
+--       ^ diag: type-mismatch
+useColor(GlobalColorKind.red)
