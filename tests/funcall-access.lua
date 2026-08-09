@@ -196,3 +196,34 @@ local buyout, itemBuyout, minPrice = member:GetPrices()
 --   (method) function UnionMemberB:GetPrices()
 --     -> buyout: number, itemBuyout: number, minPrice: nil
 --                                              ^ hover: (method) function UnionMemberA:GetPrices()\n-> buyout: nil, itemBuyout: nil, minPrice: number?\n(method) function UnionMemberB:GetPrices()\n-> buyout: number, itemBuyout: number, minPrice: nil
+
+-- ── Union receiver: a shared inherited method shows once, a real override kept ──
+-- A `CreateFrame('Button', ..., 'SomeTemplate')` yields a union type
+-- (Button | Template | Frame) whose members all inherit the same widget method
+-- from the base. The union-member hover collection would list one identical
+-- signature per member; dedupe by resolved function so the shared method appears
+-- once — while a genuinely distinct same-named method on another member is kept.
+
+---@class WBase
+local WBase = {}
+---@param name string
+function WBase:Apply(name) end
+
+---@class WLeft : WBase
+local WLeft = {}
+
+---@class WRight : WBase
+local WRight = {}
+
+---@class WOther
+local WOther = {}
+---@param count number
+function WOther:Apply(count) end
+
+-- WLeft and WRight both inherit WBase:Apply (same function) → shown once as
+-- WLeft:Apply; WOther:Apply is a distinct function → kept. Exact multi-line match.
+---@param widget WLeft | WRight | WOther
+local function applyWidget(widget)
+widget:Apply()
+--     ^ hover: (method) function WLeft:Apply(name: string)\n(method) function WOther:Apply(count: number)
+end
