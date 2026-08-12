@@ -55,3 +55,11 @@ local aliased = ns.Components.GetAliased(nil)
 --    ^ hover: (local) aliased: Frame & { Aliased: Frame } {
 aliased.Aliased:SetShown(true)
 --      ^ hover: (field) Aliased: Frame  def: external
+
+-- Injected anonymous-*record* field: the overlay carries its shape cross-file
+-- (before the record lift it decayed to `any` and was dropped). Precise hover on
+-- both the instance and the field access; no false `undefined-field`.
+local configured = ns.Components.GetConfigured(nil)
+--    ^ hover: (local) configured: Frame & { Config: { height: number, width: number } } {
+local cfg = configured.Config
+--                     ^ hover: (field) Config: { height: number, width: number }  def: external

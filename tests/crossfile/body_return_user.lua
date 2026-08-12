@@ -52,3 +52,15 @@ local lookup = ns.Core.GetLookup()
 -- previously collapsed to `number[]` because the lift gated on is_explicit_map).
 local imap = ns.Core.GetInferredMap("a")
 --    ^ hover: (local) imap: table<string, number>  def: local
+
+-- Body-inferred record return carries each field's type cross-file (was `any`).
+local pt = ns.Core.GetPoint()
+--    ^ hover: (local) pt: { label: string, x: number, y: number }  def: local
+
+-- Nested record: the inner record field is carried recursively through the lift.
+local place = ns.Core.GetPlacement()
+--    ^ hover: (local) place: { name: string, pos: { label: string, x: number, y: number } }  def: local
+
+-- A record field's explicit `@type` annotation is preferred over the inferred RHS.
+local tagged = ns.Core.GetTagged()
+--    ^ hover: (local) tagged: { count: number, names: string[] }  def: local

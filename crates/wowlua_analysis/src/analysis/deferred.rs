@@ -22,9 +22,12 @@
 //! unions) is preserved. An anonymous *array/map* table carries its element type
 //! inline as a `ValueType::TableShape` container (`T[]` / `table<K, V>`), read
 //! from the arena `TableInfo`'s `value_type`/`key_type`; an anonymous *record*
-//! table (named fields only) still decays to `any` here, since lifting its field
-//! types would need the resolved-expr cache this helper doesn't carry. A returned
-//! class instance carrying injected
+//! table (named fields only) carries each field's resolved type inline as a
+//! `ValueType::TableShape` record (`{ x: number, y: string }`) — the field types
+//! come from the source file's resolved-expr cache (`resolve_field_type`), which
+//! every harvest path holding an `AnalysisResult` threads in via
+//! `lift_local_type_to_ext_with` (returns, injected instance fields, created-global
+//! call types, generic type-args). A returned class instance carrying injected
 //! fields (`frame.DropDown = ...` on a `CreateFrame` result) is lifted into
 //! `Class & { DropDown: ... }` — an `Intersection` of its ext class with an
 //! inline `ValueType::TableShape` carrying the injected fields (narrowed to the
@@ -327,7 +330,7 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                         .inferred_return_types(local)
                         .into_iter()
                         .map(|t| {
-                            let lifted = lift_local_type_to_ext(&t, ir, ext);
+                            let lifted = lift_local_type_to_ext_with(&t, ir, ext, &result);
                             if contains_any(&lifted) { ValueType::Any }
                             else { wrap_overlay_shape(&t, lifted, &result, ext, &local.rets, path) }
                         })
@@ -453,7 +456,7 @@ fn harvest_call_globals_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                     .resolved_expr_cache
                     .get(i)
                     .and_then(|v| v.clone())
-                    .map(|t| lift_local_type_to_ext(&t, ir, ext))
+                    .map(|t| lift_local_type_to_ext_with(&t, ir, ext, &result))
                     .filter(|t| !contains_any(t));
                 break;
             }
@@ -558,7 +561,7 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                 let args = result.get_type_args_for_expr(ExprId(i));
                 if !args.is_empty() {
                     let lifted: Vec<ValueType> =
-                        args.iter().map(|a| lift_local_type_to_ext(a, ir, ext)).collect();
+                        args.iter().map(|a| lift_local_type_to_ext_with(a, ir, ext, &result)).collect();
                     // An `any` arg carries no more than the coarse fallback — skip it
                     // so a partial/unresolved harvest doesn't replace the coarse path.
                     if !lifted.iter().any(contains_any) {
@@ -717,7 +720,7 @@ fn wrap_overlay_shape(
             continue;
         }
         let Some(ty) = result.resolve_expr_type(fa.actual_expr) else { continue };
-        let lifted_ty = lift_local_type_to_ext(&ty, ir, ext);
+        let lifted_ty = lift_local_type_to_ext_with(&ty, ir, ext, result);
         // `Any` carries no information; `Nil` is the "remove method" placeholder
         // idiom (`inst.M = nil`) — neither belongs in the carried shape.
         if matches!(lifted_ty, ValueType::Any | ValueType::Nil) {
@@ -776,16 +779,46 @@ const LIFT_MAX_DEPTH: usize = 6;
 /// Convert a `ValueType` produced by per-file analysis into external-index space
 /// so it can be stored on `PreResolvedGlobals` and read by other files.
 fn lift_local_type_to_ext(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals) -> ValueType {
-    lift_local_type_to_ext_depth(ty, ir, ext, 0)
+    lift_local_type_to_ext_depth(ty, ir, ext, 0, None)
+}
+
+/// Like [`lift_local_type_to_ext`] but with the source file's analysis result in
+/// hand, so an anonymous *record* value (named fields, e.g. `{ x = 1 }`) carries
+/// each field's resolved type inline as a `TableShape` instead of decaying to
+/// `any`. Record field types aren't materialized on the arena `TableInfo` (only
+/// array/map `value_type`/`key_type` are), so they must be read from the analysis's
+/// resolved-expr cache via `resolve_field_type` — hence the extra `result`. Used by
+/// every harvest path that holds a result: body-derived returns, injected instance
+/// fields (`wrap_overlay_shape`), created-global call types, and generic type-args.
+/// The plain [`lift_local_type_to_ext`] is for callers without one (e.g. lifting an
+/// overload's already-resolved param/return types), where records stay coarse.
+fn lift_local_type_to_ext_with(
+    ty: &ValueType,
+    ir: &Ir,
+    ext: &PreResolvedGlobals,
+    res: &crate::analysis::AnalysisResult,
+) -> ValueType {
+    lift_local_type_to_ext_depth(ty, ir, ext, 0, Some(res))
 }
 
 /// Depth-guarded core of [`lift_local_type_to_ext`].
 ///
 /// Named (class) tables map by `class_name` through `ext.classes`; tables that
 /// already live in ext space pass through; a returned *local* function value is
-/// lifted losslessly into an inline `FunctionSig` carrying its signature; other
-/// anonymous/unrepresentable types decay to `Any`.
-fn lift_local_type_to_ext_depth(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals, depth: usize) -> ValueType {
+/// lifted losslessly into an inline `FunctionSig` carrying its signature. Anonymous
+/// tables are lifted to an inline `TableShape` rather than decaying: an array/map
+/// carries its element/key types (from the arena `TableInfo`), and a record carries
+/// its named fields' types (from `res.resolve_field_type`, so only when `res` is
+/// threaded — see [`lift_local_type_to_ext_with`]). Only genuinely unrepresentable
+/// types (an anonymous table with neither, an unbound type variable, …) decay to
+/// `Any`.
+fn lift_local_type_to_ext_depth(
+    ty: &ValueType,
+    ir: &Ir,
+    ext: &PreResolvedGlobals,
+    depth: usize,
+    res: Option<&crate::analysis::AnalysisResult>,
+) -> ValueType {
     match ty {
         ValueType::Table(Some(idx)) => {
             if idx.is_external() {
@@ -806,7 +839,7 @@ fn lift_local_type_to_ext_depth(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobal
                 if depth >= LIFT_MAX_DEPTH {
                     return ValueType::Table(None);
                 }
-                let lowered_val = lift_local_type_to_ext_depth(vt, ir, ext, depth + 1);
+                let lowered_val = lift_local_type_to_ext_depth(vt, ir, ext, depth + 1, res);
                 // Carry the key only for a genuine map — an explicit `table<K,V>`
                 // OR an *inferred* non-`Number` key (resolve.rs sets key_type on
                 // inferred maps WITHOUT setting is_explicit_map, so gating on that
@@ -817,7 +850,7 @@ fn lift_local_type_to_ext_depth(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobal
                     info.key_type.as_ref(),
                     info.is_explicit_map,
                 ) {
-                    info.key_type.as_ref().map(|k| lift_local_type_to_ext_depth(k, ir, ext, depth + 1))
+                    info.key_type.as_ref().map(|k| lift_local_type_to_ext_depth(k, ir, ext, depth + 1, res))
                 } else {
                     None
                 };
@@ -826,18 +859,48 @@ fn lift_local_type_to_ext_depth(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobal
                     lowered_key,
                     lowered_val,
                 )))
+            } else if !info.fields.is_empty() && info.array_fields.is_empty() {
+                // Anonymous record (named fields, no class name, no container
+                // element type): carry each field's resolved type inline as a
+                // `TableShape` so a body-derived cross-file record value stays
+                // precise (`{ x: number, y: string }`) instead of decaying to
+                // `any`. Unlike the array/map `value_type` above, record field
+                // types live only in the resolved-expr cache, not on the arena
+                // `TableInfo` — so this only sharpens past `any` when the caller
+                // threaded the analysis result (`res`, via
+                // `lift_local_type_to_ext_with` — every harvest path that holds
+                // one); otherwise a field falls back to its own annotation, then
+                // `any`. Every field still *exists* in the shape even when its
+                // type is unknown, so no spurious cross-file `undefined-field`.
+                // Same depth bound as the array/map and function-signature lifts.
+                if depth >= LIFT_MAX_DEPTH {
+                    return ValueType::Table(None);
+                }
+                let fields: Vec<(String, ValueType)> = info
+                    .fields
+                    .iter()
+                    .map(|(name, fi)| {
+                        let raw = res
+                            .and_then(|r| r.resolve_field_type(fi))
+                            .or_else(|| fi.annotation.clone())
+                            .unwrap_or(ValueType::Any);
+                        let lifted = lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1, res);
+                        (name.clone(), lifted)
+                    })
+                    .collect();
+                ValueType::TableShape(Box::new(crate::types::TableShape::new(fields)))
             } else {
                 ValueType::Any
             }
         }
         ValueType::Union(members) => ValueType::make_union(
-            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth)).collect(),
+            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res)).collect(),
         ),
         ValueType::Intersection(members) => ValueType::Intersection(
-            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth)).collect(),
+            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res)).collect(),
         ),
         ValueType::OpaqueAlias(name, inner) => {
-            ValueType::OpaqueAlias(name.clone(), Box::new(lift_local_type_to_ext_depth(inner, ir, ext, depth)))
+            ValueType::OpaqueAlias(name.clone(), Box::new(lift_local_type_to_ext_depth(inner, ir, ext, depth, res)))
         }
         // An external function value already lives in ext space; keep it.
         ValueType::Function(Some(idx)) if idx.is_external() => ty.clone(),
@@ -848,7 +911,7 @@ fn lift_local_type_to_ext_depth(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobal
             if depth >= LIFT_MAX_DEPTH {
                 return ValueType::Function(None);
             }
-            ValueType::FunctionSig(Box::new(lift_local_func_to_shape(idx.val(), ir, ext, depth)))
+            ValueType::FunctionSig(Box::new(lift_local_func_to_shape(idx.val(), ir, ext, depth, res)))
         }
         // Unbound type variables have no meaning in the caller's context.
         ValueType::TypeVariable(_) => ValueType::Any,
@@ -866,6 +929,7 @@ fn lift_local_func_to_shape(
     ir: &Ir,
     ext: &PreResolvedGlobals,
     depth: usize,
+    res: Option<&crate::analysis::AnalysisResult>,
 ) -> crate::types::FunctionShape {
     use crate::types::{ShapeParam, SymbolIdentifier};
     let func = &ir.functions[local_idx];
@@ -891,19 +955,19 @@ fn lift_local_func_to_shape(
                 .unwrap_or(ValueType::Any);
             // The `?` suffix conveys optionality, so strip nil from the display type.
             let raw = if optional { raw.strip_nil() } else { raw };
-            let ty = lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1);
+            let ty = lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1, res);
             ShapeParam { name, ty, optional }
         })
         .collect();
     let returns = if !func.return_annotations.is_empty() {
         func.return_annotations
             .iter()
-            .map(|t| lift_local_type_to_ext_depth(t, ir, ext, depth + 1))
+            .map(|t| lift_local_type_to_ext_depth(t, ir, ext, depth + 1, res))
             .collect()
     } else {
         inferred_returns_from_ir(ir, func)
             .iter()
-            .map(|t| lift_local_type_to_ext_depth(t, ir, ext, depth + 1))
+            .map(|t| lift_local_type_to_ext_depth(t, ir, ext, depth + 1, res))
             .collect()
     };
     crate::types::FunctionShape { params, returns, is_vararg: func.is_vararg }

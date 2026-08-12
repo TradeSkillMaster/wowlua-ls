@@ -67,6 +67,29 @@ function ns.Core.GetLookup()
     return m
 end
 
+-- Body-inferred RECORD return: the deferred cross-file lift carries each named
+-- field's resolved type inline (`{ label: string, x: number, y: number }`)
+-- instead of decaying the anonymous table to `any` (record-return lift). Fields
+-- render sorted by name.
+function ns.Core.GetPoint()
+    return { x = 1, y = 2, label = "origin" }
+end
+
+-- Nested record return: a field that is itself a record recurses through the
+-- lift, so the inner shape is carried too.
+function ns.Core.GetPlacement()
+    return { name = "spawn", pos = { x = 1, y = 2, label = "origin" } }
+end
+
+-- Record field carrying an explicit `@type` annotation: the annotated type is
+-- preferred over the inferred RHS (here a bare `{}` that would otherwise be
+-- `any`).
+function ns.Core.GetTagged()
+    ---@type string[]
+    local names = {}
+    return { count = 0, names = names }
+end
+
 -- Body-inferred MAP with an INFERRED (non-annotated) string key. resolve.rs sets
 -- key_type WITHOUT setting is_explicit_map for inferred maps, so the lift must
 -- decide array-vs-map from the key type (non-`Number` → map), not from that flag

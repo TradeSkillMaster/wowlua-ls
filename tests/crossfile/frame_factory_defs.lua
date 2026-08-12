@@ -34,6 +34,17 @@ function ns.Components.GetToggle(parent)
     return frame
 end
 
+-- Field injected with an anonymous *record* value (`frame.Config = { ... }`):
+-- before the record lift these decayed to `any` and were dropped from the
+-- overlay entirely (the `contains_any` filter in `wrap_overlay_shape`); now the
+-- overlay carries the field with its record shape cross-file. Exercises the
+-- overlay lift site's `lift_local_type_to_ext_with` parity with the return path.
+function ns.Components.GetConfigured(parent)
+    local frame = CreateFrame("Frame", nil, parent)
+    frame.Config = { width = 10, height = 20 }
+    return frame
+end
+
 -- Field injected through a *local alias* of the returned frame: the write's
 -- receiver is `f2`, not `frame`, but it lands on the returned instance. Its
 -- shape must still carry `Aliased` (per-instance narrowing resolves the alias),
