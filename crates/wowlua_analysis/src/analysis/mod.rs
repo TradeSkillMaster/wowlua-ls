@@ -554,6 +554,15 @@ pub struct Ir {
     /// this map first for external indices, so resolution, diagnostics, hover,
     /// and completion all see the precise created-global type.
     pub symbol_overlay: HashMap<SymbolIndex, Symbol>,
+    /// Defining files this file harvested a deferred cross-file type from during
+    /// analysis (a body-derived return, a `@creates-global`, a `@class` field, or a
+    /// constructor generic type-arg — recorded by the `ensure_*_overlay` /
+    /// field-type-args paths). The LSP uses it as a reverse dependency edge: when
+    /// one of these files is edited in a way the coarse scan can't see (so no
+    /// workspace rebuild fires), only the documents whose set contains the edited
+    /// file are re-analyzed, instead of every open tab. Accumulated during resolve;
+    /// nested harvest analyses record into their own (discarded) `Ir`.
+    pub deferred_dep_files: std::collections::HashSet<std::path::PathBuf>,
 }
 
 /// Metadata for a string literal argument annotated as `expression<C, R>`.
@@ -2310,6 +2319,13 @@ impl AnalysisResult {
     #[inline] pub fn function_name(&self, func_idx: FunctionIndex) -> Option<String> { self.ir.function_name(func_idx) }
     #[inline] pub fn resolved_expr_cache_get(&self, id: ExprId) -> Option<&ValueType> { self.resolved_expr_cache.get(id.val()).and_then(|v| v.as_ref()) }
 
+    /// Defining files this analysis harvested a deferred cross-file type from
+    /// (return / created-global / `@class` field / constructor type-arg). The LSP
+    /// treats each as a reverse dependency edge: an edit to one of these files that
+    /// the coarse scan can't see (no workspace rebuild) still re-analyzes this
+    /// document. See `Ir::deferred_dep_files`.
+    #[inline] pub fn deferred_dep_files(&self) -> &std::collections::HashSet<std::path::PathBuf> { &self.ir.deferred_dep_files }
+
     pub fn is_meta(&self) -> bool {
         self.is_meta
     }
@@ -2725,6 +2741,7 @@ impl<'a> Analysis<'a> {
                 pending_bracket_assigns: Vec::new(),
                 overlay: HashMap::new(),
                 symbol_overlay: HashMap::new(),
+                deferred_dep_files: std::collections::HashSet::new(),
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),

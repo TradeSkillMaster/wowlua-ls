@@ -3249,20 +3249,30 @@ impl<'a> Analysis<'a> {
         let mut field_types: Vec<ValueType> = shape_field_types;
         for &idx in &table_indices {
             let pre_len = field_types.len();
-            if let Some(fi) = self.ir.get_field(idx, field) {
+            // Fetch the coarse field once, extracting what the branches below need so
+            // the borrow ends immediately. Only the (rare) cross-file `any`
+            // placeholder pays for the harvest + re-fetch — warming the per-file
+            // overlay with the definition-site type harvested from the class's
+            // defining file; the common precise field is used directly, so a non-`any`
+            // external field access repeats no `get_field` lookups.
+            let mut fetched = self.ir.get_field(idx, field).map(|fi|
+                (crate::analysis::deferred::field_is_coarse_any(fi, &self.ir.ext),
+                 fi.annotation.clone(), fi.expr, fi.extra_exprs.clone()));
+            if matches!(&fetched, Some((true, ..))) {
+                self.ir.ensure_field_overlay(idx, field);
+                fetched = self.ir.get_field(idx, field).map(|fi|
+                    (false, fi.annotation.clone(), fi.expr, fi.extra_exprs.clone()));
+            }
+            if let Some((_, ann_vt, field_primary, field_extras)) = fetched {
                 field_exists = true;
-                // Extract what we need before releasing the borrow on self.ir
-                let ann_vt = fi.annotation.clone();
                 let is_any = matches!(ann_vt, Some(ValueType::Any));
-                let field_primary = fi.expr;
-                let field_extras: Vec<ExprId> = fi.extra_exprs.clone();
                 if let Some(ref ann_vt) = ann_vt {
                     if is_any {
                         // When the annotation is Any (inherited from a parent
                         // class), prefer concrete types from the primary expr
                         // and any extra_exprs (child-class assignments).
-                        let primary = fi.expr;
-                        let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                        let primary = field_primary;
+                        let extras: Vec<ExprId> = field_extras.clone();
                         let has_extras = !extras.is_empty();
                         let all_exprs: Vec<ExprId> = std::iter::once(primary).chain(extras).collect();
                         let mut found_specific = false;
@@ -3305,8 +3315,8 @@ impl<'a> Analysis<'a> {
                         field_types.push(enriched.unwrap_or_else(|| ann_vt.clone()));
                     }
                 } else {
-                    let primary = fi.expr;
-                    let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                    let primary = field_primary;
+                    let extras: Vec<ExprId> = field_extras.clone();
                     let has_extras = !extras.is_empty();
                     // If there are reassignments and the initial value is nil,
                     // skip the nil — it's just a placeholder initializer.

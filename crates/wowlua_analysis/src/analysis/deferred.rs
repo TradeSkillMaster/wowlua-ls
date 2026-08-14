@@ -37,6 +37,30 @@
 //! cross-file, and the intersection marks the value as a concrete instance so
 //! `undefined-field` doesn't fire on them downstream.
 //!
+//! The same lazy-harvest mechanism upgrades a cross-file `@class` *field* whose
+//! coarse scan type decayed to `any` (a runtime `self.x = <expr>` the scanner
+//! couldn't type). On first read of such a field, `ensure_field_overlay` re-runs the
+//! engine on the class's defining file and installs a precise `FieldInfo` into the
+//! per-file `overlay_fields`, so `get_field` transparently returns the
+//! definition-site type. This is deliberately the **`any`-only** slice, gated on
+//! *both* ends so an upgrade only replaces `any` with a genuinely more precise type:
+//! the coarse field must be exactly `any` ([`field_is_coarse_any`]), and the
+//! harvested type must not itself be a coarse placeholder — `any`, bare
+//! `table`/`function`, or `callable_or_unknown` ([`contains_coarse_placeholder`]).
+//! A bare `table` is strictly *more restrictive* than `any` (not callable), so
+//! upgrading `any`→`table` could false-positive `cannot-call`/`undefined-field` on a
+//! metatable/mixin/callable — precisely the low-confidence case the scan already
+//! gave up on; those are kept coarse. (Upgrading to a genuine *nameable* class is a
+//! real sharpening: like any precise type it may surface a correct new diagnostic —
+//! e.g. calling a non-callable class — and, because coverage is the declaring file
+//! only, can under-approximate a field also assigned elsewhere; that is the
+//! deliberate fidelity/precision trade of this slice, not the `table` regression.)
+//! The field type is the union of its assignment RHS types read from
+//! `field_assignments` (the RHS-aware path — not the coarse class surface), across
+//! *every* site, so a field cleared to nil keeps its nilability (`T?`); a `lateinit`
+//! (`T!`) field reads non-nil. A type touching a type variable decays to `any`
+//! through the lift and is kept coarse (generics stay coarse).
+//!
 //! Resolution is re-entrant: when the nested analysis reads a deferred return
 //! defined in *another* file it recurses, so multi-hop chains resolve precisely.
 //! A thread-local set of in-progress files breaks cycles (the back-edge falls
@@ -49,7 +73,7 @@ use std::sync::Arc;
 
 use crate::analysis::{Analysis, AnalysisConfig, Ir};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::types::{Expr, ExprId, FunctionIndex, ResolvedOverload, SymbolIndex, ValueType};
+use crate::types::{Expr, ExprId, FunctionIndex, ResolvedOverload, SymbolIndex, TableIndex, ValueType};
 
 /// Locates the creating call for a `@creates-global` side-effect global (e.g.
 /// the `_G.MyFrame` from `CreateFrame("Frame", "MyFrame", ...)`) so its type can
@@ -121,6 +145,9 @@ impl Ir {
         let Some(sig) = resolve_deferred_sig(&self.ext, func_idx) else {
             return;
         };
+        if let Some(loc) = self.ext.function_locations.get(&func_idx) {
+            self.deferred_dep_files.insert(loc.path.clone());
+        }
         let mut precise = self.ext.func(func_idx).clone();
         precise.return_annotations = sig.returns;
         precise.overloads = sig.overloads;
@@ -145,11 +172,67 @@ impl Ir {
         let Some(ty) = resolve_deferred_call_global_type(&self.ext, sym_idx) else {
             return;
         };
+        if let Some(dcg) = self.ext.deferred_call_globals.get(&sym_idx) {
+            self.deferred_dep_files.insert(dcg.path.clone());
+        }
         let mut precise = self.ext.sym(sym_idx).clone();
         if let Some(ver) = precise.versions.last_mut() {
             ver.resolved_type = Some(ty);
         }
         self.symbol_overlay.insert(sym_idx, precise);
+    }
+
+    /// Ensure the per-file `overlay_fields` holds a precise `FieldInfo` for a
+    /// cross-file `@class` field whose coarse scan type decayed to `any`. Idempotent:
+    /// an overlay hit, a non-external table, a field that isn't declared directly on
+    /// the class, a non-`any` coarse type, or a non-workspace class is a no-op.
+    ///
+    /// **`any`-only by design, gated on both ends.** Only a field whose coarse type
+    /// is exactly `any` ([`field_is_coarse_any`]) is a candidate, and the harvest
+    /// only replaces it when the definition-site type is genuinely more precise — not
+    /// itself a coarse placeholder (`any`, bare `table`/`function`,
+    /// `callable_or_unknown`; see [`contains_coarse_placeholder`]). This avoids the
+    /// `table`→non-optional regression class: a bare `table` is *more* restrictive
+    /// than `any` (not callable), so it is left coarse rather than false-positiving
+    /// `cannot-call` on a metatable/mixin. The harvested type carries the field's
+    /// real nilability (a field cleared to nil stays `T?`) and keeps generics coarse
+    /// (a type-variable-touching type decays back to `any` through the lift and is
+    /// skipped).
+    ///
+    /// The overlay value is the coarse external `FieldInfo` with its `annotation`
+    /// replaced by the harvested precise type. After this call, `get_field()`
+    /// transparently returns the precise field, so cross-file hover, completion,
+    /// go-to-definition, and post-fixpoint diagnostic passes see the definition-site
+    /// type.
+    pub fn ensure_field_overlay(&mut self, table_idx: TableIndex, field_name: &str) {
+        // Empty for stub-only / non-workspace analyses — they pay nothing.
+        if !table_idx.is_external() || self.ext.deferred_class_field_paths.is_empty() {
+            return;
+        }
+        if self.overlay_fields.get(&table_idx).is_some_and(|m| m.contains_key(field_name)) {
+            return;
+        }
+        // Extract the coarse field + class name from ext, dropping the borrow before
+        // mutating `self.overlay_fields`.
+        let (coarse, class_name) = {
+            let Some(t) = self.ext.try_table(table_idx) else { return };
+            let Some(fi) = t.fields.get(field_name) else { return };
+            if !field_is_coarse_any(fi, &self.ext) {
+                return;
+            }
+            let Some(name) = t.class_name.clone() else { return };
+            (fi.clone(), name)
+        };
+        let Some(def_path) = self.ext.deferred_class_field_paths.get(&class_name).cloned() else {
+            return;
+        };
+        let Some(ty) = resolve_deferred_class_field_type(&self.ext, &class_name, field_name) else {
+            return;
+        };
+        self.deferred_dep_files.insert(def_path);
+        let mut precise = coarse;
+        precise.annotation = Some(ty);
+        self.overlay_fields.entry(table_idx).or_default().insert(field_name.to_string(), precise);
     }
 }
 
@@ -581,6 +664,153 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     }
 }
 
+/// Resolve the precise type of a cross-file `@class` field whose coarse scan type
+/// decayed to `any`, by re-running the real engine on the class's defining file
+/// (memoized). Returns `None` when the class isn't a workspace class, the field is
+/// not assigned in the defining file, or the harvested type is no more precise than
+/// the coarse `any` (touches a type variable / is purely nil); callers then keep the
+/// coarse `any`.
+pub fn resolve_deferred_class_field_type(
+    ext: &Arc<PreResolvedGlobals>,
+    class_name: &str,
+    field_name: &str,
+) -> Option<ValueType> {
+    let key = (class_name.to_string(), field_name.to_string());
+
+    // Memo hit. `Some(None)` means "harvested but not upgradable" — don't re-harvest.
+    if let Ok(cache) = ext.deferred_class_field_cache.read()
+        && let Some(hit) = cache.get(&key)
+    {
+        return hit.clone();
+    }
+
+    let path = ext.deferred_class_field_paths.get(class_name)?.clone();
+
+    // Re-entrancy / cycle guard: if this file is already being analyzed on the
+    // stack, bail for this edge — the coarse `any` is kept.
+    let entered = IN_PROGRESS.with(|set| set.borrow_mut().insert(path.clone()));
+    if !entered {
+        return None;
+    }
+
+    harvest_class_fields_in_file(ext, &path);
+
+    IN_PROGRESS.with(|set| {
+        set.borrow_mut().remove(&path);
+    });
+
+    // Read the memo back. If the harvest didn't produce this key (the field isn't
+    // assigned in the defining file), record `None` so a later read of the same
+    // field doesn't re-harvest the whole file.
+    let mut cache = ext.deferred_class_field_cache.write().ok()?;
+    match cache.get(&key) {
+        Some(hit) => hit.clone(),
+        None => {
+            cache.insert(key, None);
+            None
+        }
+    }
+}
+
+/// Analyze `path` once and harvest the precise type of *every* workspace `@class`
+/// field assigned in it, writing each into the memo (`None` when not upgradable, so
+/// the file is not re-analyzed). For each such class, a field's type is the union of
+/// its assignment RHS types read from `field_assignments` (the RHS-aware path, not
+/// the coarse class surface) across every assignment site — so a field cleared to
+/// nil keeps its nilability (`T?`). A `lateinit` (`T!`) field reads as non-nil, so
+/// nil is stripped. Does nothing on I/O failure.
+fn harvest_class_fields_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
+    let text = ext
+        .document_overrides
+        .read()
+        .ok()
+        .and_then(|docs| docs.get(path).cloned());
+    let text = match text {
+        Some(t) => t,
+        None => match crate::syntax::read_source_file(path) {
+            Ok(t) => t,
+            Err(_) => return,
+        },
+    };
+
+    let config = match &ext.project_configs {
+        Some(configs) => AnalysisConfig {
+            correlated_return_overloads: configs.correlated_return_overloads_for(path),
+            backward_param_types: configs.backward_param_types_for(path),
+            ..AnalysisConfig::default()
+        },
+        None => AnalysisConfig::default(),
+    };
+
+    let tree = crate::syntax::parser::parse(&text);
+    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(ext), config);
+    analysis.resolve_types();
+    let result = analysis.into_result();
+    let ir = &result.ir;
+
+    // Map each local class table (workspace `@class` only) to its class name.
+    let mut class_name_of: HashMap<TableIndex, String> = HashMap::new();
+    for (idx, info) in ir.local_tables() {
+        if let Some(name) = &info.class_name
+            && ext.deferred_class_field_paths.contains_key(name)
+        {
+            class_name_of.insert(idx, name.clone());
+        }
+    }
+    if class_name_of.is_empty() {
+        return;
+    }
+
+    // Accumulate each `(class, field)`'s RHS-resolved types across all assignment
+    // sites (nils included → nilability preserved), plus whether any site was
+    // `lateinit`.
+    let mut acc: HashMap<(String, String), (Vec<ValueType>, bool)> = HashMap::new();
+    for fa in &ir.field_assignments {
+        let Some(name) = class_name_of.get(&fa.table_idx) else { continue };
+        let entry = acc.entry((name.clone(), fa.field_name.clone())).or_insert_with(|| (Vec::new(), false));
+        entry.1 |= fa.lateinit;
+        if let Some(ty) = result.resolve_expr_type(fa.actual_expr) {
+            let lifted = lift_local_type_to_ext_with(&ty, ir, ext, &result);
+            if !entry.0.contains(&lifted) {
+                entry.0.push(lifted);
+            }
+        }
+    }
+
+    let mut harvested: Vec<((String, String), Option<ValueType>)> = Vec::new();
+    for (key, (tys, lateinit)) in acc {
+        let upgrade = if tys.is_empty() {
+            None
+        } else {
+            let ty = ValueType::make_union(tys);
+            // A `lateinit` field reads as non-nil despite nil assignments.
+            let ty = if lateinit { ty.strip_nil() } else { ty };
+            // Keep coarse `any` unless the harvest is a genuine improvement. Dropped:
+            // a *coarse placeholder* — `any` (generics decay to `any` here — the
+            // "keep generics coarse" gate), a bare `table`/`function`, or the
+            // `callable_or_unknown` intersection — because `any` already carries no
+            // less information and a bare `table`/`function` is strictly *more*
+            // restrictive than `any` (this is the input-side `Table(None)` exclusion,
+            // mirrored on the output so a field whose RHS resolves to bare `table`
+            // isn't upgraded `any`→`table`, which would false-positive `cannot-call`
+            // on a metatable/mixin/callable). Also dropped: a purely-nil field
+            // (upgrading `any` → `nil` would over-narrow).
+            if contains_coarse_placeholder(&ty) || matches!(ty, ValueType::Nil) {
+                None
+            } else {
+                Some(ty)
+            }
+        };
+        harvested.push((key, upgrade));
+    }
+
+    if let Ok(mut cache) = ext.deferred_class_field_cache.write() {
+        for (key, ty) in harvested {
+            cache.insert(key, ty);
+        }
+    }
+}
+
 /// Lift a per-file `ResolvedOverload` into external-index space: each param type
 /// and return type is converted via `lift_local_type_to_ext`. Flags and labels
 /// pass through unchanged.
@@ -619,6 +849,45 @@ fn contains_any(ty: &ValueType) -> bool {
         }
         _ => false,
     }
+}
+
+/// True when `ty` is, or contains (inside a union/intersection), a *coarse
+/// placeholder*: bare `Any`, `Table(None)` (a shapeless `table`), or
+/// `Function(None)` (a shapeless `function`) — the `callable_or_unknown`
+/// intersection (`function & table`) is caught by the recursion.
+///
+/// Used only by the cross-file `@class` field harvest to decide whether a
+/// harvested type is a genuine improvement over the coarse `any` it would replace.
+/// It is not: `Any` carries no more information, and a bare `table`/`function` is
+/// strictly *more restrictive* than `any` (a `table` isn't callable; both reject
+/// field accesses / argument passing that `any` permits — e.g. a loosely-typed
+/// field that is really a metatable/mixin/callable). So such a harvest is dropped
+/// and the coarse `any` kept. This is the output-side mirror of the input-side
+/// eligibility gate ([`field_is_coarse_any`]), which likewise never *starts* from a
+/// `Table(None)` / `callable_or_unknown` coarse field.
+fn contains_coarse_placeholder(ty: &ValueType) -> bool {
+    match ty {
+        ValueType::Any | ValueType::Table(None) | ValueType::Function(None) => true,
+        ValueType::Union(members) | ValueType::Intersection(members) => {
+            members.iter().any(contains_coarse_placeholder)
+        }
+        _ => false,
+    }
+}
+
+/// True when a coarse external `@class` field is the cross-file `any` placeholder
+/// eligible for a precise overlay upgrade: an explicit `any` annotation, or (the
+/// common scan case) no annotation with an `Expr::Literal(Any)` placeholder expr —
+/// a runtime field the scan couldn't type (`FieldValueKind::Unknown`). A bare
+/// `table` (`Table(None)`) / `callable_or_unknown` coarse field is deliberately
+/// excluded: sharpening those is the regression-prone slice left for a later phase.
+/// Shared by `ensure_field_overlay` (eligibility) and the resolve hot path (so the
+/// warm+re-fetch runs only for this rare placeholder, not every field access).
+pub(crate) fn field_is_coarse_any(fi: &crate::types::FieldInfo, ext: &PreResolvedGlobals) -> bool {
+    matches!(fi.annotation, Some(ValueType::Any))
+        || (fi.annotation.is_none()
+            && fi.expr.is_external()
+            && matches!(ext.expr(fi.expr), Expr::Literal(ValueType::Any)))
 }
 
 /// When a deferred function returns an external class instance that had fields

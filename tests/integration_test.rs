@@ -3290,6 +3290,98 @@ fn crossfile_body_returns() {
 }
 
 #[test]
+fn crossfile_class_field_types() {
+    // A runtime `self.x = <expr>` field on a cross-file `@class` whose coarse scan
+    // type decayed to `any` is upgraded on read to the definition-site type
+    // (the `any`-only slice of the lossless-cross-file work): a class instance
+    // (`CFT_Bar`), a primitive (`number`), and — crucially — a field cleared to nil
+    // elsewhere keeps its nilability (`CFT_Bar?`), not a spurious non-optional type.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/class_field_type_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_class_field_type_invalidation() {
+    // When the *defining* file changes in a way the coarse workspace scan can't see
+    // (the field's precise type changes while its coarse type stays `any`), the
+    // harvested cross-file field type must be recomputed. The demand-driven memo is
+    // dropped by `invalidate_deferred_for_file`; the consumer records the defining
+    // file in `deferred_dep_files` so the LSP knows which docs to re-analyze.
+    let dir = std::path::PathBuf::from("tests/crossfile");
+    let user_text = std::fs::read_to_string("tests/crossfile/class_field_type_user.lua").unwrap();
+
+    let mut project_configs = ProjectConfigs::default();
+    let scan = lsp::scan_workspace_with_stubs(
+        std::slice::from_ref(&dir), &mut project_configs, &[], &[], STUB_GLOBALS.creates_global_specs(),
+    );
+    let (sc, mut sa, sg, ans, se, ws_callable) =
+        (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
+    wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
+    let mut pg = PreResolvedGlobals::build_on_stubs(&STUB_GLOBALS, &sg, &sc, &sa, false, &ans, &ws_callable);
+    pg.merge_events(&se);
+    pg.set_project_configs(Arc::new(project_configs.clone()));
+    let pre_globals = Arc::new(pg);
+
+    let tree = wowlua_ls::syntax::parser::parse(&user_text);
+    // `local p = r.plain` — hover the `plain` field token.
+    let offset = (user_text.find("r.plain").unwrap() + "r.".len()) as u32;
+    let hover_plain = |pg: &Arc<PreResolvedGlobals>| -> String {
+        let mut a = Analysis::new_with_tree(&tree, Arc::clone(pg), AnalysisConfig::default());
+        a.resolve_types();
+        a.into_result().hover_at(&tree, offset).expect("hover on r.plain").type_str
+    };
+
+    // First analysis reads the on-disk defs (`self.plain = gBar`, `gBar: CFT_Bar`).
+    let result0 = {
+        let mut a = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), AnalysisConfig::default());
+        a.resolve_types();
+        a.into_result()
+    };
+    let ty0 = result0.hover_at(&tree, offset).expect("hover on r.plain").type_str;
+    assert!(ty0.contains("CFT_Bar"), "baseline: r.plain should be CFT_Bar, got {ty0:?}");
+
+    // The consumer recorded the defining file as a deferred dependency.
+    let defs_path = result0.deferred_dep_files().iter()
+        .find(|p| p.ends_with("class_field_type_defs.lua"))
+        .cloned()
+        .expect("consumer must record the defining file as a deferred dependency");
+
+    // Simulate an edit to the defining file that changes the field's PRECISE type
+    // (`plain` now resolves to `number`) while leaving its coarse scan type `any` —
+    // so no workspace rebuild would fire. The override feeds the harvester the new
+    // text without touching disk or the (already-built) coarse scan.
+    let edited_defs = "\
+local addonName, ns = ...
+---@class CFT_Bar
+local Bar = {}
+ns.CFT_Bar = Bar
+function Bar:Ping() end
+---@class CFT_Reg
+local Reg = {}
+ns.CFT_Reg = Reg
+function Reg:Init()
+    self.plain = 42
+end
+";
+    pre_globals.document_overrides.write().unwrap().insert(defs_path.clone(), edited_defs.to_string());
+
+    // Without invalidation the memo is stale: the consumer still sees `CFT_Bar`.
+    let ty_stale = hover_plain(&pre_globals);
+    assert!(ty_stale.contains("CFT_Bar"),
+        "before invalidation the memo is stale (expected CFT_Bar), got {ty_stale:?}");
+
+    // Invalidating the defining file drops its memo entries; the next read
+    // re-harvests the edited content and sees the new precise type.
+    pre_globals.invalidate_deferred_for_file(&defs_path);
+    let ty_fresh = hover_plain(&pre_globals);
+    assert!(ty_fresh.contains("number") && !ty_fresh.contains("CFT_Bar"),
+        "after invalidation r.plain should be number, got {ty_fresh:?}");
+}
+
+#[test]
 fn crossfile_frame_factory_overlay() {
     // A cross-file factory returning a Frame with extra fields injected on the
     // instance (`frame.DropDown = ...`) carries those fields cross-file as an

@@ -449,6 +449,23 @@ pub struct PreResolvedGlobals {
     /// `#[serde(skip)]`.
     #[serde(skip)]
     pub deferred_field_type_args_cache: crate::analysis::deferred::DeferredFieldArgsCache,
+    /// Workspace `@class` name → the file where it is declared. Populated at build
+    /// time (build_on_stubs) for workspace classes only, so it is inherently empty
+    /// for a stub-only build — a cross-file `@class` *field* whose coarse scan type
+    /// is `any` has its precise type harvested lazily by re-running the real engine
+    /// on this file (see `analysis/deferred.rs::resolve_deferred_class_field_type`).
+    /// Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub deferred_class_field_paths: HashMap<String, PathBuf>,
+    /// Memoized harvested precise type (in ext-index space) per `(class_name,
+    /// field_name)`. `None` means "harvested but not upgradable" (the precise type
+    /// is still coarse `any`, touches a type variable, or is purely nil) — so the
+    /// coarse `any` is kept and no re-harvest occurs. One whole-file harvest warms
+    /// every field of every workspace class in the file at once. Lives behind the
+    /// shared `Arc`, so a wholesale rebuild invalidates it. `#[serde(skip)]`.
+    #[serde(skip)]
+    pub deferred_class_field_cache:
+        std::sync::RwLock<HashMap<crate::analysis::deferred::DeferredFieldKey, Option<ValueType>>>,
     /// In-memory document content for files the editor has open. When set,
     /// the deferred harvester reads from here instead of disk, so unsaved
     /// edits are picked up immediately. Updated by the LSP layer on
@@ -2251,6 +2268,8 @@ impl BuildContext {
             deferred_field_type_args: HashMap::new(),
             deferred_field_type_args_by_path: HashMap::new(),
             deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_class_field_paths: HashMap::new(),
+            deferred_class_field_cache: std::sync::RwLock::new(HashMap::new()),
             document_overrides: std::sync::RwLock::new(HashMap::new()),
             project_configs: None,
         }
@@ -2319,6 +2338,29 @@ impl PreResolvedGlobals {
     #[inline] pub fn try_table(&self, idx: TableIndex) -> Option<&TableInfo> {
         if !idx.is_external() { return None; }
         self.tables.get(idx.ext_offset())
+    }
+
+    /// Drop every lazily-harvested deferred memo entry whose *defining* file is
+    /// `path`, so the next cross-file read re-harvests that file's current content.
+    /// The LSP calls this when `path` is edited in a way the coarse workspace scan
+    /// can't see (so no full `build_on_stubs` rebuild — which would drop the whole
+    /// memo — fires): a body-derived return type, a `@creates-global`, a `@class`
+    /// field, or a constructor generic type-arg whose precise type changed while
+    /// the coarse scan stayed identical. Cheap — the caches hold only entries
+    /// actually read cross-file, and each `retain` walks its map once.
+    pub fn invalidate_deferred_for_file(&self, path: &Path) {
+        if let Ok(mut c) = self.deferred_sig_cache.write() {
+            c.retain(|fidx, _| self.function_locations.get(fidx).map(|l| l.path.as_path()) != Some(path));
+        }
+        if let Ok(mut c) = self.deferred_call_global_cache.write() {
+            c.retain(|sym, _| self.deferred_call_globals.get(sym).map(|d| d.path.as_path()) != Some(path));
+        }
+        if let Ok(mut c) = self.deferred_field_type_args_cache.write() {
+            c.retain(|key, _| self.deferred_field_type_args.get(key).map(|d| d.path.as_path()) != Some(path));
+        }
+        if let Ok(mut c) = self.deferred_class_field_cache.write() {
+            c.retain(|(class, _), _| self.deferred_class_field_paths.get(class).map(|p| p.as_path()) != Some(path));
+        }
     }
 
     /// Drop untyped own class fields that shadow a concretely-typed field inherited
@@ -2616,6 +2658,8 @@ impl PreResolvedGlobals {
             deferred_field_type_args: HashMap::new(),
             deferred_field_type_args_by_path: HashMap::new(),
             deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_class_field_paths: HashMap::new(),
+            deferred_class_field_cache: std::sync::RwLock::new(HashMap::new()),
             document_overrides: std::sync::RwLock::new(HashMap::new()),
             project_configs: None,
         }

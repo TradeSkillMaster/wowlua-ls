@@ -3478,6 +3478,9 @@ impl<'a> Analysis<'a> {
                         if let Some(args) = crate::analysis::deferred::resolve_deferred_field_type_args(
                             &ext, &class_name, &field,
                         ) {
+                            if let Some(dfta) = ext.deferred_field_type_args.get(&(class_name.clone(), field.clone())) {
+                                self.ir.deferred_dep_files.insert(dfta.path.clone());
+                            }
                             self.field_type_args_cache.insert((table_idx, field), args.clone());
                             return args;
                         }

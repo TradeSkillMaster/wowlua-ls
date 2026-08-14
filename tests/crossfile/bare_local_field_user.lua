@@ -8,11 +8,14 @@
 local ns = select(2, ...)
 local Util = ns.Util
 
--- The bare-local fields now resolve existence-only, typed `any`.
+-- `Library`'s RHS is a bogus synthesized class name that resolves to no real
+-- class, so it stays existence-only `any`. `Computed`'s RHS is a plain local that
+-- resolves to `number`, so the cross-file `@class` field-type harvester upgrades it
+-- from the coarse `any` to the definition-site type (see analysis/deferred.rs).
 local lib = Util.Library
 --               ^ hover: (field) Library: any
 local c = Util.Computed
---             ^ hover: (field) Computed: any
+--             ^ hover: (field) Computed: number
 
 -- `any` (not bare `table`) is deliberate (see build_on_stubs.rs). A *direct*
 -- call must NOT false-positive as `cannot-call` — a bare `table` is not

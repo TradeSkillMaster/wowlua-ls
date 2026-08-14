@@ -1218,6 +1218,20 @@ impl<'a> BuildOnStubsContext<'a> {
             }
         }
 
+        // Workspace `@class` name → declaring file, so a cross-file read of a class
+        // field whose coarse scan type decayed to `any` can lazily re-run the real
+        // engine on that file and harvest the field's precise type (see
+        // `analysis/deferred.rs`). Workspace classes only — stub classes have no
+        // re-analyzable source. A class declared in several files keeps the first
+        // location seen (`class_locations` mirrors this); fields written in *other*
+        // files stay coarse, which is safe (a follow-up may widen to all locations).
+        let mut deferred_class_field_paths: HashMap<String, PathBuf> = HashMap::new();
+        for class in ws_classes {
+            if let Some(ref path) = class.def_path {
+                deferred_class_field_paths.entry(class.name.clone()).or_insert_with(|| path.clone());
+            }
+        }
+
         PreResolvedGlobals {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,
             exprs: self.exprs, tables: self.tables,
@@ -1262,6 +1276,8 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_field_type_args,
             deferred_field_type_args_by_path,
             deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_class_field_paths,
+            deferred_class_field_cache: std::sync::RwLock::new(HashMap::new()),
             document_overrides: std::sync::RwLock::new(HashMap::new()),
             project_configs: None,
         }

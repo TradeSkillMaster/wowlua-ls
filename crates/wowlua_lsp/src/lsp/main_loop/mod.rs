@@ -1554,6 +1554,33 @@ fn main_loop(
                                     other_doc.dirty = true;
                                 }
                             }
+                        } else if has_new_text && !file_path.as_os_str().is_empty() {
+                            // Content changed but the coarse workspace scan didn't, so
+                            // no rebuild fired (a rebuild would drop the whole deferred
+                            // memo and dirty every open doc). A deferred cross-file type
+                            // harvested FROM this file — a body-derived return, a
+                            // @creates-global, a @class field, or a constructor generic
+                            // type-arg — may now be stale. Drop this file's deferred memo
+                            // entries and re-analyze only the open documents that actually
+                            // harvested from it (their `deferred_dep_files` contains this
+                            // path), instead of every open tab.
+                            ws.pre_globals.invalidate_deferred_for_file(&file_path);
+                            let mut marked_dependent = false;
+                            for (other_uri, other_doc) in documents.iter_mut() {
+                                if other_uri != uri_str
+                                    && other_doc.analysis.as_ref()
+                                        .is_some_and(|a| a.deferred_dep_files().contains(&file_path))
+                                {
+                                    other_doc.dirty = true;
+                                    marked_dependent = true;
+                                }
+                            }
+                            // Bump the generation so the marked dependents actually re-run
+                            // (Phase 4 treats an equal generation as "analysis still valid").
+                            // Unlike a rebuild this dirties only true dependents, not all tabs.
+                            if marked_dependent {
+                                ws.ws_generation += 1;
+                            }
                         }
                     }
                 }
