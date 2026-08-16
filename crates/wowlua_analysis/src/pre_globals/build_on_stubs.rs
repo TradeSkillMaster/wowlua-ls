@@ -1171,7 +1171,7 @@ impl<'a> BuildOnStubsContext<'a> {
         }
     }
 
-    fn finish(self, ws_classes: &[ClassDecl]) -> PreResolvedGlobals {
+    fn finish(self, ws_classes: &[ClassDecl], ws_globals: &[crate::annotations::ExternalGlobal]) -> PreResolvedGlobals {
         // Extend constructor method names with workspace classes
         let mut constructor_method_names = self.stubs_base.constructor_method_names.clone();
         for class in ws_classes {
@@ -1220,18 +1220,27 @@ impl<'a> BuildOnStubsContext<'a> {
 
         // Workspace `@class` name → *every* file the harvest must re-analyze to recover
         // the field's precise type when its coarse scan type decayed to `any` (see
-        // `analysis/deferred.rs`). Two file sources, unioned per name:
+        // `analysis/deferred.rs`). Three file sources, unioned per name:
         //   - every **declaring** file (`def_path`): a `@class` split across files
         //     (`(partial)`) contributes one `ClassDecl` per file (kept separate in
         //     `ws_classes`), so collecting every distinct `def_path` lets the harvest
         //     union a field assigned in one file with the same field cleared to nil in
         //     another;
-        //   - every **assigning** file (`field_paths`): a field is often written by a
-        //     method in a file that does *not* declare the class
-        //     (`function ns.C:Build() self.x = ... end` split across files). The
-        //     self-field scan records the assigning file per field, so those files are
-        //     re-analyzed too — their `self.x = ...` writes target the *external* class
-        //     table, matched by `accumulate_class_fields_in_file`'s external path.
+        //   - every **assigning** file (`field_paths`): a *typed* or *bare* field
+        //     (`self.x = param` / `self.x = literal ---@type T`) is recorded per field by
+        //     the self-field scan, so those files are re-analyzed too — their
+        //     `self.x = ...` writes target the *external* class table, matched by
+        //     `accumulate_class_fields_in_file`'s external path;
+        //   - every file writing a **funcall self-field or top-level static field**
+        //     (`ws_globals`): a `self.x = SomeCall()` write — or a top-level
+        //     `Class.x = <unresolvable call>` — becomes an `ExternalGlobalKind::TableField`
+        //     *global* (on the class name), NOT a `field_paths` entry, because the coarse
+        //     scan routes it through the funcall resolution chain. When that write's file
+        //     neither declares the class nor has a typed/bare field for it, `field_paths`
+        //     alone would leave the file out of the index and the coarse placeholder
+        //     (`any` / bare `table`) would never be harvested. Add those assigning files
+        //     too (below), so a funcall self-field written by a method in a non-declaring
+        //     file is harvested like the typed/bare cases.
         // Workspace classes only — stub classes have no re-analyzable source.
         let mut deferred_class_field_paths: HashMap<String, Vec<PathBuf>> = HashMap::new();
         for class in ws_classes {
@@ -1245,6 +1254,24 @@ impl<'a> BuildOnStubsContext<'a> {
                 if !paths.contains(path) {
                     paths.push(path.clone());
                 }
+            }
+        }
+        // Funcall self-fields / top-level static writes on a workspace class: a direct
+        // `Class.field = ...` (`TableField` with an empty path chain) whose value the coarse
+        // scan couldn't type parks a placeholder on the class but records only a *global*, so
+        // its assigning file is not in `field_paths`. Union those files in too. `get_mut`
+        // gates on the receiver being a workspace class (every one has an entry from the loop
+        // above); namespace-subtable fields (`ADDON_NS_NAME`) and stub classes are not keys
+        // and are skipped. A nested `Class.sub.field` (non-empty chain) targets the sub-table,
+        // not the class, and would never match the harvest's direct-field path — skip it.
+        for g in ws_globals {
+            if let crate::annotations::ExternalGlobalKind::TableField(chain, _, _) = &g.kind
+                && chain.is_empty()
+                && let Some(path) = &g.source_path
+                && let Some(paths) = deferred_class_field_paths.get_mut(&g.name)
+                && !paths.contains(path)
+            {
+                paths.push(path.clone());
             }
         }
         for paths in deferred_class_field_paths.values_mut() {
@@ -1333,7 +1360,7 @@ impl PreResolvedGlobals {
         // Take the stub-override list out before `finish` consumes the context; its
         // alternate go-to-definition sites are recorded onto `pg` below.
         let method_stub_overrides = std::mem::take(&mut ctx.method_stub_overrides);
-        let mut pg = ctx.finish(ws_classes);
+        let mut pg = ctx.finish(ws_classes, ws_globals);
         // Record every workspace definition site per global/alias name (independent
         // of the name-dedup that registration applies) so go-to-definition can
         // offer all of them when a name is defined in more than one file.

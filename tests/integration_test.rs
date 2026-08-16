@@ -3338,6 +3338,23 @@ fn crossfile_nondecl_field_types() {
 }
 
 #[test]
+fn crossfile_funcall_field_types() {
+    // A *funcall* self-field (`self.x = SomeCall()`) written by a method in a file that
+    // does NOT declare the `@class` and has no typed/bare field for it. Unlike a
+    // typed/bare self-field (recorded in `field_paths`), a funcall self-field becomes an
+    // `ExternalGlobalKind::TableField` *global*, so its assigning file reaches the
+    // harvest only because `build_on_stubs::finish` also indexes every `ws_globals`
+    // TableField writer of a workspace class. Upgrades the coarse placeholder to the
+    // class (`FNF_Widget`, whose method then resolves) and to `number`. Fails on revert
+    // (both fields stay a bare `table`).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/funcall_field_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_partial_class_field_types() {
     // A `@class (partial)` split across two files: the field harvester must re-analyze
     // EVERY declaring file (not just the first-seen one) and union each field's RHS

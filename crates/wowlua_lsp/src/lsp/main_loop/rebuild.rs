@@ -3,6 +3,12 @@ use super::*;
 /// Compare two globals on the fields that affect analysis results (excludes
 /// positional fields like doc, source_path, def_start, def_end which only affect
 /// hover/go-to-definition display, not type resolution or diagnostics).
+//
+// `source_path` also feeds the deferred `@class`-field harvest index (a `TableField`
+// global's assigning file, see `build_on_stubs::finish`), but ignoring it here stays
+// correct: adding/removing such a global changes `len` (→ rebuild), and the funcall
+// callee lives in `kind` (→ rebuild on a callee change), so two globals equal on every
+// field below but differing only in `source_path` harvest the identical field type.
 // IMPORTANT: Update this function when adding semantic fields to ExternalGlobal.
 pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool {
     x.name == y.name

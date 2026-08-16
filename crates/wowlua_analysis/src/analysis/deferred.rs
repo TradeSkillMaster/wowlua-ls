@@ -46,9 +46,13 @@
 //! `ensure_field_overlay` re-runs the engine on *every* file that declares **or
 //! assigns** the class's fields and installs a precise `FieldInfo` into the per-file
 //! `overlay_fields`, so `get_field` transparently returns the definition-site type.
-//! Coverage spans two file sources (unioned in the `build_on_stubs::finish` index):
-//! a class's **declaring** files, and every file that **assigns** one of its fields —
-//! including a method defined in a file that does *not* declare the class
+//! Coverage spans three file sources (unioned in the `build_on_stubs::finish` index):
+//! a class's **declaring** files; every file that assigns a **typed/bare** field
+//! (`field_paths`); and every file that writes a **funcall self-field or top-level
+//! static field** (`ws_globals` — a `self.x = SomeCall()` / `Class.x = <call>` write,
+//! which the coarse scan routes through the funcall chain as an
+//! `ExternalGlobalKind::TableField` *global* rather than a `field_paths` entry). All
+//! three matter for a method defined in a file that does *not* declare the class
 //! (`function ns.C:Build() self.x = ... end`), whose `self.x = ...` writes target the
 //! *external* class table and are matched by `accumulate_class_fields_in_file`'s
 //! external path. A **partial** class split across files is harvested as a whole:
