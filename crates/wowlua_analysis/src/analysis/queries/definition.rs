@@ -149,11 +149,8 @@ impl AnalysisResult {
     /// the field's carried cross-file definition location when a shape member
     /// declares one. `None` for ordinary class/record fields.
     fn shape_field_definition_at(&self, offset: u32) -> Option<DefinitionResult> {
-        for expr in self.ir.exprs.iter() {
-            let Expr::FieldAccess { table, field, field_range: Some((s, e)) } = expr else { continue };
-            if offset < *s || offset >= *e {
-                continue;
-            }
+        for (_, expr) in self.ir.field_access_exprs_at(offset) {
+            let Expr::FieldAccess { table, field, .. } = expr else { continue };
             // Skip (not bail) on an unresolvable receiver, matching
             // `shape_field_hover_at`: another lowered `FieldAccess` may share this
             // offset and carry the shape.

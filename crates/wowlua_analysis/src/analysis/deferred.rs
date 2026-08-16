@@ -102,7 +102,7 @@ use std::sync::Arc;
 
 use crate::analysis::{Analysis, AnalysisConfig, Ir};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::types::{Expr, ExprId, FunctionIndex, ResolvedOverload, SymbolIndex, TableIndex, ValueType};
+use crate::types::{Expr, FunctionIndex, ResolvedOverload, SymbolIndex, TableIndex, ValueType};
 
 /// Locates the creating call for a `@creates-global` side-effect global (e.g.
 /// the `_G.MyFrame` from `CreateFrame("Frame", "MyFrame", ...)`) so its type can
@@ -563,20 +563,12 @@ fn harvest_call_globals_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
         let offset = dcg.call_offset;
         // The first-return value of the creating call (ret_index 0) is the created
         // object; its resolved type is the global's type.
-        let mut resolved: Option<ValueType> = None;
-        for (i, expr) in ir.exprs.iter().enumerate() {
-            if let Expr::FunctionCall { call_range, ret_index: 0, .. } = expr
-                && call_range.0 == offset
-            {
-                resolved = result
-                    .resolved_expr_cache
-                    .get(i)
-                    .and_then(|v| v.clone())
-                    .map(|t| lift_local_type_to_ext_with(&t, ir, ext, &result))
-                    .filter(|t| !contains_any(t));
-                break;
-            }
-        }
+        let resolved = ir
+            .call_exprs_starting_at(offset)
+            .find(|(_, e)| matches!(e, Expr::FunctionCall { ret_index: 0, .. }))
+            .and_then(|(eid, _)| result.resolved_expr_cache_get(eid).cloned())
+            .map(|t| lift_local_type_to_ext_with(&t, ir, ext, &result))
+            .filter(|t| !contains_any(t));
         harvested.push((sym_idx, resolved));
     }
 
@@ -670,21 +662,19 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
         let Some(dfta) = ext.deferred_field_type_args.get(key) else { continue };
         let target = dfta.call_range;
         let mut resolved: Option<Vec<ValueType>> = None;
-        for (i, expr) in ir.exprs.iter().enumerate() {
-            if let Expr::FunctionCall { call_range, ret_index: 0, .. } = expr
-                && *call_range == target
-            {
-                let args = result.get_type_args_for_expr(ExprId(i));
-                if !args.is_empty() {
-                    let lifted: Vec<ValueType> =
-                        args.iter().map(|a| lift_local_type_to_ext_with(a, ir, ext, &result)).collect();
-                    // An `any` arg carries no more than the coarse fallback — skip it
-                    // so a partial/unresolved harvest doesn't replace the coarse path.
-                    if !lifted.iter().any(contains_any) {
-                        resolved = Some(lifted);
-                    }
+        if let Some((eid, _)) = ir
+            .call_exprs_at_range(target)
+            .find(|(_, e)| matches!(e, Expr::FunctionCall { ret_index: 0, .. }))
+        {
+            let args = result.get_type_args_for_expr(eid);
+            if !args.is_empty() {
+                let lifted: Vec<ValueType> =
+                    args.iter().map(|a| lift_local_type_to_ext_with(a, ir, ext, &result)).collect();
+                // An `any` arg carries no more than the coarse fallback — skip it
+                // so a partial/unresolved harvest doesn't replace the coarse path.
+                if !lifted.iter().any(contains_any) {
+                    resolved = Some(lifted);
                 }
-                break;
             }
         }
         harvested.push((key.clone(), resolved));

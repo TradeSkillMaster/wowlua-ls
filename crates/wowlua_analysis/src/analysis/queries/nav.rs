@@ -697,6 +697,20 @@ impl AnalysisResult {
             && let Some(result) = self.resolve_backtick_generic_return(func_idx, call_node) {
                 return Some(result);
             }
+        // Prefer the fixpoint's resolved return type for *this* call site. Keyed by the
+        // call's ExprId (recovered from its source range), it reflects overload matching
+        // and argument-bound generics, whereas the `FunctionRet(0)` slot below is the
+        // primary signature's declared return only — the source of hover/def diverging
+        // from diagnostics on overloaded calls. Falls through unchanged on a cache miss,
+        // an `Any` result, or a non-table return.
+        let range = call_node.text_range();
+        let target = (u32::from(range.start()), u32::from(range.end()));
+        if let Some((eid, _)) = self.ir.call_exprs_at_range(target)
+            .find(|(_, e)| matches!(e, Expr::FunctionCall { ret_index: 0, .. }))
+            && let Some(idx) = self.resolve_expr_type(eid).as_ref().and_then(Self::extract_table_idx)
+        {
+            return Some(idx);
+        }
         let ret_id = SymbolIdentifier::FunctionRet(func_idx, 0);
         let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
         let ret_type = self.sym(ret_sym_idx).versions.first()?.resolved_type.as_ref()?;

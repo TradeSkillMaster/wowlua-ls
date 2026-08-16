@@ -460,3 +460,25 @@ retBus:Subscribe(function(x)
 --                        ^ hover: (param) x: string
     return true
 end)
+
+-- ── Method on a direct generic-passthrough call result ───────────────────────
+-- Regression (Stage 2 resolver unification): a method call whose receiver is a
+-- *direct* call — `pass(pw):Render()` — resolves the method through the receiver
+-- call's cached, overload/generic-aware return type. The query call-return path's
+-- `FunctionRet(0)` fallback sees only the unbound `@return T` (which extracts to
+-- no table), so before reading the fixpoint cache the method hovered as nothing.
+
+---@class PassWidget
+---@field Render fun(self: PassWidget)
+local PassWidget = {}
+
+---@generic T
+---@param obj T
+---@return T
+local function pass(obj) return obj end
+
+---@type PassWidget
+local pw = {}
+
+pass(pw):Render()
+--       ^ hover: (method) function PassWidget:Render()

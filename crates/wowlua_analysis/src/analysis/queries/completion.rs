@@ -1509,14 +1509,8 @@ impl AnalysisResult {
         if node.kind() == SyntaxKind::FunctionCall || node.kind() == SyntaxKind::MethodCall {
             let range = node.text_range();
             let target = (u32::from(range.start()), u32::from(range.end()));
-            for (idx, expr) in self.ir.exprs.iter().enumerate() {
-                if let Expr::FunctionCall { call_range, .. } = expr
-                    && *call_range == target
-                {
-                    return self.resolve_expr_type(ExprId(idx));
-                }
-            }
-            return None;
+            let eid = self.ir.call_exprs_at_range(target).next()?.0;
+            return self.resolve_expr_type(eid);
         }
 
         // For identifiers (name, dot-access, etc.), find the last Name token and use

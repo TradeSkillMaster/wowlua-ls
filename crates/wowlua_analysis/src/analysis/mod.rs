@@ -779,6 +779,37 @@ impl Ir {
         self.exprs.iter().enumerate().map(|(i, e)| (ExprId::from(i), e))
     }
 
+    // ── Position → ExprId recovery ─────────────────────────────────────────────
+    // A query knows a byte offset or a syntax node's range; the fixpoint's
+    // resolved-type cache is keyed by `ExprId`. Only two `Expr` variants carry a
+    // source range back to the tree — `FunctionCall.call_range` and
+    // `FieldAccess.field_range` — so these are the positions where a query can read
+    // the fixpoint's result instead of re-deriving the type from the AST. Each
+    // yields matches in lowering order, so a caller taking the first (or first with
+    // a given `ret_index`) gets the same expr the older hand-rolled scans did.
+
+    /// `FunctionCall` exprs whose whole-call span equals `range`.
+    #[inline]
+    pub fn call_exprs_at_range(&self, range: (u32, u32)) -> impl Iterator<Item = (ExprId, &Expr)> + '_ {
+        self.local_exprs()
+            .filter(move |&(_, e)| matches!(e, Expr::FunctionCall { call_range, .. } if *call_range == range))
+    }
+
+    /// `FunctionCall` exprs whose whole-call span starts at `offset`.
+    #[inline]
+    pub fn call_exprs_starting_at(&self, offset: u32) -> impl Iterator<Item = (ExprId, &Expr)> + '_ {
+        self.local_exprs()
+            .filter(move |&(_, e)| matches!(e, Expr::FunctionCall { call_range, .. } if call_range.0 == offset))
+    }
+
+    /// `FieldAccess` exprs whose field-name token range covers `offset`.
+    #[inline]
+    pub fn field_access_exprs_at(&self, offset: u32) -> impl Iterator<Item = (ExprId, &Expr)> + '_ {
+        self.local_exprs().filter(move |&(_, e)| {
+            matches!(e, Expr::FieldAccess { field_range: Some((s, end)), .. } if offset >= *s && offset < *end)
+        })
+    }
+
     /// Iterate the per-file scope arena, pairing each scope with its local `ScopeIndex`.
     /// (Used by the plugin query snapshot; most scope walking goes through
     /// `ancestor_scopes`/`scope_at_offset`.)

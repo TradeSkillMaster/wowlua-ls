@@ -435,16 +435,8 @@ impl AnalysisResult {
         }
 
         let call_range = (u32::from(call_node.text_range().start()), u32::from(call_node.text_range().end()));
-        let call_res = self.ir.exprs.iter().enumerate()
-            .find_map(|(idx, expr)| {
-                if let Expr::FunctionCall { call_range: cr, .. } = expr
-                    && *cr == call_range
-                {
-                    self.ir.call_resolutions.get(&ExprId(idx))
-                } else {
-                    None
-                }
-            })?;
+        let call_res = self.ir.call_exprs_at_range(call_range)
+            .find_map(|(eid, _)| self.ir.call_resolutions.get(&eid))?;
 
         let is_colon = call_node.kind() == SyntaxKind::MethodCall
             || FunctionCall::cast(call_node)
@@ -570,11 +562,8 @@ impl AnalysisResult {
     /// declares the field. `None` for ordinary class/record fields (handled by
     /// the table-index field-chain path).
     fn shape_field_hover_at(&self, offset: u32) -> Option<(String, ValueType)> {
-        for expr in self.ir.exprs.iter() {
-            let Expr::FieldAccess { table, field, field_range: Some((s, e)) } = expr else { continue };
-            if offset < *s || offset >= *e {
-                continue;
-            }
+        for (_, expr) in self.ir.field_access_exprs_at(offset) {
+            let Expr::FieldAccess { table, field, .. } = expr else { continue };
             let Some(recv) = self.resolve_expr_type(*table).map(|t| t.into_strip_opaque()) else { continue };
             let mut tys: Vec<ValueType> = Vec::new();
             recv.collect_shape_field_types(field, &mut tys);
