@@ -40,9 +40,12 @@
 //! The same lazy-harvest mechanism upgrades a cross-file `@class` *field* whose
 //! coarse scan type decayed to `any` (a runtime `self.x = <expr>` the scanner
 //! couldn't type). On first read of such a field, `ensure_field_overlay` re-runs the
-//! engine on the class's defining file and installs a precise `FieldInfo` into the
-//! per-file `overlay_fields`, so `get_field` transparently returns the
-//! definition-site type. This is deliberately the **`any`-only** slice, gated on
+//! engine on *every* file that declares the class and installs a precise `FieldInfo`
+//! into the per-file `overlay_fields`, so `get_field` transparently returns the
+//! definition-site type. A **partial** class split across files is harvested as a
+//! whole: each field's RHS types are unioned across all declaring files (so a field
+//! assigned a class in one and cleared to nil in another lands as `T?`). This is
+//! deliberately the **`any`-only** slice, gated on
 //! *both* ends so an upgrade only replaces `any` with a genuinely more precise type:
 //! the coarse field must be exactly `any` ([`field_is_coarse_any`]), and the
 //! harvested type must not itself be a coarse placeholder — `any`, bare
@@ -52,9 +55,10 @@
 //! metatable/mixin/callable — precisely the low-confidence case the scan already
 //! gave up on; those are kept coarse. (Upgrading to a genuine *nameable* class is a
 //! real sharpening: like any precise type it may surface a correct new diagnostic —
-//! e.g. calling a non-callable class — and, because coverage is the declaring file
-//! only, can under-approximate a field also assigned elsewhere; that is the
-//! deliberate fidelity/precision trade of this slice, not the `table` regression.)
+//! e.g. calling a non-callable class — and, because coverage is the class's declaring
+//! files, can under-approximate a field assigned only in a file that uses the class
+//! without declaring it; that is the deliberate fidelity/precision trade of this
+//! slice, not the `table` regression.)
 //! The field type is the union of its assignment RHS types read from
 //! `field_assignments` (the RHS-aware path — not the coarse class surface), across
 //! *every* site, so a field cleared to nil keeps its nilability (`T?`); a `lateinit`
@@ -223,13 +227,15 @@ impl Ir {
             let Some(name) = t.class_name.clone() else { return };
             (fi.clone(), name)
         };
-        let Some(def_path) = self.ext.deferred_class_field_paths.get(&class_name).cloned() else {
+        let Some(def_paths) = self.ext.deferred_class_field_paths.get(&class_name).cloned() else {
             return;
         };
         let Some(ty) = resolve_deferred_class_field_type(&self.ext, &class_name, field_name) else {
             return;
         };
-        self.deferred_dep_files.insert(def_path);
+        // The harvest reads *every* declaring file, so a change to any of them can alter
+        // this field's type — record all as dependencies for edit-invalidation.
+        self.deferred_dep_files.extend(def_paths);
         let mut precise = coarse;
         precise.annotation = Some(ty);
         self.overlay_fields.entry(table_idx).or_default().insert(field_name.to_string(), precise);
@@ -665,11 +671,16 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
 }
 
 /// Resolve the precise type of a cross-file `@class` field whose coarse scan type
-/// decayed to `any`, by re-running the real engine on the class's defining file
-/// (memoized). Returns `None` when the class isn't a workspace class, the field is
-/// not assigned in the defining file, or the harvested type is no more precise than
-/// the coarse `any` (touches a type variable / is purely nil); callers then keep the
-/// coarse `any`.
+/// decayed to `any`, by re-running the real engine on *every* file that declares the
+/// class (memoized). A **partial** class split across files is harvested as a whole:
+/// each field's RHS types are accumulated across all declaring files and unioned
+/// once, so a field assigned a class in one file and cleared to nil in another keeps
+/// its nilability. The same pass also caches any *co-located* workspace class whose
+/// entire declaring-file set is among these files, so one analysis of a file warms
+/// every class declared in it (not one analysis per class). Returns `None` when the
+/// class isn't a workspace class, the field is not assigned in any declaring file, or
+/// the harvested type is no more precise than the coarse `any` (touches a type variable
+/// / is purely nil); callers then keep the coarse `any`.
 pub fn resolve_deferred_class_field_type(
     ext: &Arc<PreResolvedGlobals>,
     class_name: &str,
@@ -684,25 +695,77 @@ pub fn resolve_deferred_class_field_type(
         return hit.clone();
     }
 
-    let path = ext.deferred_class_field_paths.get(class_name)?.clone();
+    let paths = ext.deferred_class_field_paths.get(class_name)?;
 
-    // Re-entrancy / cycle guard: if this file is already being analyzed on the
-    // stack, bail for this edge — the coarse `any` is kept.
-    let entered = IN_PROGRESS.with(|set| set.borrow_mut().insert(path.clone()));
-    if !entered {
+    // Accumulate the RHS types of every field of every workspace class found in the
+    // target's declaring files, keyed by `(class, field)` with nils included. Two
+    // reasons to accumulate across the whole file set at once rather than per file:
+    //   - **partial classes**: the union+gate must run once over all a class's files so
+    //     a field assigned a class in one file and cleared to nil in another lands `T?`
+    //     (per-file gating would drop the nil-only file → a non-optional false positive);
+    //   - **whole-file warming**: analyzing a file already pays for resolving *all* its
+    //     classes, so co-located classes are harvested too — those fully covered below
+    //     are cached in the same pass, so a file declaring N classes is analyzed once,
+    //     not once per class's first cross-file field read.
+    let mut acc: HashMap<(String, String), (Vec<ValueType>, bool)> = HashMap::new();
+    let mut complete = true;
+    for path in paths {
+        // Re-entrancy / cycle guard: a file already being analyzed on this thread's
+        // stack can't contribute for this edge. Mark the accumulation incomplete and
+        // skip caching, so a later top-level (non-cyclic) read harvests the full set —
+        // matching the old single-file guard's "no cache on the back-edge".
+        let entered = IN_PROGRESS.with(|set| set.borrow_mut().insert(path.clone()));
+        if !entered {
+            complete = false;
+            continue;
+        }
+        accumulate_class_fields_in_file(ext, path, &mut acc);
+        IN_PROGRESS.with(|set| {
+            set.borrow_mut().remove(path);
+        });
+    }
+    if !complete {
+        // A cyclic edge left the accumulation partial — keep the coarse `any` for this
+        // read without caching, so the eventual complete (non-cyclic) read fills the memo.
         return None;
     }
 
-    harvest_class_fields_in_file(ext, &path);
+    // Only cache a class whose *entire* declaring-file set is among the files we just
+    // analyzed (`target_files`). The target qualifies by construction; a co-located
+    // sibling qualifies exactly when all its own decl files are in this set — which,
+    // since a class's local `@class` tables only ever appear in its own decl files,
+    // means we accumulated its *complete* field set here (accumulating from extra files
+    // that don't declare it contributes nothing). A sibling with a decl file *outside*
+    // this set is skipped: its accumulation is partial, so it harvests its own full set
+    // when first read.
+    let target_files: HashSet<&Path> = paths.iter().map(|p| p.as_path()).collect();
+    let mut covered: HashSet<String> = HashSet::new();
+    let mut checked: HashSet<&str> = HashSet::new();
+    for (cls, _) in acc.keys() {
+        if !checked.insert(cls.as_str()) {
+            continue;
+        }
+        let is_covered = ext
+            .deferred_class_field_paths
+            .get(cls)
+            .is_some_and(|ps| ps.iter().all(|p| target_files.contains(p.as_path())));
+        if is_covered {
+            covered.insert(cls.clone());
+        }
+    }
 
-    IN_PROGRESS.with(|set| {
-        set.borrow_mut().remove(&path);
-    });
-
-    // Read the memo back. If the harvest didn't produce this key (the field isn't
-    // assigned in the defining file), record `None` so a later read of the same
-    // field doesn't re-harvest the whole file.
+    // Gate + memoize every covered class's fields (consuming `acc`: the field name moves
+    // into the cache key and the owned RHS vec straight into the union — no clones).
     let mut cache = ext.deferred_class_field_cache.write().ok()?;
+    for ((cls, fname), (tys, lateinit)) in acc {
+        if !covered.contains(&cls) {
+            continue;
+        }
+        let upgrade = gate_harvested_field(tys, lateinit);
+        cache.insert((cls, fname), upgrade);
+    }
+    // The requested field may not be assigned in any declaring file — record `None` so
+    // a repeat read doesn't re-harvest the whole class.
     match cache.get(&key) {
         Some(hit) => hit.clone(),
         None => {
@@ -712,14 +775,20 @@ pub fn resolve_deferred_class_field_type(
     }
 }
 
-/// Analyze `path` once and harvest the precise type of *every* workspace `@class`
-/// field assigned in it, writing each into the memo (`None` when not upgradable, so
-/// the file is not re-analyzed). For each such class, a field's type is the union of
-/// its assignment RHS types read from `field_assignments` (the RHS-aware path, not
-/// the coarse class surface) across every assignment site — so a field cleared to
-/// nil keeps its nilability (`T?`). A `lateinit` (`T!`) field reads as non-nil, so
-/// nil is stripped. Does nothing on I/O failure.
-fn harvest_class_fields_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
+/// Analyze `path` once and accumulate, into `acc`, the RHS-resolved types of every
+/// field of every workspace `@class` assigned in it — keyed by `(class, field)`, with
+/// nils included so a field's nilability survives the later union. `acc` spans all the
+/// files the caller harvests, so the union+gate can run once over the complete set.
+/// Records, per field, whether any assignment site was `lateinit`. Reads the RHS-aware
+/// `field_assignments` (not the coarse class surface). Every workspace class in the file
+/// is accumulated (not just the read's target) so one analysis warms all co-located
+/// classes; the caller decides which are fully covered and cacheable. Does nothing on
+/// I/O failure or when the file declares no workspace-class local table.
+fn accumulate_class_fields_in_file(
+    ext: &Arc<PreResolvedGlobals>,
+    path: &Path,
+    acc: &mut HashMap<(String, String), (Vec<ValueType>, bool)>,
+) {
     let text = ext
         .document_overrides
         .read()
@@ -748,7 +817,9 @@ fn harvest_class_fields_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     let result = analysis.into_result();
     let ir = &result.ir;
 
-    // Map each local class table (workspace `@class` only) to its class name.
+    // Map each local class table that is a workspace `@class` (a registry key) to its
+    // class name. All of them — not just the read's target — so this single analysis
+    // warms every co-located class.
     let mut class_name_of: HashMap<TableIndex, String> = HashMap::new();
     for (idx, info) in ir.local_tables() {
         if let Some(name) = &info.class_name
@@ -761,10 +832,6 @@ fn harvest_class_fields_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
         return;
     }
 
-    // Accumulate each `(class, field)`'s RHS-resolved types across all assignment
-    // sites (nils included → nilability preserved), plus whether any site was
-    // `lateinit`.
-    let mut acc: HashMap<(String, String), (Vec<ValueType>, bool)> = HashMap::new();
     for fa in &ir.field_assignments {
         let Some(name) = class_name_of.get(&fa.table_idx) else { continue };
         let entry = acc.entry((name.clone(), fa.field_name.clone())).or_insert_with(|| (Vec::new(), false));
@@ -776,38 +843,33 @@ fn harvest_class_fields_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
             }
         }
     }
+}
 
-    let mut harvested: Vec<((String, String), Option<ValueType>)> = Vec::new();
-    for (key, (tys, lateinit)) in acc {
-        let upgrade = if tys.is_empty() {
-            None
-        } else {
-            let ty = ValueType::make_union(tys);
-            // A `lateinit` field reads as non-nil despite nil assignments.
-            let ty = if lateinit { ty.strip_nil() } else { ty };
-            // Keep coarse `any` unless the harvest is a genuine improvement. Dropped:
-            // a *coarse placeholder* — `any` (generics decay to `any` here — the
-            // "keep generics coarse" gate), a bare `table`/`function`, or the
-            // `callable_or_unknown` intersection — because `any` already carries no
-            // less information and a bare `table`/`function` is strictly *more*
-            // restrictive than `any` (this is the input-side `Table(None)` exclusion,
-            // mirrored on the output so a field whose RHS resolves to bare `table`
-            // isn't upgraded `any`→`table`, which would false-positive `cannot-call`
-            // on a metatable/mixin/callable). Also dropped: a purely-nil field
-            // (upgrading `any` → `nil` would over-narrow).
-            if contains_coarse_placeholder(&ty) || matches!(ty, ValueType::Nil) {
-                None
-            } else {
-                Some(ty)
-            }
-        };
-        harvested.push((key, upgrade));
+/// The output gate + union for a harvested `@class` field: union the per-site RHS
+/// types (a `lateinit` field reads as non-nil, so nil is stripped), then keep the
+/// result only when it is a genuine improvement over the coarse `any` it would
+/// replace. Dropped (→ keep coarse `any`):
+/// - a *coarse placeholder* — `any` (generics decay to `any` here — the "keep
+///   generics coarse" gate), a bare `table`/`function`, or the `callable_or_unknown`
+///   intersection — because `any` already carries no less information and a bare
+///   `table`/`function` is strictly *more* restrictive than `any` (the input-side
+///   `Table(None)` exclusion mirrored on the output, so a field whose RHS resolves to
+///   bare `table` isn't upgraded `any`→`table`, which would false-positive
+///   `cannot-call` on a metatable/mixin/callable);
+/// - a purely-`nil` field (upgrading `any` → `nil` would over-narrow).
+///
+/// Returns `None` to keep the coarse `any`. Empty input (`tys`) also yields `None`.
+/// Consumes `tys` (the owned accumulated RHS types) so the union takes them directly.
+fn gate_harvested_field(tys: Vec<ValueType>, lateinit: bool) -> Option<ValueType> {
+    if tys.is_empty() {
+        return None;
     }
-
-    if let Ok(mut cache) = ext.deferred_class_field_cache.write() {
-        for (key, ty) in harvested {
-            cache.insert(key, ty);
-        }
+    let ty = ValueType::make_union(tys);
+    let ty = if lateinit { ty.strip_nil() } else { ty };
+    if contains_coarse_placeholder(&ty) || matches!(ty, ValueType::Nil) {
+        None
+    } else {
+        Some(ty)
     }
 }
 

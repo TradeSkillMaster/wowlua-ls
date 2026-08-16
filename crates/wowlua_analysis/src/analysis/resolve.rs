@@ -3253,8 +3253,8 @@ impl<'a> Analysis<'a> {
             // the borrow ends immediately. Only the (rare) cross-file `any`
             // placeholder pays for the harvest + re-fetch — warming the per-file
             // overlay with the definition-site type harvested from the class's
-            // defining file; the common precise field is used directly, so a non-`any`
-            // external field access repeats no `get_field` lookups.
+            // declaring file(s); the common precise field is used directly, so a
+            // non-`any` external field access repeats no `get_field` lookups.
             let mut fetched = self.ir.get_field(idx, field).map(|fi|
                 (crate::analysis::deferred::field_is_coarse_any(fi, &self.ir.ext),
                  fi.annotation.clone(), fi.expr, fi.extra_exprs.clone()));

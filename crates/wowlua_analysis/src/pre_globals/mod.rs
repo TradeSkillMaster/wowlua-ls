@@ -449,20 +449,25 @@ pub struct PreResolvedGlobals {
     /// `#[serde(skip)]`.
     #[serde(skip)]
     pub deferred_field_type_args_cache: crate::analysis::deferred::DeferredFieldArgsCache,
-    /// Workspace `@class` name → the file where it is declared. Populated at build
+    /// Workspace `@class` name → **every** file that declares it. Populated at build
     /// time (build_on_stubs) for workspace classes only, so it is inherently empty
     /// for a stub-only build — a cross-file `@class` *field* whose coarse scan type
     /// is `any` has its precise type harvested lazily by re-running the real engine
-    /// on this file (see `analysis/deferred.rs::resolve_deferred_class_field_type`).
-    /// Runtime only — `#[serde(skip)]`.
+    /// on these files (see `analysis/deferred.rs::resolve_deferred_class_field_type`).
+    /// A **partial** class split across files (`@class (partial) Foo` in several) lists
+    /// every declaring file, so a field assigned in one partial-decl file and cleared
+    /// to nil in another is unioned across all of them (nilability preserved) rather
+    /// than harvested from a single first-seen file. Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
-    pub deferred_class_field_paths: HashMap<String, PathBuf>,
+    pub deferred_class_field_paths: HashMap<String, Vec<PathBuf>>,
     /// Memoized harvested precise type (in ext-index space) per `(class_name,
     /// field_name)`. `None` means "harvested but not upgradable" (the precise type
     /// is still coarse `any`, touches a type variable, or is purely nil) — so the
-    /// coarse `any` is kept and no re-harvest occurs. One whole-file harvest warms
-    /// every field of every workspace class in the file at once. Lives behind the
-    /// shared `Arc`, so a wholesale rebuild invalidates it. `#[serde(skip)]`.
+    /// coarse `any` is kept and no re-harvest occurs. One harvest (re-analyzing all the
+    /// target class's declaring files) warms every field of that class *and* of every
+    /// co-located class fully covered by those files, so a file declaring N classes is
+    /// analyzed once, not once per class. Lives behind the shared `Arc`, so a wholesale
+    /// rebuild invalidates it. `#[serde(skip)]`.
     #[serde(skip)]
     pub deferred_class_field_cache:
         std::sync::RwLock<HashMap<crate::analysis::deferred::DeferredFieldKey, Option<ValueType>>>,
@@ -2359,7 +2364,11 @@ impl PreResolvedGlobals {
             c.retain(|key, _| self.deferred_field_type_args.get(key).map(|d| d.path.as_path()) != Some(path));
         }
         if let Ok(mut c) = self.deferred_class_field_cache.write() {
-            c.retain(|(class, _), _| self.deferred_class_field_paths.get(class).map(|p| p.as_path()) != Some(path));
+            // A class field's harvest reads *every* declaring file, so drop the entry
+            // when `path` is any of them.
+            c.retain(|(class, _), _| {
+                !self.deferred_class_field_paths.get(class).is_some_and(|paths| paths.iter().any(|p| p == path))
+            });
         }
     }
 

@@ -3304,6 +3304,21 @@ fn crossfile_class_field_types() {
 }
 
 #[test]
+fn crossfile_partial_class_field_types() {
+    // A `@class (partial)` split across two files: the field harvester must re-analyze
+    // EVERY declaring file (not just the first-seen one) and union each field's RHS
+    // types. `fromB` is assigned only in the second partial-decl file (would stay `any`
+    // under the old single-file behavior), and `shared` is assigned a class in one file
+    // and cleared to nil in another (its nilability is only visible by unioning both
+    // declaring files → `PCS_Bar?`, never a spurious non-optional type).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/partial_class_split_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_class_field_type_invalidation() {
     // When the *defining* file changes in a way the coarse workspace scan can't see
     // (the field's precise type changes while its coarse type stays `any`), the
