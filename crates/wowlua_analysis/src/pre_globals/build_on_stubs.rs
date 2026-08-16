@@ -1218,23 +1218,47 @@ impl<'a> BuildOnStubsContext<'a> {
             }
         }
 
-        // Workspace `@class` name → *every* declaring file, so a cross-file read of a
-        // class field whose coarse scan type decayed to `any` can lazily re-run the real
-        // engine on all of them and harvest the field's precise type (see
-        // `analysis/deferred.rs`). Workspace classes only — stub classes have no
-        // re-analyzable source. A **partial** class split across files contributes one
-        // `ClassDecl` per file (kept separate in `ws_classes`), so collecting every
-        // distinct `def_path` per name lets the harvest union a field assigned in one
-        // partial-decl file with the same field cleared to nil in another.
+        // Workspace `@class` name → *every* file the harvest must re-analyze to recover
+        // the field's precise type when its coarse scan type decayed to `any` (see
+        // `analysis/deferred.rs`). Two file sources, unioned per name:
+        //   - every **declaring** file (`def_path`): a `@class` split across files
+        //     (`(partial)`) contributes one `ClassDecl` per file (kept separate in
+        //     `ws_classes`), so collecting every distinct `def_path` lets the harvest
+        //     union a field assigned in one file with the same field cleared to nil in
+        //     another;
+        //   - every **assigning** file (`field_paths`): a field is often written by a
+        //     method in a file that does *not* declare the class
+        //     (`function ns.C:Build() self.x = ... end` split across files). The
+        //     self-field scan records the assigning file per field, so those files are
+        //     re-analyzed too — their `self.x = ...` writes target the *external* class
+        //     table, matched by `accumulate_class_fields_in_file`'s external path.
+        // Workspace classes only — stub classes have no re-analyzable source.
         let mut deferred_class_field_paths: HashMap<String, Vec<PathBuf>> = HashMap::new();
         for class in ws_classes {
-            if let Some(ref path) = class.def_path {
-                let paths = deferred_class_field_paths.entry(class.name.clone()).or_default();
+            let paths = deferred_class_field_paths.entry(class.name.clone()).or_default();
+            if let Some(ref path) = class.def_path
+                && !paths.contains(path)
+            {
+                paths.push(path.clone());
+            }
+            for path in class.field_paths.values() {
                 if !paths.contains(path) {
                     paths.push(path.clone());
                 }
             }
         }
+        for paths in deferred_class_field_paths.values_mut() {
+            // Sort each class's file list so the harvest analyzes files — and unions each
+            // field's RHS types — in a deterministic order. `field_paths` is a `HashMap`
+            // (randomly seeded iteration order) and `ValueType::make_union` preserves
+            // insertion order, so an unsorted Vec would give a flaky union member order
+            // (`A | B` vs `B | A`) for a field assigned genuinely different types across
+            // multiple assigning files — flaky hover text and `dump-types` baselines.
+            paths.sort();
+        }
+        // Drop names that contributed no file at all, so `contains_key` stays a precise
+        // "has a re-analyzable source" test (matching the old def_path-only behavior).
+        deferred_class_field_paths.retain(|_, paths| !paths.is_empty());
 
         PreResolvedGlobals {
             scopes: self.scopes, symbols: self.symbols, functions: self.functions,

@@ -40,12 +40,17 @@
 //! The same lazy-harvest mechanism upgrades a cross-file `@class` *field* whose
 //! coarse scan type decayed to `any` (a runtime `self.x = <expr>` the scanner
 //! couldn't type). On first read of such a field, `ensure_field_overlay` re-runs the
-//! engine on *every* file that declares the class and installs a precise `FieldInfo`
-//! into the per-file `overlay_fields`, so `get_field` transparently returns the
-//! definition-site type. A **partial** class split across files is harvested as a
-//! whole: each field's RHS types are unioned across all declaring files (so a field
-//! assigned a class in one and cleared to nil in another lands as `T?`). This is
-//! deliberately the **`any`-only** slice, gated on
+//! engine on *every* file that declares **or assigns** the class's fields and installs
+//! a precise `FieldInfo` into the per-file `overlay_fields`, so `get_field`
+//! transparently returns the definition-site type. Coverage spans two file sources
+//! (unioned in the `build_on_stubs::finish` index): a class's **declaring** files, and
+//! every file that **assigns** one of its fields — including a method defined in a file
+//! that does *not* declare the class (`function ns.C:Build() self.x = ... end`), whose
+//! `self.x = ...` writes target the *external* class table and are matched by
+//! `accumulate_class_fields_in_file`'s external path. A **partial** class split across
+//! files is harvested as a whole: each field's RHS types are unioned across all those
+//! files (so a field assigned a class in one and cleared to nil in another lands as
+//! `T?`). This is deliberately the **`any`-only** slice, gated on
 //! *both* ends so an upgrade only replaces `any` with a genuinely more precise type:
 //! the coarse field must be exactly `any` ([`field_is_coarse_any`]), and the
 //! harvested type must not itself be a coarse placeholder — `any`, bare
@@ -55,10 +60,12 @@
 //! metatable/mixin/callable — precisely the low-confidence case the scan already
 //! gave up on; those are kept coarse. (Upgrading to a genuine *nameable* class is a
 //! real sharpening: like any precise type it may surface a correct new diagnostic —
-//! e.g. calling a non-callable class — and, because coverage is the class's declaring
-//! files, can under-approximate a field assigned only in a file that uses the class
-//! without declaring it; that is the deliberate fidelity/precision trade of this
-//! slice, not the `table` regression.)
+//! e.g. calling a non-callable class. The assigning-file index is derived from the
+//! scan's per-field `field_paths`, which records one assigning file per field, so a
+//! field written non-nil in one file and cleared to nil *only* in a separate file that
+//! assigns nothing else can still under-approximate to a non-optional type; that
+//! residual nil-coverage gap is the deliberate fidelity/precision trade of this slice,
+//! not the `table` regression.)
 //! The field type is the union of its assignment RHS types read from
 //! `field_assignments` (the RHS-aware path — not the coarse class surface), across
 //! *every* site, so a field cleared to nil keeps its nilability (`T?`); a `lateinit`
@@ -233,8 +240,9 @@ impl Ir {
         let Some(ty) = resolve_deferred_class_field_type(&self.ext, &class_name, field_name) else {
             return;
         };
-        // The harvest reads *every* declaring file, so a change to any of them can alter
-        // this field's type — record all as dependencies for edit-invalidation.
+        // The harvest reads *every* declaring or assigning file, so a change to any of
+        // them can alter this field's type — record all as dependencies for
+        // edit-invalidation.
         self.deferred_dep_files.extend(def_paths);
         let mut precise = coarse;
         precise.annotation = Some(ty);
@@ -671,16 +679,18 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
 }
 
 /// Resolve the precise type of a cross-file `@class` field whose coarse scan type
-/// decayed to `any`, by re-running the real engine on *every* file that declares the
-/// class (memoized). A **partial** class split across files is harvested as a whole:
-/// each field's RHS types are accumulated across all declaring files and unioned
-/// once, so a field assigned a class in one file and cleared to nil in another keeps
-/// its nilability. The same pass also caches any *co-located* workspace class whose
-/// entire declaring-file set is among these files, so one analysis of a file warms
-/// every class declared in it (not one analysis per class). Returns `None` when the
-/// class isn't a workspace class, the field is not assigned in any declaring file, or
-/// the harvested type is no more precise than the coarse `any` (touches a type variable
-/// / is purely nil); callers then keep the coarse `any`.
+/// decayed to `any`, by re-running the real engine on *every* file that declares or
+/// assigns the class's fields (memoized). A class whose fields are split across files —
+/// a `@class (partial)` or a method that assigns `self.x` from a file that does not
+/// declare the class — is harvested as a whole: each field's RHS types are accumulated
+/// across all those files and unioned once, so a field assigned a class in one file and
+/// cleared to nil in another keeps its nilability. The same pass also caches any
+/// *co-located* workspace class whose entire path set (declaring + assigning files) is
+/// among these files, so one analysis of a file warms every such class (not one
+/// analysis per class). Returns `None` when the class isn't a workspace class, the
+/// field is not assigned in any of those files, or the harvested type is no more precise
+/// than the coarse `any` (touches a type variable / is purely nil); callers then keep
+/// the coarse `any`.
 pub fn resolve_deferred_class_field_type(
     ext: &Arc<PreResolvedGlobals>,
     class_name: &str,
@@ -730,12 +740,14 @@ pub fn resolve_deferred_class_field_type(
         return None;
     }
 
-    // Only cache a class whose *entire* declaring-file set is among the files we just
-    // analyzed (`target_files`). The target qualifies by construction; a co-located
-    // sibling qualifies exactly when all its own decl files are in this set — which,
-    // since a class's local `@class` tables only ever appear in its own decl files,
-    // means we accumulated its *complete* field set here (accumulating from extra files
-    // that don't declare it contributes nothing). A sibling with a decl file *outside*
+    // Only cache a class whose *entire* path set (declaring + assigning files) is among
+    // the files we just analyzed (`target_files`). The target qualifies by construction;
+    // a co-located sibling qualifies exactly when all its own indexed paths are in this
+    // set — which means we accumulated its *complete* field set here. Accumulating from
+    // extra files (in `target_files` but not the sibling's path set) contributes nothing
+    // because `accumulate_class_fields_in_file`'s external-path gate only counts a file's
+    // `self.x = ...` writes for a class the file is *indexed* for — so a sibling's fields
+    // are only ever gathered from the sibling's own paths. A sibling with a path *outside*
     // this set is skipped: its accumulation is partial, so it harvests its own full set
     // when first read.
     let target_files: HashSet<&Path> = paths.iter().map(|p| p.as_path()).collect();
@@ -828,13 +840,37 @@ fn accumulate_class_fields_in_file(
             class_name_of.insert(idx, name.clone());
         }
     }
-    if class_name_of.is_empty() {
-        return;
-    }
+    // No early return on an empty `class_name_of`: a file that only *assigns* a class's
+    // fields (a method in a non-declaring file, `function ns.C:m() self.x = ... end`)
+    // has no local `@class` table, yet its `self.x = ...` writes still target the
+    // external class table and must be harvested — matched below.
 
     for fa in &ir.field_assignments {
-        let Some(name) = class_name_of.get(&fa.table_idx) else { continue };
-        let entry = acc.entry((name.clone(), fa.field_name.clone())).or_insert_with(|| (Vec::new(), false));
+        // Resolve the assignment's receiver to a workspace class name, from either:
+        //   - a local `@class` table declared in this (declaring) file; or
+        //   - the *external* class table `self` resolves to inside a method defined in
+        //     a file that does not declare the class. Guarded on the file being one of
+        //     the class's indexed paths, so whole-file warming of a co-located class
+        //     stays deterministic and matches that class's own harvest (a file only
+        //     contributes to classes it is officially indexed for).
+        let name = if let Some(n) = class_name_of.get(&fa.table_idx) {
+            n.clone()
+        } else if fa.table_idx.is_external() {
+            match ext.try_table(fa.table_idx).and_then(|t| t.class_name.as_deref()) {
+                Some(n)
+                    if ext
+                        .deferred_class_field_paths
+                        .get(n)
+                        .is_some_and(|ps| ps.iter().any(|p| p == path)) =>
+                {
+                    n.to_string()
+                }
+                _ => continue,
+            }
+        } else {
+            continue;
+        };
+        let entry = acc.entry((name, fa.field_name.clone())).or_insert_with(|| (Vec::new(), false));
         entry.1 |= fa.lateinit;
         if let Some(ty) = result.resolve_expr_type(fa.actual_expr) {
             let lifted = lift_local_type_to_ext_with(&ty, ir, ext, &result);

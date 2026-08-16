@@ -3304,6 +3304,23 @@ fn crossfile_class_field_types() {
 }
 
 #[test]
+fn crossfile_nondecl_field_types() {
+    // A runtime `self.x = <expr>` field written by a method in a file that does NOT
+    // declare the `@class` (`function ns.NDF_Owner:Build() self.widget = ... end`): the
+    // write targets the *external* class table, so the harvest reaches it only via the
+    // class's assigning-file index (every file that assigns the class's fields, not just
+    // its declaring files) plus external-table matching. Upgrades `any` -> the class
+    // (`NDF_Widget`), `any` -> `number`, carries nilability across the external path
+    // (`NDF_Widget?`), and warms a co-located sibling class (`NDF_Helper.tag`) whose
+    // field is assigned in that same non-declaring file.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/nondecl_field_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_partial_class_field_types() {
     // A `@class (partial)` split across two files: the field harvester must re-analyze
     // EVERY declaring file (not just the first-seen one) and union each field's RHS
