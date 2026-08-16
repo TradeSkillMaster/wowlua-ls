@@ -3190,6 +3190,20 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// A parent-class field type that must not override the child's own
+    /// placeholder in the `resolve_field_access` parent-class fallback: `any`, a
+    /// bare `table` placeholder, bare `nil`, or the empty `never` union that
+    /// `strip_nil` yields from a nil-only parent field. Letting any of these
+    /// through would replace the child's `Table(None)` (`table`) with a
+    /// less-useful — or, for the empty union, degenerate — type.
+    fn is_non_improving_parent_field(vt: &ValueType) -> bool {
+        match vt {
+            ValueType::Any | ValueType::Table(None) | ValueType::Nil => true,
+            ValueType::Union(members) => members.is_empty(),
+            _ => false,
+        }
+    }
+
     /// Resolve `Expr::FieldAccess`: dot/colon field lookup over a table type (with union/intersection/shape/parent-class handling).
     fn resolve_field_access(&mut self, table: ExprId, field: &str) -> Option<ValueType> {
         let table_type = self.resolve_expr(table)?;
@@ -3398,18 +3412,31 @@ impl<'a> Analysis<'a> {
                 let parents = self.table(idx).parent_classes.clone();
                 for &parent_idx in &parents {
                     if let Some(fi) = self.ir.get_field(parent_idx, field) {
+                        // The child *has* this field (it resolved to a placeholder
+                        // above, so it's present), so an optional *parent* declaration
+                        // (`field?: T`, common on schema base classes like
+                        // `AceDB.Schema`) must not re-introduce nil here — that would
+                        // trip a need-check-nil false positive on a field the subclass
+                        // clearly populates. Take the parent's base type, sans nil.
+                        // A nil-only parent field strips to the empty `never` union
+                        // (`strip_nil` maps bare `nil` → `Union(vec![])`); skip it like
+                        // the other non-improving placeholders so the child's own
+                        // `Table(None)` (`table`) surfaces instead of a degenerate type.
                         if let Some(ref ann_vt) = fi.annotation {
-                            if !matches!(ann_vt, ValueType::Any | ValueType::Table(None))
-                                && !parent_field_types.contains(ann_vt) {
-                                parent_field_types.push(ann_vt.clone());
+                            let ann_vt = ann_vt.strip_nil();
+                            if !Self::is_non_improving_parent_field(&ann_vt)
+                                && !parent_field_types.contains(&ann_vt) {
+                                parent_field_types.push(ann_vt);
                             }
                         } else {
                             let expr = fi.expr;
-                            if let Some(vt) = self.resolve_expr(expr)
-                                && !matches!(vt, ValueType::Any | ValueType::Table(None))
-                                && !parent_field_types.contains(&vt) {
+                            if let Some(vt) = self.resolve_expr(expr) {
+                                let vt = vt.strip_nil();
+                                if !Self::is_non_improving_parent_field(&vt)
+                                    && !parent_field_types.contains(&vt) {
                                     parent_field_types.push(vt);
                                 }
+                            }
                         }
                     }
                 }

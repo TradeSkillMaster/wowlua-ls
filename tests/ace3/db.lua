@@ -44,3 +44,29 @@ db:SetProfile("Default")
 -- ...and are reachable by colon completion (the intersection's second member).
 db:SetProfile("Default")
 --     ^ comp: SetProfile
+
+-- A `@class` extending an AceDB schema inherits every section as *optional*
+-- (`AceDB.Schema` declares `global?: table`, etc.). A literal assigned to such a
+-- class populates the sections, so direct nested access on a populated section
+-- must stay non-nil: the inherited `section?: table` on the parent must not
+-- re-introduce nil when the child's own section resolves to a bare-`table`
+-- placeholder — doing so tripped a need-check-nil false positive on every
+-- `.section.<deep>` access. (This dir enables need-check-nil, so a regression
+-- surfaces as an uncovered diagnostic on the chains below.)
+---@class SchemaBackedDefaults: AceDB.Schema
+local SCHEMA_DEFAULTS = {
+    global = {
+        display = {
+            anchor = { point = "TOPRIGHT", scale = 1 },
+        },
+    },
+    profile = {
+        threshold = 5,
+    },
+}
+
+local schemaGlobal = SCHEMA_DEFAULTS.global
+--    ^ hover: (local) schemaGlobal: table
+-- Deep access through a populated inherited section must not require a nil check.
+local schemaAnchor = SCHEMA_DEFAULTS.global.display.anchor
+local schemaThreshold = SCHEMA_DEFAULTS.profile.threshold
