@@ -38,34 +38,48 @@
 //! `undefined-field` doesn't fire on them downstream.
 //!
 //! The same lazy-harvest mechanism upgrades a cross-file `@class` *field* whose
-//! coarse scan type decayed to `any` (a runtime `self.x = <expr>` the scanner
-//! couldn't type). On first read of such a field, `ensure_field_overlay` re-runs the
-//! engine on *every* file that declares **or assigns** the class's fields and installs
-//! a precise `FieldInfo` into the per-file `overlay_fields`, so `get_field`
-//! transparently returns the definition-site type. Coverage spans two file sources
-//! (unioned in the `build_on_stubs::finish` index): a class's **declaring** files, and
-//! every file that **assigns** one of its fields — including a method defined in a file
-//! that does *not* declare the class (`function ns.C:Build() self.x = ... end`), whose
-//! `self.x = ...` writes target the *external* class table and are matched by
-//! `accumulate_class_fields_in_file`'s external path. A **partial** class split across
-//! files is harvested as a whole: each field's RHS types are unioned across all those
-//! files (so a field assigned a class in one and cleared to nil in another lands as
-//! `T?`). This is deliberately the **`any`-only** slice, gated on
-//! *both* ends so an upgrade only replaces `any` with a genuinely more precise type:
-//! the coarse field must be exactly `any` ([`field_is_coarse_any`]), and the
-//! harvested type must not itself be a coarse placeholder — `any`, bare
-//! `table`/`function`, or `callable_or_unknown` ([`contains_coarse_placeholder`]).
-//! A bare `table` is strictly *more restrictive* than `any` (not callable), so
-//! upgrading `any`→`table` could false-positive `cannot-call`/`undefined-field` on a
-//! metatable/mixin/callable — precisely the low-confidence case the scan already
-//! gave up on; those are kept coarse. (Upgrading to a genuine *nameable* class is a
-//! real sharpening: like any precise type it may surface a correct new diagnostic —
-//! e.g. calling a non-callable class. The assigning-file index is derived from the
-//! scan's per-field `field_paths`, which records one assigning file per field, so a
-//! field written non-nil in one file and cleared to nil *only* in a separate file that
-//! assigns nothing else can still under-approximate to a non-optional type; that
-//! residual nil-coverage gap is the deliberate fidelity/precision trade of this slice,
-//! not the `table` regression.)
+//! coarse scan type decayed to a **placeholder** — either `any` (a runtime
+//! `self.x = <expr>` the scanner couldn't type at all) or a bare `table`
+//! (`Table(None)`: a top-level `Class.field = <unresolvable call>` write the scan
+//! *heuristically assumes* is a table but whose shape it couldn't capture). On first
+//! read of such a field,
+//! `ensure_field_overlay` re-runs the engine on *every* file that declares **or
+//! assigns** the class's fields and installs a precise `FieldInfo` into the per-file
+//! `overlay_fields`, so `get_field` transparently returns the definition-site type.
+//! Coverage spans two file sources (unioned in the `build_on_stubs::finish` index):
+//! a class's **declaring** files, and every file that **assigns** one of its fields —
+//! including a method defined in a file that does *not* declare the class
+//! (`function ns.C:Build() self.x = ... end`), whose `self.x = ...` writes target the
+//! *external* class table and are matched by `accumulate_class_fields_in_file`'s
+//! external path. A **partial** class split across files is harvested as a whole:
+//! each field's RHS types are unioned across all those files (so a field assigned a
+//! class in one and cleared to nil in another lands as `T?`).
+//!
+//! **The eligible placeholders carry no author annotation.** Both the `any` and the
+//! bare-`table` placeholder are scan-inferred with a `None` annotation, so a
+//! `field-type-mismatch` never fired against them (`had_annotation_at_build` is
+//! false) — sharpening them cannot regress that check even for a field later cleared
+//! to nil. An *explicit* `@field x table` and the `callable_or_unknown`
+//! forwarded-callable placeholder are deliberately excluded ([`field_is_coarse_placeholder`]):
+//! the former carries an annotation, the latter a callable guess a non-callable-class
+//! sharpen would false-positive `cannot-call`. Those are the regression-prone slice
+//! left for a later phase.
+//!
+//! The upgrade is gated on *both* ends so it only ever replaces a placeholder with a
+//! genuinely more precise type: the coarse field must be an eligible placeholder
+//! ([`field_is_coarse_placeholder`]), and the harvested type must not *itself* be a
+//! coarse placeholder — `any`, bare `table`/`function`, or `callable_or_unknown`
+//! ([`contains_coarse_placeholder`]). Replacing a placeholder with another bare
+//! `table`/`function` carries no more information (and a bare `table` is strictly
+//! *more restrictive* than `any` — not callable), so such harvests are dropped and
+//! the coarse placeholder kept. Upgrading to a genuine *nameable* class is a real
+//! sharpening: like any precise type it may surface a correct new diagnostic — e.g.
+//! calling a non-callable class, or reading a field the class doesn't declare. The
+//! assigning-file index is derived from the scan's per-field `field_paths`, which
+//! records one assigning file per field, so a field written non-nil in one file and
+//! cleared to nil *only* in a separate file that assigns nothing else can still
+//! under-approximate to a non-optional type; that residual nil-coverage gap is the
+//! deliberate fidelity/precision trade of this slice.
 //! The field type is the union of its assignment RHS types read from
 //! `field_assignments` (the RHS-aware path — not the coarse class surface), across
 //! *every* site, so a field cleared to nil keeps its nilability (`T?`); a `lateinit`
@@ -194,20 +208,21 @@ impl Ir {
     }
 
     /// Ensure the per-file `overlay_fields` holds a precise `FieldInfo` for a
-    /// cross-file `@class` field whose coarse scan type decayed to `any`. Idempotent:
-    /// an overlay hit, a non-external table, a field that isn't declared directly on
-    /// the class, a non-`any` coarse type, or a non-workspace class is a no-op.
+    /// cross-file `@class` field whose coarse scan type decayed to a *placeholder*
+    /// (`any`, or a bare `table`). Idempotent: an overlay hit, a non-external table, a
+    /// field that isn't declared directly on the class, a non-placeholder coarse type,
+    /// or a non-workspace class is a no-op.
     ///
-    /// **`any`-only by design, gated on both ends.** Only a field whose coarse type
-    /// is exactly `any` ([`field_is_coarse_any`]) is a candidate, and the harvest
-    /// only replaces it when the definition-site type is genuinely more precise — not
-    /// itself a coarse placeholder (`any`, bare `table`/`function`,
-    /// `callable_or_unknown`; see [`contains_coarse_placeholder`]). This avoids the
-    /// `table`→non-optional regression class: a bare `table` is *more* restrictive
-    /// than `any` (not callable), so it is left coarse rather than false-positiving
-    /// `cannot-call` on a metatable/mixin. The harvested type carries the field's
-    /// real nilability (a field cleared to nil stays `T?`) and keeps generics coarse
-    /// (a type-variable-touching type decays back to `any` through the lift and is
+    /// **Placeholder-only by design, gated on both ends.** Only a field whose coarse
+    /// type is an eligible placeholder ([`field_is_coarse_placeholder`] — a
+    /// scan-inferred `any` or bare `Table(None)`, both carrying no author annotation)
+    /// is a candidate, and the harvest only replaces it when the definition-site type
+    /// is genuinely more precise — not itself a coarse placeholder (`any`, bare
+    /// `table`/`function`, `callable_or_unknown`; see [`contains_coarse_placeholder`]).
+    /// Replacing a placeholder with another bare `table`/`function` carries no more
+    /// information, so it is left coarse. The harvested type carries the field's real
+    /// nilability (a field cleared to nil stays `T?`) and keeps generics coarse (a
+    /// type-variable-touching type decays back to `any` through the lift and is
     /// skipped).
     ///
     /// The overlay value is the coarse external `FieldInfo` with its `annotation`
@@ -228,7 +243,7 @@ impl Ir {
         let (coarse, class_name) = {
             let Some(t) = self.ext.try_table(table_idx) else { return };
             let Some(fi) = t.fields.get(field_name) else { return };
-            if !field_is_coarse_any(fi, &self.ext) {
+            if !field_is_coarse_placeholder(fi, &self.ext) {
                 return;
             }
             let Some(name) = t.class_name.clone() else { return };
@@ -679,7 +694,8 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
 }
 
 /// Resolve the precise type of a cross-file `@class` field whose coarse scan type
-/// decayed to `any`, by re-running the real engine on *every* file that declares or
+/// decayed to a placeholder (`any` or a bare `table`), by re-running the real engine
+/// on *every* file that declares or
 /// assigns the class's fields (memoized). A class whose fields are split across files —
 /// a `@class (partial)` or a method that assigns `self.x` from a file that does not
 /// declare the class — is harvested as a whole: each field's RHS types are accumulated
@@ -689,8 +705,8 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
 /// among these files, so one analysis of a file warms every such class (not one
 /// analysis per class). Returns `None` when the class isn't a workspace class, the
 /// field is not assigned in any of those files, or the harvested type is no more precise
-/// than the coarse `any` (touches a type variable / is purely nil); callers then keep
-/// the coarse `any`.
+/// than the coarse placeholder (touches a type variable / is purely nil / is itself a
+/// bare `table`); callers then keep the coarse placeholder.
 pub fn resolve_deferred_class_field_type(
     ext: &Arc<PreResolvedGlobals>,
     class_name: &str,
@@ -735,8 +751,8 @@ pub fn resolve_deferred_class_field_type(
         });
     }
     if !complete {
-        // A cyclic edge left the accumulation partial — keep the coarse `any` for this
-        // read without caching, so the eventual complete (non-cyclic) read fills the memo.
+        // A cyclic edge left the accumulation partial — keep the coarse placeholder for
+        // this read without caching, so the eventual complete (non-cyclic) read fills the memo.
         return None;
     }
 
@@ -883,19 +899,20 @@ fn accumulate_class_fields_in_file(
 
 /// The output gate + union for a harvested `@class` field: union the per-site RHS
 /// types (a `lateinit` field reads as non-nil, so nil is stripped), then keep the
-/// result only when it is a genuine improvement over the coarse `any` it would
-/// replace. Dropped (→ keep coarse `any`):
+/// result only when it is a genuine improvement over the coarse placeholder (`any` or
+/// a bare `table`) it would replace. Dropped (→ keep coarse placeholder):
 /// - a *coarse placeholder* — `any` (generics decay to `any` here — the "keep
 ///   generics coarse" gate), a bare `table`/`function`, or the `callable_or_unknown`
-///   intersection — because `any` already carries no less information and a bare
-///   `table`/`function` is strictly *more* restrictive than `any` (the input-side
-///   `Table(None)` exclusion mirrored on the output, so a field whose RHS resolves to
-///   bare `table` isn't upgraded `any`→`table`, which would false-positive
-///   `cannot-call` on a metatable/mixin/callable);
-/// - a purely-`nil` field (upgrading `any` → `nil` would over-narrow).
+///   intersection — because it carries no more information than the coarse placeholder
+///   already does, and a bare `table`/`function` is strictly *more* restrictive than
+///   `any` (the input-side placeholder mirrored on the output, so a field whose RHS
+///   resolves to bare `table` isn't upgraded to another bare `table`, which for an
+///   `any` source would false-positive `cannot-call` on a metatable/mixin/callable);
+/// - a purely-`nil` field (upgrading a placeholder → `nil` would over-narrow).
 ///
-/// Returns `None` to keep the coarse `any`. Empty input (`tys`) also yields `None`.
-/// Consumes `tys` (the owned accumulated RHS types) so the union takes them directly.
+/// Returns `None` to keep the coarse placeholder. Empty input (`tys`) also yields
+/// `None`. Consumes `tys` (the owned accumulated RHS types) so the union takes them
+/// directly.
 fn gate_harvested_field(tys: Vec<ValueType>, lateinit: bool) -> Option<ValueType> {
     if tys.is_empty() {
         return None;
@@ -955,14 +972,15 @@ fn contains_any(ty: &ValueType) -> bool {
 /// intersection (`function & table`) is caught by the recursion.
 ///
 /// Used only by the cross-file `@class` field harvest to decide whether a
-/// harvested type is a genuine improvement over the coarse `any` it would replace.
-/// It is not: `Any` carries no more information, and a bare `table`/`function` is
-/// strictly *more restrictive* than `any` (a `table` isn't callable; both reject
-/// field accesses / argument passing that `any` permits — e.g. a loosely-typed
-/// field that is really a metatable/mixin/callable). So such a harvest is dropped
-/// and the coarse `any` kept. This is the output-side mirror of the input-side
-/// eligibility gate ([`field_is_coarse_any`]), which likewise never *starts* from a
-/// `Table(None)` / `callable_or_unknown` coarse field.
+/// harvested type is a genuine improvement over the coarse placeholder (`any` or a
+/// bare `table`) it would replace. It is not when it is *itself* a placeholder:
+/// `Any` carries no more information, and a bare `table`/`function` is strictly
+/// *more restrictive* than `any` (a `table` isn't callable; both reject field
+/// accesses / argument passing that `any` permits — e.g. a loosely-typed field that
+/// is really a metatable/mixin/callable). So such a harvest is dropped and the coarse
+/// placeholder kept. This is the output-side mirror of the input-side eligibility
+/// gate ([`field_is_coarse_placeholder`]), which likewise never *starts* from a
+/// `callable_or_unknown` coarse field.
 fn contains_coarse_placeholder(ty: &ValueType) -> bool {
     match ty {
         ValueType::Any | ValueType::Table(None) | ValueType::Function(None) => true,
@@ -973,19 +991,40 @@ fn contains_coarse_placeholder(ty: &ValueType) -> bool {
     }
 }
 
-/// True when a coarse external `@class` field is the cross-file `any` placeholder
-/// eligible for a precise overlay upgrade: an explicit `any` annotation, or (the
-/// common scan case) no annotation with an `Expr::Literal(Any)` placeholder expr —
-/// a runtime field the scan couldn't type (`FieldValueKind::Unknown`). A bare
-/// `table` (`Table(None)`) / `callable_or_unknown` coarse field is deliberately
-/// excluded: sharpening those is the regression-prone slice left for a later phase.
+/// True when a coarse external `@class` field is a cross-file placeholder eligible
+/// for a precise overlay upgrade. Two placeholder shapes qualify, both **carrying no
+/// author annotation** so a `field-type-mismatch` never fired against them
+/// (`had_annotation_at_build` is false) and sharpening them cannot regress that check:
+/// - **`any`** — an explicit `any` annotation, or (the common scan case) no
+///   annotation with an `Expr::Literal(Any)` placeholder expr: a runtime field the
+///   scan couldn't type at all (`FieldValueKind::Unknown`);
+/// - **bare `table`** — no annotation with an `Expr::Literal(Table(None))`
+///   placeholder expr: the non-namespace-root case where a top-level
+///   `Class.field = <unresolvable call>` write is *heuristically assumed* to be a
+///   table (the scan can't resolve the call — it could even be scalar-returning) and
+///   its shape couldn't be captured (`build_on_stubs`'s "keep the bare `Table(None)`
+///   placeholder" site). A method's `self.x = <unresolvable call>` write parks `any`
+///   instead (the self-field scanner's any-over-table policy), so it falls in the
+///   `any` case above, not here. Already refined *same-file* by the resolver from the
+///   field's own local assignment; the overlay extends that refinement cross-file.
+///
+/// An *explicit* `@field x table` (`Some(Table(None))`) and the `callable_or_unknown`
+/// forwarded-callable placeholder are deliberately excluded: the former carries an
+/// author annotation (so `had_annotation_at_build` is true and a sharpen could
+/// surface a nil `field-type-mismatch`), the latter a deliberate callable guess that
+/// sharpening to a non-callable class would false-positive `cannot-call`. Those are
+/// the regression-prone slice left for a later phase.
+///
 /// Shared by `ensure_field_overlay` (eligibility) and the resolve hot path (so the
-/// warm+re-fetch runs only for this rare placeholder, not every field access).
-pub(crate) fn field_is_coarse_any(fi: &crate::types::FieldInfo, ext: &PreResolvedGlobals) -> bool {
+/// warm+re-fetch runs only for these rare placeholders, not every field access).
+pub(crate) fn field_is_coarse_placeholder(fi: &crate::types::FieldInfo, ext: &PreResolvedGlobals) -> bool {
     matches!(fi.annotation, Some(ValueType::Any))
         || (fi.annotation.is_none()
             && fi.expr.is_external()
-            && matches!(ext.expr(fi.expr), Expr::Literal(ValueType::Any)))
+            && matches!(
+                ext.expr(fi.expr),
+                Expr::Literal(ValueType::Any) | Expr::Literal(ValueType::Table(None))
+            ))
 }
 
 /// When a deferred function returns an external class instance that had fields

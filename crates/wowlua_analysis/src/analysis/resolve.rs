@@ -3250,13 +3250,14 @@ impl<'a> Analysis<'a> {
         for &idx in &table_indices {
             let pre_len = field_types.len();
             // Fetch the coarse field once, extracting what the branches below need so
-            // the borrow ends immediately. Only the (rare) cross-file `any`
-            // placeholder pays for the harvest + re-fetch — warming the per-file
-            // overlay with the definition-site type harvested from the class's
-            // declaring file(s); the common precise field is used directly, so a
-            // non-`any` external field access repeats no `get_field` lookups.
+            // the borrow ends immediately. Only the (rare) cross-file placeholder
+            // field (`any` or a bare `table`) pays for the harvest + re-fetch —
+            // warming the per-file overlay with the definition-site type harvested
+            // from the class's declaring file(s); the common precise field is used
+            // directly, so a non-placeholder external field access repeats no
+            // `get_field` lookups.
             let mut fetched = self.ir.get_field(idx, field).map(|fi|
-                (crate::analysis::deferred::field_is_coarse_any(fi, &self.ir.ext),
+                (crate::analysis::deferred::field_is_coarse_placeholder(fi, &self.ir.ext),
                  fi.annotation.clone(), fi.expr, fi.extra_exprs.clone()));
             if matches!(&fetched, Some((true, ..))) {
                 self.ir.ensure_field_overlay(idx, field);

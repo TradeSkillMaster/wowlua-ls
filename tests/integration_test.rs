@@ -3304,6 +3304,23 @@ fn crossfile_class_field_types() {
 }
 
 #[test]
+fn crossfile_table_field_types() {
+    // A top-level `Class.field = <call>` whose callee the coarse cross-file scan can't
+    // follow parks a bare `Table(None)` placeholder (NOT `any`) — the `table`->precise
+    // slice. Like the `any` placeholder it carries no author annotation, so sharpening
+    // it can't regress `field-type-mismatch`. `built` upgrades `table` -> the class
+    // (`TFT_Widget`, whose method then resolves), and `num` upgrades `table` -> a
+    // primitive (`number`), proving the harvest reads the real RHS type. An explicit
+    // `@field x table` and `callable_or_unknown` stay coarse (excluded by
+    // `field_is_coarse_placeholder`).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/table_field_type_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_nondecl_field_types() {
     // A runtime `self.x = <expr>` field written by a method in a file that does NOT
     // declare the `@class` (`function ns.NDF_Owner:Build() self.widget = ... end`): the
