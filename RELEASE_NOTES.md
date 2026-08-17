@@ -1,11 +1,9 @@
-### New
+### Improvements
 
-- `@deprecated` symbols now show a deprecation notice (including any custom message) in hover and completion, and are struck through at call sites ([docs](https://tradeskillmaster.github.io/wowlua-ls/reference/annotations.html))
+- Cross-file `@class` fields now resolve to their real types. A runtime `self.x = …` field on a `@class` that previously showed as `any` when read from another file now hovers and completes with its definition-site type — class instances, primitives, and optionals (with nilability preserved) — so methods resolve on it and spurious diagnostics no longer fire.
+- Factory functions now carry their return shape across files: a function returning a frame with injected per-instance fields, or an anonymous record, resolves those fields precisely in other files instead of decaying to `any` or a bare `table`.
 
 ### Bug Fixes
 
-- Generic `@overload` returns of parameterized classes no longer drop their type arguments.
-- Removed duplicated hover text for inherited methods on union-typed receivers.
-- `@enum` whose member values are variables no longer resolves to `any`.
-- Multi-addon workspaces no longer leak namespace sub-table fields (such as `self.db`) between addons.
-- Cross-file type inference now preserves local-table field shapes and array/map element types instead of collapsing them to a bare `table`.
+- `need-check-nil` no longer reports a false positive on deep access into a section inherited as optional from a parent `@class` (such as an AceDB schema-backed defaults table).
+- Hover, completion, and go-to-definition now resolve a method called directly on the result of a generic function call (e.g. `pass(pw):Render()`), which previously resolved to nothing.
