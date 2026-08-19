@@ -625,6 +625,35 @@ do
     --                   ^ hover: (field) function Frame.handler(self)
 end
 
+-- ── Same-named methods on two locals of the same class stay distinct ─────────
+-- Two locals typed as the same external class (`Frame`) that each define a
+-- same-named method must NOT collapse onto the shared class overlay: a direct
+-- hover/signature/definition on one must resolve to that one's own definition,
+-- not the first-defined sibling's.
+do
+    local frameA = CreateFrame("Frame")
+    --- @param count number
+    function frameA:Configure(count) end
+
+    local frameB = CreateFrame("Frame")
+    --- @param label string
+    function frameB:Configure(label) end
+
+    frameA:Configure(1)
+    --     ^ hover: (method) function Frame:Configure(count: number)  def: local 636:5
+    frameB:Configure("x")
+    --     ^ hover: (method) function Frame:Configure(label: string)  def: local 640:5
+    --               ^ sig: fun(label: string)
+
+    -- Argument type-checking (a fixpoint-resolved diagnostic, distinct from the
+    -- query-time hover/sig above) must also use each receiver's own signature:
+    -- the wrong-typed call to `frameB` reports `label`, not `frameA`'s `count`.
+    frameA:Configure("wrong")
+    --               ^ diag: type-mismatch
+    frameB:Configure(99)
+    --               ^ diag: type-mismatch
+end
+
 -- Event string hover on WoW API methods
 ---@type Frame
 local _evFrame = nil

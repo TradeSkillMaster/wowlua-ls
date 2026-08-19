@@ -2082,6 +2082,15 @@ fn crossfile_frame_overlay() {
 }
 
 #[test]
+fn crossfile_sibling_method() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/sibling_method_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_class_callret_field() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/class_callret_field_user.lua",

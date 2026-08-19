@@ -2366,6 +2366,24 @@ impl<'a> Analysis<'a> {
     /// wasn't known during Phase 1 (e.g. type comes from a function return).
     fn resolve_deferred_field_assignments(&mut self) {
         let assignments = std::mem::take(&mut self.deferred_field_assignments);
+        // Receivers whose method-style def collides with a same-named method on a
+        // *different* local of the same external class (`local f1 =
+        // CreateFrame("Frame"); function f1:M()` alongside `local f2 = ...;
+        // function f2:M()`). Only these get split onto per-instance tables; a lone
+        // instance keeps the shared overlay untouched so the cross-file
+        // return-shape lift and permissive indirect access are unaffected.
+        let colliding = self.detect_colliding_instance_methods(&assignments);
+        // Per-receiver instance tables created for the colliding method defs,
+        // keyed by (symbol, version) so every method on the same receiver reuses one.
+        let mut instance_tables: HashMap<(SymbolIndex, usize), TableIndex> = HashMap::new();
+        // Every plain-local receiver that gets a method deferred-attached here. The
+        // fixpoint resolved these receivers' method calls before this pass ran, so
+        // it may have bound them to a stale target — a sibling instance's method
+        // merged on the shared overlay (same file), or the same-named method a
+        // *different* file registered on the external class (cross-file). Both are
+        // superseded once this file's own def lands (on the overlay or an instance
+        // table), so their calls are re-resolved at the end.
+        let mut method_def_receivers: HashSet<(SymbolIndex, usize)> = HashSet::new();
         for assign in assignments {
             // Try to find the class table via the symbol's resolved type
             let sym_idx = match self.ir.get_symbol(
@@ -2383,48 +2401,44 @@ impl<'a> Analysis<'a> {
             let ver_idx = assign
                 .receiver_version
                 .min(self.ir.sym(sym_idx).versions.len().saturating_sub(1));
-            let type_source = self.ir.sym(sym_idx).versions[ver_idx].type_source;
-            let table_idx = type_source
-                .and_then(|ts| self.ir.find_table_index(ts))
-                .or_else(|| {
-                    // Don't inject fields into tables obtained from bracket access —
-                    // the resolved_type points to the collection's value_type prototype,
-                    // not a writable instance.
-                    if let Some(ts) = type_source
-                        && matches!(self.ir.expr(ts), Expr::BracketIndex { .. })
-                    {
-                        return None;
-                    }
-                    // NOTE: deliberately NOT descending into a top-level
-                    // intersection (`Base & Template`, a concrete frame instance)
-                    // here. Attaching to the intersection's base class pollutes the
-                    // shared per-file class overlay across *every* instance of that
-                    // class — e.g. one instance's `inst.SetValue = nil` (the
-                    // "remove method" idiom) would make `SetValue` read as `nil` on
-                    // a sibling instance, a false `cannot-call`. `undefined-field`
-                    // already treats such instances permissively. The collapsed-`or`
-                    // reassignment case is recovered from the operands below.
-                    match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
-                        Some(ValueType::Table(Some(idx))) => Some(*idx),
-                        Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
-                            ValueType::Table(Some(idx)) => Some(*idx),
-                            _ => None,
-                        }),
-                        _ => None,
-                    }
-                })
-                .or_else(|| {
-                    // `local x = x or CreateFrame(...)` reassignment whose `or`
-                    // collapsed all the way to a bare `table` (the original operand
-                    // was untyped): the class index survives only in the operand
-                    // expressions, so recover it from the constructor side.
-                    type_source
-                        .and_then(|ts| self.or_chain_table_index(ts))
-                        .filter(|idx| idx.is_external())
-                });
-            let Some(table_idx) = table_idx else {
+            let Some(mut table_idx) = self.deferred_receiver_table_idx(sym_idx, ver_idx) else {
                 continue;
             };
+
+            // A colliding method-style def is mirrored onto the receiver's own
+            // per-instance table so a *direct* hover/signature/definition on
+            // `f2:M` resolves `f2`'s definition rather than the sibling `f1`'s that
+            // shares the class overlay. Retyping the symbol to its own instance
+            // table (inheriting the class) matches Lua semantics, where
+            // `function f:M()` mutates the `f` table. The method is STILL attached
+            // to the shared overlay below, so permissive indirect/cross-file
+            // access (`t.frame = f; t.frame:M()`) keeps resolving.
+            let instance_target: Option<TableIndex> = if colliding.contains(&(sym_idx, ver_idx)) {
+                if let Some(&inst) = instance_tables.get(&(sym_idx, ver_idx)) {
+                    // A prior method already split this receiver; keep the overlay
+                    // attach pointed at the external class (the instance's metatable).
+                    if let Some(ext) = self.table(inst).metatable_index {
+                        table_idx = ext;
+                    }
+                    Some(inst)
+                } else if table_idx.is_external() {
+                    let inst = self.instance_table_for_symbol(sym_idx, ver_idx, table_idx);
+                    instance_tables.insert((sym_idx, ver_idx), inst);
+                    Some(inst)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // A method def on a plain local of an external class: the fixpoint
+            // may have bound this receiver's `f:M()` calls to a stale target
+            // (sibling overlay merge, or a cross-file registration on the class)
+            // before this file's own def landed. Flag it for re-resolution.
+            if assign.is_method_def && (instance_target.is_some() || table_idx.is_external()) {
+                method_def_receivers.insert((sym_idx, ver_idx));
+            }
 
             let field_existed = self.class_has_field(table_idx, &assign.field_name);
             self.ir.field_assignments.push(FieldAssignment {
@@ -2524,7 +2538,192 @@ impl<'a> Analysis<'a> {
                     from_scan: false,
                 });
             }
+
+            // Mirror the method onto the receiver's own instance table so a direct
+            // access on the original symbol resolves this exact definition (not a
+            // sibling instance's same-named method merged into the shared overlay).
+            // Only this def's expr — never the overlay's merged `extra_exprs`.
+            if let Some(inst) = instance_target {
+                self.ir.tables[inst.val()].fields.insert(assign.field_name.clone(), FieldInfo {
+                    expr: assign.expr_id,
+                    extra_exprs: Vec::new(),
+                    visibility: vis,
+                    annotation: assign.inline_annotation.clone(),
+                    annotation_text: assign.inline_annotation_text.clone(),
+                    annotation_type_raw: assign.inline_type_raw.clone(),
+                    lateinit: assign.inline_is_lateinit,
+                    def_range: None,
+                    flavor_guard: 0,
+                    description: None,
+                    from_scan: false,
+                });
+            }
         }
+
+        if !method_def_receivers.is_empty() {
+            self.reresolve_method_def_receiver_calls(&method_def_receivers);
+        }
+    }
+
+    /// Re-resolve method calls on every receiver whose method was (re)attached by
+    /// `resolve_deferred_field_assignments`. `call_resolutions` — which drives
+    /// arg-name inlay hints and arg type-mismatch — was populated by the fixpoint
+    /// before this file's def landed, so it may point at a sibling's same-named
+    /// method (same file) or one another file registered on the shared class
+    /// (cross-file). Re-running each call now reads the receiver's own instance
+    /// table (colliding case) or this file's overlay def (which wins over the
+    /// external class field).
+    fn reresolve_method_def_receiver_calls(&mut self, receivers: &HashSet<(SymbolIndex, usize)>) {
+        let calls: Vec<ExprId> = (0..self.ir.exprs.len())
+            .map(ExprId)
+            .filter(|&id| {
+                let Expr::FunctionCall { func, is_method_call: true, .. } = self.ir.expr(id) else {
+                    return false;
+                };
+                let Expr::FieldAccess { table, .. } = self.ir.expr(*func) else {
+                    return false;
+                };
+                let Expr::SymbolRef(s, v) = self.ir.expr(*table) else {
+                    return false;
+                };
+                receivers.contains(&(*s, *v))
+            })
+            .collect();
+        for id in calls {
+            if let Expr::FunctionCall { func, .. } = self.ir.expr(id) {
+                let func = *func;
+                if let Some(slot) = self.resolved_expr_cache.get_mut(func.val()) {
+                    *slot = None;
+                }
+            }
+            if let Some(slot) = self.resolved_expr_cache.get_mut(id.val()) {
+                *slot = None;
+            }
+            self.ir.call_resolutions.remove(&id);
+            self.resolve_expr(id);
+        }
+    }
+
+    /// Resolve the table a deferred field assignment's receiver targets, from its
+    /// captured version's `type_source` then `resolved_type`. Shared by the main
+    /// deferred pass and `detect_colliding_instance_methods`.
+    fn deferred_receiver_table_idx(&self, sym_idx: SymbolIndex, ver_idx: usize) -> Option<TableIndex> {
+        let type_source = self.ir.sym(sym_idx).versions[ver_idx].type_source;
+        type_source
+            .and_then(|ts| self.ir.find_table_index(ts))
+            .or_else(|| {
+                // Don't inject fields into tables obtained from bracket access —
+                // the resolved_type points to the collection's value_type prototype,
+                // not a writable instance.
+                if let Some(ts) = type_source
+                    && matches!(self.ir.expr(ts), Expr::BracketIndex { .. })
+                {
+                    return None;
+                }
+                // NOTE: deliberately NOT descending into a top-level
+                // intersection (`Base & Template`, a concrete frame instance)
+                // here. Attaching to the intersection's base class pollutes the
+                // shared per-file class overlay across *every* instance of that
+                // class — e.g. one instance's `inst.SetValue = nil` (the
+                // "remove method" idiom) would make `SetValue` read as `nil` on
+                // a sibling instance, a false `cannot-call`. `undefined-field`
+                // already treats such instances permissively. The collapsed-`or`
+                // reassignment case is recovered from the operands below.
+                match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
+                    Some(ValueType::Table(Some(idx))) => Some(*idx),
+                    Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
+                        ValueType::Table(Some(idx)) => Some(*idx),
+                        _ => None,
+                    }),
+                    _ => None,
+                }
+            })
+            .or_else(|| {
+                // `local x = x or CreateFrame(...)` reassignment whose `or`
+                // collapsed all the way to a bare `table` (the original operand
+                // was untyped): the class index survives only in the operand
+                // expressions, so recover it from the constructor side.
+                type_source
+                    .and_then(|ts| self.or_chain_table_index(ts))
+                    .filter(|idx| idx.is_external())
+            })
+    }
+
+    /// Find receivers whose method-style def (`function f:M()` / `f.M = function`)
+    /// on a plain local of an external class collides with a same-named method on
+    /// a *different* local of the same class. Returns the (symbol, version) of
+    /// every such receiver. A lone instance is never returned, so its methods stay
+    /// on the shared class overlay and existing single-instance behavior (the
+    /// cross-file return-shape lift, indirect access) is untouched.
+    fn detect_colliding_instance_methods(
+        &self,
+        assignments: &[DeferredFieldAssignment],
+    ) -> HashSet<(SymbolIndex, usize)> {
+        // (external class, method name) -> receivers that define it.
+        let mut by_field: HashMap<(TableIndex, &str), Vec<(SymbolIndex, usize)>> = HashMap::new();
+        for assign in assignments {
+            if !assign.is_method_def || assign.root_name == "self" {
+                continue;
+            }
+            let Some(sym_idx) = self.ir.get_symbol(
+                &SymbolIdentifier::Name(assign.root_name.clone()),
+                assign.scope_idx,
+            ) else {
+                continue;
+            };
+            if sym_idx.is_external() {
+                continue;
+            }
+            let ver_idx = assign
+                .receiver_version
+                .min(self.ir.sym(sym_idx).versions.len().saturating_sub(1));
+            let Some(class_idx) = self.deferred_receiver_table_idx(sym_idx, ver_idx) else {
+                continue;
+            };
+            if !class_idx.is_external() {
+                continue;
+            }
+            by_field
+                .entry((class_idx, assign.field_name.as_str()))
+                .or_default()
+                .push((sym_idx, ver_idx));
+        }
+        let mut colliding = HashSet::new();
+        for receivers in by_field.into_values() {
+            // A collision needs the same method name defined on 2+ distinct locals.
+            if receivers.iter().map(|(s, _)| *s).collect::<HashSet<_>>().len() >= 2 {
+                colliding.extend(receivers);
+            }
+        }
+        colliding
+    }
+
+    /// Create a per-file instance table for a plain local receiver whose type is
+    /// the external class `class_idx`, and retype the symbol version to it. The
+    /// instance table inherits the class (via `parent_classes` for enumeration and
+    /// `metatable_index` for deep field lookup) so all class members still resolve,
+    /// while methods defined on this specific receiver can also land on the
+    /// instance for precise direct-access resolution. Called once per receiver;
+    /// the caller memoizes the result so later methods reuse the same table.
+    fn instance_table_for_symbol(&mut self, sym_idx: SymbolIndex, ver_idx: usize, class_idx: TableIndex) -> TableIndex {
+        let class = self.table(class_idx);
+        let class_name = class.class_name.clone();
+        // Flatten the class into the instance's parents so completion (which walks
+        // one level of `parent_classes`, not the metatable chain) still surfaces
+        // the class's own + directly-inherited members.
+        let mut parent_classes = Vec::with_capacity(class.parent_classes.len() + 1);
+        parent_classes.push(class_idx);
+        parent_classes.extend(class.parent_classes.iter().copied());
+        let instance_idx = TableIndex(self.ir.tables.len());
+        self.ir.tables.push(TableInfo {
+            class_name,
+            parent_classes,
+            metatable_index: Some(class_idx),
+            ..Default::default()
+        });
+        self.ir.symbols[sym_idx.val()].versions[ver_idx].resolved_type =
+            Some(ValueType::Table(Some(instance_idx)));
+        instance_idx
     }
 
     /// After the fixpoint, augment field types with `@narrows-arg` mixins recorded
