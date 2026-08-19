@@ -147,6 +147,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     diff: &ClassicApiDiff,
     wiki_pages: &HashMap<String, String>,
     wiki_redirects: &HashMap<String, String>,
+    wiki_doc_paths: &HashMap<String, String>,
     classic_ui_dirs: &[PathBuf],
     retail_api_doc: Option<&ApiDocData>,
     retail_fxml_consts: &HashMap<String, (String, String)>,
@@ -192,25 +193,29 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     let mut undocumented = 0;
     for name in missing {
         let doc_name = wiki_redirects.get(name).unwrap_or(name);
+        let doc_link = format!(
+            "---[Documentation](https://warcraft.wiki.gg/wiki/{})",
+            wiki_doc_paths.get(name).cloned().unwrap_or_else(|| format!("API_{doc_name}"))
+        );
         if let Some(&ovr) = overrides.get(name.as_str()) {
             out.push(ovr.to_string());
             out.push(String::new());
             documented += 1;
         } else if let Some(wiki) = wiki_pages.get(name) {
-            if let Some(stub) = parse_wikitext(name, wiki, doc_name) {
+            if let Some(stub) = parse_wikitext(name, wiki, doc_name, wiki_doc_paths.get(name).map(String::as_str)) {
                 out.push(stub);
                 out.push(String::new());
                 documented += 1;
             } else {
                 // Include as undocumented
-                out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
+                out.push(doc_link);
                 out.push("---@return ...any".to_string());
                 out.push(format!("function {name}(...) end"));
                 out.push(String::new());
                 undocumented += 1;
             }
         } else {
-            out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
+            out.push(doc_link);
             out.push("---@return ...any".to_string());
             out.push(format!("function {name}(...) end"));
             out.push(String::new());
@@ -237,7 +242,8 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
         for (type_name, method_name) in &diff.missing_widget_methods {
             let wiki_name = format!("{type_name}_{method_name}");
             let doc_name = wiki_redirects.get(&wiki_name).unwrap_or(&wiki_name);
-            out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
+            let doc_path = wiki_doc_paths.get(&wiki_name).cloned().unwrap_or_else(|| format!("API_{doc_name}"));
+            out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/{doc_path})"));
             out.push("---@return ...any".to_string());
             out.push(format!("function {type_name}:{method_name}(...) end"));
             out.push(String::new());

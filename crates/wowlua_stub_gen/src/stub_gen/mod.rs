@@ -168,7 +168,9 @@ const USER_AGENT: &str = "wowlua-ls-stub-generator/1.0";
 /// Max age of the cached raw wiki export dump before a fresh fetch is required (24h).
 const WIKI_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Bump to invalidate all existing wiki-export caches when the request shape changes.
-const WIKI_CACHE_VERSION: u32 = 1;
+/// v2: request both legacy "API Name" and new "API:Name" (ns 3000) titles after the
+/// warcraft.wiki.gg namespace migration.
+const WIKI_CACHE_VERSION: u32 = 2;
 
 /// Gethe/wow-ui-source repo for APIDocumentation and FrameXML constant extraction.
 const WOW_UI_SOURCE_REPO: &str = "https://github.com/Gethe/wow-ui-source.git";

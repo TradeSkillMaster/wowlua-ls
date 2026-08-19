@@ -347,16 +347,16 @@ pub fn regenerate_stubs() {
     all_wiki_names.extend(branch_data.retail_api_names.iter().cloned());
     let all_wiki_names_vec: Vec<String> = all_wiki_names.into_iter().collect();
 
-    let (wiki_pages, wiki_redirects) = if !all_wiki_names_vec.is_empty() {
+    let (wiki_pages, wiki_redirects, wiki_doc_paths) = if !all_wiki_names_vec.is_empty() {
         log::info!("Batch-fetching {} wiki pages...", all_wiki_names_vec.len());
-        let (pages, redirects) = fetch_wiki_pages(&all_wiki_names_vec);
+        let (pages, redirects, doc_paths) = fetch_wiki_pages(&all_wiki_names_vec);
         log::info!("  Got {} wiki pages, {} redirects", pages.len(), redirects.len());
         if pages.is_empty() {
             source_errors.push("wiki pages: empty (export fetch failed)".to_string());
         }
-        (pages, redirects)
+        (pages, redirects, doc_paths)
     } else {
-        (HashMap::new(), HashMap::new())
+        (HashMap::new(), HashMap::new(), HashMap::new())
     };
     phase!("fetch_wiki_pages (HTTP, batch)");
 
@@ -387,6 +387,7 @@ pub fn regenerate_stubs() {
         &classic_diff,
         &wiki_pages,
         &wiki_redirects,
+        &wiki_doc_paths,
         &classic_ui_dirs,
         retail_api_doc.as_ref(),
         &retail_fxml_consts,
@@ -452,7 +453,7 @@ pub fn regenerate_stubs() {
         .filter(|name| !existing_for_dedup.contains(name))
         .collect();
     log::info!("  Wiki names after dedup: {} (filtered from vendor stubs)", wiki_names_filtered.len());
-    let wiki_globals_lua = generate_wiki_stubs(&wiki_names_filtered, &wiki_pages, &wiki_redirects);
+    let wiki_globals_lua = generate_wiki_stubs(&wiki_names_filtered, &wiki_pages, &wiki_redirects, &wiki_doc_paths);
 
     // Step 5b: Write generated stubs to temp dir for scanning
     let gen_dir = scan_tmp.join("generated");
@@ -689,7 +690,14 @@ pub fn regenerate_stubs() {
             let mut rwm = String::from(
                 "---@meta _\n-- Removed-from-retail widget methods (still on Classic clients),\n-- recovered from wiki {{widgetmethod removed=}} pages.\n\n");
             for (type_name, method) in &removed_widget_methods {
-                rwm.push_str(&format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{type_name}_{method})\n"));
+                // Use the real fetched page URL (correct namespace post-migration), falling back
+                // to the legacy form; the `{type}_{method}` key is always present since these
+                // tuples come from collect_removed_widget_methods(&wiki_pages).
+                let doc_path = wiki_doc_paths
+                    .get(&format!("{type_name}_{method}"))
+                    .cloned()
+                    .unwrap_or_else(|| format!("API_{type_name}_{method}"));
+                rwm.push_str(&format!("---[Documentation](https://warcraft.wiki.gg/wiki/{doc_path})\n"));
                 rwm.push_str(&format!("function {type_name}:{method}(...) end\n\n"));
                 branch_data.flavor_map.insert(
                     format!("{type_name}.{method}"),

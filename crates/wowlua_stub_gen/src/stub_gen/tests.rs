@@ -917,9 +917,123 @@ Returns true if the player is on a seasonal realm.
 
 ==Returns==
 :;active:{{apitype|boolean}} - true or false."#;
-    let result = parse_wikitext("C_Seasons.HasActiveSeason", wikitext, "C_Seasons.HasActiveSeason").unwrap();
+    let result = parse_wikitext("C_Seasons.HasActiveSeason", wikitext, "C_Seasons.HasActiveSeason", None).unwrap();
     assert!(result.contains("@return boolean active"), "expected @return boolean, got: {result}");
     assert!(result.contains("function C_Seasons.HasActiveSeason()"), "expected function def, got: {result}");
+}
+
+#[test]
+fn test_wiki_title_to_api_name_both_namespaces() {
+    // warcraft.wiki.gg migrated most function pages from the legacy main namespace
+    // ("API FunctionName") into a dedicated "API:" namespace ("API:FunctionName", ns 3000).
+    // Removed/deprecated pages still use the legacy form. Both title forms — and their
+    // space/underscore-equivalent C_* variants — must normalize to the same internal name,
+    // otherwise the export parser drops every migrated page (regression: only 66 of
+    // thousands of function names survived after the migration).
+    // Legacy main-namespace form (still used by /Removed and /deprecated pages):
+    assert_eq!(wiki_title_to_api_name("API AbbreviateLargeNumbers"), "AbbreviateLargeNumbers");
+    assert_eq!(
+        wiki_title_to_api_name("API C AccountInfo.GetIDFromBattleNetAccountGUID"),
+        "C_AccountInfo.GetIDFromBattleNetAccountGUID"
+    );
+    // New dedicated "API:" namespace form (colon separator, ns 3000):
+    assert_eq!(wiki_title_to_api_name("API:AbbreviateLargeNumbers"), "AbbreviateLargeNumbers");
+    assert_eq!(
+        wiki_title_to_api_name("API:C AccountInfo.GetIDFromBattleNetAccountGUID"),
+        "C_AccountInfo.GetIDFromBattleNetAccountGUID"
+    );
+    // A redirect target uses the new namespace form and must resolve identically to the
+    // legacy source's name so the redirect map collapses to a harmless self-reference.
+    assert_eq!(
+        wiki_title_to_api_name("API AbbreviateLargeNumbers"),
+        wiki_title_to_api_name("API:AbbreviateLargeNumbers")
+    );
+}
+
+#[test]
+fn test_parse_wikitext_strips_nowiki_tags() {
+    // Wiki editors use <nowiki>...</nowiki> to render literal wiki syntax (here a literal
+    // "[[" in the apisig). Without stripping, the tags leaked into the parameter name,
+    // producing `function Math.random(<nowiki></nowiki>low, high)`. This mirrors the real
+    // warcraft.wiki.gg API:Math.random page (entities already decoded by extract_xml_tag).
+    let wikitext = "{{wowapi}}\n\
+        Returns a random number within the specified interval.\n\
+        {{apisig|rand {{=}} math.random(<nowiki>[[</nowiki>low,] high])}}\n\
+        \n\
+        ==Arguments==\n\
+        :;low:{{apitype|number}} - lower integer limit.\n\
+        :;high:{{apitype|number}} - upper integer limit.\n\
+        \n\
+        ==Returns==\n\
+        :;rand:{{apitype|number}} - generated random value.";
+    let result = parse_wikitext("Math.random", wikitext, "Math.random", None).unwrap();
+    assert!(!result.contains("nowiki"), "nowiki tag leaked into stub:\n{result}");
+    // Emitted lowercase because the apisig call name (`math.random`) overrides MediaWiki's
+    // first-letter-capitalized page title — see test_parse_wikitext_corrects_mediawiki_capitalization.
+    assert!(
+        result.contains("function math.random(low, high)"),
+        "expected clean signature, got:\n{result}"
+    );
+}
+
+#[test]
+fn test_parse_wikitext_corrects_mediawiki_capitalization() {
+    // MediaWiki capitalizes the first letter of page titles, so the title `Newproxy` miscases
+    // the real lowercase Lua function `newproxy`. The apisig call expression carries the true
+    // casing, so the emitted function name must be lowercase while the doc link keeps the
+    // (capitalized) wiki page URL.
+    let wikitext = "{{wowapi}}\n\
+        Creates a userdata proxy.\n\
+        {{apisig|proxy {{=}} newproxy(withmetatable)}}\n\
+        \n\
+        ==Arguments==\n\
+        :;withmetatable:{{apitype|boolean}} - give it a metatable.\n\
+        \n\
+        ==Returns==\n\
+        :;proxy:{{apitype|userdata}} - the created proxy.";
+    // The real page lives at API:Newproxy (new namespace); pass that as the doc path.
+    let result = parse_wikitext("Newproxy", wikitext, "Newproxy", Some("API:Newproxy")).unwrap();
+    assert!(
+        result.contains("function newproxy(withmetatable) end"),
+        "expected lowercase apisig name, got:\n{result}"
+    );
+    assert!(
+        result.contains("https://warcraft.wiki.gg/wiki/API:Newproxy"),
+        "doc link should use the real (API:) page URL:\n{result}"
+    );
+
+    // The helper only corrects an exact first-letter capitalization.
+    assert!(is_first_letter_capitalization("newproxy", "Newproxy"));
+    assert!(is_first_letter_capitalization("math.random", "Math.random"));
+    assert!(is_first_letter_capitalization("table.wipe", "Table.wipe"));
+    // A genuinely PascalCase global whose apisig was hand-lowercased differs by more than the
+    // first letter, so the title is NOT overridden.
+    assert!(!is_first_letter_capitalization("setcvar", "SetCVar"));
+    // Already-capitalized names are left untouched.
+    assert!(!is_first_letter_capitalization("GetSpellInfo", "GetSpellInfo"));
+}
+
+#[test]
+fn test_generate_wiki_stubs_dedups_by_emitted_name() {
+    // The wiki's MediaWiki-capitalized "Geterrorhandler" and BlizzardInterfaceResources'
+    // "geterrorhandler" both resolve to the same page (both requested title forms hit it) and
+    // emit the same function after casing correction — it must be emitted only once.
+    let wikitext = "{{wowapi}}\n\
+        Returns the error handler.\n\
+        {{apisig|handler {{=}} geterrorhandler()}}\n\
+        \n\
+        ==Returns==\n\
+        :;handler:{{apitype|function}} - the current error handler.";
+    let mut pages = HashMap::new();
+    pages.insert("Geterrorhandler".to_string(), wikitext.to_string());
+    pages.insert("geterrorhandler".to_string(), wikitext.to_string());
+    let mut doc_paths = HashMap::new();
+    doc_paths.insert("Geterrorhandler".to_string(), "API:Geterrorhandler".to_string());
+    doc_paths.insert("geterrorhandler".to_string(), "API:Geterrorhandler".to_string());
+    let names = vec!["Geterrorhandler".to_string(), "geterrorhandler".to_string()];
+    let out = generate_wiki_stubs(&names, &pages, &HashMap::new(), &doc_paths);
+    let count = out.matches("function geterrorhandler(").count();
+    assert_eq!(count, 1, "expected geterrorhandler emitted once, got {count}:\n{out}");
 }
 
 #[test]
@@ -943,7 +1057,7 @@ Join a chat channel.
 ==Returns==
 :;type:{{apitype|number}} - Channel type.
 :;name:{{apitype|string}} - Channel name."#;
-    let result = parse_wikitext("JoinChannelByName", wikitext, "JoinChannelByName").unwrap();
+    let result = parse_wikitext("JoinChannelByName", wikitext, "JoinChannelByName", None).unwrap();
     assert!(result.contains("@param channelName string"), "channelName stays required: {result}");
     assert!(result.contains("@param password? string"), "password optional: {result}");
     assert!(result.contains("@param frameID? number"), "frameID optional: {result}");
@@ -968,7 +1082,7 @@ Returns spell info.
 :;name:{{apitype|string}} - The name.
 :;icon:{{apitype|number}} - The icon.
 :;castTime:{{apitype|number}} - Cast time."#;
-    let result = parse_wikitext("GetSpellInfo", wikitext, "GetSpellInfo").unwrap();
+    let result = parse_wikitext("GetSpellInfo", wikitext, "GetSpellInfo", None).unwrap();
     assert!(result.contains("function GetSpellInfo(spell) end"), "primary form: {result}");
     assert!(result.contains("@param spell any"), "primary param: {result}");
     assert!(
@@ -996,7 +1110,7 @@ Returns 1 if in range.
 
 ==Returns==
 :;inRange:{{apitype|number?}} - 1, 0, or nil."#;
-    let result = parse_wikitext("IsSpellInRange", wikitext, "IsSpellInRange").unwrap();
+    let result = parse_wikitext("IsSpellInRange", wikitext, "IsSpellInRange", None).unwrap();
     assert!(result.contains("function IsSpellInRange(spellName, unit) end"), "primary form: {result}");
     assert!(result.contains("@return number? inRange"), "primary return: {result}");
     assert!(
@@ -1017,7 +1131,7 @@ Returns the item quality.
 
 ==Returns==
 :;itemQuality:{{apitype|number}} - The quality."#;
-    let result = parse_wikitext("C_Item.GetItemQuality", wikitext, "C_Item.GetItemQuality").unwrap();
+    let result = parse_wikitext("C_Item.GetItemQuality", wikitext, "C_Item.GetItemQuality", None).unwrap();
     assert!(result.contains("function C_Item.GetItemQuality(itemLocation) end"), "primary form: {result}");
     assert!(!result.contains("@overload"), "distinct-named form must not become an overload: {result}");
 }
@@ -1032,7 +1146,7 @@ Build info.
 
 ==Returns==
 :;version:{{apitype|string}} - The version."#;
-    let result = parse_wikitext("GetBuildInfo", wikitext, "GetBuildInfo").unwrap();
+    let result = parse_wikitext("GetBuildInfo", wikitext, "GetBuildInfo", None).unwrap();
     assert!(result.contains("function GetBuildInfo() end"), "primary form: {result}");
     assert!(!result.contains("@overload"), "identical repeated form must be deduped: {result}");
 }

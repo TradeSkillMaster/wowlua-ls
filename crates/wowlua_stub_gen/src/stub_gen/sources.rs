@@ -54,7 +54,20 @@ pub(in crate::stub_gen) fn fetch_url(url: &str, post_data: Option<&[(&str, &str)
         ureq::get(url).set("User-Agent", USER_AGENT).call()
     };
     match result {
-        Ok(resp) => resp.into_string().map_err(|e| e.to_string()),
+        Ok(resp) => {
+            use std::io::Read;
+            // Special:Export returns tens of MB of wikitext for the full function set — well
+            // over ureq's 10 MB into_string() cap — so read via the response reader with a
+            // higher safety limit. 256 MB is many times the real export size, so it bounds a
+            // runaway/malformed response without truncating legitimate content.
+            const MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
+            let mut buf = String::new();
+            resp.into_reader()
+                .take(MAX_RESPONSE_BYTES)
+                .read_to_string(&mut buf)
+                .map_err(|e| e.to_string())?;
+            Ok(buf)
+        }
         Err(e) => Err(e.to_string()),
     }
 }
@@ -223,7 +236,27 @@ pub(in crate::stub_gen) fn read_fresh_cache(path: &Path, ttl_secs: u64) -> Optio
 }
 
 
-pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<String, String>, HashMap<String, String>) {
+/// Convert a returned wiki page title to the canonical internal API name.
+///
+/// warcraft.wiki.gg migrated most function pages from the legacy main namespace
+/// ("API FunctionName") into a dedicated "API:" namespace ("API:FunctionName", ns 3000);
+/// removed/deprecated pages still use the legacy form. Strip whichever prefix is present and
+/// normalize spaces to underscores (MediaWiki treats them as equivalent in titles) so that
+/// both "API:C AccountInfo.Foo" and "API C AccountInfo.Foo" yield "C_AccountInfo.Foo".
+pub(in crate::stub_gen) fn wiki_title_to_api_name(title: &str) -> String {
+    title
+        .strip_prefix("API:")
+        .or_else(|| title.strip_prefix("API "))
+        .unwrap_or(title)
+        .replace(' ', "_")
+}
+
+/// Returns `(pages, redirects, doc_paths)` all keyed by canonical api_name. `doc_paths` maps
+/// each fetched page to its real wiki URL path (the title with spaces as underscores), which
+/// after the API: namespace migration is the only reliable way to build a working doc link —
+/// migrated pages live at `API:Name` (no legacy `API_Name` redirect), while removed/deprecated
+/// pages remain at `API Name` (ns 0).
+pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
     // NOTE: This is intentionally a single request. The MediaWiki Special:Export endpoint is
     // behind Cloudflare, which rejects concurrent requests with HTTP 403/429 and can
     // temporarily challenge-block the source IP. Splitting this into parallel chunked requests
@@ -260,15 +293,20 @@ pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<St
         );
         cached
     } else {
+        // Request both the legacy "API Name" (main namespace) and the newer "API:Name"
+        // (dedicated API namespace, ns 3000) titles. Most functions migrated to the "API:"
+        // namespace where the real wikitext now lives, while removed/deprecated pages remain
+        // in the legacy namespace. The legacy titles are now redirects, so requesting only
+        // them — the previous behavior — exported redirect stubs instead of page content.
         let pages_text: String = api_names.iter()
-            .map(|n| format!("API {n}"))
+            .flat_map(|n| [format!("API {n}"), format!("API:{n}")])
             .collect::<Vec<_>>()
             .join("\n");
         let fetched = match fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text), ("curonly", "1")])) {
             Ok(text) => text,
             Err(e) => {
                 log::error!("Wiki export failed: {e} — wiki pages will be empty");
-                return (HashMap::new(), HashMap::new());
+                return (HashMap::new(), HashMap::new(), HashMap::new());
             }
         };
         // Best-effort cache write — a failure here only costs a re-fetch next run.
@@ -284,17 +322,21 @@ pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<St
 
     let mut pages = HashMap::new();
     let mut redirects = HashMap::new();
+    let mut doc_paths = HashMap::new();
     for page_text in xml_text.split("<page>").skip(1) {
         let title = extract_xml_tag(page_text, "title").unwrap_or_default();
-        let api_name = title.replace("API ", "").replace(' ', "_");
+        let api_name = wiki_title_to_api_name(&title);
         if page_text.contains("<redirect") {
             if let Some(redir_title) = extract_xml_attr(page_text, "redirect", "title") {
-                let target = redir_title.replace("API ", "").replace(' ', "_");
+                let target = wiki_title_to_api_name(&redir_title);
                 redirects.insert(api_name, target);
             }
             continue;
         }
         if let Some(text) = extract_xml_tag(page_text, "text") {
+            // Canonical URL path = title with spaces as underscores (MediaWiki treats them
+            // equivalently), preserving the namespace prefix (`API:` vs legacy `API `).
+            doc_paths.insert(api_name.clone(), title.replace(' ', "_"));
             pages.insert(api_name, text);
         }
     }
@@ -312,13 +354,17 @@ pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<St
         }
         resolved_redirects.insert(from.clone(), target);
     }
-    // Copy target page wikitext to redirect sources
+    // Copy target page wikitext to redirect sources, and point their doc link at the
+    // target's real page (where the content — and a working URL — actually lives).
     for (from, to) in &resolved_redirects {
         if let Some(text) = pages.get(to) {
             pages.insert(from.clone(), text.clone());
         }
+        if let Some(path) = doc_paths.get(to).cloned() {
+            doc_paths.entry(from.clone()).or_insert(path);
+        }
     }
-    (pages, resolved_redirects)
+    (pages, resolved_redirects, doc_paths)
 }
 
 
@@ -370,8 +416,14 @@ pub(in crate::stub_gen) fn fetch_wiki_function_names() -> Vec<String> {
             if let Some(members) = json["query"]["categorymembers"].as_array() {
                 for member in members {
                     if let Some(title) = member["title"].as_str() {
-                        // Pages are "API FunctionName"; skip non-API pages like "Global functions"
-                        if let Some(name) = title.strip_prefix("API ") {
+                        // Function pages are titled "API FunctionName" in the legacy main
+                        // namespace, or "API:FunctionName" in the dedicated API namespace
+                        // (ns 3000) that warcraft.wiki.gg migrated most functions into.
+                        // Accept either prefix; skip non-API pages like "Global functions".
+                        if let Some(name) = title
+                            .strip_prefix("API ")
+                            .or_else(|| title.strip_prefix("API:"))
+                        {
                             names.push(name.replace(' ', "_"));
                             cat_count += 1;
                         }

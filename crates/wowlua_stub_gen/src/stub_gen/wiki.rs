@@ -256,10 +256,54 @@ pub(in crate::stub_gen) fn extract_xml_attr(xml: &str, tag: &str, attr: &str) ->
 }
 
 
-/// Parse wiki markup for a single API into annotated Lua stub.
+/// Strip MediaWiki `<nowiki>` / `</nowiki>` / `<nowiki/>` tags, keeping the enclosed literal
+/// text. Wiki editors use them to render literal wiki syntax (e.g. `<nowiki>[[</nowiki>` to
+/// show a literal `[[`); without stripping, the tags leak into parsed param/return names —
+/// e.g. `math.random(<nowiki>[[</nowiki>low,] high])` produced
+/// `function Math.random(<nowiki></nowiki>low, high)`.
+fn strip_nowiki_tags(s: &str) -> String {
+    regex_lite::Regex::new(r"(?i)</?nowiki\s*/?>")
+        .unwrap()
+        .replace_all(s, "")
+        .into_owned()
+}
+
+/// MediaWiki auto-capitalizes the first letter of every page title (`$wgCapitalLinks`), so a
+/// page-title-derived name miscases lowercase-first Lua functions — `API:Newproxy` documents
+/// `newproxy`, `API:Math.random` documents `math.random`. Returns true when `title` is exactly
+/// `real` with its first ASCII letter uppercased (and `real` genuinely starts lowercase), i.e.
+/// the difference is only that MediaWiki artifact. Deliberately strict — a name differing by
+/// more than the first letter is treated as a real difference, not a miscapitalization, so a
+/// hand-authored apisig that lowercases a genuinely PascalCase global isn't trusted over it.
+pub(in crate::stub_gen) fn is_first_letter_capitalization(real: &str, title: &str) -> bool {
+    let mut chars = real.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_lowercase() => {
+            first.to_ascii_uppercase().to_string() + chars.as_str() == title
+        }
+        _ => false,
+    }
+}
+
+/// Parse wiki markup for a single API into an annotated Lua stub.
 /// `doc_name` is the canonical wiki page name (differs from `api_name` for redirects).
-pub(in crate::stub_gen) fn parse_wikitext(api_name: &str, wikitext: &str, doc_name: &str) -> Option<String> {
-    let doc_link = format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})");
+/// `doc_url_path` is the real fetched page URL path (the part after `/wiki/`), which carries
+/// the correct `API:`/`API_` namespace after the migration; when `None`, the doc link falls
+/// back to the legacy `API_<doc_name>` form.
+pub(in crate::stub_gen) fn parse_wikitext(
+    api_name: &str,
+    wikitext: &str,
+    doc_name: &str,
+    doc_url_path: Option<&str>,
+) -> Option<String> {
+    let wikitext_clean = strip_nowiki_tags(wikitext);
+    let wikitext = wikitext_clean.as_str();
+    // Prefer the real fetched page URL path (which carries the correct namespace after the
+    // API: migration); fall back to the legacy `API_<name>` form when we have no page title.
+    let doc_link = match doc_url_path {
+        Some(path) => format!("---[Documentation](https://warcraft.wiki.gg/wiki/{path})"),
+        None => format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"),
+    };
 
     // Check for embedded LuaLS annotations
     let luals_re = regex_lite::Regex::new(r"(?s)<!-- luals\n(.*?)\n-->").unwrap();
@@ -477,7 +521,16 @@ pub(in crate::stub_gen) fn parse_wikitext(api_name: &str, wikitext: &str, doc_na
     if has_vararg_param {
         all_args.push("...".to_string());
     }
-    lines.push(format!("function {api_name}({}) end", all_args.join(", ")));
+    // Prefer the apisig call name's casing over the page-title name when they differ only by
+    // MediaWiki's first-letter capitalization, so lowercase-first Lua functions emit correctly
+    // (`function math.random(...)`, `function newproxy(...)`) instead of a bogus capitalized
+    // global (`Math.random`, `Newproxy`). The doc link keeps the real (capitalized) page URL.
+    let emit_name = if is_first_letter_capitalization(func_name, api_name) {
+        func_name
+    } else {
+        api_name
+    };
+    lines.push(format!("function {emit_name}({}) end", all_args.join(", ")));
 
     Some(lines.join("\n"))
 }
@@ -543,6 +596,8 @@ fn parse_apisig_call_args(orig_args: &str) -> (Vec<String>, bool, HashSet<String
 ///
 /// Returns `None` if no useful annotations could be parsed from the wiki page.
 pub(in crate::stub_gen) fn parse_widget_wiki_annotations(wikitext: &str, param_names: &[&str]) -> Option<Vec<String>> {
+    let wikitext_clean = strip_nowiki_tags(wikitext);
+    let wikitext = wikitext_clean.as_str();
     // Check for embedded LuaLS annotations — extract @param/@return lines from them
     let luals_re = regex_lite::Regex::new(r"(?s)<!-- luals\n(.*?)\n-->").unwrap();
     if let Some(c) = luals_re.captures(wikitext) {
@@ -908,36 +963,76 @@ pub(in crate::stub_gen) fn enrich_widget_stubs(
 // ── Wiki-documented global stubs (replaces Ketho's Wiki.lua) ──────────────────
 
 
+/// Extract the emitted global function name from a generated stub block (its trailing
+/// `function NAME(...) end` line). Used to dedup stubs that resolve to the same function — e.g.
+/// the wiki's MediaWiki-capitalized `Geterrorhandler` and BlizzardInterfaceResources'
+/// `geterrorhandler` both fetch the same page and emit `function geterrorhandler()`.
+pub(in crate::stub_gen) fn stub_function_name(stub: &str) -> Option<String> {
+    stub.lines().find_map(|l| {
+        l.strip_prefix("function ")
+            .and_then(|rest| rest.split('(').next())
+            .map(|s| s.trim().to_string())
+    })
+}
+
 /// Generate stubs for non-Blizzard-documented global functions using pre-fetched wiki data.
 /// Functions with a wiki page are parsed for parameter/return annotations.
 /// Functions without a wiki page or whose markup can't be parsed get a bare
-/// `function name(...) end` stub with just a doc link.
+/// `function name(...) end` stub with just a doc link. Stubs are deduplicated by emitted
+/// function name (first occurrence wins).
 pub(in crate::stub_gen) fn generate_wiki_stubs(
     names: &[String],
     wiki_pages: &HashMap<String, String>,
     wiki_redirects: &HashMap<String, String>,
+    wiki_doc_paths: &HashMap<String, String>,
 ) -> String {
     let mut out = vec![
         "---@meta _".to_string(),
         "-- Wiki-documented WoW API stubs (auto-generated from warcraft.wiki.gg)".to_string(),
         String::new(),
     ];
-    let mut documented = 0;
-    let mut undocumented = 0;
+    // Parse every documented stub once up front and record which emitted function names are
+    // backed by a real wiki page. This makes a documented stub always win over a bare fallback
+    // for the same name — independent of iteration order — without a second parse pass, while
+    // the emission loop below preserves the original ordering.
+    let mut doc_stubs: HashMap<&str, String> = HashMap::new();
+    let mut documented_fn_names: HashSet<String> = HashSet::new();
     for name in names {
         let doc_name = wiki_redirects.get(name).unwrap_or(name);
+        let doc_path = wiki_doc_paths.get(name).map(String::as_str);
         if let Some(wikitext) = wiki_pages.get(name)
-            && let Some(stub) = parse_wikitext(name, wikitext, doc_name) {
-                out.push(stub);
+            && let Some(stub) = parse_wikitext(name, wikitext, doc_name, doc_path) {
+                if let Some(f) = stub_function_name(&stub) {
+                    documented_fn_names.insert(f);
+                }
+                doc_stubs.insert(name.as_str(), stub);
+            }
+    }
+
+    let mut documented = 0;
+    let mut undocumented = 0;
+    let mut emitted: HashSet<String> = HashSet::new();
+    for name in names {
+        if let Some(stub) = doc_stubs.get(name.as_str()) {
+            // Documented — dedup by emitted function name (differently-cased names, e.g. the
+            // wiki's `Geterrorhandler` and BlizzardInterfaceResources' `geterrorhandler`, can
+            // resolve to the same page and emit the same function after casing correction).
+            if stub_function_name(stub).map(|f| emitted.insert(f)).unwrap_or(true) {
+                out.push(stub.clone());
                 out.push(String::new());
                 documented += 1;
-                continue;
             }
-        out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
-        out.push("---@return ...any".to_string());
-        out.push(format!("function {name}(...) end"));
-        out.push(String::new());
-        undocumented += 1;
+        } else if !documented_fn_names.contains(name.as_str()) && emitted.insert(name.clone()) {
+            // Bare fallback — only when no documented stub produces this function name, so a
+            // documented stub is never shadowed by the bare form.
+            let doc_name = wiki_redirects.get(name).unwrap_or(name);
+            let doc_path = wiki_doc_paths.get(name).cloned().unwrap_or_else(|| format!("API_{doc_name}"));
+            out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/{doc_path})"));
+            out.push("---@return ...any".to_string());
+            out.push(format!("function {name}(...) end"));
+            out.push(String::new());
+            undocumented += 1;
+        }
     }
     log::info!("  Wiki stubs: {documented} documented, {undocumented} undocumented");
 
