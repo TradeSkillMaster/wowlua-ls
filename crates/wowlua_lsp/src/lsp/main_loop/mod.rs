@@ -3225,6 +3225,55 @@ mod tests {
         (paths, Arc::new(pg), configs)
     }
 
+    /// Regression for the multi-file re-entrancy cycle in
+    /// `resolve_deferred_class_field_type` (see the guard comment there for the
+    /// mechanism): a `@class` assigned across many files, each reading its coarse
+    /// fields, formerly hung the deferred harvest on load. Analyzing the trigger file
+    /// must finish within the deadline; runs on a worker thread so a regression fails
+    /// as a clean timeout, not a hung test binary.
+    #[test]
+    fn deferred_class_field_harvest_terminates_across_many_files() {
+        let scan_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/deferred-field-cycle");
+        let mut configs = crate::config::ProjectConfigs::default();
+        configs.try_load(&scan_dir);
+        let scan = crate::lsp::scan_workspace(std::slice::from_ref(&scan_dir), &mut configs);
+
+        // `build_on_stubs` (not `build`) is what populates `deferred_class_field_paths` —
+        // the map that gates the cross-file field harvest at fault here. An empty stub
+        // base is fine: the deferred paths come from the workspace classes, not the base.
+        let mut aliases = scan.aliases.clone();
+        crate::annotations::register_event_type_aliases(&mut aliases, &scan.events);
+        let empty = PreResolvedGlobals::empty();
+        let mut pg = PreResolvedGlobals::build_on_stubs(
+            &empty, &scan.globals, &scan.classes, &aliases, false,
+            &scan.addon_ns_class_files, &scan.callable_classes,
+        );
+        pg.merge_events(&scan.events);
+        // The harvest reads project settings off the ext table, so it must be set.
+        pg.set_project_configs(Arc::new(configs.clone()));
+        let pre_globals = Arc::new(pg);
+        let configs = Arc::new(configs);
+
+        // Reading a coarse cross-file field in the trigger file kicks off the harvest of
+        // the many-file class — the exact operation that formerly looped.
+        let trigger = scan_dir.join("trigger.lua");
+        let text = std::fs::read_to_string(&trigger).expect("fixture trigger.lua must exist");
+        let uri = crate::lsp::uri::abs_path_to_uri(&trigger).expect("trigger uri");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let tree = parse_lua(&text);
+            let _ = analyze_lua_parsed(&uri, &pre_globals, &configs, &tree);
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(60)).is_ok(),
+            "deferred cross-file class-field harvest did not terminate within 60s — the \
+             multi-file re-entrancy guard in resolve_deferred_class_field_type regressed",
+        );
+    }
+
     #[test]
     fn crossfile_diagnostics_separated_from_per_file() {
         // compute_ws_diagnostics must return cross-file unused-function items

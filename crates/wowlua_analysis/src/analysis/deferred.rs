@@ -154,6 +154,59 @@ thread_local! {
     static IN_PROGRESS: RefCell<HashSet<PathBuf>> = RefCell::new(HashSet::new());
 }
 
+/// RAII owner of one or more [`IN_PROGRESS`] entries. Clears them on drop —
+/// **including on unwind** — so a panic inside a harvest can't leave a path marked
+/// in-progress forever. Analysis runs on persistent, reused rayon workers whose
+/// panics are caught (the server keeps serving), so a leaked path would otherwise
+/// silently short-circuit every later harvest of that file *on that worker* to the
+/// coarse placeholder — persistent precision loss with no obvious cause.
+struct InProgressGuard(Vec<PathBuf>);
+
+impl InProgressGuard {
+    /// Mark `path` in-progress and take ownership of clearing it. `None` if a caller
+    /// up the stack already holds it — a cycle; the caller bails to the coarse
+    /// fallback for this edge.
+    fn enter(path: PathBuf) -> Option<Self> {
+        IN_PROGRESS
+            .with(|set| set.borrow_mut().insert(path.clone()))
+            .then(|| Self(vec![path]))
+    }
+
+    /// Multi-path variant: start empty, then [`Self::mark`] each path. Every path
+    /// this guard actually enters is cleared together on drop.
+    fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Mark `path` in-progress under this guard unless it is already in-progress
+    /// (held by this guard or a caller up the stack). Returns whether it was newly
+    /// entered.
+    fn mark(&mut self, path: &Path) -> bool {
+        if IN_PROGRESS.with(|set| set.borrow_mut().insert(path.to_path_buf())) {
+            self.0.push(path.to_path_buf());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The paths this guard owns (and will clear on drop).
+    fn owned(&self) -> &[PathBuf] {
+        &self.0
+    }
+}
+
+impl Drop for InProgressGuard {
+    fn drop(&mut self) {
+        IN_PROGRESS.with(|set| {
+            let mut set = set.borrow_mut();
+            for path in &self.0 {
+                set.remove(path);
+            }
+        });
+    }
+}
+
 impl Ir {
     /// Ensure the per-file `overlay` holds a precise `Function` for `func_idx`
     /// when it is a deferred (body-derived) external function. Idempotent: an
@@ -351,17 +404,11 @@ pub fn resolve_deferred_sig(
     let path = ext.function_locations.get(&func_idx)?.path.clone();
 
     // Re-entrancy / cycle guard: if this file is already being analyzed on the
-    // stack, bail to the coarse fallback for this edge.
-    let entered = IN_PROGRESS.with(|set| set.borrow_mut().insert(path.clone()));
-    if !entered {
-        return None;
-    }
+    // stack, bail to the coarse fallback for this edge. The guard clears the entry
+    // on drop, even if `harvest_file` panics.
+    let _guard = InProgressGuard::enter(path.clone())?;
 
     harvest_file(ext, &path);
-
-    IN_PROGRESS.with(|set| {
-        set.borrow_mut().remove(&path);
-    });
 
     // The harvest filled the memo for every deferred function in this file
     // (including `func_idx`, if it was resolvable). Read it back out.
@@ -502,16 +549,10 @@ pub fn resolve_deferred_call_global_type(
     // Re-entrancy / cycle guard: if this file is already being analyzed on the
     // stack (e.g. the defining file reads its own created global), bail for this
     // edge — the nested harvest below still fills the memo from a fresh analysis.
-    let entered = IN_PROGRESS.with(|set| set.borrow_mut().insert(path.clone()));
-    if !entered {
-        return None;
-    }
+    // The guard clears the entry on drop, even if the harvest panics.
+    let _guard = InProgressGuard::enter(path.clone())?;
 
     harvest_call_globals_in_file(ext, &path);
-
-    IN_PROGRESS.with(|set| {
-        set.borrow_mut().remove(&path);
-    });
 
     ext.deferred_call_global_cache
         .read()
@@ -602,17 +643,11 @@ pub fn resolve_deferred_field_type_args(
     let path = ext.deferred_field_type_args.get(&key)?.path.clone();
 
     // Re-entrancy / cycle guard: if this file is already being analyzed on the
-    // stack, bail for this edge — the nested harvest still fills the memo.
-    let entered = IN_PROGRESS.with(|set| set.borrow_mut().insert(path.clone()));
-    if !entered {
-        return None;
-    }
+    // stack, bail for this edge — the nested harvest still fills the memo. The
+    // guard clears the entry on drop, even if the harvest panics.
+    let _guard = InProgressGuard::enter(path.clone())?;
 
     harvest_field_type_args_in_file(ext, &path);
-
-    IN_PROGRESS.with(|set| {
-        set.borrow_mut().remove(&path);
-    });
 
     ext.deferred_field_type_args_cache
         .read()
@@ -728,21 +763,32 @@ pub fn resolve_deferred_class_field_type(
     //     are cached in the same pass, so a file declaring N classes is analyzed once,
     //     not once per class's first cross-file field read.
     let mut acc: HashMap<(String, String), (Vec<ValueType>, bool)> = HashMap::new();
+
+    // Re-entrancy / cycle guard: mark *every* declaring/assigning file of this class as
+    // in-progress for the whole harvest — not one at a time — and clear them only once the
+    // harvest is done (when `guard` drops). A class assigned across several files (e.g. an
+    // addon table whose fields are set in many modules) is analyzed here file by file;
+    // while analyzing one file, the fresh sub-analysis resolves this same class's fields
+    // again. If the guard cleared each path right after its own accumulate (as an earlier
+    // per-file guard did), an *already-accumulated sibling* file would no longer be marked
+    // and the re-entrant read would sail through — re-analyzing the whole file set, never
+    // satisfying `complete`, never caching, and recursing without bound (an unbounded
+    // re-harvest that hung the server on load of such a workspace). Holding all paths for
+    // the harvest's duration means any re-entrant read of this class through any of its
+    // files sees them in-progress, keeps the coarse placeholder, and returns — breaking
+    // the cycle. Files already in-progress from an outer harvest on this thread's stack
+    // aren't ours (the guard owns only the paths it actually entered), and their presence
+    // marks this accumulation incomplete so it isn't cached, letting the eventual outer
+    // (non-cyclic) read fill the memo.
+    let mut guard = InProgressGuard::empty();
     let mut complete = true;
     for path in paths {
-        // Re-entrancy / cycle guard: a file already being analyzed on this thread's
-        // stack can't contribute for this edge. Mark the accumulation incomplete and
-        // skip caching, so a later top-level (non-cyclic) read harvests the full set —
-        // matching the old single-file guard's "no cache on the back-edge".
-        let entered = IN_PROGRESS.with(|set| set.borrow_mut().insert(path.clone()));
-        if !entered {
+        if !guard.mark(path) {
             complete = false;
-            continue;
         }
+    }
+    for path in guard.owned() {
         accumulate_class_fields_in_file(ext, path, &mut acc);
-        IN_PROGRESS.with(|set| {
-            set.borrow_mut().remove(path);
-        });
     }
     if !complete {
         // A cyclic edge left the accumulation partial — keep the coarse placeholder for
