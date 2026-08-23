@@ -1847,6 +1847,42 @@ fn self_field_libstub_idiom_defining_file_keeps_typed_defaults() {
     });
 }
 
+// Methods defined via `function <@class-typed-local>:Method()` inside a function body
+// join the class's cross-file method set (harvested by the coarse scan, which does not
+// otherwise descend into function bodies). Without this, a call site reaching an
+// instance through a `table<K, V>` / class-field receiver — which resolves to the
+// external class table — false-positives `undefined-field` on the method, both in the
+// defining file and across files.
+#[test]
+fn nested_class_method_same_file() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/nested-class-method-crossfile/def.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/nested-class-method-crossfile"),
+    });
+}
+
+#[test]
+fn nested_class_method_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/nested-class-method-crossfile/use.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/nested-class-method-crossfile"),
+    });
+}
+
+// A NON-`@class` local re-declaration that shadows an enclosing `@class`-typed name must
+// drop it from scope, so a method defined on the shadowing local is not mis-attributed to
+// the outer class (masking a real `undefined-field`).
+#[test]
+fn nested_class_method_shadowing_local() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/nested-class-method-crossfile/shadow.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/nested-class-method-crossfile"),
+    });
+}
+
 #[test]
 fn self_field_chain_scalar() {
     // Regression: a chained-funcall self-field whose chain returns a scalar

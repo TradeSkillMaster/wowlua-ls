@@ -580,6 +580,102 @@ fn build_func_external(
     }
 }
 
+/// Harvest methods defined as `function <local>:Method()` / `function <local>.Method()`
+/// where `<local>` is a `@class`-annotated local, when the definition sits *inside a
+/// function body*. The coarse scan and the self-field scanners drive off
+/// `collect_statements_recursive`, which flattens control-flow but deliberately does
+/// not descend into function bodies — so the common "a factory types a local and hangs
+/// methods on it" idiom
+///
+/// ```lua
+/// function Module:InitButton(button)
+///     --- @class Btn : Button
+///     local button = button;
+///     function button:RegisterSpell(id) ... end   -- nested in InitButton's body
+/// end
+/// ```
+///
+/// never contributes `Btn`'s methods to the cross-file class table. Call sites that
+/// reach a `Btn` instance through a `table<K, V>` / class-field receiver resolve to that
+/// (external) class table — not the per-file live table `build_ir` harvests these onto —
+/// and then false-positive `undefined-field` on the method (both same-file and
+/// cross-file). This walk fills that gap so the two representations agree.
+///
+/// Scoping is lexical: each function body inherits its enclosing scopes' `@class`-typed
+/// locals, minus any shadowed by the function's own parameters, plus the locals it
+/// declares. Emission is gated on being inside a function body (`in_body`), keeping it
+/// disjoint from the coarse pass (top-level + control-flow) so no method is emitted
+/// twice.
+fn scan_nested_typed_local_methods(
+    block: &Block<'_>,
+    inherited: &HashMap<String, String>,
+    in_body: bool,
+    owned_path: Option<&Path>,
+    out: &mut Vec<ExternalGlobal>,
+) {
+    let mut stmts = Vec::new();
+    collect_statements_recursive(block, &mut stmts);
+
+    // Nothing is emitted or recursed into except at a `FunctionDefinition`; a body with
+    // none needs no scope, so skip the annotation-parsing `build_var_to_class` pass.
+    if !stmts.iter().any(|s| matches!(s, Statement::FunctionDefinition(_))) {
+        return;
+    }
+
+    // This scope's `@class`-typed locals: inherited (enclosing) + declared here. A local
+    // declared in this body shadows an enclosing name — drop the inherited entry (as the
+    // param removal below does), then re-insert the body's own `@class`-typed locals so a
+    // retype like `local x = x --[[@class C]]` still establishes `x`.
+    let mut scope = inherited.clone();
+    for stmt in &stmts {
+        match stmt {
+            Statement::LocalAssign(a) => {
+                if let Some(nl) = a.name_list() {
+                    for n in nl.names() { scope.remove(&n); }
+                }
+            }
+            Statement::FunctionDefinition(f) if f.is_local() => {
+                if let Some(n) = f.name() { scope.remove(&n); }
+            }
+            _ => {}
+        }
+    }
+    for (name, class) in build_var_to_class(&stmts) {
+        scope.insert(name, class);
+    }
+
+    for stmt in &stmts {
+        let Statement::FunctionDefinition(func) = stmt else { continue };
+        if in_body
+            && let Some(ident) = func.identifier() {
+                let names = ident.names();
+                if names.len() >= 2
+                    && let Some(class_name) = scope.get(&names[0]) {
+                        let is_colon = ident.is_call_to_self();
+                        let intermediates: Vec<String> = names[1..names.len() - 1].to_vec();
+                        let method_name = names[names.len() - 1].clone();
+                        let base = build_func_external(func, func.syntax(), is_colon, owned_path);
+                        out.push(ExternalGlobal {
+                            name: class_name.clone(),
+                            kind: ExternalGlobalKind::Method(intermediates, method_name, is_colon),
+                            ..base
+                        });
+                    }
+            }
+        if let Some(body) = func.block() {
+            // A parameter shadows an enclosing `@class`-typed local of the same name,
+            // so a `function <param>:M()` inside the body is not on that outer class.
+            let mut child = scope.clone();
+            if let Some(pl) = func.params() {
+                for p in pl.parameters() {
+                    child.remove(&p);
+                }
+            }
+            scan_nested_typed_local_methods(&body, &child, true, owned_path, out);
+        }
+    }
+}
+
 // ── Dynamic global prefix scanning ──────────────────────────────────────────
 
 /// Minimum length for a string literal in `_G["PREFIX"..k]` to be considered
@@ -1809,6 +1905,10 @@ pub fn scan_file_globals_with_synth(
             });
         }
     }
+
+    // Methods hung on `@class`-typed locals *inside* function bodies (the coarse
+    // scan above only reaches top-level + control-flow statements).
+    scan_nested_typed_local_methods(&block, &HashMap::new(), false, owned_path.as_deref(), &mut globals);
 
     let addon_ns_class = addon_ns_var.as_ref()
         .and_then(|var| class_vars.get(var))
