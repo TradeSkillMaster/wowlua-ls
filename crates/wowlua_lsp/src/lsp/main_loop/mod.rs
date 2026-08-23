@@ -3274,6 +3274,139 @@ mod tests {
         );
     }
 
+    /// A dirty document with genuine pending edits must NOT be batched by
+    /// `try_batch_analyze` — it has to go through the sequential Phase 4 path, which
+    /// invalidates the file's deferred cross-file `@class` field memo and re-marks the
+    /// documents that harvested from it. Batching it instead left cross-file field
+    /// types (and their diagnostics) stale in referencing files until a close+reopen —
+    /// the "analysis doesn't pick up changes" report this guards against. Unmodified
+    /// dirty docs (post-rebuild warming) still batch.
+    #[test]
+    fn batch_analyze_skips_documents_with_pending_edits() {
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+
+        // Three trivial dirty docs, seeded into the ws scan maps so `would_rebuild`
+        // is false (the only other reason `try_batch_analyze` bails). Trivial content
+        // scans to empty globals/classes/aliases regardless of synth/protected config,
+        // so the seed matches whatever the batch recomputes.
+        let mut documents: HashMap<String, Document> = HashMap::new();
+        let uris: Vec<String> = (0..3).map(|i| format!("file:///project/f{i}.lua")).collect();
+        for uri_str in &uris {
+            let uri: lsp_types::Uri = uri_str.parse().unwrap();
+            let path = uri_to_abs_path(&uri).unwrap();
+            let src = "local x = 1\n";
+            let tree = crate::syntax::parser::parse(src);
+            let root = crate::syntax::SyntaxNode::new_root(&tree);
+            let (mut globals, _) = crate::annotations::scan_file_globals_with_synth(
+                root, Some(&path), crate::annotations::CorrelatedReturns::Skip,
+                crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::new());
+            let scan = crate::annotations::scan_all_annotations(root);
+            super::scan::mark_meta_globals(&mut globals, scan.has_meta);
+            ws.ws_file_globals.insert(path.clone(), globals);
+            ws.ws_file_classes.insert(path.clone(), scan.classes);
+            ws.ws_file_aliases.insert(path.clone(), scan.aliases);
+            documents.insert(uri_str.clone(), Document {
+                text: src.to_string(), pending_text: None, analysis: None, tree: None,
+                toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: 0,
+                pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None,
+                stub_open_seq: 0,
+            });
+        }
+
+        // Control: all three unmodified — the batch fast-path applies.
+        assert!(
+            try_batch_analyze(&uris, &mut documents, &ws),
+            "unmodified dirty docs should batch (verifies the ws seed makes would_rebuild=false)",
+        );
+
+        // Re-dirty and give ONE doc a pending edit; the batch must now bail so the
+        // sequential path (with deferred invalidation) handles the whole set.
+        for (i, uri_str) in uris.iter().enumerate() {
+            let doc = documents.get_mut(uri_str).unwrap();
+            doc.dirty = true;
+            if i == 1 {
+                doc.pending_text = Some("local x = 2\n".to_string());
+            }
+        }
+        assert!(
+            !try_batch_analyze(&uris, &mut documents, &ws),
+            "a dirty doc with pending edits must force the sequential path, not batch",
+        );
+    }
+
+    /// The mechanism the batch-routing guard above depends on: the deferred cross-file
+    /// `@class` field memo is retained across re-analyses, so after a contributing file
+    /// is edited a re-analysis of a *referencing* file keeps serving the stale field
+    /// type until `invalidate_deferred_for_file` drops the entry. Documents why edits
+    /// must reach the invalidating (sequential) path.
+    #[test]
+    fn deferred_class_field_memo_needs_invalidation_after_edit() {
+        let scan_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/crossfile");
+        let mut configs = crate::config::ProjectConfigs::default();
+        configs.try_load(&scan_dir);
+        let scan = crate::lsp::scan_workspace(std::slice::from_ref(&scan_dir), &mut configs);
+        let mut aliases = scan.aliases.clone();
+        crate::annotations::register_event_type_aliases(&mut aliases, &scan.events);
+        let empty = PreResolvedGlobals::empty();
+        let mut pg = PreResolvedGlobals::build_on_stubs(
+            &empty, &scan.globals, &scan.classes, &aliases, false,
+            &scan.addon_ns_class_files, &scan.callable_classes,
+        );
+        pg.merge_events(&scan.events);
+        pg.set_project_configs(Arc::new(configs.clone()));
+        let pre_globals = Arc::new(pg);
+        let configs = Arc::new(configs);
+
+        // Writer assigns `self.fromB = 1 + 2` (harvested to `number`); the edit retypes
+        // it to a string via a body expression the coarse scan can't see (no rebuild).
+        let b_path = scan_dir.join("partial_class_split_b.lua");
+        let b_before = std::fs::read_to_string(&b_path).unwrap();
+        let b_after = b_before.replace("self.fromB = 1 + 2", "self.fromB = \"x\" .. \"y\"");
+        assert_ne!(b_before, b_after, "fixture must contain the fromB assignment we edit");
+
+        // Reader (a SEPARATE file) reads `s.fromB` via `@type PCS_Split`.
+        let user_path = scan_dir.join("partial_class_split_user.lua");
+        let user_uri = crate::lsp::uri::abs_path_to_uri(&user_path).unwrap();
+        let user_text = std::fs::read_to_string(&user_path).unwrap();
+
+        let cached = |pg: &Arc<PreResolvedGlobals>| {
+            pg.deferred_class_field_cache.read().unwrap()
+                .get(&("PCS_Split".to_string(), "fromB".to_string())).cloned()
+        };
+        let analyze = |pg: &Arc<PreResolvedGlobals>| {
+            let tree = parse_lua(&user_text);
+            let _ = analyze_lua_parsed(&user_uri, pg, &configs, &tree);
+        };
+
+        pre_globals.document_overrides.write().unwrap().insert(b_path.clone(), b_before.clone());
+        pre_globals.document_overrides.write().unwrap().insert(user_path.clone(), user_text.clone());
+        analyze(&pre_globals);
+        assert!(
+            matches!(cached(&pre_globals), Some(Some(ValueType::Number))),
+            "initial cross-file harvest of fromB should be `number`",
+        );
+
+        // didChange on the writer's buffer, then re-analyze the reader WITHOUT
+        // invalidating: the memo is retained, so it is still `number` (stale).
+        pre_globals.document_overrides.write().unwrap().insert(b_path.clone(), b_after.clone());
+        analyze(&pre_globals);
+        assert!(
+            matches!(cached(&pre_globals), Some(Some(ValueType::Number))),
+            "without invalidation the retained memo stays stale — this is why edits \
+             must reach the sequential path that calls invalidate_deferred_for_file",
+        );
+
+        // Invalidating the writer's memo (what the sequential Phase 4 path does on its
+        // edit) lets the next reader analysis re-harvest the fresh `string` type.
+        pre_globals.invalidate_deferred_for_file(&b_path);
+        analyze(&pre_globals);
+        assert!(
+            matches!(cached(&pre_globals), Some(Some(ValueType::String(_)))),
+            "after invalidation the re-harvest should observe the edited `string` type",
+        );
+    }
+
     #[test]
     fn crossfile_diagnostics_separated_from_per_file() {
         // compute_ws_diagnostics must return cross-file unused-function items

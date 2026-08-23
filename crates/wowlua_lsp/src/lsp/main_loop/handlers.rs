@@ -1678,7 +1678,9 @@ pub(super) fn reanalyze_open_documents(
 
 /// Try to batch-analyze multiple dirty documents in parallel.
 /// Returns true if batch analysis was performed, false if we should fall back to sequential.
-/// Only succeeds when no file would trigger a workspace rebuild (i.e. initial load of unmodified files).
+/// Only succeeds when no file has pending edits and none would trigger a workspace
+/// rebuild (i.e. warming unmodified files after a rebuild / on initial load) — edits
+/// are routed to the sequential path so their deferred cross-file memo is invalidated.
 /// No side effects occur if returning false — all work is discarded.
 pub(super) fn try_batch_analyze(
     dirty_uris: &[String],
@@ -1702,6 +1704,16 @@ pub(super) fn try_batch_analyze(
             Some(d) if d.dirty => d,
             _ => continue,
         };
+        // A file with genuine pending edits must go through the sequential Phase 4
+        // path, which invalidates its deferred cross-file `@class` field memo and
+        // re-marks the docs that harvested from it — neither of which this batch
+        // fast-path does. Batching an edit would leave cross-file field types (and
+        // their diagnostics) stale in referencing files until a close+reopen. Bailing
+        // routes the set to the sequential path (already-committed warm chunks keep
+        // their work); the fast-path stays reserved for warming unmodified files.
+        if doc.pending_text.is_some() {
+            return false;
+        }
         // Skip TOC documents — they don't go through the Lua pipeline.
         if doc.toc.is_some() {
             continue;
