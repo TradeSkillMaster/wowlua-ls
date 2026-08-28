@@ -1,3 +1,2 @@
 **Bug Fixes**
-- Fixed a false `undefined-field` warning on methods defined on a `@class`-typed local inside a function body.
-- Fixed cross-file `@class` field types and diagnostics going stale after multi-file edits in IntelliJ (previously needed a close/reopen to refresh).
+- Fixed runtime field additions (e.g. `self.field = ...`) not propagating to other open files until the edited file was reopened, in cases where completion or signature help fired mid-edit.
