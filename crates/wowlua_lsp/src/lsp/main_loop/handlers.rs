@@ -1247,14 +1247,26 @@ pub(super) fn handle_notification(
                         doc.pending_edit_map = edit_map;
                         doc.pending_text = Some(text);
                         doc.dirty = true;
-                        // Keep the deferred harvest's in-memory document
-                        // override in sync so unsaved edits are picked up.
+                        // Resolve the path once, shared by the deferred-harvest
+                        // override sync and the edited-file flag below.
                         if let Ok(uri) = lsp_types::Uri::from_str(&uri_str)
                             && let Some(path) = crate::lsp::uri::uri_to_abs_path(&uri)
-                            && let Ok(mut overrides) = ws.pre_globals.document_overrides.write()
-                            && let Some(ref t) = doc.pending_text
                         {
-                            overrides.insert(path, t.clone());
+                            // Keep the deferred harvest's in-memory document override
+                            // in sync so unsaved edits are picked up.
+                            if let Some(ref t) = doc.pending_text
+                                && let Ok(mut overrides) = ws.pre_globals.document_overrides.write()
+                            {
+                                overrides.insert(path.clone(), t.clone());
+                            }
+                            // Flag this file as edited so the parallel batch fast-path
+                            // routes it to the sequential path (which runs the full
+                            // rebuild check + deferred-cache invalidation). `pending_text`
+                            // alone is insufficient: Phase 2 interactive re-analysis
+                            // (completion/signatureHelp) consumes it while leaving the
+                            // doc dirty, after which a self-field/defclass/callback edit
+                            // would otherwise be silently batched with no rebuild.
+                            ws.edited_uris.insert(path);
                         }
 
                         // For push-only clients, immediately push line-shifted
@@ -1374,6 +1386,12 @@ pub(super) fn handle_notification(
                     let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
                     result.plugin_diag_codes = ws.plugin_codes();
                     let file_path = uri_to_abs_path(&uri).unwrap_or_default();
+                    // A freshly (re)opened doc is reconciled — drop any stale edited
+                    // flag (e.g. an edit-then-reopen with no intervening didClose) so
+                    // it doesn't keep this doc off the batch-warm fast-path.
+                    if !file_path.as_os_str().is_empty() {
+                        ws.edited_uris.remove(&file_path);
+                    }
                     let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
                     // Keep the deferred harvest's in-memory document override
                     // in sync so the harvester sees the editor's text, not disk.
@@ -1466,11 +1484,12 @@ pub(super) fn handle_notification(
                 );
                 if is_stub_path(&params.text_document.uri) || is_meta_doc {
                     documents.remove(&uri_str);
-                    // Remove the in-memory document override on close.
-                    if let Some(path) = uri_to_abs_path(&params.text_document.uri)
-                        && let Ok(mut overrides) = ws.pre_globals.document_overrides.write()
-                    {
-                        overrides.remove(&path);
+                    // Remove the in-memory document override + edited flag on close.
+                    if let Some(path) = uri_to_abs_path(&params.text_document.uri) {
+                        ws.edited_uris.remove(&path);
+                        if let Ok(mut overrides) = ws.pre_globals.document_overrides.write() {
+                            overrides.remove(&path);
+                        }
                     }
                     return;
                 }
@@ -1519,11 +1538,12 @@ pub(super) fn handle_notification(
                     })
                 };
                 documents.remove(&uri_str);
-                // Remove the in-memory document override on close.
-                if let Some(path) = uri_to_abs_path(&params.text_document.uri)
-                    && let Ok(mut overrides) = ws.pre_globals.document_overrides.write()
-                {
-                    overrides.remove(&path);
+                // Remove the in-memory document override + edited flag on close.
+                if let Some(path) = uri_to_abs_path(&params.text_document.uri) {
+                    ws.edited_uris.remove(&path);
+                    if let Ok(mut overrides) = ws.pre_globals.document_overrides.write() {
+                        overrides.remove(&path);
+                    }
                 }
                 // Update cached workspace diagnostics with the document's
                 // last-known diagnostics so the Problems panel stays accurate
@@ -1714,24 +1734,38 @@ pub(super) fn try_batch_analyze(
         if doc.pending_text.is_some() {
             return false;
         }
+        // Resolve the URI + path once — reused by the edited-file guard below, the
+        // ignore check, and the would-rebuild comparison (avoids re-parsing the URI
+        // and re-converting the path per dirty doc on the warm hot path).
+        let uri = match lsp_types::Uri::from_str(uri_str) {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
+        let file_path = uri_to_abs_path(&uri);
+        // An edited file whose `pending_text` was already consumed by Phase 2
+        // (interactive completion/signatureHelp) is still dirty but no longer
+        // flagged by the check above. It must reach the sequential path so
+        // `maybe_rebuild_workspace` runs the FULL rebuild check — this fast-path's
+        // own `would_rebuild` below scans only globals/classes/aliases/events, NOT
+        // self-fields / defclass fields / callbacks, so batching a self-field add
+        // would skip its rebuild + deferred-cache invalidation and leave cross-file
+        // consumers stale until reopen. See `WorkspaceState::edited_uris`.
+        if file_path.as_ref().is_some_and(|p| ws.edited_uris.contains(p)) {
+            return false;
+        }
         // Skip TOC documents — they don't go through the Lua pipeline.
         if doc.toc.is_some() {
             continue;
         }
         let text = doc.pending_text.as_ref().unwrap_or(&doc.text).clone();
-        let uri = match lsp_types::Uri::from_str(uri_str) {
-            Ok(u) => u,
-            Err(_) => continue,
-        };
         if is_ignored_uri(&uri, &ws.configs) {
             parsed.push(ParsedFile { uri_str: uri_str.clone(), text, tree: parse_lua(""), ignored: true });
             continue;
         }
         let tree = parse_lua(&text);
 
-        // Check if this file would trigger workspace rebuild
+        // Check if this file would trigger workspace rebuild (file_path resolved above)
         let root = crate::syntax::SyntaxNode::new_root(&tree);
-        let file_path = uri_to_abs_path(&uri);
         let synth = file_path.as_ref()
             .map(|fp| ws.configs.correlated_return_overloads_for(fp))
             .unwrap_or(true);

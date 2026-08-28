@@ -264,6 +264,26 @@ struct WorkspaceState {
     /// the rayon closures elsewhere that capture `&WorkspaceState`. The query
     /// only locks it on the main loop thread, outside its parallel section.
     xfile_analysis_cache: std::sync::Mutex<XfileAnalysisCache>,
+    /// Paths of open documents edited since their declarations were last
+    /// reconciled into the `ws_file_*` scan maps. Set on `didChange`; cleared
+    /// wherever the sequential path *finalizes* the doc — the top of the Phase-4
+    /// per-doc loop (covers the normal-Lua, TOC, `@meta`/stub, ignored, and
+    /// out-of-root branches, several of which skip `maybe_rebuild_workspace`
+    /// entirely) and `didOpen` — and removed on `didClose`. The parallel batch
+    /// fast-path (`try_batch_analyze`) bails when any dirty doc is in this set,
+    /// routing the whole set to the sequential path that runs the full rebuild
+    /// check. Clearing must NOT live only inside `maybe_rebuild_workspace`: it
+    /// early-returns for out-of-root files and is skipped for TOC/`@meta`/stub/
+    /// ignored docs, so an entry for such a file would leak and permanently force
+    /// it off the batch fast-path once a later rebuild re-dirties it.
+    /// `pending_text.is_some()` alone is NOT a reliable "was edited" signal: the
+    /// Phase 2 interactive re-analysis (completion/signatureHelp, which IntelliJ
+    /// fires while typing) consumes `pending_text` but leaves the doc dirty, so an
+    /// edit that changed only self-fields / defclass fields / callbacks (which the
+    /// batch's own `would_rebuild` check does not scan for) would otherwise be
+    /// batched with no rebuild and no deferred-cache invalidation, leaving cross-
+    /// file consumers stale until the file is reopened.
+    edited_uris: HashSet<PathBuf>,
 }
 
 /// One unopened workspace file, parsed and type-resolved, cached for reuse across
@@ -827,6 +847,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         pending_lazy_warm: false,
         live_generation: Arc::new(AtomicU64::new(0)),
         xfile_analysis_cache: std::sync::Mutex::new(XfileAnalysisCache::default()),
+        edited_uris: HashSet::new(),
     };
     let plugin_paths = ws.configs.all_plugins();
     if !plugin_paths.is_empty() {
@@ -1469,6 +1490,28 @@ fn main_loop(
                         documents.insert(uri_str.clone(), doc);
                         continue;
                     }
+                    // Parse the URI + path once — reused for the edited-flag clear,
+                    // the TOC branch, and all downstream analysis (avoids re-parsing
+                    // per dirty doc on the warm hot path).
+                    let uri = match lsp_types::Uri::from_str(uri_str) {
+                        Ok(u) => u,
+                        Err(e) => {
+                            log::error!("Invalid URI {uri_str}: {e}");
+                            documents.insert(uri_str.clone(), doc);
+                            continue;
+                        }
+                    };
+                    let file_path = uri_to_abs_path(&uri).unwrap_or_default();
+                    // Every branch below finalizes this dirty doc (re-inserts it
+                    // clean), so it no longer needs the sequential rebuild path — clear
+                    // its edited flag HERE, not inside `maybe_rebuild_workspace`, which
+                    // some of those branches skip (TOC / @meta / stub / ignored) and
+                    // which early-returns for out-of-root files. Clearing only there
+                    // would leak the entry and permanently force such docs off the
+                    // batch-warm fast-path for the rest of the session.
+                    if !file_path.as_os_str().is_empty() {
+                        ws.edited_uris.remove(&file_path);
+                    }
                     // TOC documents: re-parse as TOC and skip the Lua pipeline.
                     if doc.toc.is_some() {
                         let text = doc.pending_text.unwrap_or(doc.text);
@@ -1478,14 +1521,6 @@ fn main_loop(
                     }
                     {
                         let _wg = watchdog::WorkGuard::new(format!("phase4 analyze {uri_str}"));
-                        let uri = match lsp_types::Uri::from_str(uri_str) {
-                            Ok(u) => u,
-                            Err(e) => {
-                                log::error!("Invalid URI {uri_str}: {e}");
-                                documents.insert(uri_str.clone(), doc);
-                                continue;
-                            }
-                        };
 
                         // If pending_text is None, Phase 2 already parsed+analyzed
                         // the current text — we can reuse the cached tree and
@@ -1531,7 +1566,6 @@ fn main_loop(
                         };
                         result.plugin_diag_codes = ws.plugin_codes();
 
-                        let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                         let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
                         documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false, ws_generation: ws.ws_generation, pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0 });
                         if rebuilt {
@@ -3331,6 +3365,128 @@ mod tests {
         assert!(
             !try_batch_analyze(&uris, &mut documents, &ws),
             "a dirty doc with pending edits must force the sequential path, not batch",
+        );
+    }
+
+    /// A file edited by the user must be routed to the sequential path even after
+    /// Phase 2 (interactive completion/signatureHelp) has consumed its
+    /// `pending_text` — the state is `pending_text: None`, `dirty: true`. Without
+    /// the `edited_uris` guard the batch fast-path would swallow it, and because
+    /// the fast-path's own `would_rebuild` check omits self-fields / defclass
+    /// fields / callbacks, a runtime field-add would be analyzed with NO workspace
+    /// rebuild and NO deferred-cache invalidation — leaving cross-file consumers
+    /// stale until the file is reopened (the reported "add a field, other file
+    /// doesn't update until reopen" bug). `maybe_rebuild_workspace` clears the
+    /// flag once it reconciles the file.
+    #[test]
+    fn batch_analyze_skips_edited_docs_with_consumed_pending_text() {
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+
+        let mut documents: HashMap<String, Document> = HashMap::new();
+        let uris: Vec<String> = (0..3).map(|i| format!("file:///project/f{i}.lua")).collect();
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for uri_str in &uris {
+            let uri: lsp_types::Uri = uri_str.parse().unwrap();
+            let path = uri_to_abs_path(&uri).unwrap();
+            paths.push(path.clone());
+            let src = "local x = 1\n";
+            let tree = crate::syntax::parser::parse(src);
+            let root = crate::syntax::SyntaxNode::new_root(&tree);
+            let (mut globals, _) = crate::annotations::scan_file_globals_with_synth(
+                root, Some(&path), crate::annotations::CorrelatedReturns::Skip,
+                crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::new());
+            let scan = crate::annotations::scan_all_annotations(root);
+            super::scan::mark_meta_globals(&mut globals, scan.has_meta);
+            ws.ws_file_globals.insert(path.clone(), globals);
+            ws.ws_file_classes.insert(path.clone(), scan.classes);
+            ws.ws_file_aliases.insert(path.clone(), scan.aliases);
+            // pending_text: None simulates Phase 2 having already consumed the edit.
+            documents.insert(uri_str.clone(), Document {
+                text: src.to_string(), pending_text: None, analysis: None, tree: None,
+                toc: None, plugin_diags: Vec::new(), dirty: true, ws_generation: 0,
+                pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None,
+                stub_open_seq: 0,
+            });
+        }
+
+        // Control: no doc is flagged as edited — the batch fast-path applies.
+        assert!(
+            try_batch_analyze(&uris, &mut documents, &ws),
+            "unflagged dirty docs (post-rebuild re-warm) should batch",
+        );
+
+        // Flag ONE doc as edited (as didChange does). Even with pending_text: None,
+        // the batch must now bail so the sequential path runs the full rebuild check.
+        for uri_str in &uris {
+            documents.get_mut(uri_str).unwrap().dirty = true;
+        }
+        ws.edited_uris.insert(paths[1].clone());
+        assert!(
+            !try_batch_analyze(&uris, &mut documents, &ws),
+            "an edited doc (in edited_uris) must force the sequential path even with pending_text: None",
+        );
+
+        // The flag is cleared wherever the sequential path finalizes the doc (the
+        // Phase-4 per-doc loop / didOpen) and removed on didClose — NOT only inside
+        // maybe_rebuild_workspace (which is skipped for TOC/@meta/stub/ignored/
+        // out-of-root docs, so clearing there alone would leak the entry). Simulate
+        // that reconciliation; the now-unmodified file must batch again — proving the
+        // guard is transient, not a permanent poison.
+        ws.edited_uris.remove(&paths[1]);
+        for uri_str in &uris {
+            documents.get_mut(uri_str).unwrap().dirty = true;
+        }
+        assert!(
+            try_batch_analyze(&uris, &mut documents, &ws),
+            "after the edited flag is cleared the file is batchable again — no permanent leak",
+        );
+    }
+
+    /// Regression for the `edited_uris` leak: `didClose` must remove the flag.
+    /// Otherwise a file edited then closed lingers in the set forever, and once a
+    /// later workspace rebuild re-dirties the open docs, `try_batch_analyze` bails
+    /// on every chunk containing it — silently disabling batch-warm parallelism for
+    /// the rest of the session. (The other clear sites — the Phase-4 per-doc loop
+    /// and didOpen — are exercised by the end-to-end path; this pins the didClose
+    /// one, which `maybe_rebuild_workspace` never reaches.)
+    #[test]
+    fn did_close_removes_edited_flag() {
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let (connection, _client_conn) = Connection::memory();
+        let client = ClientSupport::default();
+        let bg = BackgroundChannels {
+            stub_tx: crossbeam_channel::unbounded().0,
+            wake_tx: crossbeam_channel::unbounded().0,
+            stub_open_counter: AtomicU64::new(0),
+        };
+        let mut progress_counter = 0i32;
+
+        let uri: lsp_types::Uri = "file:///project/f.lua".parse().unwrap();
+        let path = uri_to_abs_path(&uri).unwrap();
+        let mut documents: HashMap<String, Document> = HashMap::new();
+        documents.insert(uri.to_string(), Document {
+            text: "local x = 1\n".to_string(), pending_text: None, analysis: None, tree: None,
+            toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: 0,
+            pending_line_delta: None, pending_edit_map: None, cached_diagnostics: None, stub_open_seq: 0,
+        });
+        // Simulate an edit that flagged the file, then the user closing it.
+        ws.edited_uris.insert(path.clone());
+        assert!(ws.edited_uris.contains(&path));
+
+        let not = lsp_server::Notification::new(
+            "textDocument/didClose".to_string(),
+            lsp_types::DidCloseTextDocumentParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            },
+        );
+        handle_notification(
+            &connection, &mut documents, &mut ws, not, &None, &client, &mut progress_counter, &bg,
+        );
+
+        assert!(!documents.contains_key(&uri.to_string()), "didClose must remove the document");
+        assert!(
+            !ws.edited_uris.contains(&path),
+            "didClose must remove the edited flag so it can't permanently poison the batch",
         );
     }
 
