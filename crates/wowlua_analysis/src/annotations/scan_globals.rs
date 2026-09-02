@@ -293,6 +293,20 @@ fn classify_value_kind_resolving_scalars(
     }
 }
 
+/// Map a scalar [`FieldValueKind`] (number/string/boolean) to its `@type`-equivalent
+/// `AnnotationType`, so a literal-assigned local (`local N = 1`) can carry a concrete
+/// type across files when referenced as a namespace field value. Non-scalar kinds
+/// (tables, functions, nil, refs, unknown) return `None` — they have no single simple
+/// type and are handled through their own value-kind paths.
+fn scalar_kind_to_annotation(kind: &FieldValueKind) -> Option<AnnotationType> {
+    match kind {
+        FieldValueKind::Number(_) => Some(AnnotationType::Simple("number".to_string())),
+        FieldValueKind::String(_) => Some(AnnotationType::Simple("string".to_string())),
+        FieldValueKind::Boolean => Some(AnnotationType::Simple("boolean".to_string())),
+        _ => None,
+    }
+}
+
 /// Classify a literal expression (including negated number literals) into a `FieldValueKind`,
 /// preserving literal values (string text, number text) when available.
 fn classify_literal_value_kind(expr: &Expression<'_>) -> Option<FieldValueKind> {
@@ -877,6 +891,15 @@ pub fn scan_file_globals_with_synth(
     // values referencing them (`classes = { MONK = MONK }`) resolve to the scalar
     // kind when capturing a plain local table's cross-file shape below.
     let mut local_scalar_kinds: HashMap<String, FieldValueKind> = HashMap::new();
+    // Track each single-name local's value type so a later `ns.Field = local`
+    // carries the real type cross-file — without this the field-assignment RHS
+    // degrades to a bare `FieldRef`/`Table` value-kind that cross-file resolution
+    // can only type as `any` (a local isn't a scope0 global it can look up) or a
+    // shapeless `table`. Split by provenance so precedence matches LuaLS: an
+    // explicit `@type` (any form — unions, `table<K,V>`, `{...}` shapes) overrides
+    // inference, while a bare scalar-literal inference is the lowest-priority guess.
+    let mut local_type_annotations: HashMap<String, AnnotationType> = HashMap::new();
+    let mut local_literal_types: HashMap<String, AnnotationType> = HashMap::new();
     for stmt in &all_stmts {
         if let Statement::LocalAssign(assign) = stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
@@ -958,6 +981,18 @@ pub fn scan_file_globals_with_synth(
                                 class_vars.insert(names[0].clone(), cn);
                             }
                         }
+                }
+                // Record the local's value type for cross-file `ns.Field = local`
+                // resolution. An explicit `@type` (any form — carries unions /
+                // structured types the narrower `local_type_vars` drops) is an
+                // annotation and outranks inference; a bare scalar literal
+                // (`local N = 1` → `number`) is the lowest-priority fallback.
+                if names.len() == 1 {
+                    if let Some(vt) = &annotations.var_type {
+                        local_type_annotations.insert(names[0].clone(), vt.clone());
+                    } else if let Some(simple) = local_scalar_kinds.get(&names[0]).and_then(scalar_kind_to_annotation) {
+                        local_literal_types.insert(names[0].clone(), simple);
+                    }
                 }
             }
         if let Statement::FunctionDefinition(func) = stmt
@@ -1500,8 +1535,18 @@ pub fn scan_file_globals_with_synth(
                                         vec![AnnotationType::Simple(class_name.clone())]
                                     } else if let Some(type_name) = local_type_vars.get(&rhs_names[0]) {
                                         vec![AnnotationType::Simple(type_name.clone())]
+                                    } else if let Some(vt) = local_type_annotations.get(&rhs_names[0]) {
+                                        // Explicit `@type` in a compound form (union / `table<K,V>` /
+                                        // shape) the Simple-only `local_type_vars` above can't hold.
+                                        // An annotation, so it must outrank the inferred return type
+                                        // below — matching how the Simple `@type` case already wins.
+                                        vec![vt.clone()]
                                     } else if let Some(ret_type) = local_return_types.get(&rhs_names[0]) {
                                         vec![ret_type.clone()]
+                                    } else if let Some(vt) = local_literal_types.get(&rhs_names[0]) {
+                                        // Scalar-literal inference: lowest priority. A literal local is
+                                        // never a call, so this never collides with `local_return_types`.
+                                        vec![vt.clone()]
                                     } else { Vec::new() }
                                 } else { Vec::new() }
                             } else { Vec::new() };
