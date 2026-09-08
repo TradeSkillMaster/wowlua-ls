@@ -888,7 +888,7 @@ local _dcf = DEFAULT_CHAT_FRAME
 -- Table constructor field key should not resolve to a same-named global
 local _itemClasses = {
 	ACCEPT = true,
---  ^ hover: (field) ACCEPT: true  def: local
+--  ^ hover: (field) ACCEPT: boolean  def: local
 }
 
 -- Enum constant references → number (via @enum class enum_kind)

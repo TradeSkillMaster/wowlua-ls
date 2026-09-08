@@ -728,6 +728,20 @@ impl<'a> Analysis<'a> {
                             let annotation = inline_type
                                 .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
                             let annotation_text = if annotation.is_some() { annotation_text } else { None };
+                            // Widen a bare boolean-literal field value to the generic
+                            // `boolean`, mirroring how numeric/string literals are already
+                            // widened at lowering (an inferred table field is mutable, so
+                            // `{ok = true}` is `{ok: boolean}`). This lets structurally
+                            // identical constructors converge in a union instead of
+                            // surfacing as `{ok: true} | {ok: false}`. Skipped when the
+                            // field carries an explicit `---@type` or an `@as` cast — either
+                            // is a deliberate assertion that the literal type is intended.
+                            if matches!(self.ir.expr(expr_id), Expr::Literal(ValueType::Boolean(Some(_))))
+                                && annotation.is_none()
+                                && Self::extract_inline_as(value.syntax()).is_none()
+                            {
+                                expr_id = self.ir.push_expr(Expr::Literal(ValueType::Boolean(None)));
+                            }
                             let vis = crate::annotations::default_visibility_for_name(&name, self.implicit_protected_prefix);
                             let field_range = field.syntax().text_range();
                             fields.insert(name, FieldInfo {

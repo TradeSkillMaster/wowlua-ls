@@ -57,3 +57,43 @@ local function useOnlyA(onlyA)
   needsBoth(onlyA)
   --        ^ diag: type-mismatch
 end
+
+-- Boolean-literal fields in inferred table constructors widen to `boolean`, just
+-- as numeric/string literal fields already do (an inferred field is mutable). Two
+-- constructors differing only in such a field therefore CONVERGE to a single shape
+-- in the array's element union instead of surfacing as `{f: true} | {f: false}`.
+local boolItems = {
+  { isComplete = true, pct = 1, remaining = 2 },
+  { isComplete = false, pct = 3, remaining = 4 },
+}
+local boolItemsRef = boolItems
+--    ^ hover: (local) boolItemsRef: {isComplete: boolean, pct: number, remaining: number}[]
+
+-- Control: string/number fields already behave this way — same single-shape result.
+local strItems = {
+  { kind = "a", n = 1 },
+  { kind = "b", n = 2 },
+}
+local strItemsRef = strItems
+--    ^ hover: (local) strItemsRef: {kind: string, n: number}[]
+
+-- Guard against over-widening: an explicit per-field `---@type true` is intentional
+-- and must be preserved (only bare, unannotated literals widen).
+local tagged = {
+  ready = true, ---@type true
+  pct = 1,
+}
+local readyVal = tagged.ready
+--    ^ hover: (local) readyVal: true
+
+-- An `@as` cast is an equally explicit assertion and must also survive widening.
+-- Here the cast value's natural type is `boolean`, so the literal `true` proves
+-- the cast is honored rather than discarded.
+---@return boolean
+local function truthy() return 1 == 1 end
+local castItem = {
+  ready = truthy() --[[@as true]],
+  pct = 1,
+}
+local castReady = castItem.ready
+--    ^ hover: (local) castReady: true

@@ -90,7 +90,7 @@ local obj3 = setmetatable({ x = 42 }, { __index = { x = "str", y = true } })
 local x3 = obj3.x
 --    ^ hover: (local) x3: number
 local y3 = obj3.y
---    ^ hover: (local) y3: true
+--    ^ hover: (local) y3: boolean
 
 -- ============================================================================
 -- 6. Chained metatables (__index table itself has a metatable)
