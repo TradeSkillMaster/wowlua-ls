@@ -387,6 +387,35 @@ impl<'a> Analysis<'a> {
         // where the overload specifies the handler signature.
         self.propagate_overload_callback_params(matching_overload, is_method_call, func_expr_id, args, overload_self_offset, &generic_subs);
 
+        // Propagate the callee's *function-level* @generic type vars into inline
+        // callback params (e.g. `fun(value: V)` on `@generic K, V` + `@param tbl
+        // table<K, V>`). Unlike class/receiver generics — applied before inference
+        // by the earlier propagate_inline_callback_params call — these bind from the
+        // sibling *arguments*, so they aren't known until infer_call_generic_subs has
+        // run. Skip when an overload matched: propagate_overload_callback_params above
+        // owns callback typing for the matched overload's signature.
+        if matching_overload.is_none() && !generic_subs.is_empty() {
+            let mut merged_subs = class_type_param_subs.clone();
+            for (name, vt) in &generic_subs {
+                // Only fold in concrete bindings — never lock a callback param to a
+                // still-unbound type variable (worse than untyped, and it would block
+                // later fixpoint refinement).
+                if !matches!(vt, ValueType::TypeVariable(_)) {
+                    merged_subs.insert(name.clone(), vt.clone());
+                }
+            }
+            if !merged_subs.is_empty() {
+                // Context = every substitutable name so the callee's `V`/`K` are
+                // recognized as type variables and then replaced (mirrors the
+                // class_gen_context construction above).
+                let gen_context: Vec<(String, Option<String>)> =
+                    merged_subs.keys().map(|k| (k.clone(), None)).collect();
+                self.propagate_fn_generic_callback_params(
+                    args, &param_annotations, self_offset, &gen_context, &merged_subs,
+                );
+            }
+        }
+
         // Defer type-mismatch / need-check-nil diagnostics to post-resolution.
         // Resolve each arg so side effects (e.g. undefined-field checks on
         // FieldAccess expressions) are triggered during the fixpoint loop.
@@ -2276,6 +2305,58 @@ impl<'a> Analysis<'a> {
                         self.ir.functions[inline_func_idx.val()].return_annotations = ret_anns;
                     }
                 }
+            }
+        }
+    }
+
+    /// Second callback-typing pass, run *after* `infer_call_generic_subs`: fill an
+    /// inline callback's named params whose expected `fun(...)` type uses the
+    /// callee's **function-level** `@generic` vars — e.g. `fun(value: V, index: K)`
+    /// with `V`/`K` bound from a sibling `table<K, V>` argument. The earlier
+    /// `propagate_inline_callback_params` only had class/receiver generics, so this
+    /// covers generics on plain (module/local) functions.
+    ///
+    /// Deliberately narrow, so it cannot disturb the cases the earlier pass and the
+    /// event path already own:
+    /// - Only a **direct** `fun(...)` signature — never a bare generic `@param cb F`
+    ///   (which may be bound *from this very callback*, so re-projecting it onto
+    ///   itself would wrongly mark the lambda void).
+    /// - **Named** params only — varargs / `params<E>` projections belong to
+    ///   `type_event_callback_params`.
+    /// - **Concrete** substitutions only — never lock a param to `any` or a still
+    ///   unbound type variable.
+    /// - **Params only** — no return-type / void propagation.
+    fn propagate_fn_generic_callback_params(
+        &mut self,
+        args: &[ExprId],
+        param_annotations: &[crate::annotations::AnnotationType],
+        self_offset: usize,
+        gen_context: &[(String, Option<String>)],
+        subs: &HashMap<String, ValueType>,
+    ) {
+        for (i, arg_expr_id) in args.iter().enumerate() {
+            let inline_func_idx = match self.ir.expr(*arg_expr_id) {
+                Expr::FunctionDef(idx) => *idx,
+                _ => continue,
+            };
+            if inline_func_idx.is_external() { continue; }
+            let Some(ann) = param_annotations.get(i + self_offset) else { continue };
+            let Some(sig) = crate::annotations::extract_fun_sig(
+                ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
+            ) else { continue };
+            let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
+            for (j, param_info) in sig.params.iter().enumerate() {
+                if param_info.name == "..." { continue; }
+                let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
+                if inline_sym_idx.is_external() { continue; }
+                if self.ir.symbols[inline_sym_idx.val()].versions.first()
+                    .is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                let Some(vt) = self.resolve_annotation_with_class_generics(
+                    &param_info.typ, gen_context, subs,
+                ) else { continue };
+                if matches!(vt, ValueType::Any | ValueType::TypeVariable(_)) { continue; }
+                let vt = if param_info.optional { ValueType::union(vt, ValueType::Nil) } else { vt };
+                self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
             }
         }
     }

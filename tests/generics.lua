@@ -568,6 +568,51 @@ sb:MapArray(function(value)
     return { value }
 end)
 
+-- ── Function-level @generic flows into callback parameter types ───────────
+-- Regression: a @generic on the *function* (not on a class/receiver) must reach
+-- an inline callback's params. The type var binds from a sibling argument (e.g.
+-- `V`/`K` from a `table<K, V>` arg), so it is only known after generic inference.
+
+---@class FeElem
+---@field id number
+
+---@generic K, V
+---@param tbl table<K, V>
+---@param callback fun(value: V, index: K)
+---@return table<K, V>
+local function feForEach(tbl, callback) return tbl end
+
+---@type FeElem[]
+local feArr = {}
+feForEach(feArr, function(value, index)
+    local feV = value
+    --      ^ hover: (local) feV: FeElem
+    local feI = index
+    --      ^ hover: (local) feI: number
+end)
+
+---@type table<string, FeElem>
+local feMap = {}
+feForEach(feMap, function(value, index)
+    local feMapV = value
+    --      ^ hover: (local) feMapV: FeElem
+    local feMapK = index
+    --      ^ hover: (local) feMapK: string
+end)
+
+-- Same, but the generic function is a module-table field (dot call).
+local FeUtils = {}
+
+---@generic K, V
+---@param tbl table<K, V>
+---@param callback fun(value: V, index: K)
+function FeUtils.ForEach(tbl, callback) end
+
+FeUtils.ForEach(feArr, function(value)
+    local feModV = value
+    --      ^ hover: (local) feModV: FeElem
+end)
+
 -- ── Generic inference from union of array types ───────────────────────────
 
 ---@class GenItemKey
