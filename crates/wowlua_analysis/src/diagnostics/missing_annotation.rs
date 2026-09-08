@@ -29,11 +29,17 @@ impl DiagnosticPass for MissingAnnotations {
         // lazily on the first dotted/colon candidate). See `escaping_methods`.
         let mut escaping: Option<HashSet<u32>> = None;
 
-        for (_func_idx, func) in analysis.local_functions() {
+        for (func_idx, func) in analysis.local_functions() {
             let Some(nid) = func.def_node.node_id else { continue };
 
             let func_node = SyntaxNode { tree, id: nid };
             let Some(func_def) = FunctionDefinition::cast(func_node) else { continue };
+
+            // A method registered as an event handler by string name gets its
+            // parameters typed from the event payload (see `type_event_callback_params`);
+            // its signature is dictated by the event system, so `@param` annotations
+            // aren't expected — skip it.
+            if analysis.event_handler_methods.contains(&func_idx) { continue; }
 
             // Scope: only functions visible outside their defining file.
             if func_def.is_local() { continue; }

@@ -339,7 +339,7 @@ impl<'a> Analysis<'a> {
         // (reusing the same `event_vararg_types` mechanism as in-body event narrowing).
         if !generics.is_empty() {
             let receiver_table_idx = self.event_handler_receiver_table(func_expr_id, is_method_call);
-            self.type_event_callback_params(func_idx, args, &param_annotations, self_offset, &generic_arg_indices, receiver_table_idx);
+            self.type_event_callback_params(func_idx, args, &param_annotations, self_offset, &generic_arg_indices, receiver_table_idx, &overloads, &generic_subs);
         }
 
         // Extend projected_f_idx for non-method calls: if the vararg has a
@@ -1181,6 +1181,44 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Resolve a `keyof X` target name to its table: `KEYOF_SELF_TARGET` via
+    /// `receiver`, a generic name via `generic_subs`, else a bare class name via the
+    /// local/external class tables. The shared head of `flatten_keyof` and
+    /// `keyof_target_table`.
+    fn resolve_keyof_target_table(
+        &self,
+        target: &str,
+        receiver: Option<TableIndex>,
+        generic_subs: &HashMap<String, ValueType>,
+    ) -> Option<TableIndex> {
+        if target == crate::annotations::KEYOF_SELF_TARGET {
+            receiver
+        } else if let Some(ValueType::Table(Some(idx))) = generic_subs.get(target) {
+            Some(*idx)
+        } else {
+            self.ir.classes.get(target).or_else(|| self.ir.ext.classes.get(target)).copied()
+        }
+    }
+
+    /// The table a `keyof X` type (possibly nested in a `Union`/`Intersection`)
+    /// resolves to — the go-to-definition target, *without* building the
+    /// key-string union that `flatten_keyof` produces. Returns the first resolvable
+    /// `keyof` target found.
+    fn keyof_target_table(
+        &self,
+        vt: &ValueType,
+        receiver: Option<TableIndex>,
+        generic_subs: &HashMap<String, ValueType>,
+    ) -> Option<TableIndex> {
+        match vt {
+            ValueType::KeyOf(target) => self.resolve_keyof_target_table(target, receiver, generic_subs),
+            ValueType::Intersection(members) | ValueType::Union(members) => members
+                .iter()
+                .find_map(|m| self.keyof_target_table(m, receiver, generic_subs)),
+            _ => None,
+        }
+    }
+
     /// Replace every `keyof X` in `vt` with a union of `X`'s key string-literals,
     /// resolving `self` via `receiver` and generic names via `generic_subs` (and a
     /// bare class name via the class tables). Records the resolved target table in
@@ -1195,14 +1233,7 @@ impl<'a> Analysis<'a> {
     ) -> ValueType {
         match vt {
             ValueType::KeyOf(target) => {
-                let table = if target == crate::annotations::KEYOF_SELF_TARGET {
-                    receiver
-                } else if let Some(ValueType::Table(Some(idx))) = generic_subs.get(&target) {
-                    Some(*idx)
-                } else {
-                    self.ir.classes.get(&target).or_else(|| self.ir.ext.classes.get(&target)).copied()
-                };
-                match table {
+                match self.resolve_keyof_target_table(&target, receiver, generic_subs) {
                     Some(t) => {
                         *target_out = Some(t);
                         let mut names: Vec<String> = crate::analysis::collect_class_fields_impl(
@@ -2371,6 +2402,7 @@ impl<'a> Analysis<'a> {
     /// function's parameters at/after the `...params<E>` position are typed from the
     /// event's payload. A named method registered for two events with differing
     /// payloads is a conflict and is left untyped (see `event_handler_method_*`).
+    #[allow(clippy::too_many_arguments)] // threads call-resolution state from resolve_function_call; bundling adds indirection
     fn type_event_callback_params(
         &mut self,
         func_idx: FunctionIndex,
@@ -2379,17 +2411,27 @@ impl<'a> Analysis<'a> {
         self_offset: usize,
         generic_arg_indices: &HashMap<String, usize>,
         receiver_table_idx: Option<TableIndex>,
+        overloads: &[ResolvedOverload],
+        generic_subs: &HashMap<String, ValueType>,
     ) {
         let generic_constraints_raw = self.func(func_idx).generic_constraints_raw.clone();
         for (i, arg_expr_id) in args.iter().enumerate() {
             // The callback target: an inline function literal, or a string literal
-            // naming a same-file method on the receiver.
+            // naming a same-file method on the handler's owner. For a string handler
+            // the owner is the target of the callback parameter's `keyof X` type in
+            // an overload — `keyof self` resolves to the method receiver, `keyof T`
+            // to the argument bound to generic `T` (the register-by-name idiom used
+            // by libraries whose registrar takes the addon object as an argument
+            // rather than as `self`).
             let (target_func_idx, is_named_method) = match self.ir.expr(*arg_expr_id) {
                 Expr::FunctionDef(idx) => (*idx, false),
-                _ => match self.string_handler_method_idx(*arg_expr_id, receiver_table_idx) {
-                    Some(idx) => (idx, true),
-                    None => continue,
-                },
+                _ => {
+                    let owner = self.callback_handler_owner_table(i, overloads, generic_subs, receiver_table_idx);
+                    match self.string_handler_method_idx(*arg_expr_id, owner) {
+                        Some(idx) => (idx, true),
+                        None => continue,
+                    }
+                }
             };
             if target_func_idx.is_external() { continue; }
             // Reduce the callee's param annotation to the callback's fun() params.
@@ -2490,6 +2532,31 @@ impl<'a> Analysis<'a> {
             Some(ValueType::Table(Some(idx))) => Some(idx),
             _ => None,
         }
+    }
+
+    /// The table that owns the method named by a string handler at call-argument
+    /// index `callback_arg_idx`. Looks through the overloads for that argument's
+    /// `keyof X` parameter type (the register-by-name form) and resolves `X`:
+    /// `keyof self` → the method receiver, `keyof T` → the argument bound to
+    /// generic `T`. Falls back to `method_receiver` when no overload types the
+    /// argument as `keyof`.
+    fn callback_handler_owner_table(
+        &self,
+        callback_arg_idx: usize,
+        overloads: &[ResolvedOverload],
+        generic_subs: &HashMap<String, ValueType>,
+        method_receiver: Option<TableIndex>,
+    ) -> Option<TableIndex> {
+        for o in overloads {
+            let off = usize::from(o.params.first().is_some_and(|p| p.name == "self"));
+            if let Some(param) = o.params.get(callback_arg_idx + off)
+                && let Some(typ) = &param.typ
+                && let Some(target) = self.keyof_target_table(typ, method_receiver, generic_subs)
+            {
+                return Some(target);
+            }
+        }
+        method_receiver
     }
 
     /// Resolve a string-literal argument naming a method on `receiver_table` to that

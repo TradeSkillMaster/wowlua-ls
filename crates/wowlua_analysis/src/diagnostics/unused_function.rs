@@ -59,6 +59,30 @@ fn resolve_field_func(ir: &Ir, base_expr: ExprId, field_name: &str) -> Option<Fu
     }
 }
 
+/// Record the workspace (external) function index of a method named by a `keyof X`
+/// string argument. `target` is the table `keyof X` resolved to; when the method
+/// is defined in the *same* file, that table is the file-local `@class` table whose
+/// field points to a *local* `FunctionDef`. So also look up the external class table
+/// by name (`ext.classes` — unlike a global-symbol lookup, this finds `@class`es
+/// declared on a `local`), whose field yields the workspace index the cross-file
+/// unused check compares against.
+fn record_keyof_handler_ref(ir: &Ir, target: TableIndex, name: &str, out: &mut HashSet<FunctionIndex>) {
+    let ext_by_name = ir
+        .table(target)
+        .class_name
+        .as_ref()
+        .and_then(|n| ir.ext.classes.get(n).copied());
+    for t in [Some(target), ext_by_name].into_iter().flatten() {
+        if let Some(field) = ir.get_field(t, name)
+            && let Expr::FunctionDef(func_idx) = ir.expr(field.expr)
+            && func_idx.is_external()
+        {
+            out.insert(*func_idx);
+            return;
+        }
+    }
+}
+
 /// Extract cross-file reference data from a per-file `AnalysisResult`.
 /// Uses `call_resolutions` (already computed during analysis) to track
 /// external function references. No additional tree walk is performed.
@@ -161,6 +185,24 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
             {
                 referenced_external_functions.insert(*func_idx);
             }
+        }
+    }
+
+    // Collect methods referenced via a direct `keyof X` parameter: a string
+    // literal passed where the parameter type is `keyof X` (e.g. a register-by-name
+    // event callback `callbackMemberName: keyof T`) names a method on the resolved
+    // target table. This is the same `keyof_arg_targets` data go-to-definition uses;
+    // without it a handler referenced only by its string name is falsely reported
+    // as unused. Complements the generic-constraint (`K: keyof Obj`) path above.
+    for (&call_expr_id, cr) in &analysis.ir.call_resolutions {
+        if cr.keyof_arg_targets.is_empty() {
+            continue;
+        }
+        let Expr::FunctionCall { args, .. } = analysis.ir.expr(call_expr_id) else { continue };
+        for (&arg_idx, &target) in &cr.keyof_arg_targets {
+            let Some(&arg_expr) = args.get(arg_idx) else { continue };
+            let Some(key) = analysis.ir.string_literals.get(&arg_expr) else { continue };
+            record_keyof_handler_ref(&analysis.ir, target, key, &mut referenced_external_functions);
         }
     }
 

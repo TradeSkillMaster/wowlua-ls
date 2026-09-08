@@ -274,6 +274,42 @@ parameters (an explicit `@param` always wins). A method registered for two event
 **differing** payloads is a conflict and is left untyped, rather than guessing one
 event's payload.
 
+#### Handlers owned by an argument (not `self`)
+
+Some libraries register through a plain function that takes the addon object as an
+**argument** rather than as `self`. Type the handler-name parameter as `keyof T`, where
+`T` is the argument holding the object, and project the payload with a `fun(...params<E>)`
+overload:
+
+```lua
+---@generic T
+---@generic E: MyAddonEvent
+---@overload fun(addonObject: T, event: E, callbackName: keyof T)
+---@param addonObject T
+---@param event E
+---@param callbackName fun(...params<E>)
+function Lib.RegisterCallback(addonObject, event, callbackName) end
+```
+
+The handler owner is resolved from the `keyof T` argument — here `addonObject` — so a
+string handler name is typed, navigable, and payload-projected just like the `keyof self`
+form:
+
+```lua
+---@class MyAddon
+local MyAddon = {}
+
+function MyAddon.OnScanComplete(itemCount, elapsed)
+    -- itemCount, elapsed ← typed from the SCAN_COMPLETE payload
+end
+
+Lib.RegisterCallback(MyAddon, "SCAN_COMPLETE", "OnScanComplete")
+```
+
+Because this handler is invoked directly (`callback(...payload)`) rather than as a method,
+its `fun(...params<E>)` signature carries no leading `self`/`event`, and the payload maps
+straight onto its parameters.
+
 ### Event name quoting
 
 Event names in `@event` declarations should be quoted to match how they appear at call sites:

@@ -217,6 +217,30 @@ impl AnalysisResult {
     /// a truly-local variable that happens to share a name with a workspace-wide global.
     /// Callers should only pass cross-file-stable targets (`target.is_cross_file()`)
     /// when searching files other than the file that produced the target.
+    /// Whether a table `resolved` (that a name/string reference resolved to) counts
+    /// as a reference to the find-references `target` table. Beyond identity, this
+    /// accepts (a) a file-local `@class` table whose class name maps to the external
+    /// `target` (the declaring file keeps a local table for its own `@class`), and
+    /// (b) an inherited field, where `target` and `resolved` are a class and one of
+    /// its ancestors (in either direction).
+    fn resolved_table_matches_target(&self, target: TableIndex, resolved: TableIndex) -> bool {
+        resolved == target
+            || (target.is_external() && !resolved.is_external()
+                && self.table(resolved).class_name.as_ref()
+                    .and_then(|n| self.ir.ext.classes.get(n).copied())
+                    == Some(target))
+            || self.tables_share_field_owner(target, resolved)
+    }
+
+    /// The content range of a quoted string literal spanning `start..end`, trimming
+    /// the surrounding delimiters so the range covers only `content_len` bytes of
+    /// content (e.g. `Activate`, not `"Activate"`). Rename replaces this range's
+    /// text, so it must exclude the quotes.
+    fn string_content_range(start: u32, end: u32, content_len: u32) -> TextRange {
+        let delim = (end - start).saturating_sub(content_len) / 2;
+        TextRange::new(TextSize::from(start + delim), TextSize::from(end - delim))
+    }
+
     pub fn references_for_target(
         &self,
         tree: &SyntaxTree,
@@ -396,24 +420,8 @@ impl AnalysisResult {
                         } else {
                             vec![resolved_table]
                         };
-                        let accept = owner_tables.iter().any(|&cand| {
-                            if cand == table_idx {
-                                true
-                            } else if table_idx.is_external() && !cand.is_external() {
-                                // Cross-file field search: the file that declares `@class X`
-                                // keeps a local table for it with `class_name = "X"`; fields
-                                // defined on that local (e.g. `function X:Method() end`)
-                                // should be matched for an external `X` target too.
-                                self.table(cand).class_name.as_ref()
-                                    .and_then(|n| self.ir.ext.classes.get(n).copied())
-                                    == Some(table_idx)
-                            } else {
-                                // Inherited field: the target may be a child class while the
-                                // resolved table is the parent that owns the field (or vice
-                                // versa). Check ancestry via parent_classes chains.
-                                self.tables_share_field_owner(table_idx, cand)
-                            }
-                        });
+                        let accept = owner_tables.iter()
+                            .any(|&cand| self.resolved_table_matches_target(table_idx, cand));
                         if accept {
                             results.push(token.text_range());
                         }
@@ -439,27 +447,33 @@ impl AnalysisResult {
                             .map(|(_, r)| *r) else { continue };
                         let ValueType::String(Some(key)) = bound_type else { continue };
                         if key != field_name { continue; }
-                        if let Some(ref_table_idx) = cr.resolve_keyof_target(ref_name) {
-                            let accept = ref_table_idx == table_idx
-                                || (table_idx.is_external() && !ref_table_idx.is_external()
-                                    && self.table(ref_table_idx).class_name.as_ref()
-                                        .and_then(|n| self.ir.ext.classes.get(n).copied())
-                                        == Some(table_idx))
-                                || self.tables_share_field_owner(table_idx, ref_table_idx);
-                            if accept
-                                && let Some(&(start, end)) = arg_range.as_ref()
-                            {
-                                // Trim string delimiters so the range covers only the
-                                // content (e.g. `Activate` not `"Activate"`).  This is
-                                // critical for rename, which replaces the range text.
-                                let content_len = key.len() as u32;
-                                let total_len = end - start;
-                                let delim = (total_len.saturating_sub(content_len)) / 2;
-                                results.push(TextRange::new(
-                                    TextSize::from(start + delim),
-                                    TextSize::from(end - delim),
-                                ));
-                            }
+                        if let Some(ref_table_idx) = cr.resolve_keyof_target(ref_name)
+                            && self.resolved_table_matches_target(table_idx, ref_table_idx)
+                            && let Some(&(start, end)) = arg_range.as_ref()
+                        {
+                            results.push(Self::string_content_range(start, end, key.len() as u32));
+                        }
+                    }
+                }
+
+                // Also find string literals passed to a direct `keyof X` parameter
+                // (the register-by-name idiom, e.g. `Register(obj, event, "Handler")`
+                // where the callback param is typed `keyof T`). `keyof_arg_targets`
+                // records the resolved target table per argument — the same data
+                // go-to-definition uses; match the string content against `field_name`
+                // and accept when the target owns it. Mirrors the direct-keyof tracking
+                // in `diagnostics/unused_function.rs`.
+                for (&call_expr_id, cr) in &self.ir.call_resolutions {
+                    if cr.keyof_arg_targets.is_empty() { continue; }
+                    let Expr::FunctionCall { args, arg_ranges, .. } = self.ir.expr(call_expr_id) else { continue };
+                    for (&arg_idx, &ref_table_idx) in &cr.keyof_arg_targets {
+                        let Some(&arg_expr) = args.get(arg_idx) else { continue };
+                        let Some(key) = self.ir.string_literals.get(&arg_expr) else { continue };
+                        if key != field_name { continue; }
+                        if self.resolved_table_matches_target(table_idx, ref_table_idx)
+                            && let Some(&(start, end)) = arg_ranges.get(arg_idx)
+                        {
+                            results.push(Self::string_content_range(start, end, key.len() as u32));
                         }
                     }
                 }

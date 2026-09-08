@@ -2290,6 +2290,12 @@ pub struct AnalysisResult {
     pub addon_flavors: u8,
     pub event_vararg_types: HashMap<ScopeIndex, Vec<ValueType>>,
     pub vararg_user_annotated_fns: HashSet<FunctionIndex>,
+    /// Local function indices of methods registered as event handlers by string
+    /// name (`self:RegisterEvent("E", "OnE")`), whose parameters are typed from the
+    /// event payload. Their signature is dictated by the event system, so
+    /// `missing-param-annotation` doesn't fire on them. Keys of the engine's
+    /// `event_handler_method_payloads`.
+    pub event_handler_methods: HashSet<FunctionIndex>,
     /// Diagnostic codes declared by loaded plugins (suppresses `unknown-diag-code`).
     pub plugin_diag_codes: Vec<String>,
     /// Lazy reverse-inheritance index: parent class table → direct subclasses
@@ -3011,6 +3017,7 @@ impl<'a> Analysis<'a> {
             addon_flavors: self.addon_flavors,
             event_vararg_types: self.event_vararg_types,
             vararg_user_annotated_fns: self.vararg_user_annotated_fns,
+            event_handler_methods: self.event_handler_method_payloads.keys().copied().collect(),
             plugin_diag_codes: Vec::new(),
             direct_subclasses_cache: OnceLock::new(),
         }

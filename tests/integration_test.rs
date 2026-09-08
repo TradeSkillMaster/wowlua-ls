@@ -1162,6 +1162,15 @@ fn generics_projections_e2e() {
 }
 
 #[test]
+fn event_register_by_name() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/event-register-by-name/handler.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/event-register-by-name"),
+    });
+}
+
+#[test]
 fn call_func_generics() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/call-func-generics.lua",
@@ -7068,6 +7077,19 @@ fn test_unused_function_cross_file() {
     assert!(
         unused_names.contains("Dispatched:UnusedDynamicMethod"),
         "Dispatched:UnusedDynamicMethod should be flagged as unused, got: {:?}", unused_names,
+    );
+
+    // Register-by-name event handler (issue #58): HandlerHost.OnThing is defined and
+    // registered in the SAME file (user.lua) via the string "OnThing" passed to a
+    // direct `keyof T` parameter of EventRegistrar.Register. It must not be flagged.
+    assert!(
+        !unused_names.contains("HandlerHost.OnThing"),
+        "HandlerHost.OnThing should not be flagged — registered by string name via a keyof T parameter, got: {:?}", unused_names,
+    );
+    // The sibling method never registered anywhere IS still flagged.
+    assert!(
+        unused_names.contains("HandlerHost.UnusedHostMethod"),
+        "HandlerHost.UnusedHostMethod should be flagged as unused, got: {:?}", unused_names,
     );
 }
 

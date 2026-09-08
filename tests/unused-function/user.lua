@@ -54,3 +54,13 @@ p:Execute()
 local disp = Dispatcher
 local dInstance = Dispatched
 disp:CallMethod(dInstance, "DynamicMethod")
+
+-- Register-by-name event handler defined and registered in the SAME file: the
+-- string "OnThing" passed to a `keyof T` parameter names HandlerHost.OnThing, so
+-- it must not be flagged as unused (issue #58). UnusedHostMethod proves the
+-- register-by-name tracking doesn't blanket-suppress the class's other methods.
+---@class HandlerHost
+local host = {}
+function host.OnThing(value) end
+function host.UnusedHostMethod() end
+EventRegistrar.Register(host, "ThingHappened", "OnThing")

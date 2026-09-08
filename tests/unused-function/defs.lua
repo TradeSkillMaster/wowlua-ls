@@ -163,3 +163,22 @@ end
 function Processor:UnusedProcessorMethod()
     return 41
 end
+
+-- Register-by-name event system: the registrar takes the handler owner as an
+-- ARGUMENT typed `keyof T` (not `self`), and the handler by string name. A method
+-- named only by such a string is a genuine reference (issue #58). This exercises
+-- the direct `keyof X` parameter reference path (distinct from the `K: keyof Obj`
+-- generic-constraint path covered by Dispatcher:CallMethod above).
+---@event RegistrarEvent
+---| "ThingHappened" -> value: number
+
+---@class EventRegistrar
+EventRegistrar = {}
+
+---@generic T
+---@generic E: RegistrarEvent
+---@overload fun(owner: T, event: E, handler: keyof T)
+---@param owner T
+---@param event E
+---@param handler fun(...params<E>)
+function EventRegistrar.Register(owner, event, handler) end
