@@ -1,5 +1,8 @@
 # wowlua-ls
 
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/TradeSkillMaster.wowlua-ls?label=VS%20Code%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls)
+[![Open VSX](https://img.shields.io/open-vsx/v/TradeSkillMaster/wowlua-ls?label=Open%20VSX)](https://open-vsx.org/extension/TradeSkillMaster/wowlua-ls)
+
 A language server for World of Warcraft addon development. Built specifically for WoW Lua, not a general-purpose Lua LS with WoW bolted on.
 
 > [!NOTE]
@@ -35,6 +38,8 @@ Full feature list and a complete LuaLS comparison in the [documentation](https:/
 ### VS Code
 
 Install **wowlua-ls** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls). The extension bundles the language server binary - no separate install needed.
+
+On editors that use the [Open VSX Registry](https://open-vsx.org/extension/TradeSkillMaster/wowlua-ls) instead of the Marketplace (VSCodium, Cursor, Gitpod, Eclipse Theia), install it from there - it's the same extension.
 
 ### JetBrains IDEs
 

@@ -276,6 +276,20 @@ jobs:
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
+  publish-openvsx:
+    needs: build-vsix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download VSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: vsix
+
+      - name: Publish to Open VSX
+        run: npx ovsx@^0.10 publish wowlua-ls.vsix -p "$OVSX_PAT"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+
   publish-jetbrains:
     needs: release
     runs-on: ubuntu-latest
