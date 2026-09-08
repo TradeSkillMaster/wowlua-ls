@@ -3242,7 +3242,12 @@ mod tests {
     }
 
     fn setup_unused_function_fixture() -> (Vec<PathBuf>, Arc<PreResolvedGlobals>, Arc<crate::config::ProjectConfigs>) {
-        let scan_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/unused-function");
+        build_ws_fixture(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/unused-function"))
+    }
+
+    /// Scan a fixture directory and build the `(paths, pre_globals, configs)`
+    /// triple `compute_ws_diagnostics` needs. Shared by the unused-function tests.
+    fn build_ws_fixture(scan_dir: PathBuf) -> (Vec<PathBuf>, Arc<PreResolvedGlobals>, Arc<crate::config::ProjectConfigs>) {
         let mut configs = crate::config::ProjectConfigs::default();
         configs.try_load(&scan_dir);
         let scan = crate::lsp::scan_workspace(std::slice::from_ref(&scan_dir), &mut configs);
@@ -3257,6 +3262,40 @@ mod tests {
         let configs = Arc::new(configs);
         let paths = collect_lua_paths(&scan_dir, &mut crate::config::ProjectConfigs::default());
         (paths, Arc::new(pg), configs)
+    }
+
+    #[test]
+    fn meta_file_functions_excluded_from_crossfile_unused() {
+        // A function/method declared in a `---@meta` file is a declaration stub,
+        // so "no references in workspace" is expected — it must NOT be reported as
+        // unused-function (issue #59). A genuinely-unused function in a NON-meta
+        // file in the same workspace must still be flagged, so the exclusion is
+        // proven specific to meta files (and the meta assertion is non-vacuous).
+        let scan_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/unused-function-meta");
+        let (paths, pre_globals, configs) = build_ws_fixture(scan_dir.clone());
+        let (_, crossfile) = compute_ws_diagnostics(
+            &paths, &pre_globals, &configs, &[], None, None, &|| false,
+        );
+        let crossfile = crossfile.expect("full warm must compute the cross-file map");
+
+        let meta_uri = abs_path_to_uri(&scan_dir.join("types.lua")).unwrap().to_string();
+        let consumer_uri = abs_path_to_uri(&scan_dir.join("consumer.lua")).unwrap().to_string();
+
+        // The @meta file contributes NO cross-file unused-function diagnostics,
+        // for either its methods (Pass 2) or its global stub (Pass 1).
+        assert!(
+            crossfile.get(&meta_uri).is_none_or(|d| d.is_empty()),
+            "@meta file must not produce cross-file unused-function diagnostics, got {:?}",
+            crossfile.get(&meta_uri),
+        );
+
+        // The non-meta consumer's genuinely-unused function IS still flagged —
+        // this fails if the fix is reverted only via the meta assertion above, but
+        // guarantees the pass ran at all (guards against a vacuous pass).
+        assert!(
+            crossfile.get(&consumer_uri).is_some_and(|d| !d.is_empty()),
+            "non-meta unused function must still be flagged (the cross-file pass must run)",
+        );
     }
 
     /// Regression for the multi-file re-entrancy cycle in

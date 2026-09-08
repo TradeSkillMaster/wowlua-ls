@@ -2,7 +2,7 @@
 //! a summary. Exits non-zero when errors or warnings are present.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -59,6 +59,9 @@ struct FileResult {
     stats: CheckStats,
     /// Cross-file reference data for the workspace-level unused-function check.
     ref_entry: Option<(PathBuf, FileReferenceData)>,
+    /// This file has a `---@meta` marker. Its functions are declaration stubs,
+    /// so they are excluded from the cross-file unused-function check.
+    is_meta: bool,
 }
 
 /// Analyze a single file: parse, resolve types, run diagnostics (+ plugins),
@@ -179,13 +182,14 @@ fn analyze_one_file(
 
         // Collect cross-file reference data for workspace-level unused function check
         let ref_data = wowlua_ls::diagnostics::unused_function::collect_file_reference_data(&ar);
-        (lines, stats, ref_data)
+        (lines, stats, ref_data, ar.is_meta())
     }));
     match result {
-        Ok((lines, st, ref_data)) => {
+        Ok((lines, st, ref_data, is_meta)) => {
             fr.lines.extend(lines);
             fr.stats.merge(&st);
             fr.ref_entry = Some((path.to_path_buf(), ref_data));
+            fr.is_meta = is_meta;
         }
         Err(_) => {
             error!("PANIC analyzing: {}", name.display());
@@ -287,6 +291,9 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
     // downstream pipe, e.g. `| head`, drops writes silently instead of panicking).
     let mut stats = CheckStats::default();
     let mut file_refs: HashMap<PathBuf, FileReferenceData> = HashMap::new();
+    // `@meta` files whose functions must be excluded from the cross-file
+    // unused-function check (their functions are declaration stubs).
+    let mut meta_paths: HashSet<PathBuf> = HashSet::new();
     {
         let stdout = std::io::stdout();
         let mut out = std::io::BufWriter::new(stdout.lock());
@@ -299,6 +306,9 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
             }
             stats.merge(&fr.stats);
             if let Some((p, rd)) = fr.ref_entry {
+                if fr.is_meta {
+                    meta_paths.insert(p.clone());
+                }
                 file_refs.insert(p, rd);
             }
         }
@@ -309,6 +319,7 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
             &pre_globals,
             &file_refs,
             &|p| project_configs.is_library(p),
+            &|p| meta_paths.contains(p),
         );
         let diag_map = wowlua_ls::diagnostics::unused_function::emit_unused_workspace_diagnostics(&unused);
         for (fpath, diags) in &diag_map {

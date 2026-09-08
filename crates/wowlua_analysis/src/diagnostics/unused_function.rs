@@ -259,6 +259,7 @@ fn is_used_or_excluded(
     agg: &AggregatedRefs,
     file_refs: &HashMap<PathBuf, FileReferenceData>,
     is_library: &dyn Fn(&Path) -> bool,
+    is_meta_path: &dyn Fn(&Path) -> bool,
 ) -> bool {
     // Skip underscore-prefixed names (convention for intentionally unused).
     if name.starts_with('_') {
@@ -275,6 +276,13 @@ fn is_used_or_excluded(
 
     // Skip library files (diagnostics are suppressed for libraries).
     if is_library(source_path) {
+        return true;
+    }
+
+    // Skip `@meta` declaration files: a function declared in one is a deliberate
+    // type-declaration stub (the workspace analogue of the built-in WoW API
+    // stubs), so "no references in workspace" is expected, not a defect.
+    if is_meta_path(source_path) {
         return true;
     }
 
@@ -306,6 +314,7 @@ fn find_unused_methods(
     pre_globals: &PreResolvedGlobals,
     agg: &AggregatedRefs,
     is_library: &dyn Fn(&Path) -> bool,
+    is_meta_path: &dyn Fn(&Path) -> bool,
 ) -> Vec<UnusedWorkspaceFunction> {
     let mut unused = Vec::new();
 
@@ -339,6 +348,13 @@ fn find_unused_methods(
         }
 
         if is_library(&loc.path) {
+            continue;
+        }
+
+        // Skip `@meta` declaration files (see `is_used_or_excluded`): a method
+        // declared in a type-declaration stub is expected to have no workspace
+        // references.
+        if is_meta_path(&loc.path) {
             continue;
         }
 
@@ -391,6 +407,7 @@ pub fn find_unused_workspace_functions(
     pre_globals: &PreResolvedGlobals,
     file_refs: &HashMap<PathBuf, FileReferenceData>,
     is_library: &dyn Fn(&Path) -> bool,
+    is_meta_path: &dyn Fn(&Path) -> bool,
 ) -> Vec<UnusedWorkspaceFunction> {
     let mut unused = Vec::new();
     let agg = AggregatedRefs::build(file_refs);
@@ -416,7 +433,7 @@ pub fn find_unused_workspace_functions(
             continue;
         }
 
-        if is_used_or_excluded(&g.name, source_path, ext_sym, &agg, file_refs, is_library) {
+        if is_used_or_excluded(&g.name, source_path, ext_sym, &agg, file_refs, is_library, is_meta_path) {
             continue;
         }
 
@@ -429,7 +446,7 @@ pub fn find_unused_workspace_functions(
     }
 
     // Pass 2: method functions (shared helper).
-    unused.extend(find_unused_methods(pre_globals, &agg, is_library));
+    unused.extend(find_unused_methods(pre_globals, &agg, is_library, is_meta_path));
 
     unused
 }
@@ -443,6 +460,7 @@ pub fn find_unused_from_pre_globals(
     pre_globals: &PreResolvedGlobals,
     file_refs: &HashMap<PathBuf, FileReferenceData>,
     is_library: &dyn Fn(&Path) -> bool,
+    is_meta_path: &dyn Fn(&Path) -> bool,
 ) -> Vec<UnusedWorkspaceFunction> {
     let mut unused = Vec::new();
     let agg = AggregatedRefs::build(file_refs);
@@ -476,7 +494,7 @@ pub fn find_unused_from_pre_globals(
             None => continue,
         };
 
-        if is_used_or_excluded(name, &loc.path, ext_sym, &agg, file_refs, is_library) {
+        if is_used_or_excluded(name, &loc.path, ext_sym, &agg, file_refs, is_library, is_meta_path) {
             continue;
         }
 
@@ -490,7 +508,7 @@ pub fn find_unused_from_pre_globals(
     }
 
     // Pass 2: method functions (shared helper).
-    unused.extend(find_unused_methods(pre_globals, &agg, is_library));
+    unused.extend(find_unused_methods(pre_globals, &agg, is_library, is_meta_path));
 
     unused
 }

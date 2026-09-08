@@ -78,7 +78,12 @@ pub(super) fn compute_ws_diagnostics(
     // Phase 1: per-file analysis (parallel). Collect diagnostics + reference data.
     // Also cache file text (path → text) for files that have cross-file diagnostics,
     // so Phase 2 can reuse it without re-reading from disk.
-    type PerFileEntry = (String, Vec<lsp_types::Diagnostic>, Option<(PathBuf, FileReferenceData, String)>);
+    // The final `bool` in the inner tuple is `is_meta` (file has a `---@meta`
+    // marker). Present only for freshly-analyzed files; the incremental-reuse
+    // path returns `None` for the whole option. Phase 2 (cross-file) runs only
+    // on full rebuilds where every file is freshly analyzed, so it always has
+    // this flag available for the files it inspects.
+    type PerFileEntry = (String, Vec<lsp_types::Diagnostic>, Option<(PathBuf, FileReferenceData, String, bool)>);
     let per_file: Vec<PerFileEntry> = paths
         .par_iter()
         .filter_map(|path| {
@@ -117,7 +122,7 @@ pub(super) fn compute_ws_diagnostics(
             let root = crate::syntax::SyntaxNode::new_root(&tree);
             let suppressions = scan_diagnostic_directives(root);
             let diag_items = build_file_diagnostics_with(&uri, &tree, &result, &text, &[], configs, &suppressions);
-            Some((uri_s, diag_items, Some((path.clone(), ref_data, text))))
+            Some((uri_s, diag_items, Some((path.clone(), ref_data, text, result.is_meta()))))
         })
         .collect();
 
@@ -138,16 +143,30 @@ pub(super) fn compute_ws_diagnostics(
         let file_refs: HashMap<PathBuf, FileReferenceData> = per_file
             .iter()
             .filter_map(|(_, _, ref_opt)| ref_opt.as_ref())
-            .map(|(p, r, _)| (p.clone(), r.clone()))
+            .map(|(p, r, _, _)| (p.clone(), r.clone()))
+            .collect();
+        // Paths of `@meta` declaration files — their functions are declaration
+        // stubs, so the cross-file unused check must exclude them (mirrors the
+        // `is_library` exclusion). Built here because meta-ness is a per-file
+        // analysis property, not a path pattern.
+        let meta_paths: HashSet<PathBuf> = per_file
+            .iter()
+            .filter_map(|(_, _, ref_opt)| ref_opt.as_ref())
+            .filter(|(_, _, _, is_meta)| *is_meta)
+            .map(|(p, _, _, _)| p.clone())
             .collect();
         if !file_refs.is_empty() {
-            let unused = unused_function::find_unused_from_pre_globals(pre_globals, &file_refs, &|p| configs.is_library(p));
+            let unused = unused_function::find_unused_from_pre_globals(
+                pre_globals, &file_refs,
+                &|p| configs.is_library(p),
+                &|p| meta_paths.contains(p),
+            );
             let raw_diags = unused_function::emit_unused_workspace_diagnostics(&unused);
             // Build a text cache from Phase 1 to avoid re-reading files.
             let text_cache: HashMap<&Path, &str> = per_file
                 .iter()
                 .filter_map(|(_, _, ref_opt)| ref_opt.as_ref())
-                .map(|(p, _, text)| (p.as_path(), text.as_str()))
+                .map(|(p, _, text, _)| (p.as_path(), text.as_str()))
                 .collect();
             // Convert WowDiagnostic to LSP Diagnostic for each file.
             let utf8 = use_utf8();

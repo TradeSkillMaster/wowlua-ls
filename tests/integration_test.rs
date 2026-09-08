@@ -6889,6 +6889,7 @@ fn test_unused_function_cross_file() {
 
     // Analyze each file, collect reference data.
     let mut file_refs: HashMap<PathBuf, wowlua_ls::diagnostics::unused_function::FileReferenceData> = HashMap::new();
+    let mut meta_paths: HashSet<PathBuf> = HashSet::new();
     for entry in std::fs::read_dir(&scan_dir).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
@@ -6911,6 +6912,9 @@ fn test_unused_function_cross_file() {
         );
         analysis.resolve_types();
         let result = analysis.into_result();
+        if result.is_meta() {
+            meta_paths.insert(path.clone());
+        }
         let ref_data = collect_file_reference_data(&result);
         file_refs.insert(path, ref_data);
     }
@@ -6920,6 +6924,7 @@ fn test_unused_function_cross_file() {
         &pre_globals,
         &file_refs,
         &|p| project_configs.is_library(p),
+        &|p| meta_paths.contains(p),
     );
     let unused_names: HashSet<&str> = unused.iter().map(|u| u.name.as_str()).collect();
 
