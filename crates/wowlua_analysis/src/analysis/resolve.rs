@@ -496,6 +496,28 @@ impl<'a> Analysis<'a> {
         })
     }
 
+    /// Compare two event-handler payload type lists for equivalence, treating a
+    /// `table<K,V>`/`T[]` param as equal to a structurally-identical one even when
+    /// the two resolved to different `TableInfo` arena indices (each event
+    /// materializes its own — see `resolve_event_annotation_mut`). Used by
+    /// `claim_event_handler_method` so registering one named method for two
+    /// structurally-identical events isn't misread as a payload conflict (which
+    /// would revert the handler's projected typing). Element/value type recursion
+    /// is only as deep as `types_structurally_match` follows (metadata + fields,
+    /// not nested key/value containers), which covers the realistic map/array-of
+    /// scalar-or-class payloads.
+    pub(super) fn payload_types_equivalent(&mut self, a: &[ValueType], b: &[ValueType]) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        for (x, y) in a.iter().zip(b) {
+            if x != y && !self.types_structurally_match(x, y, 0) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Recursively compare two `ValueType`s for structural equivalence,
     /// treating `Table(Some(idx_a))` and `Table(Some(idx_b))` as equal when
     /// their metadata (class_name, key/value types, field count/names) matches
@@ -1506,21 +1528,18 @@ impl<'a> Analysis<'a> {
             let Some(payload) = events.get(&string_literal) else { continue; };
             let payload_params = payload.params.clone();
 
+            let vararg_types = self.resolve_event_payload_types(&event_type_name, &string_literal, &payload_params);
+
             // Narrow named params beyond event_param_idx to payload types (scoped to target_scope)
-            for (payload_idx, param_info) in payload_params.iter().enumerate() {
+            for (payload_idx, vt) in vararg_types.iter().enumerate() {
                 let func_arg_idx = event_param_idx + 1 + payload_idx;
                 if let Some(&arg_sym_idx) = func_args.get(func_arg_idx) {
                     if arg_sym_idx.is_external() { continue; }
-                    if let Some(vt) = Self::resolve_event_param_type_static(&self.ir, param_info) {
-                        self.push_type_narrowed_version(arg_sym_idx, vt, target_scope);
-                    }
+                    self.push_type_narrowed_version(arg_sym_idx, vt.clone(), target_scope);
                 }
             }
 
             // Store vararg types for this scope
-            let vararg_types: Vec<ValueType> = payload_params.iter()
-                .filter_map(|p| Self::resolve_event_param_type_static(&self.ir, p))
-                .collect();
             if !vararg_types.is_empty() {
                 self.event_vararg_types.insert(target_scope, vararg_types);
             }
@@ -1543,29 +1562,130 @@ impl<'a> Analysis<'a> {
         None
     }
 
-    pub(super) fn resolve_event_param_type_static(ir: &super::Ir, param: &crate::pre_globals::EventPayloadParam) -> Option<ValueType> {
+    /// Resolve (and cache) all of an event's payload param types into concrete
+    /// `ValueType`s, keyed by `(event_type_name, event_name)`. The cache is what
+    /// keeps the `table<K,V>`/`T[]` `TableInfo` arena entries STABLE across
+    /// fixpoint iterations: without it every iteration would mint fresh table
+    /// indices, and the by-value `claim_event_handler_method` idempotency check
+    /// would read the re-resolved payload as a *conflicting* one and revert the
+    /// handler's projected typing.
+    pub(super) fn resolve_event_payload_types(
+        &mut self,
+        event_type_name: &str,
+        event_name: &str,
+        payload_params: &[crate::pre_globals::EventPayloadParam],
+    ) -> Vec<ValueType> {
+        let key = (event_type_name.to_string(), event_name.to_string());
+        if let Some(cached) = self.event_payload_type_cache.get(&key) {
+            return cached.clone();
+        }
+        let mut types = Vec::with_capacity(payload_params.len());
+        for p in payload_params {
+            if let Some(vt) = self.resolve_event_param_type_mut(p) {
+                types.push(vt);
+            }
+        }
+        self.event_payload_type_cache.insert(key, types.clone());
+        types
+    }
+
+    /// Resolve an event payload param's declared type to a `ValueType`,
+    /// materializing container types (`table<K,V>`, `T[]`) into real `TableInfo`
+    /// arena entries so their key/value/element types survive to hover and
+    /// in-body narrowing. The immutable free resolver collapses `table<K,V>` to a
+    /// bare `table` because it cannot allocate arena entries — this `&mut self`
+    /// path is what keeps `allInfo: table<string, Foo>` from downgrading to
+    /// `table` on the projected handler param (issue #60). Callers that resolve a
+    /// whole payload should prefer the cached `resolve_event_payload_types`.
+    pub(super) fn resolve_event_param_type_mut(&mut self, param: &crate::pre_globals::EventPayloadParam) -> Option<ValueType> {
         let at = crate::annotations::annotation_types::parse_type(&param.type_name);
-        let resolve = |a: &crate::annotations::AnnotationType| {
-            crate::annotations::resolve_annotation_type(a, &[], &ir.ext.classes, &ir.ext.aliases)
-                .or_else(|| crate::annotations::resolve_annotation_type(a, &[], &ir.classes, &ir.aliases))
-        };
-        let mut base = resolve(&at).unwrap_or(ValueType::Any);
+        let mut base = self.resolve_event_annotation_mut(&at).unwrap_or(ValueType::Any);
         // Recover fun() signature lost by Function(None) resolution (same as @param recovery in resolve_call.rs).
         if matches!(base, ValueType::Function(None))
-            && let Some(sig) = crate::annotations::extract_fun_sig(&at, &ir.alias_fun_types, &ir.ext.alias_fun_types)
+            && let Some(sig) = crate::annotations::extract_fun_sig(&at, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types)
         {
             let params: Vec<ShapeParam> = sig.params.iter().map(|p| ShapeParam {
                 name: p.name.clone(),
-                ty: resolve(&p.typ).unwrap_or(ValueType::Any),
+                ty: self.resolve_event_annotation_mut(&p.typ).unwrap_or(ValueType::Any),
                 optional: p.optional,
             }).collect();
-            let returns: Vec<ValueType> = sig.returns.iter().map(|r| resolve(r).unwrap_or(ValueType::Any)).collect();
+            let returns: Vec<ValueType> = sig.returns.iter()
+                .map(|r| self.resolve_event_annotation_mut(r).unwrap_or(ValueType::Any)).collect();
             base = ValueType::FunctionSig(Box::new(FunctionShape { params, returns, is_vararg: sig.is_vararg }));
         }
         if param.nilable {
             Some(ValueType::union(base, ValueType::Nil))
         } else {
             Some(base)
+        }
+    }
+
+    /// Resolve an annotation type appearing in an event payload, materializing
+    /// `table<K,V>` maps and `T[]` arrays into real `TableInfo` arena entries.
+    ///
+    /// This mirrors the container materialization in `prescan::resolve_annotation_type_mut`
+    /// (down to returning a bare `Table(None)` when the element/value type fails to
+    /// resolve, rather than a half-populated table), but differs deliberately in two
+    /// ways that a shared prescan helper can't provide here:
+    /// - leaf class/alias names resolve **external-first-then-local** (event payloads
+    ///   usually reference cross-file/stub classes; prescan is local-only), and
+    /// - it recurses through the key/value/element positions (and unions/intersections)
+    ///   with the same ext-first leaf order, so a nested container or cross-file value
+    ///   type survives instead of decaying via the immutable local-only leaf resolver.
+    ///
+    /// Keep the two in sync when changing container materialization.
+    fn resolve_event_annotation_mut(&mut self, at: &crate::annotations::AnnotationType) -> Option<ValueType> {
+        use crate::annotations::AnnotationType as AT;
+        match at {
+            AT::Array(inner) => {
+                let Some(elem) = self.resolve_event_annotation_mut(inner) else {
+                    return Some(ValueType::Table(None));
+                };
+                let table_idx = TableIndex(self.ir.tables.len());
+                self.ir.tables.push(TableInfo {
+                    key_type: Some(ValueType::Number),
+                    value_type: Some(elem),
+                    value_type_annotated: true,
+                    ..Default::default()
+                });
+                Some(ValueType::Table(Some(table_idx)))
+            }
+            AT::Parameterized(base, args) if base == "table" && args.len() == 2 => {
+                let key_vt = self.resolve_event_annotation_mut(&args[0]);
+                let Some(value_vt) = self.resolve_event_annotation_mut(&args[1]) else {
+                    return Some(ValueType::Table(None));
+                };
+                let table_idx = TableIndex(self.ir.tables.len());
+                self.ir.tables.push(TableInfo {
+                    key_type: key_vt,
+                    value_type: Some(value_vt),
+                    is_explicit_map: true,
+                    value_type_annotated: true,
+                    ..Default::default()
+                });
+                Some(ValueType::Table(Some(table_idx)))
+            }
+            AT::Union(parts) => {
+                let converted: Vec<ValueType> = parts.iter()
+                    .filter_map(|p| self.resolve_event_annotation_mut(p)).collect();
+                match converted.len() {
+                    0 => None, 1 => converted.into_iter().next(),
+                    _ => Some(ValueType::make_union(converted)),
+                }
+            }
+            AT::Intersection(parts) => {
+                let converted: Vec<ValueType> = parts.iter()
+                    .filter_map(|p| self.resolve_event_annotation_mut(p)).collect();
+                match converted.len() {
+                    0 => None, 1 => converted.into_iter().next(),
+                    _ => Some(ValueType::Intersection(converted)),
+                }
+            }
+            AT::NonNil(inner) => self.resolve_event_annotation_mut(inner),
+            // Leaf / other types: resolve names ext-first-then-local, matching the
+            // former static resolver.
+            _ => crate::annotations::resolve_annotation_type(at, &[], &self.ir.ext.classes, &self.ir.ext.aliases)
+                .or_else(|| crate::annotations::resolve_annotation_type(at, &[], &self.ir.classes, &self.ir.aliases)),
         }
     }
 

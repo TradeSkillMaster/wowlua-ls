@@ -42,6 +42,7 @@
 ---| "BATCH_GENERIC_PARAM" -> iter: IteratorObject<fun(): number, string>
 ---| "BATCH_FUN_ALIAS" -> prepareFunc: PrepareFunc
 ---| "BATCH_FUN_INLINE" -> onDone: fun(ok: boolean): number
+---| "BATCH_MAP" -> results: table<string, ScanEntry>, ids: number[]
 
 -- Function-typed payload via an @alias: the payload param keeps the alias's
 -- fun(...) signature on hover instead of decaying to the bare word "function".
@@ -52,6 +53,9 @@
 ---@alias AnyGameEvent WowEvent
 
 ---@class IteratorObject<F>
+
+---@class ScanEntry
+---@field id number
 
 ---@class EventFrame
 local EventFrame = {}

@@ -2465,9 +2465,7 @@ impl<'a> Analysis<'a> {
             let Some(payload_params) = self.ir.ext.event_types.get(&event_type_name)
                 .and_then(|m| m.get(&event_name))
                 .map(|payload| payload.params.clone()) else { continue };
-            let vararg_types: Vec<ValueType> = payload_params.iter()
-                .filter_map(|p| Self::resolve_event_param_type_static(&self.ir, p))
-                .collect();
+            let vararg_types = self.resolve_event_payload_types(&event_type_name, &event_name, &payload_params);
             if vararg_types.is_empty() { continue; }
             let target_args = self.ir.functions[target_func_idx.val()].args.clone();
             // A named handler is dispatched as `self[method](self, event, ...)`, so the
@@ -2580,42 +2578,51 @@ impl<'a> Analysis<'a> {
         if self.event_handler_method_conflicts.contains(&method_idx) {
             return false;
         }
-        match self.event_handler_method_payloads.get(&method_idx) {
-            Some((prev, _)) if prev.as_slice() == vararg_types => true,
-            Some((_, set_syms)) => {
-                for &sym in set_syms.clone().iter() {
-                    if let Some(v) = self.ir.symbols[sym.val()].versions.first_mut() {
-                        v.resolved_type = None;
-                    }
-                }
-                self.event_handler_method_payloads.remove(&method_idx);
-                self.event_handler_method_conflicts.insert(method_idx);
-                // Also drop the first registration's payload for the method's raw `...`
-                // (inserted at resolve time), so a `...` in a conflicted handler's body
-                // is left untyped rather than resolving to the first event's payload.
-                let scope = self.ir.functions[method_idx.val()].scope;
-                self.event_vararg_types.remove(&scope);
-                false
+        // Compare against any prior registration STRUCTURALLY, not by raw
+        // index-bearing `Vec<ValueType>` equality: a `table<K,V>`/`T[]` payload
+        // param materializes a fresh table arena index per event, so two
+        // structurally-identical payloads (the same method registered for two such
+        // events) would otherwise read as a spurious conflict. Clone `prev` to
+        // release the map borrow before the `&mut self` comparison.
+        if let Some((prev, _)) = self.event_handler_method_payloads.get(&method_idx) {
+            let prev = prev.clone();
+            if self.payload_types_equivalent(&prev, vararg_types) {
+                return true;
             }
-            None => {
-                // Record which payload params this projection will set (the
-                // currently-untyped ones, starting at `payload_start`), so they can be
-                // reverted if a later conflicting registration is found.
-                let args = self.ir.functions[method_idx.val()].args.clone();
-                let mut set_syms = Vec::new();
-                for j in 0..vararg_types.len() {
-                    let Some(&param_sym) = args.get(payload_start + j) else { break };
-                    if param_sym.is_external() { continue; }
-                    if self.ir.symbols[param_sym.val()].versions.first()
-                        .is_some_and(|v| v.resolved_type.is_none())
-                    {
-                        set_syms.push(param_sym);
-                    }
+            // Conflicting payload: revert the params the first registration set and
+            // refuse all further projection onto this method.
+            let set_syms = self.event_handler_method_payloads.get(&method_idx)
+                .map(|(_, s)| s.clone()).unwrap_or_default();
+            for &sym in &set_syms {
+                if let Some(v) = self.ir.symbols[sym.val()].versions.first_mut() {
+                    v.resolved_type = None;
                 }
-                self.event_handler_method_payloads.insert(method_idx, (vararg_types.to_vec(), set_syms));
-                true
+            }
+            self.event_handler_method_payloads.remove(&method_idx);
+            self.event_handler_method_conflicts.insert(method_idx);
+            // Also drop the first registration's payload for the method's raw `...`
+            // (inserted at resolve time), so a `...` in a conflicted handler's body
+            // is left untyped rather than resolving to the first event's payload.
+            let scope = self.ir.functions[method_idx.val()].scope;
+            self.event_vararg_types.remove(&scope);
+            return false;
+        }
+        // First registration: record which payload params this projection will set
+        // (the currently-untyped ones, starting at `payload_start`), so they can be
+        // reverted if a later conflicting registration is found.
+        let args = self.ir.functions[method_idx.val()].args.clone();
+        let mut set_syms = Vec::new();
+        for j in 0..vararg_types.len() {
+            let Some(&param_sym) = args.get(payload_start + j) else { break };
+            if param_sym.is_external() { continue; }
+            if self.ir.symbols[param_sym.val()].versions.first()
+                .is_some_and(|v| v.resolved_type.is_none())
+            {
+                set_syms.push(param_sym);
             }
         }
+        self.event_handler_method_payloads.insert(method_idx, (vararg_types.to_vec(), set_syms));
+        true
     }
 
     /// Select the overload matching the call-site argument count and types,

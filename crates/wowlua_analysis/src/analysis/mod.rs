@@ -2647,6 +2647,13 @@ pub struct Analysis<'a> {
     pub event_handler_method_payloads: HashMap<FunctionIndex, (Vec<ValueType>, Vec<SymbolIndex>)>,
     /// Named handler methods with conflicting payloads (see above) — left untyped.
     pub event_handler_method_conflicts: HashSet<FunctionIndex>,
+    /// Cache of an event payload's resolved param types, keyed by
+    /// `(event_type_name, event_name)`. Resolving `table<K,V>`/`T[]` payload
+    /// param types materializes fresh `TableInfo` arena entries; caching keeps the
+    /// same arena indices across fixpoint iterations so the by-value
+    /// `claim_event_handler_method` idempotency check doesn't mistake a re-resolved
+    /// payload for a conflicting one (and avoids per-iteration arena bloat).
+    pub event_payload_type_cache: HashMap<(String, String), Vec<ValueType>>,
 }
 
 /// Per-file analysis configuration bundling project-level settings.
@@ -2833,6 +2840,7 @@ impl<'a> Analysis<'a> {
             vararg_user_annotated_fns: HashSet::new(),
             event_handler_method_payloads: HashMap::new(),
             event_handler_method_conflicts: HashSet::new(),
+            event_payload_type_cache: HashMap::new(),
         };
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();

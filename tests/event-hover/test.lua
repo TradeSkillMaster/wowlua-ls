@@ -199,7 +199,7 @@ handleBatchHover("BATCH_OPTIONAL")
 
 -- Completions for batch events
 handleBatchHover("")
---                ^ comp: BATCH_COMPLETED, BATCH_FUN_ALIAS, BATCH_FUN_INLINE, BATCH_GENERIC_PARAM, BATCH_OPTIONAL, BATCH_RESULT, BATCH_START
+--                ^ comp: BATCH_COMPLETED, BATCH_FUN_ALIAS, BATCH_FUN_INLINE, BATCH_GENERIC_PARAM, BATCH_MAP, BATCH_OPTIONAL, BATCH_RESULT, BATCH_START
 
 -- params<BatchAction> narrowing
 ---@param action BatchAction
@@ -233,6 +233,15 @@ local function handleBatchParamTypes(action, ...)
         local i = iter
 --            ^ hover: (local) i: IteratorObject
 -- (base class resolved; type args not substituted by resolve_annotation_type)
+    end
+    -- issue #60: a table<K,V> / T[] payload param keeps its element types on the
+    -- narrowed vararg (previously downgraded to bare "table").
+    if action == "BATCH_MAP" then
+        local results, ids = ...
+        local r = results
+--            ^ hover: (local) r: table<string, ScanEntry>
+        local d = ids
+--            ^ hover: (local) d: number[]
     end
 end
 
