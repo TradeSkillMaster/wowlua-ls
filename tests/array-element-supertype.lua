@@ -97,3 +97,30 @@ local castItem = {
 }
 local castReady = castItem.ready
 --    ^ hover: (local) castReady: true
+
+-- Regression: because a bare boolean-literal field widens to `boolean` (above), a
+-- `boolean` field must still satisfy a target that wants the literal `true` — just
+-- as a widened `number`/`string` field satisfies a numeric/string-literal target.
+-- The motivating shape is an `@alias` intersecting an array with a boolean-tag shape
+-- (`T[] & {done: true}`): the constructor `{ done = true }` infers `{done: boolean}`,
+-- which must return-check against the tagged alias with NO return-mismatch.
+---@alias TaggedArray string[] & {done: true}
+
+---@return TaggedArray
+local function packChunks()
+  local out = { done = true }
+  table.insert(out, "chunk")
+  return out
+end
+
+-- Guard: two DIFFERENT boolean literals stay non-assignable, so widening `boolean`
+-- to the literal target did not collapse `true` and `false`. A bare `false` would
+-- itself widen to `boolean` (and then be accepted per the rule above), so `@as false`
+-- pins the value to the literal `false` — which must NOT satisfy the alias's
+-- `done: true`. (`@as` also skips widening; a `---@type` line comment can't be used
+-- inline here — it would swallow the closing `}`.)
+---@return TaggedArray
+local function packWrong()
+  return { done = false --[[@as false]] }
+  --     ^ diag: return-mismatch
+end

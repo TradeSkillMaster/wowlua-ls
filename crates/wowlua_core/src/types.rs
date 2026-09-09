@@ -548,8 +548,15 @@ impl ValueType {
             (_, ValueType::KeyOf(_)) => self.is_assignable_to(&ValueType::String(None)),
             // Nil assignable to any union containing nil (optional params)
             (ValueType::Nil, ValueType::Union(types)) => types.contains(&ValueType::Nil),
-            // Boolean literal assignable to generic boolean
-            (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
+            // Boolean literal ↔ generic boolean are mutually assignable — we don't
+            // model the runtime value of a plain `boolean`, so it may be any literal
+            // (mirroring the Number/String rules below). The generic→literal direction
+            // is load-bearing: an inferred table field widens `{ok = true}` to
+            // `{ok: boolean}`, which must still satisfy a `{ok: true}` target. Two
+            // *different* literals (`true` vs `false`) fall through to `false`; equal
+            // literals hit the `self == expected` fast path above.
+            (ValueType::Boolean(_), ValueType::Boolean(None))
+            | (ValueType::Boolean(None), ValueType::Boolean(_)) => true,
             // Generic `string` is mutually assignable with any string type — we
             // don't model the runtime value of a plain `string`, mirroring the
             // NumberLiteral↔Number rule below. Two *different* string literals
