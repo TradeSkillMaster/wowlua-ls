@@ -542,6 +542,14 @@ pub struct Ir {
     /// the strict counterpart of the lenient `@type`/assignment contexts, which
     /// keep the construct-then-Mixin idiom working.
     pub tc_arg_constructors: std::collections::HashSet<TableIndex>,
+    /// `(class table, field name)` pairs for placeholder-`Any` class fields that
+    /// were *synthesized from a table-constructor value* the annotation scan
+    /// couldn't type (e.g. `---@class C` / `local c = { x = OTHER.field }`), as
+    /// opposed to a user-written `---@field x any` escape hatch. Only these may
+    /// have their placeholder expr upgraded to the runtime constructor's real
+    /// expr in `merge_runtime_fields_into_class` — an explicit `@field x any`
+    /// stays `any`. Populated in `prescan_classes_and_aliases`.
+    pub ctor_inferred_any_fields: std::collections::HashSet<(TableIndex, String)>,
     /// Bracket assignments where the target table couldn't be resolved in Phase 1
     /// (e.g. `local NPCs = private.Data.NPCs; NPCs[1] = { ... }`). Deferred to
     /// Phase 2 where resolved_type is available. (root_name, scope_idx, val_expr)
@@ -2791,6 +2799,7 @@ impl<'a> Analysis<'a> {
                 synthesized_overload_funcs: HashSet::new(),
                 tc_expected_class: HashMap::new(),
                 tc_arg_constructors: std::collections::HashSet::new(),
+                ctor_inferred_any_fields: std::collections::HashSet::new(),
                 pending_bracket_assigns: Vec::new(),
                 overlay: HashMap::new(),
                 symbol_overlay: HashMap::new(),

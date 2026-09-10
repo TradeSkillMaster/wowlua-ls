@@ -286,6 +286,14 @@ impl<'a> Analysis<'a> {
                             self.ir.number_literals.insert(expr_id, val.clone());
                         }
                     }
+                    // A placeholder `Any` field that the user did NOT declare via
+                    // `@field` was synthesized from a table-constructor value the
+                    // scan couldn't type; mark it so the merge may upgrade its expr
+                    // to the runtime constructor's real value. An explicit
+                    // `@field x any` is left out, preserving the escape hatch.
+                    if matches!(vt, ValueType::Any) && !class.declared_field_names.contains(field_name) {
+                        self.ir.ctor_inferred_any_fields.insert((table_idx, field_name.clone()));
+                    }
                     self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_id,
                         visibility: *visibility,

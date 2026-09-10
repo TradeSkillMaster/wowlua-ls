@@ -2366,19 +2366,35 @@ impl<'a> Analysis<'a> {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
         for (name, field_info) in runtime_fields {
+            // Only a scan-injected placeholder — an enum member or a constructor
+            // field the scan couldn't type — may have its expr upgraded. A
+            // user-written `@field x any` is structurally identical here
+            // (`annotation = Some(Any)`) but must keep resolving to `any`, so it
+            // is deliberately absent from `ctor_inferred_any_fields`.
+            let ctor_inferred = is_enum
+                || self.ir.ctor_inferred_any_fields.contains(&(class_table_idx, name.clone()));
             match self.ir.tables[class_table_idx.val()].fields.entry(name) {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
-                    if is_enum && matches!(e.get().annotation, Some(ValueType::Any)) {
-                        // Upgrade a placeholder `Any` enum member to point at the
-                        // constructor's real value expr. Keeping the `Any`
-                        // annotation means the existing placeholder refinement
-                        // (hover / resolve_expr_type / refine_any_field_type)
-                        // resolves the member from that expr — number/string when
-                        // it resolves, gracefully falling back to `any` when it
-                        // doesn't — and `finalize_enum_kinds` reads the real value
-                        // for the kind. The constructor expr already carries its
-                        // own literals, so no literal copy is needed here.
+                    if ctor_inferred && matches!(e.get().annotation, Some(ValueType::Any)) {
+                        // Upgrade a placeholder `Any` field to point at the
+                        // constructor's real value expr. This covers both enum
+                        // members and `@class`-on-constructor fields whose value
+                        // is a symbol/field reference (e.g. `x = OTHER.field`),
+                        // which the annotation scan types as `any` because it
+                        // can't resolve references cross-referentially — only the
+                        // defining file's per-file analysis has the real expr.
+                        // Keeping the `Any` annotation means the existing
+                        // placeholder refinement (hover / resolve_expr_type /
+                        // refine_any_field_type) resolves the field from that expr
+                        // — the concrete type when it resolves, gracefully falling
+                        // back to `any` when it doesn't — and `finalize_enum_kinds`
+                        // reads the real value for enum kinds. The constructor expr
+                        // already carries its own literals, so no literal copy is
+                        // needed here.
                         e.get_mut().expr = field_info.expr;
+                        if !field_info.extra_exprs.is_empty() {
+                            e.get_mut().extra_exprs = field_info.extra_exprs;
+                        }
                     } else {
                         // Prescan-created fields don't have literals; copy from the
                         // constructor field so hover can show enum values like

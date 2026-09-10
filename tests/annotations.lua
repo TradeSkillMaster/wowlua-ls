@@ -1559,3 +1559,44 @@ local function useColor(c) end
 useColor(7)
 --       ^ diag: type-mismatch
 useColor(GlobalColorKind.red)
+
+-- ── Regression: @class on a constructor with reference-valued fields ─────────
+-- A `@class` attached to a table constructor whose field values are variable or
+-- field references (not inline literals) must resolve those fields to their real
+-- types in the class hover — not the scan-time `any` placeholder. Previously
+-- only enum members got this constructor-expr upgrade (see the block above);
+-- plain classes kept `any`, which then tainted every downstream field read.
+---@enum ClassCtorHeader
+local ClassCtorHeaders = {
+    averageMs = "averageMs",
+}
+local CLASS_CTOR_DESC = -1
+---@class ClassCtorDefaults
+local classCtorDefaults = {
+    enabled = true,
+    sortColumn = ClassCtorHeaders.averageMs,
+    sortOrder = CLASS_CTOR_DESC,
+}
+---@type ClassCtorDefaults
+--       ^ hover: (class) ClassCtorDefaults {\n  enabled: boolean,\n  sortColumn: string,\n  sortOrder: number\n}
+local classCtorRef = nil
+
+-- The taint is cleared: reads of the reference-valued fields resolve concretely.
+local ctorSort = classCtorDefaults.sortColumn
+--    ^ hover: (local) ctorSort: string  def: local
+local ctorOrder = classCtorDefaults.sortOrder
+--    ^ hover: (local) ctorOrder: number  def: local
+
+-- Negative control for the upgrade above: an explicit `@field x any` escape
+-- hatch must NOT be narrowed to its constructor initializer. At merge time it is
+-- structurally identical to a scan-inferred placeholder (annotation `Some(Any)`),
+-- but the user deliberately chose `any` — so it stays `any` and remains callable
+-- (no false-positive `cannot-call`). Only scan-synthesized placeholders (tracked
+-- in `ctor_inferred_any_fields`) get the constructor-expr upgrade.
+---@class EscapeHatchClass
+---@field payload any
+local escapeHatch = { payload = "initial" }
+local hatchPayload = escapeHatch.payload
+--    ^ hover: (local) hatchPayload: any
+-- `any` is callable — this must not emit cannot-call.
+local function callHatch() return escapeHatch.payload() end
