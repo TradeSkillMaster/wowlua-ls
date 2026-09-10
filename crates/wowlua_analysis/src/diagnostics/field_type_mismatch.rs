@@ -64,12 +64,14 @@ impl DiagnosticPass for FieldTypeMismatch {
                 // Scan-inferred *structural* table (a constructor shape captured
                 // from the field's initial assignment). Later field additions can
                 // grow the underlying table, making the constructor appear to have
-                // fewer fields than expected — a false positive. Skip only when the
-                // actual is also a table (the incremental-build scenario);
-                // genuinely wrong types (e.g. a string where a table shape was
+                // fewer fields than expected — a false positive. Skip when the actual
+                // is also a table (the incremental-build scenario), or `nil`: a
+                // scan-inferred type is not a non-nil contract, so clearing the field
+                // (`ns.cache = {}` … `ns.cache = nil`) is idiomatic, not a mismatch.
+                // Genuinely wrong types (e.g. a string where a table shape was
                 // expected) still fire the diagnostic.
                 if matches!(expected, ValueType::Table(Some(idx)) if analysis.table(*idx).class_name.is_none())
-                    && matches!(actual, ValueType::Table(_))
+                    && matches!(actual, ValueType::Table(_) | ValueType::Nil)
                 {
                     continue;
                 }

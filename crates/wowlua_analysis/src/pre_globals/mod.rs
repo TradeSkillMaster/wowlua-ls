@@ -3095,9 +3095,7 @@ impl PreResolvedGlobals {
                         let new_sub = self.rebuild_owned_subtable(
                             sub, std::slice::from_ref(field_name), paths_this, &owned_all, 0,
                         );
-                        let new_expr = ExprId(EXT_BASE + self.exprs.len());
-                        self.exprs.push(Expr::Literal(ValueType::Table(Some(new_sub))));
-                        fi.expr = new_expr;
+                        self.repoint_field_subtable(&mut fi, new_sub);
                     }
                     fi
                 };
@@ -3157,6 +3155,20 @@ impl PreResolvedGlobals {
         }
     }
 
+    /// Point a field at a freshly-rebuilt sub-table (the per-addon isolation copy),
+    /// replacing its `expr` and keeping `annotation` in sync. An inferred table-literal
+    /// field (`ns.db = {}`) carries the same `Table(Some(idx))` in both `expr` and
+    /// `annotation`; type resolution reads the annotation, so leaving it pointed at the
+    /// pre-filter combined sub-table would leak a sibling addon's `ns.db.*` children.
+    fn repoint_field_subtable(&mut self, fi: &mut FieldInfo, new_sub: TableIndex) {
+        let new_expr = ExprId(EXT_BASE + self.exprs.len());
+        self.exprs.push(Expr::Literal(ValueType::Table(Some(new_sub))));
+        fi.expr = new_expr;
+        if matches!(fi.annotation, Some(ValueType::Table(Some(_)))) {
+            fi.annotation = Some(ValueType::Table(Some(new_sub)));
+        }
+    }
+
     /// Resolve a field's value to a sub-table index, when its expr is an external
     /// `Table(Some(idx))` literal. Centralizes the direct `self.exprs` arena read
     /// shared by the per-addon table build and `rebuild_owned_subtable`.
@@ -3204,9 +3216,9 @@ impl PreResolvedGlobals {
             let child_sub = table.fields.get(&name).and_then(|fi| self.field_subtable(fi));
             if let Some(child_sub) = child_sub {
                 let new_child = self.rebuild_owned_subtable(child_sub, &child_path, owned_this, owned_all, depth + 1);
-                let new_expr = ExprId(EXT_BASE + self.exprs.len());
-                self.exprs.push(Expr::Literal(ValueType::Table(Some(new_child))));
-                table.fields.get_mut(&name).unwrap().expr = new_expr;
+                let mut fi = table.fields.remove(&name).unwrap();
+                self.repoint_field_subtable(&mut fi, new_child);
+                table.fields.insert(name, fi);
             }
         }
         let new_idx = TableIndex(EXT_BASE + self.tables.len());

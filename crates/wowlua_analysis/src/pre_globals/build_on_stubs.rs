@@ -699,7 +699,21 @@ impl<'a> BuildOnStubsContext<'a> {
                     if let FieldValueKind::Number(Some(val)) = value_kind {
                         self.number_literals.insert(expr_idx, val.clone());
                     }
-                    let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
+                    // An explicit table constructor (`X.field = { ... }`) is a real,
+                    // author-written `table`-typed field even when its shape came out
+                    // empty — positional/bracket keys aren't captured by the value-kind
+                    // scan, so `{ "a", "b" }` / `{ [1] = x }` / `{}` all yield an empty
+                    // `Table`. Give it an annotation so the prescan overlay-import keeps
+                    // it cross-file: annotation-less table fields are dropped there as
+                    // speculative `self.x = call()` placeholders, which would
+                    // false-positive a cross-file read as `undefined-field`. The
+                    // sub-table index in `vt` is preserved, so later deep-path writes
+                    // (`X.field.k = v`) still resolve against it.
+                    let annotation = if !g.returns.is_empty() || matches!(value_kind, FieldValueKind::Table(_)) {
+                        Some(vt)
+                    } else {
+                        None
+                    };
                     self.tables[local_idx].fields.insert(field_name.clone(),
                         super::shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix));
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
@@ -989,9 +1003,17 @@ impl<'a> BuildOnStubsContext<'a> {
                         });
                     if let Some(vt) = resolved {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
-                        self.exprs.push(Expr::Literal(vt));
+                        self.exprs.push(Expr::Literal(vt.clone()));
+                        // A field aliasing a resolved global (`X.LS = LibStub`) is a real
+                        // reference, not a speculative placeholder. When it resolves to a
+                        // class/table, annotate it so the prescan overlay-import keeps it
+                        // cross-file — Filter 1 there drops annotation-less table-typed
+                        // fields, which would false-positive a cross-file read as
+                        // `undefined-field`. (Scalar/function refs already survive; only
+                        // the table case is dropped, so only it needs the annotation.)
+                        let annotation = matches!(vt, ValueType::Table(_)).then_some(vt);
                         self.tables[local_idx].fields.insert(field_name.clone(),
-                            super::shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix));
+                            super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix));
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                     continue;

@@ -1958,6 +1958,23 @@ fn crossfile_class_ctor_fields() {
 }
 
 #[test]
+fn crossfile_global_class_fields() {
+    // Regression (MacroToolkit): a global that is also a `@class` (the
+    // `Foo = select(2, ...)` addon-namespace idiom), with fields written across
+    // files. Fields whose value shape the coarse scan can't capture —
+    // positional/bracket-keyed/empty table literals and a bare reference to a
+    // resolved class-typed global — must resolve cross-file, not false-positive as
+    // `undefined-field` (they were dropped as speculative placeholders by the
+    // prescan overlay-import filter). Also checks a nil-clear of an inferred table
+    // field is not a `field-type-mismatch`.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/global-class-fields/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/global-class-fields"),
+    });
+}
+
+#[test]
 fn crossfile_local_table_shape() {
     // Test that a plain local data table built up via scattered `C.x = ...` writes
     // and assigned to a @class field (`data.constants = C`) carries its accumulated
