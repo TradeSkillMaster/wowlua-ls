@@ -1,7 +1,8 @@
 **Bug Fixes**
-- `params<>` event-handler typing now works for register-by-name libraries that pass the addon object as an argument (typed `keyof T`) rather than as `self`: the string handler name is typed and go-to-definition/rename reach it, and its payload-projected parameters no longer trip `missing-param-annotation` or `unused-function`. ([docs](https://tradeskillmaster.github.io/wowlua-ls/guide/events.html))
-- `@meta` declaration files no longer report `unused-function` for the functions they declare.
+- Fixed class hover showing `any` for fields on a constructor annotated with `@class`.
+- Fixed a false-positive `undefined-field` on global-namespace `@class` addon fields accessed from another file.
+- Event handler parameters typed `table<K,V>` are no longer downgraded to bare `table` (#60).
+- Fixed a regression that produced spurious return-type mismatches on boolean-literal fields.
 
 **Improvements**
-- Function-level `@generic` type parameters now flow into inline callback parameters, bound from sibling arguments — e.g. a `fun(value: V, index: K)` callback is typed from a `table<K, V>` argument.
-- Boolean-literal table fields now widen to `boolean` in inferred types, matching numeric and string literals, so structurally identical constructors converge to one shape instead of surfacing as `{ok: true} | {ok: false}`.
+- Table fields assigned the wrong literal value are now flagged against literal-typed targets (e.g. a `false` where `---@field ok true` is expected) — previously the mismatch was masked by literal widening.
