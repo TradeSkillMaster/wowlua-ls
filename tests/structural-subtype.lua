@@ -279,3 +279,57 @@ local function useEmpty(e) end
 ---@type table<"x", number>
 local anyDict = {}
 useEmpty(anyDict)
+
+-- ── Literal-typed @class fields: expected-type-directed literal precision ────
+-- A field TYPED as a specific literal (string / number / boolean) rejects a
+-- constructor that supplies a *different* bare literal, while an equal one
+-- passes. The bare literal is recovered even though it was widened to the
+-- generic type for union convergence (see array-element-supertype.lua). Because
+-- the target is a `@class`, the mismatch carries a precise structural suffix.
+---@class TaggedRecord
+---@field kind "spell"
+---@field level 3
+---@field primary true
+---@field id number
+
+---@param r TaggedRecord
+local function useTagged(r) return r.id end
+
+-- All literals correct → clean.
+useTagged({ kind = "spell", level = 3, primary = true, id = 1 })
+
+-- Wrong string literal → precise suffix (the other literal fields stay correct).
+useTagged({ kind = "item", level = 3, primary = true, id = 1 })
+--        ^ diag: type-mismatch ~wrong type for field: 'kind' (expected `"spell"`, got `"item"`)
+
+-- Wrong number literal.
+useTagged({ kind = "spell", level = 5, primary = true, id = 1 })
+--        ^ diag: type-mismatch ~wrong type for field: 'level' (expected `3`, got `5`)
+
+-- Wrong boolean literal.
+useTagged({ kind = "spell", level = 3, primary = false, id = 1 })
+--        ^ diag: type-mismatch ~wrong type for field: 'primary' (expected `true`, got `false`)
+
+-- Equivalent numeric spelling (0x3 == 3) → clean.
+useTagged({ kind = "spell", level = 0x3, primary = true, id = 1 })
+
+-- @type assignment context, wrong string literal.
+---@type TaggedRecord
+local rec = { kind = "buff", level = 3, primary = true, id = 1 }
+--          ^ diag: assign-type-mismatch ~wrong type for field: 'kind' (expected `"spell"`, got `"buff"`)
+_consume(rec)
+
+-- Optional literal field (`kind?: "spell"` lowers to `"spell" | nil`): a present
+-- wrong bare literal is caught with the same precision as a required field, while
+-- an equal literal or an omitted field stays clean.
+---@class OptTagged
+---@field kind? "spell"
+---@field id number
+
+---@param o OptTagged
+local function useOptTagged(o) return o.id end
+
+useOptTagged({ kind = "item", id = 1 })
+--           ^ diag: type-mismatch ~wrong type for field: 'kind' (expected `"spell"?`, got `"item"`)
+useOptTagged({ kind = "spell", id = 1 })
+useOptTagged({ id = 1 })

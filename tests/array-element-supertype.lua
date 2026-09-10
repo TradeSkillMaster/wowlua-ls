@@ -98,6 +98,71 @@ local castItem = {
 local castReady = castItem.ready
 --    ^ hover: (local) castReady: true
 
+-- ── Widening does not hide a *wrong* literal against a literal target ────────
+-- Widening lets identical constructors converge (above), but when the target
+-- field type is a specific literal the precise value is still recovered and
+-- compared: an equal literal passes, a different one of the same family is a
+-- genuine mismatch. Uniform across number, string, and boolean; both `@type`
+-- assignment (`assign-type-mismatch`) and `@return` (`return-mismatch`). The
+-- anonymous-shape target shows the widened field in its whole-shape message
+-- (`{n: number}`); the paired correct case staying clean is what proves the
+-- signal is the literal value, not the field's presence.
+---@alias NumOne { n: 1 }
+---@alias StrA { s: "a" }
+---@alias BoolT { b: true }
+
+---@return NumOne
+local function retNumBad() return { n = 2 } end
+--                                ^ diag: return-mismatch ~expected return type `{n: 1}`
+---@return NumOne
+local function retNumOk() return { n = 1 } end
+
+---@type NumOne
+local nBad = { n = 2 }
+--           ^ diag: assign-type-mismatch ~(expected '{n: 1}')
+---@type NumOne
+local nOk = { n = 1 }
+
+---@type StrA
+local sBad = { s = "b" }
+--           ^ diag: assign-type-mismatch ~(expected '{s: "a"}')
+---@type StrA
+local sOk = { s = "a" }
+
+---@type BoolT
+local bBad = { b = false }
+--           ^ diag: assign-type-mismatch ~(expected '{b: true}')
+---@type BoolT
+local bOk = { b = true }
+
+-- Number literals compare by value, not spelling: `2.0` and `0x2` equal `2`, so
+-- an equivalent numeric spelling stays clean (no false positive).
+---@alias NumTwo { n: 2 }
+---@type NumTwo
+local nFloat = { n = 2.0 }
+---@type NumTwo
+local nHex = { n = 0x2 }
+
+-- A computed (non-literal) value against a literal target is NOT flagged — the
+-- LS does not constant-fold, so only bare literals are compared precisely.
+local function computeN() return 9 end
+---@type NumOne
+local nComputed = { n = computeN() }
+
+-- Escape hatches survive: an explicit per-field `---@type` matching the target,
+-- or an `@as` cast to the target literal, is honored rather than the raw value.
+-- `n = 2` would `assign-type-mismatch` on its own (see `nBad` above); the
+-- `---@type 1` overriding it to the target literal is what keeps this clean.
+---@type NumOne
+local escType = { n = 2, ---@type 1
+}
+---@type NumOne
+local escAs = { n = (2) --[[@as 1]] }
+-- But an `@as` to a *different* literal is an explicit wrong assertion → flagged.
+---@type NumOne
+local escAsBad = { n = (2) --[[@as 3]] }
+--               ^ diag: assign-type-mismatch ~(expected '{n: 1}')
+
 -- Regression: because a bare boolean-literal field widens to `boolean` (above), a
 -- `boolean` field must still satisfy a target that wants the literal `true` — just
 -- as a widened `number`/`string` field satisfies a numeric/string-literal target.
@@ -113,14 +178,12 @@ local function packChunks()
   return out
 end
 
--- Guard: two DIFFERENT boolean literals stay non-assignable, so widening `boolean`
--- to the literal target did not collapse `true` and `false`. A bare `false` would
--- itself widen to `boolean` (and then be accepted per the rule above), so `@as false`
--- pins the value to the literal `false` — which must NOT satisfy the alias's
--- `done: true`. (`@as` also skips widening; a `---@type` line comment can't be used
--- inline here — it would swallow the closing `}`.)
+-- Guard: the widening-to-literal-target rule above must not collapse `true` and
+-- `false`. `{ done = false }` widens to `{done: boolean}`, but its literal value
+-- is recovered and checked against the alias's `done: true`, so a bare wrong
+-- literal still return-mismatches (no `@as` needed to force it).
 ---@return TaggedArray
 local function packWrong()
-  return { done = false --[[@as false]] }
+  return { done = false }
   --     ^ diag: return-mismatch
 end

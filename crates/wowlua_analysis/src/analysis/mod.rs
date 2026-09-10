@@ -435,6 +435,14 @@ pub struct Ir {
     pub tuple_form_aliases: HashMap<String, crate::annotations::AnnotationType>,
     pub string_literals: HashMap<ExprId, String>,
     pub number_literals: HashMap<ExprId, String>,
+    /// Original boolean value of a bare boolean-literal table-constructor field,
+    /// keyed by the *widened* expr id it was replaced with at lowering. A bare
+    /// `{ok = true}` field widens to generic `boolean` (see `lower_expression`)
+    /// so structurally-identical constructors converge in inferred unions; this
+    /// map preserves the pre-widening value so an expected *literal* field type
+    /// can still be compared precisely (mirrors `string_literals`/`number_literals`,
+    /// which never lose their value because those families lower generic already).
+    pub boolean_literals: HashMap<ExprId, bool>,
     pub table_ranges: HashMap<(u32, u32), TableIndex>,
     /// Per-file overlay: user-added fields on external tables (indices >= EXT_BASE).
     pub overlay_fields: HashMap<TableIndex, HashMap<String, FieldInfo>>,
@@ -2750,6 +2758,7 @@ impl<'a> Analysis<'a> {
                 tuple_form_aliases: HashMap::new(),
                 string_literals: HashMap::new(),
                 number_literals: HashMap::new(),
+                boolean_literals: HashMap::new(),
                 table_ranges: HashMap::new(),
                 overlay_fields: HashMap::new(),
                 bracket_key_fields: HashMap::new(),
@@ -3384,6 +3393,71 @@ pub fn structural_mismatch_details_impl(
     Some(details)
 }
 
+/// The literal a field type demands, if any: a bare literal (`NumberLiteral`,
+/// `String(Some)`, `Boolean(Some)`), or the sole non-nil member of an
+/// optional-literal union — `---@field n? 1` lowers to `NumberLiteral | nil`, so
+/// optional literal fields get the same precision as required ones. A multi-member
+/// union (a literal enum like `"a" | "b"`) yields `None`; the generic path handles
+/// those.
+fn literal_target(expected: &ValueType) -> Option<&ValueType> {
+    let is_literal = |t: &ValueType| matches!(t,
+        ValueType::NumberLiteral(_) | ValueType::String(Some(_)) | ValueType::Boolean(Some(_)));
+    match expected {
+        t if is_literal(t) => Some(expected),
+        ValueType::Union(members) => {
+            let mut non_nil = members.iter().filter(|m| !matches!(m, ValueType::Nil));
+            match (non_nil.next(), non_nil.next()) {
+                (Some(m), None) if is_literal(m) => Some(m),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// When `expected` demands a literal (see `literal_target`) and the actual field
+/// is a *bare* literal constructor value, recover its precise literal so it can be
+/// compared against the expected literal directly. Bare number/string literals
+/// lower to the generic type with the value kept in `number_literals`/
+/// `string_literals`; bare booleans are widened to `Boolean(None)` with the value
+/// stashed in `boolean_literals`. Returns `None` (fall back to the widened generic
+/// comparison) when the field is not a bare literal of the expected family or
+/// carries an explicit `---@type` annotation — an explicit annotation is a
+/// deliberate assertion honored by the generic path.
+fn recover_bare_field_literal(
+    ir: &Ir,
+    field: &crate::types::FieldInfo,
+    expected: &ValueType,
+) -> Option<ValueType> {
+    if field.annotation.is_some() { return None; }
+    match literal_target(expected)? {
+        ValueType::NumberLiteral(_) => ir.number_literals.get(&field.expr)
+            .map(|s| ValueType::NumberLiteral(s.clone())),
+        ValueType::String(Some(_)) => ir.string_literals.get(&field.expr)
+            .map(|s| ValueType::String(Some(s.clone()))),
+        ValueType::Boolean(Some(_)) => ir.boolean_literals.get(&field.expr)
+            .map(|&b| ValueType::Boolean(Some(b))),
+        _ => None,
+    }
+}
+
+/// Compare a recovered actual literal against the expected literal target
+/// (unwrapping an optional-literal union first). Number literals compare by
+/// numeric value (so `2` and `2.0`, or `0xFF` and `255`, are equal and never
+/// falsely flagged); other families compare structurally.
+fn literal_values_match(actual: &ValueType, expected: &ValueType) -> bool {
+    let expected = literal_target(expected).unwrap_or(expected);
+    match (actual, expected) {
+        (ValueType::NumberLiteral(a), ValueType::NumberLiteral(b)) => {
+            a == b || matches!(
+                (resolve::parse_num_literal_str(a), resolve::parse_num_literal_str(b)),
+                (Some(x), Some(y)) if x == y
+            )
+        }
+        _ => actual == expected,
+    }
+}
+
 fn check_fields_impl(
     ir: &Ir,
     resolved_expr_cache: &[Option<ValueType>],
@@ -3399,7 +3473,24 @@ fn check_fields_impl(
         // (treated as OK); `Some(Some(t))` => present with a known type.
         match actual_field_type_impl(ir, resolved_expr_cache, at, field_name) {
             Some(Some(actual_type)) => {
-                if actual_type != ValueType::Nil
+                // Literal-precision refinement: when the expected field type is a
+                // literal and the actual field is a *bare* literal constructor
+                // value, that value was widened to the generic type at lowering
+                // (so structurally-identical constructors converge in inferred
+                // unions). Recover the precise literal and compare it directly —
+                // an equal literal passes, a different one of the same family is a
+                // genuine mismatch that the widened generic type would hide.
+                if let Some(actual_lit) = at.fields.get(field_name)
+                    .and_then(|f| recover_bare_field_literal(ir, f, expected_type))
+                {
+                    if !literal_values_match(&actual_lit, expected_type) {
+                        details.push(StructuralMismatchDetail::WrongType {
+                            field: field_name.clone(),
+                            expected: expected_type.clone(),
+                            actual: actual_lit,
+                        });
+                    }
+                } else if actual_type != ValueType::Nil
                     && !actual_type.is_assignable_to(expected_type)
                     && !is_table_subtype_impl(ir, resolved_expr_cache, &actual_type, expected_type)
                 {

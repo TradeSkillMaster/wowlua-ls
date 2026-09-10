@@ -736,11 +736,15 @@ impl<'a> Analysis<'a> {
                             // surfacing as `{ok: true} | {ok: false}`. Skipped when the
                             // field carries an explicit `---@type` or an `@as` cast — either
                             // is a deliberate assertion that the literal type is intended.
-                            if matches!(self.ir.expr(expr_id), Expr::Literal(ValueType::Boolean(Some(_))))
+                            if let Expr::Literal(ValueType::Boolean(Some(bool_lit))) = *self.ir.expr(expr_id)
                                 && annotation.is_none()
                                 && Self::extract_inline_as(value.syntax()).is_none()
                             {
                                 expr_id = self.ir.push_expr(Expr::Literal(ValueType::Boolean(None)));
+                                // Preserve the pre-widening value so a literal
+                                // field target (`{ok: true}`) can still be
+                                // checked precisely against the widened field.
+                                self.ir.boolean_literals.insert(expr_id, bool_lit);
                             }
                             let vis = crate::annotations::default_visibility_for_name(&name, self.implicit_protected_prefix);
                             let field_range = field.syntax().text_range();
