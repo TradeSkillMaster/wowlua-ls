@@ -1,8 +1,3 @@
-**Bug Fixes**
-- Fixed class hover showing `any` for fields on a constructor annotated with `@class`.
-- Fixed a false-positive `undefined-field` on global-namespace `@class` addon fields accessed from another file.
-- Event handler parameters typed `table<K,V>` are no longer downgraded to bare `table` (#60).
-- Fixed a regression that produced spurious return-type mismatches on boolean-literal fields.
+**New**
 
-**Improvements**
-- Table fields assigned the wrong literal value are now flagged against literal-typed targets (e.g. a `false` where `---@field ok true` is expected) — previously the mismatch was masked by literal widening.
+- Field visibility (`@private` / `@protected`) now applies to library and addon-namespace tables — the pattern where a table *is* the class. The declaring file can freely read and write its own private/protected fields (including the reload-safe `Lib = Lib or {}` idiom), while other files get `access-private` / `access-protected`. Visibility can now also be declared inline on the assignment instead of in the `@class` block. ([docs](https://tradeskillmaster.github.io/wowlua-ls/guide/classes.html#library-and-namespace-tables))
