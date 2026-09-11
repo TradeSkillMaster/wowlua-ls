@@ -1748,7 +1748,7 @@ impl BuildContext {
                     }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(),
-                        shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix));
+                        shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                 }
             }
@@ -1792,7 +1792,7 @@ impl BuildContext {
                 let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::Literal(value_type.clone()));
                 self.tables[local_idx].fields.insert(field_name.clone(),
-                    shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix));
+                    shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
             }
         }
@@ -2038,7 +2038,7 @@ impl BuildContext {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
-                            shared::scan_literal_field(expr_idx, field_name, Some(vt), 0, self.implicit_protected_prefix));
+                            shared::scan_literal_field(expr_idx, field_name, Some(vt), 0, self.implicit_protected_prefix, g.visibility));
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                     continue;
@@ -2077,7 +2077,7 @@ impl BuildContext {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
                     self.tables[local_idx].fields.insert(field_name.clone(),
-                        shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix));
+                        shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix, g.visibility));
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
             }
@@ -2139,7 +2139,7 @@ impl BuildContext {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
-                            shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix));
+                            shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix, g.visibility));
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                 }
@@ -2194,7 +2194,7 @@ impl BuildContext {
                     }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(),
-                        shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix));
+                        shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
             }

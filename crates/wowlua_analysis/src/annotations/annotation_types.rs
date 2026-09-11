@@ -802,6 +802,15 @@ pub(super) fn find_inline_description(s: &str) -> Option<usize> {
     find_description_marker(s, true)
 }
 
+/// Parse a `@type` annotation body, dropping an optional trailing LuaCATS
+/// `# description` (unquoted `#`) before parsing the type. The bare `@type`
+/// sites otherwise pass the description into `parse_type`, which then fails to
+/// parse the type at all (e.g. `@type table<K,V> # note` resolved to nothing).
+pub fn parse_type_annotation(body: &str) -> AnnotationType {
+    let body = find_hash_comment(body).map_or(body, |i| &body[..i]);
+    parse_type(body.trim())
+}
+
 pub fn extract_type_prefix(s: &str) -> &str {
     let mut depth = 0usize;
     let mut after_colon = false;

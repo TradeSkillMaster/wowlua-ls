@@ -193,3 +193,9 @@ local function preRet() return nil end
 local pr = preRet()
 local _ = pr
 --        ^ hover: (local) pr: number?
+
+-- `@type` with a trailing LuaCATS `# description` parses the type, not the note.
+---@type table<number, number[]> # [challengeMapID] = portalSpellIDs
+local described = nil
+local _ = described
+--        ^ hover: (local) described: table<number, number[]>

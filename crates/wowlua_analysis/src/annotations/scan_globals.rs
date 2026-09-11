@@ -1593,12 +1593,19 @@ pub fn scan_file_globals_with_synth(
                                 continue;
                             }
                             let range = assign.syntax().text_range();
+                            // An explicit inline `@private`/`@protected` on the field
+                            // assignment wins; otherwise fall back to the name convention.
+                            let field_visibility = if annotations.visibility != Visibility::Public {
+                                annotations.visibility
+                            } else {
+                                default_visibility_for_name(&field_name, implicit_protected_prefix)
+                            };
                             globals.push(ExternalGlobal {
                                 name: canonical_name,
                                 kind: ExternalGlobalKind::TableField(intermediates, field_name.clone(), value_kind),
                                 params: Vec::new(), returns, return_names: Vec::new(), return_descriptions: Vec::new(), overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, deprecated_message: None, nodiscard: false, constructor: false,
-                                visibility: default_visibility_for_name(&field_name, implicit_protected_prefix), generics: Vec::new(),
+                                visibility: field_visibility, generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,

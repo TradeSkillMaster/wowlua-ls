@@ -1834,7 +1834,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@type") {
             let rest = rest.trim();
-            if !rest.is_empty() { block.var_type = Some(parse_type(rest)); }
+            if !rest.is_empty() { block.var_type = Some(annotation_types::parse_type_annotation(rest)); }
         } else if content.starts_with("@cast") {
             // @cast directives are handled via raw comment lines in build_ir.rs
         } else if let Some(rest) = content.strip_prefix("@event") {

@@ -56,8 +56,29 @@ impl DiagnosticPass for AccessCheck {
                     && analysis.table(table_idx).class_name.is_some()
                 {
                     let enclosing_class = analysis.find_enclosing_class(&ident_node);
-                    let same_class = enclosing_class.is_some_and(|ec| analysis.same_class(ec, table_idx));
+                    let mut same_class = enclosing_class.is_some_and(|ec| analysis.same_class(ec, table_idx));
                     let mut is_subclass = enclosing_class.is_some_and(|ec| analysis.is_subclass_of(ec, table_idx));
+                    // A class's own table counts as inside the class throughout the
+                    // file that declares that class, so a library/module can initialize
+                    // and use its own private/protected fields at file scope (e.g.
+                    // `LibFoo.x = LibFoo.x or {}`). The exemption applies only when the
+                    // field is accessed directly on the class's OWN table — the root
+                    // variable is named after the class it resolves to: a namespace global
+                    // (`LibFoo` carrying `---@class LibFoo`) or a local module table
+                    // (`local Foo = {}` under `---@class Foo`). A `---@type Foo` handle
+                    // (root name != class name), a *different* class reached through a
+                    // field (here `class_name` is the inner class, not the root), and
+                    // consumers in other files (where the class isn't declared) stay strict.
+                    if !same_class {
+                        let class_name = analysis.table(table_idx).class_name.as_deref();
+                        let root_is_class_own_table = class_name == Some(root_token.text());
+                        let class_declared_here = class_name
+                            .is_some_and(|cn| analysis.ir.class_def_ranges.contains_key(cn));
+                        if root_is_class_own_table && class_declared_here {
+                            same_class = true;
+                            is_subclass = true;
+                        }
+                    }
                     // If the root variable is a defclass-created instance in this file,
                     // allow protected access at file scope. Private still requires colon-method context.
                     if !is_subclass && vis == Visibility::Protected {

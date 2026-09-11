@@ -80,6 +80,42 @@ Fields have three visibility levels:
 - **protected**: accessible from the class and its subclasses
 - **private**: accessible only within the class itself
 
+### Library and namespace tables
+
+The rules above are written for *class instances* accessed through `self` inside methods. They also work for the common addon pattern where a **table is itself the class** — a library or an addon namespace:
+
+```lua
+-- LibFoo.lua (declares the class)
+---@class LibFoo
+---@field private callbackMap table<any, fun()>
+LibFoo = LibFoo or {}
+
+LibFoo.callbackMap = LibFoo.callbackMap or {}   -- ok: initialized in its own file
+for _, cb in pairs(LibFoo.callbackMap) do end   -- ok: used in its own file
+```
+
+Inside the file that declares `---@class LibFoo`, the class's own table can freely read and write its private/protected fields at file scope — including the reload-safe `LibFoo.x = LibFoo.x or {}` idiom. This applies when the table is **named after the class it declares** — a namespace global (`LibFoo` for `---@class LibFoo`) or a local module table (`local Foo = {}` for `---@class Foo`). In **any other file** those fields are hidden from autocomplete and hover, and touching them raises `access-private` / `access-protected`:
+
+```lua
+-- SomeConsumer.lua
+LibFoo.callbackMap[1] = fn   -- access-private: 'callbackMap' is private
+```
+
+The leniency is only for the class's own table accessed directly. A handle typed as the class (`local h = {} ---@type LibFoo`, or a global under a different name) counts as a consumer even in the declaring file, and a *different* class reached through a field (`LibFoo.inner.secret`) is judged as itself — both still warn. Reach a private field through the class's own table (`LibFoo.callbackMap`) or a method.
+
+Field visibility can be declared either in the `@class` block (`@field private`) or **inline on the assignment**, next to the code — handy when a field is initialized where it lives rather than up top:
+
+```lua
+---@class LibFoo
+LibFoo = LibFoo or {}
+
+--- @private
+--- @type table<any, fun()>
+LibFoo.callbackMap = LibFoo.callbackMap or {}
+```
+
+Both forms produce the same visibility; use whichever reads better.
+
 ### Implicit protected for `_` prefixes
 
 If your project follows the `_`-prefix convention for internal fields, you can opt in to implicit protected visibility:

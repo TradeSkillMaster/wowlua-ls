@@ -1738,6 +1738,9 @@ impl<'a> Analysis<'a> {
             annotations: assign_annotations, flavor_guard: assign_flavor_guard, ..
         } = ctx;
         let AssignTarget { ident, index, expressions, identifiers_len, names, .. } = target;
+        // An explicit inline `@private`/`@protected` on the assignment sets the
+        // field's visibility (Copy, so it survives later moves of the block).
+        let assign_visibility = assign_annotations.visibility;
         let root_name = &names[0];
         let field_name = &names[names.len() - 1];
         let mut expr_id = self.lower_expression(expr, scope_idx);
@@ -1860,15 +1863,20 @@ impl<'a> Analysis<'a> {
                 && existing_field.is_some_and(|f| f.annotation.is_some());
             let field_lateinit = existing_field.is_some_and(|f| f.lateinit);
             if !table_idx.is_external() {
-                let existing_vis = self.ir.tables[table_idx.val()].fields.get(field_name).map(|f| f.visibility).unwrap_or_else(|| {
-                    // Ad-hoc injected fields (from outside the class) default to Public;
-                    // self._foo inside a method keeps implicit protected from _ prefix.
-                    if root_name == "self" {
-                        crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
-                    } else {
-                        Visibility::Public
-                    }
-                });
+                // An explicit inline `@private`/`@protected` on the assignment wins;
+                // otherwise keep any existing declared visibility, else fall back to
+                // the name convention (self._foo) / Public (ad-hoc injected field).
+                let existing_vis = if assign_visibility != Visibility::Public {
+                    assign_visibility
+                } else {
+                    self.ir.tables[table_idx.val()].fields.get(field_name).map(|f| f.visibility).unwrap_or_else(|| {
+                        if root_name == "self" {
+                            crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
+                        } else {
+                            Visibility::Public
+                        }
+                    })
+                };
                 if let Some(field_info) = self.ir.tables[table_idx.val()].fields.get_mut(field_name) {
                     field_info.extra_exprs.push(expr_id);
                     field_info.visibility = existing_vis;
@@ -1920,6 +1928,9 @@ impl<'a> Analysis<'a> {
 
                 if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
                     overlay_fi.extra_exprs.push(expr_id);
+                    if assign_visibility != Visibility::Public {
+                        overlay_fi.visibility = assign_visibility;
+                    }
                     if overlay_fi.annotation.is_none() {
                         if let Some(ref ann) = inline_annotation {
                             overlay_fi.annotation = Some(ann.clone());
@@ -1940,7 +1951,9 @@ impl<'a> Analysis<'a> {
                     if assign_flavor_guard != 0 { overlay_fi.flavor_guard = assign_flavor_guard; }
                 } else {
                     let assign_range = ident.syntax().text_range();
-                    let overlay_vis = if root_name == "self" {
+                    let overlay_vis = if assign_visibility != Visibility::Public {
+                        assign_visibility
+                    } else if root_name == "self" {
                         crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
                     } else {
                         Visibility::Public

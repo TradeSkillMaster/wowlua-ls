@@ -715,7 +715,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         None
                     };
                     self.tables[local_idx].fields.insert(field_name.clone(),
-                        super::shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix));
+                        super::shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                 }
             }
@@ -762,7 +762,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::Literal(value_type.clone()));
                 self.tables[local_idx].fields.insert(field_name.clone(),
-                    super::shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix));
+                    super::shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
             }
         }
@@ -919,7 +919,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
-                            super::shared::scan_literal_field(expr_idx, field_name, Some(vt), 0, self.implicit_protected_prefix));
+                            super::shared::scan_literal_field(expr_idx, field_name, Some(vt), 0, self.implicit_protected_prefix, g.visibility));
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                     continue;
@@ -966,7 +966,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         _ => None,
                     };
                     self.tables[local_idx].fields.insert(field_name.clone(),
-                        super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix));
+                        super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
             }
@@ -1013,7 +1013,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         // the table case is dropped, so only it needs the annotation.)
                         let annotation = matches!(vt, ValueType::Table(_)).then_some(vt);
                         self.tables[local_idx].fields.insert(field_name.clone(),
-                            super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix));
+                            super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                     continue;
@@ -1063,7 +1063,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
-                            super::shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix));
+                            super::shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix, g.visibility));
                     }
                 }
             }
@@ -1123,7 +1123,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(),
-                        super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix));
+                        super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
                 } else if !self.tables[local_idx].fields.contains_key(field_name) {
                     // Existence-only fallback. The field's value couldn't be typed
                     // cross-file: its RHS is a bare local that doesn't resolve to a
@@ -1158,7 +1158,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(ValueType::Any));
                     self.tables[local_idx].fields.insert(field_name.clone(),
-                        super::shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix));
+                        super::shared::scan_literal_field(expr_idx, field_name, None, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
             }

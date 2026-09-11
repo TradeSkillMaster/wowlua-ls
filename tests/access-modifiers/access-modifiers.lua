@@ -193,3 +193,23 @@ function IsectSecondary:Method()
     local _s = both.pubS
 --                  ^ comp: Method, protS, pubP, pubS, secretS
 end
+
+-- ── Inline @private on a field ASSIGNMENT (not @field) ───────────────────
+-- Visibility declared next to the code instead of in the @class block. The
+-- module table (`local Foo = {}` declared as `---@class Foo`) may declare and
+-- use its own private fields at file scope; a `---@type Foo` handle stays strict.
+
+---@class InlineMod
+local InlineMod = {}
+
+---@private
+InlineMod.secret = InlineMod.secret or 1
+
+-- the module's own file-scope use of its inline-private field: clean
+local _im = InlineMod.secret
+
+-- a ---@type handle is a consumer-style reference → the private field is denied
+---@type InlineMod
+local imh = {}
+_consume(imh.secret)
+--           ^ diag: access-private

@@ -1470,6 +1470,18 @@ fn access_modifiers() {
 }
 
 #[test]
+fn namespace_privacy() {
+    // A global @class namespace table may initialize and use its own private/
+    // protected fields at file scope in the file that declares the class; a
+    // local @type handle to that class stays strict.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/namespace-privacy/lib.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/namespace-privacy"),
+    });
+}
+
+#[test]
 fn defclass_protected_completion() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/defclass-protected-completion/module.lua",

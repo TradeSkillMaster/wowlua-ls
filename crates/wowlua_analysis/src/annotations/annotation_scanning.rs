@@ -8,7 +8,7 @@ use super::{
     AnnotationType, ParamInfo, TypedSelfField, Visibility,
     default_visibility_for_name,
 };
-use super::annotation_types::{parse_type, OverloadSig};
+use super::annotation_types::{parse_type, parse_type_annotation, OverloadSig};
 use super::scan_globals::string_keyed_receiver_method;
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
@@ -1667,7 +1667,7 @@ pub fn extract_inline_type_from_node(field_node: SyntaxNode<'_>) -> Option<Annot
                     if let Some(rest) = content.strip_prefix("@type") {
                         let rest = rest.trim();
                         if !rest.is_empty() {
-                            return Some(parse_type(rest));
+                            return Some(parse_type_annotation(rest));
                         }
                     }
                     break;
@@ -1690,7 +1690,7 @@ pub fn extract_inline_type_from_node(field_node: SyntaxNode<'_>) -> Option<Annot
                 if let Some(rest) = content.strip_prefix("@type") {
                     let rest = rest.trim();
                     if !rest.is_empty() {
-                        return Some(parse_type(rest));
+                        return Some(parse_type_annotation(rest));
                     }
                 }
                 break;
@@ -1737,7 +1737,7 @@ pub fn extract_inline_type_from_node(field_node: SyntaxNode<'_>) -> Option<Annot
                 if let Some(rest) = content.strip_prefix("@type") {
                     let rest = rest.trim();
                     if !rest.is_empty() {
-                        return Some(parse_type(rest));
+                        return Some(parse_type_annotation(rest));
                     }
                 }
                 return None;

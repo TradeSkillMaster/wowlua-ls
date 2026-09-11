@@ -157,10 +157,18 @@ pub fn scan_literal_field(
     annotation: Option<ValueType>,
     flavor_guard: u8,
     implicit_protected_prefix: bool,
+    explicit_visibility: crate::annotations::Visibility,
 ) -> FieldInfo {
     FieldInfo {
         expr,
-        visibility: crate::annotations::default_visibility_for_name(field_name, implicit_protected_prefix),
+        // An explicit inline `@private`/`@protected` on the field's assignment
+        // (carried on the scanned global) wins; otherwise fall back to the
+        // `_`-prefix name convention.
+        visibility: if explicit_visibility != crate::annotations::Visibility::Public {
+            explicit_visibility
+        } else {
+            crate::annotations::default_visibility_for_name(field_name, implicit_protected_prefix)
+        },
         annotation,
         annotation_text: None,
         annotation_type_raw: None,

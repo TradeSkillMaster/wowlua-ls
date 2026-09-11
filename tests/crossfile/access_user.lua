@@ -33,3 +33,13 @@ local si = sw._internal
 -- Private inherited field: inaccessible
 local ss = sw._secret
 --            ^ diag: access-private
+
+-- Namespace-global privacy (NsLib declared in access_defs.lua): a consumer in
+-- another file gets warned for touching its private/protected fields, even
+-- though the declaring file uses them freely at file scope.
+local nc = NsLib.callbackMap
+--               ^ diag: access-private
+local nn = NsLib.count
+--               ^ diag: access-protected
+local nt = NsLib.token
+--               ^ diag: access-private
