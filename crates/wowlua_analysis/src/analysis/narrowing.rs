@@ -24,41 +24,125 @@ pub(super) enum GuardNarrow {
     FilterTo(ValueType),
 }
 
+/// If `lhs/rhs` is `WOW_PROJECT_ID` compared against a `WOW_PROJECT_*`
+/// constant name in either order, return the constant name.
+fn extract_wow_project_comparison(lhs: &Expression<'_>, rhs: &Expression<'_>) -> Option<String> {
+    let is_project_id = |e: &Expression<'_>| -> bool {
+        if let Expression::Identifier(ident) = e {
+            let names = ident.names();
+            names.len() == 1 && names[0] == "WOW_PROJECT_ID"
+        } else { false }
+    };
+    let project_constant = |e: &Expression<'_>| -> Option<String> {
+        if let Expression::Identifier(ident) = e {
+            let names = ident.names();
+            if names.len() == 1 && names[0].starts_with("WOW_PROJECT_") && names[0] != "WOW_PROJECT_ID" {
+                return Some(names[0].clone());
+            }
+        }
+        None
+    };
+    if is_project_id(lhs) {
+        return project_constant(rhs);
+    }
+    if is_project_id(rhs) {
+        return project_constant(lhs);
+    }
+    None
+}
+
+/// The flavors in which `expr`, a `WOW_PROJECT_ID` comparison, is truthy:
+/// `WOW_PROJECT_ID == WOW_PROJECT_<const>` (either operand order) → the
+/// constant's flavor, `~=` → every other flavor. `not` complements and
+/// parentheses unwrap. Purely syntactic, so the cross-file scan uses it too.
+pub fn wow_project_guard_mask(expr: &Expression<'_>) -> Option<u8> {
+    match expr {
+        Expression::BinaryExpression(bin) => {
+            let is_eq = match bin.kind() {
+                Operator::Equals => true,
+                Operator::NotEquals => false,
+                _ => return None,
+            };
+            let terms = bin.get_terms();
+            let [lhs, rhs] = terms.as_slice() else { return None };
+            let bit = crate::flavor::wow_project_constant_flavor(&extract_wow_project_comparison(lhs, rhs)?)?;
+            Some(if is_eq { bit } else { crate::flavor::FLAVOR_ALL & !bit })
+        }
+        Expression::GroupedExpression(g) => wow_project_guard_mask(&g.get_expression()?),
+        Expression::UnaryExpression(u) if u.kind() == Operator::Not => {
+            wow_project_guard_mask(u.get_terms().first()?).map(|mask| crate::flavor::FLAVOR_ALL & !mask)
+        }
+        _ => None,
+    }
+}
+
+/// Flavor guard carried by a variable/field assigned `rhs`: an explicit
+/// `@flavor-narrows` mask wins, otherwise one inferred from a `WOW_PROJECT_ID`
+/// comparison RHS. 0 means no guard.
+pub fn assignment_flavor_guard(annotated: u8, rhs: Option<&Expression<'_>>) -> u8 {
+    if annotated != 0 { return annotated; }
+    rhs.and_then(wow_project_guard_mask).unwrap_or(0)
+}
+
+/// Per-file record of the variables and fields whose current flavor guard was
+/// inferred rather than declared with `@flavor-narrows`. A later write that is
+/// neither annotated nor a `WOW_PROJECT_ID` comparison clears an inferred guard
+/// (matching the cross-file build, where the last write wins); an annotated
+/// guard stays.
+#[derive(Default)]
+pub struct InferredFlavorGuards {
+    symbols: HashSet<SymbolIndex>,
+    fields: std::collections::HashMap<TableIndex, HashSet<String>>,
+}
+
+impl InferredFlavorGuards {
+    /// Flavor guard of `sym` after a write, given its `current` guard.
+    pub fn symbol_write(&mut self, sym: SymbolIndex, current: u8, annotated: u8, rhs: Option<&Expression<'_>>) -> u8 {
+        let (guard, inferred) = guard_after_write(current, self.symbols.contains(&sym), annotated, rhs);
+        if inferred { self.symbols.insert(sym); } else { self.symbols.remove(&sym); }
+        guard
+    }
+
+    /// Flavor guard of field `table.field` after a write, given its `current` guard.
+    pub fn field_write(&mut self, table: TableIndex, field: &str, current: u8, annotated: u8, rhs: &Expression<'_>) -> u8 {
+        let was_inferred = self.fields.get(&table).is_some_and(|fields| fields.contains(field));
+        let (guard, inferred) = guard_after_write(current, was_inferred, annotated, Some(rhs));
+        if inferred && !was_inferred {
+            self.fields.entry(table).or_default().insert(field.to_string());
+        } else if !inferred && was_inferred && let Some(fields) = self.fields.get_mut(&table) {
+            fields.remove(field);
+        }
+        guard
+    }
+}
+
+/// `(guard, is_inferred)` after a write: see [`InferredFlavorGuards`].
+fn guard_after_write(current: u8, was_inferred: bool, annotated: u8, rhs: Option<&Expression<'_>>) -> (u8, bool) {
+    let guard = assignment_flavor_guard(annotated, rhs);
+    if guard != 0 { return (guard, annotated == 0); }
+    (if was_inferred { 0 } else { current }, false)
+}
+
 impl<'a> Analysis<'a> {
     /// Detect flavor-narrowing conditions and update scope_flavors accordingly.
     /// Handles:
     ///   `WOW_PROJECT_ID == WOW_PROJECT_<const>` (equality and negation)
     ///   A call to a function annotated with `@flavor-narrows`.
+    ///   A boolean variable/field carrying a flavor guard (`@flavor-narrows`
+    ///   or inferred from a `WOW_PROJECT_ID` comparison).
     /// Returns whether anything was narrowed.
     fn try_flavor_narrow(&mut self, cond: &Expression<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) -> bool {
         if self.project_flavors == 0 { return false; }
         match cond {
-            Expression::BinaryExpression(bin) => {
-                let op = bin.kind();
-                let is_eq = matches!(op, Operator::Equals);
-                let is_neq = matches!(op, Operator::NotEquals);
-                if !is_eq && !is_neq { return false; }
-                let terms = bin.get_terms();
-                let [lhs, rhs] = match terms.as_slice() {
-                    [a, b] => [a, b],
-                    _ => return false,
-                };
-                // Match `WOW_PROJECT_ID == WOW_PROJECT_<const>` in either order.
-                let const_name = Self::extract_wow_project_comparison(lhs, rhs);
-                if let Some(ref name) = const_name {
-                    let Some(const_bit) = crate::flavor::wow_project_constant_flavor(name) else { return false };
-                    // Both equality and negation contribute flavor narrowing: the
-                    // then-branch of `==` narrows to `const_bit`, the else-branch
-                    // excludes it. `~=` flips the sense.
-                    let narrow_to_bit = (is_eq && is_then_branch) || (is_neq && !is_then_branch);
-                    if narrow_to_bit {
-                        self.narrow_scope_flavors(target_scope, const_bit);
-                    } else {
-                        self.exclude_scope_flavors(target_scope, const_bit);
-                    }
-                    return true;
+            Expression::BinaryExpression(_) => {
+                // `WOW_PROJECT_ID ==/~= WOW_PROJECT_<const>` in either order.
+                let Some(mask) = wow_project_guard_mask(cond) else { return false };
+                if is_then_branch {
+                    self.narrow_scope_flavors(target_scope, mask);
+                } else {
+                    self.exclude_scope_flavors(target_scope, mask);
                 }
-                false
+                true
             }
             // Call to a flavor-guard function — narrow in then-branch, exclude in else-branch.
             Expression::FunctionCall(call) => {
@@ -70,7 +154,8 @@ impl<'a> Analysis<'a> {
                 }
                 true
             }
-            // Boolean variable or field annotated with `@flavor-narrows`.
+            // Boolean variable/field carrying a flavor guard (`@flavor-narrows`
+            // or inferred from a `WOW_PROJECT_ID` comparison).
             Expression::Identifier(ident) => {
                 let Some(mask) = self.flavor_guard_mask_for_ident(ident, parent_scope) else { return false };
                 if is_then_branch {
@@ -94,33 +179,6 @@ impl<'a> Analysis<'a> {
             }
             _ => false,
         }
-    }
-
-    /// If `lhs/rhs` is `WOW_PROJECT_ID` compared against a `WOW_PROJECT_*`
-    /// constant name in either order, return the constant name.
-    fn extract_wow_project_comparison(lhs: &Expression<'_>, rhs: &Expression<'_>) -> Option<String> {
-        let is_project_id = |e: &Expression<'_>| -> bool {
-            if let Expression::Identifier(ident) = e {
-                let names = ident.names();
-                names.len() == 1 && names[0] == "WOW_PROJECT_ID"
-            } else { false }
-        };
-        let project_constant = |e: &Expression<'_>| -> Option<String> {
-            if let Expression::Identifier(ident) = e {
-                let names = ident.names();
-                if names.len() == 1 && names[0].starts_with("WOW_PROJECT_") && names[0] != "WOW_PROJECT_ID" {
-                    return Some(names[0].clone());
-                }
-            }
-            None
-        };
-        if is_project_id(lhs) {
-            return project_constant(rhs);
-        }
-        if is_project_id(rhs) {
-            return project_constant(lhs);
-        }
-        None
     }
 
     /// If `call` resolves to a function annotated with `@flavor-narrows`,
@@ -4137,7 +4195,8 @@ impl<'a> Analysis<'a> {
     }
 
     /// Collect flavor-guard masks from all intermediate `and` operands.
-    /// Returns the intersection of all detected `@flavor-narrows` masks.
+    /// Returns the intersection of all detected masks (`@flavor-narrows` or
+    /// inferred guards, `WOW_PROJECT_ID` comparisons, and their `not`).
     /// A return of 0 means no flavor guard was detected.
     pub(super) fn collect_and_chain_flavor_guards(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> u8 {
         if self.project_flavors == 0 { return 0; }
@@ -4188,8 +4247,16 @@ impl<'a> Analysis<'a> {
         match expr {
             Expression::FunctionCall(call) => self.flavor_guard_mask_for_call(call, scope_idx),
             Expression::Identifier(ident) => self.flavor_guard_mask_for_ident(ident, scope_idx),
+            Expression::BinaryExpression(_) => wow_project_guard_mask(expr),
             Expression::GroupedExpression(g) => {
                 g.get_expression().and_then(|inner| self.detect_and_lhs_flavor_guard_leaf(&inner, scope_idx))
+            }
+            // `not guard and ...`: the RHS only runs where the guard is false.
+            Expression::UnaryExpression(u) if u.kind() == Operator::Not => {
+                let inner = u.get_terms().into_iter().next()?;
+                self.detect_and_lhs_flavor_guard_leaf(&inner, scope_idx)
+                    .map(|mask| crate::flavor::FLAVOR_ALL & !mask)
+                    .filter(|&mask| mask != 0)
             }
             _ => None,
         }
@@ -4429,4 +4496,85 @@ impl<'a> Analysis<'a> {
         self.deferred_event_narrowings.push((sym_idx, string_literal, target_scope));
     }
 
+}
+
+#[cfg(test)]
+mod flavor_guard_tests {
+    use std::sync::Arc;
+    use super::*;
+    use crate::analysis::{AnalysisConfig, AnalysisResult};
+    use crate::flavor::{FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_RETAIL};
+    use crate::pre_globals::PreResolvedGlobals;
+
+    /// Guard mask of `<expr>` parsed from `local x = <expr>`.
+    fn guard_mask(expr_src: &str) -> Option<u8> {
+        let src = format!("local x = {expr_src}");
+        let tree = crate::syntax::parser::Parser::new(&src).parse();
+        let assign = SyntaxNode::new_root(&tree).descendants().find_map(LocalAssign::cast).unwrap();
+        wow_project_guard_mask(&assign.expression_list().unwrap().expressions()[0])
+    }
+
+    #[test]
+    fn wow_project_comparison_masks() {
+        let not_retail = FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA;
+        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE"), Some(FLAVOR_RETAIL));
+        assert_eq!(guard_mask("WOW_PROJECT_MAINLINE == WOW_PROJECT_ID"), Some(FLAVOR_RETAIL));
+        assert_eq!(guard_mask("WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE"), Some(not_retail));
+        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MISTS_CLASSIC"), Some(FLAVOR_CLASSIC));
+        assert_eq!(guard_mask("(WOW_PROJECT_ID == WOW_PROJECT_CLASSIC)"), Some(FLAVOR_CLASSIC_ERA));
+        assert_eq!(guard_mask("not (WOW_PROJECT_ID == WOW_PROJECT_MAINLINE)"), Some(not_retail));
+        assert_eq!(guard_mask("not (WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE)"), Some(FLAVOR_RETAIL));
+        // `not X == Y` is `(not X) == Y`.
+        assert_eq!(guard_mask("not WOW_PROJECT_ID == WOW_PROJECT_MAINLINE"), None);
+        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_UNKNOWN"), None);
+        assert_eq!(guard_mask("WOW_PROJECT_ID == 1"), None);
+        assert_eq!(guard_mask("WOW_PROJECT_ID < WOW_PROJECT_MAINLINE"), None);
+        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE or x"), None);
+    }
+
+    #[test]
+    fn annotation_wins_over_inferred_guard() {
+        let src = "local x = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE";
+        let tree = crate::syntax::parser::Parser::new(src).parse();
+        let assign = SyntaxNode::new_root(&tree).descendants().find_map(LocalAssign::cast).unwrap();
+        let rhs = assign.expression_list().unwrap().expressions();
+        assert_eq!(assignment_flavor_guard(0, rhs.first()), FLAVOR_RETAIL);
+        assert_eq!(assignment_flavor_guard(FLAVOR_CLASSIC_ERA, rhs.first()), FLAVOR_CLASSIC_ERA);
+        assert_eq!(assignment_flavor_guard(0, None), 0);
+    }
+
+    /// Every expr evaluated under a guarded `and` gets the chain's mask — not
+    /// just call callees — while the chain operands and later code don't.
+    #[test]
+    fn and_guard_records_every_rhs_expr() {
+        let src = "local t, k, n = {}, 1, 2\n\
+                   local a = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and t[k] + n\n\
+                   local b = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and F(n)\n\
+                   local c = n - 1\n";
+        let tree = crate::syntax::parser::Parser::new(src).parse();
+        let config = AnalysisConfig { project_flavors: FLAVOR_RETAIL | FLAVOR_CLASSIC_ERA, ..Default::default() };
+        let mut analysis = Analysis::new_with_tree(&tree, Arc::new(PreResolvedGlobals::empty()), config);
+        analysis.resolve_types();
+        let ar: AnalysisResult = analysis.into_result();
+        let mask = |id: ExprId| ar.ir.and_guarded_flavor_exprs.get(&id).copied();
+        let offset = |needle: &str| src.find(needle).unwrap() as u32;
+        let op_site = |needle: &str| {
+            ar.ir.binary_op_sites.iter().find(|s| s.op_start == offset(needle)).unwrap().expr_id
+        };
+
+        assert_eq!(mask(op_site("+ n")), Some(FLAVOR_RETAIL));
+        let key = ar.ir.bracket_index_sites.iter().find(|s| s.1 == offset("k] +")).unwrap().0;
+        assert_eq!(mask(key), Some(FLAVOR_RETAIL));
+        let (callee, arg) = ar.ir.local_exprs().find_map(|(_, e)| match e {
+            Expr::FunctionCall { func, args, call_range, .. } if call_range.0 == offset("F(n)") => Some((*func, args[0])),
+            _ => None,
+        }).unwrap();
+        assert_eq!(mask(callee), Some(FLAVOR_RETAIL));
+        assert_eq!(mask(arg), Some(FLAVOR_RETAIL));
+
+        // The guard and the `and` itself run unconditionally; so does later code.
+        assert_eq!(mask(op_site("== WOW_PROJECT_MAINLINE and t")), None);
+        assert_eq!(mask(op_site("and t")), None);
+        assert_eq!(mask(op_site("- 1")), None);
+    }
 }

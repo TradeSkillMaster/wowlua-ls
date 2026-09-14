@@ -488,13 +488,16 @@ impl<'a> Analysis<'a> {
                             }
                         }
                     }
-                    // Mark RHS function calls with the narrowed flavor mask
+                    // Mark every RHS expr with the narrowed flavor mask. Callees are
+                    // lowered inside the RHS too, so this covers the call entries
+                    // `wrong-flavor-api` looks up. A nested guarded chain already
+                    // recorded its RHS; intersect, since it runs only when both hold.
                     if and_flavor_mask != 0 {
                         let effective = self.active_flavors_at(scope_idx) & and_flavor_mask;
                         for eid in expr_start..self.ir.exprs.len() {
-                            if let Expr::FunctionCall { func, .. } = self.ir.expr(ExprId(eid)) {
-                                self.ir.and_guarded_flavor_exprs.insert(*func, effective);
-                            }
+                            self.ir.and_guarded_flavor_exprs.entry(ExprId(eid))
+                                .and_modify(|mask| *mask &= effective)
+                                .or_insert(effective);
                         }
                     }
                     // Remove temporary field narrowings so code after `and` sees the un-narrowed types

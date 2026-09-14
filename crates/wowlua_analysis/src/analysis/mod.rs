@@ -501,6 +501,10 @@ pub struct Ir {
     pub field_assignments: Vec<FieldAssignment>,
     pub call_resolutions: HashMap<ExprId, CallResolution>,
     pub and_guarded_call_exprs: HashSet<ExprId>,
+    /// Every expression evaluated only under a short-circuit `and` chain's
+    /// flavor guard (all exprs lowered for the RHS of `guard and rhs`), mapped
+    /// to the effective flavor mask there (intersected across nested chains).
+    /// Consult before `active_flavors_at`.
     pub and_guarded_flavor_exprs: HashMap<ExprId, u8>,
     pub and_guarded_nil_check_exprs: HashSet<ExprId>,
     pub assign_nil_check_bases: Vec<(ExprId, u32, u32)>,
@@ -2630,6 +2634,9 @@ pub struct Analysis<'a> {
     /// Per-scope override of the active flavor set. Scopes without an entry
     /// inherit from their parent (walked at lookup time).
     pub scope_flavors: HashMap<ScopeIndex, u8>,
+    /// Build-time: which variable/field flavor guards were inferred, so a later
+    /// non-guard write can clear them.
+    pub(super) inferred_flavor_guards: narrowing::InferredFlavorGuards,
     pub backward_param_types: bool,
     /// When true, functions without `@return` annotations whose return statements
     /// match a clear all-set-or-all-nil pattern get synthesized return-only
@@ -2846,6 +2853,7 @@ impl<'a> Analysis<'a> {
             project_flavors,
             addon_flavors,
             scope_flavors: HashMap::new(),
+            inferred_flavor_guards: Default::default(),
             backward_param_types,
             correlated_return_overloads,
             explicit_globals: HashSet::new(),

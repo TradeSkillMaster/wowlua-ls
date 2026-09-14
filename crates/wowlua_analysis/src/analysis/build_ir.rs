@@ -367,6 +367,7 @@ impl<'a> Analysis<'a> {
                     }
                 }
                 // Apply @type and @class annotations (first variable only)
+                let mut annotated_flavor_guard = 0;
                 if index == 0 {
                     let annotations = extract_annotations(assign.syntax());
                     if let Some(ref at) = annotations.var_type {
@@ -491,10 +492,11 @@ impl<'a> Analysis<'a> {
                             ));
                             self.ir.set_type_source(symbol_idx, expr_id);
                         }
-                        if annotations.flavor_guard != 0 {
-                            self.ir.symbols[symbol_idx.val()].flavor_guard = annotations.flavor_guard;
-                        }
+                    annotated_flavor_guard = annotations.flavor_guard;
                 }
+                let current_guard = self.ir.symbols[symbol_idx.val()].flavor_guard;
+                self.ir.symbols[symbol_idx.val()].flavor_guard = self.inferred_flavor_guards
+                    .symbol_write(symbol_idx, current_guard, annotated_flavor_guard, expression);
             }
         }
 
@@ -1735,7 +1737,7 @@ impl<'a> Analysis<'a> {
     ) {
         let AssignCtx {
             assign, scope_idx, func_id, constructor_of, stmt_index,
-            annotations: assign_annotations, flavor_guard: assign_flavor_guard, ..
+            annotations: assign_annotations, flavor_guard: annotated_flavor_guard, ..
         } = ctx;
         let AssignTarget { ident, index, expressions, identifiers_len, names, .. } = target;
         // An explicit inline `@private`/`@protected` on the assignment sets the
@@ -1892,7 +1894,8 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     if inline_is_lateinit { field_info.lateinit = true; }
-                    if assign_flavor_guard != 0 { field_info.flavor_guard = assign_flavor_guard; }
+                    field_info.flavor_guard = self.inferred_flavor_guards
+                        .field_write(table_idx, field_name, field_info.flavor_guard, annotated_flavor_guard, expr);
                 } else {
                     let assign_range = ident.syntax().text_range();
                     self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
@@ -1904,7 +1907,8 @@ impl<'a> Analysis<'a> {
                         annotation_type_raw: inline_type.clone(),
                         lateinit: inline_is_lateinit,
                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
-                        flavor_guard: assign_flavor_guard,
+                        flavor_guard: self.inferred_flavor_guards
+                            .field_write(table_idx, field_name, 0, annotated_flavor_guard, expr),
                         description: None,
                         from_scan: false,
                     });
@@ -1948,7 +1952,8 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     if inline_is_lateinit { overlay_fi.lateinit = true; }
-                    if assign_flavor_guard != 0 { overlay_fi.flavor_guard = assign_flavor_guard; }
+                    overlay_fi.flavor_guard = self.inferred_flavor_guards
+                        .field_write(table_idx, field_name, overlay_fi.flavor_guard, annotated_flavor_guard, expr);
                 } else {
                     let assign_range = ident.syntax().text_range();
                     let overlay_vis = if assign_visibility != Visibility::Public {
@@ -1974,7 +1979,8 @@ impl<'a> Analysis<'a> {
                         annotation_type_raw: ann_raw,
                         lateinit: li || inline_is_lateinit,
                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
-                        flavor_guard: assign_flavor_guard,
+                        flavor_guard: self.inferred_flavor_guards
+                            .field_write(table_idx, field_name, 0, annotated_flavor_guard, expr),
                         description: None,
                         from_scan: false,
                     });
@@ -2183,7 +2189,7 @@ impl<'a> Analysis<'a> {
     ) {
         let AssignCtx {
             assign, scope_idx, func_id, node,
-            annotations: assign_annotations, flavor_guard: assign_flavor_guard, ..
+            annotations: assign_annotations, flavor_guard: annotated_flavor_guard, ..
         } = ctx;
         let AssignTarget { names, index, expression, expressions, identifiers_len, .. } = target;
         let root_name = &names[0];
@@ -2271,9 +2277,9 @@ impl<'a> Analysis<'a> {
                 None
             };
             let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
-            if assign_flavor_guard != 0 {
-                self.ir.symbols[symbol_idx.val()].flavor_guard = assign_flavor_guard;
-            }
+            let current_guard = self.ir.symbols[symbol_idx.val()].flavor_guard;
+            self.ir.symbols[symbol_idx.val()].flavor_guard = self.inferred_flavor_guards
+                .symbol_write(symbol_idx, current_guard, annotated_flavor_guard, expression);
             // Mark narrowing as overridden if this symbol has active narrowing
             if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
                 || self.get_type_filtering(symbol_idx, scope_idx).is_some()

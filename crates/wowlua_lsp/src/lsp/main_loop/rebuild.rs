@@ -21,6 +21,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.nodiscard == y.nodiscard
         && x.constructor == y.constructor
         && x.visibility == y.visibility
+        && x.flavor_guard == y.flavor_guard
         && x.generics == y.generics
         && x.defclass == y.defclass
         && x.defclass_parent == y.defclass_parent
@@ -519,5 +520,21 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
         }
     } else {
         RebuildScope::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::annotations::FieldValueKind;
+
+    /// Turning `ns.isRetail = true` into `ns.isRetail = WOW_PROJECT_ID == …`
+    /// changes only the (inferred) flavor guard; dependents must still rebuild.
+    #[test]
+    fn global_semantic_eq_compares_flavor_guard() {
+        let plain = ExternalGlobal::for_test("IS_RETAIL", ExternalGlobalKind::Variable(FieldValueKind::Boolean));
+        let guarded = ExternalGlobal { flavor_guard: crate::flavor::FLAVOR_RETAIL, ..plain.clone() };
+        assert!(global_semantic_eq(&plain, &plain.clone()));
+        assert!(!global_semantic_eq(&plain, &guarded));
     }
 }

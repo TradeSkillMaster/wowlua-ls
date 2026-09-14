@@ -90,3 +90,129 @@ if Env.isClassicEra and PlayerGetTimerunningSeasonID() then return end
 -- `and` chain: boolean guard + other condition + guarded call.
 local y = true
 if y and isRetail and PlayerGetTimerunningSeasonID() then return end
+
+-- Unannotated flags: a `WOW_PROJECT_ID` comparison initializer is inferred as
+-- a flavor guard, so `@flavor-narrows` is optional there.
+local isRetailInferred = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+
+if isRetailInferred then
+    PlayerGetTimerunningSeasonID()
+else
+    PlayerGetTimerunningSeasonID()
+    -- ^ diag: wrong-flavor-api
+end
+
+if not isRetailInferred then
+    AbandonQuest()
+end
+
+-- `~=` infers every other flavor.
+local isNotRetailInferred = WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE
+
+if isNotRetailInferred then
+    AbandonQuest()
+    PlayerGetTimerunningSeasonID()
+    -- ^ diag: wrong-flavor-api
+end
+
+-- `not (...)` complements; parentheses and either operand order are accepted.
+local isEraNegated = not (WOW_PROJECT_ID ~= WOW_PROJECT_CLASSIC)
+local isEraReversed = (WOW_PROJECT_CLASSIC == WOW_PROJECT_ID)
+
+if isEraNegated then
+    AbandonQuest()
+end
+
+if isEraReversed then
+    AbandonQuest()
+end
+
+-- Each name of a multi-name local infers from its own initializer.
+local retailFlag, eraFlag = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE, WOW_PROJECT_ID == WOW_PROJECT_CLASSIC
+
+if retailFlag then
+    PlayerGetTimerunningSeasonID()
+end
+
+if eraFlag then
+    AbandonQuest()
+end
+
+-- A later plain assignment infers too.
+local assignedLater
+assignedLater = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+
+if assignedLater then
+    PlayerGetTimerunningSeasonID()
+end
+
+-- Dotted field.
+Env.isRetailInferred = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+
+if Env.isRetailInferred then
+    PlayerGetTimerunningSeasonID()
+end
+
+-- Inferred flags guard `and` chains, including under `not`.
+if isRetailInferred and PlayerGetTimerunningSeasonID() then return end
+if not isRetailInferred and AbandonQuest() then return end
+if not isRetail and AbandonQuest() then return end
+
+-- An explicit `@flavor-narrows` wins over the initializer.
+---@flavor-narrows classic_era
+local annotatedFlag = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+
+if annotatedFlag then
+    AbandonQuest()
+end
+
+-- Only a bare comparison is inferred: `<comparison> or cond` can be true
+-- outside retail.
+local function compoundInitializer(cond)
+    local maybeRetail = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE or cond
+    if maybeRetail then
+        PlayerGetTimerunningSeasonID()
+        -- ^ diag: wrong-flavor-api
+    end
+end
+
+-- A later write that isn't a guard clears an inferred guard: the flag may now
+-- be true outside retail. Reads before that write still narrow.
+local useSeasonUI = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+
+if useSeasonUI then
+    PlayerGetTimerunningSeasonID()
+end
+
+if GetCVarBool("forceSeasonUI") then useSeasonUI = true end
+
+if useSeasonUI then
+    PlayerGetTimerunningSeasonID()
+    -- ^ diag: wrong-flavor-api
+end
+
+local function widenedFlag(cond)
+    local showSeason = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+    showSeason = showSeason or cond
+    if showSeason then
+        PlayerGetTimerunningSeasonID()
+        -- ^ diag: wrong-flavor-api
+    end
+end
+
+Env.useSeasonUI = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+if GetCVarBool("forceSeasonUI") then Env.useSeasonUI = true end
+
+if Env.useSeasonUI then
+    PlayerGetTimerunningSeasonID()
+    -- ^ diag: wrong-flavor-api
+end
+
+-- An explicit `@flavor-narrows` is kept across later writes.
+---@flavor-narrows retail
+local annotatedFlag2 = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+if GetCVarBool("forceSeasonUI") then annotatedFlag2 = true end
+
+if annotatedFlag2 then
+    PlayerGetTimerunningSeasonID()
+end

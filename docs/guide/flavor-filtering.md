@@ -137,6 +137,9 @@ if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
 else
     -- Narrowed to non-retail flavors
 end
+
+-- The right-hand side of `and` is narrowed too
+local text = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and AbbreviateLargeNumbers(100)
 ```
 
 ### Custom flavor guards with `@flavor-narrows`
@@ -161,11 +164,9 @@ AbbreviateLargeNumbers(100) -- no warning
 
 #### Boolean flavor guards
 
-`@flavor-narrows` also works on boolean variables and fields, avoiding the overhead of a function call:
+A boolean variable or field assigned a `WOW_PROJECT_ID` comparison is a flavor guard on its own, with no annotation needed (`~=` guards every other flavor):
 
 ```lua
----@type boolean
----@flavor-narrows retail
 local isRetail = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
 
 if isRetail then
@@ -178,8 +179,6 @@ This is especially useful with the addon namespace pattern, where the boolean is
 ```lua
 -- In init.lua:
 local _, ns = ...
----@type boolean
----@flavor-narrows retail
 ns.isRetail = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
 
 -- In another file:
@@ -189,7 +188,15 @@ if ns.isRetail then
 end
 ```
 
-`@flavor-narrows` works with all narrowing patterns: if/else, early exit, `not`.
+A boolean computed any other way, or later reassigned something other than a comparison (`flag = flag or cond`), needs `@flavor-narrows`, which also takes precedence over an inferred guard:
+
+```lua
+---@type boolean
+---@flavor-narrows retail
+local isRetail = select(4, GetBuildInfo()) >= 100000
+```
+
+Flavor guards work with all narrowing patterns: if/else, early exit, `not`, and `and`.
 
 ## When to use it
 

@@ -71,3 +71,6 @@ if Env.IsNonRetail() and PlayerGetTimerunningSeasonID() then return end
 if IsRetail() then
     if true and PlayerGetTimerunningSeasonID() then return end
 end
+
+-- `not guard` in an `and` narrows the RHS to the guard's complement.
+if not IsRetail() and AbandonQuest() then return end
