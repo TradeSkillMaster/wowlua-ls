@@ -14,7 +14,7 @@ For Neovim diagnostic integration details (push/pull namespaces, `workspace_diag
 The project is a cargo workspace of layered library crates plus a thin binary. The layering is **one-directional and enforced at compile time** — a crate can only use the crates below it:
 
 - **`wowlua_syntax`** (`crates/wowlua_syntax/`) — leaf crate: lexer, parser, CST (`syntax/`), typed AST (`ast.rs`). Depends on nothing else.
-- **`wowlua_core`** (`crates/wowlua_core/`) — the shared type vocabulary: IR types (`types.rs`), flavor bitmask (`flavor.rs`), and the annotation type *definitions* embedded in the IR (`annotations.rs`: `AnnotationType`, `TuplePosition`, `ParamInfo`, `Visibility`, `KEYOF_SELF_TARGET`). Re-exports `syntax`/`ast`.
+- **`wowlua_core`** (`crates/wowlua_core/`) — the shared type vocabulary: IR types (`types.rs`), flavor bitmask (`flavor.rs`), and the annotation type *definitions* embedded in the IR (`annotations.rs`: `AnnotationType`, `TuplePosition`, `ParamInfo`, `Visibility`, `KEYOF_SELF_TARGET`), and the secret-value rule table + stub metadata (`secrets.rs`). Re-exports `syntax`/`ast`.
 - **`wowlua_analysis`** (`crates/wowlua_analysis/`) — the per-file analysis engine and everything in its dependency cycle: `analysis/`, `annotations/` (parsing/scanning; re-exports the core type defs), `pre_globals/`, `diagnostics/`, `config.rs`, `xml_scan.rs`. Owns `MAX_COMPLETIONS`. A `test-util` feature exposes `#[cfg(test)]` construction helpers (`ClassDecl`/`ExternalGlobal::for_test`, `PreResolvedGlobals::push_ext_*`) to higher crates' test builds.
 - **`wowlua_lsp`** (`crates/wowlua_lsp/`) — `lsp/` (server loop + handlers), `plugins/` (Lua plugin engine), `toc/` (.toc parsing), `has_shebang`. Owns the `embedded-stubs` feature (`lsp/main_loop/stub_loading.rs`).
 - **`wowlua_stub_gen`** (`crates/wowlua_stub_gen/`) — the offline stub-generation tool (`stub_gen/`); above `wowlua_lsp` because it drives a workspace scan. Forwards `embedded-stubs` to `wowlua_lsp`.
@@ -42,6 +42,7 @@ A concise map of the source tree. Several files carry deep mechanism notes too l
   - `narrowing.rs` — Type narrowing from control flow guards: `GuardNarrow` enum, `OrTermEffect`, flavor narrowing detection, `@flavor-narrows`, type filter/strip for scope-specific refinement
   - `resolve.rs` — Phase 2: fixpoint type resolution loop, expression resolver, backward param-type inference
   - `resolve_call.rs` — Function call resolution: `CallSiteInfo`, argument count/type checking, return type determination, overload matching, generic binding
+  - `secret_narrowing.rs` — `@secret-guard` narrowing (`issecretvalue`/`canaccessvalue`/…): guard facts applied through the `type()`-guard maps. See [ARCHITECTURE.md — Secret values](.claude/ARCHITECTURE.md#secret-values).
   - `checks.rs` — Diagnostic check orchestration via `run_diagnostics()`, name-token collection for access diagnostics
   - `queries/` — LSP query methods, split per feature (all `impl AnalysisResult` blocks over the `pub(crate)` fields defined in `mod.rs`). `mod.rs` holds shared imports/re-exports (`ReferenceTarget`, `HighlightKind`, `CallSiteResult`, `OutgoingCallResult`, `DATA_REPLACE_START/END`) and the cross-module helpers (`return_type_at_slot`, `format_vararg_return`, `format_vararg_param`). Submodules: `nav.rs` (token/symbol/field resolution helpers like `find_symbol_at`, `find_field_at`, `scope_at_offset`), `format.rs` (type/signature formatting), `hover.rs`, `definition.rs`, `completion.rs`, `signature.rs`, `references.rs`, `rename.rs`, `highlights.rs` (document highlights), `inlay_hints.rs`, `code_lens.rs`, `call_hierarchy.rs`, `document_symbols.rs`, `embedded_strings.rs` (event/`expression<C,R>` string hover/completion/definition)
   - `semantic_tokens.rs` — LSP semantic-token classification (emits `function` on bare name tokens that resolve to functions; classifies the name chain of a function/method *definition* header as `class`/`property`/`method`/`function`; `defaultLibrary`/`deprecated` modifiers). Narrow by design — the analysis owns only the dotted-chain cases a type-blind TextMate grammar can't get right; everything else is left to the editor grammar. Encoded by `main_loop/semantic_token_encoding.rs::encode_semantic_tokens`. See [ARCHITECTURE.md — Semantic-token classification](.claude/ARCHITECTURE.md#semantic-token-classification-analysissemantic_tokensrs).
@@ -74,6 +75,7 @@ A concise map of the source tree. Several files carry deep mechanism notes too l
   - `framexml.rs` — FrameXML Lua scanning: inferred returns, runtime fields, utility tables/mixins
   - `xml_frames.rs` — XML frame/mixin extraction and inheritance resolution
   - `classic.rs` — Classic-flavor stubs, flavor-map computation, API-doc dir scanning, and constant inference
+  - `secret_stubs.rs` — retail secret-value metadata: Blizzard doc secrecy keys → `secret<T>` types + `@secret-*` annotations, rewritten into generated and vendor stub text
   - `util.rs` — filesystem/name-scan helpers, scan-path collection, validation (`validate_stub_counts`), and misc utilities
   - `tests.rs` — `#[cfg(test)]` unit tests
 - `src/xml_scan.rs` — XML frame/template scanning: parses `.xml` files for `<Frame>`, `<Button>`, `<Texture>`, etc. elements, extracting `ClassDecl` (virtual templates) and `ExternalGlobal` (non-virtual named frames) entries. Handles `parentKey`/`parentArray` child fields, `KeyValue` typed fields, `inherits`/`mixin`/`secureMixin` parent chains, `$parent` name resolution, `intrinsic="true"` custom element types, and implicit parentKey on special elements (NormalTexture, HighlightTexture, etc.)
@@ -190,6 +192,7 @@ These annotation-syntax and `ValueType` features are conventions — load-bearin
 - `@return self<X>` — re-parameterized self return (`Function.returns_self_type_args`). [→](.claude/ARCHITECTURE.md#return-selfx-re-parameterized-self-return)
 - `@alias Foo<K,V> V[]` — parameterized alias, with constraint enforcement at every use site. [→](.claude/ARCHITECTURE.md#alias-fookv-v-parameterized-alias)
 - Deferred constructor self-field type args — cross-file generic recovery (harvested lazily). [→](.claude/ARCHITECTURE.md#deferred-constructor-self-field-type-args-cross-file-generic-recovery)
+- `secret<T>` / `@secret-*` — retail secret values (`ValueType::Secret`); all rules live in `wowlua_core::secrets`, never in the engine. [→](.claude/ARCHITECTURE.md#secret-values)
 
 ## Testing
 

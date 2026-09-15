@@ -53,6 +53,7 @@ export default defineConfig({
           { text: 'Builder Pattern', link: '/guide/builder-pattern' },
           { text: 'Custom Type Guards', link: '/guide/type-guards' },
           { text: 'Flavor Filtering', link: '/guide/flavor-filtering' },
+          { text: 'Secret Values', link: '/guide/secrets' },
         ],
       },
       {

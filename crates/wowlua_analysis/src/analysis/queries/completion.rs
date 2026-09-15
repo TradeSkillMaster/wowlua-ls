@@ -160,6 +160,8 @@ impl AnalysisResult {
         if offset == 0 {
             return None;
         }
+        // The cursor sits after what it completes, so positions are looked up one back.
+        let _secrecy = self.secrecy_display_at(offset - 1);
 
         let prev_char = source.as_bytes().get((offset - 1) as usize).copied()?;
 
@@ -1078,6 +1080,9 @@ impl AnalysisResult {
         };
         let offset = data.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let name = &item.label;
+        // Like `completions_at`, look the cursor position up one back.
+        let lookup = offset.saturating_sub(1);
+        let _secrecy = self.secrecy_display_at(lookup);
 
         if data.get("member").and_then(|v| v.as_bool()).unwrap_or(false) {
             // Member-access resolve: find the table, look up the field
@@ -1086,7 +1091,7 @@ impl AnalysisResult {
             }
         } else if data.get("scope").and_then(|v| v.as_bool()).unwrap_or(false) {
             // Scope resolve: find the symbol by name in scope hierarchy + externals
-            let scope_idx = self.scope_at_offset(offset);
+            let scope_idx = self.scope_at_offset(lookup);
             if let Some(scope_idx) = scope_idx
                 && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                     let resolved = self.sym(sym_idx).versions.iter().rev()
@@ -1648,6 +1653,11 @@ impl AnalysisResult {
             ("narrows-arg",    "In-place argument type narrowing",        F,         Some("narrows-arg ${1:N}")),
             ("creates-global", "Call creates a named global (e.g. CreateFrame)", F,   Some("creates-global ${1:N}")),
             ("requires",       "Restrict method by receiver type-param constraint", F,  Some("requires ${1:T}: ${2:Constraint}")),
+            ("secret-when",    "Results may be secret under a restriction predicate", F, Some("secret-when ${1:Predicate}")),
+            ("secret-args",    "Whether secret values are accepted as arguments", F, Some("secret-args ${1|none,untainted,tainted|}")),
+            ("secret-aspect",  "Widget secret aspect set or read by this method", F, Some("secret-aspect ${1:Aspect}")),
+            ("secret-guard",   "Boolean result proves an argument (non-)secret", F, Some("secret-guard ${1:param} ${2|is-secret,accessible,any-secret|}")),
+            ("secret-unless",  "Results are never secret for these argument values", F, Some("secret-unless ${1:param} ${2:value}")),
             ("correlated",     "Declare fields that are always nil/non-nil together", C, None),
             ("see",            "Cross-reference link to related symbol or URL", F|C|S, None),
         ];
@@ -1722,7 +1732,8 @@ impl AnalysisResult {
                         match tag {
                             "param" | "return" | "generic" | "builds-field" | "built-name"
                             | "built-extends" | "type-narrows" | "returns-class-name" | "defclass" | "flavor-narrows"
-                            | "narrows-arg" | "creates-global" | "requires" => {
+                            | "narrows-arg" | "creates-global" | "requires"
+                            | "secret-args" | "secret-aspect" | "secret-guard" | "secret-unless" => {
                                 has_function_tag = true;
                             }
                             "class" | "enum" | "field" | "accessor" | "correlated" => {
@@ -2389,5 +2400,37 @@ impl AnalysisResult {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod secrecy_display_tests {
+    use super::{CallSnippets, Snippets};
+    use crate::analysis::{Analysis, AnalysisConfig};
+    use crate::pre_globals::PreResolvedGlobals;
+    use std::sync::Arc;
+
+    /// The resolved `detail` of the `hp` scope completion at the end of `body`.
+    fn resolved_detail(body: &str) -> Option<String> {
+        let text = format!("---@return secret<number>\nlocal function Health() return 1 end\nlocal hp = Health()\n{body}\nlocal after = 1\n");
+        let tree = crate::syntax::parser::parse(&text);
+        let mut analysis = Analysis::new_with_tree(&tree, Arc::new(PreResolvedGlobals::empty()), AnalysisConfig::default());
+        analysis.resolve_types();
+        let result = analysis.into_result();
+        let offset = text.rfind("= h").map(|i| i as u32 + 3)?;
+        let mut item = result.completions_at(&tree, offset, &text, Snippets::Disabled, CallSnippets::Disabled)?
+            .into_iter()
+            .find(|item| item.label == "hp")?;
+        result.resolve_completion(&tree, &mut item);
+        item.detail
+    }
+
+    #[test]
+    fn completion_detail_hides_secrecy_inside_non_retail_guard() {
+        assert_eq!(resolved_detail("local x = h").as_deref(), Some("secret<number>"));
+        assert_eq!(
+            resolved_detail("if WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE then\n    local x = h\nend").as_deref(),
+            Some("number"),
+        );
     }
 }

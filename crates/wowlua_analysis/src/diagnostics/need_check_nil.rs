@@ -98,7 +98,7 @@ pub fn run_callee(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
 
 pub fn run_length(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
     for &(expr_id, start, end) in &analysis.ir.unary_op_sites {
-        let Expr::UnaryOp { operand, .. } = *analysis.expr(expr_id) else { continue };
+        let Expr::UnaryOp { op: crate::ast::Operator::ArrayLength, operand } = *analysis.expr(expr_id) else { continue };
         let Some(operand_type) = analysis.resolve_expr_type(operand) else { continue };
         if !is_nullable(&operand_type) { continue; }
         if check_nil_suppressed(analysis, operand, start) { continue; }

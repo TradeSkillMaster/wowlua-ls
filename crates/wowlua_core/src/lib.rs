@@ -10,4 +10,5 @@ pub use wowlua_syntax::{ast, syntax};
 
 pub mod annotations;
 pub mod flavor;
+pub mod secrets;
 pub mod types;

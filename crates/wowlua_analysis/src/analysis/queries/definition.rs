@@ -262,6 +262,7 @@ impl AnalysisResult {
                 None => Vec::new(),
             },
             ValueType::OpaqueAlias(name, _) => self.alias_definitions_by_name(name),
+            ValueType::Secret(inner) => self.type_definitions_for_value(inner),
             ValueType::Union(types) | ValueType::Intersection(types) => types
                 .iter()
                 .map(|t| self.type_definitions_for_value(t))

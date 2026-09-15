@@ -265,7 +265,7 @@ impl AnalysisResult {
         match resolved {
             ValueType::Table(Some(idx)) => Some(*idx),
             // Unwrap opaque aliases — field chain resolution works on the inner type
-            ValueType::OpaqueAlias(_, inner) => Self::extract_table_idx(inner),
+            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => Self::extract_table_idx(inner),
             ValueType::Intersection(types) => types.iter().find_map(|t| match t {
                 ValueType::Table(Some(idx)) => Some(*idx),
                 _ => None,
@@ -289,7 +289,7 @@ impl AnalysisResult {
     pub(super) fn extract_all_table_indices(resolved: &ValueType) -> Vec<TableIndex> {
         match resolved {
             ValueType::Table(Some(idx)) => vec![*idx],
-            ValueType::OpaqueAlias(_, inner) => Self::extract_all_table_indices(inner),
+            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => Self::extract_all_table_indices(inner),
             ValueType::Intersection(types) => types.iter().flat_map(
                 Self::extract_all_table_indices
             ).collect(),

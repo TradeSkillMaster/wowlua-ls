@@ -1743,6 +1743,7 @@ impl<'a> Analysis<'a> {
                 type_narrows: None,
                 type_narrows_class: None,
                 returns_class_name: false,
+                secret: None,
                 has_vararg_return,
                 see: Vec::new(),
                 flavors: 0,
@@ -1851,6 +1852,9 @@ impl<'a> Analysis<'a> {
                 return Some(ValueType::Table(Some(table_idx)));
             }
             return Some(ValueType::Table(None));
+        }
+        if let Some(inner) = at.secret_arg() {
+            return self.resolve_annotation_type_mut(inner).map(ValueType::secret_of);
         }
         if let AnnotationType::Parameterized(base, _) = at {
             // expression<C, R> is a built-in type for inline Lua expressions;
@@ -1961,6 +1965,9 @@ impl<'a> Analysis<'a> {
             && base == "expression"
         {
             return Some(ValueType::String(None));
+        }
+        if let Some(inner) = at.secret_arg() {
+            return self.resolve_annotation_type_mut_gen(inner, generics).map(ValueType::secret_of);
         }
         if let AnnotationType::Parameterized(base, args) = at {
             // Gap 4 utility-type projections. At declaration time (F unbound)
@@ -2281,6 +2288,7 @@ impl<'a> Analysis<'a> {
             type_narrows: None,
             type_narrows_class: None,
             returns_class_name: false,
+            secret: None,
             has_vararg_return: tuple_has_vararg_tail || non_tuple_vararg_return,
             see: Vec::new(),
             flavors: 0,

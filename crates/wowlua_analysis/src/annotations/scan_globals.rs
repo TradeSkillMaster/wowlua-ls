@@ -547,6 +547,7 @@ fn build_func_external(
     } else if !annotations.params.is_empty() {
         std::mem::take(&mut annotations.params)
     } else { Vec::new() };
+    let secret = annotations.secret_meta();
     ExternalGlobal {
         name: String::new(),
         kind: ExternalGlobalKind::Function,
@@ -591,6 +592,7 @@ fn build_func_external(
         name_end,
         mixin_parents: Vec::new(),
         returns_class_name: annotations.returns_class_name,
+        secret,
     }
 }
 
@@ -1405,6 +1407,7 @@ pub fn scan_file_globals_with_synth(
                                 name_start: ns, name_end: ne,
                                 mixin_parents,
                                 returns_class_name: false,
+                                secret: None,
                             });
                         } else if names.len() >= 2 {
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
@@ -1626,6 +1629,7 @@ pub fn scan_file_globals_with_synth(
                                 name_end: u32::from(range.end()),
                                 mixin_parents: Vec::new(),
                                 returns_class_name: false,
+                                secret: None,
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.
@@ -1795,6 +1799,7 @@ pub fn scan_file_globals_with_synth(
                     name_end: ne,
                     mixin_parents: Vec::new(),
                     returns_class_name: false,
+                    secret: None,
                 });
                 continue;
             }
@@ -1954,6 +1959,7 @@ pub fn scan_file_globals_with_synth(
                 name_end: ne,
                 mixin_parents: Vec::new(),
                 returns_class_name: false,
+                secret: None,
             });
         }
     }
@@ -2152,6 +2158,7 @@ pub fn scan_created_globals(
                 name_end: u32::from(range.end()),
                 mixin_parents: Vec::new(),
                 returns_class_name: false,
+                secret: None,
             });
         }
     }

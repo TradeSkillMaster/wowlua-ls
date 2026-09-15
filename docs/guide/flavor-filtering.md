@@ -198,6 +198,8 @@ local isRetail = select(4, GetBuildInfo()) >= 100000
 
 Flavor guards work with all narrowing patterns: if/else, early exit, `not`, and `and`.
 
+Flavor guards also scope the retail-only [secret-value](/guide/secrets) diagnostics, and for those no `flavors` declaration is needed.
+
 ## When to use it
 
 Flavor filtering is most valuable for addons that ship a single codebase across retail and classic. Without it, you won't know about missing APIs until a classic player reports a Lua error.

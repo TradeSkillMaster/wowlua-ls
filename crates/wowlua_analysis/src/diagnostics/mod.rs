@@ -35,6 +35,7 @@ mod redefined_local;
 mod redundant_condition;
 mod redundant_logical;
 mod return_mismatch;
+mod secret_values;
 mod shadowed_local;
 mod trailing_space;
 mod type_mismatch;
@@ -167,6 +168,11 @@ pub const INVALID_CLASS_PARENT: DiagnosticDef     = DiagnosticDef { code: "inval
 pub const INVALID_OP: DiagnosticDef               = DiagnosticDef { code: "invalid-op",               severity: DiagnosticSeverity::WARNING };
 pub const NIL_TABLE_KEY: DiagnosticDef            = DiagnosticDef { code: "nil-table-key",            severity: DiagnosticSeverity::WARNING };
 pub const CLASS_SHADOWS_BUILTIN: DiagnosticDef    = DiagnosticDef { code: "class-shadows-builtin",    severity: DiagnosticSeverity::WARNING };
+pub const SECRET_COMPARISON: DiagnosticDef        = DiagnosticDef { code: "secret-comparison",        severity: DiagnosticSeverity::WARNING };
+pub const SECRET_ARITHMETIC: DiagnosticDef        = DiagnosticDef { code: "secret-arithmetic",        severity: DiagnosticSeverity::WARNING };
+pub const SECRET_CONDITION: DiagnosticDef         = DiagnosticDef { code: "secret-condition",         severity: DiagnosticSeverity::WARNING };
+pub const SECRET_TABLE_KEY: DiagnosticDef         = DiagnosticDef { code: "secret-table-key",         severity: DiagnosticSeverity::WARNING };
+pub const SECRET_ARGUMENT: DiagnosticDef          = DiagnosticDef { code: "secret-argument",          severity: DiagnosticSeverity::WARNING };
 pub const SAFETY_LIMIT: DiagnosticDef            = DiagnosticDef { code: "safety-limit",             severity: DiagnosticSeverity::ERROR };
 
 const CATALOG: &[&DiagnosticDef] = &[
@@ -189,7 +195,8 @@ const CATALOG: &[&DiagnosticDef] = &[
     &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SHADOWED_LOCAL,
     &MIXED_ENUM_VALUES, &INVALID_CLASS_PARENT, &INVALID_OP, &NIL_TABLE_KEY, &SAFETY_LIMIT,
     &REDUNDANT_OR, &REDUNDANT_AND, &REDUNDANT_CONDITION, &UNKNOWN_CALLBACK_EVENT,
-    &CLASS_SHADOWS_BUILTIN,
+    &CLASS_SHADOWS_BUILTIN, &SECRET_COMPARISON, &SECRET_ARITHMETIC, &SECRET_CONDITION,
+    &SECRET_TABLE_KEY, &SECRET_ARGUMENT,
 ];
 
 pub fn append_structural_details_suffix(
@@ -344,6 +351,7 @@ pub fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDiagnosti
         &mixed_enum_values::MixedEnumValues,
         &destructure_arity::DestructureArity,
         &class_shadows_builtin::ClassShadowsBuiltin,
+        &secret_values::SecretValues,
     ];
     for pass in run_passes {
         if meta && !pass.runs_in_meta() { continue; }
@@ -490,7 +498,7 @@ pub fn is_type_permissive(ty: &ValueType) -> bool {
     match ty {
         ValueType::Any | ValueType::TypeVariable(_) => true,
         ValueType::Union(types) => types.iter().any(is_type_permissive),
-        ValueType::OpaqueAlias(_, inner) => is_type_permissive(inner),
+        ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => is_type_permissive(inner),
         _ => false,
     }
 }
@@ -535,7 +543,8 @@ pub fn types_disjoint(a: &ValueType, b: &ValueType) -> bool {
     match (a, b) {
         // Unwrap opaque aliases: at runtime the value is the inner base type, so
         // an opaque `number` and a plain `number` can compare equal.
-        (ValueType::OpaqueAlias(_, inner), other) | (other, ValueType::OpaqueAlias(_, inner)) => {
+        (ValueType::OpaqueAlias(_, inner), other) | (other, ValueType::OpaqueAlias(_, inner))
+        | (ValueType::Secret(inner), other) | (other, ValueType::Secret(inner)) => {
             types_disjoint(inner, other)
         }
         // A union is disjoint from `x` only if every member is disjoint from `x`.
@@ -584,6 +593,7 @@ fn base_kind(t: &ValueType) -> u8 {
         ValueType::Intersection(_) => 8,
         ValueType::OpaqueAlias(_, _) => 9,
         ValueType::Union(_) => 10,
+        ValueType::Secret(inner) => base_kind(inner),
         ValueType::Any | ValueType::TypeVariable(_) => 255,
     }
 }
@@ -696,7 +706,7 @@ pub fn collect_class_indices(t: &ValueType, out: &mut Vec<TableIndex>) {
         ValueType::Union(members) | ValueType::Intersection(members) => {
             for m in members { collect_class_indices(m, out); }
         }
-        ValueType::OpaqueAlias(_, inner) => collect_class_indices(inner, out),
+        ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => collect_class_indices(inner, out),
         _ => {}
     }
 }
@@ -736,7 +746,7 @@ fn class_has_own_method(analysis: &AnalysisResult, table_idx: TableIndex, method
 fn annotation_admits_function(ty: &ValueType) -> bool {
     match ty {
         ValueType::Function(_) | ValueType::FunctionSig(_) => true,
-        ValueType::OpaqueAlias(_, inner) => annotation_admits_function(inner),
+        ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => annotation_admits_function(inner),
         ValueType::Union(members) | ValueType::Intersection(members) => {
             members.iter().any(annotation_admits_function)
         }

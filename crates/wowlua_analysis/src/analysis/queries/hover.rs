@@ -2,6 +2,7 @@ use super::*;
 
 impl AnalysisResult {
     pub fn hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
+        let _secrecy = self.secrecy_display_at(offset);
         // Compute enclosing class for visibility filtering in hover tooltips
         let enclosing_class = {
             let text_size = TextSize::from(offset);

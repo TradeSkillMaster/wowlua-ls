@@ -43,7 +43,7 @@ The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Ann
 [Gethe/wow-ui-source](https://github.com/AreWeReadyYet/wow-ui-source) is shallow-cloned across three branches: `live`, `classic_era`, `classic`.
 
 - **`Interface/AddOns/**/*.xml`**: XML files parsed via regex to extract `<Frame>`, `<Button>` elements with `name=`, `mixin=`, and `inherits=` attributes, producing frame global names with type and mixin associations. Inheritance is resolved transitively with cycle detection.
-- **`Interface/AddOns/Blizzard_APIDocumentationGenerated/*.lua`**: Parsed directly for structured function/event/structure data. Each file is a Lua table with `Type = "System"` (game APIs) or `Type = "ScriptObject"` (widget methods, skipped). Functions include namespace, arguments, returns, and `MayReturnNothing`. Events include `LiteralName` and `Payload`. Structures include typed `Fields`. Params with a `Mixin` field use the mixin name (Lua class) instead of the C++ `Type`. Types are normalized minimally: `bool`→`boolean`, `cstring`→`string`, `luaIndex`→`number`; all other type names (e.g. `WOWGUID`, `fileID`, `time_t`) are kept as-is since they have `@alias` definitions in Ketho's `BlizzardType.lua`. Array params (`Type = "table", InnerType = "Foo"`) produce `Foo[]`. Generated stubs only fill gaps: functions/structures already covered by Ketho's richer annotations are skipped via name deduplication. Also parsed for classic-only constants (structured `{Name, Type, Value}` entries) and enumerations (`{Name, EnumValue}` entries).
+- **`Interface/AddOns/Blizzard_APIDocumentationGenerated/*.lua`**: Parsed directly for structured function/event/structure data. Each file is a Lua table with `Type = "System"` (game APIs) or `Type = "ScriptObject"` (widget methods, skipped). Functions include namespace, arguments, returns, and `MayReturnNothing`. Events include `LiteralName` and `Payload`. Structures include typed `Fields`. Params with a `Mixin` field use the mixin name (Lua class) instead of the C++ `Type`. Types are normalized minimally: `bool`→`boolean`, `cstring`→`string`, `luaIndex`→`number`; all other type names (e.g. `WOWGUID`, `fileID`, `time_t`) are kept as-is since they have `@alias` definitions in Ketho's `BlizzardType.lua`. Array params (`Type = "table", InnerType = "Foo"`) produce `Foo[]`. Generated stubs only fill gaps: functions/structures already covered by Ketho's richer annotations are skipped via name deduplication. Also parsed for classic-only constants (structured `{Name, Type, Value}` entries) and enumerations (`{Name, EnumValue}` entries). On the retail branch, secret-value keys (`SecretReturns`, `SecretWhen…` predicates, `SecretArguments`, per-field `NeverSecret`/`ConditionalSecret`/`SecretValue`, widget aspects) become `secret<T>` types and `@secret-*` annotations on the matching functions, widget methods, events, and structure fields, both in the generated files and in Ketho's vendor stubs (rewritten in place before scanning). See [Secret Values](/guide/secrets).
 - **`Interface/AddOns/**/*.lua`**: All FrameXML Lua files scanned for: top-level `UPPER_SNAKE` constant assignments (classic vs retail diff), `LE_*` name references (cross-referenced with BlizzardInterfaceResources `LuaEnum.lua` for values), and field/method assignments on frame globals (`FrameName.field = rhs`, `function FrameName:method(...)`) to infer field types. Also detects `PanelTemplates_SetNumTabs` calls to inject `numTabs`/`selectedTab` fields.
 
 ### 5. warcraft.wiki.gg
@@ -65,7 +65,7 @@ Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments 
 
 ### 6. Local overrides
 
-Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (43 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
+Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (44 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
 
 | File | Purpose |
 |------|---------|
@@ -105,6 +105,7 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `plugin_api.lua` | Plugin diagnostic API types |
 | `Pools.lua` | Generic `ObjectPool<T>`/`FramePool`/`FramePoolCollection` types (FrameXML-defined, no upstream source) |
 | `RuntimeMissingGlobals.lua` | Globals used by addons but not in BlizzardInterfaceResources |
+| `SecretValues.lua` | `@secret-guard` on `issecretvalue`/`canaccessvalue`/`canaccessallvalues`/`hasanysecretvalues`, and `@secret-args tainted` on the string functions Blizzard documents as accepting secrets |
 | `select.lua` | `returns<F>` projection for variadic return truncation |
 | `SetScript.lua` | Contextual callback typing with event-param narrowing |
 | `string_match.lua` | Pattern matching return types |

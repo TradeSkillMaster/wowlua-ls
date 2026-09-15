@@ -22,6 +22,9 @@ pub(super) enum GuardNarrow {
     StripFalsy,
     /// Type guard (`type(x) == "string" and ...`): filter union to matching types
     FilterTo(ValueType),
+    /// Inverse type guard: strip matching types (`not issecretvalue(x) and ...`
+    /// strips secrecy). Carries no nil information.
+    StripType(ValueType),
 }
 
 /// If `lhs/rhs` is `WOW_PROJECT_ID` compared against a `WOW_PROJECT_*`
@@ -132,7 +135,6 @@ impl<'a> Analysis<'a> {
     ///   or inferred from a `WOW_PROJECT_ID` comparison).
     /// Returns whether anything was narrowed.
     fn try_flavor_narrow(&mut self, cond: &Expression<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) -> bool {
-        if self.project_flavors == 0 { return false; }
         match cond {
             Expression::BinaryExpression(_) => {
                 // `WOW_PROJECT_ID ==/~= WOW_PROJECT_<const>` in either order.
@@ -260,7 +262,7 @@ impl<'a> Analysis<'a> {
     /// Walk a symbol's `type_source` to find a FunctionDef. Handles both
     /// external symbols (read via resolved_type) and local ones (read via
     /// type_source, since resolved_type is only populated in Phase 2).
-    fn find_function_for_symbol(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<FunctionIndex> {
+    pub(super) fn find_function_for_symbol(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<FunctionIndex> {
         let ver_idx = self.ir.version_for_scope(sym_idx, scope_idx);
         if sym_idx.is_external() {
             let rt = self.sym(sym_idx).versions.get(ver_idx)?.resolved_type.as_ref()?;
@@ -291,7 +293,7 @@ impl<'a> Analysis<'a> {
     /// Walk an expression ID to find a FunctionDef at the end (follows SymbolRef /
     /// Literal(Function(_)) / FunctionDef / Grouped / FieldAccess chains).
     /// Delegates to `find_callable_function` which handles all these cases.
-    fn find_function_def(&self, expr_id: ExprId) -> Option<FunctionIndex> {
+    pub(super) fn find_function_def(&self, expr_id: ExprId) -> Option<FunctionIndex> {
         self.find_callable_function(expr_id, 10)
     }
 
@@ -389,6 +391,15 @@ impl<'a> Analysis<'a> {
     /// Comparison/logical guard handling for `Expression::BinaryExpression` conditions.
     fn narrow_binary_guard(&mut self, bin: &BinaryExpression<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
                 let op = bin.kind();
+                // A falsy `and` or truthy `or` proves nothing per operand, unless one
+                // operand's truthiness is fixed and the other is a secret guard
+                // (`if issecretvalue and issecretvalue(x) then … else <x> end`).
+                if matches!((op, is_then_branch), (Operator::And, false) | (Operator::Or, true))
+                    && let Some(fact) = self.secret_guard_fact(&Expression::BinaryExpression(*bin), parent_scope, is_then_branch)
+                {
+                    self.apply_secret_fact(fact, target_scope, false);
+                    return;
+                }
                 // `a and b` — both conditions hold in the then-branch.
                 // Also handle Operator::None which the parser produces for the outer
                 // grouping node of chained binary expressions like `a == b and c == d`.
@@ -710,6 +721,10 @@ impl<'a> Analysis<'a> {
 
     /// Custom-type-guard / literal-bool discriminator handling for `Expression::FunctionCall` conditions.
     fn narrow_funcall_guard(&mut self, call: &FunctionCall<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
+                if let Some(fact) = self.secret_guard_fact(&Expression::FunctionCall(*call), parent_scope, is_then_branch) {
+                    self.apply_secret_fact(fact, target_scope, false);
+                    return;
+                }
                 if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, parent_scope) {
                     // @type-narrows only narrows in then-branch (no else-branch semantic)
                     if is_then_branch {
@@ -895,6 +910,11 @@ impl<'a> Analysis<'a> {
             // `if not IsType(x, "Foo") then return end` → x IS Foo after
             Expression::UnaryExpression(unary) => {
                 if !matches!(unary.kind(), Operator::Not) { return; }
+                // `if not canaccessvalue(x) then return end` → x is accessible after
+                if let Some(fact) = self.secret_guard_fact(cond, scope_idx, false) {
+                    self.apply_secret_fact(fact, scope_idx, true);
+                    return;
+                }
                 let terms = unary.get_terms();
                 if let Some(Expression::Identifier(ident)) = terms.first() {
                     let names = ident.names_with_brackets();
@@ -932,6 +952,11 @@ impl<'a> Analysis<'a> {
             // `if type(x) == "boolean" then return end` → x has boolean stripped after
             // `if a or b then return end` → both a and b are false after
             Expression::BinaryExpression(bin) => {
+                // `if issecretvalue and issecretvalue(x) then return end` → x is not secret after
+                if let Some(fact) = self.secret_guard_fact(cond, scope_idx, false) {
+                    self.apply_secret_fact(fact, scope_idx, true);
+                    return;
+                }
                 let op = bin.kind();
                 // `a or b` in early-exit: NOT (a OR b) = NOT a AND NOT b
                 if matches!(op, Operator::Or) {
@@ -1088,6 +1113,12 @@ impl<'a> Analysis<'a> {
             Expression::GroupedExpression(g) => {
                 if let Some(inner) = g.get_expression() {
                     self.analyze_early_exit_guard(&inner, scope_idx);
+                }
+            }
+            // `if issecretvalue(x) then return end` → x is not secret after
+            Expression::FunctionCall(_) => {
+                if let Some(fact) = self.secret_guard_fact(cond, scope_idx, false) {
+                    self.apply_secret_fact(fact, scope_idx, true);
                 }
             }
             _ => {}
@@ -1365,6 +1396,11 @@ impl<'a> Analysis<'a> {
     /// `assert(a and b and c)` narrows all three identifiers.
     pub(super) fn narrow_assert_expr(&mut self, expr: &Expression<'_>, scope_idx: ScopeIndex) {
         self.try_flavor_narrow(expr, scope_idx, scope_idx, true);
+        // assert(canaccessvalue(x)), assert(not issecretvalue(x)), …
+        if let Some(fact) = self.secret_guard_fact(expr, scope_idx, true) {
+            self.apply_secret_fact(fact, scope_idx, false);
+            return;
+        }
         match expr {
             Expression::Identifier(ident) => {
                 let names = ident.names_with_brackets();
@@ -2723,7 +2759,7 @@ impl<'a> Analysis<'a> {
     /// When `ancestors_only` is true, uses ancestors-only scope lookup to avoid
     /// picking up versions from descendant scopes (e.g. then-branch versions
     /// that would corrupt the result in early-exit narrowing).
-    fn push_strip_type_version(&mut self, sym_idx: SymbolIndex, strip_type: ValueType, scope_idx: ScopeIndex, ancestors_only: bool) {
+    pub(super) fn push_strip_type_version(&mut self, sym_idx: SymbolIndex, strip_type: ValueType, scope_idx: ScopeIndex, ancestors_only: bool) {
         if !sym_idx.is_external() {
             let prev_ver = if ancestors_only {
                 self.ir.version_for_scope_ancestors_only(sym_idx, scope_idx)
@@ -2795,7 +2831,7 @@ impl<'a> Analysis<'a> {
     }
 
     /// Add a type to strip for a symbol in a scope, combining with any existing strip.
-    fn add_type_stripped(&mut self, scope: ScopeIndex, sym_idx: SymbolIndex, vt: ValueType) {
+    pub(super) fn add_type_stripped(&mut self, scope: ScopeIndex, sym_idx: SymbolIndex, vt: ValueType) {
         let map = self.narrowing.type_stripped.entry(scope).or_default();
         let key = NarrowTarget::Symbol(sym_idx);
         if let Some(existing) = map.remove(&key) {
@@ -2956,7 +2992,7 @@ impl<'a> Analysis<'a> {
     }
 
     /// Add a type to strip for a field chain in a scope, combining with any existing strip.
-    fn add_type_stripped_field(&mut self, scope: ScopeIndex, sym_idx: SymbolIndex, chain: Vec<String>, vt: ValueType) {
+    pub(super) fn add_type_stripped_field(&mut self, scope: ScopeIndex, sym_idx: SymbolIndex, chain: Vec<String>, vt: ValueType) {
         let map = self.narrowing.type_stripped.entry(scope).or_default();
         let key = NarrowTarget::Field(sym_idx, chain);
         if let Some(existing) = map.remove(&key) {
@@ -3333,6 +3369,8 @@ impl<'a> Analysis<'a> {
                 Expr::FunctionDef(idx) => return Some(*idx),
                 Expr::Literal(ValueType::Function(Some(idx))) => return Some(*idx),
                 Expr::Grouped(inner) => { current = *inner; }
+                // `f = f or function … end` polyfill: the function is the left operand.
+                Expr::BinaryOp { op: Operator::Or, lhs, .. } => { current = *lhs; }
                 Expr::SymbolRef(sym_idx, ver_idx) => {
                     let sym = self.sym(*sym_idx);
                     let ver = sym.versions.get(*ver_idx)?;
@@ -3437,23 +3475,27 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    fn try_resolve_call_function(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {
+    pub(super) fn try_resolve_call_function(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {
+        self.resolve_call_function_by_path(call, scope)
+            .or_else(|| self.unique_narrowing_method(call, scope))
+    }
+
+    /// Resolve a call's callee through its name path: the symbol (through local
+    /// aliases and the `f = f or function … end` polyfill), the fields of the
+    /// table it holds, a class of the same name, or an addon-namespace sub-table.
+    pub(super) fn resolve_call_function_by_path(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {
         let ident = call.identifier()?;
         let names = ident.names();
         if names.is_empty() { return None; }
 
         let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?;
+        if names.len() == 1 {
+            // Direct function call: `isType(x)`, through local aliases and the
+            // `f = f or function … end` polyfill.
+            return self.find_function_for_symbol(sym_idx, scope);
+        }
         let sym = self.sym(sym_idx);
         let version = sym.versions.last()?;
-
-        if names.len() == 1 {
-            // Direct function call: `isType(x)`
-            let expr_id = version.type_source?;
-            if let Expr::FunctionDef(func_idx) = self.expr(expr_id) {
-                return Some(*func_idx);
-            }
-            return None;
-        }
 
         // Dotted/colon call: `Table.Method(x)` or `obj:Method()` — walk through table fields
         let resolved = version.type_source.and_then(|expr_id| self.resolve_expr_to_table(expr_id));
@@ -3468,35 +3510,38 @@ impl<'a> Analysis<'a> {
             return Some(result);
         }
         // Fallback: check addon namespace sub-tables
-        if let Some(result) = self.resolve_func_via_addon_namespace(&names) {
-            return Some(result);
-        }
-        // Fallback: search all classes for a unique method with @type-narrows.
-        // Handles cross-file patterns where the receiver's type can't be resolved
-        // at Phase 1 (e.g. `task:__isa(X)` when `task` comes from a for-in over
-        // an imported module's iterator). Only single-receiver method calls —
-        // deeper chains like `a.b:method()` are too ambiguous for a global search.
-        // Bails out if multiple classes define the method with @type-narrows to
-        // avoid non-deterministic resolution and false narrowing on unrelated receivers.
-        if names.len() == 2 {
-            let method = &names[1];
-            let mut found: Option<FunctionIndex> = None;
-            for &table_idx in self.ir.classes.values().chain(self.ir.ext.classes.values()) {
-                if let Some(fi) = self.ir.table(table_idx).fields.get(method.as_str())
-                    && let Expr::FunctionDef(func_idx) | Expr::Literal(ValueType::Function(Some(func_idx))) = self.expr(fi.expr) {
-                    let func = self.func(*func_idx);
-                    if func.type_narrows.is_some() || func.type_narrows_class.is_some() || func.returns_class_name {
-                        if let Some(prev) = found
-                            && prev != *func_idx {
-                            return None;
-                        }
-                        found = Some(*func_idx);
+        self.resolve_func_via_addon_namespace(&names)
+    }
+
+    /// Last-resort callee for `recv:method()`: the one class method of that name
+    /// annotated `@type-narrows` / `@returns-class-name`, searched across every
+    /// class. Handles cross-file patterns where the receiver's type can't be
+    /// resolved at Phase 1 (e.g. `task:__isa(X)` when `task` comes from a for-in
+    /// over an imported module's iterator). Only single-receiver method calls —
+    /// deeper chains like `a.b:method()` are too ambiguous for a global search.
+    /// Bails out if multiple classes define the method with such an annotation to
+    /// avoid non-deterministic resolution and false narrowing on unrelated
+    /// receivers. Scans the whole class universe, so guards it can't match (e.g.
+    /// `@secret-guard`) use [`Self::resolve_call_function_by_path`] instead.
+    fn unique_narrowing_method(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {
+        let names = call.identifier()?.names();
+        let [receiver, method] = names.as_slice() else { return None };
+        self.sym(self.get_symbol(&SymbolIdentifier::Name(receiver.clone()), scope)?).versions.last()?;
+        let mut found: Option<FunctionIndex> = None;
+        for &table_idx in self.ir.classes.values().chain(self.ir.ext.classes.values()) {
+            if let Some(fi) = self.ir.table(table_idx).fields.get(method.as_str())
+                && let Expr::FunctionDef(func_idx) | Expr::Literal(ValueType::Function(Some(func_idx))) = self.expr(fi.expr) {
+                let func = self.func(*func_idx);
+                if func.type_narrows.is_some() || func.type_narrows_class.is_some() || func.returns_class_name {
+                    if let Some(prev) = found
+                        && prev != *func_idx {
+                        return None;
                     }
+                    found = Some(*func_idx);
                 }
             }
-            return found;
         }
-        None
+        found
     }
 
     fn resolve_func_via_addon_namespace(&self, names: &[String]) -> Option<FunctionIndex> {
@@ -4199,7 +4244,6 @@ impl<'a> Analysis<'a> {
     /// inferred guards, `WOW_PROJECT_ID` comparisons, and their `not`).
     /// A return of 0 means no flavor guard was detected.
     pub(super) fn collect_and_chain_flavor_guards(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> u8 {
-        if self.project_flavors == 0 { return 0; }
         let mut combined: u8 = 0;
         self.collect_and_chain_flavor_guards_inner(lhs, scope_idx, &mut combined);
         combined

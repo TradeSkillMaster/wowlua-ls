@@ -404,6 +404,9 @@ pub struct ExternalGlobal {
     /// override is the canonical source), so adding it bumped `BLOB_VERSION`.
     #[serde(default)]
     pub returns_class_name: bool,
+    /// `@secret-*` metadata (retail secret values). Rides the stub blob.
+    #[serde(default)]
+    pub secret: Option<Box<crate::secrets::SecretMeta>>,
 }
 
 impl ExternalGlobal {
@@ -453,6 +456,7 @@ impl ExternalGlobal {
             name_end: 0,
             mixin_parents: Vec::new(),
             returns_class_name: false,
+            secret: None,
         }
     }
 }
@@ -989,6 +993,7 @@ pub fn scan_method_funcall_self_fields(
                 name_end: range.1,
                 mixin_parents: Vec::new(),
                 returns_class_name: false,
+                secret: None,
             });
         }
     }
@@ -1480,7 +1485,10 @@ pub fn resolve_annotation_type(
             }
         }
         AnnotationType::Array(_inner) => Some(ValueType::Table(None)),
-        AnnotationType::Parameterized(base, _args) => {
+        AnnotationType::Parameterized(base, _) => {
+            if let Some(inner) = at.secret_arg() {
+                return resolve_annotation_type(inner, generics, classes, aliases).map(ValueType::secret_of);
+            }
             // expression<C, R> is a built-in type for inline Lua expressions;
             // at the ValueType level it's just a string (the annotation metadata
             // is preserved on param_annotations for call-site analysis).

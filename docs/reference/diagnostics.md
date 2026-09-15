@@ -48,6 +48,11 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `constructor-return` | `@constructor` with return other than `@return self` |
 | `count-down-loop` | For-loop step direction doesn't match start/end |
 | `wrong-flavor-api` | API not available in all declared flavors |
+| `secret-arithmetic` | Arithmetic on a value that may be [secret](/guide/secrets) (retail) |
+| `secret-comparison` | Comparing a value that may be [secret](/guide/secrets) (retail) |
+| `secret-condition` | Testing a boolean that may be [secret](/guide/secrets) in a condition or `and`/`or` (retail) |
+| `secret-table-key` | Using a value that may be [secret](/guide/secrets) as a table key (retail) |
+| `secret-argument` | Passing a value that may be [secret](/guide/secrets) to an API that never accepts secrets (retail) |
 | `redundant-class-generic` | Method redeclares class-level `@generic` |
 | `cannot-call` | Calling a value whose type is not callable |
 | `invalid-op` | Operator applied to incompatible types (e.g. `+` on strings instead of `..`) **(off by default)** |

@@ -1059,6 +1059,7 @@ fn finalize_frame(
             name_end: ctx.def_end,
             mixin_parents: Vec::new(),
             returns_class_name: false,
+            secret: None,
         });
     }
 
@@ -1108,6 +1109,7 @@ fn finalize_frame(
             name_end: ctx.def_end,
             mixin_parents: Vec::new(),
             returns_class_name: false,
+            secret: None,
         });
     }
 }

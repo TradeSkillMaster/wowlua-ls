@@ -298,6 +298,29 @@ goto myLabel
 ---@flavor-narrows retail, classic
 -- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ storage.type.annotation.lua
 
+-- Annotation: @secret-when (description stays plain)
+---@secret-when SecretWhenUnitRestricted Results are secret for other units.
+-- ^^^^^^^^^^^^ storage.type.annotation.lua
+--              ^^^^^^^^^^^^^^^^^^^^^^^^ support.class.lua
+--                                       ^^^^^^^ - support.type.lua
+
+-- Annotation: @secret-args
+---@secret-args tainted
+-- ^^^^^^^^^^^^ storage.type.annotation.lua
+--              ^^^^^^^ storage.modifier.lua
+
+-- Annotation: @secret-guard
+---@secret-guard value is-secret
+-- ^^^^^^^^^^^^^ storage.type.annotation.lua
+--               ^^^^^ entity.name.variable.lua
+--                     ^^^^^^^^^ storage.modifier.lua
+
+-- Annotation: @secret-unless
+---@secret-unless unit player pet
+-- ^^^^^^^^^^^^^^ storage.type.annotation.lua
+--                ^^^^ entity.name.variable.lua
+--                     ^^^^^^ string.unquoted.lua
+
 -- Annotation: @field index signature
 ---@field [string] number
 -- ^^^^^^ storage.type.annotation.lua

@@ -34,6 +34,39 @@ pub enum AnnotationType {
     Tuple(Vec<TuplePosition>, Option<String>),
 }
 
+impl AnnotationType {
+    /// The `T` of a `secret<T>` annotation (retail secret values); any other
+    /// arity is malformed (reported by `malformed-annotation`).
+    pub fn secret_arg(&self) -> Option<&AnnotationType> {
+        match self {
+            AnnotationType::Parameterized(base, args) if base == "secret" => match args.as_slice() {
+                [inner] => Some(inner),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether a `secret<…>` appears at the top level or as a union member.
+    pub fn contains_secret(&self) -> bool {
+        match self {
+            AnnotationType::Union(members) => members.iter().any(AnnotationType::contains_secret),
+            other => other.secret_arg().is_some(),
+        }
+    }
+
+    /// The annotation with `secret<T>` replaced by `T`, at the top level and in
+    /// union members.
+    pub fn without_secret(&self) -> AnnotationType {
+        match self {
+            AnnotationType::Union(members) => {
+                AnnotationType::Union(members.iter().map(AnnotationType::without_secret).collect())
+            }
+            other => other.secret_arg().cloned().unwrap_or_else(|| other.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TuplePosition {
     pub typ: AnnotationType,

@@ -42,6 +42,7 @@ pub(in crate::stub_gen) fn parse_blizzard_api_docs(ui_source_dir: &Path) -> Bliz
         events: Vec::new(),
         structures: Vec::new(),
         script_objects: Vec::new(),
+        predicates: Vec::new(),
     };
     if !api_doc_dir.is_dir() {
         log::warn!("Blizzard_APIDocumentationGenerated not found at {}", api_doc_dir.display());
@@ -58,8 +59,8 @@ pub(in crate::stub_gen) fn parse_blizzard_api_docs(ui_source_dir: &Path) -> Bliz
     }
 
     log::info!(
-        "  Parsed Blizzard API docs: {} functions, {} events, {} structures, {} script objects",
-        docs.functions.len(), docs.events.len(), docs.structures.len(), docs.script_objects.len(),
+        "  Parsed Blizzard API docs: {} functions, {} events, {} structures, {} script objects, {} predicates",
+        docs.functions.len(), docs.events.len(), docs.structures.len(), docs.script_objects.len(), docs.predicates.len(),
     );
     docs
 }
@@ -92,9 +93,12 @@ pub(in crate::stub_gen) fn parse_blizzard_api_doc_file(content: &str, docs: &mut
                             arguments,
                             returns,
                             may_return_nothing,
+                            secrecy: extract_entry_secrecy(block, re),
                         });
                     }
                 }
+            } else if section_name == "Predicates" {
+                extract_predicates(section_content, docs, re);
             }
         }
         docs.script_objects.push(BlizzardScriptObjectApi { name, functions });
@@ -123,6 +127,7 @@ pub(in crate::stub_gen) fn parse_blizzard_api_doc_file(content: &str, docs: &mut
                                 arguments,
                                 returns,
                                 may_return_nothing,
+                                secrecy: extract_entry_secrecy(block, re),
                             });
                         }
                 }
@@ -134,6 +139,7 @@ pub(in crate::stub_gen) fn parse_blizzard_api_doc_file(content: &str, docs: &mut
                         docs.events.push(BlizzardEvent {
                             literal_name: lit_name,
                             payload,
+                            secrecy: extract_entry_secrecy(block, re),
                         });
                     }
                 }
@@ -149,6 +155,7 @@ pub(in crate::stub_gen) fn parse_blizzard_api_doc_file(content: &str, docs: &mut
                     }
                 }
             }
+            "Predicates" => extract_predicates(section_content, docs, re),
             _ => {}
         }
     }
@@ -212,6 +219,81 @@ pub(in crate::stub_gen) fn extract_field(re: &regex_lite::Regex, block: &str) ->
 }
 
 
+/// Whether an inline param entry carries `key = true` (whole-word key, so
+/// `NeverSecret` doesn't match `NeverSecretContents`).
+pub(in crate::stub_gen) fn param_flag(param_text: &str, key: &str) -> bool {
+    param_text.match_indices(key).any(|(i, _)| {
+        let before_ok = param_text[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+        let after = &param_text[i + key.len()..];
+        before_ok
+            && !after.starts_with(|c: char| c.is_alphanumeric())
+            && after.trim_start().strip_prefix('=').is_some_and(|v| v.trim_start().starts_with("true"))
+    })
+}
+
+
+/// Collect an entry block's own (three-tab) secret-value keys: every `Key = true`
+/// flag, `SecretArguments`, and the widget aspect lists.
+pub(in crate::stub_gen) fn extract_entry_secrecy(block: &str, re: &BlizzardDocRegexes) -> EntrySecrecy {
+    let mut secrecy = EntrySecrecy::default();
+    for cap in re.entry_key.captures_iter(block) {
+        let key = cap.get(1).unwrap().as_str();
+        let value = cap.get(2).unwrap().as_str().trim();
+        match key {
+            "SecretArguments" => secrecy.arguments = Some(value.trim_matches('"').to_string()),
+            "SecretArgumentsAddAspect" | "SecretReturnsForAspect" => {
+                let names = value.trim_matches(|c| c == '{' || c == '}').split(',')
+                    .filter_map(|a| a.trim().rsplit('.').next())
+                    .filter(|a| !a.is_empty());
+                for name in names {
+                    if !secrecy.aspects.iter().any(|x| x == name) {
+                        secrecy.aspects.push(name.to_string());
+                    }
+                }
+            }
+            _ if value == "true" => secrecy.flags.push(key.to_string()),
+            _ => {}
+        }
+    }
+    secrecy
+}
+
+
+/// Parse a `Predicates` section: each entry's `Name`, `Type` and joined `Documentation`.
+pub(in crate::stub_gen) fn extract_predicates(section: &str, docs: &mut BlizzardApiDocs, re: &BlizzardDocRegexes) {
+    for block in extract_blocks(section) {
+        let Some(name) = extract_field(&re.name, block) else { continue };
+        let kind = extract_field(&re.type_field, block).unwrap_or_default();
+        let documentation = re.documentation.captures(block).and_then(|c| {
+            let text = parse_lua_string_list(c.get(1).unwrap().as_str());
+            (!text.is_empty()).then_some(text)
+        });
+        docs.predicates.push(BlizzardPredicate { name, kind, documentation });
+    }
+}
+
+
+/// Join the double-quoted strings of a Lua `{ "a", "b" }` list body with spaces,
+/// unescaping `\"` and `\\`.
+fn parse_lua_string_list(body: &str) -> String {
+    let mut parts = Vec::new();
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' { continue; }
+        let mut part = String::new();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => if let Some(escaped) = chars.next() { part.push(escaped) },
+                '"' => break,
+                other => part.push(other),
+            }
+        }
+        parts.push(part);
+    }
+    parts.join(" ")
+}
+
+
 /// Extract parameter entries from a named sub-array (Arguments, Returns, Payload, Fields).
 pub(in crate::stub_gen) fn extract_params(
     block: &str,
@@ -220,9 +302,13 @@ pub(in crate::stub_gen) fn extract_params(
     inner_type_re: &regex_lite::Regex,
     mixin_re: &regex_lite::Regex,
 ) -> Vec<BlizzardParam> {
-    // Find the array: `ArrayName =\n\t\t{`
+    // Find the array: `ArrayName =\n\t\t{`. The key must stand alone — entry
+    // keys like `SecretReturns = true` also contain `Returns =`.
     let marker = format!("{array_name} =");
-    let Some(marker_pos) = block.find(&marker) else { return Vec::new() };
+    let Some(marker_pos) = block.match_indices(&marker)
+        .map(|(i, _)| i)
+        .find(|&i| block[..i].chars().next_back().is_none_or(char::is_whitespace))
+    else { return Vec::new() };
     let after = &block[marker_pos..];
 
     // Find the matching closing brace for the array
@@ -267,12 +353,20 @@ pub(in crate::stub_gen) fn extract_params(
                                 .map(|c| c.get(1).unwrap().as_str().to_string());
                             let mixin = mixin_re.captures(param_text)
                                 .map(|c| c.get(1).unwrap().as_str().to_string());
+                            let secrecy = ParamSecrecy {
+                                never: param_flag(param_text, "NeverSecret"),
+                                conditional: param_flag(param_text, "ConditionalSecret"),
+                                value: param_flag(param_text, "SecretValue"),
+                                never_contents: param_flag(param_text, "NeverSecretContents"),
+                                secret_contents: param_flag(param_text, "ConditionalSecretContents"),
+                            };
                             params.push(BlizzardParam {
                                 name: cap.get(1).unwrap().as_str().to_string(),
                                 type_name: cap.get(2).unwrap().as_str().to_string(),
                                 nilable: cap.get(3).unwrap().as_str() == "true",
                                 inner_type: inner,
                                 mixin,
+                                secrecy,
                             });
                         }
                         param_start = None;

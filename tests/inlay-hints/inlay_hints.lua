@@ -152,6 +152,12 @@ local greeting = "hello"
 local flag = true
 --        ^ hint: : true
 
+-- A value that may be secret uses the hover spelling.
+---@return number|secret<number>
+local function secretHealth() return 1 end
+local health = secretHealth()
+--          ^ hint: : secret<number>
+
 -- Nil literal: no hint
 local nothing = nil
 --           ^ hint: none

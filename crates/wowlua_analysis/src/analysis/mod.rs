@@ -2,6 +2,7 @@ pub mod prescan;
 pub mod build_ir;
 pub mod lower_expression;
 pub mod narrowing;
+pub mod secret_narrowing;
 pub mod resolve;
 pub mod resolve_call;
 pub mod checks;
@@ -465,7 +466,8 @@ pub struct Ir {
     /// Condition sites for `redundant-condition` diagnostics.
     /// Covers `if`/`elseif` and `while` conditions.
     pub condition_sites: Vec<ConditionSite>,
-    /// Unary-op sites for `invalid-op` and `need-check-nil` diagnostics (currently `#` length operator).
+    /// Unary-op sites: `#` (for `invalid-op` and `need-check-nil`) and unary minus
+    /// (for `secret-arithmetic`).
     /// Each entry is (unary_op_expr_id, start, end).
     pub unary_op_sites: Vec<(ExprId, u32, u32)>,
     /// Source ranges for local @class declarations (class name → (start, end) byte offsets).
@@ -506,6 +508,9 @@ pub struct Ir {
     /// to the effective flavor mask there (intersected across nested chains).
     /// Consult before `active_flavors_at`.
     pub and_guarded_flavor_exprs: HashMap<ExprId, u8>,
+    /// Source ranges of those right operands with their chain's flavor mask, for
+    /// queries that only have an offset (hover, inlay hints).
+    pub and_guarded_flavor_ranges: Vec<(u32, u32, u8)>,
     pub and_guarded_nil_check_exprs: HashSet<ExprId>,
     pub assign_nil_check_bases: Vec<(ExprId, u32, u32)>,
     pub symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
@@ -994,7 +999,7 @@ impl Ir {
                 shape.params.iter().any(|p| self.type_contains_type_variable_deep_inner(&p.ty, visited))
                 || shape.returns.iter().any(|r| self.type_contains_type_variable_deep_inner(r, visited))
             }
-            ValueType::OpaqueAlias(_, inner) => self.type_contains_type_variable_deep_inner(inner, visited),
+            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => self.type_contains_type_variable_deep_inner(inner, visited),
             _ => false,
         }
     }
@@ -1091,6 +1096,7 @@ impl Ir {
         // SymbolIdentifier::Name only happens when vt is String (narrow case).
         let lib_name = match vt {
             ValueType::String(_) => "string",
+            ValueType::Secret(inner) => return self.library_table_for_type(inner),
             _ => return None,
         };
         let sym_id = SymbolIdentifier::Name(lib_name.to_string());
@@ -1256,6 +1262,7 @@ impl Ir {
             ValueType::String(Some(s)) => format!("\"{s}\""),
             ValueType::String(None) => "string".into(),
             ValueType::KeyOf(target) => format!("keyof {target}"),
+            ValueType::Secret(inner) => format!("secret<{}>", self.type_sig_str(Some(inner), depth + 1)),
             ValueType::Function(_) => "function".into(),
             ValueType::FunctionSig(shape) => {
                 let params: Vec<String> = shape.params.iter()
@@ -2077,6 +2084,20 @@ impl Ir {
                     }
                     return;
                 }
+                if base == "secret" {
+                    if args.len() != 1 {
+                        crate::diagnostics::MALFORMED_ANNOTATION.emit(
+                            diags,
+                            "secret<...> expects exactly one type argument".to_string(),
+                            start,
+                            end,
+                        );
+                    }
+                    for arg in args {
+                        self.check_annotation_type_names(arg, generics, start, end, diags);
+                    }
+                    return;
+                }
                 if base == "params" || base == "returns" {
                     // params<F> requires exactly 1 generic arg.
                     // returns<F> or returns<F, offset_param> requires 1-2 args;
@@ -2267,6 +2288,9 @@ impl Ir {
             AnnotationType::NonNil(inner) | AnnotationType::Backtick(inner) => {
                 self.resolve_annotation_type_for_check(inner, generics)
             }
+            AnnotationType::Parameterized(..) => {
+                self.resolve_annotation_type_for_check(at.secret_arg()?, generics).map(ValueType::secret_of)
+            }
             _ => None,
         }
     }
@@ -2305,7 +2329,8 @@ pub struct AnalysisResult {
     /// The addon's full *declared* flavor breadth (`config.addon_flavors_for`):
     /// `project_flavors` when set, else the nearest `.toc` `## Interface:`
     /// versions. Unlike `project_flavors` this is **not** used for
-    /// `wrong-flavor-api`; it only gates flavor-aware `deprecated` suppression.
+    /// `wrong-flavor-api`; it gates flavor-aware `deprecated` suppression and
+    /// secret values, and is the guard base when no `flavors` are declared.
     /// 0 = no flavor signal at all.
     pub addon_flavors: u8,
     pub event_vararg_types: HashMap<ScopeIndex, Vec<ValueType>>,
@@ -2458,10 +2483,36 @@ impl AnalysisResult {
     }
 
     pub fn active_flavors_at(&self, scope_idx: ScopeIndex) -> u8 {
-        if self.project_flavors == 0 { return 0; }
         ancestor_scopes(&self.ir.scopes, scope_idx)
             .find_map(|si| self.scope_flavors.get(&si).copied())
-            .unwrap_or(self.project_flavors)
+            .unwrap_or(crate::flavor::guard_base(self.project_flavors, self.addon_flavors))
+    }
+
+    /// `active_flavors_at` for one expression: the mask of an enclosing guarded
+    /// `and` chain when it sits in one (`Ir::and_guarded_flavor_exprs`), else the
+    /// scope's.
+    pub fn active_flavors_for_expr(&self, expr: ExprId, scope_idx: ScopeIndex) -> u8 {
+        self.ir.and_guarded_flavor_exprs.get(&expr).copied()
+            .unwrap_or_else(|| self.active_flavors_at(scope_idx))
+    }
+
+    /// Whether secret values apply to this file (the addon targets retail, or
+    /// declares no flavor). Otherwise `secret<T>` displays as plain `T` and no
+    /// `secret-*` diagnostic fires.
+    pub fn secrets_enabled(&self) -> bool {
+        crate::flavor::guard_base(self.project_flavors, self.addon_flavors) & crate::flavor::SECRET_VALUE_FLAVORS != 0
+    }
+
+    /// The flavors the code at `offset` runs under: its scope's flavor guards,
+    /// narrowed by any guarded `and` chain whose right operand contains it.
+    pub fn active_flavors_at_offset(&self, offset: u32) -> u8 {
+        let scoped = match self.scope_at_offset(offset) {
+            Some(scope) => self.active_flavors_at(scope),
+            None => crate::flavor::guard_base(self.project_flavors, self.addon_flavors),
+        };
+        self.ir.and_guarded_flavor_ranges.iter()
+            .filter(|&&(start, end, _)| (start..end).contains(&offset))
+            .fold(scoped, |mask, &(_, _, chain_mask)| mask & chain_mask)
     }
 
     pub fn suppress_inject_field_on_g(&self, class_name: &str, field_name: &str, scope_idx: ScopeIndex) -> bool {
@@ -2627,7 +2678,7 @@ pub struct Analysis<'a> {
     pub allow_slash_commands: bool,
     pub allow_binding_globals: bool,
     /// Declared target flavors for the project (see `crate::flavor`). Zero
-    /// means flavor filtering is disabled (backward-compat).
+    /// disables `wrong-flavor-api`; guards still narrow from `flavor::guard_base`.
     pub project_flavors: u8,
     /// The addon's full declared flavor breadth (see `AnalysisResult::addon_flavors`).
     pub addon_flavors: u8,
@@ -2794,6 +2845,7 @@ impl<'a> Analysis<'a> {
                 call_resolutions: HashMap::new(),
                 and_guarded_call_exprs: HashSet::new(),
                 and_guarded_flavor_exprs: HashMap::new(),
+                and_guarded_flavor_ranges: Vec::new(),
                 and_guarded_nil_check_exprs: HashSet::new(),
                 assign_nil_check_bases: Vec::new(),
                 symbol_type_annotations: HashMap::new(),
@@ -2989,19 +3041,18 @@ impl<'a> Analysis<'a> {
     }
 
     /// Look up the active flavor mask at `scope_idx` by walking ancestor
-    /// scopes for the first explicit override; falls back to the project's
-    /// declared flavors. Returns 0 when flavor filtering is disabled.
+    /// scopes for the first explicit override; falls back to
+    /// `flavor::guard_base` (declared flavors, else the `.toc` breadth, else
+    /// every flavor).
     pub fn active_flavors_at(&self, scope_idx: ScopeIndex) -> u8 {
-        if self.project_flavors == 0 { return 0; }
         ancestor_scopes(&self.ir.scopes, scope_idx)
             .find_map(|si| self.scope_flavors.get(&si).copied())
-            .unwrap_or(self.project_flavors)
+            .unwrap_or(crate::flavor::guard_base(self.project_flavors, self.addon_flavors))
     }
 
     /// Narrow the active flavor set in `scope_idx` to the intersection of
     /// `new_mask` with whatever is already active. Used by flavor guards.
     pub fn narrow_scope_flavors(&mut self, scope_idx: ScopeIndex, new_mask: u8) {
-        if self.project_flavors == 0 { return; }
         let parent_scope = if scope_idx.val() < self.ir.scopes.len() {
             self.ir.scopes[scope_idx.val()].parent.unwrap_or(scope_idx)
         } else {
@@ -3015,7 +3066,6 @@ impl<'a> Analysis<'a> {
     /// Set the active flavor set in `scope_idx` to `parent_mask & !exclude_mask`
     /// — used for else-branches of flavor comparisons.
     pub fn exclude_scope_flavors(&mut self, scope_idx: ScopeIndex, exclude_mask: u8) {
-        if self.project_flavors == 0 { return; }
         let parent_scope = if scope_idx.val() < self.ir.scopes.len() {
             self.ir.scopes[scope_idx.val()].parent.unwrap_or(scope_idx)
         } else {
@@ -3140,6 +3190,9 @@ pub fn is_table_subtype_impl(
         // Unwrap opaques and delegate to inner type
         (ValueType::OpaqueAlias(_, inner), exp) => is_table_subtype_impl(ir, resolved_expr_cache, inner, exp),
         (act, ValueType::OpaqueAlias(_, inner)) => is_table_subtype_impl(ir, resolved_expr_cache, act, inner),
+        // Secrecy is transparent to assignability (see `ValueType::is_assignable_to`).
+        (ValueType::Secret(inner), exp) => is_table_subtype_impl(ir, resolved_expr_cache, inner, exp),
+        (act, ValueType::Secret(inner)) => is_table_subtype_impl(ir, resolved_expr_cache, act, inner),
         // Number enum <-> number: @enum types with numeric values are integers at runtime
         (ValueType::Table(Some(a)), ValueType::Number) if ir.table(*a).enum_kind == EnumKind::Number => true,
         (ValueType::Number, ValueType::Table(Some(b))) if ir.table(*b).enum_kind == EnumKind::Number => true,

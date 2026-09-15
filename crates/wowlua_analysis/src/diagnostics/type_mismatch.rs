@@ -55,7 +55,7 @@ fn expects_string_literal(vt: &ValueType) -> bool {
         ValueType::Union(types) | ValueType::Intersection(types) => {
             types.iter().any(expects_string_literal)
         }
-        ValueType::OpaqueAlias(_, inner) => expects_string_literal(inner),
+        ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => expects_string_literal(inner),
         _ => false,
     }
 }

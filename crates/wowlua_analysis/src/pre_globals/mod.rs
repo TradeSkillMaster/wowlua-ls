@@ -165,7 +165,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 36;
+pub const BLOB_VERSION: u32 = 37;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -190,6 +190,9 @@ pub struct EventPayloadParam {
 pub struct EventPayload {
     pub params: Vec<EventPayloadParam>,
     pub documentation: Option<String>,
+    /// `@secret-when` predicates under which the payload may be secret.
+    #[serde(default)]
+    pub secret_when: Vec<crate::secrets::SecretPredicate>,
 }
 
 /// The resolved event-name set for a callback registry (see
@@ -839,6 +842,7 @@ pub struct FnMeta<'a> {
     pub type_narrows_raw: Option<(usize, usize)>,
     pub type_narrows_class_raw: Option<String>,
     pub returns_class_name_raw: bool,
+    pub secret_raw: Option<Box<crate::secrets::SecretMeta>>,
     pub narrows_arg_raw: Option<usize>,
     pub requires_raw: Vec<(String, String)>,
     pub is_colon: bool,
@@ -879,6 +883,7 @@ impl<'a> FnMeta<'a> {
             type_narrows_raw: None,
             type_narrows_class_raw: None,
             returns_class_name_raw: false,
+            secret_raw: None,
             narrows_arg_raw: None,
             requires_raw: Vec::new(),
             is_colon: false,
@@ -919,6 +924,7 @@ impl<'a> FnMeta<'a> {
             type_narrows_raw: g.type_narrows,
             type_narrows_class_raw: g.type_narrows_class.clone(),
             returns_class_name_raw: g.returns_class_name,
+            secret_raw: g.secret.clone(),
             narrows_arg_raw: g.narrows_arg,
             requires_raw: g.requires.clone(),
             is_colon,
@@ -2486,6 +2492,7 @@ impl PreResolvedGlobals {
             let payload = EventPayload {
                 params: ev.params.clone(),
                 documentation: ev.documentation.clone(),
+                secret_when: ev.secret_when.clone(),
             };
             self.event_types
                 .entry(ev.event_type.clone())
@@ -3250,6 +3257,9 @@ impl PreResolvedGlobals {
         if let AnnotationType::NonNil(inner) = at {
             return Self::resolve_annotation(inner, classes, aliases, param_aliases);
         }
+        if let Some(inner) = at.secret_arg() {
+            return Self::resolve_annotation(inner, classes, aliases, param_aliases).map(ValueType::secret_of);
+        }
         // Handle parameterized alias instantiation (e.g. MyAlias<string, number>)
         if let AnnotationType::Parameterized(base, args) = at
             && let Some((type_params, body)) = param_aliases.get(base)
@@ -3276,6 +3286,10 @@ impl PreResolvedGlobals {
                     let substituted = crate::annotations::substitute_alias_type_params(body, type_params, args);
                     return Self::resolve_annotation_gen(&substituted, classes, aliases, param_aliases, generics, tables, exprs);
                 }
+            if let Some(inner) = at.secret_arg() {
+                return Self::resolve_annotation_gen(inner, classes, aliases, param_aliases, generics, tables, exprs)
+                    .map(ValueType::secret_of);
+            }
             if (base == "params" || base == "returns")
                 && args.len() == 1
                 && matches!(&args[0], AnnotationType::Simple(n) if generics.iter().any(|(g, _)| g == n))
@@ -3476,6 +3490,7 @@ impl PreResolvedGlobals {
             type_narrows: None,
             type_narrows_class: None,
             returns_class_name: false,
+            secret: None,
             has_vararg_return,
             see: Vec::new(),
             flavors: 0,
@@ -3515,6 +3530,7 @@ impl PreResolvedGlobals {
             type_narrows_raw,
             type_narrows_class_raw,
             returns_class_name_raw,
+            secret_raw,
             narrows_arg_raw,
             requires_raw,
             is_colon,
@@ -3947,6 +3963,7 @@ impl PreResolvedGlobals {
             type_narrows: type_narrows_raw,
             type_narrows_class: type_narrows_class_raw,
             returns_class_name: returns_class_name_raw,
+            secret: secret_raw,
             has_vararg_return: non_self_returns.last().is_some_and(|r| matches!(r, AnnotationType::VarArgs(_)))
                 || tuple_ret.has_vararg_tail,
             see,

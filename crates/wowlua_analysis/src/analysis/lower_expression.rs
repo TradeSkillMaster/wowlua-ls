@@ -102,13 +102,21 @@ impl<'a> Analysis<'a> {
                     // symbol is non-nil in the RHS. Collect all of them so nested
                     // `or` chains narrow every guarded symbol (not just the first).
                     let is_or_chain = matches!(op, Operator::Or) || (matches!(op, Operator::None) && matches!(rhs, Expression::BinaryExpression(rb) if matches!(rb.kind(), Operator::Or)));
-                    let extra_chain_guards: Vec<(SymbolIndex, GuardNarrow)> = if is_and_chain {
+                    let (secret_symbol_guards, secret_field_guards) = if is_and_chain {
+                        self.secret_chain_guards(lhs, scope_idx, Operator::And)
+                    } else if is_or_chain {
+                        self.secret_chain_guards(lhs, scope_idx, Operator::Or)
+                    } else {
+                        Default::default()
+                    };
+                    let mut extra_chain_guards: Vec<(SymbolIndex, GuardNarrow)> = if is_and_chain {
                         self.collect_and_chain_guards(lhs, scope_idx)
                     } else if is_or_chain {
                         self.collect_or_chain_guards(lhs, scope_idx)
                     } else {
                         Vec::new()
                     };
+                    extra_chain_guards.extend(secret_symbol_guards);
                     // Collect flavor-guard masks from `and` chain LHS for temporary scope narrowing.
                     let and_flavor_mask: u8 = if is_and_chain {
                         self.collect_and_chain_flavor_guards(lhs, scope_idx)
@@ -169,9 +177,11 @@ impl<'a> Analysis<'a> {
                         match &narrow_kind {
                             GuardNarrow::StripNil | GuardNarrow::FilterTo(_) => narrowed_sources.push((si, false)),
                             GuardNarrow::StripFalsy => narrowed_sources.push((si, true)),
+                            GuardNarrow::StripType(_) => {}
                         }
                         match narrow_kind {
                             GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt, scope_idx, false),
+                            GuardNarrow::StripType(vt) => self.push_strip_type_version(si, vt, scope_idx, false),
                             GuardNarrow::StripNil => self.push_strip_nil_version(si, scope_idx),
                             GuardNarrow::StripFalsy => self.push_strip_falsy_version(si, scope_idx),
                         }
@@ -187,9 +197,11 @@ impl<'a> Analysis<'a> {
                         match narrow_kind {
                             GuardNarrow::StripNil | GuardNarrow::FilterTo(_) => narrowed_sources.push((*si, false)),
                             GuardNarrow::StripFalsy => narrowed_sources.push((*si, true)),
+                            GuardNarrow::StripType(_) => {}
                         }
                         match narrow_kind.clone() {
                             GuardNarrow::FilterTo(vt) => self.push_type_filter_version(*si, vt, scope_idx, false),
+                            GuardNarrow::StripType(vt) => self.push_strip_type_version(*si, vt, scope_idx, false),
                             GuardNarrow::StripNil => self.push_strip_nil_version(*si, scope_idx),
                             GuardNarrow::StripFalsy => self.push_strip_falsy_version(*si, scope_idx),
                         }
@@ -233,49 +245,27 @@ impl<'a> Analysis<'a> {
                         } else { None }
                     } else { None };
                     // Also collect field guards from intermediate `and` operands
-                    // (e.g. `self.a and self.b and func(self.a, self.b)` narrows both).
-                    let extra_field_guards: Vec<(SymbolIndex, Vec<String>, GuardNarrow)> = if is_and_chain {
+                    // (e.g. `self.a and self.b and func(self.a, self.b)` narrows both)
+                    // and every field a secret guard in the chain proves.
+                    let mut extra_field_guards: Vec<(SymbolIndex, Vec<String>, GuardNarrow)> = if is_and_chain {
                         self.collect_and_chain_field_guards(lhs, scope_idx)
                     } else {
                         Vec::new()
                     };
+                    extra_field_guards.extend(secret_field_guards);
                     // Temporarily insert field narrowings so RHS sees narrowed types.
                     // We track which entries we inserted so we can remove them after.
                     let mut temp_field_narrows: Vec<(SymbolIndex, Vec<String>, GuardNarrow)> = Vec::new();
-                    if let Some((sym_idx, ref chain, ref narrow_kind)) = field_guard {
-                        let key = NarrowTarget::Field(sym_idx, chain.clone());
-                        let inserted = self.narrowing.narrowed.entry(scope_idx).or_default().insert(key.clone());
-                        if inserted {
-                            match narrow_kind {
-                                GuardNarrow::StripFalsy => {
-                                    self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(key.clone());
-                                }
-                                GuardNarrow::FilterTo(vt) => {
-                                    self.narrowing.type_narrowed.entry(scope_idx).or_default()
-                                        .insert(key.clone(), vt.clone());
-                                }
-                                GuardNarrow::StripNil => {}
-                            }
-                            temp_field_narrows.push((sym_idx, chain.clone(), narrow_kind.clone()));
-                        }
+                    if let Some((sym_idx, ref chain, ref narrow_kind)) = field_guard
+                        && self.insert_temp_field_narrow(scope_idx, sym_idx, chain, narrow_kind)
+                    {
+                        temp_field_narrows.push((sym_idx, chain.clone(), narrow_kind.clone()));
                     }
                     for (sym_idx, chain, narrow_kind) in &extra_field_guards {
-                        if field_guard.as_ref().is_none_or(|(gs, gc, _)| *gs != *sym_idx || *gc != *chain) {
-                            let key = NarrowTarget::Field(*sym_idx, chain.clone());
-                            let inserted = self.narrowing.narrowed.entry(scope_idx).or_default().insert(key.clone());
-                            if inserted {
-                                match narrow_kind {
-                                    GuardNarrow::StripFalsy => {
-                                        self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(key);
-                                    }
-                                    GuardNarrow::FilterTo(vt) => {
-                                        self.narrowing.type_narrowed.entry(scope_idx).or_default()
-                                            .insert(key, vt.clone());
-                                    }
-                                    GuardNarrow::StripNil => {}
-                                }
-                                temp_field_narrows.push((*sym_idx, chain.clone(), narrow_kind.clone()));
-                            }
+                        if field_guard.as_ref().is_none_or(|(gs, gc, _)| *gs != *sym_idx || *gc != *chain)
+                            && self.insert_temp_field_narrow(scope_idx, *sym_idx, chain, narrow_kind)
+                        {
+                            temp_field_narrows.push((*sym_idx, chain.clone(), narrow_kind.clone()));
                         }
                     }
                     // Temporarily suppress scope-level type narrowing metadata for
@@ -325,8 +315,8 @@ impl<'a> Analysis<'a> {
                                 }
                                 if n || f { sibling_tracking_inserted.push((*sym, n, f)); }
                             }
-                            // FilterTo has no NarrowKind counterpart; skip sibling narrowing.
-                            GuardNarrow::FilterTo(_) => {}
+                            // Type filters have no NarrowKind counterpart; skip sibling narrowing.
+                            GuardNarrow::FilterTo(_) | GuardNarrow::StripType(_) => {}
                         }
                     }
                     let mut sibling_restore: Vec<(SymbolIndex, usize)> = Vec::new();
@@ -493,6 +483,8 @@ impl<'a> Analysis<'a> {
                     // `wrong-flavor-api` looks up. A nested guarded chain already
                     // recorded its RHS; intersect, since it runs only when both hold.
                     if and_flavor_mask != 0 {
+                        let r = rhs.syntax().text_range();
+                        self.ir.and_guarded_flavor_ranges.push((u32::from(r.start()), u32::from(r.end()), and_flavor_mask));
                         let effective = self.active_flavors_at(scope_idx) & and_flavor_mask;
                         for eid in expr_start..self.ir.exprs.len() {
                             self.ir.and_guarded_flavor_exprs.entry(ExprId(eid))
@@ -503,7 +495,9 @@ impl<'a> Analysis<'a> {
                     // Remove temporary field narrowings so code after `and` sees the un-narrowed types
                     for (sym_idx, chain, narrow_kind) in &temp_field_narrows {
                         let key = NarrowTarget::Field(*sym_idx, chain.clone());
-                        if let Some(set) = self.narrowing.narrowed.get_mut(&scope_idx) {
+                        if !matches!(narrow_kind, GuardNarrow::StripType(_))
+                            && let Some(set) = self.narrowing.narrowed.get_mut(&scope_idx)
+                        {
                             set.remove(&key);
                         }
                         match narrow_kind {
@@ -514,6 +508,11 @@ impl<'a> Analysis<'a> {
                             }
                             GuardNarrow::FilterTo(_) => {
                                 if let Some(map) = self.narrowing.type_narrowed.get_mut(&scope_idx) {
+                                    map.remove(&key);
+                                }
+                            }
+                            GuardNarrow::StripType(_) => {
+                                if let Some(map) = self.narrowing.type_stripped.get_mut(&scope_idx) {
                                     map.remove(&key);
                                 }
                             }
@@ -599,8 +598,9 @@ impl<'a> Analysis<'a> {
                     let operand_id = self.lower_expression(operand, scope_idx);
                     let op = u.kind();
                     let expr_id = self.ir.push_expr(Expr::UnaryOp { op, operand: operand_id });
-                    // Track length operator sites for invalid-op diagnostic.
-                    if op == Operator::ArrayLength {
+                    // Track length (`invalid-op`, `need-check-nil`), negation
+                    // (`secret-arithmetic`), and `not` (`secret-condition`) sites.
+                    if matches!(op, Operator::ArrayLength | Operator::Subtract | Operator::Not) {
                         let r = u.syntax().text_range();
                         self.ir.unary_op_sites.push((expr_id, u32::from(r.start()), u32::from(r.end())));
                     }
@@ -833,6 +833,34 @@ impl<'a> Analysis<'a> {
                 eid
             }
         }
+    }
+
+    /// Temporarily record a field-chain guard for an `and`/`or` right-hand side.
+    /// Returns whether it took a new entry, so the caller removes exactly what it
+    /// added. A `StripType` guard proves nothing about nil.
+    fn insert_temp_field_narrow(&mut self, scope_idx: ScopeIndex, sym_idx: SymbolIndex, chain: &[String], narrow_kind: &GuardNarrow) -> bool {
+        let key = NarrowTarget::Field(sym_idx, chain.to_vec());
+        if let GuardNarrow::StripType(vt) = narrow_kind {
+            let map = self.narrowing.type_stripped.entry(scope_idx).or_default();
+            if map.contains_key(&key) {
+                return false;
+            }
+            map.insert(key, vt.clone());
+            return true;
+        }
+        let inserted = self.narrowing.narrowed.entry(scope_idx).or_default().insert(key.clone());
+        if inserted {
+            match narrow_kind {
+                GuardNarrow::StripFalsy => {
+                    self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(key);
+                }
+                GuardNarrow::FilterTo(vt) => {
+                    self.narrowing.type_narrowed.entry(scope_idx).or_default().insert(key, vt.clone());
+                }
+                GuardNarrow::StripNil | GuardNarrow::StripType(_) => {}
+            }
+        }
+        inserted
     }
 
     // ── Parser2 split-identifier handlers ──────────────────────────────────────

@@ -266,6 +266,14 @@ pub enum ValueType {
     /// until flattened. Kept before the runtime-only variants below to hold a stable
     /// serialized index.
     KeyOf(String),
+    /// A value that may be a WoW secret (retail 12.x): tainted code can store and
+    /// pass it, but inspecting it errors — see `crate::secrets`. Blizzard never
+    /// marks a value unconditionally secret, so this is the only secrecy state;
+    /// `make_union` folds a hand-written `T|secret<T>` into it. Only wraps
+    /// scalar-like types — construct via [`ValueType::secret_of`]. `Secret(Any)`
+    /// is the secrecy type-guard wildcard ([`ValueType::secret_guard`]).
+    /// Serialized in the stub blob, so kept before the runtime-only variants.
+    Secret(Box<ValueType>),
     /// Inline function signature produced by the cross-file harvest lift when a
     /// deferred function returns a *local* function value. The local arena index
     /// is meaningless cross-file, so the callable's signature (params + return
@@ -396,10 +404,12 @@ pub struct ShapeParam {
 }
 
 impl ValueType {
-    /// Strip all `OpaqueAlias` wrappers, returning a reference to the innermost non-opaque type.
+    /// Strip all `OpaqueAlias` (and `Secret`) wrappers, returning a reference to
+    /// the innermost underlying type. Both wrappers are transparent to structure:
+    /// field lookups, calls and operators work on the wrapped value.
     pub fn strip_opaque(&self) -> &ValueType {
         let mut t = self;
-        while let ValueType::OpaqueAlias(_, inner) = t {
+        while let ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) = t {
             t = inner;
         }
         t
@@ -460,10 +470,10 @@ impl ValueType {
         }
     }
 
-    /// Strip all `OpaqueAlias` wrappers, consuming self.
+    /// Strip all `OpaqueAlias` (and `Secret`) wrappers, consuming self.
     pub fn into_strip_opaque(self) -> ValueType {
         let mut t = self;
-        while let ValueType::OpaqueAlias(_, inner) = t {
+        while let ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) = t {
             t = *inner;
         }
         t
@@ -475,6 +485,7 @@ impl ValueType {
     pub fn into_decay_number_literal(self) -> ValueType {
         match self {
             ValueType::NumberLiteral(_) => ValueType::Number,
+            ValueType::Secret(inner) => ValueType::Secret(Box::new(inner.into_decay_number_literal())),
             other => other,
         }
     }
@@ -497,7 +508,7 @@ impl ValueType {
             ValueType::TypeVariable(_) => false,
             ValueType::Userdata => false,
             ValueType::Thread => false,
-            ValueType::OpaqueAlias(_, inner) => inner.can_concat_to_string(),
+            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => inner.can_concat_to_string(),
         }
     }
 
@@ -505,7 +516,7 @@ impl ValueType {
     /// Used by `or` resolution: `truthy_val or y` always evaluates to `truthy_val`.
     pub fn is_guaranteed_truthy(&self) -> bool {
         match self {
-            ValueType::OpaqueAlias(_, inner) => inner.is_guaranteed_truthy(),
+            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => inner.is_guaranteed_truthy(),
             other => matches!(other,
                 ValueType::Number
                 | ValueType::NumberLiteral(_)
@@ -529,7 +540,7 @@ impl ValueType {
     pub fn is_guaranteed_falsy(&self) -> bool {
         match self {
             ValueType::Nil | ValueType::Boolean(Some(false)) => true,
-            ValueType::OpaqueAlias(_, inner) => inner.is_guaranteed_falsy(),
+            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => inner.is_guaranteed_falsy(),
             _ => false,
         }
     }
@@ -546,6 +557,10 @@ impl ValueType {
             // a literal union at the call site (see `resolve_call`).
             (ValueType::KeyOf(_), _) => ValueType::String(None).is_assignable_to(expected),
             (_, ValueType::KeyOf(_)) => self.is_assignable_to(&ValueType::String(None)),
+            // Secrecy doesn't change what a value is: a secret flows wherever its
+            // underlying type does (the `secret-*` diagnostics own the misuse).
+            (ValueType::Secret(inner), expected) => inner.is_assignable_to(expected),
+            (actual, ValueType::Secret(inner)) => actual.is_assignable_to(inner),
             // Nil assignable to any union containing nil (optional params)
             (ValueType::Nil, ValueType::Union(types)) => types.contains(&ValueType::Nil),
             // Boolean literal ↔ generic boolean are mutually assignable — we don't
@@ -634,6 +649,7 @@ impl ValueType {
             match t {
                 ValueType::Nil | ValueType::Boolean(Some(false)) => None,
                 ValueType::Boolean(None) => Some(ValueType::Boolean(Some(true))),
+                ValueType::Secret(inner) => map_member(inner).map(|m| ValueType::Secret(Box::new(m))),
                 other => Some(other.clone()),
             }
         }
@@ -660,6 +676,7 @@ impl ValueType {
                 ValueType::Boolean(Some(false)) | ValueType::Boolean(None) => {
                     Some(ValueType::Boolean(Some(false)))
                 }
+                ValueType::Secret(inner) => map_member(inner).map(|m| ValueType::Secret(Box::new(m))),
                 _ => None,
             }
         }
@@ -696,6 +713,11 @@ impl ValueType {
         match (self, guard) {
             // Union guard: match if self matches any variant in the union
             (_, ValueType::Union(guards)) => guards.iter().any(|g| self.matches_type_guard_with(g, enum_kind_of)),
+            // The secrecy wildcard matches secret members only; any other guard
+            // (a `type()` check) sees through secrecy — `type(secret)` is its real type.
+            (ValueType::Secret(_), g) if g.is_secret_guard() => true,
+            (_, g) if g.is_secret_guard() => false,
+            (ValueType::Secret(inner), _) => inner.matches_type_guard_with(guard, enum_kind_of),
             // Number enums match Number guard (they're integers at runtime)
             (ValueType::Table(Some(idx)), ValueType::Number) if enum_kind_of(*idx) == EnumKind::Number => true,
             // String enums match String(None) guard (they're strings at runtime)
@@ -719,6 +741,23 @@ impl ValueType {
     /// wildcard matching all variants of that type family (e.g. any `Table(...)`).
     /// Enum-aware: number/string enums match their base type guard.
     pub fn strip_type_with(&self, target: &ValueType, enum_kind_of: &impl Fn(TableIndex) -> EnumKind) -> ValueType {
+        // Stripping secrecy unwraps (`secret<number>` → `number`) rather than
+        // deleting the member, so the value keeps its underlying type past a
+        // `canaccessvalue` guard.
+        if target.contains_secret_guard() {
+            let unwrapped = self.strip_secret();
+            return match target {
+                ValueType::Union(parts) => {
+                    let rest: Vec<ValueType> = parts.iter().filter(|p| !p.is_secret_guard()).cloned().collect();
+                    if rest.is_empty() {
+                        unwrapped
+                    } else {
+                        unwrapped.strip_type_with(&ValueType::make_union(rest), enum_kind_of)
+                    }
+                }
+                _ => unwrapped,
+            };
+        }
         match self {
             ValueType::Union(types) => {
                 let filtered: Vec<_> = types.iter().filter(|t| !t.matches_type_guard_with(target, enum_kind_of)).cloned().collect();
@@ -738,6 +777,14 @@ impl ValueType {
     /// Uses `matches_type_guard` so `Table(None)` keeps all `Table(...)` variants.
     /// Enum-aware: number enums match `Number`, string enums match `String(None)`.
     pub fn filter_type_with(&self, guard: &ValueType, enum_kind_of: &impl Fn(TableIndex) -> EnumKind) -> ValueType {
+        // `issecretvalue(x)` then-branch: x is secret (and therefore not nil).
+        if guard.is_secret_guard() {
+            let non_nil = self.strip_nil();
+            if matches!(&non_nil, ValueType::Union(m) if m.is_empty()) {
+                return self.clone();
+            }
+            return ValueType::secret_of(non_nil);
+        }
         match self {
             ValueType::Union(types) => {
                 let filtered: Vec<_> = types.iter().filter(|t| t.matches_type_guard_with(guard, enum_kind_of)).cloned().collect();
@@ -758,7 +805,7 @@ impl ValueType {
             ValueType::TypeVariable(_) => true,
             ValueType::Union(types) => types.iter().any(|t| t.contains_type_variable()),
             ValueType::Intersection(types) => types.iter().any(|t| t.contains_type_variable()),
-            ValueType::OpaqueAlias(_, inner) => inner.contains_type_variable(),
+            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => inner.contains_type_variable(),
             ValueType::Any => false,
             _ => false,
         }
@@ -790,35 +837,98 @@ impl ValueType {
                 return ValueType::Any;
             }
         }
-        // Collapse boolean variants: true | false → boolean, boolean | true/false → boolean
-        let has_bool_none = deduped.contains(&ValueType::Boolean(None));
-        let has_true = deduped.contains(&ValueType::Boolean(Some(true)));
-        let has_false = deduped.contains(&ValueType::Boolean(Some(false)));
-        if has_bool_none || (has_true && has_false) {
-            deduped.retain(|t| !matches!(t, ValueType::Boolean(_)));
-            deduped.push(ValueType::Boolean(None));
-        }
-        // Collapse string variants: string | "literal" → string (generic subsumes literals).
-        // This discards the literals, so "open" string-enum aliases (`@alias UnitToken
-        // string` + `---|"player"` lines) preserve them separately in
-        // `alias_string_literals` for string-argument completion — see the alias
-        // registration in `pre_globals::shared` / `analysis::prescan`.
-        if deduped.contains(&ValueType::String(None)) {
-            deduped.retain(|t| !matches!(t, ValueType::String(Some(_))));
-        }
-        // Collapse table variants: table | Table(idx) → table (generic subsumes specific)
-        if deduped.contains(&ValueType::Table(None)) {
-            deduped.retain(|t| !matches!(t, ValueType::Table(Some(_))));
-        }
-        // Collapse number-literal variants when a plain number is present:
-        // number | 0 → number (so slot-0 `number | 0` displays as `number`).
-        if deduped.contains(&ValueType::Number) {
-            deduped.retain(|t| !matches!(t, ValueType::NumberLiteral(_)));
+        collapse_scalar_variants(&mut deduped);
+        // Secret members: their inners collapse among themselves (`secret<true> |
+        // secret<false>` → `secret<boolean>`; a collapse always shortens the list),
+        // and a plain twin adds nothing since `secret<T>` already means "may be
+        // `T`" (`T | secret<T>` → `secret<T>`).
+        let mut inners: Vec<ValueType> = deduped.iter()
+            .filter_map(|t| if let ValueType::Secret(inner) = t { Some((**inner).clone()) } else { None })
+            .collect();
+        if !inners.is_empty() {
+            let before = inners.len();
+            collapse_scalar_variants(&mut inners);
+            deduped.retain(|t| matches!(t, ValueType::Secret(_)) || !inners.contains(t));
+            if inners.len() != before {
+                deduped.retain(|t| !matches!(t, ValueType::Secret(_)));
+                deduped.extend(inners.into_iter().map(|t| ValueType::Secret(Box::new(t))));
+            }
         }
         if deduped.len() == 1 {
             deduped.into_iter().next().unwrap()
         } else {
             ValueType::Union(deduped)
+        }
+    }
+
+    /// The secrecy type-guard wildcard: filtering to it keeps secret members
+    /// (`issecretvalue(x)` then-branch), stripping it unwraps them
+    /// (`canaccessvalue(x)` then-branch). Never a real value's type.
+    pub fn secret_guard() -> ValueType {
+        ValueType::Secret(Box::new(ValueType::Any))
+    }
+
+    pub fn is_secret_guard(&self) -> bool {
+        matches!(self, ValueType::Secret(inner) if **inner == ValueType::Any)
+    }
+
+    fn contains_secret_guard(&self) -> bool {
+        self.is_secret_guard()
+            || matches!(self, ValueType::Union(parts) if parts.iter().any(ValueType::is_secret_guard))
+    }
+
+    /// Mark `t` as (possibly) secret. Distributes over unions. Only scalar values
+    /// are secret themselves — Blizzard's APIs return tables and mixins whose
+    /// *fields* are secret — so `nil`, `any`, tables (including enum tables, which
+    /// can't be told apart here), functions and the like pass through unwrapped.
+    pub fn secret_of(t: ValueType) -> ValueType {
+        match t {
+            ValueType::Union(members) => {
+                ValueType::make_union(members.into_iter().map(ValueType::secret_of).collect())
+            }
+            ValueType::Boolean(_) | ValueType::Number | ValueType::NumberLiteral(_)
+            | ValueType::String(_) | ValueType::KeyOf(_) | ValueType::TypeVariable(_)
+            | ValueType::OpaqueAlias(..) => ValueType::Secret(Box::new(t)),
+            other => other,
+        }
+    }
+
+    /// Remove secrecy: `secret<T>` → `T`, through union members.
+    pub fn strip_secret(&self) -> ValueType {
+        match self {
+            ValueType::Secret(inner) => inner.strip_secret(),
+            ValueType::Union(members) if members.iter().any(ValueType::has_secret) => {
+                ValueType::make_union(members.iter().map(ValueType::strip_secret).collect())
+            }
+            _ => self.clone(),
+        }
+    }
+
+    /// Mark as secret the members of `self` a value of one of `secrets` can be:
+    /// the same type, or the base type a secret literal merged into (a secret
+    /// `"x"` makes a `string` member possibly secret).
+    pub fn with_secret_members(self, secrets: &[ValueType]) -> ValueType {
+        let reachable = |member: &ValueType| secrets.iter().flat_map(|s| [s, s.strip_opaque()]).any(|secret| {
+            secret == member || matches!(
+                (secret, member),
+                (ValueType::String(Some(_)), ValueType::String(None))
+                    | (ValueType::NumberLiteral(_), ValueType::Number)
+                    | (ValueType::Boolean(Some(_)), ValueType::Boolean(None))
+            )
+        });
+        let mark = |member: ValueType| if reachable(&member) { ValueType::secret_of(member) } else { member };
+        match self {
+            ValueType::Union(members) => ValueType::make_union(members.into_iter().map(mark).collect()),
+            other => mark(other),
+        }
+    }
+
+    /// Whether any member of this type is a secret value.
+    pub fn has_secret(&self) -> bool {
+        match self {
+            ValueType::Secret(_) => true,
+            ValueType::Union(members) => members.iter().any(ValueType::has_secret),
+            _ => false,
         }
     }
 
@@ -849,6 +959,37 @@ impl ValueType {
     /// and cause spurious downstream diagnostics.
     pub fn callable_or_unknown() -> ValueType {
         ValueType::Intersection(vec![ValueType::Function(None), ValueType::Table(None)])
+    }
+}
+
+/// Normalize a deduplicated union member list in place: `true | false` →
+/// `boolean`, and a generic `string`/`table`/`number` subsumes its literal and
+/// specific variants.
+fn collapse_scalar_variants(deduped: &mut Vec<ValueType>) {
+    // Collapse boolean variants: true | false → boolean, boolean | true/false → boolean
+    let has_bool_none = deduped.contains(&ValueType::Boolean(None));
+    let has_true = deduped.contains(&ValueType::Boolean(Some(true)));
+    let has_false = deduped.contains(&ValueType::Boolean(Some(false)));
+    if has_bool_none || (has_true && has_false) {
+        deduped.retain(|t| !matches!(t, ValueType::Boolean(_)));
+        deduped.push(ValueType::Boolean(None));
+    }
+    // Collapse string variants: string | "literal" → string (generic subsumes literals).
+    // This discards the literals, so "open" string-enum aliases (`@alias UnitToken
+    // string` + `---|"player"` lines) preserve them separately in
+    // `alias_string_literals` for string-argument completion — see the alias
+    // registration in `pre_globals::shared` / `analysis::prescan`.
+    if deduped.contains(&ValueType::String(None)) {
+        deduped.retain(|t| !matches!(t, ValueType::String(Some(_))));
+    }
+    // Collapse table variants: table | Table(idx) → table (generic subsumes specific)
+    if deduped.contains(&ValueType::Table(None)) {
+        deduped.retain(|t| !matches!(t, ValueType::Table(Some(_))));
+    }
+    // Collapse number-literal variants when a plain number is present:
+    // number | 0 → number (so slot-0 `number | 0` displays as `number`).
+    if deduped.contains(&ValueType::Number) {
+        deduped.retain(|t| !matches!(t, ValueType::NumberLiteral(_)));
     }
 }
 
@@ -1133,6 +1274,11 @@ pub struct Function {
     /// rather than a boolean guard call.
     #[serde(default)]
     pub returns_class_name: bool,
+    /// `@secret-when` / `@secret-args` / `@secret-aspect` / `@secret-guard`
+    /// metadata (retail secret values). Secret *returns* live in the return
+    /// types themselves (`secret<T>`).
+    #[serde(default)]
+    pub secret: Option<Box<crate::secrets::SecretMeta>>,
 }
 
 /// Utility-type projection referencing a bound generic's function shape.

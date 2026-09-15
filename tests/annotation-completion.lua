@@ -5,17 +5,17 @@
 
 -- All tags after ---@ (no context: shows everything)
 ---@
---  ^ comp: param, return, type, class, field, alias, enum, event, overload, defclass, generic, cast, as, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, accessor, meta, diagnostic, type-narrows, returns-class-name, flavor-narrows, narrows-arg, creates-global, requires, correlated, see
+--  ^ comp: param, return, type, class, field, alias, enum, event, overload, defclass, generic, cast, as, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, accessor, meta, diagnostic, type-narrows, returns-class-name, flavor-narrows, narrows-arg, creates-global, requires, secret-when, secret-args, secret-aspect, secret-guard, secret-unless, correlated, see
 
 -- Partial prefix: "re" → return, requires, returns-class-name
 ---@diagnostic disable-next-line: malformed-annotation
 ---@re
 --    ^ comp: return, requires, returns-class-name
 
--- Partial prefix: "se" → see
+-- Partial prefix: "se" → secret-*, see
 ---@diagnostic disable-next-line: malformed-annotation
 ---@se
---    ^ comp: see
+--    ^ comp: secret-when, secret-args, secret-aspect, secret-guard, secret-unless, see
 
 -- Partial prefix: "p" → param, private, protected
 ---@diagnostic disable-next-line: malformed-annotation
@@ -57,7 +57,7 @@
 -- Function context: after @param, only function-applicable tags appear
 ---@param x number
 ---@
---  ^ comp: param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, returns-class-name, flavor-narrows, narrows-arg, creates-global, requires, see
+--  ^ comp: param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, returns-class-name, flavor-narrows, narrows-arg, creates-global, requires, secret-when, secret-args, secret-aspect, secret-guard, secret-unless, see
 function ctxFuncTest(x) end
 
 -- Class context: after @class, only class-applicable tags appear
@@ -67,12 +67,12 @@ function ctxFuncTest(x) end
 
 -- Function context inferred from function below (no prior tags)
 ---@
---  ^ comp: param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, returns-class-name, flavor-narrows, narrows-arg, creates-global, requires, see
+--  ^ comp: param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, returns-class-name, flavor-narrows, narrows-arg, creates-global, requires, secret-when, secret-args, secret-aspect, secret-guard, secret-unless, see
 function ctxInferredFunc() end
 
 -- Function context with params: "Annotate function" appears alongside tags
 ---@
---  ^ comp: Annotate function, param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, returns-class-name, flavor-narrows, narrows-arg, creates-global, requires, see
+--  ^ comp: Annotate function, param, return, cast, overload, defclass, generic, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, diagnostic, type-narrows, returns-class-name, flavor-narrows, narrows-arg, creates-global, requires, secret-when, secret-args, secret-aspect, secret-guard, secret-unless, see
 function ctxWithParams(a, b) end
 
 -- ── Param name completions ───────────────────────────────────────────────────

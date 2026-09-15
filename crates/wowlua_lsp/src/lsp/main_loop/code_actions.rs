@@ -1562,7 +1562,7 @@ pub(super) fn placeholder_for_type(vt: &ValueType) -> &'static str {
             }
             "nil"
         }
-        ValueType::OpaqueAlias(_, inner) => placeholder_for_type(inner),
+        ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => placeholder_for_type(inner),
         _ => "nil",
     }
 }

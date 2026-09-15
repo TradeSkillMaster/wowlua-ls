@@ -209,6 +209,67 @@ impl<'a> Analysis<'a> {
         ret_index: &usize,
         call_site: CallSiteInfo,
     ) -> Option<ValueType> {
+        let is_method_call = call_site.is_method_call;
+        let result = self.resolve_function_call_inner(expr_id, func, args, arg_ranges, ret_index, call_site)?;
+        Some(self.apply_call_secrecy(*func, args, is_method_call, result))
+    }
+
+    /// Secrecy of a call's result beyond its declared return types: a
+    /// `@secret-unless` argument value makes it ordinary (also through a
+    /// `returns<F>` vararg projection such as `select(2, UnitClass("player"))`),
+    /// and a C API that accepts secret arguments (`@secret-args tainted`) returns
+    /// results carrying their secrecy (`crate::secrets::argument_rule`).
+    fn apply_call_secrecy(&mut self, func: ExprId, args: &[ExprId], is_method_call: bool, result: ValueType) -> ValueType {
+        let Some(ValueType::Function(Some(func_idx))) = self.resolve_expr(func).map(ValueType::into_strip_opaque) else {
+            return result;
+        };
+        if result.has_secret() {
+            let projected_call = matches!(self.func(func_idx).vararg_projection, Some(crate::types::ProjectionKind::Return(..)))
+                .then(|| args.last().copied())
+                .flatten()
+                .and_then(|last| match self.expr(last) {
+                    Expr::FunctionCall { func, args, is_method_call, .. } => Some((*func, args.clone(), *is_method_call)),
+                    _ => None,
+                });
+            let exempt = self.secret_exempt_call(func_idx, args, is_method_call)
+                || projected_call.is_some_and(|(inner_func, inner_args, inner_method)| {
+                    matches!(self.resolve_expr(inner_func), Some(ValueType::Function(Some(inner_idx)))
+                        if self.secret_exempt_call(inner_idx, &inner_args, inner_method))
+                });
+            if exempt {
+                return result.strip_secret();
+            }
+        }
+        let policy = self.func(func_idx).secret.as_ref().and_then(|m| m.args);
+        if crate::secrets::argument_rule(policy) != crate::secrets::SecretRule::Propagate {
+            return result;
+        }
+        if args.iter().any(|&arg| self.resolve_expr(arg).is_some_and(|t| t.has_secret())) {
+            ValueType::secret_of(result)
+        } else {
+            result
+        }
+    }
+
+    /// Whether a call to `func_idx` passes a `@secret-unless` value for its
+    /// exempted parameter.
+    fn secret_exempt_call(&self, func_idx: FunctionIndex, args: &[ExprId], is_method_call: bool) -> bool {
+        let Some(exemption) = self.func(func_idx).secret.as_ref().and_then(|m| m.unless.as_ref()) else { return false };
+        self.param_position(func_idx, &exemption.param, is_method_call)
+            .and_then(|pos| args.get(pos))
+            .and_then(|arg| self.ir.string_literals.get(arg))
+            .is_some_and(|value| exemption.values.contains(value))
+    }
+
+    fn resolve_function_call_inner(
+        &mut self,
+        expr_id: ExprId,
+        func: &ExprId,
+        args: &[ExprId],
+        arg_ranges: &[(u32, u32)],
+        ret_index: &usize,
+        call_site: CallSiteInfo,
+    ) -> Option<ValueType> {
         let func_expr_id = *func;
         let CallSiteInfo { is_method_call, .. } = call_site;
         // Resolve the function expression to get its type
@@ -3942,6 +4003,7 @@ impl<'a> Analysis<'a> {
                     type_narrows: None,
                     type_narrows_class: None,
                     returns_class_name: false,
+                    secret: None,
                     has_vararg_return: has_vararg_return_clone,
                     see: Vec::new(),
                     flavors: 0,
@@ -4018,6 +4080,7 @@ impl<'a> Analysis<'a> {
             ValueType::OpaqueAlias(name, inner) => {
                 ValueType::OpaqueAlias(name.clone(), Box::new(self.substitute_generics_deep(inner, subs)))
             }
+            ValueType::Secret(inner) => ValueType::secret_of(self.substitute_generics_deep(inner, subs)),
             ValueType::FunctionSig(shape) => {
                 let new_params = shape.params.iter().map(|p| ShapeParam {
                     name: p.name.clone(),

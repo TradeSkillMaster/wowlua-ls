@@ -266,17 +266,18 @@ pub(super) fn resolve_expr_type_impl(
         Expr::UnaryOp { op, operand } => {
             let (op, operand) = (*op, *operand);
             let operand_type = resolve_expr_type_impl(ir, resolved_expr_cache, operand, visited, depth + 1)?;
-            match op {
+            let plain = match op {
                 Operator::Not => Some(ValueType::Boolean(None)),
                 Operator::Subtract => {
-                    match &operand_type {
+                    match operand_type.strip_secret() {
                         ValueType::Number => Some(ValueType::Number),
                         _ => None,
                     }
                 }
                 Operator::ArrayLength => Some(ValueType::Number),
                 _ => None,
-            }
+            };
+            crate::analysis::resolve::apply_unary_secrecy(op, &operand_type, plain)
         }
         Expr::FieldAccess { table, field, .. } => {
             let table = *table;
@@ -503,6 +504,10 @@ pub(super) fn resolve_expr_type_impl(
             let cast_type = cast_type.clone();
             resolve_expr_type_impl(ir, resolved_expr_cache, inner, visited, depth + 1)
                 .map(|vt| vt.strip_type_with(&cast_type, &|idx| ir.table(idx).enum_kind))
+        }
+        Expr::TypeFilter(inner, guard_type) => {
+            resolve_expr_type_impl(ir, resolved_expr_cache, *inner, visited, depth + 1)
+                .map(|vt| vt.filter_type_with(guard_type, &|idx| ir.table(idx).enum_kind))
         }
         _ => None,
     }
@@ -747,8 +752,9 @@ impl AnalysisResult {
         let show_deprecated = func.deprecated
             && !(self.ir.is_stub_function(func_idx)
                 && crate::flavor::deprecation_suppressed(self.addon_flavors, flavors_mask));
+        let secrecy = self.format_secrecy_doc(func);
         if func.doc.is_none() && !has_descriptions && func.see.is_empty()
-            && flavors_mask == 0 && !show_deprecated
+            && flavors_mask == 0 && !show_deprecated && secrecy.is_none()
         {
             return None;
         }
@@ -785,6 +791,9 @@ impl AnalysisResult {
         if let Some(see_block) = self.format_see_doc(&func.see) {
             parts.push(see_block);
         }
+        if let Some(secrecy) = secrecy {
+            parts.push(secrecy);
+        }
         // Low-key flavor info for APIs with known availability data.
         if flavors_mask != 0 {
             parts.push(format!("Flavors: {}", crate::flavor::format_flavor_list(flavors_mask)));
@@ -794,6 +803,79 @@ impl AnalysisResult {
         } else {
             Some(parts.join("\n\n"))
         }
+    }
+
+    /// The hover "Secrecy" section of a function: the `@secret-when` predicates
+    /// with their documentation, which returns are never secret, the
+    /// `@secret-unless` exemption, the `@secret-args` policy, widget aspects,
+    /// and what a `@secret-guard` result means. `None` when nothing applies or the
+    /// addon doesn't target retail.
+    fn format_secrecy_doc(&self, func: &crate::types::Function) -> Option<String> {
+        use crate::secrets::{SecretArgsPolicy, SecretGuardKind};
+        if !self.secrets_displayed() {
+            return None;
+        }
+        let meta = func.secret.as_deref();
+        let secret_returns: Vec<bool> = func.return_annotations.iter().map(ValueType::has_secret).collect();
+        let any_secret_return = secret_returns.iter().any(|s| *s);
+        if meta.is_none() && !any_secret_return {
+            return None;
+        }
+        let mut lines = vec!["**Secrecy**".to_string()];
+        let when = meta.map(|m| m.when.as_slice()).unwrap_or_default();
+        lines.extend(when.iter().map(|pred| pred.hover_line("May return secret values")));
+        if any_secret_return && when.is_empty() {
+            lines.push("- Returns may be secret values.".to_string());
+        }
+        if any_secret_return && secret_returns.iter().any(|s| !*s) {
+            let never: Vec<String> = secret_returns.iter().enumerate()
+                .filter(|(_, secret)| !**secret)
+                .map(|(i, _)| match func.return_labels.get(i).cloned().flatten() {
+                    Some(label) => format!("`{label}`"),
+                    None => format!("return {}", i + 1),
+                })
+                .collect();
+            lines.push(format!("- Never secret: {}", never.join(", ")));
+        }
+        if let Some(meta) = meta {
+            if let Some(unless) = &meta.unless {
+                let values: Vec<String> = unless.values.iter().map(|v| format!("`\"{v}\"`")).collect();
+                lines.push(format!("- Never secret when `{}` is {}", unless.param, values.join(" or ")));
+            }
+            match meta.args {
+                Some(p @ SecretArgsPolicy::NotAllowed) => {
+                    lines.push(format!("- Secret arguments: `{}` — never accepted", p.blizzard_name()));
+                }
+                Some(p @ SecretArgsPolicy::AllowedWhenTainted) if func.return_annotations.is_empty() => {
+                    lines.push(format!("- Secret arguments: `{}` — accepted", p.blizzard_name()));
+                }
+                Some(p @ SecretArgsPolicy::AllowedWhenTainted) => {
+                    lines.push(format!("- Secret arguments: `{}` — accepted (results inherit their secrecy)", p.blizzard_name()));
+                }
+                Some(p @ SecretArgsPolicy::AllowedWhenUntainted) => {
+                    lines.push(format!("- Secret arguments: `{}` — accepted only from Blizzard code", p.blizzard_name()));
+                }
+                None => {}
+            }
+            if !meta.aspects.is_empty() {
+                let aspects: Vec<String> = meta.aspects.iter().map(|a| format!("`{a}`")).collect();
+                let role = if func.return_annotations.is_empty() {
+                    "passing a secret value marks the widget's aspect secret"
+                } else {
+                    "returns secret values while the widget's aspect is secret"
+                };
+                lines.push(format!("- Secret aspect {}: {role}", aspects.join(", ")));
+            }
+            if let Some(guard) = &meta.guard {
+                let meaning = match guard.kind {
+                    SecretGuardKind::IsSecret => format!("`true` means `{}` is secret", guard.param),
+                    SecretGuardKind::Accessible => format!("`true` means `{}` can be inspected (not secret)", guard.param),
+                    SecretGuardKind::AnySecret => format!("`false` means no value in `{}` is secret", guard.param),
+                };
+                lines.push(format!("- Guard: {meaning}"));
+            }
+        }
+        Some(lines.join("\n"))
     }
 
     pub fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {
@@ -1326,6 +1408,11 @@ impl AnalysisResult {
             ValueType::String(Some(val)) => format!("\"{}\"", val),
             ValueType::String(None) => "string".to_string(),
             ValueType::KeyOf(target) => format!("keyof {}", target),
+            ValueType::Secret(inner) if !self.secrets_displayed() => self.format_value_type_depth(inner, depth),
+            ValueType::Secret(inner) => format!("secret<{}>", self.format_value_type_depth(inner, depth + 1)),
+            ValueType::Union(_) if !self.secrets_displayed() && vt.has_secret() => {
+                self.format_value_type_depth(&vt.strip_secret(), depth)
+            }
             ValueType::Function(Some(func_idx)) => {
                 let primary = self.format_function_value(*func_idx, depth, None);
                 let func = self.func(*func_idx);
@@ -1602,6 +1689,8 @@ impl AnalysisResult {
             // the `type_contains_type_variable_deep` guard triggering for an
             // inner TypeVariable and then falling through without effect.
             ValueType::OpaqueAlias(name, _) => name.clone(),
+            ValueType::Secret(inner) if !self.secrets_displayed() => self.format_type_subst(inner, depth, subs),
+            ValueType::Secret(inner) => format!("secret<{}>", self.format_type_subst(inner, depth + 1, subs)),
             _ => self.format_value_type_depth(vt, depth),
         }
     }

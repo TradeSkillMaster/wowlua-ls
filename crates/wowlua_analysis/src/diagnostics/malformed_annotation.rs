@@ -41,6 +41,7 @@ const KNOWN_TAGS: &[&str] = &[
     "generic", "private", "protected", "accessor", "diagnostic",
     "builds-field", "built-name", "built-extends", "type-narrows", "returns-class-name", "narrows-arg",
     "creates-global", "generates-events", "callback-event-arg", "correlated", "flavor-narrows", "event", "requires",
+    "secret-when", "secret-args", "secret-aspect", "secret-guard", "secret-unless",
     "see", "vararg", "as", "cast", "operator", "module", "source",
     "version", "package", "async", "nodoc", "public",
 ];
@@ -294,6 +295,23 @@ impl DiagnosticPass for MalformedAnnotation {
                         } else {
                             None
                         }
+                    }
+                }
+                "secret-when" if rest.is_empty() =>
+                    Some("@secret-when requires a predicate name (e.g. @secret-when SecretWhenInCombat)".to_string()),
+                "secret-aspect" if rest.is_empty() =>
+                    Some("@secret-aspect requires an aspect name (e.g. @secret-aspect Text)".to_string()),
+                "secret-args" => match rest.split_whitespace().next() {
+                    Some(policy) if crate::secrets::SecretArgsPolicy::parse(policy).is_some() => None,
+                    _ => Some("@secret-args requires one of: none, untainted, tainted".to_string()),
+                },
+                "secret-unless" if rest.split_whitespace().nth(1).is_none() =>
+                    Some("@secret-unless requires a parameter name and at least one value (e.g. @secret-unless unit player)".to_string()),
+                "secret-guard" => {
+                    let mut parts = rest.split_whitespace();
+                    match (parts.next(), parts.next()) {
+                        (Some(_), Some(kind)) if crate::secrets::SecretGuardKind::parse(kind).is_some() => None,
+                        _ => Some("@secret-guard requires a parameter name and one of: is-secret, accessible, any-secret (e.g. @secret-guard value is-secret)".to_string()),
                     }
                 }
                 "event" => {

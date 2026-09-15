@@ -487,6 +487,10 @@ Line ends with whitespace.
 
 API call not available in all declared project flavors. See [Flavor Filtering](/guide/flavor-filtering).
 
+### `secret-arithmetic` / `secret-comparison` / `secret-condition` / `secret-table-key` / `secret-argument` <Badge type="warning" text="Warning" />
+
+Retail 12.x only. Flags operations that error when a value is secret: arithmetic, comparisons, testing a secret boolean, using it as a table key, and passing it to an API that never accepts secrets. Guard with `canaccessvalue` or `issecretvalue`. See [Secret Values](/guide/secrets).
+
 ### `access-private` / `access-protected` <Badge type="warning" text="Warning" />
 
 Accessing a private or protected field from outside its visibility scope.

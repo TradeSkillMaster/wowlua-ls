@@ -108,6 +108,25 @@ pub fn deprecation_suppressed(addon_flavors: u8, fn_flavors: u8) -> bool {
     addon_flavors & available & !DEPRECATION_ORIGIN_FLAVORS != 0
 }
 
+/// Secret values (patch 12.x) exist only on retail.
+pub const SECRET_VALUE_FLAVORS: u8 = FLAVOR_RETAIL;
+
+/// The flavor set a file's code runs under before any guard narrows it: the
+/// declared `flavors` config (`project_flavors`) when set, else the addon's
+/// `.toc` breadth (`addon_flavors`), else every flavor. Flavor guards
+/// (`WOW_PROJECT_ID` comparisons, `@flavor-narrows`) narrow from here, so they
+/// work without a `flavors` declaration; `wrong-flavor-api` separately
+/// requires one.
+pub fn guard_base(project_flavors: u8, addon_flavors: u8) -> u8 {
+    if project_flavors != 0 {
+        project_flavors
+    } else if addon_flavors != 0 {
+        addon_flavors
+    } else {
+        FLAVOR_ALL
+    }
+}
+
 /// Map a TOC `## Interface:` version number (e.g. `120005`, `50503`, `11508`)
 /// to a flavor mask by its major version. WoW interface numbers are
 /// `MAJOR*10000 + MINOR*100 + PATCH`, and the major version distinguishes the
@@ -341,6 +360,13 @@ mod tests {
         assert_eq!(parse_interface_flavors("  120005  "), FLAVOR_RETAIL);
         assert_eq!(parse_interface_flavors(""), 0);
         assert_eq!(parse_interface_flavors("abc"), 0);
+    }
+
+    #[test]
+    fn guard_base_prefers_config_then_toc_then_all() {
+        assert_eq!(guard_base(FLAVOR_RETAIL, FLAVOR_RETAIL | FLAVOR_CLASSIC), FLAVOR_RETAIL);
+        assert_eq!(guard_base(0, FLAVOR_CLASSIC_ERA), FLAVOR_CLASSIC_ERA);
+        assert_eq!(guard_base(0, 0), FLAVOR_ALL);
     }
 
     #[test]

@@ -176,7 +176,7 @@ pub fn regenerate_stubs() {
         parse_blizzard_api_docs(&retail_ui_dir)
     } else {
         source_errors.push("Blizzard APIDocumentation: no retail wow-ui-source clone".to_string());
-        BlizzardApiDocs { functions: Vec::new(), events: Vec::new(), structures: Vec::new(), script_objects: Vec::new() }
+        BlizzardApiDocs { functions: Vec::new(), events: Vec::new(), structures: Vec::new(), script_objects: Vec::new(), predicates: Vec::new() }
     };
     if blizzard_docs.functions.len() < 500 {
         source_errors.push(format!("Blizzard API functions: {} (expected ≥500)", blizzard_docs.functions.len()));
@@ -403,6 +403,16 @@ pub fn regenerate_stubs() {
     log::info!("Enriching widget stubs with wiki annotations...");
     enrich_widget_stubs(&widget_methods, &wiki_pages, &wiki_redirects);
 
+    // Step 4b1: Secret-value annotations from the retail docs' secrecy keys, applied
+    // to Ketho's vendor stubs (which drop those keys) and later to our generated files.
+    log::info!("Applying secret-value annotations...");
+    let secret_table_types = get_existing_names_with(&clone_dir.join("Annotations"), &class_re, &[]);
+    let secret_index = build_secret_index(&blizzard_docs, &secret_table_types);
+    if has_retail_ui && secret_index.is_empty() {
+        source_errors.push("Secret-value index: empty (expected secrecy keys in retail APIDocumentation)".to_string());
+    }
+    apply_secret_annotations_to_dir(&clone_dir.join("Annotations/Core"), &secret_index);
+
     // Step 4b2: Collect the final set of (class, method) pairs from Ketho's vendor stubs
     // (after wiki enrichment). Used to filter ScriptObject stubs to only new methods.
     let existing_widget_methods = collect_existing_widget_methods(&vendor_dir_paths);
@@ -573,6 +583,7 @@ pub fn regenerate_stubs() {
     extra_event_names.extend(registered_events);
     let blizzard_events_lua = generate_blizzard_event_stubs(&blizzard_docs, &known_enum_names, &extra_event_names);
     std::fs::write(gen_dir.join("BlizzardEvents.lua"), &blizzard_events_lua).unwrap();
+    apply_secret_annotations_to_dir(&gen_dir, &secret_index);
 
     // Step 6: Collect all stub file paths for scanning
     log::info!("Scanning stubs...");

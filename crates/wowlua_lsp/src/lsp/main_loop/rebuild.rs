@@ -36,6 +36,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.callback_event_arg == y.callback_event_arg
         && x.mixin_parents == y.mixin_parents
         && x.returns_class_name == y.returns_class_name
+        && x.secret == y.secret
         // `@meta` status gates stub overriding (build_on_stubs), so toggling
         // `---@meta` on a file must re-run the cross-file build. Unlike
         // path-derived `is_override`, `is_meta` is content-derived and can change
@@ -222,6 +223,7 @@ pub(super) fn events_match(a: &[EventDecl], b: &[EventDecl]) -> bool {
         x.event_type == y.event_type
             && x.event_name == y.event_name
             && x.params == y.params
+            && x.secret_when == y.secret_when
     })
 }
 

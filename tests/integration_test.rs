@@ -7163,3 +7163,97 @@ fn class_shadows_builtin_library_additive() {
         scan_dir: Some("tests/class-shadows-library"),
     });
 }
+
+#[test]
+fn secrets_stubs() {
+    // Secret values from the generated retail stubs: taint, exemptions, hover
+    // Secrecy sections, guards, and diagnostics on API results.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/stubs.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn secrets_annotations() {
+    // Secret-value rules through user annotations: `secret<T>` types,
+    // propagation, `@secret-guard` narrowing forms, `@secret-args`/`@secret-unless`,
+    // and every `secret-*` diagnostic with guarded negatives.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/annotations.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn secrets_crossfile() {
+    // `@secret-*` metadata and secret return/field types declared in another file.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/crossfile/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/secrets/crossfile"),
+    });
+}
+
+#[test]
+fn secrets_classic_flavor() {
+    // A Classic-only project: secret types display plain and no `secret-*` fires.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/classic/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn secrets_multi_flavor() {
+    // Retail + Classic: secret diagnostics fire, except inside Classic-only flavor guards.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/multi-flavor/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn secrets_guards_no_config() {
+    // No config and no .toc: flavor guards (`WOW_PROJECT_ID`, `@flavor-narrows`)
+    // still scope the diagnostics (they narrow from `flavor::guard_base`).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/guards-no-config/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn secrets_toc_classic() {
+    // No config; the .toc `## Interface:` line says Classic Era → secrets off.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/toc-classic/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn secrets_toc_multi_interface() {
+    // No config; the .toc declares Retail + Classic Era → secrets on, guard-scoped.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/toc-multi-interface/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn secrets_toc_suffix() {
+    // The file is listed only in a `_Vanilla` .toc → per-file Classic Era → secrets off.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/toc-suffix/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}

@@ -83,6 +83,21 @@ end
 
 Flavor guards are understood automatically: `WOW_PROJECT_ID` checks, boolean flag patterns, and the `@flavor-narrows` annotation all suppress false warnings in guarded code.
 
+### Secret values
+
+In retail 12.x, APIs like `UnitHealth` return secret values during combat and other restrictions, and comparing or doing math on one is a Lua error that only shows up in those situations. wowlua-ls knows which API results may be secret and flags the operations that would error:
+
+```lua
+local hp, maxHp = UnitHealth("target"), UnitHealthMax("target")
+local pct = hp / maxHp -- warning: secret-arithmetic
+
+if canaccessallvalues(hp, maxHp) then
+    pct = hp / maxHp -- OK, narrowed to number
+end
+```
+
+See the [Secret Values guide](/guide/secrets).
+
 ### Mixin and template support
 
 `CreateFrame`, `Mixin`, `CreateFromMixins`, and `CreateAndInitFromMixin` return intersection types automatically:
@@ -210,9 +225,9 @@ schema.guild  -- Guild!
 
 Every field is typed. Every access is checked. The type is named `PlayerState` and can be referenced in annotations elsewhere.
 
-## 75+ diagnostics
+## 80+ diagnostics
 
-wowlua-ls ships with 75+ diagnostics organized across several categories:
+wowlua-ls ships with 80+ diagnostics organized across several categories:
 
 - **Type safety**: type-mismatch, return-mismatch, field-type-mismatch, assign-type-mismatch, generic-constraint-mismatch, invalid-op
 - **Nil checking**: need-check-nil, nil-index, nil-table-key, missing-return-value, implicit-nil-return
@@ -220,7 +235,7 @@ wowlua-ls ships with 75+ diagnostics organized across several categories:
 - **Globals and fields**: undefined-global, undefined-field, inject-field, create-global, missing-fields
 - **Annotation correctness**: undefined-doc-class, undefined-doc-name, malformed-annotation, circle-doc-class, and more
 - **Code quality**: unused-local, unused-function, shadowed-local, unreachable-code, deprecated, empty-block, trailing-space
-- **WoW-specific**: wrong-flavor-api, access-private, access-protected
+- **WoW-specific**: wrong-flavor-api, secret-comparison, secret-arithmetic, secret-table-key, access-private, access-protected
 
 Each diagnostic is individually configurable: enable, disable, or change severity per-line (`@diagnostic`) or per-project (`.wowluarc.json`). Several stricter checks are off by default and opt-in.
 
@@ -275,6 +290,7 @@ What you gain:
 | XML frame/template scanning | No | Automatic: templates, named frames, parentKey fields |
 | TOC file editing | No | Hover, completions, go-to-def, diagnostics |
 | Flavor-specific API warnings | No | `wrong-flavor-api` with `WOW_PROJECT_ID` guards |
+| Secret-value checks (retail 12.x) | No | `secret-*` diagnostics with `issecretvalue` / `canaccessvalue` narrowing |
 | Mixin/template intersection types | No | `CreateFrame` + `Mixin` return `A & B` |
 | Parameterized classes | No | `@class Foo<T>` with method propagation |
 | Generic constraints | No | `@generic T: Base` |

@@ -1348,6 +1348,7 @@ fn lift_local_type_to_ext_depth(
         ValueType::OpaqueAlias(name, inner) => {
             ValueType::OpaqueAlias(name.clone(), Box::new(lift_local_type_to_ext_depth(inner, ir, ext, depth, res)))
         }
+        ValueType::Secret(inner) => ValueType::secret_of(lift_local_type_to_ext_depth(inner, ir, ext, depth, res)),
         // An external function value already lives in ext space; keep it.
         ValueType::Function(Some(idx)) if idx.is_external() => ty.clone(),
         // A returned *local* function value can't be referenced cross-file by

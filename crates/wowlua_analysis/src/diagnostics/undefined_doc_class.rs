@@ -209,7 +209,7 @@ fn is_inheritable_type(vt: &ValueType) -> bool {
         ValueType::Table(_) | ValueType::Any | ValueType::Userdata => true,
         ValueType::Union(members) => members.iter().any(is_inheritable_type),
         ValueType::Intersection(members) => members.iter().any(is_inheritable_type),
-        ValueType::OpaqueAlias(_, inner) => is_inheritable_type(inner),
+        ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => is_inheritable_type(inner),
         _ => false,
     }
 }

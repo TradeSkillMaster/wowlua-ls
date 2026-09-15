@@ -622,6 +622,7 @@ APIDocumentation:AddDocumentationTable(TestDoc);
         functions: Vec::new(),
         events: Vec::new(),
         structures: Vec::new(),
+        predicates: Vec::new(),
         script_objects: Vec::new(),
     };
     parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
@@ -701,6 +702,7 @@ local TestDoc =
         functions: Vec::new(),
         events: Vec::new(),
         structures: Vec::new(),
+        predicates: Vec::new(),
         script_objects: Vec::new(),
     };
     parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
@@ -765,6 +767,7 @@ local TestDoc =
         functions: Vec::new(),
         events: Vec::new(),
         structures: Vec::new(),
+        predicates: Vec::new(),
         script_objects: Vec::new(),
     };
     parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
@@ -816,6 +819,7 @@ fn test_resolve_blizzard_param_type_mixin_priority() {
         nilable: false,
         inner_type: None,
         mixin: Some("ItemLocationMixin".into()),
+        secrecy: Default::default(),
     };
     assert_eq!(resolve_blizzard_param_type(&p, &no_enums), "ItemLocationMixin");
 
@@ -826,6 +830,7 @@ fn test_resolve_blizzard_param_type_mixin_priority() {
         nilable: false,
         inner_type: None,
         mixin: None,
+        secrecy: Default::default(),
     };
     assert_eq!(resolve_blizzard_param_type(&p2, &no_enums), "boolean");
 
@@ -836,6 +841,7 @@ fn test_resolve_blizzard_param_type_mixin_priority() {
         nilable: false,
         inner_type: Some("ItemLocation".into()),
         mixin: Some("ItemLocationMixin".into()),
+        secrecy: Default::default(),
     };
     assert_eq!(resolve_blizzard_param_type(&p3, &no_enums), "ItemLocationMixin");
 
@@ -847,6 +853,7 @@ fn test_resolve_blizzard_param_type_mixin_priority() {
         nilable: false,
         inner_type: None,
         mixin: None,
+        secrecy: Default::default(),
     };
     assert_eq!(resolve_blizzard_param_type(&p4, &enums), "Enum.UISoundSubType");
 }
@@ -889,6 +896,7 @@ local SimpleFrameAPI =
         functions: Vec::new(),
         events: Vec::new(),
         structures: Vec::new(),
+        predicates: Vec::new(),
         script_objects: Vec::new(),
     };
     parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
@@ -1384,6 +1392,7 @@ fn test_generate_scriptobject_method_stubs() {
         functions: Vec::new(),
         events: Vec::new(),
         structures: Vec::new(),
+        predicates: Vec::new(),
         script_objects: vec![
             BlizzardScriptObjectApi {
                 name: "SimpleFontStringAPI".to_string(),
@@ -1397,9 +1406,11 @@ fn test_generate_scriptobject_method_stubs() {
                             nilable: false,
                             inner_type: None,
                             mixin: None,
+                            secrecy: Default::default(),
                         }],
                         returns: Vec::new(),
                         may_return_nothing: false,
+                        secrecy: Default::default(),
                     },
                     // A method Blizzard documents with NO Arguments array (its auto-docs
                     // are incomplete for inherited widget methods). It is missing from
@@ -1416,8 +1427,10 @@ fn test_generate_scriptobject_method_stubs() {
                             nilable: false,
                             inner_type: None,
                             mixin: None,
+                            secrecy: Default::default(),
                         }],
                         may_return_nothing: false,
+                        secrecy: Default::default(),
                     },
                     // This one simulates a method already in Ketho's stubs (e.g. GetText)
                     BlizzardFunction {
@@ -1426,6 +1439,7 @@ fn test_generate_scriptobject_method_stubs() {
                         arguments: Vec::new(),
                         returns: Vec::new(),
                         may_return_nothing: false,
+                        secrecy: Default::default(),
                     },
                 ],
             },
@@ -1438,6 +1452,7 @@ fn test_generate_scriptobject_method_stubs() {
                     arguments: Vec::new(),
                     returns: Vec::new(),
                     may_return_nothing: false,
+                    secrecy: Default::default(),
                 }],
             },
         ],
@@ -1728,8 +1743,10 @@ fn test_generate_blizzard_event_stubs_extra_events() {
         events: vec![BlizzardEvent {
             literal_name: "PLAYER_LOGIN".to_string(),
             payload: vec![],
+            secrecy: Default::default(),
         }],
         structures: vec![],
+        predicates: Vec::new(),
         script_objects: vec![],
     };
     let known_enums = HashSet::new();
@@ -1777,4 +1794,368 @@ fn override_stem_collision_panics_on_multi_match() {
     std::fs::write(dir.join("FrameXML/Mixin.lua"), "---@meta _\n").unwrap();
     let stems: HashSet<String> = ["Mixin".to_string()].into_iter().collect();
     check_override_stem_collisions(&[dir], &stems);
+}
+
+fn secret_test_docs() -> BlizzardApiDocs {
+    let content = r#"
+local UnitDoc =
+{
+	Name = "Unit",
+	Type = "System",
+
+	Functions =
+	{
+		{
+			Name = "UnitCastInfo",
+			Type = "Function",
+			SecretWhenUnitSpellCastRestricted = true,
+			SecretArguments = "AllowedWhenUntainted",
+
+			Arguments =
+			{
+				{ Name = "unit", Type = "UnitToken", Nilable = false },
+			},
+
+			Returns =
+			{
+				{ Name = "name", Type = "cstring", Nilable = false },
+				{ Name = "castBarID", Type = "number", Nilable = true, NeverSecret = true },
+			},
+		},
+		{
+			Name = "UnitHP",
+			Type = "Function",
+			SecretReturns = true,
+			SecretArguments = "NotAllowed",
+
+			Arguments =
+			{
+				{ Name = "unit", Type = "UnitToken", Nilable = false },
+			},
+
+			Returns =
+			{
+				{ Name = "result", Type = "number", Nilable = false },
+			},
+		},
+		{
+			Name = "UnitRole",
+			Type = "Function",
+			SecretArguments = "AllowedWhenTainted",
+
+			Returns =
+			{
+				{ Name = "role", Type = "cstring", Nilable = false, ConditionalSecret = true },
+				{ Name = "roleID", Type = "number", Nilable = false },
+			},
+		},
+		{
+			Name = "UnitCurve",
+			Type = "Function",
+			SecretWhenCurveSecret = true,
+			RequiresUnitIdentity = true,
+
+			Returns =
+			{
+				{ Name = "info", Type = "CastData", Nilable = false },
+			},
+		},
+		{
+			Name = "UnitIdentity",
+			Type = "Function",
+			SecretWhenUnitIdentityRestricted = true,
+
+			Arguments =
+			{
+				{ Name = "unitToken", Type = "UnitTokenRestrictedForAddOns", Nilable = false },
+			},
+
+			Returns =
+			{
+				{ Name = "name", Type = "cstring", Nilable = false },
+			},
+		},
+		{
+			Name = "UnitPlain",
+			Type = "Function",
+
+			Returns =
+			{
+				{ Name = "value", Type = "number", Nilable = false },
+			},
+		},
+	},
+
+	Events =
+	{
+		{
+			Name = "UnitCastSent",
+			Type = "Event",
+			LiteralName = "UNIT_CAST_SENT",
+			SecretWhenUnitSpellCastRestricted = true,
+			Payload =
+			{
+				{ Name = "unitTarget", Type = "UnitToken", Nilable = false, NeverSecret = true },
+				{ Name = "target", Type = "cstring", Nilable = false },
+			},
+		},
+	},
+
+	Tables =
+	{
+		{
+			Name = "CastData",
+			Type = "Structure",
+			Fields =
+			{
+				{ Name = "spellName", Type = "cstring", Nilable = false },
+				{ Name = "castID", Type = "number", Nilable = false, NeverSecret = true },
+				{ Name = "color", Type = "colorRGBA", Mixin = "ColorMixin", Nilable = false },
+			},
+		},
+		{
+			Name = "Unrelated",
+			Type = "Structure",
+			Fields =
+			{
+				{ Name = "plain", Type = "number", Nilable = false },
+				{ Name = "flagged", Type = "bool", Nilable = false, SecretValue = true },
+			},
+		},
+	},
+
+	Predicates =
+	{
+		{
+			Name = "RequiresUnitIdentity",
+			Type = "Precondition",
+			FailureMode = "ReturnNothing",
+		},
+		{
+			Name = "SecretWhenUnitIdentityRestricted",
+			Type = "Secret",
+			Documentation = { "Guarded APIs produce secret values when the unit isn't player-controlled." },
+		},
+		{
+			Name = "SecretWhenUnitSpellCastRestricted",
+			Type = "Secret",
+			Documentation = { "Guarded APIs produce secret values if the unit is not the player.", "Second sentence." },
+		},
+	},
+};
+
+local FontAPI =
+{
+	Name = "SimpleFontStringAPI",
+	Type = "ScriptObject",
+
+	Functions =
+	{
+		{
+			Name = "SetText",
+			Type = "Function",
+			SecretArgumentsAddAspect = { Enum.SecretAspect.Text, Enum.SecretAspect.Alpha },
+			SecretArguments = "AllowedWhenTainted",
+
+			Arguments =
+			{
+				{ Name = "text", Type = "cstring", Nilable = false },
+			},
+		},
+		{
+			Name = "GetText",
+			Type = "Function",
+			SecretReturnsForAspect = { Enum.SecretAspect.Text },
+			SecretWhenUnitSpellCastRestricted = true,
+
+			Returns =
+			{
+				{ Name = "text", Type = "cstring", Nilable = false },
+			},
+		},
+	},
+};
+"#;
+    let mut docs = BlizzardApiDocs {
+        functions: Vec::new(),
+        events: Vec::new(),
+        structures: Vec::new(),
+        predicates: Vec::new(),
+        script_objects: Vec::new(),
+    };
+    let re = BlizzardDocRegexes::new();
+    let (unit_doc, font_doc) = content.split_at(content.find("local FontAPI").unwrap());
+    parse_blizzard_api_doc_file(unit_doc, &mut docs, &re);
+    parse_blizzard_api_doc_file(font_doc, &mut docs, &re);
+    docs
+}
+
+#[test]
+fn test_parse_blizzard_secrecy_keys() {
+    let docs = secret_test_docs();
+    let cast = &docs.functions[0];
+    assert_eq!(cast.secrecy.flags, vec!["SecretWhenUnitSpellCastRestricted"]);
+    assert_eq!(cast.secrecy.arguments.as_deref(), Some("AllowedWhenUntainted"));
+    assert!(!cast.returns[0].secrecy.never);
+    assert!(cast.returns[1].secrecy.never);
+    assert!(docs.functions[2].returns[0].secrecy.conditional);
+    assert!(docs.structures[1].fields[1].secrecy.value);
+    assert_eq!(docs.events[0].secrecy.flags, vec!["SecretWhenUnitSpellCastRestricted"]);
+
+    assert_eq!(docs.predicates.len(), 3);
+    let pred = &docs.predicates[2];
+    assert_eq!(pred.kind, "Secret");
+    assert_eq!(
+        pred.documentation.as_deref(),
+        Some("Guarded APIs produce secret values if the unit is not the player. Second sentence."),
+    );
+
+    let set_text = &docs.script_objects[0].functions[0];
+    assert_eq!(set_text.secrecy.aspects, vec!["Text", "Alpha"]);
+    assert_eq!(set_text.secrecy.arguments.as_deref(), Some("AllowedWhenTainted"));
+}
+
+#[test]
+fn test_param_flag_whole_word() {
+    assert!(param_flag(r#"{ Name = "x", NeverSecret = true }"#, "NeverSecret"));
+    assert!(!param_flag(r#"{ Name = "x", NeverSecretContents = true }"#, "NeverSecret"));
+    assert!(!param_flag(r#"{ Name = "x", NeverSecret = false }"#, "NeverSecret"));
+}
+
+#[test]
+fn test_build_secret_index_rules() {
+    let index = build_secret_index(&secret_test_docs(), &HashSet::new());
+
+    // Predicated: every return except NeverSecret ones, with the predicate docs.
+    let cast = &index.functions["UnitCastInfo"];
+    assert_eq!(cast.entries, vec![("name".to_string(), true), ("castBarID".to_string(), false)]);
+    assert_eq!(cast.when.len(), 1);
+    assert!(cast.when[0].doc.as_deref().is_some_and(|d| d.starts_with("Guarded APIs")));
+    assert_eq!(cast.args, None, "AllowedWhenUntainted is the implicit default");
+
+    // SecretReturns without a predicate; NotAllowed → `none`. (The `SecretReturns =`
+    // key must not be mistaken for the `Returns =` array, which would read the
+    // arguments as returns.)
+    let hp = &index.functions["UnitHP"];
+    assert!(hp.when.is_empty());
+    assert_eq!(hp.entries, vec![("result".to_string(), true)]);
+    assert_eq!(hp.args, Some(crate::secrets::SecretArgsPolicy::NotAllowed));
+
+    // ConditionalSecret marks just that return.
+    let role = &index.functions["UnitRole"];
+    assert_eq!(role.entries, vec![("role".to_string(), true), ("roleID".to_string(), false)]);
+    assert_eq!(role.args, Some(crate::secrets::SecretArgsPolicy::AllowedWhenTainted));
+
+    // An undefined `SecretWhen…` flag is a predicate by convention; a Precondition isn't.
+    let curve = &index.functions["UnitCurve"];
+    assert_eq!(curve.when, vec![crate::secrets::SecretPredicate { name: "SecretWhenCurveSecret".to_string(), doc: None }]);
+    // A structure return is table-like itself; its fields are marked instead.
+    assert_eq!(curve.entries, vec![("info".to_string(), false)]);
+    let cast_data = &index.structures["CastData"];
+    assert!(cast_data.contains("spellName"));
+    assert!(!cast_data.contains("castID"), "NeverSecret field");
+    assert!(!cast_data.contains("color"), "mixin tables carry secret fields, not secrecy");
+
+    // SecretValue fields are secret in any structure; others there are not.
+    let unrelated = &index.structures["Unrelated"];
+    assert!(unrelated.contains("flagged") && !unrelated.contains("plain"));
+
+    assert!(!index.functions.contains_key("UnitPlain"));
+
+    let sent = &index.events["UNIT_CAST_SENT"];
+    assert_eq!(sent.entries, vec![("unitTarget".to_string(), false), ("target".to_string(), true)]);
+
+    let set_text = &index.functions["FontString:SetText"];
+    assert_eq!(set_text.aspects, vec!["Text", "Alpha"]);
+    assert_eq!(set_text.args, Some(crate::secrets::SecretArgsPolicy::AllowedWhenTainted));
+
+    // Widget getters keep their predicates/aspects for hover but aren't tainted.
+    let get_text = &index.functions["FontString:GetText"];
+    assert_eq!(get_text.aspects, vec!["Text"]);
+    assert_eq!(get_text.when.len(), 1);
+    assert_eq!(get_text.entries, vec![("text".to_string(), false)]);
+
+    // Identity secrecy never applies to the player's own units; a cast predicate
+    // (individual spells can be always-secret) exempts nothing.
+    let identity = &index.functions["UnitIdentity"];
+    assert_eq!(identity.unless, Some((0, "unitToken".to_string(), vec!["player", "pet"])));
+    assert_eq!(index.functions["UnitCastInfo"].unless, None);
+    assert_eq!(index.functions["UnitHP"].unless, None, "SecretReturns is never exempt");
+}
+
+#[test]
+fn test_apply_secret_annotations_rewrites_stub_text() {
+    let index = build_secret_index(&secret_test_docs(), &HashSet::new());
+    let stub = "\
+---[Documentation](https://warcraft.wiki.gg/wiki/API_UnitCastInfo)
+---@param unit UnitToken
+---@return string name
+---@return number? castBarID
+function UnitCastInfo(unit) end
+
+---@return number value
+function UnitPlain() end
+
+---@param text? string
+function FontString:SetText(text) end
+
+---@return string text
+function FontString:GetText() end
+
+---@param unit UnitToken
+---@return string name
+function UnitIdentity(unit) end
+
+---@class CastData
+---@field spellName string
+---@field castID number
+---@field color colorRGBA
+
+---@event FrameEvent \"UNIT_CAST_SENT\"
+---@param unitTarget UnitToken
+---@param target string
+";
+    let out = apply_secret_annotations(stub, &index).expect("stub should change");
+    let expected = "\
+---[Documentation](https://warcraft.wiki.gg/wiki/API_UnitCastInfo)
+---@param unit UnitToken
+---@return secret<string> name
+---@return number? castBarID
+---@secret-when SecretWhenUnitSpellCastRestricted Guarded APIs produce secret values if the unit is not the player. Second sentence.
+function UnitCastInfo(unit) end
+
+---@return number value
+function UnitPlain() end
+
+---@param text? string
+---@secret-args tainted
+---@secret-aspect Text
+---@secret-aspect Alpha
+function FontString:SetText(text) end
+
+---@return string text
+---@secret-when SecretWhenUnitSpellCastRestricted Guarded APIs produce secret values if the unit is not the player. Second sentence.
+---@secret-aspect Text
+function FontString:GetText() end
+
+---@param unit UnitToken
+---@return secret<string> name
+---@secret-when SecretWhenUnitIdentityRestricted Guarded APIs produce secret values when the unit isn't player-controlled.
+---@secret-unless unit player pet
+function UnitIdentity(unit) end
+
+---@class CastData
+---@field spellName secret<string>
+---@field castID number
+---@field color colorRGBA
+
+---@event FrameEvent \"UNIT_CAST_SENT\"
+---@secret-when SecretWhenUnitSpellCastRestricted Guarded APIs produce secret values if the unit is not the player. Second sentence.
+---@param unitTarget UnitToken
+---@param target secret<string>
+";
+    assert_eq!(out, expected);
+    // Text the index doesn't touch comes back as `None`.
+    assert!(apply_secret_annotations("---@return number value\nfunction UnitPlain() end\n", &index).is_none());
+    assert_eq!(wrap_secret_type("string?"), "secret<string>?");
 }

@@ -47,8 +47,13 @@ impl AnalysisResult {
     pub(super) fn event_string_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
         let (_, event_name, payload) = self.resolve_event_string_at(tree, offset)
             .or_else(|| self.resolve_event_string_in_comparison(tree, offset))?;
-        let type_str = Self::format_event_payload(event_name, payload);
-        Some(HoverResult { type_str, doc: payload.documentation.clone() })
+        let type_str = self.format_event_payload(event_name, payload);
+        let secrecy = self.format_event_secrecy_doc(payload);
+        let doc = match (payload.documentation.clone(), secrecy) {
+            (Some(d), Some(s)) => Some(format!("{d}\n\n{s}")),
+            (d, s) => d.or(s),
+        };
+        Some(HoverResult { type_str, doc })
     }
 
     pub(super) fn event_string_definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
@@ -124,13 +129,13 @@ impl AnalysisResult {
         None
     }
 
-    pub(super) fn format_event_payload(event_name: &str, payload: &crate::pre_globals::EventPayload) -> String {
+    pub(super) fn format_event_payload(&self, event_name: &str, payload: &crate::pre_globals::EventPayload) -> String {
         if payload.params.is_empty() {
             return format!("(event) {}", event_name);
         }
         let params: Vec<String> = payload.params.iter().map(|p| {
             let nilable = if p.nilable { "?" } else { "" };
-            format!("{}{}: {}", p.name, nilable, p.type_name)
+            format!("{}{}: {}", p.name, nilable, self.event_param_type_text(&p.type_name))
         }).collect();
         let single_line = format!("(event) {} \u{2192} {}", event_name, params.join(", "));
         if single_line.len() > 80 && params.len() > 1 {
@@ -138,6 +143,37 @@ impl AnalysisResult {
         } else {
             single_line
         }
+    }
+
+    /// A payload param's annotation text as displayed: `secret<T>` becomes plain
+    /// `T` when secrecy isn't displayed (`secrets_displayed`).
+    fn event_param_type_text(&self, type_name: &str) -> String {
+        let at = crate::annotations::annotation_types::parse_type(type_name);
+        if self.secrets_displayed() || !at.contains_secret() {
+            return type_name.to_string();
+        }
+        crate::annotations::format_annotation_type(&at.without_secret())
+    }
+
+    /// The hover "Secrecy" section of an event: its `@secret-when` predicates and
+    /// which payload params may be secret.
+    fn format_event_secrecy_doc(&self, payload: &crate::pre_globals::EventPayload) -> Option<String> {
+        if !self.secrets_displayed() {
+            return None;
+        }
+        let secret_params: Vec<String> = payload.params.iter()
+            .filter(|p| crate::annotations::annotation_types::parse_type(&p.type_name).contains_secret())
+            .map(|p| format!("`{}`", p.name))
+            .collect();
+        if payload.secret_when.is_empty() && secret_params.is_empty() {
+            return None;
+        }
+        let mut lines = vec!["**Secrecy**".to_string()];
+        lines.extend(payload.secret_when.iter().map(|pred| pred.hover_line("Payload may be secret")));
+        if !secret_params.is_empty() {
+            lines.push(format!("- May be secret: {}", secret_params.join(", ")));
+        }
+        Some(lines.join("\n"))
     }
 
     /// Check whether the token at `offset` is a string literal passed to an

@@ -700,6 +700,8 @@ pub struct EventDecl {
     pub event_name: String,
     pub params: Vec<crate::pre_globals::EventPayloadParam>,
     pub documentation: Option<String>,
+    /// `@secret-when` predicates on the event block.
+    pub secret_when: Vec<crate::secrets::SecretPredicate>,
     pub def_range: Option<(u32, u32)>,
     pub def_path: Option<std::path::PathBuf>,
 }
@@ -727,6 +729,13 @@ pub fn register_event_type_aliases(aliases: &mut Vec<AliasDecl>, events: &[Event
     }
     if !to_insert.is_empty() {
         aliases.splice(0..0, to_insert);
+    }
+}
+
+impl AnnotationBlock {
+    /// The block's `@secret-*` metadata, or `None` when it carries none.
+    pub fn secret_meta(&self) -> Option<Box<crate::secrets::SecretMeta>> {
+        (self.secret != crate::secrets::SecretMeta::default()).then(|| Box::new(self.secret.clone()))
     }
 }
 
@@ -779,6 +788,8 @@ pub struct AnnotationBlock {
     /// receiver's class (e.g. `GetObjectType`), used for equality-comparison
     /// type narrowing.
     pub returns_class_name: bool,
+    /// `@secret-when` / `@secret-args` / `@secret-aspect` / `@secret-guard`.
+    pub secret: crate::secrets::SecretMeta,
     pub is_enum: bool,
     pub is_key_enum: bool,
     pub correlated_groups: Vec<Vec<String>>,
@@ -1398,6 +1409,7 @@ fn flush_group(
                 event_name,
                 params,
                 documentation,
+                secret_when: block.secret.when.clone(),
                 def_range: event_range,
                 def_path: None,
             });
@@ -1411,6 +1423,7 @@ fn flush_group(
                     event_name,
                     params,
                     documentation: documentation.clone(),
+                    secret_when: block.secret.when.clone(),
                     def_range: entry_range,
                     def_path: None,
                 });
@@ -1922,6 +1935,38 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 .collect();
             if names.len() >= 2 {
                 block.correlated_groups.push(names);
+            }
+        } else if let Some(rest) = content.strip_prefix("@secret-when") {
+            // `@secret-when <Predicate> [documentation]`
+            let rest = rest.trim();
+            let (name, doc) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            if !name.is_empty() {
+                let doc = doc.trim();
+                block.secret.when.push(crate::secrets::SecretPredicate {
+                    name: name.to_string(),
+                    doc: (!doc.is_empty()).then(|| doc.to_string()),
+                });
+            }
+        } else if let Some(rest) = content.strip_prefix("@secret-args") {
+            if let Some(policy) = rest.split_whitespace().next().and_then(crate::secrets::SecretArgsPolicy::parse) {
+                block.secret.args = Some(policy);
+            }
+        } else if let Some(rest) = content.strip_prefix("@secret-aspect") {
+            block.secret.aspects.extend(rest.split_whitespace().map(str::to_string));
+        } else if let Some(rest) = content.strip_prefix("@secret-unless") {
+            // `@secret-unless <param> <value>...`
+            let mut parts = rest.split_whitespace();
+            if let Some(param) = parts.next() {
+                let values: Vec<String> = parts.map(|v| v.trim_matches(|c| c == '"' || c == '\'').to_string()).collect();
+                if !values.is_empty() {
+                    block.secret.unless = Some(crate::secrets::SecretExemption { param: param.to_string(), values });
+                }
+            }
+        } else if let Some(rest) = content.strip_prefix("@secret-guard") {
+            // `@secret-guard <param> is-secret|accessible|any-secret`
+            let mut parts = rest.split_whitespace();
+            if let (Some(param), Some(kind)) = (parts.next(), parts.next().and_then(crate::secrets::SecretGuardKind::parse)) {
+                block.secret.guard = Some(crate::secrets::SecretGuard { param: param.to_string(), kind });
             }
         } else if let Some(rest) = content.strip_prefix("@see")
             .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))

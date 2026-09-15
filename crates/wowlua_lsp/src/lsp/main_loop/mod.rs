@@ -2374,6 +2374,7 @@ mod tests {
                 type_narrows: None,
                 type_narrows_class: None,
                 returns_class_name: false,
+                secret: None,
                 string_value: None,
                 number_value: None,
                 is_override: false,
@@ -2869,6 +2870,7 @@ mod tests {
             type_narrows: None,
             type_narrows_class: None,
             returns_class_name: false,
+            secret: None,
             string_value: None,
             number_value: None,
             is_override: false,
@@ -3047,6 +3049,35 @@ mod tests {
             RebuildScope::Full => panic!("expected Incremental scope, got Full"),
             RebuildScope::None => panic!("expected Incremental scope, got None"),
         }
+    }
+
+    #[test]
+    fn secret_annotation_edits_trigger_rebuild() {
+        // A `@secret-*` edit changes other files' analysis (guard narrowing,
+        // exemptions, payload hover), so `globals_match`/`events_match` must see it.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let mut rebuild = |src: String| {
+            let tree = crate::syntax::parser::parse(&src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws)
+        };
+
+        let guard = |kind: &str| format!(
+            "---@secret-guard value {kind}\n---@param value any\n---@return boolean\nfunction IsReadable(value) end\n"
+        );
+        let _ = rebuild(guard("accessible"));
+        match rebuild(guard("is-secret")) {
+            RebuildScope::Incremental(names) => assert!(names.contains("IsReadable"), "changed guard must be named: {names:?}"),
+            RebuildScope::Full => panic!("expected Incremental scope, got Full"),
+            RebuildScope::None => panic!("@secret-guard edit must trigger a rebuild"),
+        }
+
+        let event = |when: &str| format!("---@event MyEvent \"SOMETHING_HAPPENED\"\n{when}---@param id number\n");
+        let _ = rebuild(event(""));
+        assert!(
+            matches!(rebuild(event("---@secret-when SecretWhenRestricted\n")), RebuildScope::Full),
+            "@secret-when edit on an event must trigger a Full rebuild",
+        );
     }
 
     #[test]

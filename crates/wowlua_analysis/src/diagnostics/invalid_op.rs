@@ -37,7 +37,7 @@ fn supports_length(ty: &ValueType) -> bool {
         ValueType::Intersection(types) => {
             types.iter().any(supports_length)
         }
-        ValueType::OpaqueAlias(_, inner) => supports_length(inner),
+        ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => supports_length(inner),
         _ => false,
     }
 }
@@ -78,7 +78,7 @@ impl DiagnosticPass for InvalidOp {
 
         // Check unary # (length) operator on types that don't support it.
         for &(expr_id, start, end) in &analysis.ir.unary_op_sites {
-            let Expr::UnaryOp { operand, .. } = *analysis.expr(expr_id) else { continue };
+            let Expr::UnaryOp { op: Operator::ArrayLength, operand } = *analysis.expr(expr_id) else { continue };
             let Some(operand_type) = analysis.resolve_expr_type(operand) else { continue };
             if is_type_permissive(&operand_type) { continue; }
             if supports_length(&operand_type) { continue; }

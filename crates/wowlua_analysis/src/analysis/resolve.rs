@@ -3463,24 +3463,30 @@ impl<'a> Analysis<'a> {
                     // Unresolved operand: `not` still produces boolean (Lua semantics)
                     None if op == Operator::Not => Some(ValueType::Boolean(None)),
                     None => None,
-                    Some(ref ot) => match op {
-                        Operator::Not => Some(ValueType::Boolean(None)),
-                        Operator::Subtract => {
-                            match ot {
-                                ValueType::Number | ValueType::NumberLiteral(_) => Some(ValueType::Number),
-                                _ => self.resolve_unary_metamethod(op, ot),
-                            }
-                        }
-                        Operator::ArrayLength => {
-                            match ot {
-                                ValueType::Table(Some(_)) => {
-                                    self.resolve_unary_metamethod(op, ot)
-                                        .or(Some(ValueType::Number))
+                    Some(ref ot) => {
+                        // Operate on the underlying type; secrecy is re-applied below.
+                        let stripped;
+                        let plain_ot = if ot.has_secret() { stripped = ot.strip_secret(); &stripped } else { ot };
+                        let plain = match op {
+                            Operator::Not => Some(ValueType::Boolean(None)),
+                            Operator::Subtract => {
+                                match plain_ot {
+                                    ValueType::Number | ValueType::NumberLiteral(_) => Some(ValueType::Number),
+                                    _ => self.resolve_unary_metamethod(op, plain_ot),
                                 }
-                                _ => Some(ValueType::Number),
                             }
-                        }
-                        _ => None,
+                            Operator::ArrayLength => {
+                                match plain_ot {
+                                    ValueType::Table(Some(_)) => {
+                                        self.resolve_unary_metamethod(op, plain_ot)
+                                            .or(Some(ValueType::Number))
+                                    }
+                                    _ => Some(ValueType::Number),
+                                }
+                            }
+                            _ => None,
+                        };
+                        apply_unary_secrecy(op, ot, plain)
                     }
                 };
             }
@@ -4316,9 +4322,43 @@ fn first_table_index_in_type(ty: &ValueType) -> Option<TableIndex> {
     }
 }
 
+/// Apply `crate::secrets` to a unary operator's result computed on the operand's
+/// underlying (secret-stripped) type. Shared by both resolution engines.
+pub(super) fn apply_unary_secrecy(op: Operator, operand: &ValueType, plain: Option<ValueType>) -> Option<ValueType> {
+    use crate::secrets::SecretRule;
+    let plain = plain?;
+    if !operand.has_secret() {
+        return Some(plain);
+    }
+    let rule = match op {
+        Operator::Not => crate::secrets::truth_test_rule(operand),
+        Operator::Subtract => crate::secrets::NEGATE,
+        Operator::ArrayLength => crate::secrets::LENGTH,
+        _ => SecretRule::Allowed,
+    };
+    Some(match rule {
+        SecretRule::Propagate => ValueType::secret_of(plain),
+        SecretRule::Allowed | SecretRule::Error => plain,
+    })
+}
+
 /// Pure function for binary op type resolution (no `self` needed).
 /// Called from both `Analysis::resolve_binary_op` and `AnalysisResult::resolve_expr_type_inner`.
 pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
+    // Secret operands: resolve on the underlying types, then re-apply secrecy where
+    // `crate::secrets` says it propagates (comparison results are ordinary booleans;
+    // `and`/`or` keep the secrecy of the operands that can pass through untested).
+    if lhs_type.has_secret() || rhs_type.has_secret() {
+        use crate::secrets::SecretRule;
+        let plain = resolve_binary_op_standalone(op, lhs_type.strip_secret(), rhs_type.strip_secret())?;
+        if matches!(op, Operator::And | Operator::Or) {
+            return Some(plain.with_secret_members(&crate::secrets::and_or_secrets(op, &lhs_type, &rhs_type)));
+        }
+        return Some(match crate::secrets::binary_op_rule(op, &lhs_type, &rhs_type) {
+            SecretRule::Propagate => ValueType::secret_of(plain),
+            _ => plain,
+        });
+    }
     // Unwrap opaque aliases — operators work on the inner type, results decay to base type
     let lhs_type = lhs_type.into_strip_opaque();
     let rhs_type = rhs_type.into_strip_opaque();
@@ -4422,8 +4462,8 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
                     (_, ValueType::Union(types)) => types.iter().all(|t| can_ordered_cmp(lhs, t)),
                     (ValueType::Intersection(types), _) => types.iter().any(|t| can_ordered_cmp(t, rhs)),
                     (_, ValueType::Intersection(types)) => types.iter().any(|t| can_ordered_cmp(lhs, t)),
-                    (ValueType::OpaqueAlias(_, inner), _) => can_ordered_cmp(inner, rhs),
-                    (_, ValueType::OpaqueAlias(_, inner)) => can_ordered_cmp(lhs, inner),
+                    (ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner), _) => can_ordered_cmp(inner, rhs),
+                    (_, ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner)) => can_ordered_cmp(lhs, inner),
                     _ => false,
                 }
             }

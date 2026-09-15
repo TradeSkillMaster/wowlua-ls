@@ -75,6 +75,18 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@narrows-arg N` | Bare call narrows the Nth argument's type to the return type. | [Type Guards](/guide/type-guards#narrows-arg) |
 | `@flavor-narrows flavor` | Flavor guard function or boolean. | [Flavor Filtering](/guide/flavor-filtering) |
 
+## Secret-value annotations
+
+Retail only. A value that may be secret is typed `secret<T>` (see [Type syntax](#type-syntax)); these annotations describe the functions that produce, accept, or test secrets. See [Secret Values](/guide/secrets).
+
+| Annotation | Description |
+|---|---|
+| `@secret-guard param kind` | Guard function: its boolean result proves `param` (`...` for varargs) secret or not. `kind` is `is-secret`, `accessible`, or `any-secret`. |
+| `@secret-args none\|tainted\|untainted` | Secret arguments: `none` never accepted ([`secret-argument`](/reference/diagnostics)), `tainted` accepted from addon code with secret results, `untainted` accepted only from Blizzard code (not reported). |
+| `@secret-unless param value...` | A call passing one of these string literals for `param` returns ordinary values (`@secret-unless unit player pet`). |
+| `@secret-when Predicate [description]` | The restriction under which results (or an `@event`'s payload) may be secret. Shown in hover; secret results are still typed in `@return`. |
+| `@secret-aspect Aspect` | Widget aspect (`Text`, `Alpha`, …) the method makes secret or reads. Shown in hover. |
+
 ## Metadata annotations
 
 | Annotation | Description |
@@ -277,6 +289,7 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `T[]` | Array |
 | `T[K]` | Indexed access: field type of K on T |
 | `keyof T` | A string that is one of `T`'s field/method names (see below) |
+| `secret<T>` | A `T` that may be a [secret value](/guide/secrets) (retail); `T\|secret<T>` means the same |
 | `[T1, T2]` | Tuple: fixed-shape table (`{ [1]: T1, [2]: T2 }`) |
 | `T?` | Optional (`T \| nil`) |
 | `?T` | Optional, prefix form (same as `T?`) |

@@ -251,6 +251,8 @@ fn is_assignable(actual: &ValueType, expected: &ValueType) -> bool {
         (ValueType::OpaqueAlias(a, _), ValueType::OpaqueAlias(b, _)) if a != b => false,
         (_, ValueType::OpaqueAlias(_, inner)) => is_assignable(actual, inner),
         (ValueType::OpaqueAlias(_, inner), _) => is_assignable(inner, expected),
+        (ValueType::Secret(inner), _) => is_assignable(inner, expected),
+        (_, ValueType::Secret(inner)) => is_assignable(actual, inner),
         _ => actual == expected,
     }
 }

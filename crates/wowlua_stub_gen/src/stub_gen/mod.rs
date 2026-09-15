@@ -22,6 +22,7 @@ mod xml_frames;
 mod classic;
 mod util;
 mod data_params;
+mod secret_stubs;
 mod orchestrate;
 #[cfg(test)]
 mod tests;
@@ -35,6 +36,7 @@ pub(in crate::stub_gen) use xml_frames::*;
 pub(in crate::stub_gen) use classic::*;
 pub(in crate::stub_gen) use util::*;
 pub(in crate::stub_gen) use data_params::*;
+pub(in crate::stub_gen) use secret_stubs::*;
 pub use orchestrate::regenerate_stubs;
 
 /// Files we generate from wago.tools DB2 data — excluded from dedup scans so that
@@ -76,6 +78,46 @@ pub(in crate::stub_gen) struct BlizzardParam {
     /// when present. Blizzard's `Type` is a C++ type while `Mixin` is the actual
     /// Lua class (e.g. `Type = "ItemLocation", Mixin = "ItemLocationMixin"`).
     mixin: Option<String>,
+    /// Inline secret-value markers (`NeverSecret = true`, ...).
+    secrecy: ParamSecrecy,
+}
+
+/// Inline secret-value markers on a return / struct field / event payload entry.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(in crate::stub_gen) struct ParamSecrecy {
+    /// `NeverSecret = true`
+    never: bool,
+    /// `ConditionalSecret = true`: this entry may be secret regardless of the
+    /// owning function's own keys.
+    conditional: bool,
+    /// `SecretValue = true`: this entry is secret regardless of context.
+    value: bool,
+    /// `NeverSecretContents = true` on a table entry.
+    never_contents: bool,
+    /// `ConditionalSecretContents = true` on a table entry.
+    secret_contents: bool,
+}
+
+/// Function- or event-level secret-value keys (3-tab keys of the entry block).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(in crate::stub_gen) struct EntrySecrecy {
+    /// Every `Key = true` flag, in source order. Secret predicates, `SecretReturns`,
+    /// `SecretPayloads` and `ReturnsNeverSecret` are picked out of this later,
+    /// against the parsed `Predicates` tables.
+    flags: Vec<String>,
+    /// `SecretArguments = "..."`
+    arguments: Option<String>,
+    /// `SecretArgumentsAddAspect` / `SecretReturnsForAspect` aspect names.
+    aspects: Vec<String>,
+}
+
+/// An entry of a documentation file's `Predicates` table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::stub_gen) struct BlizzardPredicate {
+    name: String,
+    /// `Type = "Secret" | "Precondition"`
+    kind: String,
+    documentation: Option<String>,
 }
 
 #[derive(Debug)]
@@ -85,12 +127,14 @@ pub(in crate::stub_gen) struct BlizzardFunction {
     arguments: Vec<BlizzardParam>,
     returns: Vec<BlizzardParam>,
     may_return_nothing: bool,
+    secrecy: EntrySecrecy,
 }
 
 #[derive(Debug)]
 pub(in crate::stub_gen) struct BlizzardEvent {
     literal_name: String,
     payload: Vec<BlizzardParam>,
+    secrecy: EntrySecrecy,
 }
 
 #[derive(Debug)]
@@ -107,6 +151,8 @@ pub(in crate::stub_gen) struct BlizzardApiDocs {
     /// Widget/frame method APIs from `Type = "ScriptObject"` documentation files.
     /// These are methods on specific frame types, not top-level globals.
     script_objects: Vec<BlizzardScriptObjectApi>,
+    /// Every file's `Predicates` entries (secret predicates and preconditions).
+    predicates: Vec<BlizzardPredicate>,
 }
 
 /// A ScriptObject API definition from Blizzard_APIDocumentationGenerated.
@@ -133,6 +179,8 @@ pub(in crate::stub_gen) struct BlizzardDocRegexes {
     may_return_nothing: regex_lite::Regex,
     literal_name: regex_lite::Regex,
     section: regex_lite::Regex,
+    entry_key: regex_lite::Regex,
+    documentation: regex_lite::Regex,
 }
 
 impl BlizzardDocRegexes {
@@ -152,7 +200,11 @@ impl BlizzardDocRegexes {
             mixin: regex_lite::Regex::new(r#"Mixin\s*=\s*"(\w+)""#).unwrap(),
             may_return_nothing: regex_lite::Regex::new(r"MayReturnNothing\s*=\s*true").unwrap(),
             literal_name: regex_lite::Regex::new(r#"LiteralName\s*=\s*"([A-Z_][A-Z0-9_]*)""#).unwrap(),
-            section: regex_lite::Regex::new(r"(?m)^\t(Functions|Events|Tables)\s*=\s*$").unwrap(),
+            section: regex_lite::Regex::new(r"(?m)^\t(Functions|Events|Tables|Predicates)\s*=\s*$").unwrap(),
+            // An entry-level key: exactly three tabs of indentation (nested
+            // Arguments/Returns entries sit deeper).
+            entry_key: regex_lite::Regex::new(r"(?m)^\t\t\t(\w+)[ \t]*=[ \t]*(.*?),?[ \t]*$").unwrap(),
+            documentation: regex_lite::Regex::new(r#"Documentation\s*=\s*\{\s*((?:"(?:[^"\\]|\\.)*"\s*,?\s*)*)\}"#).unwrap(),
         }
     }
 }

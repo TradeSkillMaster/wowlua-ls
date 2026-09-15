@@ -146,6 +146,7 @@ impl AnalysisResult {
 
             // For tables mutated via bracket assignment, show the constructor's
             // initial element type rather than the post-mutation type.
+            let _secrecy = self.secrecy_display_at(token_start);
             let formatted = self.initial_array_display(resolved)
                 .unwrap_or_else(|| self.format_type_for_hint(resolved));
             if formatted == "?" { continue; }
@@ -182,6 +183,7 @@ impl AnalysisResult {
             return;
         }
 
+        let _secrecy = self.secrecy_display_at(node_start);
         let rets = self.format_inferred_returns_for_hint(func);
         if rets.is_empty() { return; }
 
@@ -244,9 +246,10 @@ impl AnalysisResult {
 
             if matches!(resolved, ValueType::Any | ValueType::Nil) { continue; }
 
+            let token_start = u32::from(token.text_range().start());
+            let _secrecy = self.secrecy_display_at(token_start);
             let formatted = self.format_type_for_hint(resolved);
 
-            let token_start = u32::from(token.text_range().start());
             let type_args = self.get_symbol_type_args(sym_idx, token_start);
             let formatted = self.append_type_args_to_class(&formatted, resolved, &type_args);
 
@@ -313,6 +316,7 @@ impl AnalysisResult {
 
             if matches!(resolved, ValueType::Any) { continue; }
 
+            let _secrecy = self.secrecy_display_at(token_start);
             let formatted = self.format_type_for_hint(resolved);
             if formatted == "?" { continue; }
 
@@ -365,6 +369,7 @@ impl AnalysisResult {
                 continue;
             }
 
+            let _secrecy = self.secrecy_display_at(call_range.0);
             let formatted = self.format_type_for_hint(&resolved);
             if formatted == "?" {
                 continue;

@@ -2,6 +2,7 @@ use super::*;
 
 impl AnalysisResult {
     pub fn signature_help_at(&self, tree: &SyntaxTree, offset: u32) -> Option<SignatureHelpResult> {
+        let _secrecy = self.secrecy_display_at(offset);
         let text_size = TextSize::from(offset);
         let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
 

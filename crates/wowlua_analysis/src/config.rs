@@ -537,8 +537,8 @@ impl ProjectConfigs {
         }
     }
 
-    /// The addon's full *declared* flavor breadth for a file, used only by the
-    /// flavor-aware `deprecated` diagnostic (not `wrong-flavor-api`).
+    /// The addon's full *declared* flavor breadth for a file, used by flavor-aware
+    /// `deprecated`, secret values, and `flavor::guard_base` (not `wrong-flavor-api`).
     ///
     /// Prefers an explicit declaration — `flavors_for` (`.wowluarc.json`
     /// `flavors` intersected with a flavor-specific TOC) — and otherwise falls

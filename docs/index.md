@@ -22,8 +22,8 @@ features:
     details: "Understands setmetatable + __index chains, __call, operator metamethods, and self-referential metatables. Your OOP patterns just work - no annotations needed."
   - title: Deep nil safety
     details: "Nil errors are the #1 cause of addon crashes. wowlua-ls tracks nil through every guard - if-checks, assert, early returns, type() tests, and field presence - so you never get false nil warnings, and multi-return values narrow together (check one, the rest come with it). Enable need-check-nil to flag unsafe access before it ships."
-  - title: 75+ diagnostics
-    details: "Type safety, nil checking, annotation correctness, code quality, and WoW-specific checks like wrong-flavor-api. Each one suppressible per-line or per-project. Write custom diagnostic plugins in Lua."
+  - title: 80+ diagnostics
+    details: "Type safety, nil checking, annotation correctness, code quality, and WoW-specific checks like wrong-flavor-api and secret-value misuse. Each one suppressible per-line or per-project. Write custom diagnostic plugins in Lua."
   - title: Cross-file intelligence
     details: "Addon namespace resolution, class inheritance across files, defclass factories, XML templates, and metatable chains - all resolved workspace-wide with parallel scanning. Multi-addon workspaces supported."
   - title: Flavor filtering

@@ -356,7 +356,7 @@ fn possible_type_kinds(t: &ValueType) -> Option<Vec<&'static str>> {
             ValueType::Function(_) | ValueType::FunctionSig(_) => out.push("function"),
             ValueType::Userdata => out.push("userdata"),
             ValueType::Thread => out.push("thread"),
-            ValueType::OpaqueAlias(_, inner) => return collect(inner, out),
+            ValueType::OpaqueAlias(_, inner) | ValueType::Secret(inner) => return collect(inner, out),
             ValueType::Union(members) => {
                 for m in members {
                     if !collect(m, out) { return false; }

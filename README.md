@@ -19,6 +19,7 @@ LuaLS is an excellent general-purpose Lua language server. But WoW addons aren't
 | XML frames & templates | Invisible to the language server | Scanned into typed classes and globals |
 | `.toc` files | Unsupported | Hover, completion, go-to-def, diagnostics |
 | Wrong-flavor API calls | Not detected | Flagged with `wrong-flavor-api` |
+| Secret values (retail 12.x) | Not detected | Comparisons, arithmetic, and table keys on secrets flagged |
 | Mixins & templates | Annotate by hand | `CreateFrame` / `Mixin` infer `A & B` automatically |
 
 And it goes well beyond stubs. The type engine understands the patterns addons are actually written in:
@@ -27,7 +28,7 @@ And it goes well beyond stubs. The type engine understands the patterns addons a
 - **Correlated narrowing**: check one return value, and the LS narrows the rest. Eliminates false positives from multi-return functions. Works automatically - no annotations needed in most cases.
 - **Powerful generics**: parameterized classes, constrained type parameters, backtick factory annotations, function-type projections (`params<F>`, `returns<F>`). Class-level generics propagate through method calls automatically.
 - **Builder pattern**: `@builds-field` tracks progressive type construction across chained method calls.
-- **75+ diagnostics**: type safety, nil checking, annotation correctness, code quality, and WoW-specific checks. Each one individually configurable per-line or per-project.
+- **80+ diagnostics**: type safety, nil checking, annotation correctness, code quality, and WoW-specific checks. Each one individually configurable per-line or per-project.
 - **Diagnostic plugins**: write custom Lua scripts to enforce project-specific conventions. Query local variables, field accesses, and method calls to emit your own diagnostics.
 - **CI-ready CLI**: `wowlua_ls check path/to/addon` lints your addon and exits non-zero on diagnostics. Drop it into your CI pipeline.
 

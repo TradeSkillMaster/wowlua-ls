@@ -8,7 +8,7 @@
 //! `crate::lsp::…` (etc.) paths keep resolving inside the moved code.
 
 pub use wowlua_lsp::{
-    analysis, annotations, ast, config, diagnostics, flavor, lsp, plugins, pre_globals, syntax,
+    analysis, annotations, ast, config, diagnostics, flavor, lsp, plugins, pre_globals, secrets, syntax,
     toc, types, xml_scan,
 };
 
