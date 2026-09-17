@@ -60,8 +60,9 @@ The raw `Special:Export` XML dump is the single most expensive step (~25–40s).
 - **Classic-only APIs**: Wiki pages for APIs in `(classic_era ∪ classic) \ retail` are parsed to extract parameter types, names, and return types, generating typed stubs in `ClassicGlobals.lua`.
 - **Wiki-documented globals**: Function names from the wiki category query are parsed with `parse_wikitext()` to generate `WikiGlobals.lua`. Functions without a wiki page or whose markup can't be parsed get a bare `function name(...) end` stub with a doc link.
 - **Widget method enrichment**: Vendor widget stubs that have a doc link but no annotations are enriched by parsing type annotations via `parse_widget_wiki_annotations()`.
+- **Secret-value structure fields**: Structures that Blizzard's API documentation references but doesn't define (such as `AuraData`) are described on the wiki's `Structure <Name>` pages, which API pages transclude. Those pages are fetched in a second `Special:Export` request (cached the same way) and parsed with `parse_wiki_structure()`; their <code v-pre>{{apitype|type|secret=NeverSecret}}</code> marks feed the same secret-value marking as Blizzard's own structures. A page that marks no field's secrecy isn't used.
 
-Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments ==` / `== Returns ==` sections, <code v-pre>{{apitype|type|nilable}}</code> type annotations, embedded `<!-- luals ... -->` blocks, optional parameters `[, param]`, and redirect resolution.
+Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments ==` / `== Returns ==` sections, <code v-pre>{{apitype|type|nilable}}</code> type annotations, embedded `<!-- luals ... -->` blocks, optional parameters `[, param]`, and redirect resolution (a name's own page wins over a legacy title that redirects elsewhere).
 
 ### 6. Local overrides
 

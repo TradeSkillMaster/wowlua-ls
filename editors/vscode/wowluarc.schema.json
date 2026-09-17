@@ -319,6 +319,7 @@
         "return-mismatch",
         "return-self-class-name",
         "safety-limit",
+        "secret-access",
         "secret-argument",
         "secret-arithmetic",
         "secret-comparison",

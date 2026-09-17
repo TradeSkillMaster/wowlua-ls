@@ -6159,6 +6159,48 @@ fn fuzz_resolve_work_limit() {
     assert!(result, "expected safety-limit diagnostic for pathological input");
 }
 
+fn analyze_source(src: &str) -> (SyntaxTree, AnalysisResult) {
+    let tree = wowlua_ls::syntax::parser::parse(src);
+    let mut analysis = Analysis::new_with_tree(&tree, Arc::new(PreResolvedGlobals::empty()), AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+    (tree, result)
+}
+
+/// Unterminated strings typed mid-edit used to panic (and kill the language
+/// server): stripping delimiters sliced through a trailing multi-byte character,
+/// and narrowing sliced a lone `"` compared in an `if` condition as `[1..0]`.
+#[test]
+fn unterminated_strings_do_not_panic() {
+    let sources = [
+        "L = {}\nL[\"Hello\"] = [[你",
+        "local x = [[a€",
+        "local y = [==[€€",
+        "local s = 'café",
+        "local x\nif x == \"\nthen end\n",
+    ];
+    for src in sources {
+        let (tree, result) = analyze_source(src);
+        result.run_diagnostics(&tree);
+        result.semantic_tokens(&tree);
+    }
+}
+
+/// Content offsets in an `expression<C, R>` string come from its opener: an
+/// unterminated long-bracket string has no closer to balance the math against.
+#[test]
+fn unterminated_expression_string_offsets() {
+    let src = "---@class Ctx\n---@field level number\n\n---@param expr expression<Ctx, boolean>\nfunction Check(expr) end\n\nCheck([==[level > 1";
+    let (tree, result) = analyze_source(src);
+    let level = src.rfind("level").unwrap() as u32;
+    let tokens = result.semantic_tokens(&tree);
+    assert!(
+        tokens.iter().any(|t| t.start == level && t.length == 5),
+        "expected a token for `level` at {level}, got starts {:?}",
+        tokens.iter().map(|t| t.start).collect::<Vec<_>>(),
+    );
+}
+
 #[test]
 fn bracket_access_string_literal_union_key() {
     // Bracket access with a string literal union key should resolve to the union of

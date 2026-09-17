@@ -1,14 +1,14 @@
 use crate::analysis::AnalysisResult;
 use crate::syntax::parser::Parser;
 use crate::syntax::tree::SyntaxTree;
-use crate::syntax::{SyntaxKind, SyntaxNode};
+use crate::syntax::{SyntaxKind, SyntaxNode, TextSize};
 use crate::types::{TableIndex, ValueType};
 use super::{DiagnosticPass, WowDiagnostic};
 
 pub struct ExpressionType;
 
 impl DiagnosticPass for ExpressionType {
-    fn run(&self, analysis: &AnalysisResult, _tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
+    fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for (&expr_id, arg_info) in &analysis.ir.expression_args {
             // When the context type couldn't be fully resolved (an unbound generic
             // type-param member), `table_idxs` is only a partial view of the
@@ -24,7 +24,7 @@ impl DiagnosticPass for ExpressionType {
             // string_literals stores content with all delimiters already stripped
             // (quotes, long brackets) — see strip_string_delimiters in lower_expression.rs.
             let content = raw_content.as_str();
-            let content_start = compute_content_start(content.len(), str_start, str_end);
+            let content_start = compute_content_start(tree, str_start);
 
             // Parse the expression as "return <expr>"
             let wrapped = format!("return {}", content);
@@ -91,21 +91,16 @@ fn format_class_names(analysis: &AnalysisResult, table_idxs: &[TableIndex]) -> S
     names.join(" & ")
 }
 
-/// Compute the byte offset where the string content starts in the file.
-///
-/// Relies on symmetric delimiters: `"..."` (1+1), `[[...]]` (2+2), `[=[...]=]` (3+3).
-/// The `else` branch handles the edge case where `string_literals` stores trimmed
-/// content for quoted strings (total_len == content_len), falling back to skip
-/// a single opening quote character.
-pub fn compute_content_start(content_len: usize, str_start: u32, str_end: u32) -> u32 {
-    let total_len = (str_end - str_start) as usize;
-    if total_len > content_len {
-        let delimiter_total = total_len - content_len;
-        let open_len = delimiter_total / 2;
-        str_start + open_len as u32
-    } else {
-        str_start + 1
-    }
+/// Compute the byte offset where the content of the string token starting at
+/// `str_start` begins in the file: after its `"`, `'`, or `[=*[` opener. Read from
+/// the token itself, since an unterminated string (mid-edit) has no closer.
+pub fn compute_content_start(tree: &SyntaxTree, str_start: u32) -> u32 {
+    let open = SyntaxNode::new_root(tree)
+        .token_at_offset(TextSize::from(str_start))
+        .right_biased()
+        .filter(|token| token.kind() == SyntaxKind::String)
+        .map_or(0, |token| crate::analysis::lower_expression::string_content_range(token.text()).start);
+    str_start + open as u32
 }
 
 /// Simple rule-based type inference for a Lua expression parsed as `return <expr>`.

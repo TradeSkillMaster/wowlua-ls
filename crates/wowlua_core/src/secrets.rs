@@ -16,9 +16,8 @@
 //!
 //! Facts the engine needs no rule constant for: storing a secret in a table
 //! value, a local, or an upvalue, returning it, and passing it to a Lua function
-//! are VERIFIED allowed (the value just flows); indexing or calling a secret is a
-//! VERIFIED error that isn't diagnosed yet; `type(secret)` VERIFIED returns the
-//! real type.
+//! are VERIFIED allowed (the value just flows); `type(secret)` VERIFIED returns
+//! the real type.
 
 use crate::ast::Operator;
 use crate::types::ValueType;
@@ -90,8 +89,21 @@ fn secret_members(t: &ValueType) -> Vec<ValueType> {
 pub const NEGATE: SecretRule = SecretRule::Error;
 
 /// `#secret`. VERIFIED error ("not allowed to use the length operator").
-/// Not diagnosed yet.
 pub const LENGTH: SecretRule = SecretRule::Error;
+
+/// Indexing a secret: `secret.x`, `secret[k]`, or a method call `secret:m()`
+/// (string methods included). VERIFIED error ("not allowed to perform indexed
+/// access or assignment ... on secret values").
+pub const INDEX: SecretRule = SecretRule::Error;
+
+/// Calling a secret. VERIFIED error ("not allowed to call secret values as-if
+/// they were functions").
+pub const CALL: SecretRule = SecretRule::Error;
+
+/// A secret start, limit, or step of a numeric `for` loop. ASSUMED error: the
+/// loop compares its counter to the limit on every iteration (and the step to
+/// zero), which the comparison rule forbids.
+pub const NUMERIC_FOR_BOUND: SecretRule = SecretRule::Error;
 
 /// A truth test that Lua forces on a value: `if`/`elseif`/`while`/`repeat`
 /// conditions, `not`, and the left operand of `and`/`or`. VERIFIED: tests on

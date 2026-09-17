@@ -27,6 +27,26 @@ local _, playerClass = UnitClass("player")
 --       ^ hover: (local) playerClass: string
 local classID = select(3, UnitClass("player"))
 --    ^ hover: (local) classID: number
+-- Cast and max-power secrecy doesn't apply to the player's units either.
+local _, _, _, _, castEndTimeMs = UnitCastingInfo("player")
+--                ^ hover: (local) castEndTimeMs: number
+local castRemaining = (castEndTimeMs - GetTime()) / 1000
+local _, _, _, _, channelEndTimeMs = UnitChannelInfo("pet")
+--                ^ hover: (local) channelEndTimeMs: number
+local playerMaxPower = UnitPowerMax("player")
+--    ^ hover: (local) playerMaxPower: number
+local _, _, _, _, focusCastEndTimeMs = UnitCastingInfo("focus")
+--                ^ hover: (local) focusCastEndTimeMs: secret<number>
+
+-- Fields of structures Blizzard's docs don't describe come from the wiki: every
+-- `AuraData` field may be secret except the ones marked NeverSecret.
+local aura = C_UnitAuras.GetAuraDataByIndex("target", 1, "HARMFUL")
+if aura then
+    local auraDuration = aura.duration
+    --    ^ hover: (local) auraDuration: secret<number>
+    local auraInstanceID = aura.auraInstanceID
+    --    ^ hover: (local) auraInstanceID: number
+end
 
 -- Widget getters aren't tainted (only frames fed secrets return them).
 local frame = CreateFrame("Frame")
@@ -39,6 +59,16 @@ frame:SetScript("OnEvent", function(self, event, ...)
         local unit, target = ...
         --          ^ hover: (local) target: secret<string>
         local _ = target .. ""
+        local realmStart = target:find("-")
+        --                 ^ diag: secret-access ~calling a method on it
+    elseif event == "UNIT_AURA" then
+        local unit, updateInfo = ...
+        if updateInfo and updateInfo.addedAuras then
+            for _, added in ipairs(updateInfo.addedAuras) do
+                local addedName = added.name
+                --    ^ hover: (local) addedName: secret<string>
+            end
+        end
     end
 end)
 
@@ -59,6 +89,9 @@ local h1 = UnitHealth("focus")
 --         ^ doc: Returns may be secret values.
 local ci = UnitCastingInfo("focus")
 --         ^ doc: Never secret: `isTradeskill`, `castBarID`, `delayTimeMs`
+--         ^ doc: Never secret when `unit` is `"player"` or `"pet"`
+local pm = UnitPowerMax("focus")
+--         ^ doc: Never secret when `unitToken` is `"player"` or `"pet"`
 local s1 = issecretvalue(hp)
 --         ^ doc: Guard: `true` means `value` is secret
 frame:SetAlpha(0.5)
@@ -85,6 +118,30 @@ local color = roleColors[role]
 if UnitIsAFK("target") then end
 -- ^ diag: secret-condition ~boolean from `UnitIsAFK` may be secret
 
+local focusName = UnitName("focus")
+local shortFocusName = focusName:sub(1, 3)
+--                     ^ diag: secret-access ~value from `UnitName` may be secret; calling a method on it errors in addon code
+local focusNameLength = #UnitName("focus")
+--                      ^ diag: secret-access ~value from `UnitName` may be secret; taking its length
+for i = 1, UnitHealth("focus") do end
+--         ^ diag: secret-comparison ~value from `UnitHealth` may be secret; using it as a `for` loop bound
+local playerNameUpper = UnitName("player"):upper()
+for i = 1, UnitHealthMax("player") do end
+local focusCastRemaining = focusCastEndTimeMs - GetTime()
+--                         ^ diag: secret-arithmetic ~value from `UnitCastingInfo` may be secret
+local aurasById = {}
+if aura then
+    local byInstance = aurasById[aura.auraInstanceID]
+    if aura.isHarmful then end
+    local bySpell = aurasById[aura.spellId]
+    --                        ^ diag: secret-table-key ~value from `AuraData.spellId` may be secret
+    local auraRemaining = aura.expirationTime - GetTime()
+    --                    ^ diag: secret-arithmetic ~value from `AuraData.expirationTime` may be secret
+end
+-- Narrowing `aura` leaves its fields secret.
+if aura and aura.duration > 5 then end
+--          ^ diag: secret-comparison ~value from `AuraData.duration` may be secret
+
 -- A guard's true branch still reports what errors there.
 local function SecretBranch()
     local raw = UnitHealth("target")
@@ -109,6 +166,10 @@ local polyfill = issecretvalue or function() return false end
 local targetName = UnitName("target")
 if not polyfill(targetName) then
     local _ = roleColors[targetName]
+end
+if canaccessvalue(targetName) then
+    local _ = targetName:upper()
+    local _ = #targetName
 end
 
 -- The player's identity is never secret.

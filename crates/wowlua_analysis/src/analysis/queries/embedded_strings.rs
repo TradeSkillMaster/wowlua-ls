@@ -195,7 +195,7 @@ impl AnalysisResult {
 
         let raw_content = self.ir.string_literals.get(&expr_id)?;
         let content = raw_content.as_str();
-        let content_start = compute_content_start(content.len(), tok_start, tok_end);
+        let content_start = compute_content_start(tree, tok_start);
 
         Some(ExpressionStringContext {
             table_idxs: arg_info.table_idxs.clone(),

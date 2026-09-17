@@ -2954,9 +2954,11 @@ impl<'a> Analysis<'a> {
     fn extract_string_literal(expr: &Expression<'_>) -> Option<String> {
         if let Expression::Literal(lit) = expr {
             let raw = lit.get_string()?;
-            // get_string() returns the full token text including quotes
-            if (raw.starts_with('"') && raw.ends_with('"'))
-                || (raw.starts_with('\'') && raw.ends_with('\''))
+            // get_string() returns the full token text including quotes; a lone
+            // quote is an unterminated string, not an empty one.
+            if raw.len() >= 2
+                && ((raw.starts_with('"') && raw.ends_with('"'))
+                    || (raw.starts_with('\'') && raw.ends_with('\'')))
             {
                 return Some(raw[1..raw.len() - 1].to_string());
             }

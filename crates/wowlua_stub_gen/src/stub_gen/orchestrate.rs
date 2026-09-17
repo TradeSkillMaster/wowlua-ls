@@ -407,7 +407,21 @@ pub fn regenerate_stubs() {
     // to Ketho's vendor stubs (which drop those keys) and later to our generated files.
     log::info!("Applying secret-value annotations...");
     let secret_table_types = get_existing_names_with(&clone_dir.join("Annotations"), &class_re, &[]);
-    let secret_index = build_secret_index(&blizzard_docs, &secret_table_types);
+    // Structures the docs reference without defining (e.g. `AuraData`) are described
+    // field by field, secrecy included, only on the wiki's `Structure <Name>` pages.
+    let wiki_structure_names = undefined_structure_names(&blizzard_docs, &wiki_pages);
+    let wiki_structures: Vec<BlizzardStructure> = fetch_wiki_structure_pages(&wiki_structure_names)
+        .iter()
+        .filter_map(|(name, text)| parse_wiki_structure(name, text))
+        .collect();
+    log::info!(
+        "  Wiki structures: parsed {} of {} undefined structure page(s): {}",
+        wiki_structures.len(), wiki_structure_names.len(), wiki_structure_names.join(", "),
+    );
+    if !wiki_structure_names.is_empty() && wiki_structures.is_empty() {
+        source_errors.push(format!("Wiki structure pages: 0 of {} parsed (fetch failed?)", wiki_structure_names.len()));
+    }
+    let secret_index = build_secret_index(&blizzard_docs, &wiki_structures, &secret_table_types);
     if has_retail_ui && secret_index.is_empty() {
         source_errors.push("Secret-value index: empty (expected secrecy keys in retail APIDocumentation)".to_string());
     }

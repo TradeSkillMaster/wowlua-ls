@@ -173,6 +173,7 @@ pub const SECRET_ARITHMETIC: DiagnosticDef        = DiagnosticDef { code: "secre
 pub const SECRET_CONDITION: DiagnosticDef         = DiagnosticDef { code: "secret-condition",         severity: DiagnosticSeverity::WARNING };
 pub const SECRET_TABLE_KEY: DiagnosticDef         = DiagnosticDef { code: "secret-table-key",         severity: DiagnosticSeverity::WARNING };
 pub const SECRET_ARGUMENT: DiagnosticDef          = DiagnosticDef { code: "secret-argument",          severity: DiagnosticSeverity::WARNING };
+pub const SECRET_ACCESS: DiagnosticDef            = DiagnosticDef { code: "secret-access",            severity: DiagnosticSeverity::WARNING };
 pub const SAFETY_LIMIT: DiagnosticDef            = DiagnosticDef { code: "safety-limit",             severity: DiagnosticSeverity::ERROR };
 
 const CATALOG: &[&DiagnosticDef] = &[
@@ -196,7 +197,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &MIXED_ENUM_VALUES, &INVALID_CLASS_PARENT, &INVALID_OP, &NIL_TABLE_KEY, &SAFETY_LIMIT,
     &REDUNDANT_OR, &REDUNDANT_AND, &REDUNDANT_CONDITION, &UNKNOWN_CALLBACK_EVENT,
     &CLASS_SHADOWS_BUILTIN, &SECRET_COMPARISON, &SECRET_ARITHMETIC, &SECRET_CONDITION,
-    &SECRET_TABLE_KEY, &SECRET_ARGUMENT,
+    &SECRET_TABLE_KEY, &SECRET_ARGUMENT, &SECRET_ACCESS,
 ];
 
 pub fn append_structural_details_suffix(

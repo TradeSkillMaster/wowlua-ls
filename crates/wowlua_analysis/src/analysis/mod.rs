@@ -54,6 +54,28 @@ pub struct BinaryOpSite {
     pub op_end: u32,
 }
 
+/// How an [`AccessSite`] uses its receiver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessKind {
+    /// `x.y` or `x[k]`, read.
+    Index,
+    /// `x:m(...)`.
+    Method,
+    /// `x(...)`.
+    Call,
+}
+
+/// A value that is indexed or called, for `secret-access`.
+#[derive(Debug, Clone, Copy)]
+pub struct AccessSite {
+    /// The indexed value, or the callee.
+    pub receiver: ExprId,
+    /// Byte range of the receiver expression.
+    pub start: u32,
+    pub end: u32,
+    pub kind: AccessKind,
+}
+
 /// A tracked condition site for `redundant-condition` diagnostics.
 /// Covers `if`/`elseif`/`while`/`repeat...until` conditions.
 #[derive(Debug, Clone, Copy)]
@@ -466,10 +488,16 @@ pub struct Ir {
     /// Condition sites for `redundant-condition` diagnostics.
     /// Covers `if`/`elseif` and `while` conditions.
     pub condition_sites: Vec<ConditionSite>,
-    /// Unary-op sites: `#` (for `invalid-op` and `need-check-nil`) and unary minus
-    /// (for `secret-arithmetic`).
+    /// Unary-op sites: `#` (for `invalid-op`, `need-check-nil`, and `secret-access`)
+    /// and unary minus (for `secret-arithmetic`).
     /// Each entry is (unary_op_expr_id, start, end).
     pub unary_op_sites: Vec<(ExprId, u32, u32)>,
+    /// Field reads, bracket reads, method calls, and calls, by receiver (for
+    /// `secret-access`).
+    pub access_sites: Vec<AccessSite>,
+    /// Numeric `for` loop start/limit/step expressions (for `secret-comparison`).
+    /// Each entry is (expr_id, start, end).
+    pub numeric_for_bound_sites: Vec<(ExprId, u32, u32)>,
     /// Source ranges for local @class declarations (class name → (start, end) byte offsets).
     pub class_def_ranges: HashMap<String, (u32, u32)>,
     /// Maps @class annotation byte offset → TableIndex for positional disambiguation
@@ -2833,6 +2861,8 @@ impl<'a> Analysis<'a> {
                 binary_op_sites: Vec::new(),
                 condition_sites: Vec::new(),
                 unary_op_sites: Vec::new(),
+                access_sites: Vec::new(),
+                numeric_for_bound_sites: Vec::new(),
                 class_def_ranges: HashMap::new(),
                 class_table_by_offset: HashMap::new(),
                 class_def_symbols: HashSet::new(),

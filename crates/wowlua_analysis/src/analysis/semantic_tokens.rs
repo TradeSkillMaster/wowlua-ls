@@ -127,7 +127,7 @@ impl AnalysisResult {
         }
 
         // Emit property tokens for identifiers inside expression<C, R> strings
-        self.collect_expression_tokens(&mut out);
+        self.collect_expression_tokens(tree, &mut out);
 
         // Must be sorted by start position for LSP delta encoding
         out.sort_by_key(|t| t.start);
@@ -249,13 +249,12 @@ impl AnalysisResult {
     }
 
     /// Emit semantic tokens for all meaningful tokens inside expression strings.
-    fn collect_expression_tokens(&self, out: &mut Vec<RawSemanticToken>) {
+    fn collect_expression_tokens(&self, tree: &SyntaxTree, out: &mut Vec<RawSemanticToken>) {
         for (&expr_id, arg_info) in &self.ir.expression_args {
             let table_idxs = &arg_info.table_idxs;
             let Some(raw_content) = self.ir.string_literals.get(&expr_id) else { continue };
             let content = raw_content.as_str();
-            let (str_start, str_end) = arg_info.str_range;
-            let content_start = compute_content_start(content.len(), str_start, str_end);
+            let content_start = compute_content_start(tree, arg_info.str_range.0);
 
             let wrapped = format!("return {}", content);
             let expr_tree = Parser::new(&wrapped).parse();

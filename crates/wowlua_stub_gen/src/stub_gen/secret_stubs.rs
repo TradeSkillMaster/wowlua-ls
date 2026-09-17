@@ -110,8 +110,11 @@ impl<'a> PredicateTable<'a> {
 }
 
 /// Unit tokens a unit-scoped secret predicate never restricts, per its
-/// documentation. Predicates whose docs leave any exception (e.g. "individual
-/// spells may be flagged as always secret") aren't listed and exempt nothing.
+/// documentation. A per-spell or per-power-type flag ("may be flagged as never
+/// or always secret") doesn't cancel the exemption: the stubs can't see it. The
+/// threat predicates exempt *pairs* of tokens ("one unit token is the player …
+/// while the other is a nameplate"), which one parameter can't express, so
+/// they aren't listed and exempt nothing.
 const PREDICATE_EXEMPT_UNITS: &[(&str, &[&str])] = &[
     // "when the unit isn't player-controlled or in the party/raid"
     ("SecretWhenUnitIdentityRestricted", &["player", "pet"]),
@@ -119,6 +122,10 @@ const PREDICATE_EXEMPT_UNITS: &[(&str, &[&str])] = &[
     ("SecretWhenUnitNameIdentityRestricted", &["player", "pet"]),
     // "when the unit isn't player-controlled"
     ("SecretWhenUnitHealthMaxRestricted", &["player", "pet"]),
+    // "when the unit isn't player-controlled"
+    ("SecretWhenUnitPowerMaxRestricted", &["player", "pet"]),
+    // "if the unit being queried for cast information is not the player or their pet"
+    ("SecretWhenUnitSpellCastRestricted", &["player", "pet"]),
     // "if the subject unit is not the active player"
     ("SecretWhenLossOfControlInfoRestricted", &["player"]),
     // "except for unit tokens under the player's direct control"
@@ -157,12 +164,45 @@ fn is_table_like(p: &BlizzardParam, structures: &HashSet<&str>, table_types: &Ha
         || table_types.contains(&p.type_name)
 }
 
-/// Build the index from the retail docs. `table_types` names every `@class` the
-/// stubs declare (structures the docs reference without describing field by field,
-/// widgets, Lua objects) so such values aren't wrapped as scalars.
-pub(in crate::stub_gen) fn build_secret_index(docs: &BlizzardApiDocs, table_types: &HashSet<String>) -> SecretIndex {
+/// Structures Blizzard's docs reference without defining (`AuraData`) that API
+/// pages transclude from the wiki, sorted.
+pub(in crate::stub_gen) fn undefined_structure_names(docs: &BlizzardApiDocs, wiki_pages: &HashMap<String, String>) -> Vec<String> {
+    let defined: HashSet<&str> = docs.structures.iter().map(|s| s.name.as_str()).collect();
+    let referenced: HashSet<&str> = docs.functions.iter()
+        .chain(docs.script_objects.iter().flat_map(|o| &o.functions))
+        .flat_map(|f| f.arguments.iter().chain(&f.returns))
+        .chain(docs.events.iter().flat_map(|e| &e.payload))
+        .chain(docs.structures.iter().flat_map(|s| &s.fields))
+        .flat_map(|p| [Some(p.type_name.as_str()), p.inner_type.as_deref()])
+        .flatten()
+        .filter(|name| !defined.contains(name))
+        .collect();
+    let mut names: Vec<String> = transcluded_structure_names(wiki_pages).into_iter()
+        .filter(|name| referenced.contains(name.as_str()))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Build the index from the retail docs. `wiki_structures` are the wiki's field
+/// lists for structures the docs don't define; `table_types` names every `@class`
+/// the stubs declare (structures the docs reference without describing field by
+/// field, widgets, Lua objects) so such values aren't wrapped as scalars.
+pub(in crate::stub_gen) fn build_secret_index(
+    docs: &BlizzardApiDocs,
+    wiki_structures: &[BlizzardStructure],
+    table_types: &HashSet<String>,
+) -> SecretIndex {
     let predicates = PredicateTable::new(docs);
-    let structures: HashSet<&str> = docs.structures.iter().map(|s| s.name.as_str()).collect();
+    // A wiki page that marks no field's secrecy hasn't been documented for secret
+    // values; reaching it would make every field secret on no evidence.
+    let doc_structures: HashSet<&str> = docs.structures.iter().map(|s| s.name.as_str()).collect();
+    let all_structures: Vec<&BlizzardStructure> = docs.structures.iter()
+        .chain(wiki_structures.iter().filter(|s| {
+            !doc_structures.contains(s.name.as_str()) && s.fields.iter().any(|f| f.secrecy != ParamSecrecy::default())
+        }))
+        .collect();
+    let structures: HashSet<&str> = all_structures.iter().map(|s| s.name.as_str()).collect();
     let mut index = SecretIndex::default();
     // Structures reached through a secret return/payload; their fields get marked below.
     let mut secret_structs: Vec<String> = Vec::new();
@@ -232,7 +272,7 @@ pub(in crate::stub_gen) fn build_secret_index(docs: &BlizzardApiDocs, table_type
     // Mark structure fields. A reached structure's non-`NeverSecret` scalar fields
     // may be secret (nested structures are reached in turn); `SecretValue` /
     // `ConditionalSecret` fields may be secret in any structure.
-    let by_name: HashMap<&str, &BlizzardStructure> = docs.structures.iter().map(|s| (s.name.as_str(), s)).collect();
+    let by_name: HashMap<&str, &BlizzardStructure> = all_structures.iter().map(|s| (s.name.as_str(), *s)).collect();
     let mut reached: HashSet<String> = HashSet::new();
     while let Some(name) = secret_structs.pop() {
         if !reached.insert(name.clone()) { continue; }
@@ -246,7 +286,7 @@ pub(in crate::stub_gen) fn build_secret_index(docs: &BlizzardApiDocs, table_type
             }
         }
     }
-    for st in &docs.structures {
+    for st in all_structures {
         let fields: HashSet<String> = st.fields.iter()
             .filter(|f| (reached.contains(&st.name) && !f.secrecy.never) || f.secrecy.conditional || f.secrecy.value)
             .filter(|f| !is_table_like(f, &structures, table_types))

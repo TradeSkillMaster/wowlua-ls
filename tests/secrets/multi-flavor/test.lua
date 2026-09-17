@@ -6,8 +6,15 @@ local hp = UnitHealth("target")
 if hp > 0 then end
 -- ^ diag: secret-comparison
 
+local targetName = UnitName("target")
+local shortName = targetName:sub(1, 3)
+--                ^ diag: secret-access
+
 if WOW_PROJECT_ID == WOW_PROJECT_CLASSIC then
     if hp > 0 then end
+    local classicShortName = targetName:sub(1, 3)
+    local classicLength = #targetName
+    for i = 1, hp do end
 end
 
 if WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE then

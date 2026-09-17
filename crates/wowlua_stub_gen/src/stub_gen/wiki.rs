@@ -587,6 +587,62 @@ fn parse_apisig_call_args(orig_args: &str) -> (Vec<String>, bool, HashSet<String
     }
 }
 
+// ── Structure pages ───────────────────────────────────────────────────────────
+
+/// Structure names that API pages transclude: `{{:Structure AuraData|nocaption=1}}`,
+/// or the `{{:Struct AuraData}}` redirect form.
+pub(in crate::stub_gen) fn transcluded_structure_names(wiki_pages: &HashMap<String, String>) -> HashSet<String> {
+    let transclusion_re = regex_lite::Regex::new(r"\{\{:Struct(?:ure)? (\w+)").unwrap();
+    wiki_pages.values()
+        .flat_map(|text| transclusion_re.captures_iter(text).map(|c| c.get(1).unwrap().as_str().to_string()))
+        .collect()
+}
+
+/// Parse a wiki `Structure <name>` page into the structure's fields. The page's own
+/// table is the one captioned with its name (`{{#if:{{{nocaption|}}}||Name}}`); later
+/// tables document nested structures. Rows read `| {{apiname|field}} || {{apitype|T}} || …`,
+/// where `T` may end in `[]` (array) and `?` (nilable), and a `secret=` parameter carries
+/// Blizzard's per-entry secrecy key.
+pub(in crate::stub_gen) fn parse_wiki_structure(name: &str, wikitext: &str) -> Option<BlizzardStructure> {
+    let apiname_re = regex_lite::Regex::new(r"\{\{apiname\|(\w+)").unwrap();
+    let apitype_re = regex_lite::Regex::new(r"\{\{apitype\|([^}]*)\}\}").unwrap();
+    let mut in_table = false;
+    let mut fields = Vec::new();
+    for line in wikitext.lines().map(str::trim) {
+        if let Some(caption) = line.strip_prefix("|+") {
+            in_table = caption.rsplit('|').next().is_some_and(|c| c.trim().trim_end_matches('}') == name);
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if line.starts_with("|}") {
+            break;
+        }
+        let (Some(field), Some(apitype)) = (apiname_re.captures(line), apitype_re.captures(line)) else { continue };
+        let mut params = apitype.get(1).unwrap().as_str().split('|');
+        let declared = params.next().unwrap_or("").trim();
+        let ty = declared.trim_end_matches('?');
+        let (type_name, inner_type) = match ty.strip_suffix("[]") {
+            Some(inner) => ("table".to_string(), Some(inner.to_string())),
+            None => (ty.to_string(), None),
+        };
+        let mut secrecy = ParamSecrecy::default();
+        for key in params.filter_map(|p| p.trim().strip_prefix("secret=")) {
+            secrecy.set(key.trim());
+        }
+        fields.push(BlizzardParam {
+            name: field.get(1).unwrap().as_str().to_string(),
+            type_name,
+            nilable: declared.len() != ty.len(),
+            inner_type,
+            mixin: None,
+            secrecy,
+        });
+    }
+    (!fields.is_empty()).then(|| BlizzardStructure { name: name.to_string(), fields })
+}
+
 // ── Widget stub wiki enrichment ───────────────────────────────────────────────
 
 

@@ -98,6 +98,28 @@ pub(in crate::stub_gen) struct ParamSecrecy {
     secret_contents: bool,
 }
 
+/// Accessor for one of [`ParamSecrecy`]'s flags.
+type SecrecyFlag = fn(&mut ParamSecrecy) -> &mut bool;
+
+impl ParamSecrecy {
+    /// Blizzard's per-entry secrecy keys (the wiki uses the same names as
+    /// `secret=` values), each with the flag it sets.
+    const KEYS: [(&'static str, SecrecyFlag); 5] = [
+        ("NeverSecret", |s| &mut s.never),
+        ("ConditionalSecret", |s| &mut s.conditional),
+        ("SecretValue", |s| &mut s.value),
+        ("NeverSecretContents", |s| &mut s.never_contents),
+        ("ConditionalSecretContents", |s| &mut s.secret_contents),
+    ];
+
+    /// Set the flag `key` names; any other key is ignored.
+    fn set(&mut self, key: &str) {
+        if let Some((_, flag)) = Self::KEYS.iter().find(|(name, _)| *name == key) {
+            *flag(self) = true;
+        }
+    }
+}
+
 /// Function- or event-level secret-value keys (3-tab keys of the entry block).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(in crate::stub_gen) struct EntrySecrecy {

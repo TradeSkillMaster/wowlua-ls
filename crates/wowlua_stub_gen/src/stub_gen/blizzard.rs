@@ -353,13 +353,10 @@ pub(in crate::stub_gen) fn extract_params(
                                 .map(|c| c.get(1).unwrap().as_str().to_string());
                             let mixin = mixin_re.captures(param_text)
                                 .map(|c| c.get(1).unwrap().as_str().to_string());
-                            let secrecy = ParamSecrecy {
-                                never: param_flag(param_text, "NeverSecret"),
-                                conditional: param_flag(param_text, "ConditionalSecret"),
-                                value: param_flag(param_text, "SecretValue"),
-                                never_contents: param_flag(param_text, "NeverSecretContents"),
-                                secret_contents: param_flag(param_text, "ConditionalSecretContents"),
-                            };
+                            let mut secrecy = ParamSecrecy::default();
+                            for (key, flag) in ParamSecrecy::KEYS {
+                                *flag(&mut secrecy) |= param_flag(param_text, key);
+                            }
                             params.push(BlizzardParam {
                                 name: cap.get(1).unwrap().as_str().to_string(),
                                 type_name: cap.get(2).unwrap().as_str().to_string(),

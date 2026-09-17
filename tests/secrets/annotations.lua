@@ -229,6 +229,51 @@ local cached = cache[hp]
 local built = { [GetLabel()] = 1 }
 --               ^ diag: secret-table-key
 
+-- Indexing a secret (string methods included), calling it, and taking its length
+-- error; each reports at the secret value, and the result is an ordinary value.
+local secretText = GetLabel()
+local shouted = secretText:upper()
+--              ^ diag: secret-access ~value from `GetLabel` may be secret; calling a method on it errors in addon code
+--    ^ hover: (local) shouted: string
+local firstByte = secretText[1]
+--                ^ diag: secret-access ~value from `GetLabel` may be secret; indexing it errors in addon code
+local lenField = secretText.len
+--               ^ diag: secret-access ~indexing it
+local textLength = #secretText
+--                 ^ diag: secret-access ~value from `GetLabel` may be secret; taking its length errors in addon code
+--    ^ hover: (local) textLength: number
+local called = hp()
+--             ^ diag: secret-access ~value from `GetHealth` may be secret; calling it errors in addon code
+--             ^ diag: cannot-call
+local chained = GetLabel():lower():upper()
+--              ^ diag: secret-access ~calling a method on it
+--    ^ hover: (local) chained: string
+local suffixed = (secretText .. "!"):len()
+--               ^ diag: secret-access ~value from `GetLabel` may be secret
+local lengthBound = #GetLabel() + 1
+--                  ^ diag: secret-access ~taking its length
+if CanAccess(secretText) then
+    local guardedUpper = secretText:upper()
+    local guardedLength = #secretText
+end
+local guardedLower = CanAccess(secretText) and secretText:lower()
+local plainUpper = ("plain"):upper()
+
+-- A numeric `for` loop compares its counter with the limit on every iteration.
+for i = 1, hp do end
+--         ^ diag: secret-comparison ~value from `GetHealth` may be secret; using it as a `for` loop bound errors in addon code
+for i = definite, 10 do end
+--      ^ diag: secret-comparison ~value from `definite` may be secret
+for i = 1, 10, GetHealth() do end
+--             ^ diag: secret-comparison
+for i = 1, -hp do end
+--         ^ diag: secret-arithmetic
+for i = 1, #secretText do end
+--         ^ diag: secret-access
+if CanAccess(hp) then
+    for i = hp, 1, -1 do end
+end
+
 ---@secret-args none
 ---@param text string
 local function RejectsSecrets(text) end

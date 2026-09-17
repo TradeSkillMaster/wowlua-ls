@@ -235,7 +235,7 @@ wowlua-ls ships with 80+ diagnostics organized across several categories:
 - **Globals and fields**: undefined-global, undefined-field, inject-field, create-global, missing-fields
 - **Annotation correctness**: undefined-doc-class, undefined-doc-name, malformed-annotation, circle-doc-class, and more
 - **Code quality**: unused-local, unused-function, shadowed-local, unreachable-code, deprecated, empty-block, trailing-space
-- **WoW-specific**: wrong-flavor-api, secret-comparison, secret-arithmetic, secret-table-key, access-private, access-protected
+- **WoW-specific**: wrong-flavor-api, secret-comparison, secret-arithmetic, secret-table-key, secret-access, access-private, access-protected
 
 Each diagnostic is individually configurable: enable, disable, or change severity per-line (`@diagnostic`) or per-project (`.wowluarc.json`). Several stricter checks are off by default and opt-in.
 

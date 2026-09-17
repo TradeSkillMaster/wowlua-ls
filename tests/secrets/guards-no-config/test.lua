@@ -18,6 +18,8 @@ else
     if UnitIsAFK("target") then end
     C_ChatInfo.SendAddonMessage("PFX", UnitName("target"), "PARTY")
     if hp > 0 then end
+    local short = UnitName("target"):sub(1, 3)
+    for i = 1, hp do end
 end
 if WOW_PROJECT_ID == WOW_PROJECT_CLASSIC then
     if hp > 0 then end
@@ -77,11 +79,15 @@ if isEra and UnitIsAFK("target") then end
 local roleColors = {}
 if isEra and roleColors[UnitGroupRolesAssigned("target")] then end
 if isEra and C_ChatInfo.SendAddonMessage("PFX", UnitName("target"), "PARTY") then end
+if isEra and UnitName("target"):upper() == "BOSS" then end
+if isEra and #UnitName("target") > 0 then end
 local lateral = isEra and hp > 5
 local eraHealth = isEra and hp
 --                          ^ hover: (local) hp: number
 if IsRetail() and hp > 6 then end
 --                ^ diag: secret-comparison
+if IsRetail() and UnitName("target"):upper() == "BOSS" then end
+--                ^ diag: secret-access
 
 -- Unannotated flags: a `WOW_PROJECT_ID` comparison initializer is a guard.
 local isEraInferred = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC

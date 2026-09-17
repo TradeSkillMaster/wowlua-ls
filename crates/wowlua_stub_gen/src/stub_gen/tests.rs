@@ -1884,6 +1884,22 @@ local UnitDoc =
 				{ Name = "value", Type = "number", Nilable = false },
 			},
 		},
+		{
+			Name = "UnitThreat",
+			Type = "Function",
+			SecretWhenUnitThreatStateRestricted = true,
+
+			Arguments =
+			{
+				{ Name = "unit", Type = "UnitToken", Nilable = false },
+				{ Name = "mobGUID", Type = "UnitToken", Nilable = true },
+			},
+
+			Returns =
+			{
+				{ Name = "result", Type = "number", Nilable = true },
+			},
+		},
 	},
 
 	Events =
@@ -2016,6 +2032,21 @@ fn test_parse_blizzard_secrecy_keys() {
 }
 
 #[test]
+fn test_param_secrecy_keys_set_distinct_flags() {
+    let set = |key: &str| {
+        let mut secrecy = ParamSecrecy::default();
+        secrecy.set(key);
+        secrecy
+    };
+    let flags: Vec<ParamSecrecy> = ParamSecrecy::KEYS.iter().map(|(key, _)| set(key)).collect();
+    for (i, secrecy) in flags.iter().enumerate() {
+        assert_ne!(*secrecy, ParamSecrecy::default(), "{} sets no flag", ParamSecrecy::KEYS[i].0);
+        assert!(!flags[i + 1..].contains(secrecy), "{} shares a flag", ParamSecrecy::KEYS[i].0);
+    }
+    assert_eq!(set("SecretReturns"), ParamSecrecy::default(), "entry-level keys aren't per-entry markers");
+}
+
+#[test]
 fn test_param_flag_whole_word() {
     assert!(param_flag(r#"{ Name = "x", NeverSecret = true }"#, "NeverSecret"));
     assert!(!param_flag(r#"{ Name = "x", NeverSecretContents = true }"#, "NeverSecret"));
@@ -2024,7 +2055,7 @@ fn test_param_flag_whole_word() {
 
 #[test]
 fn test_build_secret_index_rules() {
-    let index = build_secret_index(&secret_test_docs(), &HashSet::new());
+    let index = build_secret_index(&secret_test_docs(), &[], &HashSet::new());
 
     // Predicated: every return except NeverSecret ones, with the predicate docs.
     let cast = &index.functions["UnitCastInfo"];
@@ -2075,17 +2106,20 @@ fn test_build_secret_index_rules() {
     assert_eq!(get_text.when.len(), 1);
     assert_eq!(get_text.entries, vec![("text".to_string(), false)]);
 
-    // Identity secrecy never applies to the player's own units; a cast predicate
-    // (individual spells can be always-secret) exempts nothing.
+    // Identity and cast secrecy never apply to the player's own units (a cast
+    // predicate's per-spell flags don't cancel that); the exemption names the
+    // documented parameter.
     let identity = &index.functions["UnitIdentity"];
     assert_eq!(identity.unless, Some((0, "unitToken".to_string(), vec!["player", "pet"])));
-    assert_eq!(index.functions["UnitCastInfo"].unless, None);
+    assert_eq!(index.functions["UnitCastInfo"].unless, Some((0, "unit".to_string(), vec!["player", "pet"])));
     assert_eq!(index.functions["UnitHP"].unless, None, "SecretReturns is never exempt");
+    // Threat secrecy depends on the pair of units, which no single parameter expresses.
+    assert_eq!(index.functions["UnitThreat"].unless, None);
 }
 
 #[test]
 fn test_apply_secret_annotations_rewrites_stub_text() {
-    let index = build_secret_index(&secret_test_docs(), &HashSet::new());
+    let index = build_secret_index(&secret_test_docs(), &[], &HashSet::new());
     let stub = "\
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_UnitCastInfo)
 ---@param unit UnitToken
@@ -2122,6 +2156,7 @@ function UnitIdentity(unit) end
 ---@return secret<string> name
 ---@return number? castBarID
 ---@secret-when SecretWhenUnitSpellCastRestricted Guarded APIs produce secret values if the unit is not the player. Second sentence.
+---@secret-unless unit player pet
 function UnitCastInfo(unit) end
 
 ---@return number value
@@ -2158,4 +2193,193 @@ function UnitIdentity(unit) end
     // Text the index doesn't touch comes back as `None`.
     assert!(apply_secret_annotations("---@return number value\nfunction UnitPlain() end\n", &index).is_none());
     assert_eq!(wrap_secret_type("string?"), "secret<string>?");
+}
+
+#[test]
+fn test_parse_wiki_structure() {
+    // The structure's own table, then a nested structure's table (as on
+    // `Structure TooltipData`, whose second table is `TooltipDataLine`).
+    let page = r#"{{wowapitype}}
+<onlyinclude>{| class="vertical-align-row"
+|
+{| class="sortable darktable zebra" {{apitable.style}}
+|+ {{apitable.captionstyle}} | {{#if:{{{nocaption|}}}||AuraInfo}}
+! Field !! Type !! Description
+|-
+| {{apiname|auraInstanceID}} || {{apitype|number|secret=NeverSecret}} || 
+|-
+| {{apiname|dispelName}} || {{apitype|string?}} || The magic type: <code>"Curse"</code>, <code>""</code>
+|-
+| {{apiname|isFullUpdate}} || {{apitype|boolean?|default=false}} || 
+|-
+| {{apiname|addedAuras}} || {{apitype|AuraData[]?}} || 
+|-
+! colspan="3" | 0: Item
+|-
+| {{apiname|hyperlink}} || {{apitype|string|secret=ConditionalSecret}} ||
+|}
+|
+{| class="sortable darktable zebra" {{apitable.style}}
+|+ {{apitable.captionstyle}} | AuraInfoLine
+! Field !! Type !! Description
+|-
+| {{apiname|leftText}} || {{apitype|string}} || 
+|}
+|}</onlyinclude>"#;
+    let st = parse_wiki_structure("AuraInfo", page).expect("AuraInfo has fields");
+    assert_eq!(st.name, "AuraInfo");
+    let names: Vec<&str> = st.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["auraInstanceID", "dispelName", "isFullUpdate", "addedAuras", "hyperlink"]);
+
+    let [id, dispel, full, added, link] = &st.fields[..] else { unreachable!() };
+    assert_eq!((id.type_name.as_str(), id.nilable), ("number", false));
+    assert!(id.secrecy.never && !id.secrecy.conditional);
+    assert_eq!((dispel.type_name.as_str(), dispel.nilable), ("string", true));
+    assert_eq!(dispel.secrecy, ParamSecrecy::default());
+    assert_eq!((full.type_name.as_str(), full.nilable), ("boolean", true));
+    assert_eq!(full.secrecy, ParamSecrecy::default(), "other template parameters are ignored");
+    assert_eq!((added.type_name.as_str(), added.inner_type.as_deref(), added.nilable), ("table", Some("AuraData"), true));
+    assert!(link.secrecy.conditional);
+
+    // Captions match whole names only.
+    let line = parse_wiki_structure("AuraInfoLine", page).expect("AuraInfoLine has fields");
+    assert_eq!(line.fields.len(), 1);
+    assert_eq!(line.fields[0].name, "leftText");
+    assert!(parse_wiki_structure("Aura", page).is_none());
+}
+
+#[test]
+fn test_build_secret_index_wiki_structures() {
+    let content = r#"
+local AuraDoc =
+{
+	Name = "UnitAura",
+	Type = "System",
+
+	Functions =
+	{
+		{
+			Name = "GetAuraInfo",
+			Type = "Function",
+			SecretWhenUnitAuraRestricted = true,
+
+			Returns =
+			{
+				{ Name = "aura", Type = "AuraInfo", Nilable = true },
+			},
+		},
+		{
+			Name = "GetTip",
+			Type = "Function",
+			SecretWhenUnitAuraRestricted = true,
+
+			Returns =
+			{
+				{ Name = "tip", Type = "TipData", Nilable = false },
+				{ Name = "cast", Type = "CastData", Nilable = false },
+			},
+		},
+	},
+
+	Events =
+	{
+		{
+			Name = "AuraUpdated",
+			Type = "Event",
+			LiteralName = "AURA_UPDATED",
+			SecretWhenUnitAuraRestricted = true,
+			Payload =
+			{
+				{ Name = "info", Type = "AuraUpdate", Nilable = false },
+			},
+		},
+	},
+
+	Tables =
+	{
+		{
+			Name = "AuraUpdate",
+			Type = "Structure",
+			Fields =
+			{
+				{ Name = "addedAuras", Type = "table", InnerType = "AuraBrief", Nilable = true },
+			},
+		},
+		{
+			Name = "CastData",
+			Type = "Structure",
+			Fields =
+			{
+				{ Name = "spellName", Type = "cstring", Nilable = false },
+			},
+		},
+	},
+};
+"#;
+    let mut docs = BlizzardApiDocs {
+        functions: Vec::new(),
+        events: Vec::new(),
+        structures: Vec::new(),
+        predicates: Vec::new(),
+        script_objects: Vec::new(),
+    };
+    parse_blizzard_api_doc_file(content, &mut docs, &BlizzardDocRegexes::new());
+
+    // Only structures the docs reference without defining are fetched.
+    let api_pages: HashMap<String, String> = [
+        ("GetAuraInfo", "==Returns==\n:;aura:{{apitype|AuraInfo?}}\n{{:Structure AuraInfo|nocaption=1}}"),
+        ("GetTip", "{{:Struct TipData}}\n{{:Structure CastData}}"),
+        ("AuraEvent", "{{:Structure AuraBrief}}"),
+        ("Other", "{{:Structure Unreferenced}}"),
+    ].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    assert_eq!(undefined_structure_names(&docs, &api_pages), ["AuraBrief", "AuraInfo", "TipData"]);
+
+    let page = |name: &str, rows: &[(&str, &str)]| {
+        let rows: String = rows.iter().map(|(field, ty)| format!("|-\n| {{{{apiname|{field}}}}} || {{{{apitype|{ty}}}}} || \n")).collect();
+        let text = format!("{{| class=\"sortable\"\n|+ caption | {{{{#if:{{{{{{nocaption|}}}}}}||{name}}}}}\n! Field !! Type !! Description\n{rows}|}}");
+        parse_wiki_structure(name, &text).unwrap()
+    };
+    let wiki = [
+        page("AuraInfo", &[("auraInstanceID", "number|secret=NeverSecret"), ("duration", "number"), ("points", "number[]")]),
+        page("AuraBrief", &[("spellId", "number"), ("isHarmful", "boolean|secret=NeverSecret")]),
+        // No secrecy marks: the page hasn't been documented for secret values.
+        page("TipData", &[("id", "number")]),
+        // The docs define CastData; the wiki can't override them.
+        page("CastData", &[("spellName", "string|secret=NeverSecret")]),
+    ];
+    let table_types: HashSet<String> = ["AuraInfo", "AuraBrief", "TipData", "CastData"].into_iter().map(String::from).collect();
+    let index = build_secret_index(&docs, &wiki, &table_types);
+
+    // A reached wiki structure's non-NeverSecret scalar fields may be secret.
+    assert_eq!(index.structures["AuraInfo"], HashSet::from(["duration".to_string()]));
+    // Reached through a doc structure's array field.
+    assert_eq!(index.structures["AuraBrief"], HashSet::from(["spellId".to_string()]));
+    assert!(!index.structures.contains_key("TipData"));
+    assert!(index.structures["CastData"].contains("spellName"));
+    // Structure returns are tables; only their fields carry secrecy.
+    assert_eq!(index.functions["GetAuraInfo"].entries, [("aura".to_string(), false)]);
+    assert_eq!(index.functions["GetTip"].entries, [("tip".to_string(), false), ("cast".to_string(), false)]);
+}
+
+#[test]
+fn test_parse_wiki_export_own_page_beats_redirect() {
+    let page = |title: &str, body: &str| format!("<page>\n<title>{title}</title>\n{body}\n</page>\n");
+    let redirect = |title: &str, target: &str| page(title, &format!("<redirect title=\"{target}\" />\n<text>#REDIRECT</text>"));
+    let content = |title: &str, text: &str| page(title, &format!("<text xml:space=\"preserve\">{text}</text>"));
+    let xml = [
+        // A function split out of a shared page: the legacy title still redirects there.
+        redirect("API securecallfunction", "API securecall"),
+        content("API:securecallfunction", "own page"),
+        content("API:securecall", "shared page"),
+        // A plain alias has no page of its own and takes the target's.
+        redirect("API StartDuelUnit", "API:StartDuel"),
+        content("API:StartDuel", "duel page"),
+    ].concat();
+    let (pages, redirects, doc_paths) = parse_wiki_export(&xml);
+    assert_eq!(pages["securecallfunction"], "own page");
+    assert_eq!(doc_paths["securecallfunction"], "API:securecallfunction");
+    assert!(!redirects.contains_key("securecallfunction"));
+    assert_eq!(pages["StartDuelUnit"], "duel page");
+    assert_eq!(redirects["StartDuelUnit"], "StartDuel");
+    assert_eq!(doc_paths["StartDuelUnit"], "API:StartDuel");
 }

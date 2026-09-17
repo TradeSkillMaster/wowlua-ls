@@ -251,23 +251,21 @@ pub(in crate::stub_gen) fn wiki_title_to_api_name(title: &str) -> String {
         .replace(' ', "_")
 }
 
-/// Returns `(pages, redirects, doc_paths)` all keyed by canonical api_name. `doc_paths` maps
-/// each fetched page to its real wiki URL path (the title with spaces as underscores), which
-/// after the API: namespace migration is the only reliable way to build a working doc link —
-/// migrated pages live at `API:Name` (no legacy `API_Name` redirect), while removed/deprecated
-/// pages remain at `API Name` (ns 0).
-pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
-    // NOTE: This is intentionally a single request. The MediaWiki Special:Export endpoint is
-    // behind Cloudflare, which rejects concurrent requests with HTTP 403/429 and can
+/// A `Special:Export` dump of the newline-separated page titles `pages_text` builds, persistently
+/// cached as `<prefix>-<key>.xml` with the export TTL (stale files with the same prefix are
+/// evicted). `key` identifies the requested page set (see [`wiki_cache_key`]).
+fn fetch_wiki_export_cached(prefix: &str, key: u64, pages_text: impl FnOnce() -> String) -> Result<String, String> {
+    // NOTE: Each export is intentionally a single request. The MediaWiki Special:Export endpoint
+    // is behind Cloudflare, which rejects concurrent requests with HTTP 403/429 and can
     // temporarily challenge-block the source IP. Splitting this into parallel chunked requests
-    // was measured to fail outright (every chunk 403'd) — do not parallelize this fetch.
+    // was measured to fail outright (every chunk 403'd) — do not parallelize these fetches.
     //
     // The raw XML dump is persistently cached (keyed by the requested page set) with a 24h TTL,
     // so repeated runs within a day — including iterating on parsing/stub-formatting code —
     // reuse the dump instead of re-fetching. Set WOWLUA_LS_REFRESH_WIKI to force a fresh fetch.
     let force_refresh = std::env::var_os("WOWLUA_LS_REFRESH_WIKI").is_some();
     let cd = cache_dir();
-    let cache_filename = format!("wiki-export-{:016x}.xml", wiki_cache_key(api_names));
+    let cache_filename = format!("{prefix}-{key:016x}.xml");
     let cache_path = cd.join(&cache_filename);
 
     // Evict stale wiki cache files that don't match the current hash (e.g. from a different
@@ -276,50 +274,63 @@ pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<St
         for entry in entries.flatten() {
             let name = entry.file_name();
             if let Some(s) = name.to_str()
-                && s.starts_with("wiki-export-") && s.ends_with(".xml") && s != cache_filename
+                && s.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('-'))
+                && s.ends_with(".xml") && s != cache_filename
             {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
     }
 
-    let xml_text = if !force_refresh
-        && let Some(cached) = read_fresh_cache(&cache_path, WIKI_CACHE_TTL_SECS)
-    {
+    if !force_refresh && let Some(cached) = read_fresh_cache(&cache_path, WIKI_CACHE_TTL_SECS) {
         log::info!(
             "  Using cached wiki export: {} ({:.1} MB; set WOWLUA_LS_REFRESH_WIKI to force refresh)",
             cache_path.display(),
             cached.len() as f64 / 1_048_576.0
         );
-        cached
-    } else {
-        // Request both the legacy "API Name" (main namespace) and the newer "API:Name"
-        // (dedicated API namespace, ns 3000) titles. Most functions migrated to the "API:"
-        // namespace where the real wikitext now lives, while removed/deprecated pages remain
-        // in the legacy namespace. The legacy titles are now redirects, so requesting only
-        // them — the previous behavior — exported redirect stubs instead of page content.
-        let pages_text: String = api_names.iter()
-            .flat_map(|n| [format!("API {n}"), format!("API:{n}")])
-            .collect::<Vec<_>>()
-            .join("\n");
-        let fetched = match fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text), ("curonly", "1")])) {
-            Ok(text) => text,
-            Err(e) => {
-                log::error!("Wiki export failed: {e} — wiki pages will be empty");
-                return (HashMap::new(), HashMap::new(), HashMap::new());
-            }
-        };
-        // Best-effort cache write — a failure here only costs a re-fetch next run.
-        if let Some(parent) = cache_path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            log::warn!("Could not create wiki cache dir {}: {e}", parent.display());
-        } else if let Err(e) = std::fs::write(&cache_path, &fetched) {
-            log::warn!("Could not write wiki cache {}: {e}", cache_path.display());
+        return Ok(cached);
+    }
+    let fetched = fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text()), ("curonly", "1")]))?;
+    // Best-effort cache write — a failure here only costs a re-fetch next run.
+    if let Some(parent) = cache_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        log::warn!("Could not create wiki cache dir {}: {e}", parent.display());
+    } else if let Err(e) = std::fs::write(&cache_path, &fetched) {
+        log::warn!("Could not write wiki cache {}: {e}", cache_path.display());
+    }
+    Ok(fetched)
+}
+
+/// Returns `(pages, redirects, doc_paths)` all keyed by canonical api_name. `doc_paths` maps
+/// each fetched page to its real wiki URL path (the title with spaces as underscores), which
+/// after the API: namespace migration is the only reliable way to build a working doc link —
+/// migrated pages live at `API:Name` (no legacy `API_Name` redirect), while removed/deprecated
+/// pages remain at `API Name` (ns 0).
+pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
+    // Request both the legacy "API Name" (main namespace) and the newer "API:Name"
+    // (dedicated API namespace, ns 3000) titles. Most functions migrated to the "API:"
+    // namespace where the real wikitext now lives, while removed/deprecated pages remain
+    // in the legacy namespace. The legacy titles are now redirects, so requesting only
+    // them — the previous behavior — exported redirect stubs instead of page content.
+    let pages_text = || api_names.iter()
+        .flat_map(|n| [format!("API {n}"), format!("API:{n}")])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let xml_text = match fetch_wiki_export_cached("wiki-export", wiki_cache_key(api_names), pages_text) {
+        Ok(text) => text,
+        Err(e) => {
+            log::error!("Wiki export failed: {e} — wiki pages will be empty");
+            return (HashMap::new(), HashMap::new(), HashMap::new());
         }
-        fetched
     };
 
+    parse_wiki_export(&xml_text)
+}
+
+/// Split a `Special:Export` dump of API pages into `(pages, redirects, doc_paths)` keyed by
+/// canonical api_name (see [`fetch_wiki_pages`]).
+pub(in crate::stub_gen) fn parse_wiki_export(xml_text: &str) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
     let mut pages = HashMap::new();
     let mut redirects = HashMap::new();
     let mut doc_paths = HashMap::new();
@@ -340,6 +351,9 @@ pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<St
             pages.insert(api_name, text);
         }
     }
+    // A name with a page of its own keeps it: its legacy "API Name" title can still redirect to
+    // a page the function was later split out of (e.g. `securecallfunction` → `securecall`).
+    redirects.retain(|from, _| !pages.contains_key(from));
     // Resolve redirect chains (A→B→C becomes A→C) and flatten redirects map
     let mut resolved_redirects = HashMap::new();
     for (from, to) in &redirects {
@@ -365,6 +379,36 @@ pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<St
         }
     }
     (pages, resolved_redirects, doc_paths)
+}
+
+
+/// Fetch the wiki's `Structure <Name>` pages (main namespace) for `names`, in one export
+/// request cached like the API page export. Returns structure name → wikitext; missing
+/// pages and redirects are skipped.
+pub(in crate::stub_gen) fn fetch_wiki_structure_pages(names: &[String]) -> HashMap<String, String> {
+    if names.is_empty() {
+        return HashMap::new();
+    }
+    let titles: Vec<String> = names.iter().map(|n| format!("Structure {n}")).collect();
+    let xml_text = match fetch_wiki_export_cached("wiki-structures", wiki_cache_key(&titles), || titles.join("\n")) {
+        Ok(text) => text,
+        Err(e) => {
+            log::error!("Wiki structure export failed: {e} — wiki structure pages will be empty");
+            return HashMap::new();
+        }
+    };
+    let mut pages = HashMap::new();
+    for page_text in xml_text.split("<page>").skip(1) {
+        let title = extract_xml_tag(page_text, "title").unwrap_or_default();
+        let Some(name) = title.strip_prefix("Structure ") else { continue };
+        if page_text.contains("<redirect") {
+            continue;
+        }
+        if let Some(text) = extract_xml_tag(page_text, "text") {
+            pages.insert(name.replace(' ', "_"), text);
+        }
+    }
+    pages
 }
 
 

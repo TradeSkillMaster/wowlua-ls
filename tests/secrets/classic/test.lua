@@ -9,5 +9,8 @@ if hp / maxHp < 0.5 then end
 local name = UnitName("target")
 local seen = {}
 seen[name] = true
+local upperName = name:upper()
+local nameLength = #name
+for i = 1, hp do end
 local h = UnitHealth("focus")
 --        ^ doc: !**Secrecy**

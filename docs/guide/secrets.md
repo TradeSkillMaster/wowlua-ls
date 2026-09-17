@@ -31,13 +31,14 @@ Secrecy
 |---|---|---|
 | Arithmetic: `+ - * / % ^`, unary `-` | Error | `secret-arithmetic` |
 | Ordering: `< > <= >=` | Error | `secret-comparison` |
+| Start, limit, or step of a numeric `for` loop (`for i = 1, hp do`)\* | Error | `secret-comparison` |
 | `==` / `~=` with a value that may have the same type | Error | `secret-comparison` |
 | `==` / `~=` with `nil` or a value of another type | Allowed | |
 | Testing a secret **boolean** (`if`, `while`, `until`, `not`, left side of `and` / `or`) | Error | `secret-condition` |
 | Testing any other secret (`if name then`) | Allowed | |
 | Table key: `t[secret] = v`, `{ [secret] = v }`, `t[secret]`\* | Error | `secret-table-key` |
 | Argument to an API that never accepts secrets (e.g. `C_ChatInfo.SendAddonMessage`) | Error | `secret-argument` |
-| Length `#`, indexing, or calling a secret | Error | not reported yet |
+| Length `#`, indexing (`name:upper()`, `name.x`, `name[1]`), or calling a secret | Error | `secret-access` |
 | `..`, `string.format`, `string.join`, `string.concat` | Allowed; the result is secret | |
 | `a and b`, `a or b` | Allowed; the result is secret only if the operand it returns is (`UnitName(unit) and "named" or "unnamed"` is plain) | |
 | `type(secret)` | Allowed; returns the real type | |
@@ -51,6 +52,7 @@ local hp, maxHp = UnitHealth("target"), UnitHealthMax("target")
 local pct = hp / maxHp      -- secret-arithmetic
 if hp < maxHp then end      -- secret-comparison
 if UnitIsAFK("target") then end  -- secret-condition
+local short = UnitName("target"):sub(1, 3)  -- secret-access
 ```
 
 ## Guarding
@@ -95,7 +97,8 @@ Use `...` as the parameter name for a vararg guard (`@secret-guard ... accessibl
 
 The retail API stubs are generated from Blizzard's API documentation, which marks the functions, event payloads, and structure fields that may be secret, the conditions under which they are, and the APIs that reject secret arguments. A few details:
 
-- **Player exemptions.** Unit APIs whose restriction never applies to the player (`UnitName`, `UnitClass`, `UnitRace`, …) return ordinary values for a literal `"player"` (and `"pet"` where documented). The stubs express this with `@secret-unless`.
+- **Player exemptions.** Unit APIs whose restriction never applies to the player (`UnitName`, `UnitClass`, `UnitCastingInfo`, `UnitPowerMax`, …) return ordinary values for a literal `"player"` (and `"pet"` where documented). The stubs express this with `@secret-unless`.
+- **Structures the documentation doesn't describe.** Blizzard's documentation returns `AuraData` without listing its fields, so their secrecy comes from warcraft.wiki.gg: every field may be secret except the ones it marks as never secret (`auraInstanceID`, `isHarmful`, `isHelpful`, …).
 - **Widgets.** Passing a secret to a widget setter is allowed. Blizzard marks widgets that received secrets as having a secret *aspect*, after which their getters return secrets. Hover shows these aspects, but getters aren't treated as secret, since most widgets never receive secrets.
 - **Your own code.** Returns and fields assigned from secret values are inferred automatically. To declare secrecy explicitly (for example on a function whose body isn't visible), write `secret<T>` in the type and use the annotations in the [reference](/reference/annotations#secret-value-annotations).
 

@@ -5,7 +5,7 @@ use crate::annotations::AnnotationType;
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
-use super::Analysis;
+use super::{AccessKind, AccessSite, Analysis};
 use super::NarrowTarget;
 use super::build_ir::trimmed_node_end;
 use super::narrowing::GuardNarrow;
@@ -1017,6 +1017,9 @@ impl<'a> Analysis<'a> {
         });
 
         if let Some(field_token) = field_name {
+            if let Some(base_node) = node.children().next() {
+                self.record_access(base_expr_id, base_node, AccessKind::Index);
+            }
             let r = field_token.text_range();
             let expr_id = self.ir.push_expr(Expr::FieldAccess {
                 table: base_expr_id,
@@ -1125,6 +1128,9 @@ impl<'a> Analysis<'a> {
         let base = base_node.and_then(Expression::cast)
             .map(|e| self.lower_expression(&e, scope_idx))
             .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
+        if let Some(base_node) = base_node {
+            self.record_access(base, base_node, AccessKind::Index);
+        }
 
         let key_range = key_node.as_ref().map(|kn| {
             let r = kn.text_range();
@@ -1191,10 +1197,14 @@ impl<'a> Analysis<'a> {
         // Lower the base expression (first child node).
         // For chained calls, this is another MethodCall which will be fully lowered
         // as a FunctionCall through Expression::cast → lower_expression.
-        let base = node.children().next()
+        let base_node = node.children().next();
+        let base = base_node
             .and_then(Expression::cast)
             .map(|e| self.lower_expression(&e, scope_idx))
             .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
+        if let Some(base_node) = base_node {
+            self.record_access(base, base_node, AccessKind::Method);
+        }
 
         // Find the method Name token (the one after Colon)
         let mut seen_colon = false;
@@ -1358,6 +1368,13 @@ impl<'a> Analysis<'a> {
                     .filter(|t| t.kind() == SyntaxKind::Name)
                     .collect()
             };
+            // Each link indexes the previous call's result.
+            if !name_tokens.is_empty()
+                && let Some(base_call) = ident.syntax().children().find_map(FunctionCall::cast)
+            {
+                let kind = if ident.syntax().kind() == SyntaxKind::MethodCall { AccessKind::Method } else { AccessKind::Index };
+                self.record_access(current, base_call.syntax(), kind);
+            }
             for field_token in &name_tokens {
                 let r = field_token.text_range();
                 current = self.ir.push_expr(Expr::FieldAccess {
@@ -1405,6 +1422,9 @@ impl<'a> Analysis<'a> {
                     })
                     .unzip())
                 .unwrap_or_default();
+            if !is_method_call {
+                self.record_access(current, ident.syntax(), AccessKind::Call);
+            }
             let range = chain_call.syntax().text_range();
             let call_range = (u32::from(range.start()), u32::from(range.end()));
             current = self.ir.push_expr(Expr::FunctionCall {
@@ -1461,31 +1481,78 @@ impl<'a> Analysis<'a> {
                 })
                 .unzip())
             .unwrap_or_default();
+        // A method call's receiver was recorded with the method; any other call records its callee.
+        if !is_method_call
+            && let Some(callee) = call.syntax().children().next().filter(|n| n.kind() != SyntaxKind::ArgumentList)
+        {
+            self.record_access(func_id, callee, AccessKind::Call);
+        }
         let range = call.syntax().text_range();
         let call_range = (u32::from(range.start()), u32::from(range.end()));
         self.ir.push_expr(Expr::FunctionCall { func: func_id, args, arg_ranges, ret_index, call_range, discarded, is_method_call })
+    }
+
+    /// Record that `receiver`, lowered from `node`, is indexed or called (`secret-access`).
+    fn record_access(&mut self, receiver: ExprId, node: SyntaxNode<'_>, kind: AccessKind) {
+        let start = u32::from(node.text_range().start());
+        self.ir.access_sites.push(AccessSite { receiver, start, end: trimmed_node_end(node), kind });
     }
 }
 
 /// Strip string delimiters from a raw Lua string literal.
 /// Handles `"..."`, `'...'`, `[[...]]`, and `[=*[...]=*]`.
 fn strip_string_delimiters(raw: &str) -> &str {
+    &raw[string_content_range(raw)]
+}
+
+/// Byte range of a raw Lua string literal's content: after the opening `"`, `'`,
+/// or `[=*[`, and before the matching closing delimiter when there is one (an
+/// unterminated string, mid-edit, has none). Text without a recognized opener is
+/// all content. Delimiters are ASCII, so both ends are char boundaries.
+pub fn string_content_range(raw: &str) -> std::ops::Range<usize> {
     let bytes = raw.as_bytes();
-    if bytes.first() == Some(&b'"') || bytes.first() == Some(&b'\'') {
-        // Regular quoted string: strip first and last character.
-        // Clamp end to >= start to avoid panic on unterminated single-char tokens.
-        &raw[1..raw.len().saturating_sub(1).max(1)]
-    } else if bytes.first() == Some(&b'[') {
-        // Long bracket string: find the opening `[=*[` and closing `]=*]`
-        let level = bytes.iter().skip(1).take_while(|&&b| b == b'=').count();
-        let open_len = 2 + level; // `[` + `=`*level + `[`
-        let close_len = 2 + level; // `]` + `=`*level + `]`
-        if raw.len() >= open_len + close_len {
-            &raw[open_len..raw.len() - close_len]
-        } else {
-            raw
+    let open = match bytes.first() {
+        Some(b'"' | b'\'') => 1,
+        Some(b'[') => {
+            let level = bytes[1..].iter().take_while(|&&b| b == b'=').count();
+            if bytes.get(1 + level) != Some(&b'[') {
+                return 0..raw.len();
+            }
+            2 + level
         }
-    } else {
-        raw
+        _ => return 0..raw.len(),
+    };
+    // The closing delimiter is as long as the opening one: the same quote, or `]=*]`.
+    let closed = bytes.len() >= 2 * open && match bytes[0] {
+        b'[' => {
+            let tail = &bytes[bytes.len() - open..];
+            tail[0] == b']' && tail[open - 1] == b']' && tail[1..open - 1].iter().all(|&b| b == b'=')
+        }
+        quote => bytes[bytes.len() - 1] == quote,
+    };
+    open..bytes.len() - if closed { open } else { 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_string_delimiters;
+
+    #[test]
+    fn strip_string_delimiters_quoted() {
+        assert_eq!(strip_string_delimiters("\"abc\""), "abc");
+        assert_eq!(strip_string_delimiters("'café'"), "café");
+        assert_eq!(strip_string_delimiters("\"\""), "");
+        assert_eq!(strip_string_delimiters("[[]]"), "");
+        assert_eq!(strip_string_delimiters("[==[long]==]"), "long");
+        assert_eq!(strip_string_delimiters("[==[a]]b]==]"), "a]]b");
+        // Unterminated strings (mid-edit) keep all their content, including a
+        // trailing multi-byte character, which used to panic on a slice through it.
+        assert_eq!(strip_string_delimiters("'"), "");
+        assert_eq!(strip_string_delimiters("'café"), "café");
+        assert_eq!(strip_string_delimiters("[[a€"), "a€");
+        assert_eq!(strip_string_delimiters("[==[€€"), "€€");
+        assert_eq!(strip_string_delimiters("[[你"), "你");
+        assert_eq!(strip_string_delimiters("[=[abc]]"), "abc]]");
+        assert_eq!(strip_string_delimiters("[[]"), "]");
     }
 }

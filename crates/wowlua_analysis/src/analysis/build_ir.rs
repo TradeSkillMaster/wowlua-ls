@@ -794,7 +794,9 @@ impl<'a> Analysis<'a> {
         if let Some(expr_list) = for_loop.expression_list() {
             let exprs = expr_list.expressions();
             for expr in &exprs {
-                self.lower_expression(expr, scope_idx);
+                let expr_id = self.lower_expression(expr, scope_idx);
+                let start = u32::from(expr.syntax().text_range().start());
+                self.ir.numeric_for_bound_sites.push((expr_id, start, trimmed_node_end(expr.syntax())));
             }
         }
         if let Some(inner_block) = for_loop.block() {

@@ -3,7 +3,7 @@
 //! decided by `crate::secrets`; narrowing by `issecretvalue`/`canaccessvalue`
 //! guards is already reflected in the resolved operand types.
 
-use crate::analysis::AnalysisResult;
+use crate::analysis::{AccessKind, AnalysisResult};
 use crate::ast::Operator;
 use crate::secrets::SecretRule;
 use crate::syntax::tree::SyntaxTree;
@@ -19,8 +19,10 @@ impl DiagnosticPass for SecretValues {
             return;
         }
         check_operators(analysis, diags);
+        check_for_bounds(analysis, diags);
         check_conditions(analysis, tree, diags);
         check_table_keys(analysis, diags);
+        check_access(analysis, diags);
         check_arguments(analysis, diags);
     }
 }
@@ -103,6 +105,23 @@ fn check_operators(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
             continue;
         }
         report(analysis, diags, def, culprit, "value", action, (start, end));
+    }
+}
+
+/// A numeric `for` loop's start, limit, and step.
+fn check_for_bounds(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
+    if crate::secrets::NUMERIC_FOR_BOUND != SecretRule::Error {
+        return;
+    }
+    for &(bound, start, end) in &analysis.ir.numeric_for_bound_sites {
+        if !is_secret(analysis, bound) || !active_at(analysis, bound, start) || erroring_secret_op(analysis, bound).is_some() {
+            continue;
+        }
+        report(
+            analysis, diags, &super::SECRET_COMPARISON, bound, "value",
+            "using it as a `for` loop bound errors in addon code; guard with `canaccessvalue`",
+            (start, end),
+        );
     }
 }
 
@@ -199,6 +218,40 @@ fn check_table_keys(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
             analysis, diags, &super::SECRET_TABLE_KEY, key, "value",
             "using it as a table key errors in addon code; guard with `canaccessvalue`",
             (start, end),
+        );
+    }
+}
+
+/// `#`, indexing (`x.y`, `x[k]`, `x:m()`), and calls on a value that may be
+/// secret, reported at that value.
+fn check_access(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
+    let lengths = analysis.ir.unary_op_sites.iter().filter_map(|&(expr_id, start, end)| match *analysis.expr(expr_id) {
+        Expr::UnaryOp { op: Operator::ArrayLength, operand } => Some((operand, (start, end), crate::secrets::LENGTH, "taking its length")),
+        _ => None,
+    });
+    let accesses = analysis.ir.access_sites.iter().map(|site| {
+        let (rule, action) = match site.kind {
+            AccessKind::Index => (crate::secrets::INDEX, "indexing it"),
+            AccessKind::Method => (crate::secrets::INDEX, "calling a method on it"),
+            AccessKind::Call => (crate::secrets::CALL, "calling it"),
+        };
+        (site.receiver, (site.start, site.end), rule, action)
+    });
+    // `local a, b = f()` lowers the call once per name; report each site once.
+    let mut seen = std::collections::HashSet::new();
+    for (value, range, rule, action) in lengths.chain(accesses) {
+        if rule != SecretRule::Error
+            || !is_secret(analysis, value)
+            || !active_at(analysis, value, range.0)
+            || erroring_secret_op(analysis, value).is_some()
+            || !seen.insert(range)
+        {
+            continue;
+        }
+        report(
+            analysis, diags, &super::SECRET_ACCESS, value, "value",
+            &format!("{action} errors in addon code; guard with `canaccessvalue`"),
+            range,
         );
     }
 }
