@@ -7,9 +7,11 @@ members = [
     "crates/wowlua_stub_gen",
     "crates/wowlua_doc",
 ]
-# cargo-fuzz crate: its own standalone build (nightly + libfuzzer), depends on the
-# root facade. Excluded so it doesn't pull into normal workspace builds/tests.
-exclude = ["fuzz"]
+# Standalone crates with their own build:
+# - `fuzz`: cargo-fuzz targets (nightly + libfuzzer), depends on the root facade.
+# - `editors/zed`: the Zed extension, a `wasm32-wasip2` cdylib built by Zed itself.
+# Excluded so neither pulls into normal workspace builds/tests.
+exclude = ["fuzz", "editors/zed"]
 
 [workspace.package]
 version = "0.0.0"

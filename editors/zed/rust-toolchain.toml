@@ -1,0 +1,13 @@
+# The extension is a standalone wasm crate, not part of the workspace, so it
+# does not want the workspace's pinned compiler (`../../rust-toolchain.toml`,
+# which exists to keep the zero-warnings policy deterministic).
+#
+# `targets` matters: Zed builds an extension by running `rustup target add
+# wasm32-wasip2` from its own working directory — i.e. against the *default*
+# toolchain — and then `cargo build` from this directory. Without the toolchain
+# file below, that pair disagrees whenever a directory override is in effect and
+# the build fails with a missing-target error. Listing the target here makes
+# rustup install it for whichever toolchain actually compiles the crate.
+[toolchain]
+channel = "stable"
+targets = ["wasm32-wasip2"]

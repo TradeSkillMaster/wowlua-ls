@@ -1,0 +1,21 @@
+id = "wowlua-ls"
+name = "WoW Lua Language Server"
+description = "WoW addon development: 9,000+ WoW API stubs, event payload typing, XML frame scanning, and 80+ diagnostics."
+version = "0.1.0"
+schema_version = 1
+authors = ["TradeSkillMaster"]
+repository = "https://github.com/TradeSkillMaster/wowlua-ls"
+
+[language_servers.wowlua-ls]
+name = "WoW Lua LS"
+# `Lua` comes from the Lua extension; `WoW TOC` from the wow-toc extension.
+# Neither is required to install this one — a language that isn't installed
+# simply never matches a buffer.
+languages = ["Lua", "WoW TOC"]
+
+# The server routes a document by the `languageId` it is opened with, so both
+# languages must map to the ids it knows. Zed otherwise derives the id by
+# lowercasing the language name, which would send `wow toc` for a `.toc` file.
+[language_servers.wowlua-ls.language_ids]
+"Lua" = "lua"
+"WoW TOC" = "toc"

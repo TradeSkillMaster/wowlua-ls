@@ -10,6 +10,41 @@ Install the **wowlua-ls** extension from the VS Code marketplace. It bundles the
 
 Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server) (or **Settings → Plugins → Marketplace**, search for "WoW Lua"). Works in any JetBrains IDE 2025.2 or newer; it uses the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin as its LSP client, which the Marketplace installs automatically as a dependency. The plugin bundles the language server binary - no separate install needed.
 
+### Zed
+
+Install **WoW Lua Language Server** from Zed's extensions view (`zed: extensions`). It downloads the language server binary for your platform on first use - no separate install needed.
+
+Zed gets its languages from extensions, so install two more:
+
+- **Lua** - supplies the `Lua` language and its grammar. Zed offers it the first time you open a `.lua` file.
+- **wow-toc** - supplies the `WoW TOC` language. Without it, Zed treats `.toc` files as plain text and the server never sees them.
+
+The Lua extension also brings LuaLS, which reports its own (WoW-unaware) diagnostics on the same files. Disable it for Lua buffers:
+
+```json
+{
+  "languages": {
+    "Lua": {
+      "language_servers": ["wowlua-ls", "!lua-language-server", "..."]
+    }
+  }
+}
+```
+
+To run a server you built yourself instead of the downloaded release, point the extension at it:
+
+```json
+{
+  "lsp": {
+    "wowlua-ls": {
+      "binary": { "path": "/path/to/wowlua_ls" }
+    }
+  }
+}
+```
+
+Inlay hints are off by default in Zed; turn them on with `"inlay_hints": { "enabled": true }` under `languages.Lua`. Leave the top-level `"code_lens"` setting off: Zed renders the lenses, but the "N usages" and "overrides X" lenses run editor-side commands that only the VS Code and JetBrains clients implement, so clicking one does nothing.
+
 ### Neovim
 
 Neovim has built-in LSP client support - no plugin required, just configuration.

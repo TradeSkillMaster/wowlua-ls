@@ -46,6 +46,12 @@ On editors that use the [Open VSX Registry](https://open-vsx.org/extension/Trade
 
 Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server) (or **Settings → Plugins → Marketplace**, search for "WoW Lua"). Works in any JetBrains IDE 2025.2 or newer; it uses the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin as its LSP client, which the Marketplace installs automatically as a dependency. The plugin bundles the language server binary - no separate install needed.
 
+### Zed
+
+Install **WoW Lua Language Server** from Zed's extensions view (`zed: extensions`). The extension downloads the language server binary on first use - no separate install needed.
+
+Zed gets its languages from extensions, so install the **Lua** extension too (Zed offers it the first time you open a `.lua` file), plus **wow-toc** if you want `.toc` files analyzed. See the [extension README](editors/zed/README.md) for settings, including how to disable LuaLS on Lua buffers so diagnostics aren't reported twice.
+
 ### Neovim
 
 Neovim has built-in LSP support - no plugin required. Get the binary (download from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release`), then add to your config:
