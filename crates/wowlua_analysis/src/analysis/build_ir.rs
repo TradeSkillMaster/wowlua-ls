@@ -112,6 +112,12 @@ struct AssignTarget<'a, 'c> {
     identifiers_len: usize,
 }
 
+/// A syntax node's byte range.
+fn node_range(node: SyntaxNode<'_>) -> (u32, u32) {
+    let r = node.text_range();
+    (u32::from(r.start()), u32::from(r.end()))
+}
+
 impl<'a> Analysis<'a> {
     pub(super) fn build_ir(&mut self) {
         let root_order = self.ir.next_order();
@@ -540,6 +546,7 @@ impl<'a> Analysis<'a> {
                 self.ir.record_loop_condition_site(expr_id, range, new_scope_idx);
                 // Narrow the loop body scope (condition is true inside the loop)
                 self.analyze_nil_guard(cond, scope_idx, new_scope_idx, true);
+                self.record_secret_guard(cond, scope_idx, scope_idx, true, node_range(inner_block.syntax()));
                 // Collect post-loop narrowings: when the loop exits normally
                 // (condition is false), narrow symbols accordingly.
                 // Skip for `while true` (infinite loop) and loops with break.
@@ -626,6 +633,8 @@ impl<'a> Analysis<'a> {
                     for prev in &branches[..i] {
                         if let Some(prev_cond) = prev.expression() {
                             self.analyze_nil_guard(&prev_cond, scope_idx, new_scope_idx, false);
+                            // The elseif condition runs only when earlier ones were false, too.
+                            self.record_secret_guard(&prev_cond, scope_idx, scope_idx, false, node_range(branch.syntax()));
                         }
                     }
                     if let Some(cond) = branch.expression() {
@@ -635,6 +644,7 @@ impl<'a> Analysis<'a> {
                 }
                 if let Some(cond) = branch.expression() {
                     self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, true);
+                    self.record_secret_guard(&cond, scope_idx, scope_idx, true, node_range(inner_block.syntax()));
                 }
                 stack.push(Frame {
                     block: inner_block,
@@ -656,6 +666,7 @@ impl<'a> Analysis<'a> {
                 for branch in &branches {
                     if let Some(cond) = branch.expression() {
                         self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, false);
+                        self.record_secret_guard(&cond, scope_idx, scope_idx, false, node_range(inner_block.syntax()));
                     }
                 }
                 stack.push(Frame {
@@ -681,6 +692,10 @@ impl<'a> Analysis<'a> {
             exiting_prefix_len = bi + 1;
             if let Some(cond) = branch.expression() {
                 self.analyze_early_exit_guard(&cond, scope_idx);
+                let (if_start, if_end) = node_range(if_chain.syntax());
+                if let Some((_, block_end)) = self.block_range_containing(scope_idx, if_start) {
+                    self.record_secret_guard(&cond, scope_idx, scope_idx, false, (if_end, block_end));
+                }
             }
         }
         // Detect complementary early-exit guard pairs:
@@ -2446,6 +2461,10 @@ impl<'a> Analysis<'a> {
                     let exprs = args.expressions();
                     if let Some(first_arg) = exprs.first() {
                         self.narrow_assert_expr(first_arg, scope_idx);
+                        let (call_start, call_end) = node_range(call.syntax());
+                        if let Some((_, block_end)) = self.block_range_containing(scope_idx, call_start) {
+                            self.record_secret_guard(first_arg, scope_idx, scope_idx, true, (call_end, block_end));
+                        }
                     }
                 }
         }

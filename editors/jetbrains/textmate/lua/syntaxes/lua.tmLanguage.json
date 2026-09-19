@@ -468,6 +468,68 @@
           ]
         },
         {
+          "begin": "(?<=---)[ \\t]*(@secret-clears)(?:\\s+(\\*|[a-zA-Z_][a-zA-Z0-9_]*(?:,[a-zA-Z_][a-zA-Z0-9_]*)*))?",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.annotation.lua"
+            },
+            "2": {
+              "name": "support.class.lua"
+            }
+          },
+          "end": "(?=[\\n@#])",
+          "patterns": [
+            {
+              "match": "==",
+              "name": "keyword.operator.lua"
+            },
+            {
+              "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*(?:\\.[a-zA-Z_][a-zA-Z0-9_]*)+",
+              "name": "string.unquoted.lua"
+            },
+            {
+              "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*",
+              "name": "entity.name.variable.lua"
+            }
+          ]
+        },
+        {
+          "begin": "(?<=---)[ \\t]*(@secret-restriction-guard)(?:\\s+([a-zA-Z_][a-zA-Z0-9_]*))?",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.annotation.lua"
+            },
+            "2": {
+              "name": "entity.name.variable.lua"
+            }
+          },
+          "end": "(?=[\\n@#])",
+          "patterns": [
+            {
+              "match": "==",
+              "name": "keyword.operator.lua"
+            },
+            {
+              "match": "\\b[a-zA-Z_][a-zA-Z0-9_.]*",
+              "name": "string.unquoted.lua"
+            }
+          ]
+        },
+        {
+          "match": "(?<=---)[ \\t]*(@secret-precondition)(?:\\s+([a-zA-Z_][a-zA-Z0-9_]*))?(?:\\s+(ReturnNothing|ReturnWithError|Error)\\b)?",
+          "captures": {
+            "1": {
+              "name": "storage.type.annotation.lua"
+            },
+            "2": {
+              "name": "support.class.lua"
+            },
+            "3": {
+              "name": "storage.modifier.lua"
+            }
+          }
+        },
+        {
           "begin": "(?<=---)[ \\t]*@correlated\\b",
           "beginCaptures": {
             "0": {

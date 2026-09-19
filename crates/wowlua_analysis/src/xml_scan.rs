@@ -935,6 +935,7 @@ fn build_mixin_augment(mixin_name: &str, ctx: &FrameContext, path: &Path) -> Cla
         field_descriptions: HashMap::new(),
         bare_inferred_field_names: HashSet::new(),
         deferred_field_call_ranges: HashMap::new(),
+        secret_when: Vec::new(),
     }
 }
 
@@ -1010,6 +1011,7 @@ fn finalize_frame(
         field_descriptions: HashMap::new(),
         bare_inferred_field_names: HashSet::new(),
         deferred_field_call_ranges: HashMap::new(),
+        secret_when: Vec::new(),
     };
     classes.push(class_decl);
 

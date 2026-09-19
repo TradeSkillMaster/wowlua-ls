@@ -26,6 +26,7 @@ impl AnalysisResult {
 
             if is_func
                 && let Some(ValueType::Function(Some(func_idx))) = &resolved_type {
+                    let _call_secrecy = self.secrecy_display_for_function(*func_idx, self.call_expr_for_callee_at(tree, offset));
                     let skip_self = access_kind == FieldAccessKind::Colon;
                     let qualified_name = if is_g_env {
                         field_name.clone()
@@ -75,6 +76,7 @@ impl AnalysisResult {
                 }
 
             if let Some(field_info) = self.get_field(table_idx, &field_name) {
+                let _field_secrecy = self.secrecy_display_for_tables(&receiver_tables);
                 let (formatted, effective_type, has_annotation) = {
                     if let Some(ref text) = field_info.annotation_text {
                         let expansion = field_info.annotation_type_raw.as_ref()
@@ -287,6 +289,11 @@ impl AnalysisResult {
                 // Declaration-style for functions
                 if !is_fun_alias_param
                     && let ValueType::Function(Some(func_idx)) = display_ref {
+                    let _call_secrecy = self.secrecy_display_for_function(*func_idx, self.call_expr_for_callee_at(tree, offset));
+                    // Re-derived under the guard on purpose: `doc_for_type` reads
+                    // the display context to drop predicates the surrounding
+                    // context guards clear, so the copy above was built without it.
+                    let doc = self.doc_for_type(display_ref);
                     let type_str = format!("({}) {}", kind, self.format_function_decl(*func_idx, &name, false, None));
                     return Some(HoverResult { type_str, doc });
                 }

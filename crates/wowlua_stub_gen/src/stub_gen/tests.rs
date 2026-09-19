@@ -1463,7 +1463,12 @@ fn test_generate_scriptobject_method_stubs() {
         ("FontString".to_string(), "GetText".to_string()),
     ].into_iter().collect();
 
-    let out = generate_scriptobject_method_stubs(&docs, &known_enums, &existing);
+    let declared: HashSet<String> = ["FontString".to_string()].into_iter().collect();
+    let out = generate_scriptobject_method_stubs(&docs, &known_enums, &existing, &declared);
+    assert!(!out.contains("---@class"), "a declared class isn't redeclared: {out}");
+    // An object no stub declares gets its class, once.
+    let undeclared = generate_scriptobject_method_stubs(&docs, &known_enums, &existing, &HashSet::new());
+    assert_eq!(undeclared.matches("---@class FontString\nlocal FontString = {}\n").count(), 1, "{undeclared}");
 
     // SetSmoothScaling should appear (not in existing). It has a documented
     // argument, so it keeps its precise arity — NOT a vararg signature.
@@ -2180,6 +2185,7 @@ function FontString:GetText() end
 function UnitIdentity(unit) end
 
 ---@class CastData
+---@secret-when SecretWhenCurveSecret
 ---@field spellName secret<string>
 ---@field castID number
 ---@field color colorRGBA
@@ -2359,6 +2365,325 @@ local AuraDoc =
     // Structure returns are tables; only their fields carry secrecy.
     assert_eq!(index.functions["GetAuraInfo"].entries, [("aura".to_string(), false)]);
     assert_eq!(index.functions["GetTip"].entries, [("tip".to_string(), false), ("cast".to_string(), false)]);
+    // The predicates that reach a structure, directly or through a field, mark its class.
+    let predicate_names = |name: &str| index.structure_predicates[name].iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+    assert_eq!(predicate_names("AuraInfo"), ["SecretWhenUnitAuraRestricted"]);
+    assert_eq!(predicate_names("AuraBrief"), ["SecretWhenUnitAuraRestricted"]);
+}
+
+fn guard_test_docs() -> BlizzardApiDocs {
+    let secrets = r#"
+local SecretUtil =
+{
+	Name = "SecretUtil",
+	Type = "System",
+	Namespace = "C_Secrets",
+
+	Functions =
+	{
+		{
+			Name = "GetSpellCooldownSecrecy",
+			Type = "Function",
+			Arguments = { { Name = "spellIdentifier", Type = "SpellIdentifier", Nilable = false } },
+			Returns = { { Name = "secrecy", Type = "SecrecyLevel", Nilable = false } },
+		},
+		{
+			Name = "HasSecretRestrictions",
+			Type = "Function",
+			Returns = { { Name = "hasSecretRestrictions", Type = "bool", Nilable = false } },
+		},
+		{
+			Name = "ShouldUnitHealthMaxBeSecret",
+			Type = "Function",
+			Arguments = { { Name = "unit", Type = "UnitToken", Nilable = false } },
+			Returns = { { Name = "isUnitHealthMaxSecret", Type = "bool", Nilable = false } },
+		},
+	},
+};
+
+local RestrictedActions =
+{
+	Name = "RestrictedActions",
+	Type = "System",
+	Namespace = "C_RestrictedActions",
+
+	Functions =
+	{
+		{
+			Name = "InCombatLockdown",
+			Type = "Function",
+			Namespace = "",
+			Returns = { { Name = "inCombatLockdown", Type = "bool", Nilable = false } },
+		},
+		{
+			Name = "IsAddOnRestrictionActive",
+			Type = "Function",
+			Arguments = { { Name = "type", Type = "AddOnRestrictionType", Nilable = false } },
+			Returns = { { Name = "active", Type = "bool", Nilable = false } },
+		},
+	},
+};
+
+local Unit =
+{
+	Name = "Unit",
+	Type = "System",
+
+	Functions =
+	{
+		{
+			Name = "UnitIsUnit",
+			Type = "Function",
+			RequiresComparableUnitTokens = true,
+			SecretWhenUnitComparisonRestricted = true,
+			Arguments = { { Name = "unit1", Type = "UnitToken", Nilable = false }, { Name = "unit2", Type = "UnitToken", Nilable = false } },
+			Returns = { { Name = "result", Type = "bool", Nilable = false } },
+		},
+		{
+			Name = "GetAuraCount",
+			Type = "Function",
+			RequiresUnitAuraAccess = true,
+			Returns = { { Name = "count", Type = "number", Nilable = false } },
+		},
+		{
+			Name = "GetClubCount",
+			Type = "Function",
+			RequiresClubsInitialized = true,
+			Returns = { { Name = "count", Type = "number", Nilable = false } },
+		},
+		{
+			Name = "GetCooldown",
+			Type = "Function",
+			SecretWhenCooldownsRestricted = true,
+			Returns = { { Name = "info", Type = "CooldownInfo", Nilable = false } },
+		},
+		{
+			Name = "GetAlwaysInfo",
+			Type = "Function",
+			SecretWhenCooldownsRestricted = true,
+			Returns = { { Name = "info", Type = "AlwaysInfo", Nilable = false } },
+		},
+		{
+			Name = "GetMixedPredicated",
+			Type = "Function",
+			SecretWhenCooldownsRestricted = true,
+			Returns = { { Name = "info", Type = "MixedInfo", Nilable = false } },
+		},
+		{
+			Name = "GetMixedUnconditional",
+			Type = "Function",
+			SecretReturns = true,
+			Returns = { { Name = "info", Type = "MixedInfo", Nilable = false } },
+		},
+	},
+
+	Tables =
+	{
+		{
+			Name = "CooldownInfo",
+			Type = "Structure",
+			Fields =
+			{
+				{ Name = "startTime", Type = "number", Nilable = false },
+				{ Name = "charges", Type = "ChargeInfo", Nilable = false },
+			},
+		},
+		{
+			Name = "ChargeInfo",
+			Type = "Structure",
+			Fields = { { Name = "currentCharges", Type = "number", Nilable = false } },
+		},
+		{
+			Name = "AlwaysInfo",
+			Type = "Structure",
+			Fields = { { Name = "value", Type = "number", Nilable = false, SecretValue = true } },
+		},
+		{
+			Name = "MixedInfo",
+			Type = "Structure",
+			Fields = { { Name = "value", Type = "number", Nilable = false } },
+		},
+	},
+};
+
+local FrameAPI =
+{
+	Name = "SimpleFrameAPI",
+	Type = "ScriptObject",
+
+	Functions =
+	{
+		{
+			Name = "GetAttribute",
+			Type = "Function",
+			ConstSecretAccessor = true,
+			SecretArguments = "AllowedWhenUntainted",
+			Arguments = { { Name = "attribute", Type = "cstring", Nilable = false } },
+			Returns = { { Name = "value", Type = "LuaValueVariant", Nilable = false } },
+		},
+	},
+};
+"#;
+    let predicates = r#"
+local SecretPredicates =
+{
+	Predicates =
+	{
+		{
+			Name = "RequiresComparableUnitTokens",
+			Type = "Precondition",
+			FailureMode = "ReturnNothing",
+			Documentation = { "Guarded APIs only accept comparable unit token pairs." },
+		},
+		{
+			Name = "RequiresUnitAuraAccess",
+			Type = "Precondition",
+			FailureMode = "Error",
+		},
+		{
+			Name = "RequiresNonSecretAura",
+			Type = "Precondition",
+			Documentation = { "Protected APIs will return no values." },
+		},
+		{ Name = "SecretWhenUnitComparisonRestricted", Type = "Secret" },
+		{ Name = "SecretWhenUnitHealthMaxRestricted", Type = "Secret" },
+		{ Name = "SecretWhenCooldownsRestricted", Type = "Secret" },
+	},
+};
+"#;
+    let other_predicates = r#"
+local Club =
+{
+	Predicates =
+	{
+		{ Name = "RequiresClubsInitialized", Type = "Precondition", FailureMode = "ReturnNothing" },
+	},
+};
+"#;
+    let mut docs = BlizzardApiDocs {
+        functions: Vec::new(),
+        events: Vec::new(),
+        structures: Vec::new(),
+        predicates: Vec::new(),
+        script_objects: Vec::new(),
+    };
+    let re = BlizzardDocRegexes::new();
+    let object_start = secrets.find("local FrameAPI").unwrap();
+    for file in secrets[..object_start].split("\nlocal ").filter(|f| !f.trim().is_empty()) {
+        parse_blizzard_api_doc_file(&format!("local {file}"), &mut docs, &re);
+    }
+    parse_blizzard_api_doc_file(&secrets[object_start..], &mut docs, &re);
+    // Only the secret predicate table's preconditions are secrecy preconditions.
+    parse_blizzard_api_doc_file(predicates, &mut docs, &re);
+    for predicate in &mut docs.predicates {
+        predicate.secret_table = true;
+    }
+    parse_blizzard_api_doc_file(other_predicates, &mut docs, &re);
+    docs
+}
+
+#[test]
+fn test_build_secret_index_guards_and_preconditions() {
+    use crate::secrets::{PreconditionFailure, SecretArgsPolicy, SecretPrecondition};
+    let docs = guard_test_docs();
+    assert_eq!(docs.predicates.iter().find(|p| p.name == "RequiresUnitAuraAccess").and_then(|p| p.failure_mode.as_deref()), Some("Error"));
+    let index = build_secret_index(&docs, &[], &HashSet::new());
+
+    // Curated `C_Secrets` guards, with their parameters' positions.
+    let clears = |name: &str| index.functions[name].clears.clone().expect(name);
+    assert_eq!(clears("C_Secrets.ShouldUnitHealthMaxBeSecret"), GuardAnnotation {
+        head: "SecretWhenUnitHealthMaxRestricted".to_string(),
+        head_param: None,
+        params: vec![(0, "unit".to_string())],
+        equals: None,
+    });
+    assert_eq!(clears("C_Secrets.HasSecretRestrictions").head, "*");
+    assert_eq!(clears("C_Secrets.GetSpellCooldownSecrecy").equals, Some("Enum.SecrecyLevel.NeverSecret"));
+    // A curated guard the docs don't define (or whose predicates they don't) is skipped.
+    assert!(!index.functions.contains_key("C_Secrets.ShouldAurasBeSecret"));
+
+    let restriction = |name: &str| index.functions[name].restriction_guard.clone().expect(name);
+    assert_eq!(restriction("C_RestrictedActions.IsAddOnRestrictionActive").head_param, Some(0));
+    assert_eq!(restriction("InCombatLockdown").head, "Combat");
+    assert_eq!(restriction("C_RestrictedActions.InCombatLockdown").head_param, None);
+
+    // Secrecy preconditions come only from the secret predicate table.
+    assert_eq!(index.functions["UnitIsUnit"].preconditions, [SecretPrecondition {
+        name: "RequiresComparableUnitTokens".to_string(),
+        failure: Some(PreconditionFailure::ReturnNothing),
+        doc: Some("Guarded APIs only accept comparable unit token pairs.".to_string()),
+    }]);
+    assert_eq!(index.functions["GetAuraCount"].preconditions[0].failure, Some(PreconditionFailure::Error));
+    assert!(!index.functions.contains_key("GetClubCount"));
+
+    // Constant accessors propagate their arguments' secrecy.
+    assert_eq!(index.functions["Frame:GetAttribute"].args, Some(SecretArgsPolicy::AllowedWhenTainted));
+
+    // A structure only predicated APIs return secret carries their predicates, as
+    // do the structures it contains; one returned secret unconditionally doesn't.
+    let predicate_names = |name: &str| index.structure_predicates[name].iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+    assert_eq!(predicate_names("CooldownInfo"), ["SecretWhenCooldownsRestricted"]);
+    assert_eq!(predicate_names("ChargeInfo"), ["SecretWhenCooldownsRestricted"]);
+    assert!(index.structures.contains_key("MixedInfo") && !index.structure_predicates.contains_key("MixedInfo"));
+    // Nor one with a field that is secret whatever the predicates say.
+    assert!(index.structures.contains_key("AlwaysInfo") && !index.structure_predicates.contains_key("AlwaysInfo"));
+}
+
+#[test]
+fn test_apply_secret_annotations_guards_and_preconditions() {
+    let index = build_secret_index(&guard_test_docs(), &[], &HashSet::new());
+    // Stub parameter names differ from the docs'; annotations use the stub's.
+    let stub = "\
+---@param unitToken UnitToken
+---@return boolean isUnitHealthMaxSecret
+function C_Secrets.ShouldUnitHealthMaxBeSecret(unitToken) end
+
+---@param restrictionType Enum.AddOnRestrictionType
+---@return boolean active
+function C_RestrictedActions.IsAddOnRestrictionActive(restrictionType) end
+
+---@param unit1 UnitToken
+---@param unit2 UnitToken
+---@return boolean result
+function UnitIsUnit(unit1, unit2) end
+
+---@return number|string count
+function GetAuraCount() end
+
+---@class CooldownInfo
+---@field startTime number
+";
+    let out = apply_secret_annotations(stub, &index).expect("stub should change");
+    let expected = "\
+---@param unitToken UnitToken
+---@return boolean isUnitHealthMaxSecret
+---@secret-clears SecretWhenUnitHealthMaxRestricted unitToken
+function C_Secrets.ShouldUnitHealthMaxBeSecret(unitToken) end
+
+---@param restrictionType Enum.AddOnRestrictionType
+---@return boolean active
+---@secret-restriction-guard restrictionType
+function C_RestrictedActions.IsAddOnRestrictionActive(restrictionType) end
+
+---@param unit1 UnitToken
+---@param unit2 UnitToken
+---@return secret<boolean>? result
+---@secret-when SecretWhenUnitComparisonRestricted
+---@secret-precondition RequiresComparableUnitTokens ReturnNothing Guarded APIs only accept comparable unit token pairs.
+function UnitIsUnit(unit1, unit2) end
+
+---@return number|string count
+---@secret-precondition RequiresUnitAuraAccess Error
+function GetAuraCount() end
+
+---@class CooldownInfo
+---@secret-when SecretWhenCooldownsRestricted
+---@field startTime secret<number>
+";
+    assert_eq!(out, expected);
+    // A precondition that returns nothing widens unions too.
+    assert_eq!(nilable_type("number|string"), "number|string|nil");
+    assert_eq!(nilable_type("boolean?"), "boolean?");
 }
 
 #[test]

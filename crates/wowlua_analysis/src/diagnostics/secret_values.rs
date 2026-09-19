@@ -28,10 +28,12 @@ impl DiagnosticPass for SecretValues {
 }
 
 /// Whether secret values apply to `expr` (at `offset`): not inside a
-/// Classic-only flavor guard or a guarded `and` chain.
+/// Classic-only flavor guard or a guarded `and` chain, nor where
+/// `HasSecretRestrictions` is false.
 fn active_at(analysis: &AnalysisResult, expr: ExprId, offset: u32) -> bool {
     let scope = analysis.scope_at_offset(offset).unwrap_or(ScopeIndex(0));
     analysis.active_flavors_for_expr(expr, scope) & crate::flavor::SECRET_VALUE_FLAVORS != 0
+        && !analysis.ir.secret_context_at(offset).is_some_and(|context| context.all)
 }
 
 /// Whether `expr` may hold a secret, without cloning its type when it is cached.

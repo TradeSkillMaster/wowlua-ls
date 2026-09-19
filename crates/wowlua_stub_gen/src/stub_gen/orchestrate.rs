@@ -502,7 +502,7 @@ pub fn regenerate_stubs() {
 
     // Generate ScriptObject widget method stubs for new frame methods not yet in Ketho's stubs
     log::info!("Generating ScriptObject widget method stubs...");
-    let script_object_lua = generate_scriptobject_method_stubs(&blizzard_docs, &known_enum_names, &existing_widget_methods);
+    let script_object_lua = generate_scriptobject_method_stubs(&blizzard_docs, &known_enum_names, &existing_widget_methods, &secret_table_types);
     std::fs::write(gen_dir.join("ScriptObjectMethods.lua"), &script_object_lua).unwrap();
 
     // Fetch LuaEnum.lua once for both Enum.* categories and Constants.* sub-tables.

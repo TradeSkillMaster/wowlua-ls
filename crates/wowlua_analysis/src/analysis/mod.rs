@@ -3,6 +3,7 @@ pub mod build_ir;
 pub mod lower_expression;
 pub mod narrowing;
 pub mod secret_narrowing;
+pub mod secret_context;
 pub mod resolve;
 pub mod resolve_call;
 pub mod checks;
@@ -542,6 +543,12 @@ pub struct Ir {
     /// Source ranges of those right operands with their chain's flavor mask, for
     /// queries that only have an offset (hover, inlay hints).
     pub and_guarded_flavor_ranges: Vec<(u32, u32, u8)>,
+    /// Code guarded by `@secret-clears` / `@secret-restriction-guard` results
+    /// (`secret_context.rs`).
+    pub secret_context_regions: Vec<secret_context::SecretContextRegion>,
+    /// Function body scopes, where secret context regions stop (filled after
+    /// building when there are regions).
+    pub function_body_scopes: HashSet<ScopeIndex>,
     pub and_guarded_nil_check_exprs: HashSet<ExprId>,
     pub assign_nil_check_bases: Vec<(ExprId, u32, u32)>,
     pub symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
@@ -2883,6 +2890,8 @@ impl<'a> Analysis<'a> {
                 and_guarded_call_exprs: HashSet::new(),
                 and_guarded_flavor_exprs: HashMap::new(),
                 and_guarded_flavor_ranges: Vec::new(),
+                secret_context_regions: Vec::new(),
+                function_body_scopes: HashSet::new(),
                 and_guarded_nil_check_exprs: HashSet::new(),
                 assign_nil_check_bases: Vec::new(),
                 symbol_type_annotations: HashMap::new(),
@@ -2960,6 +2969,7 @@ impl<'a> Analysis<'a> {
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();
         analysis.build_ir();
+        analysis.ir.index_function_body_scopes();
         analysis.mark_external_mixins_open();
         analysis.materialize_fun_annotations();
         analysis.inject_preresolved();

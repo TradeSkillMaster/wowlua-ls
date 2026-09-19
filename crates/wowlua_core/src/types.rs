@@ -1360,6 +1360,8 @@ pub struct FieldInfo {
 pub struct TableInfo {
     pub fields: HashMap<String, FieldInfo>,
     pub class_name: Option<String>,
+    /// `@secret-when` predicates of a class (`ClassDecl::secret_when`).
+    pub secret_when: Vec<String>,
     pub class_type_params: Vec<String>,
     #[serde(default)]
     pub class_type_param_constraints: Vec<Option<String>>,

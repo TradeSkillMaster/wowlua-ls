@@ -104,6 +104,38 @@ local plainDoc = GetTime()
 frame:RegisterEvent("UNIT_SPELLCAST_SENT")
 --                   ^ doc: Payload may be secret: `SecretWhenUnitSpellCastRestricted`
 
+-- Constant accessors return secrets exactly when an argument is secret.
+local formatter = C_StringUtil.CreateSecondsFormatter()
+local remainingText = formatter:Format(UnitHealth("focus"))
+--    ^ hover: (local) remainingText: secret<string>
+local fixedText = formatter:Format(5)
+--    ^ hover: (local) fixedText: string
+local curve = C_CurveUtil.CreateCurve()
+local curved = curve:Evaluate(UnitHealth("focus"))
+--    ^ hover: (local) curved: secret<number>
+
+-- Preconditions: a failing `ReturnNothing`/`ReturnWithError` one makes the returns nilable.
+local sameUnit = UnitIsUnit("target", "focus")
+--    ^ hover: (local) sameUnit: secret<boolean>?
+--               ^ doc: Returns nothing when `RequiresComparableUnitTokens` fails — Guarded APIs only accept unit token pairs
+local effectiveAlpha = frame:GetEffectiveAlpha()
+--    ^ hover: (local) effectiveAlpha: number?
+--                           ^ doc: Returns nothing and reports an error when `RequiresScriptObjectAlphaAccess` fails
+local auraByIndex = C_UnitAuras.GetAuraDataByIndex("target", 1)
+--                              ^ doc: Errors when `RequiresUnitAuraAccess` fails
+
+-- Context guards.
+local healthMaxSecret = C_Secrets.ShouldUnitHealthMaxBeSecret("target")
+--                                ^ doc: Guard: `false` clears `SecretWhenUnitHealthMaxRestricted` for later calls with the same `unit`
+local secretsEnabled = C_Secrets.HasSecretRestrictions()
+--                               ^ doc: Guard: `false` means no API returns secret values
+local cooldownSecrecy = C_Secrets.GetSpellCooldownSecrecy(61304)
+--                                ^ doc: Guard: `Enum.SecrecyLevel.NeverSecret` clears `SecretWhenCooldownsRestricted` for later calls with the same `spellIdentifier`
+local encounterActive = C_RestrictedActions.IsAddOnRestrictionActive(Enum.AddOnRestrictionType.Encounter)
+--                                          ^ doc: Guard: `false` means the restriction passed as `type` is inactive
+local lockdown = InCombatLockdown()
+--               ^ doc: Guard: `false` means the `Combat` restriction is inactive
+
 -- ── Diagnostics on stub-derived values ─────────────────────────────────────────
 
 local maxHp = UnitHealthMax("target")

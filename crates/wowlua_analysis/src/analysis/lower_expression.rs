@@ -121,6 +121,12 @@ impl<'a> Analysis<'a> {
                     let and_flavor_mask: u8 = if is_and_chain {
                         self.collect_and_chain_flavor_guards(lhs, scope_idx)
                     } else { 0 };
+                    // The right operand runs only when the left is truthy (`and`) or falsy (`or`).
+                    if is_and_chain || is_or_chain {
+                        let context = self.secret_context_of(lhs, scope_idx, is_and_chain);
+                        let r = rhs.syntax().text_range();
+                        self.record_secret_context(context, scope_idx, (u32::from(r.start()), u32::from(r.end())));
+                    }
                     let guard_result = if is_and_chain {
                         self.detect_and_lhs_guard(lhs, scope_idx)
                     } else if matches!(op, Operator::Or) {

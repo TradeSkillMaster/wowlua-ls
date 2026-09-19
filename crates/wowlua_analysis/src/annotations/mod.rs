@@ -562,6 +562,11 @@ pub struct ClassDecl {
     /// arguments from the per-file engine. Workspace-only (not in the stub blob).
     #[serde(skip)]
     pub deferred_field_call_ranges: HashMap<String, (u32, u32)>,
+    /// `@secret-when` predicates on the class: the conditions under which its
+    /// secret fields hold secrets, so a guard clearing all of them unwraps field
+    /// reads.
+    #[serde(default)]
+    pub secret_when: Vec<String>,
 }
 
 impl ClassDecl {
@@ -593,6 +598,7 @@ impl ClassDecl {
             field_descriptions: HashMap::new(),
             bare_inferred_field_names: HashSet::new(),
             deferred_field_call_ranges: HashMap::new(),
+            secret_when: Vec::new(),
         }
     }
 
@@ -1366,7 +1372,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::new(), deferred_field_call_ranges: HashMap::new() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::new(), deferred_field_call_ranges: HashMap::new(), secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -1962,6 +1968,15 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     block.secret.unless = Some(crate::secrets::SecretExemption { param: param.to_string(), values });
                 }
             }
+        } else if let Some(rest) = content.strip_prefix("@secret-clears") {
+            // `@secret-clears <Predicate>[,<Predicate>…]|* [param…] [== Value]`
+            block.secret.clears = crate::secrets::SecretClears::parse(rest);
+        } else if let Some(rest) = content.strip_prefix("@secret-restriction-guard") {
+            // `@secret-restriction-guard <param|RestrictionType> [== Value]`
+            block.secret.restriction_guard = crate::secrets::SecretRestrictionGuard::parse(rest);
+        } else if let Some(rest) = content.strip_prefix("@secret-precondition") {
+            // `@secret-precondition <Name> [FailureMode] [documentation]`
+            block.secret.preconditions.extend(crate::secrets::SecretPrecondition::parse(rest));
         } else if let Some(rest) = content.strip_prefix("@secret-guard") {
             // `@secret-guard <param> is-secret|accessible|any-secret`
             let mut parts = rest.split_whitespace();

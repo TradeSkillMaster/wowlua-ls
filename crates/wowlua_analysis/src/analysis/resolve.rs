@@ -3506,7 +3506,17 @@ impl<'a> Analysis<'a> {
                 })
             }
 
-            Expr::FieldAccess { table, field, field_range: _ } => self.resolve_field_access(*table, field),
+            Expr::FieldAccess { table, field, field_range } => {
+                let result = self.resolve_field_access(*table, field)?;
+                // A guard clearing the struct's predicates unwraps the field (`secret_context.rs`).
+                let cleared = match field_range {
+                    Some((start, _)) if result.has_secret() && !self.ir.secret_context_regions.is_empty() => {
+                        self.resolve_expr(*table).is_some_and(|receiver| self.ir.field_secrecy_cleared(&receiver, *start))
+                    }
+                    _ => false,
+                };
+                Some(if cleared { result.strip_secret() } else { result })
+            }
             Expr::VarArgs(ret_index, file_level) => self.resolve_varargs(expr_id, *ret_index, *file_level),
             Expr::BracketIndex { table, key, literal_key } => self.resolve_bracket_index(*table, *key, literal_key.clone()),
             Expr::ForInVar { iterator_call, var_index, state_expr } => self.resolve_forin_var(*iterator_call, *var_index, *state_expr),

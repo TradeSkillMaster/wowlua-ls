@@ -3322,7 +3322,15 @@ impl<'a> Analysis<'a> {
                 Expr::AssignNarrow { inner, .. } => { current = *inner; }
                 Expr::SymbolRef(sym_idx, ver) => {
                     let ver_data = self.sym(*sym_idx).versions.get(*ver)?;
-                    current = ver_data.type_source?;
+                    match ver_data.type_source {
+                        Some(source) => current = source,
+                        // A stub global (`local S = C_Secrets`) carries its table
+                        // in `resolved_type`; only local symbols have a source expr.
+                        None => return match ver_data.resolved_type {
+                            Some(ValueType::Table(Some(ti))) => Some(ti),
+                            _ => None,
+                        },
+                    }
                 }
                 Expr::ForInVar { iterator_call, var_index, .. } => {
                     return self.forin_var_table(*iterator_call, *var_index, depth);
@@ -3484,7 +3492,8 @@ impl<'a> Analysis<'a> {
 
     /// Resolve a call's callee through its name path: the symbol (through local
     /// aliases and the `f = f or function … end` polyfill), the fields of the
-    /// table it holds, a class of the same name, or an addon-namespace sub-table.
+    /// table it holds (a stub namespace such as `C_Secrets` included), a class of
+    /// the same name, or an addon-namespace sub-table.
     pub(super) fn resolve_call_function_by_path(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {
         let ident = call.identifier()?;
         let names = ident.names();
@@ -3500,7 +3509,11 @@ impl<'a> Analysis<'a> {
         let version = sym.versions.last()?;
 
         // Dotted/colon call: `Table.Method(x)` or `obj:Method()` — walk through table fields
-        let resolved = version.type_source.and_then(|expr_id| self.resolve_expr_to_table(expr_id));
+        let resolved = if sym_idx.is_external() {
+            self.find_table_for_symbol_phase1(sym_idx, scope)
+        } else {
+            version.type_source.and_then(|expr_id| self.resolve_expr_to_table(expr_id))
+        };
         if let Some(current_table) = resolved
             && let Some(result) = self.walk_table_fields_to_func(current_table, &names[1..]) {
             return Some(result);
@@ -3571,10 +3584,10 @@ impl<'a> Analysis<'a> {
             let field = self.ir.get_field(current_table, name)?;
             let field_expr = self.expr(field.expr);
             if i == names.len() - 1 {
-                if let Expr::FunctionDef(func_idx) = field_expr {
-                    return Some(*func_idx);
-                }
-                return None;
+                return match field_expr {
+                    Expr::FunctionDef(func_idx) | Expr::Literal(ValueType::Function(Some(func_idx))) => Some(*func_idx),
+                    _ => None,
+                };
             }
             match field_expr {
                 Expr::TableConstructor(ti) => current_table = *ti,

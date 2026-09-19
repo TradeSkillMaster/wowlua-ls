@@ -121,17 +121,8 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// The call-site argument position of `func_idx`'s parameter `param`
-    /// (`...` = the first vararg position). A method call passes its receiver
-    /// as the implicit first parameter, so that one is skipped.
     pub(super) fn param_position(&self, func_idx: FunctionIndex, param: &str, is_method_call: bool) -> Option<usize> {
-        let func = self.func(func_idx);
-        let skip = usize::from(is_method_call && !func.args.is_empty());
-        let mut names = func.args.iter().skip(skip).map(|&s| match &self.sym(s).id {
-            SymbolIdentifier::Name(n) => n.as_str(),
-            _ => "",
-        });
-        if param == "..." { Some(names.count()) } else { names.position(|n| n == param) }
+        self.ir.param_position(func_idx, param, is_method_call)
     }
 
     fn secret_narrow_target(&self, arg: &Expression<'_>, scope: ScopeIndex) -> Option<NarrowTarget> {

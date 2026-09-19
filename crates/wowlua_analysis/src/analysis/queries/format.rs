@@ -219,6 +219,33 @@ pub(super) fn resolve_expr_type_impl(
     visited: &mut HashSet<ExprId>,
     depth: usize,
 ) -> Option<ValueType> {
+    let result = resolve_expr_type_uncleared(ir, resolved_expr_cache, expr_id, visited, depth)?;
+    if !result.has_secret() || ir.secret_context_regions.is_empty() {
+        return Some(result);
+    }
+    // Mirror the fixpoint: a guard clearing a call's or a struct field's
+    // predicates unwraps its secrecy (`secret_context.rs`).
+    let cleared = match ir.expr(expr_id) {
+        Expr::FunctionCall { func, args, call_range, .. } => {
+            matches!(resolve_expr_type_impl(ir, resolved_expr_cache, *func, &mut HashSet::new(), depth + 1).map(ValueType::into_strip_opaque),
+                Some(ValueType::Function(Some(func_idx))) if ir.call_secrecy_cleared(func_idx, args, call_range.0))
+        }
+        Expr::FieldAccess { table, field_range: Some((start, _)), .. } => {
+            resolve_expr_type_impl(ir, resolved_expr_cache, *table, &mut HashSet::new(), depth + 1)
+                .is_some_and(|receiver| ir.field_secrecy_cleared(&receiver, *start))
+        }
+        _ => false,
+    };
+    Some(if cleared { result.strip_secret() } else { result })
+}
+
+fn resolve_expr_type_uncleared(
+    ir: &Ir,
+    resolved_expr_cache: &[Option<ValueType>],
+    expr_id: ExprId,
+    visited: &mut HashSet<ExprId>,
+    depth: usize,
+) -> Option<ValueType> {
     // Check Phase 2 resolve cache first — builder chains (@builds-field / @built-name /
     // @return self) are resolved during the fixpoint loop and the result is cached here.
     // The read-only resolver can't replicate the mutable table-cloning logic, so we
@@ -806,10 +833,11 @@ impl AnalysisResult {
     }
 
     /// The hover "Secrecy" section of a function: the `@secret-when` predicates
-    /// with their documentation, which returns are never secret, the
-    /// `@secret-unless` exemption, the `@secret-args` policy, widget aspects,
-    /// and what a `@secret-guard` result means. `None` when nothing applies or the
-    /// addon doesn't target retail.
+    /// with their documentation (minus those context guards clear), which
+    /// returns are never secret, the `@secret-unless` exemption, the
+    /// `@secret-args` policy, widget aspects, preconditions, and what a
+    /// `@secret-guard` / `@secret-clears` / `@secret-restriction-guard` result
+    /// means. `None` when nothing applies or the addon doesn't target retail.
     fn format_secrecy_doc(&self, func: &crate::types::Function) -> Option<String> {
         use crate::secrets::{SecretArgsPolicy, SecretGuardKind};
         if !self.secrets_displayed() {
@@ -823,7 +851,9 @@ impl AnalysisResult {
         }
         let mut lines = vec!["**Secrecy**".to_string()];
         let when = meta.map(|m| m.when.as_slice()).unwrap_or_default();
-        lines.extend(when.iter().map(|pred| pred.hover_line("May return secret values")));
+        lines.extend(when.iter()
+            .filter(|pred| self.secret_predicate_displayed(&pred.name))
+            .map(|pred| pred.hover_line("May return secret values")));
         if any_secret_return && when.is_empty() {
             lines.push("- Returns may be secret values.".to_string());
         }
@@ -874,8 +904,33 @@ impl AnalysisResult {
                 };
                 lines.push(format!("- Guard: {meaning}"));
             }
+            let result_text = |equals: &Option<String>| match equals {
+                Some(value) => format!("`{value}`"),
+                None => "`false`".to_string(),
+            };
+            if let Some(clears) = &meta.clears {
+                let meaning = if clears.all {
+                    "means no API returns secret values".to_string()
+                } else {
+                    let names: Vec<String> = clears.predicates.iter().map(|p| format!("`{p}`")).collect();
+                    let params: Vec<String> = clears.params.iter().map(|p| format!("`{p}`")).collect();
+                    match params.is_empty() {
+                        true => format!("clears {}", names.join(", ")),
+                        false => format!("clears {} for later calls with the same {}", names.join(", "), params.join(", ")),
+                    }
+                };
+                lines.push(format!("- Guard: {} {meaning}", result_text(&clears.equals)));
+            }
+            if let Some(guard) = &meta.restriction_guard {
+                let restriction = match guard.fixed_bit() {
+                    Some(_) => format!("the `{}` restriction", guard.restriction),
+                    None => format!("the restriction passed as `{}`", guard.restriction),
+                };
+                lines.push(format!("- Guard: {} means {restriction} is inactive", result_text(&guard.equals)));
+            }
+            lines.extend(meta.preconditions.iter().map(crate::secrets::SecretPrecondition::hover_line));
         }
-        Some(lines.join("\n"))
+        (lines.len() > 1).then(|| lines.join("\n"))
     }
 
     pub fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {

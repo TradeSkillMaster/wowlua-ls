@@ -54,7 +54,13 @@ pub(in crate::stub_gen) fn parse_blizzard_api_docs(ui_source_dir: &Path) -> Bliz
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "lua")
             && let Ok(content) = std::fs::read_to_string(&path) {
+                let predicates_before = docs.predicates.len();
                 parse_blizzard_api_doc_file(&content, &mut docs, &re);
+                if path.file_name().is_some_and(|n| n == SECRET_PREDICATES_FILE) {
+                    for predicate in &mut docs.predicates[predicates_before..] {
+                        predicate.secret_table = true;
+                    }
+                }
             }
     }
 
@@ -259,16 +265,21 @@ pub(in crate::stub_gen) fn extract_entry_secrecy(block: &str, re: &BlizzardDocRe
 }
 
 
-/// Parse a `Predicates` section: each entry's `Name`, `Type` and joined `Documentation`.
+/// The documentation file that defines the secret-value predicates and preconditions.
+pub(in crate::stub_gen) const SECRET_PREDICATES_FILE: &str = "SecretPredicatesDocumentation.lua";
+
+/// Parse a `Predicates` section: each entry's `Name`, `Type`, `FailureMode` and
+/// joined `Documentation`.
 pub(in crate::stub_gen) fn extract_predicates(section: &str, docs: &mut BlizzardApiDocs, re: &BlizzardDocRegexes) {
     for block in extract_blocks(section) {
         let Some(name) = extract_field(&re.name, block) else { continue };
         let kind = extract_field(&re.type_field, block).unwrap_or_default();
+        let failure_mode = extract_field(&re.failure_mode, block);
         let documentation = re.documentation.captures(block).and_then(|c| {
             let text = parse_lua_string_list(c.get(1).unwrap().as_str());
             (!text.is_empty()).then_some(text)
         });
-        docs.predicates.push(BlizzardPredicate { name, kind, documentation });
+        docs.predicates.push(BlizzardPredicate { name, kind, failure_mode, documentation, secret_table: false });
     }
 }
 
@@ -520,6 +531,7 @@ pub(in crate::stub_gen) fn generate_scriptobject_method_stubs(
     docs: &BlizzardApiDocs,
     known_enums: &HashSet<String>,
     existing_widget_methods: &HashSet<(String, String)>,
+    existing_classes: &HashSet<String>,
 ) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -529,6 +541,7 @@ pub(in crate::stub_gen) fn generate_scriptobject_method_stubs(
     writeln!(out).unwrap();
 
     let mut total = 0usize;
+    let mut declared: HashSet<&str> = HashSet::new();
     for script_obj in &docs.script_objects {
         let Some(class_name) = SCRIPTOBJECT_CLASS_MAP
             .iter()
@@ -550,6 +563,11 @@ pub(in crate::stub_gen) fn generate_scriptobject_method_stubs(
 
         writeln!(out, "-- {class_name} methods from Blizzard ScriptObject API ({api_name})",
             api_name = script_obj.name).unwrap();
+        // Objects no stub declares (e.g. `SecondsFormatter`, returned by
+        // `C_StringUtil.CreateSecondsFormatter`) get a class so values of the type resolve.
+        if !existing_classes.contains(class_name) && declared.insert(class_name) {
+            writeln!(out, "---@class {class_name}\nlocal {class_name} = {{}}\n").unwrap();
+        }
         for func in new_methods {
             for arg in &func.arguments {
                 let typ = resolve_blizzard_param_type(arg, known_enums);

@@ -3091,11 +3091,29 @@ mod tests {
             RebuildScope::None => panic!("@secret-guard edit must trigger a rebuild"),
         }
 
+        let clears = |params: &str| format!(
+            "---@secret-clears SecretWhenRestricted{params}\n---@param unit string\n---@return boolean\nfunction ShouldBeSecret(unit) end\n"
+        );
+        let _ = rebuild(clears(""));
+        match rebuild(clears(" unit")) {
+            RebuildScope::Incremental(names) => assert!(names.contains("ShouldBeSecret"), "changed guard must be named: {names:?}"),
+            RebuildScope::Full => panic!("expected Incremental scope, got Full"),
+            RebuildScope::None => panic!("@secret-clears edit must trigger a rebuild"),
+        }
+
         let event = |when: &str| format!("---@event MyEvent \"SOMETHING_HAPPENED\"\n{when}---@param id number\n");
         let _ = rebuild(event(""));
         assert!(
             matches!(rebuild(event("---@secret-when SecretWhenRestricted\n")), RebuildScope::Full),
             "@secret-when edit on an event must trigger a Full rebuild",
+        );
+
+        // Class predicates unwrap field reads in other files.
+        let class = |when: &str| format!("---@class GaugeInfo\n{when}---@field current number\n");
+        let _ = rebuild(class(""));
+        assert!(
+            !matches!(rebuild(class("---@secret-when SecretWhenRestricted\n")), RebuildScope::None),
+            "@secret-when edit on a class must trigger a rebuild",
         );
     }
 

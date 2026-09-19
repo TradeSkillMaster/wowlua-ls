@@ -8,7 +8,7 @@
 //! no secrecy keys, which keeps the metadata retail-only by construction.
 
 use super::*;
-use crate::secrets::{SecretArgsPolicy, SecretPredicate};
+use crate::secrets::{PreconditionFailure, SecretArgsPolicy, SecretPrecondition, SecretPredicate};
 
 /// How a function, method, or event is annotated.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -24,16 +24,56 @@ pub(in crate::stub_gen) struct StubSecrecy {
     /// `@secret-unless`: the unit-token parameter (position, documented name) and
     /// the tokens every predicate exempts.
     pub(in crate::stub_gen) unless: Option<(usize, String, Vec<&'static str>)>,
+    /// `@secret-clears` of a curated `C_Secrets` guard ([`SECRET_CLEARS`]).
+    pub(in crate::stub_gen) clears: Option<GuardAnnotation>,
+    /// `@secret-restriction-guard` of a curated restriction guard ([`RESTRICTION_GUARDS`]).
+    pub(in crate::stub_gen) restriction_guard: Option<GuardAnnotation>,
+    /// `@secret-precondition`s from the secret predicate table.
+    pub(in crate::stub_gen) preconditions: Vec<SecretPrecondition>,
+}
+
+/// A curated guard annotation: its leading word (predicate list, `*`,
+/// restriction type, or the position of the parameter naming the restriction),
+/// the bound parameters (position, documented name), and the `== Value` result
+/// that clears, if not `false`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::stub_gen) struct GuardAnnotation {
+    pub(in crate::stub_gen) head: String,
+    pub(in crate::stub_gen) head_param: Option<usize>,
+    pub(in crate::stub_gen) params: Vec<(usize, String)>,
+    pub(in crate::stub_gen) equals: Option<&'static str>,
+}
+
+impl GuardAnnotation {
+    /// `head param… [== Value]`, naming each parameter as the stub does.
+    fn text(&self, params: &[String]) -> String {
+        let stub_name = |index: usize, doc_name: &String| params.get(index).unwrap_or(doc_name).clone();
+        let mut words = vec![match self.head_param {
+            Some(index) => stub_name(index, &self.head),
+            None => self.head.clone(),
+        }];
+        words.extend(self.params.iter().map(|(index, doc_name)| stub_name(*index, doc_name)));
+        if let Some(value) = self.equals {
+            words.push(format!("== {value}"));
+        }
+        words.join(" ")
+    }
 }
 
 impl StubSecrecy {
     fn is_empty(&self) -> bool {
         self.when.is_empty() && self.args.is_none() && self.aspects.is_empty()
             && !self.entries.iter().any(|(_, secret)| *secret)
+            && self.clears.is_none() && self.restriction_guard.is_none() && self.preconditions.is_empty()
+    }
+
+    /// Whether a failing precondition returns nothing, which makes every return nilable.
+    fn nilable_returns(&self) -> bool {
+        self.preconditions.iter().any(SecretPrecondition::returns_nothing)
     }
 
     /// `params` are the stub's own parameter names, which can differ from the
-    /// documentation's (the exemption names the parameter at the same position).
+    /// documentation's (annotations name the parameter at the same position).
     fn annotation_lines(&self, params: &[String]) -> Vec<String> {
         let mut lines: Vec<String> = self.when.iter().map(|p| match &p.doc {
             Some(doc) => format!("---@secret-when {} {doc}", p.name),
@@ -47,6 +87,18 @@ impl StubSecrecy {
             let param = params.get(*index).map(String::as_str).unwrap_or(doc_name);
             lines.push(format!("---@secret-unless {param} {}", tokens.join(" ")));
         }
+        if let Some(clears) = &self.clears {
+            lines.push(format!("---@secret-clears {}", clears.text(params)));
+        }
+        if let Some(guard) = &self.restriction_guard {
+            lines.push(format!("---@secret-restriction-guard {}", guard.text(params)));
+        }
+        lines.extend(self.preconditions.iter().map(|p| {
+            let mut words = vec!["---@secret-precondition".to_string(), p.name.clone()];
+            words.extend(p.failure.map(|f| f.name().to_string()));
+            words.extend(p.doc.clone());
+            words.join(" ")
+        }));
         lines
     }
 
@@ -67,6 +119,9 @@ pub(in crate::stub_gen) struct SecretIndex {
     pub(in crate::stub_gen) events: HashMap<String, StubSecrecy>,
     /// Structure name → names of fields that may be secret.
     pub(in crate::stub_gen) structures: HashMap<String, HashSet<String>>,
+    /// Structure name → the predicates of every API that returns it secret
+    /// (`@secret-when` on the `@class`), sorted by name.
+    pub(in crate::stub_gen) structure_predicates: HashMap<String, Vec<SecretPredicate>>,
 }
 
 impl SecretIndex {
@@ -75,24 +130,39 @@ impl SecretIndex {
     }
 }
 
-/// Resolves which entry-level flags are secret predicates.
+/// Resolves which entry-level flags are secret predicates and preconditions.
 struct PredicateTable<'a> {
     secret: HashMap<&'a str, Option<&'a str>>,
+    /// Preconditions of the secret predicate table, with their failure mode and documentation.
+    preconditions: HashMap<&'a str, (Option<PreconditionFailure>, Option<&'a str>)>,
     other: HashSet<&'a str>,
 }
 
 impl<'a> PredicateTable<'a> {
     fn new(docs: &'a BlizzardApiDocs) -> Self {
         let mut secret = HashMap::new();
+        let mut preconditions = HashMap::new();
         let mut other = HashSet::new();
         for p in &docs.predicates {
             if p.kind == "Secret" {
                 secret.insert(p.name.as_str(), p.documentation.as_deref());
             } else {
+                if p.kind == "Precondition" && p.secret_table {
+                    let failure = p.failure_mode.as_deref().and_then(PreconditionFailure::parse);
+                    preconditions.insert(p.name.as_str(), (failure, p.documentation.as_deref()));
+                }
                 other.insert(p.name.as_str());
             }
         }
-        Self { secret, other }
+        Self { secret, preconditions, other }
+    }
+
+    /// The secrecy preconditions among an entry's flags, in flag order.
+    fn preconditions(&self, flags: &[String]) -> Vec<SecretPrecondition> {
+        flags.iter().filter_map(|flag| {
+            let (failure, doc) = self.preconditions.get(flag.as_str())?;
+            Some(SecretPrecondition { name: flag.clone(), failure: *failure, doc: doc.map(str::to_string) })
+        }).collect()
     }
 
     /// `Some(doc)` when `flag` names a secret predicate. Flags used without a
@@ -131,6 +201,140 @@ const PREDICATE_EXEMPT_UNITS: &[(&str, &[&str])] = &[
     // "except for unit tokens under the player's direct control"
     ("SecretWhenUnitPossessionRestricted", &["player", "pet"]),
 ];
+
+/// A curated guard: the function, the annotation's leading word, the bound
+/// parameters (documented names), and the `== Value` result that clears, if not
+/// `false`.
+type GuardSpec = (&'static str, &'static str, &'static [&'static str], Option<&'static str>);
+
+/// `Enum.SecrecyLevel.NeverSecret`: "Will never yield secret values when queried."
+const NEVER_SECRET: Option<&str> = Some("Enum.SecrecyLevel.NeverSecret");
+
+/// `C_Secrets` guards and the predicates their clearing result rules out. The
+/// docs link no guard to a predicate, so this is curated by name, citing each
+/// guard's documentation. Parameters bind the clear to later calls whose
+/// arguments at the same positions match, so a parameter is listed only where
+/// the guarded APIs take the same value at the same position. Not listed:
+/// `CanCompareUnitTokens` (a precondition check), `GetPowerTypeSecrecy` (power
+/// APIs take the power type second), `GetSpellCastSecrecy` (cast APIs take a
+/// unit, not a spell), and `ShouldTotemSpellBeSecret` (totem APIs take a slot).
+const SECRET_CLEARS: &[GuardSpec] = &[
+    // "If false, all APIs that are tagged as potentially returning secrets will never do so."
+    ("C_Secrets.HasSecretRestrictions", "*", &[], None),
+    // "Returns true if queries for aura data will generally produce secret values."
+    ("C_Secrets.ShouldAurasBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &[], None),
+    // "Returns true if a given aura index will produce secret values if queried."
+    ("C_Secrets.ShouldUnitAuraIndexBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &["unit", "index"], None),
+    // "Returns true if a given aura instance ID will produce secret values if queried."
+    ("C_Secrets.ShouldUnitAuraInstanceBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &["unit", "auraInstanceID"], None),
+    // "Returns true if a given aura slot ID will produce secret values if queried."
+    ("C_Secrets.ShouldUnitAuraSlotBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &["unit", "slot"], None),
+    // "Returns true if a given spell identifier would, if applied as an aura,
+    // produce secret values when queried."
+    ("C_Secrets.ShouldSpellAuraBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &["spellIdentifier"], None),
+    // "Queries the base secrecy for a spell if queried as an aura."
+    ("C_Secrets.GetSpellAuraSecrecy", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &["spellIdentifier"], NEVER_SECRET),
+    // "Returns true if queries for cooldown data will generally produce secret values."
+    ("C_Secrets.ShouldCooldownsBeSecret", "SecretWhenCooldownsRestricted", &[], None),
+    // "Returns true if a given spell identifier will produce secret values for cooldowns if queried."
+    ("C_Secrets.ShouldSpellCooldownBeSecret", "SecretWhenCooldownsRestricted", &["spellIdentifier"], None),
+    // "Queries the base secrecy for a spell if queried as a cooldown."
+    ("C_Secrets.GetSpellCooldownSecrecy", "SecretWhenCooldownsRestricted", &["spellIdentifier"], NEVER_SECRET),
+    // "Returns true if a given action bar slot ID will produce secret values for cooldowns if queried."
+    ("C_Secrets.ShouldActionCooldownBeSecret", "SecretWhenCooldownsRestricted", &["actionID"], None),
+    // "Returns true if a given spellbook item will produce secret values for cooldowns if queried."
+    ("C_Secrets.ShouldSpellBookItemCooldownBeSecret", "SecretWhenCooldownsRestricted", &["spellBookItemSlotIndex", "spellBookItemSpellBank"], None),
+    // "Returns true if information about a totem slot will produce secret values if queried."
+    ("C_Secrets.ShouldTotemSlotBeSecret", "SecretWhenTotemSlotSecret", &["slot"], None),
+    // "Returns true if queries that compare units will produce secret values."
+    ("C_Secrets.ShouldUnitComparisonBeSecret", "SecretWhenUnitComparisonRestricted", &["unit1", "unit2"], None),
+    // "Returns true if queries for maximum unit health will produce secret values."
+    ("C_Secrets.ShouldUnitHealthMaxBeSecret", "SecretWhenUnitHealthMaxRestricted", &["unit"], None),
+    // "Returns true if queries for unit identity (such as name or GUID) will produce
+    // secret values." Name identity is identity secrecy with a PvP exception.
+    ("C_Secrets.ShouldUnitIdentityBeSecret", "SecretWhenUnitIdentityRestricted,SecretWhenUnitNameIdentityRestricted", &["unit"], None),
+    // "Returns true if queries for unit power will produce secret values."
+    ("C_Secrets.ShouldUnitPowerBeSecret", "SecretWhenUnitPowerRestricted", &["unit", "powerType"], None),
+    // "Returns true if queries for maximum unit power will produce secret values."
+    ("C_Secrets.ShouldUnitPowerMaxBeSecret", "SecretWhenUnitPowerMaxRestricted", &["unit", "powerType"], None),
+    // "Returns true if queries for spell casting information for a unit would
+    // produce secret values when queried." Bound by unit: cast APIs take no spell.
+    ("C_Secrets.ShouldUnitSpellCastBeSecret", "SecretWhenUnitSpellCastRestricted", &["unit"], None),
+    // "Returns true if queries for spell casting information for a specific unit
+    // will generally produce secret values."
+    ("C_Secrets.ShouldUnitSpellCastingBeSecret", "SecretWhenUnitSpellCastRestricted", &["unit"], None),
+    // "Returns true if queries for unit statistics will produce secret values."
+    ("C_Secrets.ShouldUnitStatsBeSecret", "SecretWhenUnitStatsRestricted", &[], None),
+    // "Returns true if queries for unit threat status will produce secret values."
+    ("C_Secrets.ShouldUnitThreatStateBeSecret", "SecretWhenUnitThreatStateRestricted", &["unit", "mobUnit"], None),
+    // "Returns true if queries for unit threat values will produce secret values."
+    ("C_Secrets.ShouldUnitThreatValuesBeSecret", "SecretWhenUnitThreatValuesRestricted", &["unit", "mobUnit"], None),
+];
+
+/// Guards that prove an addon restriction inactive, and the documentation
+/// function each is validated against.
+const RESTRICTION_GUARDS: &[(GuardSpec, &str)] = &[
+    // "Returns true if an addon restriction type is in an active state."
+    (("C_RestrictedActions.IsAddOnRestrictionActive", "type", &[], None), "C_RestrictedActions.IsAddOnRestrictionActive"),
+    // "Returns the current state of an addon restriction type." `Inactive`: "State
+    // used when an addon restriction is not being enforced." (`Activating` counts
+    // as active.)
+    (("C_RestrictedActions.GetAddOnRestrictionState", "type", &[], Some("Enum.AddOnRestrictionState.Inactive")), "C_RestrictedActions.GetAddOnRestrictionState"),
+    // ASSUMED: combat lockdown is the `Combat` restriction (undocumented). The
+    // documentation entry overrides its namespace to the global; Ketho's
+    // annotations also declare it on the namespace.
+    (("InCombatLockdown", "Combat", &[], None), "C_RestrictedActions.InCombatLockdown"),
+    (("C_RestrictedActions.InCombatLockdown", "Combat", &[], None), "C_RestrictedActions.InCombatLockdown"),
+];
+
+/// The documented function `key` (`Namespace.Name` or a global name).
+fn doc_function<'a>(docs: &'a BlizzardApiDocs, key: &str) -> Option<&'a BlizzardFunction> {
+    docs.functions.iter().find(|f| match &f.namespace {
+        Some(ns) => key.strip_prefix(ns.as_str()).and_then(|rest| rest.strip_prefix('.')) == Some(f.name.as_str()),
+        None => key == f.name,
+    })
+}
+
+/// A curated guard's annotation, validated against the documentation: `None`
+/// (with a warning) when the function, a parameter, or a predicate is missing,
+/// so an upstream rename drops the guard instead of emitting a stale one.
+fn guard_annotation(
+    docs: &BlizzardApiDocs,
+    predicates: &PredicateTable<'_>,
+    (_, head, params, equals): &GuardSpec,
+    doc_key: &str,
+    head_is_predicates: bool,
+) -> Option<GuardAnnotation> {
+    let Some(func) = doc_function(docs, doc_key) else {
+        log::warn!("  Secret values: guard {doc_key} is not documented; skipped");
+        return None;
+    };
+    let param_index = |name: &str| {
+        let index = func.arguments.iter().position(|a| a.name == name);
+        if index.is_none() {
+            log::warn!("  Secret values: guard {doc_key} has no parameter {name}; skipped");
+        }
+        index
+    };
+    let mut head_param = None;
+    if head_is_predicates {
+        if let Some(unknown) = head.split(',').find(|p| *p != "*" && predicates.secret_predicate(p).is_none()) {
+            log::warn!("  Secret values: guard {doc_key} names unknown predicate {unknown}; skipped");
+            return None;
+        }
+        // `*` states that no restriction is in force, so it binds no argument.
+        if *head == "*" && !params.is_empty() {
+            log::warn!("  Secret values: guard {doc_key} binds parameters to `*`; skipped");
+            return None;
+        }
+    } else if crate::secrets::restriction_bit(head).is_none() {
+        head_param = Some(param_index(head)?);
+    }
+    let bound = params.iter()
+        .map(|param| Some((param_index(param)?, param.to_string())))
+        .collect::<Option<Vec<_>>>()?;
+    Some(GuardAnnotation { head: head.to_string(), head_param, params: bound, equals: *equals })
+}
 
 /// The `@secret-unless` exemption for a function whose secrecy comes only from
 /// unit-scoped predicates: its first unit-token parameter and the tokens all of
@@ -184,6 +388,31 @@ pub(in crate::stub_gen) fn undefined_structure_names(docs: &BlizzardApiDocs, wik
     names
 }
 
+/// How secret returns and payloads reach a structure: the predicates of the
+/// APIs that return it, or `unconditional` when one returns it secret without a
+/// predicate (`SecretReturns`, `SecretValue`). A conditional entry names no
+/// condition, so it adds neither.
+#[derive(Debug, Default, Clone)]
+struct StructReach {
+    predicates: Vec<SecretPredicate>,
+    unconditional: bool,
+}
+
+impl StructReach {
+    /// Merge `other` in; whether anything changed.
+    fn merge(&mut self, other: &StructReach) -> bool {
+        let mut changed = other.unconditional && !self.unconditional;
+        self.unconditional |= other.unconditional;
+        for p in &other.predicates {
+            if !self.predicates.iter().any(|q| q.name == p.name) {
+                self.predicates.push(p.clone());
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
 /// Build the index from the retail docs. `wiki_structures` are the wiki's field
 /// lists for structures the docs don't define; `table_types` names every `@class`
 /// the stubs declare (structures the docs reference without describing field by
@@ -205,7 +434,7 @@ pub(in crate::stub_gen) fn build_secret_index(
     let structures: HashSet<&str> = all_structures.iter().map(|s| s.name.as_str()).collect();
     let mut index = SecretIndex::default();
     // Structures reached through a secret return/payload; their fields get marked below.
-    let mut secret_structs: Vec<String> = Vec::new();
+    let mut reach: HashMap<String, StructReach> = HashMap::new();
 
     // `taint` = whether the entries' own types become `secret<T>`. Widget
     // methods keep their metadata but not the taint: a widget getter returns
@@ -214,30 +443,45 @@ pub(in crate::stub_gen) fn build_secret_index(
         let when: Vec<SecretPredicate> = secrecy.flags.iter()
             .filter_map(|f| predicates.secret_predicate(f).map(|doc| SecretPredicate { name: f.clone(), doc }))
             .collect();
-        let all = !when.is_empty() || secrecy.flags.iter().any(|f| f == all_key);
+        let all_key_set = secrecy.flags.iter().any(|f| f == all_key);
+        let all = !when.is_empty() || all_key_set;
         let never_all = secrecy.flags.iter().any(|f| f == "ReturnsNeverSecret");
         let mut out_entries = Vec::with_capacity(entries.len());
         for e in entries {
             let maybe = taint && !never_all && !e.secrecy.never && (all || e.secrecy.conditional || e.secrecy.value);
             let table_like = is_table_like(e, &structures, table_types);
             if (maybe && !e.secrecy.never_contents) || (taint && e.secrecy.secret_contents) {
+                let entry_reach = StructReach {
+                    predicates: when.clone(),
+                    unconditional: e.secrecy.value || (when.is_empty() && all_key_set && maybe),
+                };
                 for name in [Some(&e.type_name), e.inner_type.as_ref()].into_iter().flatten() {
                     if structures.contains(name.as_str()) {
-                        secret_structs.push(name.clone());
+                        reach.entry(name.clone()).or_default().merge(&entry_reach);
                     }
                 }
             }
             out_entries.push((e.name.clone(), maybe && !table_like));
         }
         let unless = unit_exemption(&when, secrecy, arguments, entries);
+        // "Constant accessors" (wiki `Secret_Values`) apply no aspects for secret
+        // arguments but return secrets when any argument is secret, which is the
+        // `AllowedWhenTainted` rule; the docs still mark them `AllowedWhenUntainted`.
+        let args = if secrecy.flags.iter().any(|f| f == "ConstSecretAccessor") {
+            Some(SecretArgsPolicy::AllowedWhenTainted)
+        } else {
+            secrecy.arguments.as_deref()
+                .and_then(SecretArgsPolicy::from_blizzard_name)
+                .filter(|p| *p != SecretArgsPolicy::AllowedWhenUntainted)
+        };
         StubSecrecy {
             when,
-            args: secrecy.arguments.as_deref()
-                .and_then(SecretArgsPolicy::from_blizzard_name)
-                .filter(|p| *p != SecretArgsPolicy::AllowedWhenUntainted),
+            args,
             aspects: secrecy.aspects.clone(),
             entries: out_entries,
             unless,
+            preconditions: predicates.preconditions(&secrecy.flags),
+            ..StubSecrecy::default()
         }
     };
 
@@ -268,33 +512,59 @@ pub(in crate::stub_gen) fn build_secret_index(
             index.events.insert(event.literal_name.clone(), s);
         }
     }
+    for spec in SECRET_CLEARS {
+        if let Some(guard) = guard_annotation(docs, &predicates, spec, spec.0, true) {
+            index.functions.entry(spec.0.to_string()).or_default().clears = Some(guard);
+        }
+    }
+    for (spec, doc_key) in RESTRICTION_GUARDS {
+        if let Some(guard) = guard_annotation(docs, &predicates, spec, doc_key, false) {
+            index.functions.entry(spec.0.to_string()).or_default().restriction_guard = Some(guard);
+        }
+    }
 
     // Mark structure fields. A reached structure's non-`NeverSecret` scalar fields
-    // may be secret (nested structures are reached in turn); `SecretValue` /
-    // `ConditionalSecret` fields may be secret in any structure.
+    // may be secret (nested structures are reached in turn, with the same
+    // predicates); `SecretValue` / `ConditionalSecret` fields may be secret in any
+    // structure.
     let by_name: HashMap<&str, &BlizzardStructure> = all_structures.iter().map(|s| (s.name.as_str(), *s)).collect();
-    let mut reached: HashSet<String> = HashSet::new();
-    while let Some(name) = secret_structs.pop() {
-        if !reached.insert(name.clone()) { continue; }
-        let Some(st) = by_name.get(name.as_str()) else { continue };
-        for f in &st.fields {
-            if f.secrecy.never { continue; }
-            for nested in [Some(&f.type_name), f.inner_type.as_ref()].into_iter().flatten() {
-                if structures.contains(nested.as_str()) && !f.secrecy.never_contents {
-                    secret_structs.push(nested.clone());
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut names: Vec<String> = reach.keys().cloned().collect();
+        names.sort();
+        for name in names {
+            let Some(st) = by_name.get(name.as_str()) else { continue };
+            let parent = reach[&name].clone();
+            for f in st.fields.iter().filter(|f| !f.secrecy.never && !f.secrecy.never_contents) {
+                for nested in [Some(&f.type_name), f.inner_type.as_ref()].into_iter().flatten() {
+                    if structures.contains(nested.as_str()) {
+                        let nested_reach = reach.entry(nested.clone());
+                        changed |= matches!(nested_reach, std::collections::hash_map::Entry::Vacant(_));
+                        changed |= nested_reach.or_default().merge(&parent);
+                    }
                 }
             }
         }
     }
     for st in all_structures {
+        let reached = reach.get(&st.name);
         let fields: HashSet<String> = st.fields.iter()
-            .filter(|f| (reached.contains(&st.name) && !f.secrecy.never) || f.secrecy.conditional || f.secrecy.value)
+            .filter(|f| (reached.is_some() && !f.secrecy.never) || f.secrecy.conditional || f.secrecy.value)
             .filter(|f| !is_table_like(f, &structures, table_types))
             .map(|f| f.name.clone())
             .collect();
-        if !fields.is_empty() {
-            index.structures.insert(st.name.clone(), fields);
+        if fields.is_empty() {
+            continue;
         }
+        // A `SecretValue` field is secret whatever the predicates say.
+        let clearable = !st.fields.iter().any(|f| f.secrecy.value);
+        if let Some(r) = reached.filter(|r| clearable && !r.unconditional && !r.predicates.is_empty()) {
+            let mut preds = r.predicates.clone();
+            preds.sort_by(|a, b| a.name.cmp(&b.name));
+            index.structure_predicates.insert(st.name.clone(), preds);
+        }
+        index.structures.insert(st.name.clone(), fields);
     }
 
     log::info!(
@@ -317,17 +587,30 @@ pub(in crate::stub_gen) fn wrap_secret_type(ty: &str) -> String {
     format!("secret<{base}>{optional}")
 }
 
-/// Rewrite the type token of a `---@return T name` line.
+/// `T` → `T?` (`A|B` → `A|B|nil`); already-optional and function types are left alone.
+pub(in crate::stub_gen) fn nilable_type(ty: &str) -> String {
+    if ty.ends_with('?') || ty.split('|').any(|member| member == "nil") || ty.starts_with("fun(") {
+        ty.to_string()
+    } else if ty.contains('|') {
+        format!("{ty}|nil")
+    } else {
+        format!("{ty}?")
+    }
+}
+
+/// Rewrite the type token of a `---@return T name` line: wrap a secret return,
+/// and make it nilable when a failing precondition returns nothing.
 fn rewrite_return_line(line: &str, secrecy: &StubSecrecy, index: usize) -> String {
     let Some(rest) = line.strip_prefix("---@return ") else { return line.to_string() };
     let mut parts = rest.splitn(3, ' ');
     let Some(ty) = parts.next() else { return line.to_string() };
     let name = parts.next();
-    if !secrecy.entry_is_secret(name, index) {
-        return line.to_string();
+    let mut new_ty = if secrecy.entry_is_secret(name, index) { wrap_secret_type(ty) } else { ty.to_string() };
+    if secrecy.nilable_returns() {
+        new_ty = nilable_type(&new_ty);
     }
     let tail = &rest[ty.len()..];
-    format!("---@return {}{tail}", wrap_secret_type(ty))
+    format!("---@return {new_ty}{tail}")
 }
 
 /// Rewrite the type token of a `---@param name T` / `---@field name T` line whose
@@ -394,6 +677,10 @@ pub(in crate::stub_gen) fn apply_secret_annotations(text: &str, index: &SecretIn
             let name = rest.split(|c: char| c.is_whitespace() || c == ':').next().unwrap_or("");
             struct_fields = index.structures.get(name);
             out.push(line.to_string());
+            if let Some(preds) = index.structure_predicates.get(name) {
+                out.extend(preds.iter().map(|p| format!("---@secret-when {}", p.name)));
+                changed = true;
+            }
         } else if let Some(fields) = struct_fields.filter(|_| line.starts_with("---@field ")) {
             let rewritten = rewrite_named_line(line, "---@field ", |n| fields.contains(n));
             changed |= rewritten != line;

@@ -77,6 +77,16 @@ pub fn register_classes_and_aliases(
         if skip_existing && reg.classes.contains_key(&class.name) { continue; }
         let table_idx = TableIndex(EXT_BASE + reg.tables.len());
         let accessors = class.accessors.iter().cloned().collect();
+        // A later declaration of the same class replaces the table; keep the
+        // secret predicates any declaration gave it.
+        let mut secret_when = reg.classes.get(&class.name)
+            .map(|&prev| reg.tables[prev.val() - EXT_BASE].secret_when.clone())
+            .unwrap_or_default();
+        for predicate in &class.secret_when {
+            if !secret_when.contains(predicate) {
+                secret_when.push(predicate.clone());
+            }
+        }
         reg.tables.push(TableInfo {
             class_name: Some(class.name.clone()),
             class_type_params: class.type_params.clone(),
@@ -86,6 +96,7 @@ pub fn register_classes_and_aliases(
             enum_kind: class.initial_enum_kind(),
             is_key_enum: class.is_key_enum,
             see: class.see.clone(),
+            secret_when,
             ..Default::default()
         });
         reg.classes.insert(class.name.clone(), table_idx);

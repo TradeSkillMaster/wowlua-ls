@@ -211,15 +211,20 @@ impl<'a> Analysis<'a> {
     ) -> Option<ValueType> {
         let is_method_call = call_site.is_method_call;
         let result = self.resolve_function_call_inner(expr_id, func, args, arg_ranges, ret_index, call_site)?;
-        Some(self.apply_call_secrecy(*func, args, is_method_call, result))
+        let call_offset = match self.expr(expr_id) {
+            Expr::FunctionCall { call_range, .. } => call_range.0,
+            _ => 0,
+        };
+        Some(self.apply_call_secrecy(*func, args, is_method_call, call_offset, result))
     }
 
     /// Secrecy of a call's result beyond its declared return types: a
-    /// `@secret-unless` argument value makes it ordinary (also through a
+    /// `@secret-unless` argument value, or a guard clearing the callee's
+    /// predicates (`secret_context.rs`), makes it ordinary (also through a
     /// `returns<F>` vararg projection such as `select(2, UnitClass("player"))`),
     /// and a C API that accepts secret arguments (`@secret-args tainted`) returns
     /// results carrying their secrecy (`crate::secrets::argument_rule`).
-    fn apply_call_secrecy(&mut self, func: ExprId, args: &[ExprId], is_method_call: bool, result: ValueType) -> ValueType {
+    fn apply_call_secrecy(&mut self, func: ExprId, args: &[ExprId], is_method_call: bool, call_offset: u32, mut result: ValueType) -> ValueType {
         let Some(ValueType::Function(Some(func_idx))) = self.resolve_expr(func).map(ValueType::into_strip_opaque) else {
             return result;
         };
@@ -231,13 +236,19 @@ impl<'a> Analysis<'a> {
                     Expr::FunctionCall { func, args, is_method_call, .. } => Some((*func, args.clone(), *is_method_call)),
                     _ => None,
                 });
-            let exempt = self.secret_exempt_call(func_idx, args, is_method_call)
+            let ordinary = |this: &Self, idx: FunctionIndex, call_args: &[ExprId], method: bool| {
+                this.secret_exempt_call(idx, call_args, method)
+                    || (!this.ir.secret_context_regions.is_empty() && this.ir.call_secrecy_cleared(idx, call_args, call_offset))
+            };
+            let exempt = ordinary(self, func_idx, args, is_method_call)
                 || projected_call.is_some_and(|(inner_func, inner_args, inner_method)| {
                     matches!(self.resolve_expr(inner_func), Some(ValueType::Function(Some(inner_idx)))
-                        if self.secret_exempt_call(inner_idx, &inner_args, inner_method))
+                        if ordinary(self, inner_idx, &inner_args, inner_method))
                 });
             if exempt {
-                return result.strip_secret();
+                // The declared secrecy is gone, but an argument's secrecy still
+                // flows through a `@secret-args tainted` callee.
+                result = result.strip_secret();
             }
         }
         let policy = self.func(func_idx).secret.as_ref().and_then(|m| m.args);

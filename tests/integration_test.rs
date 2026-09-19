@@ -7271,6 +7271,17 @@ fn secrets_guards_no_config() {
 }
 
 #[test]
+fn secrets_guards_context() {
+    // `@secret-clears` / `@secret-restriction-guard` guards (`C_Secrets`,
+    // `C_RestrictedActions`, `InCombatLockdown`) clear the predicates they cover.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/guards-context/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn secrets_toc_classic() {
     // No config; the .toc `## Interface:` line says Classic Era → secrets off.
     run_annotation_tests(&TestConfig {

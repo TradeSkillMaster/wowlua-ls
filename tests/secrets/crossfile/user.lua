@@ -26,3 +26,13 @@ local other = Shared_NameOf("target")
 --    ^ hover: (local) other: secret<string>
 Shared_Send(other)
 --          ^ diag: secret-argument
+
+-- Context guards, predicates, and class predicates from another file.
+if not Shared_ShouldGaugeBeSecret("energy") then
+    local energy = Shared_GaugeValue("energy")
+    --    ^ hover: (local) energy: number
+    local rage = Shared_GaugeValue("rage")
+    --    ^ hover: (local) rage: secret<number>
+    local current = Shared_GaugeInfo().current
+    --    ^ hover: (local) current: number
+end

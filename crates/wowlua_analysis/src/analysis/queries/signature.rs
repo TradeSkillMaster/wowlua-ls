@@ -118,6 +118,7 @@ impl AnalysisResult {
         };
 
         let func = self.func(func_idx);
+        let _call_secrecy = self.secrecy_display_for_function(func_idx, self.call_expr_for_node(call_node));
         let is_colon = ident.is_call_to_self();
 
         // Build signatures: primary + overloads

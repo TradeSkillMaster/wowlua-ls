@@ -42,6 +42,7 @@ const KNOWN_TAGS: &[&str] = &[
     "builds-field", "built-name", "built-extends", "type-narrows", "returns-class-name", "narrows-arg",
     "creates-global", "generates-events", "callback-event-arg", "correlated", "flavor-narrows", "event", "requires",
     "secret-when", "secret-args", "secret-aspect", "secret-guard", "secret-unless",
+    "secret-clears", "secret-restriction-guard", "secret-precondition",
     "see", "vararg", "as", "cast", "operator", "module", "source",
     "version", "package", "async", "nodoc", "public",
 ];
@@ -314,6 +315,15 @@ impl DiagnosticPass for MalformedAnnotation {
                         _ => Some("@secret-guard requires a parameter name and one of: is-secret, accessible, any-secret (e.g. @secret-guard value is-secret)".to_string()),
                     }
                 }
+                "secret-clears" if crate::secrets::SecretClears::parse(rest).is_none() =>
+                    Some("@secret-clears requires predicate names, then optional parameter names and `== Value` (e.g. @secret-clears SecretWhenUnitHealthMaxRestricted unit); `*` clears everything and takes no parameters".to_string()),
+                "secret-restriction-guard" if crate::secrets::SecretRestrictionGuard::parse(rest).is_none() =>
+                    Some("@secret-restriction-guard requires a parameter or restriction type name and an optional `== Value` (e.g. @secret-restriction-guard Combat)".to_string()),
+                "secret-precondition" if crate::secrets::SecretPrecondition::parse(rest).is_none() =>
+                    Some(format!(
+                        "@secret-precondition requires a name, then an optional failure mode ({}) and an optional description (e.g. @secret-precondition RequiresUnitAuraAccess Error Requires access to unit aura data)",
+                        crate::secrets::PreconditionFailure::NAMES.join(", "),
+                    )),
                 "event" => {
                     if rest.is_empty() {
                         Some("@event requires a type and event name (e.g. @event MyEvent \"EVENT_NAME\")".to_string())

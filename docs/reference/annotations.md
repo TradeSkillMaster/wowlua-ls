@@ -84,7 +84,10 @@ Retail only. A value that may be secret is typed `secret<T>` (see [Type syntax](
 | `@secret-guard param kind` | Guard function: its boolean result proves `param` (`...` for varargs) secret or not. `kind` is `is-secret`, `accessible`, or `any-secret`. |
 | `@secret-args none\|tainted\|untainted` | Secret arguments: `none` never accepted ([`secret-argument`](/reference/diagnostics)), `tainted` accepted from addon code with secret results, `untainted` accepted only from Blizzard code (not reported). |
 | `@secret-unless param value...` | A call passing one of these string literals for `param` returns ordinary values (`@secret-unless unit player pet`). |
-| `@secret-when Predicate [description]` | The restriction under which results (or an `@event`'s payload) may be secret. Shown in hover; secret results are still typed in `@return`. |
+| `@secret-when Predicate [description]` | The restriction under which results (or an `@event`'s payload) may be secret. Shown in hover; secret results are still typed in `@return`. On a `@class`, the restriction under which its `secret<T>` fields hold secrets. A [context guard](/guide/secrets#guarding-by-context) that clears every predicate of a call or class makes its results or fields ordinary. |
+| `@secret-clears Predicate[,Predicate...] [param...] [== Value]` | Context guard: a `false` result (or one equal to `Value`) clears the listed predicates in the code it guards. With parameters, only for later calls passing the same local, field, or literal at those positions. `*` in place of the predicates clears every secret in that code and takes no parameters. |
+| `@secret-restriction-guard param\|Restriction [== Value]` | Context guard: a `false` result (or one equal to `Value`) proves an addon restriction inactive: the fixed `Restriction` (`Combat`, `Encounter`, `ChallengeMode`, `PvPMatch`, `Map`, `Chat`), or the one `param` names as `Enum.AddOnRestrictionType.<Restriction>`. |
+| `@secret-precondition Name [FailureMode] [description]` | A precondition the call needs. `FailureMode` is `ReturnNothing`, `ReturnWithError`, or `Error`; the first two make every return nilable in the stubs. Shown in hover. |
 | `@secret-aspect Aspect` | Widget aspect (`Text`, `Alpha`, …) the method makes secret or reads. Shown in hover. |
 
 ## Metadata annotations

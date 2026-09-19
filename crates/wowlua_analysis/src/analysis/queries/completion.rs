@@ -1097,6 +1097,10 @@ impl AnalysisResult {
                     let resolved = self.sym(sym_idx).versions.iter().rev()
                         .find_map(|v| v.resolved_type.as_ref());
                     if let Some(vt) = resolved {
+                        let _function_secrecy = match vt {
+                            ValueType::Function(Some(func_idx)) => Some(self.secrecy_display_for_function(*func_idx, None)),
+                            _ => None,
+                        };
                         item.detail = Some(self.format_type(vt));
                     }
                 }
@@ -1139,6 +1143,10 @@ impl AnalysisResult {
 
         let fi = self.get_field(table_idx, field_name)?;
         let resolved = self.resolve_expr_type(fi.expr)?;
+        let _secrecy = match &resolved {
+            ValueType::Function(Some(func_idx)) => self.secrecy_display_for_function(*func_idx, None),
+            _ => self.secrecy_display_for_tables(&[table_idx]),
+        };
         Some(self.format_type(&resolved))
     }
 
@@ -2423,6 +2431,39 @@ mod secrecy_display_tests {
             .find(|item| item.label == "hp")?;
         result.resolve_completion(&tree, &mut item);
         item.detail
+    }
+
+    #[test]
+    fn completion_detail_follows_context_guards() {
+        // The resolved `detail` of completion `label` at the end of `body`.
+        let resolve = |body: &str, label: &str| {
+            let prefix = "---@secret-clears SecretWhenHealthRestricted\n---@return boolean\nlocal function ShouldBeSecret() return true end\n\
+                ---@secret-when SecretWhenHealthRestricted\n---@return secret<number>\nlocal function Health() return 1 end\n\
+                ---@class Gauge\n---@secret-when SecretWhenHealthRestricted\n---@field current secret<number>\n\
+                ---@type Gauge\nlocal gauge = { current = 1 }\n";
+            let text = format!("{prefix}{body}\nend\n");
+            let tree = crate::syntax::parser::parse(&text);
+            let mut analysis = Analysis::new_with_tree(&tree, Arc::new(PreResolvedGlobals::empty()), AnalysisConfig::default());
+            analysis.resolve_types();
+            let result = analysis.into_result();
+            let cursor = (prefix.len() + body.len()) as u32;
+            let item = result.completions_at(&tree, cursor, &text, Snippets::Disabled, CallSnippets::Disabled)?
+                .into_iter()
+                .find(|item| item.label == label)?;
+            let mut item = item;
+            if body.ends_with('.') {
+                // Member details resolve from the trigger character.
+                item.data = Some(serde_json::json!({"member": true, "offset": cursor - 1}));
+            }
+            result.resolve_completion(&tree, &mut item);
+            item.detail
+        };
+        let unguarded = "do\n    local x = ";
+        let guarded = "if not ShouldBeSecret() then\n    local x = ";
+        assert_eq!(resolve(&format!("{unguarded}Heal"), "Health").as_deref(), Some("fun(): secret<number>"));
+        assert_eq!(resolve(&format!("{guarded}Heal"), "Health").as_deref(), Some("fun(): number"));
+        assert_eq!(resolve(&format!("{unguarded}gauge."), "current").as_deref(), Some("secret<number>"));
+        assert_eq!(resolve(&format!("{guarded}gauge."), "current").as_deref(), Some("number"));
     }
 
     #[test]

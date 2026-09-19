@@ -139,7 +139,13 @@ pub(in crate::stub_gen) struct BlizzardPredicate {
     name: String,
     /// `Type = "Secret" | "Precondition"`
     kind: String,
+    /// `FailureMode = "ReturnNothing" | "ReturnWithError" | "Error"` (preconditions).
+    failure_mode: Option<String>,
     documentation: Option<String>,
+    /// Defined in `SecretPredicatesDocumentation.lua`, the secret-value predicate
+    /// table (other files define unrelated preconditions such as
+    /// `RequiresClubsInitialized`).
+    secret_table: bool,
 }
 
 #[derive(Debug)]
@@ -203,6 +209,7 @@ pub(in crate::stub_gen) struct BlizzardDocRegexes {
     section: regex_lite::Regex,
     entry_key: regex_lite::Regex,
     documentation: regex_lite::Regex,
+    failure_mode: regex_lite::Regex,
 }
 
 impl BlizzardDocRegexes {
@@ -227,6 +234,7 @@ impl BlizzardDocRegexes {
             // Arguments/Returns entries sit deeper).
             entry_key: regex_lite::Regex::new(r"(?m)^\t\t\t(\w+)[ \t]*=[ \t]*(.*?),?[ \t]*$").unwrap(),
             documentation: regex_lite::Regex::new(r#"Documentation\s*=\s*\{\s*((?:"(?:[^"\\]|\\.)*"\s*,?\s*)*)\}"#).unwrap(),
+            failure_mode: regex_lite::Regex::new(r#"FailureMode\s*=\s*"(\w+)""#).unwrap(),
         }
     }
 }

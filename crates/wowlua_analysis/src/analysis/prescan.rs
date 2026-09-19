@@ -148,6 +148,7 @@ impl<'a> Analysis<'a> {
                 is_key_enum: class.is_key_enum,
                 correlated_groups: class.correlated_groups.clone(),
                 see: class.see.clone(),
+                secret_when: class.secret_when.clone(),
                 ..Default::default()
             });
             let ti = TableIndex(table_idx);

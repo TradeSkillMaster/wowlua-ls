@@ -321,6 +321,28 @@ goto myLabel
 --                ^^^^ entity.name.variable.lua
 --                     ^^^^^^ string.unquoted.lua
 
+-- Annotation: @secret-clears
+---@secret-clears SecretWhenA,SecretWhenB unit == Enum.SecrecyLevel.NeverSecret
+-- ^^^^^^^^^^^^^^ storage.type.annotation.lua
+--                ^^^^^^^^^^^^^^^^^^^^^^^ support.class.lua
+--                                        ^^^^ entity.name.variable.lua
+--                                             ^^ keyword.operator.lua
+--                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ string.unquoted.lua
+
+-- Annotation: @secret-restriction-guard
+---@secret-restriction-guard type == Enum.AddOnRestrictionState.Inactive
+-- ^^^^^^^^^^^^^^^^^^^^^^^^^ storage.type.annotation.lua
+--                           ^^^^ entity.name.variable.lua
+--                                ^^ keyword.operator.lua
+--                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ string.unquoted.lua
+
+-- Annotation: @secret-precondition (description stays plain)
+---@secret-precondition RequiresUnitAuraAccess Error Guarded APIs need aura access.
+-- ^^^^^^^^^^^^^^^^^^^^ storage.type.annotation.lua
+--                      ^^^^^^^^^^^^^^^^^^^^^^ support.class.lua
+--                                             ^^^^^ storage.modifier.lua
+--                                                   ^^^^^^^ - support.type.lua
+
 -- Annotation: @field index signature
 ---@field [string] number
 -- ^^^^^^ storage.type.annotation.lua

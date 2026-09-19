@@ -182,6 +182,258 @@ fn has_secret_boolean(t: &ValueType) -> bool {
     }
 }
 
+// ── Addon restrictions ───────────────────────────────────────────────────────
+
+/// `Enum.AddOnRestrictionType` members, indexed by their enum value (VERIFIED:
+/// `RestrictedActionsConstantsDocumentation.lua`). A restriction set is a
+/// bitmask over these positions.
+pub const RESTRICTION_TYPES: [&str; 6] = ["Combat", "Encounter", "ChallengeMode", "PvPMatch", "Map", "Chat"];
+
+/// The enum a `@secret-restriction-guard` argument names its type with
+/// (`Enum.AddOnRestrictionType.Combat`).
+pub const RESTRICTION_TYPE_ENUM: [&str; 2] = ["Enum", "AddOnRestrictionType"];
+
+/// The bit of a restriction type name (`Combat` → `1 << 0`).
+pub fn restriction_bit(name: &str) -> Option<u8> {
+    RESTRICTION_TYPES.iter().position(|t| *t == name).map(|i| 1 << i)
+}
+
+/// The bit of a restriction type written as `Enum.AddOnRestrictionType.<Type>`.
+pub fn restriction_bit_for_path(path: &[String]) -> Option<u8> {
+    match path {
+        [enum_root, enum_name, member] if *enum_root == RESTRICTION_TYPE_ENUM[0] && *enum_name == RESTRICTION_TYPE_ENUM[1] => {
+            restriction_bit(member)
+        }
+        _ => None,
+    }
+}
+
+const COMBAT: u8 = 1;
+const ENCOUNTER: u8 = 1 << 1;
+const CHALLENGE_MODE: u8 = 1 << 2;
+const PVP_MATCH: u8 = 1 << 3;
+const MAP: u8 = 1 << 4;
+const CHAT: u8 = 1 << 5;
+
+/// The addon restrictions a secret predicate depends on: while every one of
+/// them is inactive, the predicate yields no secrets. `None` for predicates that
+/// depend on the unit or object queried (identity, health max, power, stats,
+/// casts, loss of control, possession, threat, anchoring, curves, formatters);
+/// only their own `C_Secrets` guard or `HasSecretRestrictions` clears those.
+///
+/// Per-spell (and per-totem-aura) "always secret" flags take priority over
+/// restrictions, so clearing aura, cooldown, and totem predicates by restriction
+/// state is unsound for such spells; the stubs can't see those flags.
+pub fn predicate_restrictions(predicate: &str) -> Option<u8> {
+    let four = COMBAT | ENCOUNTER | CHALLENGE_MODE | PVP_MATCH;
+    Some(match predicate {
+        // VERIFIED: "when combat addon restrictions are in effect."
+        "SecretWhenInCombat" => COMBAT,
+        // VERIFIED: "when combat, encounter, challenge mode, or PvP match addon
+        // restrictions are in effect." (the three per-spell/totem predicates add
+        // "Individual spells may be flagged as never or always secret, which
+        // takes priority over restrictions.")
+        "SecretWhenAurasRestricted" | "SecretWhenUnitAuraRestricted" | "SecretWhenCooldownsRestricted"
+        | "SecretWhenTotemSlotSecret" => four,
+        // VERIFIED: "when encounter, challenge mode, or PvP match addon
+        // restrictions are in effect, and when the player is on a
+        // communication-restricted map such as a dungeon or raid." ASSUMED that
+        // the communication-restricted map is the `Chat` restriction.
+        "SecretInChatMessagingLockdown" => ENCOUNTER | CHALLENGE_MODE | PVP_MATCH | CHAT,
+        // VERIFIED: "when the player is on an addon-restricted map such as a
+        // dungeon or raid."
+        "SecretOnRestrictedMaps" => MAP,
+        // VERIFIED: "when PvP match addon restrictions are in effect."
+        "SecretInActivePvPMatch" => PVP_MATCH,
+        // VERIFIED: "This restriction only applies when the player is on an
+        // addon-restricted map." (Comparisons of compound tokens such as
+        // `boss1target` are documented as always secret.)
+        "SecretWhenUnitComparisonRestricted" => MAP,
+        // ASSUMED: undocumented; used only by encounter timeline APIs.
+        "SecretWhenEncounterEvent" => ENCOUNTER,
+        _ => return None,
+    })
+}
+
+/// `@secret-clears <Predicate>[,<Predicate>…]|* [param…] [== Value]`: a guard
+/// whose result proves the listed predicates yield no secrets.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SecretClears {
+    /// The cleared predicates; empty for `*`.
+    pub predicates: Vec<String>,
+    /// `*`: no API returns secret values (`C_Secrets.HasSecretRestrictions`).
+    pub all: bool,
+    /// Guard parameters that bind the clear: a later call is cleared only when
+    /// its arguments at the same positions are the same local, field chain, or
+    /// literal. Always empty for `*`, which states a property of the client
+    /// rather than of an argument.
+    pub params: Vec<String>,
+    /// `== Value`: the result that proves the predicates clear (`None` = a false
+    /// result).
+    pub equals: Option<String>,
+}
+
+impl SecretClears {
+    /// Parse the text after `@secret-clears`.
+    pub fn parse(rest: &str) -> Option<Self> {
+        let (head, equals) = split_equals(rest)?;
+        let mut words = head.split_whitespace();
+        let predicates = words.next()?;
+        let all = predicates == "*";
+        let predicates: Vec<String> = if all {
+            Vec::new()
+        } else {
+            predicates.split(',').map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect()
+        };
+        if !all && predicates.is_empty() {
+            return None;
+        }
+        let params: Vec<String> = words.map(str::to_string).collect();
+        // `*` is "no restriction is in force", a property of the client and not
+        // of any argument, and silences every report in the region it guards.
+        // Binding it would have to be honored there too, so reject the form.
+        if all && !params.is_empty() {
+            return None;
+        }
+        Some(Self { predicates, all, params, equals })
+    }
+}
+
+/// `@secret-restriction-guard <param|RestrictionType> [== Value]`: a guard
+/// whose result proves an addon restriction inactive.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SecretRestrictionGuard {
+    /// A restriction type name ([`RESTRICTION_TYPES`]), or the parameter whose
+    /// `Enum.AddOnRestrictionType` argument names it.
+    pub restriction: String,
+    /// `== Value`: the result that proves the restriction inactive (`None` = a
+    /// false result).
+    pub equals: Option<String>,
+}
+
+impl SecretRestrictionGuard {
+    /// Parse the text after `@secret-restriction-guard`.
+    pub fn parse(rest: &str) -> Option<Self> {
+        let (head, equals) = split_equals(rest)?;
+        let mut words = head.split_whitespace();
+        let restriction = words.next()?.to_string();
+        words.next().is_none().then_some(Self { restriction, equals })
+    }
+
+    /// The fixed restriction bit, when `restriction` names a type rather than a parameter.
+    pub fn fixed_bit(&self) -> Option<u8> {
+        restriction_bit(&self.restriction)
+    }
+}
+
+/// `head [== Value]`; `None` when `==` has no value.
+fn split_equals(rest: &str) -> Option<(&str, Option<String>)> {
+    match rest.split_once("==") {
+        Some((head, value)) => {
+            let value = value.trim();
+            (!value.is_empty() && !value.contains(char::is_whitespace)).then(|| (head, Some(value.to_string())))
+        }
+        None => Some((rest, None)),
+    }
+}
+
+/// How a function fails when a secrecy precondition doesn't hold (Blizzard's
+/// `FailureMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PreconditionFailure {
+    /// `ReturnNothing`: the call returns no values.
+    ReturnNothing,
+    /// `ReturnWithError`: the call returns no values and reports an error.
+    ReturnWithError,
+    /// `Error`: the call raises an error.
+    Error,
+}
+
+impl PreconditionFailure {
+    /// Every mode, in annotation spelling.
+    pub const NAMES: [&'static str; 3] = ["ReturnNothing", "ReturnWithError", "Error"];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ReturnNothing" => Some(Self::ReturnNothing),
+            "ReturnWithError" => Some(Self::ReturnWithError),
+            "Error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+
+    /// Whether `s` names a mode in the wrong case: a typo, not the first word
+    /// of a description. A description could plausibly start with any other
+    /// word, so only this certain case is rejected.
+    pub fn is_miscased(s: &str) -> bool {
+        Self::parse(s).is_none() && Self::NAMES.iter().any(|name| name.eq_ignore_ascii_case(s))
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ReturnNothing => "ReturnNothing",
+            Self::ReturnWithError => "ReturnWithError",
+            Self::Error => "Error",
+        }
+    }
+
+    /// Whether a failing call returns nothing, which makes every return nilable.
+    pub fn returns_nothing(self) -> bool {
+        matches!(self, Self::ReturnNothing | Self::ReturnWithError)
+    }
+}
+
+/// `@secret-precondition <Name> [FailureMode] [documentation]`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SecretPrecondition {
+    pub name: String,
+    /// `None` when Blizzard documents no failure mode.
+    pub failure: Option<PreconditionFailure>,
+    pub doc: Option<String>,
+}
+
+impl SecretPrecondition {
+    /// Parse the text after `@secret-precondition`.
+    pub fn parse(rest: &str) -> Option<Self> {
+        let rest = rest.trim();
+        let (name, rest) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        if name.is_empty() {
+            return None;
+        }
+        let rest = rest.trim_start();
+        let (mode, after_mode) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        if PreconditionFailure::is_miscased(mode) {
+            return None;
+        }
+        // The failure mode is optional: any other second word starts the description.
+        let (failure, doc) = match PreconditionFailure::parse(mode) {
+            Some(failure) => (Some(failure), after_mode.trim()),
+            None => (None, rest),
+        };
+        Some(Self { name: name.to_string(), failure, doc: (!doc.is_empty()).then(|| doc.to_string()) })
+    }
+
+    /// Whether a failing call returns nothing, which makes every return nilable.
+    pub fn returns_nothing(&self) -> bool {
+        self.failure.is_some_and(PreconditionFailure::returns_nothing)
+    }
+
+    /// A hover bullet: "- Returns nothing when `Name` fails — doc".
+    pub fn hover_line(&self) -> String {
+        let outcome = match self.failure {
+            Some(PreconditionFailure::ReturnNothing) => "Returns nothing when",
+            Some(PreconditionFailure::ReturnWithError) => "Returns nothing and reports an error when",
+            Some(PreconditionFailure::Error) => "Errors when",
+            None => "Precondition:",
+        };
+        let fails = if self.failure.is_some() { " fails" } else { "" };
+        match &self.doc {
+            Some(doc) => format!("- {outcome} `{}`{fails} — {doc}", self.name),
+            None => format!("- {outcome} `{}`{fails}", self.name),
+        }
+    }
+}
+
 // ── Stub metadata ────────────────────────────────────────────────────────────
 
 /// A `@secret-when` predicate: the named restriction under which a function's
@@ -310,4 +562,57 @@ pub struct SecretMeta {
     pub aspects: Vec<String>,
     pub guard: Option<SecretGuard>,
     pub unless: Option<SecretExemption>,
+    pub clears: Option<SecretClears>,
+    pub restriction_guard: Option<SecretRestrictionGuard>,
+    pub preconditions: Vec<SecretPrecondition>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_context_guard_annotations() {
+        let clears = SecretClears::parse(" SecretWhenA,SecretWhenB unit mobUnit").unwrap();
+        assert_eq!(clears.predicates, ["SecretWhenA", "SecretWhenB"]);
+        assert_eq!(clears.params, ["unit", "mobUnit"]);
+        assert!(!clears.all && clears.equals.is_none());
+        let all = SecretClears::parse(" *").unwrap();
+        assert!(all.all && all.predicates.is_empty());
+        let equals = SecretClears::parse(" SecretWhenA spell == Enum.SecrecyLevel.NeverSecret").unwrap();
+        assert_eq!((equals.params.as_slice(), equals.equals.as_deref()), (&["spell".to_string()][..], Some("Enum.SecrecyLevel.NeverSecret")));
+        assert!(SecretClears::parse("").is_none());
+        assert!(SecretClears::parse(" SecretWhenA unit ==").is_none());
+        // `*` clears the whole region, so it cannot be bound to an argument.
+        assert!(SecretClears::parse(" * unit").is_none());
+
+        let fixed = SecretRestrictionGuard::parse(" Combat").unwrap();
+        assert_eq!(fixed.fixed_bit(), Some(1));
+        let param = SecretRestrictionGuard::parse(" type == Enum.AddOnRestrictionState.Inactive").unwrap();
+        assert_eq!((param.fixed_bit(), param.equals.as_deref()), (None, Some("Enum.AddOnRestrictionState.Inactive")));
+        assert!(SecretRestrictionGuard::parse(" type extra").is_none());
+
+        let precondition = SecretPrecondition::parse(" RequiresX ReturnNothing Needs access.").unwrap();
+        assert_eq!((precondition.failure, precondition.doc.as_deref()), (Some(PreconditionFailure::ReturnNothing), Some("Needs access.")));
+        assert!(precondition.returns_nothing());
+        let undocumented_mode = SecretPrecondition::parse(" RequiresY Guarded APIs return nothing.").unwrap();
+        assert_eq!((undocumented_mode.failure, undocumented_mode.doc.as_deref()), (None, Some("Guarded APIs return nothing.")));
+        assert!(!SecretPrecondition::parse(" RequiresZ Error").unwrap().returns_nothing());
+        assert!(SecretPrecondition::parse(" ").is_none());
+        // A mode in the wrong case is a typo, not a description.
+        assert!(SecretPrecondition::parse(" RequiresY returnnothing Needs access.").is_none());
+        assert!(SecretPrecondition::parse(" RequiresY ERROR").is_none());
+    }
+
+    #[test]
+    fn restriction_sets() {
+        let path = |p: &str| p.split('.').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(restriction_bit_for_path(&path("Enum.AddOnRestrictionType.Chat")), Some(1 << 5));
+        assert_eq!(restriction_bit_for_path(&path("Other.AddOnRestrictionType.Chat")), None);
+        let aura = predicate_restrictions("SecretWhenUnitAuraRestricted").unwrap();
+        assert_eq!(aura, COMBAT | ENCOUNTER | CHALLENGE_MODE | PVP_MATCH);
+        assert_eq!(predicate_restrictions("SecretWhenInCombat"), Some(COMBAT));
+        // Unit-condition predicates depend on the unit, not on restrictions.
+        assert_eq!(predicate_restrictions("SecretWhenUnitHealthMaxRestricted"), None);
+    }
 }

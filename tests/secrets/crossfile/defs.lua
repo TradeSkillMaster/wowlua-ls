@@ -30,3 +30,20 @@ function Shared_NameOf(unit) return "" end
 function Shared_Send(text) end
 
 ns.lastHealth = UnitHealth("target")
+
+---@secret-clears SecretWhenGaugeRestricted gauge
+---@param gauge string
+---@return boolean
+function Shared_ShouldGaugeBeSecret(gauge) return true end
+
+---@secret-when SecretWhenGaugeRestricted
+---@param gauge string
+---@return secret<number>
+function Shared_GaugeValue(gauge) return 1 end
+
+---@class SharedGaugeInfo
+---@secret-when SecretWhenGaugeRestricted
+---@field current secret<number>
+
+---@return SharedGaugeInfo
+function Shared_GaugeInfo() return { current = 1 } end

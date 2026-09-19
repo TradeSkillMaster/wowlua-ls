@@ -297,7 +297,83 @@ local own = NameOf("player")
 local other = NameOf("target")
 --    ^ hover: (local) other: secret<string>
 
+-- ── Context guards ─────────────────────────────────────────────────────────────
+
+---@secret-clears SecretWhenScoreRestricted player
+---@param player string
+---@return boolean
+local function ShouldScoreBeSecret(player) return true end
+
+---@secret-restriction-guard Combat
+---@return boolean
+local function InLockdown() return false end
+
+---@secret-restriction-guard kind == Enum.AddOnRestrictionState.Inactive
+---@param kind Enum.AddOnRestrictionType
+---@return Enum.AddOnRestrictionState
+local function RestrictionState(kind) return Enum.AddOnRestrictionState.Active end
+
+---@secret-when SecretWhenScoreRestricted
+---@param player string
+---@return secret<number>
+local function GetScore(player) return 1 end
+
+---@secret-when SecretWhenInCombat
+---@return secret<number>
+local function GetCombatTime() return 1 end
+
+---@class ScoreCard
+---@secret-when SecretWhenScoreRestricted
+---@field total secret<number>
+
+---@return ScoreCard
+local function GetScoreCard() return { total = 1 } end
+
+if not ShouldScoreBeSecret("alice") then
+    local aliceScore = GetScore("alice")
+    --    ^ hover: (local) aliceScore: number
+    local bobScore = GetScore("bob")
+    --    ^ hover: (local) bobScore: secret<number>
+    local cardTotal = GetScoreCard().total
+    --    ^ hover: (local) cardTotal: number
+end
+if not InLockdown() then
+    local combatTime = GetCombatTime()
+    --    ^ hover: (local) combatTime: number
+end
+if RestrictionState(Enum.AddOnRestrictionType.Combat) == Enum.AddOnRestrictionState.Inactive then
+    local stateTime = GetCombatTime()
+    --    ^ hover: (local) stateTime: number
+end
+
+---@secret-precondition RequiresScoreAccess ReturnNothing Scores need access.
+---@return number?
+local function GetCheckedScore() return nil end
+local checkedScore = GetCheckedScore()
+--                   ^ doc: Returns nothing when `RequiresScoreAccess` fails — Scores need access.
+
+-- The failure mode is optional; a second word that isn't one starts the description.
+---@secret-precondition RequiresCardAccess Cards need access.
+---@return number
+local function GetCheckedCard() return 1 end
+local checkedCard = GetCheckedCard()
+--                  ^ doc: Precondition: `RequiresCardAccess` — Cards need access.
+
 -- ── Annotation validation ──────────────────────────────────────────────────────
+
+---@secret-clears
+-- ^ diag: malformed-annotation
+---@secret-clears SecretWhenScoreRestricted player ==
+-- ^ diag: malformed-annotation
+---@secret-clears * player
+-- ^ diag: malformed-annotation
+---@secret-restriction-guard
+-- ^ diag: malformed-annotation
+---@secret-precondition
+-- ^ diag: malformed-annotation
+---@secret-precondition RequiresScoreAccess returnnothing Scores need access.
+-- ^ diag: malformed-annotation
+local function BadGuards(player) end
 
 ---@secret-args sometimes
 -- ^ diag: malformed-annotation
