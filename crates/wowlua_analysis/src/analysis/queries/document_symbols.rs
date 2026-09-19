@@ -113,7 +113,7 @@ pub(super) fn extend_ranges_to_children(entries: &mut [DocumentSymbolEntry]) {
 
 impl AnalysisResult {
     pub fn document_symbols(&self, tree: &SyntaxTree) -> Vec<DocumentSymbolEntry> {
-        let mut class_children: HashMap<String, Vec<DocumentSymbolEntry>> = HashMap::new();
+        let mut class_children: HashMap<String, Vec<DocumentSymbolEntry>> = HashMap::default();
         let mut top_level: Vec<DocumentSymbolEntry> = Vec::new();
 
         // Build func start offset → FunctionIndex lookup for nested symbol enrichment

@@ -2,7 +2,7 @@
 //! a summary. Exits non-zero when errors or warnings are present.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use wowlua_ls::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -290,10 +290,10 @@ pub fn run(dir: PathBuf, severity: Severity) -> CliResult {
     // so they share batched writes and identical broken-pipe handling (a closed
     // downstream pipe, e.g. `| head`, drops writes silently instead of panicking).
     let mut stats = CheckStats::default();
-    let mut file_refs: HashMap<PathBuf, FileReferenceData> = HashMap::new();
+    let mut file_refs: HashMap<PathBuf, FileReferenceData> = HashMap::default();
     // `@meta` files whose functions must be excluded from the cross-file
     // unused-function check (their functions are declaration stubs).
-    let mut meta_paths: HashSet<PathBuf> = HashSet::new();
+    let mut meta_paths: HashSet<PathBuf> = HashSet::default();
     {
         let stdout = std::io::stdout();
         let mut out = std::io::BufWriter::new(stdout.lock());

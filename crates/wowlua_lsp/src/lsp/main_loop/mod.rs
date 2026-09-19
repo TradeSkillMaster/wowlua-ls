@@ -1,5 +1,6 @@
 
-pub(super) use std::collections::{BTreeMap, HashMap, HashSet};
+pub(super) use std::collections::BTreeMap;
+use crate::collections::{HashMap, HashSet};
 pub(super) use std::error::Error;
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::str::FromStr;
@@ -846,19 +847,19 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         cached_needs_built_name: false,
         cached_defclass_func_names: Vec::new(),
         cached_built_name_func_names: Vec::new(),
-        cached_generates_events_methods: HashMap::new(),
+        cached_generates_events_methods: HashMap::default(),
         ws_file_addon_ns_class: scan_result.addon_ns_class,
         ws_file_callable_classes: scan_result.file_callable_classes,
-        cached_callable_classes: HashSet::new(),
+        cached_callable_classes: HashSet::default(),
         plugin_engine: None,
         ws_generation: 0,
         cached_ws_diagnostics: None,
-        cached_crossfile_diagnostics: HashMap::new(),
+        cached_crossfile_diagnostics: HashMap::default(),
         warm_in_flight: false,
         pending_lazy_warm: false,
         live_generation: Arc::new(AtomicU64::new(0)),
         xfile_analysis_cache: std::sync::Mutex::new(XfileAnalysisCache::default()),
-        edited_uris: HashSet::new(),
+        edited_uris: HashSet::default(),
     };
     ws.set_stubs(stub_globals, stub_classes);
     let plugin_paths = ws.configs.all_plugins();
@@ -1001,7 +1002,7 @@ fn main_loop(
     mut ws: WorkspaceState,
     client: ClientSupport,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
-    let mut documents: HashMap<String, Document> = HashMap::new();
+    let mut documents: HashMap<String, Document> = HashMap::default();
     let mut progress_counter: i32 = 1; // 0 is used by the startup loading token
 
     // Spawn the main-loop watchdog so a stalled analysis or request self-reports
@@ -2125,9 +2126,9 @@ mod tests {
                 ("new".to_string(), AnnotationType::Simple("boolean".to_string()), Visibility::Public),
             ],
             constraint_type_arg_subs: vec![("Class".to_string(), vec!["Parent".to_string()])],
-            field_built_names: HashMap::from([("_SCHEMA".to_string(), "ChildSchema".to_string())]),
-            field_ranges: HashMap::from([("_SCHEMA".to_string(), (10u32, 20u32))]),
-            field_paths: HashMap::from([("_SCHEMA".to_string(), PathBuf::from("child.lua"))]),
+            field_built_names: HashMap::from_iter([("_SCHEMA".to_string(), "ChildSchema".to_string())]),
+            field_ranges: HashMap::from_iter([("_SCHEMA".to_string(), (10u32, 20u32))]),
+            field_paths: HashMap::from_iter([("_SCHEMA".to_string(), PathBuf::from("child.lua"))]),
             ..empty_class("Child")
         };
 
@@ -2226,7 +2227,7 @@ mod tests {
 
         // A pending background stub doc (stub_open_seq != 0, analysis None) is
         // warmed in place.
-        let mut documents = HashMap::new();
+        let mut documents = HashMap::default();
         documents.insert(uri.to_string(), pending_stub_doc(text, 7));
         ensure_stub_doc_analyzed(&connection, &mut documents, &uri, &ws, &client);
         let doc = &documents[&uri.to_string()];
@@ -2246,7 +2247,7 @@ mod tests {
 
         // Shebang / ignored docs carry analysis None with stub_open_seq == 0 on
         // purpose — they must be left untouched.
-        let mut documents = HashMap::new();
+        let mut documents = HashMap::default();
         documents.insert(uri.to_string(), pending_stub_doc(text, 0));
         ensure_stub_doc_analyzed(&connection, &mut documents, &uri, &ws, &client);
         assert!(
@@ -2278,7 +2279,7 @@ mod tests {
         let uri = abs_path_to_uri(&path).unwrap();
 
         // No tracked document at all — the untracked-stub case.
-        let mut documents = HashMap::new();
+        let mut documents = HashMap::default();
         ensure_stub_doc_analyzed(&connection, &mut documents, &uri, &ws, &client);
 
         let doc = documents
@@ -2312,7 +2313,7 @@ mod tests {
         let user_uri = abs_path_to_uri(&user_path).unwrap();
         assert!(!is_stub_path(&user_uri), "test setup: path must be outside the stub dir");
 
-        let mut documents = HashMap::new();
+        let mut documents = HashMap::default();
         ensure_stub_doc_analyzed(&connection, &mut documents, &user_uri, &ws, &client);
         assert!(
             documents.is_empty(),
@@ -2340,7 +2341,7 @@ mod tests {
         let client = ClientSupport::default();
         let (server, client_side) = Connection::memory();
 
-        let mut documents = HashMap::new();
+        let mut documents = HashMap::default();
         documents.insert(uri.to_string(), pending_stub_doc(text, 3));
         ensure_stub_doc_analyzed(&server, &mut documents, &uri, &ws, &client);
 
@@ -2452,7 +2453,7 @@ mod tests {
     #[test]
     fn merge_pushes_defclass_entry_without_overlay() {
         let defclass = ClassDecl {
-            field_built_names: HashMap::from([("key".to_string(), "BuiltType".to_string())]),
+            field_built_names: HashMap::from_iter([("key".to_string(), "BuiltType".to_string())]),
             ..empty_class("OrphanChild")
         };
 
@@ -2815,7 +2816,7 @@ mod tests {
 
         // Pre-populate globals/classes/aliases so only the events path is tested.
         // (Without this, globals_changed is true because the file isn't in the map yet.)
-        let (mut globals, _) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), crate::annotations::CorrelatedReturns::Skip, crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::new());
+        let (mut globals, _) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), crate::annotations::CorrelatedReturns::Skip, crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::default());
         let scan_pre = crate::annotations::scan_all_annotations(root);
         super::scan::mark_meta_globals(&mut globals, scan_pre.has_meta);
         ws.ws_file_globals.insert(file_path.clone(), globals);
@@ -3157,7 +3158,7 @@ mod tests {
         }
 
         assert!(matches!(RebuildScope::None.merge(RebuildScope::Full), RebuildScope::Full));
-        assert!(matches!(RebuildScope::Full.merge(RebuildScope::Incremental(HashSet::new())), RebuildScope::Full));
+        assert!(matches!(RebuildScope::Full.merge(RebuildScope::Incremental(HashSet::default())), RebuildScope::Full));
         let merged = RebuildScope::None.merge(RebuildScope::Incremental(["X".to_string()].into_iter().collect()));
         assert!(matches!(merged, RebuildScope::Incremental(_)));
         assert!(matches!(RebuildScope::None.merge(RebuildScope::None), RebuildScope::None));
@@ -3173,7 +3174,7 @@ mod tests {
         assert!(!file_unaffected_by("---@type TimeParts\nlocal t", &affected));
         assert!(!file_unaffected_by("Widget:New()", &affected));
         // Empty affected set: nothing can be affected, so reuse is always valid.
-        assert!(file_unaffected_by("anything TimeParts", &HashSet::new()));
+        assert!(file_unaffected_by("anything TimeParts", &HashSet::default()));
         // Word-boundary matching: "ID" inside "GUID" is not a match (reduces
         // false positives for short class names).
         let short: HashSet<String> = ["ID".to_string(), "UI".to_string()].into_iter().collect();
@@ -3430,7 +3431,7 @@ mod tests {
         // is false (the only other reason `try_batch_analyze` bails). Trivial content
         // scans to empty globals/classes/aliases regardless of synth/protected config,
         // so the seed matches whatever the batch recomputes.
-        let mut documents: HashMap<String, Document> = HashMap::new();
+        let mut documents: HashMap<String, Document> = HashMap::default();
         let uris: Vec<String> = (0..3).map(|i| format!("file:///project/f{i}.lua")).collect();
         for uri_str in &uris {
             let uri: lsp_types::Uri = uri_str.parse().unwrap();
@@ -3440,7 +3441,7 @@ mod tests {
             let root = crate::syntax::SyntaxNode::new_root(&tree);
             let (mut globals, _) = crate::annotations::scan_file_globals_with_synth(
                 root, Some(&path), crate::annotations::CorrelatedReturns::Skip,
-                crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::new());
+                crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::default());
             let scan = crate::annotations::scan_all_annotations(root);
             super::scan::mark_meta_globals(&mut globals, scan.has_meta);
             ws.ws_file_globals.insert(path.clone(), globals);
@@ -3489,7 +3490,7 @@ mod tests {
     fn batch_analyze_skips_edited_docs_with_consumed_pending_text() {
         let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
 
-        let mut documents: HashMap<String, Document> = HashMap::new();
+        let mut documents: HashMap<String, Document> = HashMap::default();
         let uris: Vec<String> = (0..3).map(|i| format!("file:///project/f{i}.lua")).collect();
         let mut paths: Vec<PathBuf> = Vec::new();
         for uri_str in &uris {
@@ -3501,7 +3502,7 @@ mod tests {
             let root = crate::syntax::SyntaxNode::new_root(&tree);
             let (mut globals, _) = crate::annotations::scan_file_globals_with_synth(
                 root, Some(&path), crate::annotations::CorrelatedReturns::Skip,
-                crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::new());
+                crate::annotations::ProtectedPrefix::Explicit, &crate::annotations::CreatesGlobalMap::default());
             let scan = crate::annotations::scan_all_annotations(root);
             super::scan::mark_meta_globals(&mut globals, scan.has_meta);
             ws.ws_file_globals.insert(path.clone(), globals);
@@ -3570,7 +3571,7 @@ mod tests {
 
         let uri: lsp_types::Uri = "file:///project/f.lua".parse().unwrap();
         let path = uri_to_abs_path(&uri).unwrap();
-        let mut documents: HashMap<String, Document> = HashMap::new();
+        let mut documents: HashMap<String, Document> = HashMap::default();
         documents.insert(uri.to_string(), Document {
             text: "local x = 1\n".to_string(), pending_text: None, analysis: None, tree: None,
             toc: None, plugin_diags: Vec::new(), dirty: false, ws_generation: 0,
@@ -3840,7 +3841,7 @@ mod tests {
         assert!(analysis.is_meta(), "test fixture must be a @meta file");
         doc.tree = Some(tree);
         doc.analysis = Some(analysis);
-        let mut documents = HashMap::new();
+        let mut documents = HashMap::default();
         documents.insert(uri_str.clone(), doc);
 
         let report = diagnostics_handlers::handle_document_diagnostic(&uri, &mut documents, &ws);
@@ -4143,7 +4144,7 @@ mod tests {
         // Open defs.lua (the definition site); user.lua stays unopened on disk so
         // it flows through the cached disk-scan path.
         let (defs_uri, defs_doc) = open_doc(&ws, &defs);
-        let mut documents: HashMap<String, Document> = HashMap::new();
+        let mut documents: HashMap<String, Document> = HashMap::default();
         documents.insert(defs_uri.to_string(), defs_doc);
 
         // `function UsedGlobal()` is on line index 3; the name starts at column 9.
@@ -4259,7 +4260,7 @@ mod tests {
         std::fs::write(&xml, xml_with("OldFrame")).unwrap();
 
         let mut ws = WorkspaceState::for_test(Some(tmp.clone()));
-        let mut documents: HashMap<String, Document> = HashMap::new();
+        let mut documents: HashMap<String, Document> = HashMap::default();
 
         rescan_workspace_from_disk(&mut documents, &mut ws);
 

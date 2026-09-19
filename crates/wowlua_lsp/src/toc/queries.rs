@@ -168,7 +168,7 @@ pub fn completions_at(doc: &TocDocument, text: &str, offset: u32, toc_dir: Optio
 
 fn complete_field_names(doc: &TocDocument, _prefix: &str) -> Vec<TocCompletion> {
     // Collect already-present headers to avoid suggesting duplicates
-    let present: std::collections::HashSet<String> = doc.lines.iter().filter_map(|line| {
+    let present: crate::collections::HashSet<String> = doc.lines.iter().filter_map(|line| {
         if let TocLine::Header { key, .. } = line {
             Some(key.to_ascii_lowercase())
         } else {

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::types::*;
@@ -41,7 +41,7 @@ impl<'a> Analysis<'a> {
         // them (`local f = MyCreatedFrame`). Gated on a non-empty registry so
         // workspaces without created globals pay nothing.
         if !self.ir.ext.deferred_call_globals.is_empty() {
-            let mut created: HashSet<SymbolIndex> = HashSet::new();
+            let mut created: HashSet<SymbolIndex> = HashSet::default();
             for expr in &self.ir.exprs {
                 if let Expr::SymbolRef(s, _) = expr
                     && s.is_external()
@@ -83,7 +83,7 @@ impl<'a> Analysis<'a> {
         }
 
         // Collect call expressions not already backing a symbol's type_source
-        let symbol_exprs: std::collections::HashSet<ExprId> = self.ir.symbols.iter()
+        let symbol_exprs: crate::collections::HashSet<ExprId> = self.ir.symbols.iter()
             .flat_map(|s| s.versions.iter())
             .filter_map(|v| v.type_source)
             .collect();
@@ -871,7 +871,7 @@ impl<'a> Analysis<'a> {
             let rets = self.ir.functions[func_id.val()].rets.clone();
 
             // Group by DefNode
-            let mut groups: HashMap<(u32, u32), Vec<(usize, SymbolIndex)>> = HashMap::new();
+            let mut groups: HashMap<(u32, u32), Vec<(usize, SymbolIndex)>> = HashMap::default();
             for &sym_idx in &rets {
                 if sym_idx.is_external() { continue; }
                 let sym = &self.ir.symbols[sym_idx.val()];
@@ -1017,7 +1017,7 @@ impl<'a> Analysis<'a> {
             let rets = self.ir.functions[func_id.val()].rets.clone();
 
             // Group by DefNode to find return statements
-            let mut groups: HashMap<(u32, u32), Vec<(usize, SymbolIndex)>> = HashMap::new();
+            let mut groups: HashMap<(u32, u32), Vec<(usize, SymbolIndex)>> = HashMap::default();
             for &sym_idx in &rets {
                 if sym_idx.is_external() { continue; }
                 let sym = &self.ir.symbols[sym_idx.val()];
@@ -2298,9 +2298,9 @@ impl<'a> Analysis<'a> {
     /// substitution, so we look up F's concrete binding and extract its return type.
     fn resolve_projection_for_narrow(
         &self,
-        projs: &std::collections::HashMap<usize, ProjectionKind>,
+        projs: &crate::collections::HashMap<usize, ProjectionKind>,
         ret_index: usize,
-        subs: Option<&std::collections::HashMap<String, ValueType>>,
+        subs: Option<&crate::collections::HashMap<String, ValueType>>,
     ) -> Option<ValueType> {
         // Find the projection — direct hit at ret_index, or expansion from a lower index.
         let (proj, proj_base) = projs.get(&ret_index).map(|p| (p, ret_index))
@@ -2495,7 +2495,7 @@ impl<'a> Analysis<'a> {
         let colliding = self.detect_colliding_instance_methods(&assignments);
         // Per-receiver instance tables created for the colliding method defs,
         // keyed by (symbol, version) so every method on the same receiver reuses one.
-        let mut instance_tables: HashMap<(SymbolIndex, usize), TableIndex> = HashMap::new();
+        let mut instance_tables: HashMap<(SymbolIndex, usize), TableIndex> = HashMap::default();
         // Every plain-local receiver that gets a method deferred-attached here. The
         // fixpoint resolved these receivers' method calls before this pass ran, so
         // it may have bound them to a stale target — a sibling instance's method
@@ -2503,7 +2503,7 @@ impl<'a> Analysis<'a> {
         // *different* file registered on the external class (cross-file). Both are
         // superseded once this file's own def lands (on the overlay or an instance
         // table), so their calls are re-resolved at the end.
-        let mut method_def_receivers: HashSet<(SymbolIndex, usize)> = HashSet::new();
+        let mut method_def_receivers: HashSet<(SymbolIndex, usize)> = HashSet::default();
         for assign in assignments {
             // Try to find the class table via the symbol's resolved type
             let sym_idx = match self.ir.get_symbol(
@@ -2780,7 +2780,7 @@ impl<'a> Analysis<'a> {
         assignments: &[DeferredFieldAssignment],
     ) -> HashSet<(SymbolIndex, usize)> {
         // (external class, method name) -> receivers that define it.
-        let mut by_field: HashMap<(TableIndex, &str), Vec<(SymbolIndex, usize)>> = HashMap::new();
+        let mut by_field: HashMap<(TableIndex, &str), Vec<(SymbolIndex, usize)>> = HashMap::default();
         for assign in assignments {
             if !assign.is_method_def || assign.root_name == "self" {
                 continue;
@@ -2808,7 +2808,7 @@ impl<'a> Analysis<'a> {
                 .or_default()
                 .push((sym_idx, ver_idx));
         }
-        let mut colliding = HashSet::new();
+        let mut colliding = HashSet::default();
         for receivers in by_field.into_values() {
             // A collision needs the same method name defined on 2+ distinct locals.
             if receivers.iter().map(|(s, _)| *s).collect::<HashSet<_>>().len() >= 2 {
@@ -2861,7 +2861,7 @@ impl<'a> Analysis<'a> {
         }
         // (receiver table, field name) pairs actually augmented, so cache/symbol
         // invalidation can be keyed on the table — not just the field name.
-        let mut augmented: std::collections::HashSet<(TableIndex, String)> = std::collections::HashSet::new();
+        let mut augmented: crate::collections::HashSet<(TableIndex, String)> = crate::collections::HashSet::default();
         for m in mixins {
             // Resolve the root variable to its table (mirrors the field-assignment pass).
             let Some(sym_idx) = self.ir.get_symbol(&SymbolIdentifier::Name(m.root_name.clone()), m.scope_idx) else { continue };
@@ -2938,7 +2938,7 @@ impl<'a> Analysis<'a> {
         // field during the fixpoint, so it recomputes against the new
         // intersection. Targeted (not a full cache wipe) so builder-chain results
         // the read-only resolver can't recompute are left intact.
-        let augmented_names: std::collections::HashSet<&str> =
+        let augmented_names: crate::collections::HashSet<&str> =
             augmented.iter().map(|(_, f)| f.as_str()).collect();
         // Seed: reads of an augmented field, matched on the *resolved receiver
         // table* (not just the field name) so a same-named field on an unrelated
@@ -2951,7 +2951,7 @@ impl<'a> Analysis<'a> {
                 _ => None,
             })
             .collect();
-        let mut stale: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut stale: crate::collections::HashSet<usize> = crate::collections::HashSet::default();
         for (i, table_expr, field) in field_reads {
             let on_augmented = match self.resolve_expr(table_expr) {
                 Some(ValueType::Table(Some(tidx))) => augmented.contains(&(tidx, field.clone())),
@@ -4174,7 +4174,7 @@ impl<'a> Analysis<'a> {
         let param_annotations: Vec<crate::annotations::AnnotationType> = self.func(func_idx).param_annotations.clone();
         let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
 
-        let mut generic_subs = HashMap::new();
+        let mut generic_subs = HashMap::default();
 
         // Bind generics from the state expression as if it were the first param
         if let Some(first_annotation) = param_annotations.first() {
@@ -4188,7 +4188,7 @@ impl<'a> Analysis<'a> {
                 // Structural inference (handles table<K,V>, T[], etc.). The
                 // array-bound-generic tracking is unused here (this path doesn't
                 // build per-arg type-mismatch checks), so discard it.
-                let mut array_bound = HashSet::new();
+                let mut array_bound = HashSet::default();
                 self.infer_generics_from_annotation(first_annotation, &generic_names, &generics, &None, state_eid, &mut generic_subs, &mut array_bound);
             }
         }

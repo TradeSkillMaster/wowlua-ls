@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 use crate::analysis::{Analysis, AnalysisResult};
 use crate::syntax::SyntaxNode;
@@ -111,7 +111,7 @@ impl DiagnosticPass for UndefinedDocClass {
             // Parent relationships declared in THIS file. The declared parents win
             // over the resolved IR (a file's own `@class Foo : Bar` takes priority),
             // matching the original precedence.
-            let mut scan_parent_map: HashMap<&str, &Vec<String>> = HashMap::new();
+            let mut scan_parent_map: HashMap<&str, &Vec<String>> = HashMap::default();
             for class in &scan.classes {
                 if !class.parents.is_empty() {
                     scan_parent_map.insert(class.name.as_str(), &class.parents);
@@ -138,7 +138,7 @@ impl DiagnosticPass for UndefinedDocClass {
                 Vec::new()
             };
 
-            let mut reported: HashSet<String> = HashSet::new();
+            let mut reported: HashSet<String> = HashSet::default();
             for class in &scan.classes {
                 let mut visited = vec![class.name.clone()];
                 let mut queue = class.parents.clone();

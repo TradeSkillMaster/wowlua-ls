@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::analysis::{AnalysisResult, Ir};
@@ -87,9 +87,9 @@ fn record_keyof_handler_ref(ir: &Ir, target: TableIndex, name: &str, out: &mut H
 /// Uses `call_resolutions` (already computed during analysis) to track
 /// external function references. No additional tree walk is performed.
 pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceData {
-    let mut referenced_externals = HashSet::new();
-    let mut scope0_referenced_names = HashSet::new();
-    let mut referenced_external_functions = HashSet::new();
+    let mut referenced_externals = HashSet::default();
+    let mut scope0_referenced_names = HashSet::default();
+    let mut referenced_external_functions = HashSet::default();
 
     for &idx in &analysis.referenced_symbols {
         if idx.is_external() {
@@ -243,9 +243,9 @@ struct AggregatedRefs {
 
 impl AggregatedRefs {
     fn build(file_refs: &HashMap<PathBuf, FileReferenceData>) -> Self {
-        let mut multi_file_externals = HashSet::new();
-        let mut single_file_externals: HashMap<SymbolIndex, PathBuf> = HashMap::new();
-        let mut all_functions = HashSet::new();
+        let mut multi_file_externals = HashSet::default();
+        let mut single_file_externals: HashMap<SymbolIndex, PathBuf> = HashMap::default();
+        let mut all_functions = HashSet::default();
 
         for (path, ref_data) in file_refs {
             for &sym in &ref_data.referenced_externals {
@@ -363,7 +363,7 @@ fn find_unused_methods(
     // Pre-compute interface detection: count distinct TableIndex values per method name.
     // If 2+ distinct tables define the same method name, it's likely a duck-typing
     // framework callback (e.g. GetFrame, Show, Hide) called via dynamic dispatch.
-    let mut method_name_tables: HashMap<&str, HashSet<TableIndex>> = HashMap::new();
+    let mut method_name_tables: HashMap<&str, HashSet<TableIndex>> = HashMap::default();
     for (func_idx, display_name) in &pre_globals.function_names {
         if func_idx.ext_offset() < pre_globals.stub_functions_end {
             continue;
@@ -559,7 +559,7 @@ pub fn find_unused_from_pre_globals(
 pub fn emit_unused_workspace_diagnostics(
     unused: &[UnusedWorkspaceFunction],
 ) -> HashMap<PathBuf, Vec<WowDiagnostic>> {
-    let mut by_file: HashMap<PathBuf, Vec<WowDiagnostic>> = HashMap::new();
+    let mut by_file: HashMap<PathBuf, Vec<WowDiagnostic>> = HashMap::default();
     for u in unused {
         let diags = by_file.entry(u.source_path.clone()).or_default();
         super::UNUSED_FUNCTION.emit(

@@ -262,7 +262,7 @@ impl AnalysisResult {
 
         // Collect all fields from all context classes and their parents
         let mut items = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for &idx in &ctx.table_idxs {
             self.collect_expression_fields(idx, &mut seen, &mut items);
         }

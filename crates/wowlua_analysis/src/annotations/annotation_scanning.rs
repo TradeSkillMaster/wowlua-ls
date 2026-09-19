@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use crate::ast::{AstNode, Block, Expression, ExpressionList, FunctionCall, Statement};
 use crate::syntax::SyntaxKind;
@@ -744,7 +744,7 @@ pub(super) fn receiver_name(names: &[String]) -> &str {
 /// Handles `--- @class Foo\nlocal Bar = ...`, inline `local Bar = ... ---@class Foo`,
 /// and global assignments `--- @class Foo\nBar = ...`.
 pub(super) fn build_var_to_class(all_stmts: &[Statement<'_>]) -> HashMap<String, String> {
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     for stmt in all_stmts {
         match stmt {
             Statement::LocalAssign(assign) => {
@@ -820,7 +820,7 @@ pub fn scan_method_typed_self_fields(
         };
         let Some(body) = func.block() else { continue };
         // Walk the method body for typed self-field assignments
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut field_list = Vec::new();
         scan_typed_self_fields_inner(body, &mut field_list, &mut seen);
         for (field_name, ann_type, range) in field_list {
@@ -955,7 +955,7 @@ pub fn scan_method_funcall_self_fields(
             continue;
         };
         let Some(body) = func.block() else { continue };
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut field_list = Vec::new();
         scan_funcall_self_fields_inner(body, &class_name, &mut field_list, &mut seen);
         for (field_name, callee_names, first_string_arg, range) in field_list {
@@ -1156,7 +1156,7 @@ pub fn scan_method_bare_self_fields(
         let param_types: HashMap<&str, &AnnotationType> = annotations.params.iter()
             .map(|p| (p.name.as_str(), &p.typ))
             .collect();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut field_list = Vec::new();
         scan_bare_self_fields_inner(body, &param_types, &mut field_list, &mut seen);
         for (field_name, ann_type, range) in field_list {
@@ -1332,8 +1332,8 @@ fn scan_bare_self_fields_inner(
 /// traversal regardless of chain depth.
 pub fn reduce_to_fun_alias<'a>(
     at: &'a AnnotationType,
-    local_aliases: &'a std::collections::HashMap<String, AnnotationType>,
-    ext_aliases: &'a std::collections::HashMap<String, AnnotationType>,
+    local_aliases: &'a crate::collections::HashMap<String, AnnotationType>,
+    ext_aliases: &'a crate::collections::HashMap<String, AnnotationType>,
 ) -> Option<(&'a AnnotationType, bool)> {
     let (mut current, wraps_nil) = match at {
         AnnotationType::NonNil(inner) => (inner.as_ref(), false),
@@ -1348,7 +1348,7 @@ pub fn reduce_to_fun_alias<'a>(
         }
         _ => (at, false),
     };
-    let mut visited: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut visited: crate::collections::HashSet<&str> = crate::collections::HashSet::default();
     loop {
         match current {
             AnnotationType::Fun(..) => return Some((current, wraps_nil)),
@@ -1367,8 +1367,8 @@ pub fn reduce_to_fun_alias<'a>(
 /// `reduce_to_fun_alias`.
 pub fn extract_fun_sig(
     ann: &AnnotationType,
-    local_aliases: &std::collections::HashMap<String, AnnotationType>,
-    ext_aliases: &std::collections::HashMap<String, AnnotationType>,
+    local_aliases: &crate::collections::HashMap<String, AnnotationType>,
+    ext_aliases: &crate::collections::HashMap<String, AnnotationType>,
 ) -> Option<OverloadSig> {
     match ann {
         AnnotationType::Simple(s) if s.starts_with("fun(") => {

@@ -80,7 +80,7 @@ pub(in crate::stub_gen) fn infer_type_from_name(name: &str) -> Option<&'static s
 // ── Manual overrides ──────────────────────────────────────────────────────────
 
 pub(in crate::stub_gen) fn manual_overrides() -> HashMap<&'static str, &'static str> {
-    let mut m = HashMap::new();
+    let mut m = HashMap::default();
     m.insert(
         "GetSpellBookItemName",
         "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSpellBookItemName)\n\
@@ -361,8 +361,8 @@ pub(in crate::stub_gen) fn parse_wikitext(
     ].into_iter().collect();
 
     let mut section: Option<&str> = None;
-    let mut param_types: HashMap<String, (String, bool)> = HashMap::new();
-    let mut return_types: HashMap<String, (String, bool)> = HashMap::new();
+    let mut param_types: HashMap<String, (String, bool)> = HashMap::default();
+    let mut return_types: HashMap<String, (String, bool)> = HashMap::default();
 
     for line in wikitext.lines() {
         let line_stripped = line.trim();
@@ -489,7 +489,7 @@ pub(in crate::stub_gen) fn parse_wikitext(
         // Dedup by argument-name list so identical repeated forms (e.g.
         // `GetBuildInfo()` documented once per flavor) don't emit a redundant
         // overload. The primary form seeds the set.
-        let mut seen_arg_lists: HashSet<Vec<String>> = HashSet::new();
+        let mut seen_arg_lists: HashSet<Vec<String>> = HashSet::default();
         seen_arg_lists.insert(arg_names.clone());
 
         for cap in call_re.captures_iter(&call_part).skip(1) {
@@ -551,7 +551,7 @@ fn parse_apisig_call_args(orig_args: &str) -> (Vec<String>, bool, HashSet<String
     let brace_re = regex_lite::Regex::new(r"\{([^}]+)\}").unwrap();
     let word_re = regex_lite::Regex::new(r"(\w+)").unwrap();
 
-    let mut optional_params: HashSet<String> = HashSet::new();
+    let mut optional_params: HashSet<String> = HashSet::default();
     for c in opt_re.captures_iter(orig_args) {
         optional_params.insert(c.get(1).unwrap().as_str().to_string());
     }
@@ -713,8 +713,8 @@ pub(in crate::stub_gen) fn parse_widget_wiki_annotations(wikitext: &str, param_n
     }
 
     let mut section: Option<&str> = None;
-    let mut param_types: HashMap<String, (String, bool)> = HashMap::new();
-    let mut return_types: HashMap<String, (String, bool)> = HashMap::new();
+    let mut param_types: HashMap<String, (String, bool)> = HashMap::default();
+    let mut return_types: HashMap<String, (String, bool)> = HashMap::default();
 
     for line in wikitext.lines() {
         let line_stripped = line.trim();
@@ -963,7 +963,7 @@ pub(in crate::stub_gen) fn enrich_widget_stubs(
     log::info!("  Found {} widget methods needing wiki enrichment", methods.len());
 
     // Parse annotations and group by file
-    let mut file_patches: HashMap<PathBuf, Vec<(usize, Vec<String>)>> = HashMap::new();
+    let mut file_patches: HashMap<PathBuf, Vec<(usize, Vec<String>)>> = HashMap::default();
     let mut enriched = 0;
 
     let mut no_page = 0;
@@ -1051,8 +1051,8 @@ pub(in crate::stub_gen) fn generate_wiki_stubs(
     // backed by a real wiki page. This makes a documented stub always win over a bare fallback
     // for the same name — independent of iteration order — without a second parse pass, while
     // the emission loop below preserves the original ordering.
-    let mut doc_stubs: HashMap<&str, String> = HashMap::new();
-    let mut documented_fn_names: HashSet<String> = HashSet::new();
+    let mut doc_stubs: HashMap<&str, String> = HashMap::default();
+    let mut documented_fn_names: HashSet<String> = HashSet::default();
     for name in names {
         let doc_name = wiki_redirects.get(name).unwrap_or(name);
         let doc_path = wiki_doc_paths.get(name).map(String::as_str);
@@ -1067,7 +1067,7 @@ pub(in crate::stub_gen) fn generate_wiki_stubs(
 
     let mut documented = 0;
     let mut undocumented = 0;
-    let mut emitted: HashSet<String> = HashSet::new();
+    let mut emitted: HashSet<String> = HashSet::default();
     for name in names {
         if let Some(stub) = doc_stubs.get(name.as_str()) {
             // Documented — dedup by emitted function name (differently-cased names, e.g. the

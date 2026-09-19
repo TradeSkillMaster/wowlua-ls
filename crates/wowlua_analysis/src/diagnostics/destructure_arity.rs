@@ -112,9 +112,9 @@ fn find_call_resolution(
                         projected_f_idx: None,
                         is_expansion: false,
                         first_arg_range: None,
-                        receiver_param_subs: std::collections::HashMap::new(),
+                        receiver_param_subs: crate::collections::HashMap::default(),
                         receiver_table_idx: None,
-                        keyof_arg_targets: std::collections::HashMap::new(),
+                        keyof_arg_targets: crate::collections::HashMap::default(),
                     },
                 ));
             }

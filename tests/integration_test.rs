@@ -4,7 +4,7 @@
 // warning is a false positive here.
 #![allow(clippy::mutable_key_type)]
 
-use std::collections::HashSet;
+use wowlua_ls::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
 use wowlua_ls::analysis::{Analysis, AnalysisConfig, AnalysisResult};
@@ -197,7 +197,7 @@ fn run_annotation_tests(config: &TestConfig) {
 
     // Track which lines have been covered by a `diag:` assertion so we can
     // detect unasserted diagnostics after the annotation loop.
-    let mut diag_asserted_lines: HashSet<u32> = HashSet::new();
+    let mut diag_asserted_lines: HashSet<u32> = HashSet::default();
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -4139,13 +4139,13 @@ function M.f() end
 fn build_per_addon_tables_from_globals(
     pg: &mut PreResolvedGlobals,
     globals: &[wowlua_ls::annotations::ExternalGlobal],
-    addon_ns_class_files: &std::collections::HashMap<std::path::PathBuf, String>,
+    addon_ns_class_files: &wowlua_ls::collections::HashMap<std::path::PathBuf, String>,
     configs: &ProjectConfigs,
 ) {
-    use std::collections::HashMap;
+    use wowlua_ls::collections::HashMap;
     let addon_roots = configs.addon_roots();
     if addon_roots.is_empty() { return; }
-    let mut file_addon_roots: HashMap<std::path::PathBuf, std::path::PathBuf> = HashMap::new();
+    let mut file_addon_roots: HashMap<std::path::PathBuf, std::path::PathBuf> = HashMap::default();
     for g in globals {
         if let Some(ref path) = g.source_path
             && let Some(root) = configs.addon_root_for(path) {
@@ -4154,6 +4154,40 @@ fn build_per_addon_tables_from_globals(
     }
     let per_addon_class_names = configs.group_addon_ns_classes_by_root(addon_ns_class_files);
     pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names, globals);
+}
+
+#[test]
+fn repeated_analysis_infers_the_same_type() {
+    // Regression: analysing the same source twice used to produce different
+    // types, because a dynamic `t[key]` unions the field types of `t` by walking
+    // a hash map whose iteration order was reseeded per map. That flipped the
+    // union's member order — and, when it changed which expression the fixpoint
+    // resolved first, whether the type resolved at all — so the same binary
+    // reported a diagnostic on one run and not the next.
+    let src = "\
+local registry = {
+    alpha = 1,
+    bravo = \"two\",
+    charlie = true,
+    delta = {},
+    echo = 5.5,
+}
+local function pick(key)
+    return registry[key]
+end
+local picked = pick(\"alpha\")
+";
+    let offset = src.rfind("picked").unwrap() as u32;
+    let first = {
+        let (tree, result) = analyze_source_with_tree(src);
+        result.hover_at(&tree, offset).expect("hover on picked").type_str
+    };
+    assert!(first.contains('|'), "expected a union, got `{first}`");
+    for _ in 0..8 {
+        let (tree, result) = analyze_source_with_tree(src);
+        let again = result.hover_at(&tree, offset).expect("hover on picked").type_str;
+        assert_eq!(again, first, "inferred type differs between analyses of the same source");
+    }
 }
 
 fn analyze_source_with_tree(source: &str) -> (wowlua_ls::syntax::tree::SyntaxTree, AnalysisResult) {
@@ -6938,7 +6972,7 @@ fn scope_completion_locals_sort_before_globals() {
 
 #[test]
 fn test_unused_function_cross_file() {
-    use std::collections::HashMap;
+    use wowlua_ls::collections::HashMap;
     use std::path::PathBuf;
     use wowlua_ls::diagnostics::unused_function::{
         collect_file_reference_data, find_unused_workspace_functions,
@@ -6968,8 +7002,8 @@ fn test_unused_function_cross_file() {
     let pre_globals = Arc::new(pg);
 
     // Analyze each file, collect reference data.
-    let mut file_refs: HashMap<PathBuf, wowlua_ls::diagnostics::unused_function::FileReferenceData> = HashMap::new();
-    let mut meta_paths: HashSet<PathBuf> = HashSet::new();
+    let mut file_refs: HashMap<PathBuf, wowlua_ls::diagnostics::unused_function::FileReferenceData> = HashMap::default();
+    let mut meta_paths: HashSet<PathBuf> = HashSet::default();
     for entry in std::fs::read_dir(&scan_dir).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();

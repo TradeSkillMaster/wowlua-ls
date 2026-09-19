@@ -208,7 +208,7 @@ pub fn regenerate_stubs() {
         // Single Interface/ tree walk: collect both constant assignments and standalone
         // global function definitions rather than making two separate traversals.
         let (fxml_consts, fxml_funcs) = scan_interface_lua_combined(&retail_ui_dir);
-        let mut constants: HashMap<String, i64> = HashMap::new();
+        let mut constants: HashMap<String, i64> = HashMap::default();
         // Chain FrameXML first so APIDocumentation values win on duplicates.
         for (name, (typ, val)) in fxml_consts.iter().chain(api_doc.constants.iter()) {
             if typ == "number" {
@@ -233,7 +233,7 @@ pub fn regenerate_stubs() {
         let enums = api_doc.enums.clone();
         (constants, enums, extra, Some(api_doc), fxml_consts, fxml_funcs)
     } else {
-        (HashMap::new(), HashMap::new(), HashSet::new(), None, HashMap::new(), HashSet::new())
+        (HashMap::default(), HashMap::default(), HashSet::default(), None, HashMap::default(), HashSet::default())
     };
     phase!("extract retail constants/enums (FrameXML walk)");
 
@@ -250,7 +250,7 @@ pub fn regenerate_stubs() {
         }
         util_dirs.extend(classic_ui_dirs.iter().map(|p| p.as_path()));
         if util_dirs.is_empty() {
-            HashMap::new()
+            HashMap::default()
         } else {
             log::info!("Scanning FrameXML utility tables and mixins across {} branch(es)...", util_dirs.len());
             let tables = scan_framexml_utility_tables(&util_dirs);
@@ -333,7 +333,7 @@ pub fn regenerate_stubs() {
     let widget_methods = collect_widget_enrichment_methods(&vendor_dir_paths);
     log::info!("  Widget methods needing enrichment: {}", widget_methods.len());
 
-    let mut all_wiki_names: HashSet<String> = HashSet::new();
+    let mut all_wiki_names: HashSet<String> = HashSet::default();
     all_wiki_names.extend(classic_diff.missing.iter().cloned());
     all_wiki_names.extend(wiki_names.iter().cloned());
     all_wiki_names.extend(widget_methods.iter().map(|m| m.api_name.clone()));
@@ -356,7 +356,7 @@ pub fn regenerate_stubs() {
         }
         (pages, redirects, doc_paths)
     } else {
-        (HashMap::new(), HashMap::new(), HashMap::new())
+        (HashMap::default(), HashMap::default(), HashMap::default())
     };
     phase!("fetch_wiki_pages (HTTP, batch)");
 
@@ -601,10 +601,10 @@ pub fn regenerate_stubs() {
 
     // Step 6: Collect all stub file paths for scanning
     log::info!("Scanning stubs...");
-    let mut override_set = std::collections::HashSet::new();
+    let mut override_set = crate::collections::HashSet::default();
 
     // Collect override stems (to determine which vendor files to skip)
-    let mut override_stems = HashSet::new();
+    let mut override_stems = HashSet::default();
     {
         let mut override_paths = Vec::new();
         collect_lua_paths(&overrides_dir, &mut override_paths);
@@ -632,7 +632,7 @@ pub fn regenerate_stubs() {
     let mut paths = collect_stub_scan_paths(&vendor_dirs, &gen_dir, &overrides_dir, &override_stems, &mut override_set);
 
     phase!("write generated stubs + enum/constants merge");
-    let scan_result = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[], &crate::annotations::CreatesGlobalMap::new());
+    let scan_result = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[], &crate::annotations::CreatesGlobalMap::default());
     let (mut classes, mut aliases, mut globals, stub_events) =
         (scan_result.classes, scan_result.aliases, scan_result.globals, scan_result.events);
     // Retype mixin-object parameters (colorRGB, ItemLocation, …) to their data type
@@ -654,7 +654,7 @@ pub fn regenerate_stubs() {
 
     // Step 6: Build PreResolvedGlobals (Pass 1 — used for FrameXML return type inference)
     log::info!("Building PreResolvedGlobals (pass 1)...");
-    let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashMap::new(), &std::collections::HashSet::new());
+    let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &crate::collections::HashMap::default(), &crate::collections::HashSet::default());
     pre_globals.merge_events(&stub_events);
     phase!("PreResolvedGlobals::build (pass 1)");
 
@@ -738,7 +738,7 @@ pub fn regenerate_stubs() {
         log::info!("Re-scanning stubs with inferred returns (pass 2)...");
         paths = collect_stub_scan_paths(&vendor_dirs, &gen_dir, &overrides_dir, &override_stems, &mut override_set);
 
-        let scan_result2 = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[], &crate::annotations::CreatesGlobalMap::new());
+        let scan_result2 = crate::lsp::scan_paths_with_overrides(&paths, &override_set, None, &[], &[], &crate::annotations::CreatesGlobalMap::default());
         let (classes2, aliases2, globals2, stub_events2) =
             (scan_result2.classes, scan_result2.aliases, scan_result2.globals, scan_result2.events);
         phase!("scan_paths_with_overrides (pass 2)");
@@ -753,7 +753,7 @@ pub fn regenerate_stubs() {
         crate::annotations::register_event_type_aliases(&mut aliases, &stub_events2);
 
         log::info!("Building PreResolvedGlobals (pass 2)...");
-        pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashMap::new(), &std::collections::HashSet::new());
+        pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &crate::collections::HashMap::default(), &crate::collections::HashSet::default());
         pre_globals.merge_events(&stub_events2);
         phase!("PreResolvedGlobals::build (pass 2)");
     }
@@ -775,7 +775,7 @@ pub fn regenerate_stubs() {
 
     // Step 7: Populate stub_file_contents for go-to-def
     log::info!("Embedding stub file contents for go-to-definition...");
-    let mut referenced_paths: HashSet<PathBuf> = HashSet::new();
+    let mut referenced_paths: HashSet<PathBuf> = HashSet::default();
     for loc in pre_globals.symbol_locations.values() {
         referenced_paths.insert(loc.path.clone());
     }
@@ -799,7 +799,7 @@ pub fn regenerate_stubs() {
         }
     }
 
-    let mut stub_file_contents = HashMap::new();
+    let mut stub_file_contents = HashMap::default();
     let mut file_read_failures = 0usize;
     for abs_path in &referenced_paths {
         match std::fs::read_to_string(abs_path) {

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use crate::collections::HashSet;
 use std::path::Path;
 
 use super::{TocDocument, TocLine};
@@ -52,7 +52,7 @@ fn check_missing_interface(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
 }
 
 fn check_duplicate_headers(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::default();
     for line in &doc.lines {
         if let TocLine::Header { key, key_range, .. } = line {
             let lower = key.to_ascii_lowercase();

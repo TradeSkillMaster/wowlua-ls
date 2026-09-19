@@ -53,7 +53,7 @@ pub(in crate::stub_gen) fn parse_globalstrings_csv(content: &str) -> HashMap<Str
 
     let header = match lines.next() {
         Some(h) => parse_csv_record(h),
-        None => return HashMap::new(),
+        None => return HashMap::default(),
     };
     let base_tag_col = header.iter().position(|h| h == "BaseTag")
         .unwrap_or_else(|| panic!("GlobalStrings CSV missing 'BaseTag' column (got: {header:?})"));
@@ -61,7 +61,7 @@ pub(in crate::stub_gen) fn parse_globalstrings_csv(content: &str) -> HashMap<Str
         .unwrap_or_else(|| panic!("GlobalStrings CSV missing 'TagText_lang' column (got: {header:?})"));
 
     let ident_re = regex_lite::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     for line in lines {
         if line.is_empty() {
             continue;

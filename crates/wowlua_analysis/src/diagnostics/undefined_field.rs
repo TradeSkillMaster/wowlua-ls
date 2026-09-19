@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use crate::collections::HashSet;
 use crate::analysis::AnalysisResult;
 use crate::ast::{AstNode, BinaryExpression, Expression, Identifier, IfBranch, LocalAssign, Operator, RepeatUntilLoop, UnaryExpression, WhileLoop};
 use crate::syntax::NodeOrToken;
@@ -76,8 +76,8 @@ fn is_closed_record(analysis: &AnalysisResult, idx: TableIndex) -> bool {
 /// multi-segment identifiers, so the legitimate `local private = {}; function
 /// private.X()` pattern never escapes.
 fn collect_pure_record_symbols(analysis: &AnalysisResult, tree: &SyntaxTree) -> HashSet<SymbolIndex> {
-    let mut candidates = HashSet::new();
-    let mut escaped = HashSet::new();
+    let mut candidates = HashSet::default();
+    let mut escaped = HashSet::default();
     for node in SyntaxNode::new_root(tree).descendants() {
         if node.kind() == SyntaxKind::LocalAssignStatement {
             if let Some(assign) = LocalAssign::cast(node) {
@@ -220,7 +220,7 @@ fn reliable_string_receiver(analysis: &AnalysisResult, base: ExprId) -> bool {
 ///      matches a probed path are suppressed, so a *deeper* access on a
 ///      now-known field (`if o.cfg then o.cfg.typo end`) is still checked.
 fn collect_membership_suppressions(tree: &SyntaxTree) -> HashSet<u32> {
-    let mut suppress = HashSet::new();
+    let mut suppress = HashSet::default();
     for node in SyntaxNode::new_root(tree).descendants() {
         match node.kind() {
             SyntaxKind::IfBranch => {

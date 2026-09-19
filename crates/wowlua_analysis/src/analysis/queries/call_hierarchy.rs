@@ -107,7 +107,7 @@ impl AnalysisResult {
     }
 
     pub(super) fn build_scope_to_function_map(&self) -> HashMap<ScopeIndex, FunctionIndex> {
-        let mut map = HashMap::new();
+        let mut map = HashMap::default();
         for (i, func) in self.ir.functions.iter().enumerate() {
             map.insert(func.scope, FunctionIndex(i));
         }
@@ -152,7 +152,7 @@ impl AnalysisResult {
             .map(|f| (f.def_node.start, f.def_node.end))
             .collect();
 
-        let mut calls: HashMap<FunctionIndex, (String, Vec<(u32, u32)>)> = HashMap::new();
+        let mut calls: HashMap<FunctionIndex, (String, Vec<(u32, u32)>)> = HashMap::default();
 
         for (expr_id, expr) in self.ir.exprs.iter().enumerate() {
             if let Expr::FunctionCall { call_range, func: callee_expr, ret_index, .. } = expr {

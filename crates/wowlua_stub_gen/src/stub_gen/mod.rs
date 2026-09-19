@@ -8,7 +8,7 @@
 // shared imports below stay internal to this module tree and don't leak into the
 // wider crate namespace. `pub(super)` would be equivalent to `pub(crate)` here
 // (stub_gen is a top-level module), so the explicit `in` path is what narrows it.
-pub(in crate::stub_gen) use std::collections::{HashMap, HashSet};
+pub(in crate::stub_gen) use crate::collections::{HashMap, HashSet};
 pub(in crate::stub_gen) use std::path::{Path, PathBuf};
 
 pub(in crate::stub_gen) use crate::flavor::{FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA};

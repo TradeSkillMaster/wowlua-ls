@@ -140,9 +140,9 @@ struct PredicateTable<'a> {
 
 impl<'a> PredicateTable<'a> {
     fn new(docs: &'a BlizzardApiDocs) -> Self {
-        let mut secret = HashMap::new();
-        let mut preconditions = HashMap::new();
-        let mut other = HashSet::new();
+        let mut secret = HashMap::default();
+        let mut preconditions = HashMap::default();
+        let mut other = HashSet::default();
         for p in &docs.predicates {
             if p.kind == "Secret" {
                 secret.insert(p.name.as_str(), p.documentation.as_deref());
@@ -434,7 +434,7 @@ pub(in crate::stub_gen) fn build_secret_index(
     let structures: HashSet<&str> = all_structures.iter().map(|s| s.name.as_str()).collect();
     let mut index = SecretIndex::default();
     // Structures reached through a secret return/payload; their fields get marked below.
-    let mut reach: HashMap<String, StructReach> = HashMap::new();
+    let mut reach: HashMap<String, StructReach> = HashMap::default();
 
     // `taint` = whether the entries' own types become `secret<T>`. Widget
     // methods keep their metadata but not the taint: a widget getter returns

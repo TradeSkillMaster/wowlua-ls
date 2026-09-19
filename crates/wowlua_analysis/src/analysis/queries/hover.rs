@@ -53,7 +53,7 @@ impl AnalysisResult {
                         // union member that inherits it, so `find_all_fields_in_tables`
                         // reports it once per member — all resolving to the same
                         // function. Show each distinct signature only once.
-                        let mut seen_funcs: HashSet<FunctionIndex> = HashSet::from([*func_idx]);
+                        let mut seen_funcs: HashSet<FunctionIndex> = HashSet::from_iter([*func_idx]);
                         let all_fields = self.find_all_fields_in_tables(&receiver_tables, &field_name);
                         for (alt_table_idx, alt_expr_id) in all_fields {
                             if alt_table_idx == table_idx { continue; }

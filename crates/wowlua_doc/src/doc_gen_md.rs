@@ -4,7 +4,7 @@
 //! Per-class files are designed for inclusion via `<!--@include: ./api/ClassName.md-->`
 //! so users can write custom prose above the generated API reference.
 
-use std::collections::HashSet;
+use crate::collections::HashSet;
 use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
@@ -323,7 +323,7 @@ mod tests {
     }
 
     fn all_classes(ns: &DocNamespace) -> HashSet<&str> {
-        let mut set: HashSet<&str> = std::collections::HashSet::new();
+        let mut set: HashSet<&str> = crate::collections::HashSet::default();
         set.insert(ns.name.as_str());
         for d in &ns.defines {
             for p in &d.extends {

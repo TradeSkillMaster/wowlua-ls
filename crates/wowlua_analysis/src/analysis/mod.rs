@@ -15,7 +15,7 @@ pub mod layered_map;
 #[cfg(test)]
 mod proptests;
 
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use crate::ast::Block;
@@ -588,7 +588,7 @@ pub struct Ir {
     /// called on it), so `missing_fields` requires the class's methods for these —
     /// the strict counterpart of the lenient `@type`/assignment contexts, which
     /// keep the construct-then-Mixin idiom working.
-    pub tc_arg_constructors: std::collections::HashSet<TableIndex>,
+    pub tc_arg_constructors: crate::collections::HashSet<TableIndex>,
     /// `(class table, field name)` pairs for placeholder-`Any` class fields that
     /// were *synthesized from a table-constructor value* the annotation scan
     /// couldn't type (e.g. `---@class C` / `local c = { x = OTHER.field }`), as
@@ -596,7 +596,7 @@ pub struct Ir {
     /// have their placeholder expr upgraded to the runtime constructor's real
     /// expr in `merge_runtime_fields_into_class` — an explicit `@field x any`
     /// stays `any`. Populated in `prescan_classes_and_aliases`.
-    pub ctor_inferred_any_fields: std::collections::HashSet<(TableIndex, String)>,
+    pub ctor_inferred_any_fields: crate::collections::HashSet<(TableIndex, String)>,
     /// Bracket assignments where the target table couldn't be resolved in Phase 1
     /// (e.g. `local NPCs = private.Data.NPCs; NPCs[1] = { ... }`). Deferred to
     /// Phase 2 where resolved_type is available. (root_name, scope_idx, val_expr)
@@ -625,7 +625,7 @@ pub struct Ir {
     /// workspace rebuild fires), only the documents whose set contains the edited
     /// file are re-analyzed, instead of every open tab. Accumulated during resolve;
     /// nested harvest analyses record into their own (discarded) `Ir`.
-    pub deferred_dep_files: std::collections::HashSet<std::path::PathBuf>,
+    pub deferred_dep_files: crate::collections::HashSet<std::path::PathBuf>,
 }
 
 /// Metadata for a string literal argument annotated as `expression<C, R>`.
@@ -1005,7 +1005,7 @@ impl Ir {
     /// Deep check whether a type (or any nested table field / function
     /// param-return type) still contains an unresolved generic type variable.
     pub fn type_contains_type_variable_deep(&self, vt: &ValueType) -> bool {
-        let mut visited: HashSet<TableIndex> = HashSet::new();
+        let mut visited: HashSet<TableIndex> = HashSet::default();
         self.type_contains_type_variable_deep_inner(vt, &mut visited)
     }
 
@@ -1425,7 +1425,7 @@ impl Ir {
         let order = self.next_order();
         self.scopes.push(Scope {
             parent,
-            symbols: HashMap::new(),
+            symbols: HashMap::default(),
             creation_order: order,
             is_loop: false,
         });
@@ -1668,7 +1668,7 @@ impl Ir {
             return Some(fi);
         }
         // Walk metatable __index chain with cycle detection
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         self.get_field_via_metatable(table_idx, field_name, &mut visited)
     }
 
@@ -1773,7 +1773,7 @@ impl Ir {
 
     /// Get accessor visibility from a table or its ancestors (recursive).
     pub fn get_accessor(&self, table_idx: TableIndex, name: &str) -> Option<crate::annotations::Visibility> {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         self.get_accessor_recursive(table_idx, name, &mut visited)
     }
 
@@ -2006,7 +2006,7 @@ impl Ir {
 
     /// Check if `child_idx` is the same class as or inherits from `parent_idx`.
     pub fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         self.is_subclass_of_inner(child_idx, parent_idx, &mut visited)
     }
 
@@ -2444,7 +2444,7 @@ impl AnalysisResult {
     /// treats each as a reverse dependency edge: an edit to one of these files that
     /// the coarse scan can't see (no workspace rebuild) still re-analyzes this
     /// document. See `Ir::deferred_dep_files`.
-    #[inline] pub fn deferred_dep_files(&self) -> &std::collections::HashSet<std::path::PathBuf> { &self.ir.deferred_dep_files }
+    #[inline] pub fn deferred_dep_files(&self) -> &crate::collections::HashSet<std::path::PathBuf> { &self.ir.deferred_dep_files }
 
     pub fn is_meta(&self) -> bool {
         self.is_meta
@@ -2462,8 +2462,8 @@ impl AnalysisResult {
     /// so we dedupe the per-parent lists to keep BFS iteration linear.
     pub fn direct_subclasses(&self) -> &HashMap<TableIndex, Vec<TableIndex>> {
         self.direct_subclasses_cache.get_or_init(|| {
-            let mut seen: HashMap<TableIndex, HashSet<TableIndex>> = HashMap::new();
-            let mut map: HashMap<TableIndex, Vec<TableIndex>> = HashMap::new();
+            let mut seen: HashMap<TableIndex, HashSet<TableIndex>> = HashMap::default();
+            let mut map: HashMap<TableIndex, Vec<TableIndex>> = HashMap::default();
             let local = self.ir.classes.values().copied();
             let external = self.ir.ext.classes.values().copied();
             for table_idx in local.chain(external) {
@@ -2860,16 +2860,16 @@ impl<'a> Analysis<'a> {
                 classes,
                 aliases,
                 alias_string_literals,
-                alias_fun_types: HashMap::new(),
-                parameterized_aliases: HashMap::new(),
-                parameterized_alias_constraints: HashMap::new(),
-                tuple_form_aliases: HashMap::new(),
-                string_literals: HashMap::new(),
-                number_literals: HashMap::new(),
-                boolean_literals: HashMap::new(),
-                table_ranges: HashMap::new(),
-                overlay_fields: HashMap::new(),
-                bracket_key_fields: HashMap::new(),
+                alias_fun_types: HashMap::default(),
+                parameterized_aliases: HashMap::default(),
+                parameterized_alias_constraints: HashMap::default(),
+                tuple_form_aliases: HashMap::default(),
+                string_literals: HashMap::default(),
+                number_literals: HashMap::default(),
+                boolean_literals: HashMap::default(),
+                table_ranges: HashMap::default(),
+                overlay_fields: HashMap::default(),
+                bracket_key_fields: HashMap::default(),
                 bracket_index_sites: Vec::new(),
                 bracket_table_sites: Vec::new(),
                 binary_op_sites: Vec::new(),
@@ -2877,71 +2877,71 @@ impl<'a> Analysis<'a> {
                 unary_op_sites: Vec::new(),
                 access_sites: Vec::new(),
                 numeric_for_bound_sites: Vec::new(),
-                class_def_ranges: HashMap::new(),
-                class_table_by_offset: HashMap::new(),
-                class_def_symbols: HashSet::new(),
-                param_symbols: HashSet::new(),
-                local_decl_symbols: HashSet::new(),
-                alias_def_ranges: HashMap::new(),
+                class_def_ranges: HashMap::default(),
+                class_table_by_offset: HashMap::default(),
+                class_def_symbols: HashSet::default(),
+                param_symbols: HashSet::default(),
+                local_decl_symbols: HashSet::default(),
+                alias_def_ranges: HashMap::default(),
                 next_creation_order: 0,
                 g_table_idx,
                 field_assignments: Vec::new(),
-                call_resolutions: HashMap::new(),
-                and_guarded_call_exprs: HashSet::new(),
-                and_guarded_flavor_exprs: HashMap::new(),
+                call_resolutions: HashMap::default(),
+                and_guarded_call_exprs: HashSet::default(),
+                and_guarded_flavor_exprs: HashMap::default(),
                 and_guarded_flavor_ranges: Vec::new(),
                 secret_context_regions: Vec::new(),
-                function_body_scopes: HashSet::new(),
-                and_guarded_nil_check_exprs: HashSet::new(),
+                function_body_scopes: HashSet::default(),
+                and_guarded_nil_check_exprs: HashSet::default(),
                 assign_nil_check_bases: Vec::new(),
-                symbol_type_annotations: HashMap::new(),
-                lateinit_symbols: HashSet::new(),
-                varargs_scope: HashMap::new(),
-                event_type_display: HashMap::new(),
+                symbol_type_annotations: HashMap::default(),
+                lateinit_symbols: HashSet::default(),
+                varargs_scope: HashMap::default(),
+                event_type_display: HashMap::default(),
                 addon_table_override,
                 addon_folder_name,
-                expression_args: HashMap::new(),
-                synthesized_overload_funcs: HashSet::new(),
-                tc_expected_class: HashMap::new(),
-                tc_arg_constructors: std::collections::HashSet::new(),
-                ctor_inferred_any_fields: std::collections::HashSet::new(),
+                expression_args: HashMap::default(),
+                synthesized_overload_funcs: HashSet::default(),
+                tc_expected_class: HashMap::default(),
+                tc_arg_constructors: crate::collections::HashSet::default(),
+                ctor_inferred_any_fields: crate::collections::HashSet::default(),
                 pending_bracket_assigns: Vec::new(),
-                overlay: HashMap::new(),
-                symbol_overlay: HashMap::new(),
-                deferred_dep_files: std::collections::HashSet::new(),
+                overlay: HashMap::default(),
+                symbol_overlay: HashMap::default(),
+                deferred_dep_files: crate::collections::HashSet::default(),
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),
             deferred_field_mixins: Vec::new(),
-            referenced_symbols: HashSet::new(),
-            functions_with_returns: HashSet::new(),
+            referenced_symbols: HashSet::default(),
+            functions_with_returns: HashSet::default(),
             resolving_exprs: Vec::new(),
             resolve_depth: 0,
             resolve_work_count: 0,
             resolved_expr_cache: Vec::new(),
             projection_deferred: false,
-            builder_call_memo: HashMap::new(),
-            call_type_args: HashMap::new(),
-            call_site_generic_subs: HashMap::new(),
-            field_type_args_cache: HashMap::new(),
-            method_decl_subs: HashMap::new(),
-            multi_return_siblings: HashMap::new(),
+            builder_call_memo: HashMap::default(),
+            call_type_args: HashMap::default(),
+            call_site_generic_subs: HashMap::default(),
+            field_type_args_cache: HashMap::default(),
+            method_decl_subs: HashMap::default(),
+            multi_return_siblings: HashMap::default(),
             deferred_sibling_narrowings: Vec::new(),
             passthrough_candidates: None,
             deferred_class_eq_narrowings: Vec::new(),
             deferred_event_narrowings: Vec::new(),
             correlated_locals: Vec::new(),
             guard_implications: Vec::new(),
-            or_coalesce_derivations: HashMap::new(),
-            and_or_num_sentinel: HashMap::new(),
-            conditionally_reached_exprs: HashSet::new(),
+            or_coalesce_derivations: HashMap::default(),
+            and_or_num_sentinel: HashMap::default(),
+            conditionally_reached_exprs: HashSet::default(),
             synth_return_overload_refinements: Vec::new(),
-            defclass_vars: HashMap::new(),
+            defclass_vars: HashMap::default(),
             narrowing: NarrowingState::default(),
-            type_of_aliases: HashMap::new(),
-            type_guard_aliases: HashMap::new(),
-            symbol_version_at: HashMap::new(),
-            sym_ref_sites: HashMap::new(),
+            type_of_aliases: HashMap::default(),
+            type_guard_aliases: HashMap::default(),
+            symbol_version_at: HashMap::default(),
+            sym_ref_sites: HashMap::default(),
             current_func_id: None,
             pending_blocks: Vec::new(),
             allowed_read_globals,
@@ -2950,21 +2950,21 @@ impl<'a> Analysis<'a> {
             allow_binding_globals,
             project_flavors,
             addon_flavors,
-            scope_flavors: HashMap::new(),
+            scope_flavors: HashMap::default(),
             inferred_flavor_guards: Default::default(),
             backward_param_types,
             correlated_return_overloads,
-            explicit_globals: HashSet::new(),
+            explicit_globals: HashSet::default(),
             implicit_protected_prefix,
-            inherited_constructors: HashSet::new(),
-            function_owner_class: HashMap::new(),
+            inherited_constructors: HashSet::default(),
+            function_owner_class: HashMap::default(),
             is_meta: false,
             safety_limit_hit: None,
-            event_vararg_types: HashMap::new(),
-            vararg_user_annotated_fns: HashSet::new(),
-            event_handler_method_payloads: HashMap::new(),
-            event_handler_method_conflicts: HashSet::new(),
-            event_payload_type_cache: HashMap::new(),
+            event_vararg_types: HashMap::default(),
+            vararg_user_annotated_fns: HashSet::default(),
+            event_handler_method_payloads: HashMap::default(),
+            event_handler_method_conflicts: HashSet::default(),
+            event_payload_type_cache: HashMap::default(),
         };
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();
@@ -3188,7 +3188,7 @@ pub fn type_involves_type_variable_impl(ir: &Ir, vt: &ValueType) -> bool {
 
 pub fn class_has_field_impl(ir: &Ir, table_idx: TableIndex, field_name: &str) -> bool {
     let mut to_check = vec![table_idx];
-    let mut visited = std::collections::HashSet::new();
+    let mut visited = crate::collections::HashSet::default();
     while let Some(idx) = to_check.pop() {
         if !visited.insert(idx) { continue; }
         let table = ir.table(idx);
@@ -3207,12 +3207,12 @@ pub fn class_has_field_impl(ir: &Ir, table_idx: TableIndex, field_name: &str) ->
 fn extract_string_literal_keys(key_type: &ValueType) -> Option<HashSet<String>> {
     match key_type {
         ValueType::String(Some(s)) => {
-            let mut set = HashSet::new();
+            let mut set = HashSet::default();
             set.insert(s.clone());
             Some(set)
         }
         ValueType::Union(types) if !types.is_empty() => {
-            let mut set = HashSet::new();
+            let mut set = HashSet::default();
             for t in types {
                 match t {
                     ValueType::String(Some(s)) => { set.insert(s.clone()); }
@@ -3683,7 +3683,7 @@ pub fn collect_class_fields_impl(
     table_idx: TableIndex,
 ) -> Vec<(String, ValueType, bool)> {
     let mut result = Vec::new();
-    let mut visited = HashSet::new();
+    let mut visited = HashSet::default();
     collect_class_fields_inner_impl(ir, resolved_expr_cache, table_idx, &mut result, &mut visited);
     result
 }

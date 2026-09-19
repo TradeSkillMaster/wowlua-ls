@@ -1,5 +1,5 @@
 
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location, NumberOrString, Uri};
 use crate::annotations::{DiagnosticSuppression, SuppressionKind};
 use crate::diagnostics::WowDiagnostic;

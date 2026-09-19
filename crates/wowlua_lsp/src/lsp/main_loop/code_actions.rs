@@ -81,19 +81,11 @@ pub fn compute_code_actions(
         let all_edits: Vec<lsp_types::TextEdit> =
             edit_groups.iter().flatten().cloned().collect();
         let Some(merged) = merge_edits_for_fix_all(all_edits) else { continue };
-        // `lsp_types::Uri` contains an `Arc` for reference counting only; it is
-        // never mutated through hash/eq, so using it as a HashMap key is safe.
-        #[allow(clippy::mutable_key_type)]
-        let mut changes = HashMap::new();
-        changes.insert(uri.clone(), merged);
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: format!("Fix all '{}' in this file ({} occurrences)", code_str, n),
             kind: Some(CodeActionKind::QUICKFIX),
             is_preferred: Some(false),
-            edit: Some(lsp_types::WorkspaceEdit {
-                changes: Some(changes),
-                ..Default::default()
-            }),
+            edit: Some(single_file_edit(uri, merged)),
             ..Default::default()
         }));
     }
@@ -320,16 +312,11 @@ pub(super) fn make_prefix_underscore_action(
         range: Range { start: insert_pos, end: insert_pos },
         new_text: "_".to_string(),
     };
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
     CodeAction {
         title: "Prefix with `_`".to_string(),
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     }
 }
@@ -410,16 +397,11 @@ pub(super) fn make_add_field_edit(
         new_text,
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
     Some(CodeAction {
         title: format!("Add `@field {}` to `{}`", field_name, class_name),
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     })
 }
@@ -504,16 +486,11 @@ pub(super) fn make_generate_annotations_action(
         "Generate missing annotations".to_string()
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
     Some(CodeAction {
         title,
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     })
 }
@@ -600,15 +577,10 @@ pub fn make_generate_annotation_stubs_source_action(
         new_text,
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
     Some(CodeAction {
         title: "Generate annotation stubs".to_string(),
         kind: Some(CodeActionKind::SOURCE),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     })
 }
@@ -742,15 +714,10 @@ pub(super) fn make_combine_returns_action(
         new_text: format!("{}\n", combined),
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
     Some(CodeAction {
         title: "Combine into single-line tuple return".to_string(),
         kind: Some(CodeActionKind::REFACTOR_REWRITE),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     })
 }
@@ -790,16 +757,11 @@ pub(super) fn make_add_local_for_name(
         new_text: "local ".to_string(),
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
     Some(CodeAction {
         title: format!("Add `local` declaration for `{}`", name),
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     })
 }
@@ -965,16 +927,11 @@ fn single_edit_quickfix(
     title: String,
     edit: lsp_types::TextEdit,
 ) -> CodeAction {
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
     CodeAction {
         title,
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     }
 }
@@ -1311,16 +1268,11 @@ pub(super) fn make_as_cast_action(
         range: Range { start: insert_pos, end: insert_pos },
         new_text,
     };
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
     Some(CodeAction {
         title: format!("Cast to `{}`", expected_type),
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     })
 }
@@ -1422,9 +1374,6 @@ pub(super) fn make_fill_missing_fields_action(
         new_text: insert,
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
-
     let title = if field_names.len() == 1 {
         format!("Fill missing field `{}`", field_names[0])
     } else {
@@ -1435,10 +1384,7 @@ pub(super) fn make_fill_missing_fields_action(
         title,
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     })
 }
@@ -1530,16 +1476,11 @@ pub(super) fn make_nil_coalesce_action(
         "Provide fallbacks for possibly-nil values".to_string()
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), edits);
     Some(CodeAction {
         title,
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, edits)),
         ..Default::default()
     })
 }
@@ -1688,17 +1629,11 @@ pub(super) fn make_disable_line_action(
         }
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
-
     CodeAction {
         title: format!("Disable `{}` on this line", code),
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     }
 }
@@ -1728,17 +1663,11 @@ pub(super) fn make_disable_next_line_action(
         make_new_disable_next_line_edit(text, target_line, code)
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
-
     CodeAction {
         title: format!("Disable `{}` for this line (above)", code),
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     }
 }
@@ -1797,17 +1726,11 @@ pub(super) fn make_disable_file_action(
         }
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
-
     CodeAction {
         title: format!("Disable `{}` for this file", code),
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: Some(vec![diag.clone()]),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit])),
         ..Default::default()
     }
 }

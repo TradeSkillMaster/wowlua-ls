@@ -199,7 +199,7 @@ impl AnalysisResult {
             })
             .collect();
 
-        let no_subs = HashMap::new();
+        let no_subs = HashMap::default();
         let rets: Vec<String> = if func.returns_self {
             vec![self.self_return_text(func, &no_subs)]
         } else if !func.return_annotations.is_empty() {

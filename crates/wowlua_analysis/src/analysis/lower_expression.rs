@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 use crate::ast::*;
 use crate::annotations::AnnotationType;
@@ -296,7 +296,7 @@ impl<'a> Analysis<'a> {
                     // post-RHS cleanup reverts every touched sibling's current version
                     // to its pre-`and` state via `push_alias_version`.
                     let mut sibling_narrow_guards: Vec<(SymbolIndex, GuardNarrow)> = Vec::new();
-                    let mut guard_seen: std::collections::HashSet<SymbolIndex> = std::collections::HashSet::new();
+                    let mut guard_seen: crate::collections::HashSet<SymbolIndex> = crate::collections::HashSet::default();
                     if let Some((s, ref k)) = guard_result
                         && guard_seen.insert(s) {
                             sibling_narrow_guards.push((s, k.clone()));
@@ -326,7 +326,7 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     let mut sibling_restore: Vec<(SymbolIndex, usize)> = Vec::new();
-                    let mut sibling_seen: std::collections::HashSet<SymbolIndex> = std::collections::HashSet::new();
+                    let mut sibling_seen: crate::collections::HashSet<SymbolIndex> = crate::collections::HashSet::default();
                     for (sym, _) in &sibling_narrow_guards {
                         // `.cloned()` releases the immutable borrow on `multi_return_siblings`
                         // so the inner body can take `&mut self` via `version_for_scope`.
@@ -351,7 +351,7 @@ impl<'a> Analysis<'a> {
                     let mut correlated_tracking: Vec<SymbolIndex> = Vec::new();
                     // Reuse guard_seen for dedup: correlated siblings that are
                     // themselves guard symbols are already narrowed.
-                    let coalesce_syms: std::collections::HashSet<SymbolIndex> =
+                    let coalesce_syms: crate::collections::HashSet<SymbolIndex> =
                         coalesce_pre_narrow.iter().map(|(s, _)| *s).collect();
                     for (sym, _) in &sibling_narrow_guards {
                         for sib in self.correlated_local_siblings(*sym) {
@@ -689,7 +689,7 @@ impl<'a> Analysis<'a> {
                 expr_id
             }
             Expression::TableConstructor(tc) => {
-                let mut fields: HashMap<String, FieldInfo> = HashMap::new();
+                let mut fields: HashMap<String, FieldInfo> = HashMap::default();
                 let mut array_fields = Vec::new();
                 let mut bracket_fields: Vec<(ExprId, ExprId)> = Vec::new();
                 for field in tc.fields() {
@@ -997,7 +997,7 @@ impl<'a> Analysis<'a> {
                         let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                             self.ir.ext.table(addon_idx).fields.clone()
                         } else {
-                            HashMap::new()
+                            HashMap::default()
                         };
                         self.ir.tables.push(TableInfo { fields, ..Default::default() });
                         self.ir.push_expr(Expr::TableConstructor(table_idx))
@@ -1341,7 +1341,7 @@ impl<'a> Analysis<'a> {
             let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                 self.ir.ext.table(addon_idx).fields.clone()
             } else {
-                HashMap::new()
+                HashMap::default()
             };
             self.ir.tables.push(TableInfo { fields, ..Default::default() });
             self.ir.push_expr(Expr::TableConstructor(table_idx))

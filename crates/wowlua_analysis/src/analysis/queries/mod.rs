@@ -4,7 +4,8 @@
 //! LSP capability. Shared crate-wide imports are re-exported here so submodules
 //! can pull them in with `use super::*;`.
 
-pub use std::collections::{BTreeMap, HashMap, HashSet};
+pub use std::collections::BTreeMap;
+use crate::collections::{HashMap, HashSet};
 pub use crate::types::*;
 pub use super::{AnalysisResult, Ir};
 pub use crate::syntax::SyntaxKind;

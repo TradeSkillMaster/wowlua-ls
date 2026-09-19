@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use crate::collections::HashSet;
 use crate::analysis::AnalysisResult;
 use crate::types::{Expr, ExprId, ValueType};
 use super::{DiagnosticPass, WowDiagnostic};
@@ -26,7 +26,7 @@ fn check_nil_suppressed(analysis: &AnalysisResult, table_expr: ExprId, start: u3
 }
 
 pub fn run_access(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     for (expr_id, expr) in analysis.local_exprs() {
         let Expr::FieldAccess { table, field_range: Some((start, end)), .. } = expr else { continue };
         let (table, start, end) = (*table, *start, *end);

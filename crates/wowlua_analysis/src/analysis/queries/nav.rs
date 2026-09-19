@@ -173,7 +173,7 @@ impl AnalysisResult {
             }
         }
         // Walk metatable __index chain
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         let mut current = table_idx;
         while visited.insert(current) {
             if let Some(index_idx) = self.table(current).metatable_index {
@@ -334,7 +334,7 @@ impl AnalysisResult {
     /// (first match) and hover (all matches for union receiver display).
     pub(super) fn find_all_fields_in_tables(&self, table_indices: &[TableIndex], field_name: &str) -> Vec<(TableIndex, ExprId)> {
         let mut results = Vec::new();
-        let mut seen_tables: HashSet<TableIndex> = HashSet::new();
+        let mut seen_tables: HashSet<TableIndex> = HashSet::default();
         // Direct fields first
         for &idx in table_indices {
             if let Some(fi) = self.get_field(idx, field_name)

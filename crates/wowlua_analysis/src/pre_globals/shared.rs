@@ -34,7 +34,7 @@
 //!   identical sub-computations are [`deferred_returns_by_path`] and
 //!   [`deferred_call_globals_by_path`].
 
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 use crate::types::*;
 use crate::annotations::{AnnotationType, AliasDecl, ClassDecl, parse_overload};
@@ -198,7 +198,7 @@ pub fn deferred_returns_by_path(
     deferred_returns: &HashSet<FunctionIndex>,
     function_locations: &HashMap<FunctionIndex, ExternalLocation>,
 ) -> HashMap<std::path::PathBuf, Vec<FunctionIndex>> {
-    let mut by_path: HashMap<std::path::PathBuf, Vec<FunctionIndex>> = HashMap::new();
+    let mut by_path: HashMap<std::path::PathBuf, Vec<FunctionIndex>> = HashMap::default();
     for &fidx in deferred_returns {
         if let Some(loc) = function_locations.get(&fidx) {
             by_path.entry(loc.path.clone()).or_default().push(fidx);
@@ -212,7 +212,7 @@ pub fn deferred_returns_by_path(
 pub fn deferred_call_globals_by_path(
     deferred_call_globals: &HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
 ) -> HashMap<std::path::PathBuf, Vec<SymbolIndex>> {
-    let mut by_path: HashMap<std::path::PathBuf, Vec<SymbolIndex>> = HashMap::new();
+    let mut by_path: HashMap<std::path::PathBuf, Vec<SymbolIndex>> = HashMap::default();
     for (sym_idx, dcg) in deferred_call_globals {
         by_path.entry(dcg.path.clone()).or_default().push(*sym_idx);
     }
@@ -560,11 +560,11 @@ pub fn resolve_inheritance(
                 .filter_map(|p| crate::annotations::parent_link_with_bindings(p).map(|(b, _)| b))
                 .collect())
             .collect();
-        let mut class_index: HashMap<&str, usize> = HashMap::new();
+        let mut class_index: HashMap<&str, usize> = HashMap::default();
         for (i, class) in class_decls.iter().enumerate() {
             class_index.insert(&class.name, i);
         }
-        let mut children_of: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut children_of: HashMap<&str, Vec<usize>> = HashMap::default();
         let mut in_degree: Vec<usize> = vec![0; class_decls.len()];
         for (i, parents) in lookup_parents.iter().enumerate() {
             for parent_name in parents {
@@ -581,7 +581,7 @@ pub fn resolve_inheritance(
             if deg == 0 { queue.push_back(i); }
         }
         let mut order: Vec<usize> = Vec::with_capacity(class_decls.len());
-        let mut processed_names: HashSet<&str> = HashSet::new();
+        let mut processed_names: HashSet<&str> = HashSet::default();
         while let Some(idx) = queue.pop_front() {
             let name = class_decls[idx].name.as_str();
             // Skip duplicate class names (same class from multiple files)
@@ -715,7 +715,7 @@ pub fn resolve_inheritance(
                 continue;
             }
             // Build substitution map: class_type_param → resolved class name → table index
-            let mut subs: HashMap<String, TableIndex> = HashMap::new();
+            let mut subs: HashMap<String, TableIndex> = HashMap::default();
             for (tp, resolved_name) in parent_type_params.iter().zip(resolved_args.iter()) {
                 if let Some(&tidx) = classes.get(resolved_name.as_str()) {
                     subs.insert(tp.clone(), tidx);
@@ -755,7 +755,7 @@ pub fn resolve_inheritance(
     // Pre-build name → ClassDecl(s) index for O(1) lookups.
     // Multiple files may declare the same class name, so use a multimap.
     let mut built_extends_parents: Vec<(TableIndex, TableIndex)> = Vec::new();
-    let mut class_decls_by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut class_decls_by_name: HashMap<&str, Vec<usize>> = HashMap::default();
     for (i, c) in class_decls.iter().enumerate() {
         class_decls_by_name.entry(c.name.as_str()).or_default().push(i);
     }
@@ -764,10 +764,10 @@ pub fn resolve_inheritance(
         let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
         let child_local = child_table_idx.ext_offset();
         // Build substitution map: old_class_name → new_class_table_index
-        let mut type_subs: HashMap<String, TableIndex> = HashMap::new();
+        let mut type_subs: HashMap<String, TableIndex> = HashMap::default();
         // Collect ALL ancestor class names by transitively walking the parent chain.
         // BaseFrame → Container → Element requires walking multiple levels.
-        let mut ancestor_names: HashSet<String> = HashSet::new();
+        let mut ancestor_names: HashSet<String> = HashSet::default();
         let mut queue: Vec<String> = class.parents.clone();
         while let Some(parent_name) = queue.pop() {
             if !ancestor_names.insert(parent_name.clone()) { continue; }

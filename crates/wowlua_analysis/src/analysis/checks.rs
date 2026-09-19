@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::syntax::SyntaxKind;
@@ -357,7 +357,7 @@ impl AnalysisResult {
     /// Check if a field with an annotation exists on a class table, its built table, or parents.
     pub fn class_has_annotated_field(&self, table_idx: TableIndex, field_name: &str) -> bool {
         let mut to_check = vec![table_idx];
-        let mut visited = std::collections::HashSet::new();
+        let mut visited = crate::collections::HashSet::default();
         while let Some(idx) = to_check.pop() {
             if !visited.insert(idx) { continue; }
             let table = self.ir.table(idx);

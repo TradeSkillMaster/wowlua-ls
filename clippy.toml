@@ -1,0 +1,13 @@
+# The std hash containers reseed their hasher every process start, so iteration
+# order — and anything derived from it, such as the member order of an inferred
+# union or which of two writes to a field resolves first — differs between runs
+# of the same binary. Use the deterministic `crate::collections` aliases instead
+# (see `wowlua_core::collections`).
+#
+# The one legitimate exception is `lsp_types::WorkspaceEdit::changes`, whose map
+# type is fixed by the protocol crate; it is confined to `workspace_edit()` in
+# `lsp/main_loop/conversions.rs`, which carries a local `allow`.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "use crate::collections::HashMap (deterministic hasher)" },
+    { path = "std::collections::HashSet", reason = "use crate::collections::HashSet (deterministic hasher)" },
+]

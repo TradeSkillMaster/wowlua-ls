@@ -65,7 +65,7 @@ pub(super) fn find_references_across_workspace(
 
     // Track paths we've already searched (by canonical path, not URI string) so the
     // disk scan below doesn't re-search any document that happens to also be open.
-    let mut searched_paths: HashSet<PathBuf> = HashSet::new();
+    let mut searched_paths: HashSet<PathBuf> = HashSet::default();
     if let Some(path) = uri_to_path_lax(current_uri) {
         searched_paths.insert(path);
     }
@@ -105,7 +105,7 @@ pub(super) fn find_references_across_workspace(
                 .filter_map(|p| cache.files.get(*p).map(|a| ((*p).clone(), Arc::clone(a))))
                 .collect()
         } else {
-            HashMap::new()
+            HashMap::default()
         }
     };
 
@@ -360,7 +360,7 @@ pub(super) fn handle_type_hierarchy_subtypes(
         .unwrap_or(item.name.as_str());
 
     let mut results = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     for class in &ws.cached_all_classes {
         let is_child = class.parents.iter().any(|p| {
             let base = p.split('<').next().unwrap_or(p);
@@ -485,7 +485,7 @@ pub(super) fn handle_incoming_calls(
             n.rsplit_once(':').or_else(|| n.rsplit_once('.')).map_or(n.clone(), |(_, m)| m.to_string())
         });
 
-    let mut grouped: HashMap<String, (CallHierarchyItem, Vec<Range>)> = HashMap::new();
+    let mut grouped: HashMap<String, (CallHierarchyItem, Vec<Range>)> = HashMap::default();
 
     // Current file.
     let call_sites = analysis.call_sites_for_function(func_idx);
@@ -516,7 +516,7 @@ pub(super) fn handle_incoming_calls(
     };
 
     if let Some(xf_idx) = xf_func_idx {
-        let mut searched_paths: HashSet<PathBuf> = HashSet::new();
+        let mut searched_paths: HashSet<PathBuf> = HashSet::default();
         if let Some(path) = uri_to_path_lax(&uri) {
             searched_paths.insert(path);
         }
@@ -782,7 +782,7 @@ pub fn search_workspace_symbols(
     let mut results: Vec<SymbolInformation> = Vec::new();
     const LIMIT: usize = 200;
 
-    let mut text_cache: HashMap<PathBuf, Option<String>> = HashMap::new();
+    let mut text_cache: HashMap<PathBuf, Option<String>> = HashMap::default();
     let loc_to_lsp = |loc: &crate::types::ExternalLocation,
                       cache: &mut HashMap<PathBuf, Option<String>>| -> Option<Location> {
         if !loc.path.is_absolute() { return None; }
@@ -797,7 +797,7 @@ pub fn search_workspace_symbols(
         })
     };
 
-    let mut seen_class_names: HashSet<String> = HashSet::new();
+    let mut seen_class_names: HashSet<String> = HashSet::default();
 
     // Global functions and variables (scope-0 symbols, excluding class-typed)
     for (sym_id, &sym_idx) in &pre.scope0_symbols {

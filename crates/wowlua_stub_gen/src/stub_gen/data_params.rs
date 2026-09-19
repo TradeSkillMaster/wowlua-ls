@@ -20,7 +20,7 @@
 //! a real object.
 
 use crate::annotations::{AnnotationType, ClassDecl, ExternalGlobal};
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 /// Object/mixin type → its plain-data counterpart. Only the types Ketho models with
 /// an explicit data/mixin split appear here; every other mixin object type is either

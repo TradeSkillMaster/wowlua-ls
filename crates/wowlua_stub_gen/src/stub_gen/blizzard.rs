@@ -405,11 +405,11 @@ pub(in crate::stub_gen) fn generate_blizzard_api_stubs(
     writeln!(out).unwrap();
 
     // Collect namespaces that need table declarations
-    let mut namespaces: HashSet<&str> = HashSet::new();
+    let mut namespaces: HashSet<&str> = HashSet::default();
     let mut generated_count = 0usize;
 
     // Group functions by namespace for cleaner output
-    let mut ns_functions: HashMap<Option<&str>, Vec<&BlizzardFunction>> = HashMap::new();
+    let mut ns_functions: HashMap<Option<&str>, Vec<&BlizzardFunction>> = HashMap::default();
     for func in &docs.functions {
         let ns = func.namespace.as_deref();
         // Check if this function is already covered by existing stubs
@@ -495,7 +495,7 @@ pub(in crate::stub_gen) fn write_blizzard_function_stub(out: &mut String, func: 
 /// Used to avoid generating duplicate ScriptObject stubs for already-annotated methods.
 pub(in crate::stub_gen) fn collect_existing_widget_methods(vendor_dirs: &[PathBuf]) -> HashSet<(String, String)> {
     let method_re = regex_lite::Regex::new(r"^function (\w+):(\w+)\(").unwrap();
-    let mut methods = HashSet::new();
+    let mut methods = HashSet::default();
 
     let mut all_files: Vec<PathBuf> = Vec::new();
     for dir in vendor_dirs {
@@ -541,7 +541,7 @@ pub(in crate::stub_gen) fn generate_scriptobject_method_stubs(
     writeln!(out).unwrap();
 
     let mut total = 0usize;
-    let mut declared: HashSet<&str> = HashSet::new();
+    let mut declared: HashSet<&str> = HashSet::default();
     for script_obj in &docs.script_objects {
         let Some(class_name) = SCRIPTOBJECT_CLASS_MAP
             .iter()
@@ -667,7 +667,7 @@ pub(in crate::stub_gen) fn find_matching_brace(s: &str) -> usize {
 /// Returns `{ "SubTableName" → fields }`, excluding sub-tables with no fields.
 pub(in crate::stub_gen) fn parse_lua_subtables<T>(content: &str, field_parser: impl Fn(&str) -> Vec<T>) -> HashMap<String, Vec<T>> {
     let sub_re = regex_lite::Regex::new(r"\t(\w+)\s*=\s*\{").unwrap();
-    let mut result = HashMap::new();
+    let mut result = HashMap::default();
     let mut search_from = 0;
 
     while let Some(cap) = sub_re.captures(&content[search_from..]) {
@@ -750,13 +750,13 @@ pub(in crate::stub_gen) fn parse_constants_tables(content: &str) -> HashMap<Stri
     // Find the Constants = { ... } top-level block
     let Some(start) = content.find("\nConstants = {") else {
         log::warn!("No Constants block found in LuaEnum.lua");
-        return HashMap::new();
+        return HashMap::default();
     };
     let block_start = start + "\nConstants = {".len();
     let block_end = find_matching_brace(&content[block_start..]);
     if block_end == 0 {
         log::warn!("Could not find closing brace for Constants block");
-        return HashMap::new();
+        return HashMap::default();
     }
     let constants_block = &content[block_start..block_start + block_end];
 
@@ -825,7 +825,7 @@ pub(in crate::stub_gen) fn generate_constants_stubs(
 /// Parse event names from a `---@alias FrameEvent string` definition in Event.lua.
 /// Returns the set of all `---|"EVENT_NAME"` entries.
 pub(in crate::stub_gen) fn parse_event_alias_names(content: &str) -> HashSet<String> {
-    let mut names = HashSet::new();
+    let mut names = HashSet::default();
     let re = regex_lite::Regex::new(r#"^\|\s*"([A-Z_][A-Z0-9_]*)""#).unwrap();
     for line in content.lines() {
         let trimmed = line.trim_start_matches('-');
@@ -863,7 +863,7 @@ pub(in crate::stub_gen) fn scan_registered_events(ui_source_dirs: &[PathBuf]) ->
     lua_files
         .par_iter()
         .map(|path| {
-            let mut local = HashSet::new();
+            let mut local = HashSet::default();
             if let Ok(content) = std::fs::read_to_string(path) {
                 for cap in re.captures_iter(&content) {
                     local.insert(cap.get(1).unwrap().as_str().to_string());
@@ -871,7 +871,7 @@ pub(in crate::stub_gen) fn scan_registered_events(ui_source_dirs: &[PathBuf]) ->
             }
             local
         })
-        .reduce(HashSet::new, |mut acc, local| {
+        .reduce(HashSet::default, |mut acc, local| {
             acc.extend(local);
             acc
         })

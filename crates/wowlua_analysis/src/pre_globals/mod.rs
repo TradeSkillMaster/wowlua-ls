@@ -1,7 +1,7 @@
 mod build_on_stubs;
 mod shared;
 
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::types::*;
@@ -1262,38 +1262,38 @@ impl BuildContext {
             functions: Vec::new(),
             exprs: Vec::new(),
             tables: Vec::new(),
-            classes: HashMap::new(),
-            aliases: HashMap::new(),
-            alias_string_literals: HashMap::new(),
-            alias_fun_types: HashMap::new(),
-            parameterized_aliases: HashMap::new(),
-            parameterized_alias_constraints: HashMap::new(),
-            tuple_form_aliases: HashMap::new(),
-            scope0_symbols: HashMap::new(),
-            symbol_locations: HashMap::new(),
-            function_locations: HashMap::new(),
-            function_names: HashMap::new(),
-            function_to_field: HashMap::new(),
-            class_locations: HashMap::new(),
-            alias_locations: HashMap::new(),
-            field_locations: HashMap::new(),
-            non_class_tables: HashMap::new(),
-            table_source_locations: HashMap::new(),
-            class_globals: HashSet::new(),
-            sub_tables: HashMap::new(),
+            classes: HashMap::default(),
+            aliases: HashMap::default(),
+            alias_string_literals: HashMap::default(),
+            alias_fun_types: HashMap::default(),
+            parameterized_aliases: HashMap::default(),
+            parameterized_alias_constraints: HashMap::default(),
+            tuple_form_aliases: HashMap::default(),
+            scope0_symbols: HashMap::default(),
+            symbol_locations: HashMap::default(),
+            function_locations: HashMap::default(),
+            function_names: HashMap::default(),
+            function_to_field: HashMap::default(),
+            class_locations: HashMap::default(),
+            alias_locations: HashMap::default(),
+            field_locations: HashMap::default(),
+            non_class_tables: HashMap::default(),
+            table_source_locations: HashMap::default(),
+            class_globals: HashSet::default(),
+            sub_tables: HashMap::default(),
             addon_table_idx: None,
             setmetatable_func_idx: None,
             getmetatable_func_idx: None,
-            string_values: HashMap::new(),
-            number_values: HashMap::new(),
-            number_literals: HashMap::new(),
-            string_literals: HashMap::new(),
-            framexml_names: HashSet::new(),
-            constructor_method_names: HashSet::new(),
-            declared_class_fields: HashMap::new(),
-            deferred_returns: HashSet::new(),
-            conflicting_arity_funcs: HashSet::new(),
-            deferred_call_globals: HashMap::new(),
+            string_values: HashMap::default(),
+            number_values: HashMap::default(),
+            number_literals: HashMap::default(),
+            string_literals: HashMap::default(),
+            framexml_names: HashSet::default(),
+            constructor_method_names: HashSet::default(),
+            declared_class_fields: HashMap::default(),
+            deferred_returns: HashSet::default(),
+            conflicting_arity_funcs: HashSet::default(),
+            deferred_call_globals: HashMap::default(),
             implicit_protected_prefix: false,
         }
     }
@@ -1525,7 +1525,7 @@ impl BuildContext {
         //   - Non-empty path, non-addon root: path segments are accessor names on
         //     the root class, used only for visibility lookup; method lands on root.
         // Done BEFORE inheritance so methods are inherited by child classes.
-        let mut seen_methods: HashSet<(String, String)> = HashSet::new();
+        let mut seen_methods: HashSet<(String, String)> = HashSet::default();
         for g in globals {
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
                 let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
@@ -1814,7 +1814,7 @@ impl BuildContext {
         use crate::annotations::{ExternalGlobalKind, FieldValueKind};
 
         // Build global function entries
-        let mut seen_functions: HashSet<&str> = HashSet::new();
+        let mut seen_functions: HashSet<&str> = HashSet::default();
         for g in globals {
             if let ExternalGlobalKind::Function = &g.kind {
                 if !seen_functions.insert(&g.name) && !g.is_override { continue; }
@@ -2218,7 +2218,7 @@ impl BuildContext {
 
     fn finish(mut self) -> PreResolvedGlobals {
         // Partition scope0_symbols: move FrameXML-only globals to a separate map
-        let mut framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex> = HashMap::new();
+        let mut framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex> = HashMap::default();
         for name in &self.framexml_names {
             let key = SymbolIdentifier::Name(name.clone());
             if let Some(idx) = self.scope0_symbols.remove(&key) {
@@ -2238,50 +2238,50 @@ impl BuildContext {
             parameterized_aliases: self.parameterized_aliases,
             parameterized_alias_constraints: self.parameterized_alias_constraints,
             tuple_form_aliases: self.tuple_form_aliases,
-            creates_global_specs: HashMap::new(),
+            creates_global_specs: HashMap::default(),
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
             function_names: self.function_names, function_to_field: self.function_to_field,
             string_values: self.string_values, number_values: self.number_values,
             number_literals: self.number_literals, string_literals: self.string_literals,
-            addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),
-            addon_ns_class_own_fields: HashMap::new(),
+            addon_table_idx: self.addon_table_idx, addon_tables: HashMap::default(),
+            addon_ns_class_own_fields: HashMap::default(),
             constructor_method_names: self.constructor_method_names,
             class_locations: self.class_locations,
             alias_locations: self.alias_locations,
             field_locations: self.field_locations,
             // Multiplicity of stub-defined globals/types is not tracked (these
             // are runtime-only and the workspace path populates them).
-            symbol_locations_by_name: HashMap::new(),
-            class_locations_all: HashMap::new(),
-            alias_locations_all: HashMap::new(),
-            func_alt_locations: HashMap::new(),
+            symbol_locations_by_name: HashMap::default(),
+            class_locations_all: HashMap::default(),
+            alias_locations_all: HashMap::default(),
+            func_alt_locations: HashMap::default(),
             setmetatable_func_idx: self.setmetatable_func_idx,
             getmetatable_func_idx: self.getmetatable_func_idx,
             stub_symbols_end: 0,
             stub_functions_end: 0,
-            stub_class_names: HashSet::new(),
-            event_types: HashMap::new(),
-            event_locations: HashMap::new(),
-            callback_registries: HashMap::new(),
-            callback_event_methods: HashMap::new(),
+            stub_class_names: HashSet::default(),
+            event_types: HashMap::default(),
+            event_locations: HashMap::default(),
+            callback_registries: HashMap::default(),
+            callback_event_methods: HashMap::default(),
             declared_class_fields: self.declared_class_fields,
             deferred_returns_by_path,
             deferred_returns: self.deferred_returns,
             conflicting_arity_funcs: self.conflicting_arity_funcs,
-            deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_sig_cache: std::sync::RwLock::new(HashMap::default()),
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,
-            deferred_call_global_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_call_global_cache: std::sync::RwLock::new(HashMap::default()),
             // Stubs carry no defclass constructor self-fields needing harvest, and
             // these maps are #[serde(skip)] anyway; the workspace path
             // (build_on_stubs) populates them at runtime.
-            deferred_field_type_args: HashMap::new(),
-            deferred_field_type_args_by_path: HashMap::new(),
-            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::new()),
-            deferred_class_field_paths: HashMap::new(),
-            deferred_class_field_cache: std::sync::RwLock::new(HashMap::new()),
-            document_overrides: std::sync::RwLock::new(HashMap::new()),
+            deferred_field_type_args: HashMap::default(),
+            deferred_field_type_args_by_path: HashMap::default(),
+            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::default()),
+            deferred_class_field_paths: HashMap::default(),
+            deferred_class_field_cache: std::sync::RwLock::new(HashMap::default()),
+            document_overrides: std::sync::RwLock::new(HashMap::default()),
             project_configs: None,
         }
     }
@@ -2441,7 +2441,7 @@ impl PreResolvedGlobals {
                 }
             }
         }
-        let idx_to_name: std::collections::HashMap<usize, &str> = self
+        let idx_to_name: crate::collections::HashMap<usize, &str> = self
             .classes
             .iter()
             .map(|(name, tidx)| (tidx.ext_offset(), name.as_str()))
@@ -2530,12 +2530,12 @@ impl PreResolvedGlobals {
         if registries.is_empty() {
             return;
         }
-        let mut const_map: HashMap<&str, (&[String], bool)> = HashMap::new();
+        let mut const_map: HashMap<&str, (&[String], bool)> = HashMap::default();
         for c in consts {
             const_map.entry(c.path.as_str()).or_insert((c.values.as_slice(), c.complete));
         }
         // Resolve each declaration to (event-set, complete), grouped by receiver path.
-        let mut by_path: HashMap<&str, Vec<(HashSet<String>, bool)>> = HashMap::new();
+        let mut by_path: HashMap<&str, Vec<(HashSet<String>, bool)>> = HashMap::default();
         for reg in registries {
             let mut events: HashSet<String> = reg.inline_events.iter().cloned().collect();
             let mut complete = reg.complete;
@@ -2561,7 +2561,7 @@ impl PreResolvedGlobals {
             // registries that collide — degrade to incomplete, suppressing validation.
             let first = &decls[0].0;
             let mut complete = decls.iter().all(|(events, c)| *c && events == first);
-            let mut union: HashSet<String> = HashSet::new();
+            let mut union: HashSet<String> = HashSet::default();
             for (events, _) in &decls {
                 union.extend(events.iter().cloned());
             }
@@ -2617,7 +2617,7 @@ impl PreResolvedGlobals {
             flavor_guard: 0,
             flavors: 0,
         };
-        let mut scope0_symbols = HashMap::new();
+        let mut scope0_symbols = HashMap::default();
         scope0_symbols.insert(SymbolIdentifier::Name("_G".to_string()), SymbolIndex(g_sym_idx));
 
         PreResolvedGlobals {
@@ -2626,57 +2626,57 @@ impl PreResolvedGlobals {
             functions: Vec::new(),
             exprs: Vec::new(),
             tables: vec![g_table],
-            classes: HashMap::new(),
-            aliases: HashMap::new(),
-            alias_string_literals: HashMap::new(),
-            alias_fun_types: HashMap::new(),
-            parameterized_aliases: HashMap::new(),
-            parameterized_alias_constraints: HashMap::new(),
-            tuple_form_aliases: HashMap::new(),
-            creates_global_specs: HashMap::new(),
+            classes: HashMap::default(),
+            aliases: HashMap::default(),
+            alias_string_literals: HashMap::default(),
+            alias_fun_types: HashMap::default(),
+            parameterized_aliases: HashMap::default(),
+            parameterized_alias_constraints: HashMap::default(),
+            tuple_form_aliases: HashMap::default(),
+            creates_global_specs: HashMap::default(),
             scope0_symbols,
-            framexml_scope0_symbols: HashMap::new(),
-            symbol_locations: HashMap::new(),
-            function_locations: HashMap::new(),
-            function_names: HashMap::new(),
-            function_to_field: HashMap::new(),
-            string_values: HashMap::new(),
-            number_values: HashMap::new(),
-            number_literals: HashMap::new(),
-            string_literals: HashMap::new(),
-            addon_table_idx: None, addon_tables: HashMap::new(),
-            addon_ns_class_own_fields: HashMap::new(),
-            constructor_method_names: HashSet::new(),
-            class_locations: HashMap::new(),
-            alias_locations: HashMap::new(),
-            field_locations: HashMap::new(),
-            symbol_locations_by_name: HashMap::new(),
-            class_locations_all: HashMap::new(),
-            alias_locations_all: HashMap::new(),
-            func_alt_locations: HashMap::new(),
+            framexml_scope0_symbols: HashMap::default(),
+            symbol_locations: HashMap::default(),
+            function_locations: HashMap::default(),
+            function_names: HashMap::default(),
+            function_to_field: HashMap::default(),
+            string_values: HashMap::default(),
+            number_values: HashMap::default(),
+            number_literals: HashMap::default(),
+            string_literals: HashMap::default(),
+            addon_table_idx: None, addon_tables: HashMap::default(),
+            addon_ns_class_own_fields: HashMap::default(),
+            constructor_method_names: HashSet::default(),
+            class_locations: HashMap::default(),
+            alias_locations: HashMap::default(),
+            field_locations: HashMap::default(),
+            symbol_locations_by_name: HashMap::default(),
+            class_locations_all: HashMap::default(),
+            alias_locations_all: HashMap::default(),
+            func_alt_locations: HashMap::default(),
             setmetatable_func_idx: None,
             getmetatable_func_idx: None,
             stub_symbols_end: 0,
             stub_functions_end: 0,
-            stub_class_names: HashSet::new(),
-            event_types: HashMap::new(),
-            event_locations: HashMap::new(),
-            callback_registries: HashMap::new(),
-            callback_event_methods: HashMap::new(),
-            declared_class_fields: HashMap::new(),
-            deferred_returns: HashSet::new(),
-            deferred_returns_by_path: HashMap::new(),
-            conflicting_arity_funcs: HashSet::new(),
-            deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
-            deferred_call_globals: HashMap::new(),
-            deferred_call_globals_by_path: HashMap::new(),
-            deferred_call_global_cache: std::sync::RwLock::new(HashMap::new()),
-            deferred_field_type_args: HashMap::new(),
-            deferred_field_type_args_by_path: HashMap::new(),
-            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::new()),
-            deferred_class_field_paths: HashMap::new(),
-            deferred_class_field_cache: std::sync::RwLock::new(HashMap::new()),
-            document_overrides: std::sync::RwLock::new(HashMap::new()),
+            stub_class_names: HashSet::default(),
+            event_types: HashMap::default(),
+            event_locations: HashMap::default(),
+            callback_registries: HashMap::default(),
+            callback_event_methods: HashMap::default(),
+            declared_class_fields: HashMap::default(),
+            deferred_returns: HashSet::default(),
+            deferred_returns_by_path: HashMap::default(),
+            conflicting_arity_funcs: HashSet::default(),
+            deferred_sig_cache: std::sync::RwLock::new(HashMap::default()),
+            deferred_call_globals: HashMap::default(),
+            deferred_call_globals_by_path: HashMap::default(),
+            deferred_call_global_cache: std::sync::RwLock::new(HashMap::default()),
+            deferred_field_type_args: HashMap::default(),
+            deferred_field_type_args_by_path: HashMap::default(),
+            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::default()),
+            deferred_class_field_paths: HashMap::default(),
+            deferred_class_field_cache: std::sync::RwLock::new(HashMap::default()),
+            document_overrides: std::sync::RwLock::new(HashMap::default()),
             project_configs: None,
         }
     }
@@ -2894,7 +2894,7 @@ impl PreResolvedGlobals {
         // authoritative signal. `runtime_owned[root]` = top-level ns field names
         // written by an `ADDON_NS_NAME` global whose source file is under `root`.
         let mut runtime_owned: HashMap<&Path, HashSet<String>> = addon_roots.iter()
-            .map(|r| (*r, HashSet::new()))
+            .map(|r| (*r, HashSet::default()))
             .collect();
         for g in all_globals {
             if g.name != crate::annotations::ADDON_NS_NAME { continue; }
@@ -2917,7 +2917,7 @@ impl PreResolvedGlobals {
         // (`@class`/`@type`/class-typed RHS → `g.returns[0]`), resolved here —
         // before the mutable arena borrows below — into owned `ValueType`s keyed by
         // (addon root, field name).
-        let mut addon_field_types: HashMap<&Path, HashMap<String, ValueType>> = HashMap::new();
+        let mut addon_field_types: HashMap<&Path, HashMap<String, ValueType>> = HashMap::default();
         for g in all_globals {
             use crate::annotations::ExternalGlobalKind::TableField;
             if g.name != crate::annotations::ADDON_NS_NAME || g.returns.is_empty() { continue; }
@@ -2955,7 +2955,7 @@ impl PreResolvedGlobals {
         // an addon's `self.Field` navigates into whichever addon's write happened to
         // be recorded (a sibling's file). Only empty-path writes qualify — a deep
         // `ns.Field.sub = …` locates the sub-field, not `Field` itself.
-        let mut addon_field_locs: HashMap<&Path, HashMap<String, ExternalLocation>> = HashMap::new();
+        let mut addon_field_locs: HashMap<&Path, HashMap<String, ExternalLocation>> = HashMap::default();
         for g in all_globals {
             use crate::annotations::ExternalGlobalKind::{Method, TableField};
             if g.name != crate::annotations::ADDON_NS_NAME { continue; }
@@ -2988,7 +2988,7 @@ impl PreResolvedGlobals {
         // pick the same class name, we must process it once against the *union* of
         // its claiming roots' runtime fields — stripping per-root would erase each
         // addon's exclusive fields (each root's pass removing the other's).
-        let mut class_claim_roots: HashMap<&str, Vec<&Path>> = HashMap::new();
+        let mut class_claim_roots: HashMap<&str, Vec<&Path>> = HashMap::default();
         for root in &addon_roots {
             if let Some(class_names) = per_addon_class_names.get(*root) {
                 for cn in class_names {
@@ -3034,7 +3034,7 @@ impl PreResolvedGlobals {
         // each addon its own `db`, a per-addon copy must keep only the sub-paths that
         // addon actually wrote — these chains drive that recursive filtering below.
         let mut owned_paths: HashMap<&Path, HashSet<Vec<String>>> = addon_roots.iter()
-            .map(|r| (*r, HashSet::new()))
+            .map(|r| (*r, HashSet::default()))
             .collect();
         for g in all_globals {
             use crate::annotations::ExternalGlobalKind::{Method, TableField};
@@ -3376,7 +3376,7 @@ impl PreResolvedGlobals {
     ) -> ValueType {
         let func_scope_local = ctx.scopes.len();
         let func_scope = ScopeIndex(EXT_BASE + func_scope_local);
-        ctx.scopes.push(Scope { parent: Some(ScopeIndex(0)), symbols: HashMap::new(), creation_order: 0, is_loop: false });
+        ctx.scopes.push(Scope { parent: Some(ScopeIndex(0)), symbols: HashMap::default(), creation_order: 0, is_loop: false });
 
         let mut arg_symbols = Vec::new();
         let mut param_annotations = Vec::new();
@@ -3436,7 +3436,7 @@ impl PreResolvedGlobals {
         };
 
         // Detect `returns<F>` projections in return annotations
-        let mut ret_projections: std::collections::HashMap<usize, crate::types::ProjectionKind> = std::collections::HashMap::new();
+        let mut ret_projections: crate::collections::HashMap<usize, crate::types::ProjectionKind> = crate::collections::HashMap::default();
         if !generic_names_owned.is_empty() {
             for (i, rt) in returns.iter().enumerate() {
                 match crate::annotations::match_projection(rt, &generic_names_owned) {
@@ -3545,7 +3545,7 @@ impl PreResolvedGlobals {
         let func_scope = ScopeIndex(EXT_BASE + func_scope_local);
         ctx.scopes.push(Scope {
             parent: Some(ScopeIndex(0)),
-            symbols: HashMap::new(),
+            symbols: HashMap::default(),
             creation_order: 0,
             is_loop: false,
         });
@@ -3593,7 +3593,7 @@ impl PreResolvedGlobals {
             }
         }
         let generic_annotations = effective_generic_annotations.as_slice();
-        let empty_alias_fun_types: HashMap<String, AnnotationType> = HashMap::new();
+        let empty_alias_fun_types: HashMap<String, AnnotationType> = HashMap::default();
         let mut has_vararg_param = false;
         for p in params {
             if p.name == "..." {
@@ -3869,7 +3869,7 @@ impl PreResolvedGlobals {
         let generic_names: Vec<String> = generic_annotations.iter().map(|(n, _)| n.clone()).collect();
         let vararg_proj = vararg_param
             .and_then(|p| crate::annotations::match_projection(&p.typ, &generic_names));
-        let mut ret_projections = std::collections::HashMap::new();
+        let mut ret_projections = crate::collections::HashMap::default();
         // For tuple-union returns, scan per-column raw annotations instead of
         // the outer union — the projection sits inside a specific column.
         let proj_source: Vec<&AnnotationType> = if let Some(ref raws) = tuple_ret.raw_override {
@@ -4000,20 +4000,20 @@ mod tests {
             generics: Vec::new(),
             constructor_methods: Vec::new(),
             constraint_type_arg_subs: Vec::new(),
-            field_built_names: std::collections::HashMap::new(),
+            field_built_names: crate::collections::HashMap::default(),
             is_enum: false,
             is_key_enum: false,
             correlated_groups: Vec::new(),
             def_range: None,
             def_path: None,
-            field_ranges: std::collections::HashMap::new(),
-            field_paths: std::collections::HashMap::new(),
+            field_ranges: crate::collections::HashMap::default(),
+            field_paths: crate::collections::HashMap::default(),
             see: Vec::new(),
-            declared_field_names: std::collections::HashSet::new(),
-            field_literals: std::collections::HashMap::new(),
-            field_descriptions: std::collections::HashMap::new(),
-            bare_inferred_field_names: std::collections::HashSet::new(),
-            deferred_field_call_ranges: std::collections::HashMap::new(),
+            declared_field_names: crate::collections::HashSet::default(),
+            field_literals: crate::collections::HashMap::default(),
+            field_descriptions: crate::collections::HashMap::default(),
+            bare_inferred_field_names: crate::collections::HashSet::default(),
+            deferred_field_call_ranges: crate::collections::HashMap::default(),
             secret_when: Vec::new(),
         }
     }
@@ -4034,7 +4034,7 @@ mod tests {
         ];
 
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false, &HashMap::new(), &HashSet::new(),
+            &stubs_base, &[], &ws_classes, &[], false, &HashMap::default(), &HashSet::default(),
         );
 
         let d_idx = result.classes["D"];
@@ -4073,7 +4073,7 @@ mod tests {
         // Non-`@meta` declaration deliberately FIRST — the previously order-dependent case.
         let ws_globals = vec![method("number", false), method("boolean", true)];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &ws_globals, &ws_classes, &[], false, &HashMap::new(), &HashSet::new(),
+            &stubs_base, &ws_globals, &ws_classes, &[], false, &HashMap::default(), &HashSet::default(),
         );
 
         let widget_idx = result.classes["Widget"];
@@ -4111,7 +4111,7 @@ mod tests {
 
         let ws_classes = vec![parent, child, elem_state, item_list_state];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false, &HashMap::new(), &HashSet::new(),
+            &stubs_base, &[], &ws_classes, &[], false, &HashMap::default(), &HashSet::default(),
         );
 
         let item_list_idx = result.classes["ItemList"];
@@ -4161,7 +4161,7 @@ mod tests {
 
         let ws_classes = vec![base, parent, child];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false, &HashMap::new(), &HashSet::new(),
+            &stubs_base, &[], &ws_classes, &[], false, &HashMap::default(), &HashSet::default(),
         );
 
         let child_idx = result.classes["Child"];
@@ -4200,7 +4200,7 @@ mod tests {
 
         let classes = vec![parent, child];
         let result = PreResolvedGlobals::build(
-            &[], &classes, &[], false, &HashMap::new(), &HashSet::new(),
+            &[], &classes, &[], false, &HashMap::default(), &HashSet::default(),
         );
 
         let parent_idx = result.classes["Parent"];
@@ -4247,7 +4247,7 @@ mod tests {
         ];
 
         let result = PreResolvedGlobals::build_on_stubs(
-            &PreResolvedGlobals::empty(), &[], &[callable], &[], false, &HashMap::new(), &HashSet::new(),
+            &PreResolvedGlobals::empty(), &[], &[callable], &[], false, &HashMap::default(), &HashSet::default(),
         );
         let idx = result.classes["Factory"];
         let call_func = result.tables[idx.ext_offset()].call_func
@@ -4308,7 +4308,7 @@ mod tests {
 
     #[test]
     fn strip_untyped_fields_shadowing_typed_ancestors_guards() {
-        use std::collections::HashMap;
+        use crate::collections::HashMap;
         let mut pg = PreResolvedGlobals::empty();
 
         // Minimal FieldInfo — only `expr` and `annotation` vary across the cases.

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::annotations::{
@@ -246,8 +246,8 @@ fn scan_xml_content(text: &str, path: &Path) -> XmlScanResult {
         classes: Vec::new(),
         globals: Vec::new(),
         mixin_augments: Vec::new(),
-        intrinsics: HashMap::new(),
-        xml_bound_names: HashSet::new(),
+        intrinsics: HashMap::default(),
+        xml_bound_names: HashSet::default(),
     };
     let mut script_depth: usize = 0;
 
@@ -503,7 +503,7 @@ fn handle_frame_element(
         inherits,
         mixins,
         fields: Vec::new(),
-        field_ranges: HashMap::new(),
+        field_ranges: HashMap::default(),
         def_start: tag_start,
         def_end: tag_start,
         global_key_values: Vec::new(),
@@ -917,7 +917,7 @@ fn build_mixin_augment(mixin_name: &str, ctx: &FrameContext, path: &Path) -> Cla
         generics: Vec::new(),
         constructor_methods: Vec::new(),
         constraint_type_arg_subs: Vec::new(),
-        field_built_names: HashMap::new(),
+        field_built_names: HashMap::default(),
         is_enum: false,
         is_key_enum: false,
         correlated_groups: Vec::new(),
@@ -930,11 +930,11 @@ fn build_mixin_augment(mixin_name: &str, ctx: &FrameContext, path: &Path) -> Cla
             .map(|k| (k.clone(), path.to_path_buf()))
             .collect(),
         see: Vec::new(),
-        declared_field_names: HashSet::new(),
-        field_literals: HashMap::new(),
-        field_descriptions: HashMap::new(),
-        bare_inferred_field_names: HashSet::new(),
-        deferred_field_call_ranges: HashMap::new(),
+        declared_field_names: HashSet::default(),
+        field_literals: HashMap::default(),
+        field_descriptions: HashMap::default(),
+        bare_inferred_field_names: HashSet::default(),
+        deferred_field_call_ranges: HashMap::default(),
         secret_when: Vec::new(),
     }
 }
@@ -993,7 +993,7 @@ fn finalize_frame(
         generics: Vec::new(),
         constructor_methods: Vec::new(),
         constraint_type_arg_subs: Vec::new(),
-        field_built_names: HashMap::new(),
+        field_built_names: HashMap::default(),
         is_enum: false,
         is_key_enum: false,
         correlated_groups: Vec::new(),
@@ -1006,11 +1006,11 @@ fn finalize_frame(
             .map(|k| (k.clone(), path.to_path_buf()))
             .collect(),
         see: Vec::new(),
-        declared_field_names: HashSet::new(),
-        field_literals: HashMap::new(),
-        field_descriptions: HashMap::new(),
-        bare_inferred_field_names: HashSet::new(),
-        deferred_field_call_ranges: HashMap::new(),
+        declared_field_names: HashSet::default(),
+        field_literals: HashMap::default(),
+        field_descriptions: HashMap::default(),
+        bare_inferred_field_names: HashSet::default(),
+        deferred_field_call_ranges: HashMap::default(),
         secret_when: Vec::new(),
     };
     classes.push(class_decl);

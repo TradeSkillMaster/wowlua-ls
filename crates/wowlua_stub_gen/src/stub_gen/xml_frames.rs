@@ -6,9 +6,9 @@ pub(in crate::stub_gen) fn extract_xml_frames_and_mixins(
     use rayon::prelude::*;
     let regs = MixinScanRegexes::new();
 
-    let mut frames: HashMap<String, String> = HashMap::new();
-    let mut direct_mixins: HashMap<String, Vec<String>> = HashMap::new();
-    let mut inherits_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut frames: HashMap<String, String> = HashMap::default();
+    let mut direct_mixins: HashMap<String, Vec<String>> = HashMap::default();
+    let mut inherits_map: HashMap<String, Vec<String>> = HashMap::default();
 
     // Scan the full Interface/ tree: AddOns contains Blizzard addon XML (Blizzard_ObjectiveTracker,
     // Blizzard_AuctionHouseUI, etc.) while FrameXML contains core XML (AuctionFrame.xml,
@@ -29,9 +29,9 @@ pub(in crate::stub_gen) fn extract_xml_frames_and_mixins(
     let partials: Vec<XmlFramePartial> = xml_files
         .par_iter()
         .map(|path| {
-            let mut f = HashMap::new();
-            let mut dm = HashMap::new();
-            let mut im = HashMap::new();
+            let mut f = HashMap::default();
+            let mut dm = HashMap::default();
+            let mut im = HashMap::default();
             if let Ok(content) = std::fs::read_to_string(path) {
                 let stripped = regs.comment.replace_all(&content, "");
                 accumulate_xml_frames_and_mixins(&stripped, &regs, &mut f, &mut dm, &mut im);
@@ -85,7 +85,7 @@ pub(in crate::stub_gen) fn extract_xml_parentkey_fields(
 
     let interface_dir = ui_source_dir.join("Interface");
     if !interface_dir.is_dir() {
-        return HashMap::new();
+        return HashMap::default();
     }
     let mut xml_files = Vec::new();
     collect_xml_paths(&interface_dir, &mut xml_files);
@@ -93,7 +93,7 @@ pub(in crate::stub_gen) fn extract_xml_parentkey_fields(
     let partials: Vec<HashMap<String, Vec<(String, String)>>> = xml_files
         .par_iter()
         .map(|path| {
-            let mut out: HashMap<String, Vec<(String, String)>> = HashMap::new();
+            let mut out: HashMap<String, Vec<(String, String)>> = HashMap::default();
             if let Some(result) = crate::xml_scan::scan_xml_file(path) {
                 // xml_scan emits a ClassDecl per named frame (and per virtual
                 // template) carrying its parentKey/parentArray child fields.
@@ -111,7 +111,7 @@ pub(in crate::stub_gen) fn extract_xml_parentkey_fields(
         })
         .collect();
 
-    let mut merged: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut merged: HashMap<String, Vec<(String, String)>> = HashMap::default();
     for p in partials {
         for (frame, fields) in p {
             let entry = merged.entry(frame).or_default();
@@ -184,14 +184,14 @@ pub(in crate::stub_gen) fn resolve_inherited_mixins(
     // Any name appearing as a key in either map is a candidate. We don't
     // restrict to direct-mixin keys because a frame might only get its
     // mixin via inheritance.
-    let mut all_names: HashSet<&str> = HashSet::new();
+    let mut all_names: HashSet<&str> = HashSet::default();
     for k in direct.keys() { all_names.insert(k.as_str()); }
     for k in inherits.keys() { all_names.insert(k.as_str()); }
 
-    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let mut out: HashMap<String, Vec<String>> = HashMap::default();
     for name in all_names {
         let mut mixins: Vec<String> = Vec::new();
-        let mut visited: HashSet<&str> = HashSet::new();
+        let mut visited: HashSet<&str> = HashSet::default();
         collect_mixins_recursive(name, direct, inherits, &mut visited, &mut mixins);
         if !mixins.is_empty() {
             out.insert(name.to_string(), mixins);

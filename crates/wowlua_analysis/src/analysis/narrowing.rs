@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+use crate::collections::HashSet;
 use crate::ast::*;
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
@@ -95,7 +96,7 @@ pub fn assignment_flavor_guard(annotated: u8, rhs: Option<&Expression<'_>>) -> u
 #[derive(Default)]
 pub struct InferredFlavorGuards {
     symbols: HashSet<SymbolIndex>,
-    fields: std::collections::HashMap<TableIndex, HashSet<String>>,
+    fields: crate::collections::HashMap<TableIndex, HashSet<String>>,
 }
 
 impl InferredFlavorGuards {

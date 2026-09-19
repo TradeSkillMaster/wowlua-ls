@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::path::Path;
 use crate::ast::{AstNode, Block, Statement, Expression, ExpressionList, FunctionCall, Operator,
     LocalAssign, FunctionDefinition, ForCountLoop, ForInLoop, ParameterList};
@@ -171,7 +171,7 @@ fn unwrap_logical_chain<'a>(mut expr: Expression<'a>) -> Expression<'a> {
 /// globals at the cost of occasionally missing a genuine global that shadows a same-named
 /// local elsewhere — the safe direction for the coarse cross-file scan.
 fn collect_all_local_names(root: &SyntaxNode<'_>) -> HashSet<String> {
-    let mut locals: HashSet<String> = HashSet::new();
+    let mut locals: HashSet<String> = HashSet::default();
     for node in root.descendants() {
         match node.kind() {
             SyntaxKind::LocalAssignStatement => {
@@ -221,7 +221,7 @@ fn collect_all_local_names(root: &SyntaxNode<'_>) -> HashSet<String> {
 /// to the callable-or-unknown default, unchanged). Mirrors the in-function scan's
 /// `_G.` redirect so the two path spaces line up.
 fn collect_ctor_key_paths(root: &SyntaxNode<'_>, local_vars: &HashSet<String>) -> HashSet<String> {
-    let mut paths: HashSet<String> = HashSet::new();
+    let mut paths: HashSet<String> = HashSet::default();
     for node in root.descendants() {
         let Some(Statement::Assign(assign)) = Statement::cast(node) else { continue };
         let Some(var_list) = assign.variable_list() else { continue };
@@ -738,7 +738,7 @@ pub fn scan_dynamic_global_prefixes(root: SyntaxNode<'_>) -> Vec<String> {
     let mut all_stmts = Vec::new();
     collect_statements_recursive(&block, &mut all_stmts);
 
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::collections::HashSet::default();
     let mut prefixes = Vec::new();
     for stmt in &all_stmts {
         if let Statement::Assign(assign) = stmt
@@ -816,7 +816,7 @@ impl ProtectedPrefix {
 }
 
 pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
-    scan_file_globals_with_synth(root, source_path, CorrelatedReturns::Synthesize, ProtectedPrefix::Explicit, &CreatesGlobalMap::new()).0
+    scan_file_globals_with_synth(root, source_path, CorrelatedReturns::Synthesize, ProtectedPrefix::Explicit, &CreatesGlobalMap::default()).0
 }
 
 /// Variant of [`scan_file_globals`] retaining the per-file
@@ -868,31 +868,31 @@ pub fn scan_file_globals_with_synth(
     collect_statements_recursive(&block, &mut all_stmts);
 
     // Track local aliases to known tables (e.g. `local str = string`, `local tab = table`)
-    let mut local_aliases: HashMap<String, String> = HashMap::new();
+    let mut local_aliases: HashMap<String, String> = HashMap::default();
     // Track local variables assigned table constructors (e.g. `local Locale = {}`)
-    let mut local_tables: HashSet<String> = HashSet::new();
+    let mut local_tables: HashSet<String> = HashSet::default();
     // Track local functions (e.g. `local function Foo()` or `local Foo = function()`)
-    let mut local_functions: HashSet<String> = HashSet::new();
+    let mut local_functions: HashSet<String> = HashSet::default();
     // Track ALL local variable names so we can skip field/method assignments on
     // non-class, non-table locals (e.g. `local frame = CreateFrame(...); frame.x = 1`
     // should not create a phantom global class "frame").
-    let mut local_vars: HashSet<String> = HashSet::new();
+    let mut local_vars: HashSet<String> = HashSet::default();
     // Byte offset of the *first* `local X` declaration for each name. A plain
     // `X = ...` assignment is only a reassignment of that local (not an implicit
     // global) if it appears at or after the local comes into scope. Tracking the
     // earliest declaration offset lets a genuine global assignment that *precedes*
     // a later same-named `local X` (e.g. `X = 100` then `local X = X`) still be
     // recognized as a global.
-    let mut first_local_offset: HashMap<String, u32> = HashMap::new();
+    let mut first_local_offset: HashMap<String, u32> = HashMap::default();
     // Track local variables annotated with @class (e.g. local LibTSMCore = {} ---@class LibTSMCore)
-    let mut class_vars: HashMap<String, String> = HashMap::new();
+    let mut class_vars: HashMap<String, String> = HashMap::default();
     // Track locals with @type annotations so field assignments on them are emitted
     // under the annotated class name (cross-file overlay tracking).
-    let mut local_type_vars: HashMap<String, String> = HashMap::new();
+    let mut local_type_vars: HashMap<String, String> = HashMap::default();
     // Track locals assigned a scalar literal (`local MONK = 10`) so enum-style field
     // values referencing them (`classes = { MONK = MONK }`) resolve to the scalar
     // kind when capturing a plain local table's cross-file shape below.
-    let mut local_scalar_kinds: HashMap<String, FieldValueKind> = HashMap::new();
+    let mut local_scalar_kinds: HashMap<String, FieldValueKind> = HashMap::default();
     // Track each single-name local's value type so a later `ns.Field = local`
     // carries the real type cross-file — without this the field-assignment RHS
     // degrades to a bare `FieldRef`/`Table` value-kind that cross-file resolution
@@ -900,8 +900,8 @@ pub fn scan_file_globals_with_synth(
     // shapeless `table`. Split by provenance so precedence matches LuaLS: an
     // explicit `@type` (any form — unions, `table<K,V>`, `{...}` shapes) overrides
     // inference, while a bare scalar-literal inference is the lowest-priority guess.
-    let mut local_type_annotations: HashMap<String, AnnotationType> = HashMap::new();
-    let mut local_literal_types: HashMap<String, AnnotationType> = HashMap::new();
+    let mut local_type_annotations: HashMap<String, AnnotationType> = HashMap::default();
+    let mut local_literal_types: HashMap<String, AnnotationType> = HashMap::default();
     for stmt in &all_stmts {
         if let Statement::LocalAssign(assign) = stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
@@ -1035,7 +1035,7 @@ pub fn scan_file_globals_with_synth(
     // files as its named type via the `returns` path at the field-assignment site, so its
     // `Table` value-kind is never consulted. Nested inline constructors recurse; a
     // single-name scalar-constant leaf resolves through `local_scalar_kinds`.
-    let mut local_table_field_kinds: HashMap<String, Vec<(String, FieldValueKind)>> = HashMap::new();
+    let mut local_table_field_kinds: HashMap<String, Vec<(String, FieldValueKind)>> = HashMap::default();
     for stmt in &all_stmts {
         if let Statement::Assign(assign) = stmt
             && let (Some(var_list), Some(expr_list)) = (assign.variable_list(), assign.expression_list())
@@ -1072,7 +1072,7 @@ pub fn scan_file_globals_with_synth(
 
     // Track return types of same-file function definitions (e.g. `---@return Foo \n function X.bar()`)
     // so that `local x = X.bar(); Class.field = x` propagates `Foo` as the field type cross-file.
-    let mut func_return_types: HashMap<String, AnnotationType> = HashMap::new();
+    let mut func_return_types: HashMap<String, AnnotationType> = HashMap::default();
     for stmt in &all_stmts {
         if let Statement::FunctionDefinition(func) = stmt {
             if func.is_local() { continue; }
@@ -1088,12 +1088,12 @@ pub fn scan_file_globals_with_synth(
     }
 
     // Track local variable return types from annotated function calls
-    let mut local_return_types: HashMap<String, AnnotationType> = HashMap::new();
+    let mut local_return_types: HashMap<String, AnnotationType> = HashMap::default();
     // Track local variables assigned from function calls whose return type isn't known
     // locally (e.g. stub/external methods).  Stores (canonicalized callee chain, first
     // string arg) so that `ns.Field = localVar` can emit FieldValueKind::FunctionCall
     // instead of FieldRef, letting build_on_stubs resolve the return type.
-    let mut local_call_origins: HashMap<String, (Vec<String>, Option<String>)> = HashMap::new();
+    let mut local_call_origins: HashMap<String, (Vec<String>, Option<String>)> = HashMap::default();
     for stmt in &all_stmts {
         if let Statement::LocalAssign(assign) = stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
@@ -1129,7 +1129,7 @@ pub fn scan_file_globals_with_synth(
     // the params/returns survive cross-file, instead of degrading to a bare
     // `function` type. Body-derived return types are NOT captured here — they
     // are resolved lazily by the per-file harvest at call time.
-    let mut local_function_sigs: HashMap<String, ExternalGlobal> = HashMap::new();
+    let mut local_function_sigs: HashMap<String, ExternalGlobal> = HashMap::default();
     for stmt in &all_stmts {
         match stmt {
             Statement::FunctionDefinition(func) if func.is_local() => {
@@ -1165,12 +1165,12 @@ pub fn scan_file_globals_with_synth(
 
     // Track field names assigned on the addon table in this file (e.g. ns.LibTSMApp = ...)
     // Used to gate 3-part chains so we don't inject fields onto unrelated external classes
-    let mut addon_assigned_fields: HashSet<String> = HashSet::new();
+    let mut addon_assigned_fields: HashSet<String> = HashSet::default();
     // Buffer methods defined on local tables (e.g. function Locale.GetTable())
     // so they can be emitted when the local table is assigned to the addon ns
-    let mut local_table_methods: HashMap<String, Vec<ExternalGlobal>> = HashMap::new();
+    let mut local_table_methods: HashMap<String, Vec<ExternalGlobal>> = HashMap::default();
     // Map local table var name → addon field name (e.g. "Locale" → "Locale" from ns.Locale = Locale)
-    let mut local_table_to_addon_field: HashMap<String, String> = HashMap::new();
+    let mut local_table_to_addon_field: HashMap<String, String> = HashMap::default();
 
     for stmt in &all_stmts {
         match stmt {
@@ -1966,7 +1966,7 @@ pub fn scan_file_globals_with_synth(
 
     // Methods hung on `@class`-typed locals *inside* function bodies (the coarse
     // scan above only reaches top-level + control-flow statements).
-    scan_nested_typed_local_methods(&block, &HashMap::new(), false, owned_path.as_deref(), &mut globals);
+    scan_nested_typed_local_methods(&block, &HashMap::default(), false, owned_path.as_deref(), &mut globals);
 
     let addon_ns_class = addon_ns_var.as_ref()
         .and_then(|var| class_vars.get(var))

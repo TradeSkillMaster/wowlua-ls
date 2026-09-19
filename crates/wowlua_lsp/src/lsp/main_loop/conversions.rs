@@ -92,3 +92,28 @@ pub(super) fn convert_toc_diagnostics(
         }
     }).collect()
 }
+
+/// Build a `WorkspaceEdit` from `(file, edit)` pairs, grouped by file.
+///
+/// `WorkspaceEdit::changes` is a `std::collections::HashMap` fixed by
+/// `lsp_types` — the one map in the workspace that cannot use the deterministic
+/// [`crate::collections::HashMap`]. Routing every edit through here keeps that
+/// exception to a single site.
+pub(super) fn workspace_edit(
+    edits: impl IntoIterator<Item = (lsp_types::Uri, lsp_types::TextEdit)>,
+) -> lsp_types::WorkspaceEdit {
+    // `lsp_types::Uri` contains an `Arc` for reference counting only; it is
+    // never mutated through hash/eq, so using it as a HashMap key is safe.
+    #[allow(clippy::mutable_key_type, clippy::disallowed_types)]
+    let mut changes: std::collections::HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> =
+        std::collections::HashMap::new();
+    for (uri, edit) in edits {
+        changes.entry(uri).or_default().push(edit);
+    }
+    lsp_types::WorkspaceEdit { changes: Some(changes), ..Default::default() }
+}
+
+/// [`workspace_edit`] for the common case of one file's worth of edits.
+pub(super) fn single_file_edit(uri: &lsp_types::Uri, edits: Vec<lsp_types::TextEdit>) -> lsp_types::WorkspaceEdit {
+    workspace_edit(edits.into_iter().map(|edit| (uri.clone(), edit)))
+}

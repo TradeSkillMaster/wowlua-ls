@@ -410,7 +410,7 @@ impl AnalysisResult {
         // accessibility against *that* member — not always the primary. Dedup
         // keeps the first (primary-member) field, matching intersection
         // first-match precedence.
-        let mut seen_fields: HashSet<&String> = HashSet::new();
+        let mut seen_fields: HashSet<&String> = HashSet::default();
         let mut all_fields: Vec<(&String, &FieldInfo, TableIndex)> = Vec::new();
         for &mi in &member_indices {
             let member_table = self.table(mi);
@@ -574,7 +574,7 @@ impl AnalysisResult {
         use lsp_types::{CompletionItem, CompletionItemKind};
 
         let mut items: Vec<CompletionItem> = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         // Collect from local scope0 and external scope0_symbols
         let scope0_iter = self.ir.scope0_local_symbols()
             .map(|(id, idx)| (id.clone(), idx));
@@ -710,7 +710,7 @@ impl AnalysisResult {
             .and_then(|n| n.ancestors().find(|a| a.kind() == SyntaxKind::Block))
             .map(|b| u32::from(b.text_range().start()));
 
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut items = Vec::new();
         let mut current_scope = Some(scope_idx);
         while let Some(si) = current_scope {
@@ -974,7 +974,7 @@ impl AnalysisResult {
         let already_set: HashSet<&String> = ctor_table.fields.keys().collect();
 
         // Collect fields from all candidate classes and their parents
-        let mut seen_fields: HashSet<&String> = HashSet::new();
+        let mut seen_fields: HashSet<&String> = HashSet::default();
         let mut all_fields: Vec<(&String, &FieldInfo)> = Vec::new();
         for &class_idx in class_indices {
             let class_table = self.table(class_idx);
@@ -1497,7 +1497,7 @@ impl AnalysisResult {
             None => None,
         };
 
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut names = Vec::new();
         for (name, &idx) in self.ir.classes.iter().chain(self.ir.ext.classes.iter()) {
             if let Some(bound_idx) = bound
@@ -1901,7 +1901,7 @@ impl AnalysisResult {
         };
 
         // Walk the scope chain but skip scope 0 (globals) — @cast targets local variables.
-        let mut seen: HashSet<&String> = HashSet::new();
+        let mut seen: HashSet<&String> = HashSet::default();
         let mut items = Vec::new();
         let mut current_scope = Some(scope_idx);
         while let Some(si) = current_scope {
@@ -1954,7 +1954,7 @@ impl AnalysisResult {
         let mut field_names = collect_field_names_in_direction(token.prev_token(), false);
         field_names.extend(collect_field_names_in_direction(token.next_token(), true));
 
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let items: Vec<CompletionItem> = field_names
             .iter()
             .filter(|name| {
@@ -2280,7 +2280,7 @@ impl AnalysisResult {
         let type_prefix = trailing_type_ident(type_region);
 
         let mut items = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
 
         const BUILTINS: &[&str] = &[
             "number", "string", "boolean", "nil", "table", "function", "any", "self", "void",

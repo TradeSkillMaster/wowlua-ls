@@ -107,7 +107,7 @@ pub(in crate::stub_gen) fn fetch_resource(branch: &str, file: &str) -> HashSet<S
         Ok(text) => parse_resource_names(&text),
         Err(e) => {
             log::error!("FAILED to fetch {file} from {branch}: {e} — classic-only API diff will be incomplete");
-            HashSet::new()
+            HashSet::default()
         }
     }
 }
@@ -129,7 +129,7 @@ pub(in crate::stub_gen) fn fetch_resource(branch: &str, file: &str) -> HashSet<S
 /// }
 /// ```
 pub(in crate::stub_gen) fn parse_widget_api_methods(text: &str) -> HashMap<String, HashSet<String>> {
-    let mut result: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut result: HashMap<String, HashSet<String>> = HashMap::default();
     let mut current_type: Option<String> = None;
     let mut in_methods = false;
 
@@ -173,7 +173,7 @@ pub(in crate::stub_gen) fn fetch_widget_api(branch: &str) -> HashMap<String, Has
         Ok(text) => parse_widget_api_methods(&text),
         Err(e) => {
             log::warn!("FAILED to fetch WidgetAPI.lua from {branch}: {e} — classic-only widget method diff will be incomplete");
-            HashMap::new()
+            HashMap::default()
         }
     }
 }
@@ -321,7 +321,7 @@ pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<St
         Ok(text) => text,
         Err(e) => {
             log::error!("Wiki export failed: {e} — wiki pages will be empty");
-            return (HashMap::new(), HashMap::new(), HashMap::new());
+            return (HashMap::default(), HashMap::default(), HashMap::default());
         }
     };
 
@@ -331,9 +331,9 @@ pub(in crate::stub_gen) fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<St
 /// Split a `Special:Export` dump of API pages into `(pages, redirects, doc_paths)` keyed by
 /// canonical api_name (see [`fetch_wiki_pages`]).
 pub(in crate::stub_gen) fn parse_wiki_export(xml_text: &str) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
-    let mut pages = HashMap::new();
-    let mut redirects = HashMap::new();
-    let mut doc_paths = HashMap::new();
+    let mut pages = HashMap::default();
+    let mut redirects = HashMap::default();
+    let mut doc_paths = HashMap::default();
     for page_text in xml_text.split("<page>").skip(1) {
         let title = extract_xml_tag(page_text, "title").unwrap_or_default();
         let api_name = wiki_title_to_api_name(&title);
@@ -355,7 +355,7 @@ pub(in crate::stub_gen) fn parse_wiki_export(xml_text: &str) -> (HashMap<String,
     // a page the function was later split out of (e.g. `securecallfunction` → `securecall`).
     redirects.retain(|from, _| !pages.contains_key(from));
     // Resolve redirect chains (A→B→C becomes A→C) and flatten redirects map
-    let mut resolved_redirects = HashMap::new();
+    let mut resolved_redirects = HashMap::default();
     for (from, to) in &redirects {
         let mut target = to.clone();
         // Follow chain up to 5 hops to avoid infinite loops
@@ -387,17 +387,17 @@ pub(in crate::stub_gen) fn parse_wiki_export(xml_text: &str) -> (HashMap<String,
 /// pages and redirects are skipped.
 pub(in crate::stub_gen) fn fetch_wiki_structure_pages(names: &[String]) -> HashMap<String, String> {
     if names.is_empty() {
-        return HashMap::new();
+        return HashMap::default();
     }
     let titles: Vec<String> = names.iter().map(|n| format!("Structure {n}")).collect();
     let xml_text = match fetch_wiki_export_cached("wiki-structures", wiki_cache_key(&titles), || titles.join("\n")) {
         Ok(text) => text,
         Err(e) => {
             log::error!("Wiki structure export failed: {e} — wiki structure pages will be empty");
-            return HashMap::new();
+            return HashMap::default();
         }
     };
-    let mut pages = HashMap::new();
+    let mut pages = HashMap::default();
     for page_text in xml_text.split("<page>").skip(1) {
         let title = extract_xml_tag(page_text, "title").unwrap_or_default();
         let Some(name) = title.strip_prefix("Structure ") else { continue };
@@ -540,7 +540,7 @@ pub(in crate::stub_gen) fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<Str
         Ok(text) => text,
         Err(e) => {
             log::error!("FAILED to fetch LuaEnum.lua from {branch}: {e} — LE_* values will be missing");
-            return HashMap::new();
+            return HashMap::default();
         }
     };
 
@@ -550,7 +550,7 @@ pub(in crate::stub_gen) fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<Str
     let category_re = regex_lite::Regex::new(r"\t(\w+)\s*=\s*\{").unwrap();
     let field_re = regex_lite::Regex::new(r"(\w+)\s*=\s*(-?\d+)").unwrap();
 
-    let mut result = HashMap::new();
+    let mut result = HashMap::default();
     let mut search_from = 0;
 
     while let Some(cat_cap) = category_re.captures(&content[search_from..]) {
@@ -698,7 +698,7 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path) -> BranchRes
             .chain(widget_classic.keys())
             .cloned()
             .collect();
-        let empty_set: HashSet<String> = HashSet::new();
+        let empty_set: HashSet<String> = HashSet::default();
 
         for type_name in &all_widget_types {
             let classic_era_methods = widget_classic_era.get(type_name).unwrap_or(&empty_set);
@@ -739,7 +739,7 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path) -> BranchRes
     log::info!("  Classic-only widget methods needing stubs: {}", missing_widget_methods.len());
 
     BranchResourceData {
-        classic_diff: ClassicApiDiff { missing, missing_fxml, missing_widget_methods, existing_globals, override_classes: HashSet::new() },
+        classic_diff: ClassicApiDiff { missing, missing_fxml, missing_widget_methods, existing_globals, override_classes: HashSet::default() },
         retail_all_names,
         retail_api_names: retail,
         flavor_map,

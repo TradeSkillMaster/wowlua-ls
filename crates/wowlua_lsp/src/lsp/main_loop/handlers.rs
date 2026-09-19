@@ -701,20 +701,10 @@ pub(super) fn handle_request(
                     let locations = find_references_across_workspace(
                         &uri, position, true, true, documents, ws,
                     )?;
-                    // lsp_types::Uri triggers mutable_key_type but is safe to hash
-                    #[allow(clippy::mutable_key_type)]
-                    let mut changes: std::collections::HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> =
-                        std::collections::HashMap::new();
-                    for loc in locations {
-                        changes.entry(loc.uri).or_default().push(lsp_types::TextEdit {
-                            range: loc.range,
-                            new_text: new_name.clone(),
-                        });
-                    }
-                    Some(lsp_types::WorkspaceEdit {
-                        changes: Some(changes),
-                        ..Default::default()
-                    })
+                    Some(workspace_edit(locations.into_iter().map(|loc| (loc.uri, lsp_types::TextEdit {
+                        range: loc.range,
+                        new_text: new_name.clone(),
+                    }))))
                 })();
                 send_response(connection, id, &result);
             }
@@ -1843,7 +1833,7 @@ pub(super) fn try_batch_analyze(
 
     // Phase 3: Collect results for document insertion.
     // Pull-model handlers serve diagnostics from cached analysis on demand.
-    let mut result_map: HashMap<String, AnalysisResult> = HashMap::new();
+    let mut result_map: HashMap<String, AnalysisResult> = HashMap::default();
     for af in results {
         result_map.insert(af.uri_str, af.result);
     }

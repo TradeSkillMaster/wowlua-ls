@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use lsp_types::DiagnosticSeverity;
@@ -425,7 +425,7 @@ impl ProjectConfigs {
     /// These are external directories that should be scanned for types.
     pub fn external_library_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = crate::collections::HashSet::default();
         for (_, config) in &self.entries {
             for dir in config.absolute_library_dirs() {
                 if seen.insert(dir.clone()) {
@@ -446,7 +446,7 @@ impl ProjectConfigs {
 
     /// Collect all unique plugin paths across all configs in the workspace.
     pub fn all_plugins(&self) -> Vec<PathBuf> {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = crate::collections::HashSet::default();
         let mut result = Vec::new();
         for (_, config) in &self.entries {
             for p in &config.plugins {
@@ -646,9 +646,9 @@ impl ProjectConfigs {
     /// Group addon namespace `@class` names by their addon root directory.
     pub fn group_addon_ns_classes_by_root(
         &self,
-        addon_ns_class_files: &std::collections::HashMap<PathBuf, String>,
-    ) -> std::collections::HashMap<PathBuf, std::collections::HashSet<String>> {
-        let mut per_addon: std::collections::HashMap<PathBuf, std::collections::HashSet<String>> = std::collections::HashMap::new();
+        addon_ns_class_files: &crate::collections::HashMap<PathBuf, String>,
+    ) -> crate::collections::HashMap<PathBuf, crate::collections::HashSet<String>> {
+        let mut per_addon: crate::collections::HashMap<PathBuf, crate::collections::HashSet<String>> = crate::collections::HashMap::default();
         for (file_path, class_name) in addon_ns_class_files {
             if let Some(root) = self.addon_root_for(file_path) {
                 per_addon
@@ -874,12 +874,12 @@ fn extract_toc_suffix(stem: &str) -> Option<(&str, u8)> {
 /// - Per-file flavor masks derived from TOC filename suffixes,
 ///   `## AllowLoadGameType:` headers, and `[AllowLoadGameType]` per-line directives
 fn parse_toc_files(dir: &Path) -> TocParseResult {
-    let mut saved_variables = HashSet::new();
+    let mut saved_variables = HashSet::default();
     let mut interface_flavor = 0u8;
 
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return TocParseResult { saved_variables, file_flavors: HashMap::new(), has_toc: false, interface_flavor: 0 },
+        Err(_) => return TocParseResult { saved_variables, file_flavors: HashMap::default(), has_toc: false, interface_flavor: 0 },
     };
 
     // Collect all TOC files, classifying them by base addon name and suffix.
@@ -943,12 +943,12 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
     // Group TOCs by base addon name to compute effective flavors.
     // For each addon, determine which flavors are claimed by suffixed TOCs,
     // then assign the base (unsuffixed) TOC the remaining flavors.
-    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut groups: HashMap<String, Vec<usize>> = HashMap::default();
     for (i, entry) in toc_entries.iter().enumerate() {
         groups.entry(entry.base_name.clone()).or_default().push(i);
     }
 
-    let mut file_flavors: HashMap<PathBuf, u8> = HashMap::new();
+    let mut file_flavors: HashMap<PathBuf, u8> = HashMap::default();
 
     for indices in groups.values() {
         // Compute union of all suffix flavors for this addon group
@@ -1163,7 +1163,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let diag = raw.diagnostics.unwrap_or_default();
     let disabled_diagnostics: HashSet<String> = diag.disable.unwrap_or_default().into_iter().collect();
     let enabled_diagnostics: HashSet<String> = diag.enable.unwrap_or_default().into_iter().collect();
-    let mut severity_overrides = HashMap::new();
+    let mut severity_overrides = HashMap::default();
     if let Some(map) = diag.severity {
         for (code, sev_str) in map {
             if let Some(sev) = parse_severity(&sev_str) {

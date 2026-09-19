@@ -119,7 +119,7 @@ pub fn compute_folding_ranges(
     // A single-branch `if` produces an IfChain fold and an IfBranch fold over
     // the same lines; drop exact duplicates so clients don't get redundant
     // regions for the common `if … then … end`.
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::collections::HashSet::default();
     ranges.retain(|r| {
         let kind_disc = match &r.kind {
             Some(FoldingRangeKind::Comment) => 0u8,

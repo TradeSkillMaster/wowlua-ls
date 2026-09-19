@@ -5,7 +5,7 @@ use super::*;
 /// return type annotations (and thus should not be overridden by inferred stubs).
 pub(in crate::stub_gen) fn get_functions_with_return(dir: &Path) -> HashSet<String> {
     let func_re = regex_lite::Regex::new(r"(?m)^function\s+([A-Za-z_]\w*)\s*\(").unwrap();
-    let mut result = HashSet::new();
+    let mut result = HashSet::default();
     let mut lua_files = Vec::new();
     collect_lua_paths(dir, &mut lua_files);
     for path in &lua_files {
@@ -190,12 +190,12 @@ pub(in crate::stub_gen) fn infer_fxml_return_types(
     use crate::types::{SymbolIdentifier, ValueType};
 
     if needs_return.is_empty() && util_table_names.is_empty() {
-        return HashMap::new();
+        return HashMap::default();
     }
 
     let interface_dir = ui_source_dir.join("Interface");
     if !interface_dir.is_dir() {
-        return HashMap::new();
+        return HashMap::default();
     }
 
     let mut lua_files = Vec::new();
@@ -335,7 +335,7 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
 
     let interface_dir = ui_source_dir.join("Interface");
     if !interface_dir.is_dir() {
-        return HashMap::new();
+        return HashMap::default();
     }
 
     let mut lua_files = Vec::new();
@@ -362,13 +362,13 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
     // any of these as a discovered `@field M any?` would shadow the real typed
     // method (e.g. degrading an inherited `RegisterEvent` to `any?`), so they are
     // never emitted — a runtime field populated by C++ is data, never a method.
-    let mut builtin_method_names: HashSet<String> = HashSet::new();
+    let mut builtin_method_names: HashSet<String> = HashSet::default();
     let (class_field_map, class_data_field_map): (
         HashMap<String, HashSet<String>>,
         HashMap<String, HashSet<String>>,
     ) = {
-        let mut all: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut data: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut all: HashMap<String, HashSet<String>> = HashMap::default();
+        let mut data: HashMap<String, HashSet<String>> = HashMap::default();
         // Collect one table's fields into both maps, gating the data map on an
         // explicit type annotation and recording annotation-less fields (methods)
         // in `builtin_method_names`.
@@ -418,7 +418,7 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
         regex_lite::Regex::new(r"^\s*([A-Z][A-Za-z0-9_]*)\.([A-Za-z_]\w*)\s*=[^=]").unwrap();
 
     let per_file: Vec<HashMap<String, HashSet<String>>> = lua_files.par_iter().map(|path| {
-        let Ok(raw_content) = std::fs::read_to_string(path) else { return HashMap::new() };
+        let Ok(raw_content) = std::fs::read_to_string(path) else { return HashMap::default() };
 
         let content: String = raw_content.lines()
             .map(|line| {
@@ -436,14 +436,14 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
         analysis.resolve_types();
         let ar = analysis.into_result();
 
-        let mut discovered: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut discovered: HashMap<String, HashSet<String>> = HashMap::default();
 
         // ── Structural matching for any-typed variables ──
         // Group field accesses by variable NAME (not index) so that parameters
         // with the same name across different functions in the same file are
         // merged.  E.g. all `lineData` params in TooltipDataRules.lua contribute
         // their accessed fields to a single group.
-        let mut any_var_fields: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut any_var_fields: HashMap<String, HashSet<String>> = HashMap::default();
         for (_, expr) in ar.ir.local_exprs() {
             let Expr::FieldAccess { table, field, .. } = expr else { continue };
             let table_type = ar.resolve_expr_type(*table);
@@ -526,7 +526,7 @@ pub(in crate::stub_gen) fn discover_runtime_fields(
     }).collect();
 
     // Merge per-file results
-    let mut all: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut all: HashMap<String, HashSet<String>> = HashMap::default();
     for file_result in per_file {
         for (class, fields) in file_result {
             all.entry(class).or_default().extend(fields);
@@ -590,14 +590,14 @@ pub(in crate::stub_gen) fn generate_inferred_return_stubs(
     // and generated files (e.g. GlobalColors.lua defines CreateColor with
     // @return colorRGBA — without scanning gen_dir those would be overridden
     // by inferred types from the FrameXML source body).
-    let mut already_annotated = HashSet::new();
+    let mut already_annotated = HashSet::default();
     for dir in stubs_dirs {
         already_annotated.extend(get_functions_with_return(dir));
     }
 
     // Build a lookup from pass 1 globals: name → params, for forwarding
     // existing @param annotations into the generated override stubs.
-    let mut vendor_params: HashMap<&str, &[ParamInfo]> = HashMap::new();
+    let mut vendor_params: HashMap<&str, &[ParamInfo]> = HashMap::default();
     for g in pass1_globals {
         if !g.params.is_empty() {
             vendor_params.insert(&g.name, &g.params);
@@ -666,7 +666,7 @@ pub(in crate::stub_gen) fn generate_framexml_utility_stubs(
     names.sort();
 
     let mut count = 0usize;
-    let mut generated_names = HashSet::new();
+    let mut generated_names = HashSet::default();
 
     for name in &names {
         let info = &util_tables[*name];
@@ -742,7 +742,7 @@ pub(in crate::stub_gen) fn scan_framexml_lua_fields(
 ) -> HashMap<String, Vec<(String, String)>> {
     use rayon::prelude::*;
     // Per-frame field accumulator: frame_name → (field_name → type_str)
-    let mut acc: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut acc: HashMap<String, HashMap<String, String>> = HashMap::default();
 
     // 1. Field assignment: FrameName.field = rhs
     let field_re = regex_lite::Regex::new(
@@ -780,7 +780,7 @@ pub(in crate::stub_gen) fn scan_framexml_lua_fields(
     let partials: Vec<HashMap<String, HashMap<String, String>>> = lua_files
         .par_iter()
         .map(|path| {
-            let mut local: HashMap<String, HashMap<String, String>> = HashMap::new();
+            let mut local: HashMap<String, HashMap<String, String>> = HashMap::default();
             let Ok(content) = std::fs::read_to_string(path) else { return local };
 
             for cap in field_re.captures_iter(&content) {
@@ -954,13 +954,13 @@ pub(in crate::stub_gen) fn scan_framexml_utility_tables(ui_source_dirs: &[&Path]
         }
     }
     if lua_files.is_empty() {
-        return HashMap::new();
+        return HashMap::default();
     }
 
     // Scan each file into a local map in parallel, then fold with the same
     // dedup semantics (rayon preserves path order in collect).
     let partials: Vec<HashMap<String, UtilTableInfo>> = lua_files.par_iter().map(|path| {
-        let mut tables: HashMap<String, UtilTableInfo> = HashMap::new();
+        let mut tables: HashMap<String, UtilTableInfo> = HashMap::default();
         let Ok(content) = std::fs::read_to_string(path) else { return tables };
 
         for cap in dot_func_re.captures_iter(&content) {
@@ -1014,12 +1014,12 @@ pub(in crate::stub_gen) fn scan_framexml_utility_tables(ui_source_dirs: &[&Path]
         tables
     }).collect();
 
-    let mut tables: HashMap<String, UtilTableInfo> = HashMap::new();
+    let mut tables: HashMap<String, UtilTableInfo> = HashMap::default();
     // Persistent seen-sets per table name: track which (name, is_method) pairs and
     // factory-closure field names have already been added across all partials.
     // Avoids O(n²) linear scans of the accumulated Vec on each insert.
-    let mut seen_methods: HashMap<String, HashSet<(String, bool)>> = HashMap::new();
-    let mut seen_closures: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut seen_methods: HashMap<String, HashSet<(String, bool)>> = HashMap::default();
+    let mut seen_closures: HashMap<String, HashSet<String>> = HashMap::default();
     for partial in partials {
         for (table_name, src) in partial {
             let info = tables.entry(table_name.clone()).or_default();

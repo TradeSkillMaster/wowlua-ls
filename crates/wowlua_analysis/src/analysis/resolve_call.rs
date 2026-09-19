@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 use crate::types::*;
 use super::Analysis;
@@ -369,13 +369,13 @@ impl<'a> Analysis<'a> {
         self.propagate_inline_callback_params(args, &param_annotations, self_offset, &class_gen_context, &class_type_param_subs);
 
         // Build generic substitution map from call-site arg types
-        let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
+        let mut generic_subs: HashMap<String, ValueType> = HashMap::default();
         // Track which argument index inferred each generic (for diagnostics)
-        let mut generic_arg_indices: HashMap<String, usize> = HashMap::new();
+        let mut generic_arg_indices: HashMap<String, usize> = HashMap::default();
         // Track generics inferred from structural patterns (T[], table<K,V>)
         // — safe to use for type-mismatch substitution (vs. promotional patterns
         // like backtick/defclass where the arg type intentionally differs)
-        let mut substitutable_generic_names: HashSet<String> = HashSet::new();
+        let mut substitutable_generic_names: HashSet<String> = HashSet::default();
         // Track generics set by constraint fallback so overload re-inference can
         // override them. Lifecycle:
         //  1. Populated by the constraint fallback in `infer_call_generic_subs`:
@@ -386,7 +386,7 @@ impl<'a> Analysis<'a> {
         //  3. In `resolve_string_bound_fn_generics`: if a function-constrained
         //     generic was re-bound to a string but couldn't resolve to a global
         //     function, it is restored to the constraint type.
-        let mut constraint_fallback_names: HashSet<String> = HashSet::new();
+        let mut constraint_fallback_names: HashSet<String> = HashSet::default();
         // Track generics bound from an array `T[]` argument via element-type
         // inference. The element type of a heterogeneous array (e.g. one holding
         // `Frame & TemplateA` alongside a plain `Frame`) is too strict when used
@@ -395,7 +395,7 @@ impl<'a> Analysis<'a> {
         // should be accepted. `build_resolved_call_args` relaxes only those
         // arg checks, leaving the binding itself (used for `ipairs` reads etc.)
         // at its precise intersection.
-        let mut array_bound_generics: HashSet<String> = HashSet::new();
+        let mut array_bound_generics: HashSet<String> = HashSet::default();
         self.infer_call_generic_subs(func_idx, func, func_expr_id, args, &func_args, &param_annotations, &generics, &defclass, self_offset, is_method_call, call_func_table_idx, &mut generic_subs, &mut generic_arg_indices, &mut substitutable_generic_names, &mut constraint_fallback_names, &mut array_bound_generics);
 
         // Type event-callback params from a literal event name. For:
@@ -882,9 +882,9 @@ impl<'a> Analysis<'a> {
         // Collect the parent's own plus all transitively-inherited members
         // (cycle-safe, nearest-wins) before touching the class, so the immutable
         // walk borrows release before the mutable inserts below.
-        let mut fields: HashMap<String, crate::types::FieldInfo> = HashMap::new();
-        let mut accessors: HashMap<String, crate::annotations::Visibility> = HashMap::new();
-        let mut visited: HashSet<TableIndex> = HashSet::new();
+        let mut fields: HashMap<String, crate::types::FieldInfo> = HashMap::default();
+        let mut accessors: HashMap<String, crate::annotations::Visibility> = HashMap::default();
+        let mut visited: HashSet<TableIndex> = HashSet::default();
         let mut stack = vec![parent_idx];
         while let Some(idx) = stack.pop() {
             if !visited.insert(idx) { continue; }
@@ -1394,7 +1394,7 @@ impl<'a> Analysis<'a> {
         // machinery, and each keyof arg's resolved target table is remembered for
         // go-to-definition / hover on the string literal.
         let mut resolved_call_args = resolved_call_args;
-        let mut keyof_arg_targets: HashMap<usize, TableIndex> = HashMap::new();
+        let mut keyof_arg_targets: HashMap<usize, TableIndex> = HashMap::default();
         for (i, arg) in resolved_call_args.iter_mut().enumerate() {
             if arg.expected_type.as_ref().is_some_and(Self::type_contains_keyof)
                 && let Some(et) = arg.expected_type.take()
@@ -2211,7 +2211,7 @@ impl<'a> Analysis<'a> {
         field_range: Option<(u32, u32)>,
     ) -> (Option<FunctionIndex>, HashMap<String, ValueType>) {
         let mut projected_f_idx: Option<FunctionIndex> = None;
-        let mut class_type_param_subs: HashMap<String, ValueType> = HashMap::new();
+        let mut class_type_param_subs: HashMap<String, ValueType> = HashMap::default();
         if is_method_call
             && let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone()
         {
@@ -2270,13 +2270,13 @@ impl<'a> Analysis<'a> {
             if let Some(ValueType::Table(Some(recv_tidx))) = &receiver_type {
                 let mut work: Vec<(TableIndex, HashMap<String, ValueType>)> =
                     vec![(*recv_tidx, class_type_param_subs.clone())];
-                let mut visited: HashSet<TableIndex> = HashSet::new();
+                let mut visited: HashSet<TableIndex> = HashSet::default();
                 while let Some((tidx, cur_subs)) = work.pop() {
                     if !visited.insert(tidx) { continue; }
                     let parent_bindings = self.table(tidx).parent_type_bindings.clone();
                     for (parent_idx, bindings) in parent_bindings {
                         let parent_params = self.table(parent_idx).class_type_params.clone();
-                        let mut parent_subs: HashMap<String, ValueType> = HashMap::new();
+                        let mut parent_subs: HashMap<String, ValueType> = HashMap::default();
                         for (i, p_name) in parent_params.iter().enumerate() {
                             if let Some(b) = bindings.get(i) {
                                 let concrete = self.substitute_generics_deep(b, &cur_subs);
@@ -2564,7 +2564,7 @@ impl<'a> Analysis<'a> {
                     let Some(&sym) = target_args.get(self_off + pos) else { break };
                     if sym.is_external() { continue; }
                     if self.ir.symbols[sym.val()].versions.first().is_some_and(|v| v.resolved_type.is_some()) { continue; }
-                    if let Some(vt) = self.resolve_annotation_with_class_generics(&p.typ, &[], &HashMap::new()) {
+                    if let Some(vt) = self.resolve_annotation_with_class_generics(&p.typ, &[], &HashMap::default()) {
                         let vt = if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt };
                         if let Some(v) = self.ir.symbols[sym.val()].versions.first_mut() {
                             v.resolved_type = Some(vt);
@@ -3393,7 +3393,7 @@ impl<'a> Analysis<'a> {
         let mut built_fields = if let Some(bt_idx) = existing_built {
             self.table(bt_idx).fields.clone()
         } else {
-            HashMap::new()
+            HashMap::default()
         };
         let (built_class_name, built_parent_classes) = if let Some(bt_idx) = existing_built {
             (self.table(bt_idx).class_name.clone(), self.table(bt_idx).parent_classes.clone())
@@ -3480,7 +3480,7 @@ impl<'a> Analysis<'a> {
             if let Some(bt_idx) = existing_built {
                 parents.push(bt_idx);
                 let mut frontier = self.table(bt_idx).parent_classes.clone();
-                let mut visited = std::collections::HashSet::new();
+                let mut visited = crate::collections::HashSet::default();
                 while let Some(p) = frontier.pop() {
                     if visited.insert(p) {
                         parents.push(p);
@@ -3488,12 +3488,12 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
-            (HashMap::new(), parents)
+            (HashMap::default(), parents)
         } else {
             let fields = if let Some(bt_idx) = existing_built {
                 self.table(bt_idx).fields.clone()
             } else {
-                HashMap::new()
+                HashMap::default()
             };
             (fields, Vec::new())
         };
@@ -3567,25 +3567,25 @@ impl<'a> Analysis<'a> {
         &mut self,
         func_idx: FunctionIndex,
         func_expr: ExprId,
-    ) -> std::collections::HashMap<String, ValueType> {
-        use std::collections::HashMap;
+    ) -> crate::collections::HashMap<String, ValueType> {
+        use crate::collections::HashMap;
         let param_anns = self.ir.func(func_idx).param_annotations.clone();
         let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) =
             param_anns.first()
         else {
-            return HashMap::new();
+            return HashMap::default();
         };
         let generic_names: Vec<String> = self.ir.func(func_idx)
             .generic_constraints_raw.iter()
             .map(|(n, _)| n.clone()).collect();
         let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func_expr).clone() else {
-            return HashMap::new();
+            return HashMap::default();
         };
         let receiver_type_args = self.get_expr_type_args(receiver_expr);
         if receiver_type_args.len() != type_arg_anns.len() {
-            return HashMap::new();
+            return HashMap::default();
         }
-        let mut subs = HashMap::new();
+        let mut subs = HashMap::default();
         for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
             if let crate::annotations::AnnotationType::Simple(name) = type_arg_ann
                 && generic_names.contains(name)
@@ -4019,7 +4019,7 @@ impl<'a> Analysis<'a> {
                     see: Vec::new(),
                     flavors: 0,
                     flavor_guard: 0,
-                    return_projections: std::collections::HashMap::new(),
+                    return_projections: crate::collections::HashMap::default(),
                     vararg_projection: None,
                     event_params: None,
                     narrows_arg: None,
@@ -4115,9 +4115,9 @@ impl<'a> Analysis<'a> {
 
     pub(super) fn infer_backward_param_types(&mut self) -> bool {
         use crate::annotations::AnnotationType;
-        use std::collections::HashSet;
+        use crate::collections::HashSet;
 
-        let mut candidates: HashSet<SymbolIndex> = HashSet::new();
+        let mut candidates: HashSet<SymbolIndex> = HashSet::default();
         for func in &self.ir.functions {
             for (i, &sym_idx) in func.args.iter().enumerate() {
                 if sym_idx.is_external() { continue; }
@@ -4180,17 +4180,17 @@ impl<'a> Analysis<'a> {
 
     fn collect_backward_inference_hints(
         &mut self,
-        candidates: &std::collections::HashSet<SymbolIndex>,
-    ) -> std::collections::HashMap<SymbolIndex, BackwardInferenceHints> {
+        candidates: &crate::collections::HashSet<SymbolIndex>,
+    ) -> crate::collections::HashMap<SymbolIndex, BackwardInferenceHints> {
         use crate::annotations::AnnotationType;
         use crate::ast::Operator;
-        use std::collections::{HashMap, HashSet};
+        use crate::collections::{HashMap, HashSet};
 
-        let mut baseline_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
-        let mut narrowing_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
-        let mut caller_types: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
-        let mut or_lhs_params: HashSet<SymbolIndex> = HashSet::new();
-        let mut and_lhs_params: HashSet<SymbolIndex> = HashSet::new();
+        let mut baseline_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::default();
+        let mut narrowing_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::default();
+        let mut caller_types: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::default();
+        let mut or_lhs_params: HashSet<SymbolIndex> = HashSet::default();
+        let mut and_lhs_params: HashSet<SymbolIndex> = HashSet::default();
         let concat_hint = ValueType::union(ValueType::String(None), ValueType::Number);
 
         for expr_id in 0..self.ir.exprs.len() {
@@ -4287,7 +4287,7 @@ impl<'a> Analysis<'a> {
 
                     let receiver_generic_subs: HashMap<String, ValueType> = if is_method_call {
                         self.bind_receiver_type_args(func_idx, func)
-                    } else { HashMap::new() };
+                    } else { HashMap::default() };
 
                     for sig in &signatures {
                         let mut generic_subs: HashMap<String, ValueType> = receiver_generic_subs.clone();
@@ -4468,7 +4468,7 @@ impl<'a> Analysis<'a> {
             .filter(|s| self.narrowing.falsy_narrowed_pre_reassign.contains(s))
             .collect();
 
-        let mut out: HashMap<SymbolIndex, BackwardInferenceHints> = HashMap::new();
+        let mut out: HashMap<SymbolIndex, BackwardInferenceHints> = HashMap::default();
         for (s, baseline) in baseline_hints {
             let narrowing: Vec<ValueType> = narrowing_hints.remove(&s)
                 .unwrap_or_default()
@@ -4514,7 +4514,7 @@ impl<'a> Analysis<'a> {
         out
     }
 
-    fn candidate_ref_in(&self, expr_id: ExprId, candidates: &std::collections::HashSet<SymbolIndex>) -> Option<SymbolIndex> {
+    fn candidate_ref_in(&self, expr_id: ExprId, candidates: &crate::collections::HashSet<SymbolIndex>) -> Option<SymbolIndex> {
         let mut cur = expr_id;
         loop {
             match self.expr(cur) {
@@ -5120,8 +5120,8 @@ impl BackwardInferenceSignature {
 }
 
 fn record_hint(
-    baseline: &mut std::collections::HashMap<SymbolIndex, Vec<ValueType>>,
-    narrowing: &mut std::collections::HashMap<SymbolIndex, Vec<ValueType>>,
+    baseline: &mut crate::collections::HashMap<SymbolIndex, Vec<ValueType>>,
+    narrowing: &mut crate::collections::HashMap<SymbolIndex, Vec<ValueType>>,
     conditional: bool,
     sym: SymbolIndex,
     vt: ValueType,

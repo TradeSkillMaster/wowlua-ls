@@ -8,7 +8,7 @@
 //! `crate::syntax::…` / `crate::ast::…` / `crate::types::…` / `crate::flavor::…`
 //! paths keep resolving inside the moved code.
 
-pub use wowlua_core::{ast, flavor, secrets, syntax, types};
+pub use wowlua_core::{ast, collections, flavor, secrets, syntax, types};
 
 pub mod analysis;
 pub mod annotations;

@@ -31,7 +31,7 @@ impl PendingEditMap {
 /// Collect (class_name, field_name) pairs from all @field entries on the given classes.
 /// Used to tell the self-field scan which fields are already declared.
 pub(super) fn collect_typed_field_names<'a>(classes: impl Iterator<Item = &'a ClassDecl>) -> HashSet<(String, String)> {
-    let mut names = HashSet::new();
+    let mut names = HashSet::default();
     for class in classes {
         for (field_name, _, _) in &class.fields {
             names.insert((class.name.clone(), field_name.clone()));
@@ -169,10 +169,10 @@ impl WorkspaceState {
                 _ => None,
             }
         };
-        let mut defclass_names: HashSet<String> = std::collections::HashSet::new();
-        let mut built_name_names: HashSet<String> = std::collections::HashSet::new();
+        let mut defclass_names: HashSet<String> = crate::collections::HashSet::default();
+        let mut built_name_names: HashSet<String> = crate::collections::HashSet::default();
         // Track class names whose methods have @built-name, so we can find wrapper functions.
-        let mut class_with_built_name_method: HashSet<String> = std::collections::HashSet::new();
+        let mut class_with_built_name_method: HashSet<String> = crate::collections::HashSet::default();
         // `@generates-events` rides the defclass scan; its method leaf names go into
         // the defclass func-name set (for the rebuild text-contains gate) and force
         // `cached_needs_defclass` so the scan runs.
@@ -291,7 +291,7 @@ impl WorkspaceState {
         let addon_roots = self.configs.addon_roots();
         if !addon_roots.is_empty() {
             // Map each source file to its addon root
-            let mut file_addon_roots: HashMap<PathBuf, PathBuf> = HashMap::new();
+            let mut file_addon_roots: HashMap<PathBuf, PathBuf> = HashMap::default();
             for file_path in self.ws_file_globals.keys() {
                 if let Some(root) = self.configs.addon_root_for(file_path) {
                     file_addon_roots.insert(file_path.clone(), root.to_path_buf());
@@ -394,15 +394,15 @@ impl WorkspaceState {
             stub_pre_globals: Arc::new(PreResolvedGlobals::empty()),
             stubs_have_defclass: false,
             stubs_have_built_name: false,
-            ws_file_globals: HashMap::new(),
-            ws_file_classes: HashMap::new(),
-            ws_file_aliases: HashMap::new(),
-            ws_file_defclasses: HashMap::new(),
-            ws_file_events: HashMap::new(),
-            ws_file_callback_registries: HashMap::new(),
-            ws_file_string_consts: HashMap::new(),
-            ws_file_self_fields: HashMap::new(),
-            ws_file_self_field_globals: HashMap::new(),
+            ws_file_globals: HashMap::default(),
+            ws_file_classes: HashMap::default(),
+            ws_file_aliases: HashMap::default(),
+            ws_file_defclasses: HashMap::default(),
+            ws_file_events: HashMap::default(),
+            ws_file_callback_registries: HashMap::default(),
+            ws_file_string_consts: HashMap::default(),
+            ws_file_self_fields: HashMap::default(),
+            ws_file_self_field_globals: HashMap::default(),
             pre_globals: Arc::new(PreResolvedGlobals::empty()),
             cached_all_globals: Vec::new(),
             cached_all_classes: Vec::new(),
@@ -410,20 +410,20 @@ impl WorkspaceState {
             cached_needs_built_name: false,
             cached_defclass_func_names: Vec::new(),
             cached_built_name_func_names: Vec::new(),
-            cached_generates_events_methods: HashMap::new(),
-            ws_file_dynamic_prefixes: HashMap::new(),
-            ws_file_addon_ns_class: HashMap::new(),
-            ws_file_callable_classes: HashMap::new(),
-            cached_callable_classes: HashSet::new(),
+            cached_generates_events_methods: HashMap::default(),
+            ws_file_dynamic_prefixes: HashMap::default(),
+            ws_file_addon_ns_class: HashMap::default(),
+            ws_file_callable_classes: HashMap::default(),
+            cached_callable_classes: HashSet::default(),
             plugin_engine: None,
             ws_generation: 0,
             cached_ws_diagnostics: None,
-            cached_crossfile_diagnostics: HashMap::new(),
+            cached_crossfile_diagnostics: HashMap::default(),
             warm_in_flight: false,
             pending_lazy_warm: false,
             live_generation: Arc::new(AtomicU64::new(0)),
             xfile_analysis_cache: std::sync::Mutex::new(super::XfileAnalysisCache::default()),
-            edited_uris: HashSet::new(),
+            edited_uris: HashSet::default(),
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::ast::Operator;
@@ -1236,7 +1236,7 @@ pub struct Function {
     /// `Return` kind for that slot so call-site resolution can substitute F's
     /// actual return type. Keyed by ret slot index (0-based).
     #[serde(default)]
-    pub return_projections: std::collections::HashMap<usize, ProjectionKind>,
+    pub return_projections: crate::collections::HashMap<usize, ProjectionKind>,
     /// `@param ... params<F>` or `@param ... returns<F>` — project F's param
     /// or return list onto the vararg slot. `Params` expands F's params;
     /// `Return` binds F from the last multi-return call in the varargs.
@@ -1562,7 +1562,7 @@ pub struct CallResolution {
     /// For method calls on a parameterized receiver, the substitution of the
     /// receiver class's type params to concrete types (e.g. `{T: boolean}`).
     /// Used by the `param-constraint-mismatch` diagnostic to enforce `@requires`.
-    pub receiver_param_subs: std::collections::HashMap<String, ValueType>,
+    pub receiver_param_subs: crate::collections::HashMap<String, ValueType>,
     /// For method calls (`receiver:method(...)`), the receiver's class table.
     /// None for non-method calls or when the receiver doesn't resolve to a
     /// `Table`. Currently consumed only by `resolve_keyof_target` (which the
@@ -1574,7 +1574,7 @@ pub struct CallResolution {
     /// target table keyed by 0-based argument index (excluding `self`). Populated in
     /// `record_call_resolution` when the keyof is flattened to its key union, so
     /// go-to-definition and hover on the string literal can jump to the named field.
-    pub keyof_arg_targets: std::collections::HashMap<usize, TableIndex>,
+    pub keyof_arg_targets: crate::collections::HashMap<usize, TableIndex>,
 }
 
 impl CallResolution {

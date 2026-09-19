@@ -19,6 +19,11 @@ edition = "2024"
 license = "GPL-3.0"
 repository = "https://github.com/TradeSkillMaster/wowlua_ls"
 
+[workspace.dependencies]
+# Deterministic hasher for the workspace-wide `collections::{HashMap, HashSet}`
+# aliases (see `wowlua_core::collections`).
+rustc-hash = "2.1"
+
 # Single source of truth for the zero-warnings policy that was previously only a
 # convention (see CLAUDE.md). Every member crate opts in with `lints.workspace =
 # true`, so the policy lives here and applies workspace-wide. The `fuzz/` crate is
@@ -43,6 +48,10 @@ all = { level = "deny", priority = -1 }
 redundant_else = "deny"            # drop the `else` after a diverging `if` branch
 stable_sort_primitive = "deny"     # `sort_unstable` on primitive slices: same result, faster
 cloned_instead_of_copied = "deny"  # `.copied()` over `.cloned()` for `Copy` items
+# Keeps analysis runs reproducible: `std::collections::{HashMap, HashSet}` reseed
+# their hasher per process, so their iteration order leaks into inferred types
+# and diagnostics. The allowed replacements are configured in `clippy.toml`.
+disallowed_types = "deny"
 
 [package]
 name = "wowlua_ls"

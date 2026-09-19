@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::annotations::{AnnotationType, parse_overload, scan_all_annotations};
@@ -130,7 +130,7 @@ impl<'a> Analysis<'a> {
             // This preserves @constructor registrations from the workspace scan (e.g. __init from
             // @constructor __init on a base class) that would otherwise be lost when the local
             // @class shadows the external one.
-            let mut constructors: std::collections::HashSet<String> = class.constructor_methods.iter().cloned().collect();
+            let mut constructors: crate::collections::HashSet<String> = class.constructor_methods.iter().cloned().collect();
             if constructors.is_empty()
                 && let Some(&ext_idx) = self.ir.classes.get(&class.name)
             {
@@ -598,7 +598,7 @@ impl<'a> Analysis<'a> {
         let ext = std::sync::Arc::clone(&self.ir.ext);
 
         // Pass 0: Find local function definitions with @defclass annotations
-        let mut local_defclass_funcs: HashMap<String, DefclassFuncInfo> = HashMap::new();
+        let mut local_defclass_funcs: HashMap<String, DefclassFuncInfo> = HashMap::default();
         {
             let Some(block) = Block::cast(self.root()) else { return };
             for stmt in block.statements() {
@@ -795,7 +795,7 @@ impl<'a> Analysis<'a> {
                         self.ir.tables[local_idx.val()].accessors.entry(k.clone()).or_insert(*v);
                     }
                     if let Some(ct) = dc_info.constraint_table {
-                        let mut func_generic_subs = HashMap::new();
+                        let mut func_generic_subs = HashMap::default();
                         if let Some(ref pgn) = dc_info.parent_generic_name {
                             func_generic_subs.insert(pgn.clone(), parent_idx);
                         }
@@ -852,8 +852,8 @@ impl<'a> Analysis<'a> {
             }
 
             // Inherit fields and accessors from constraint parent
-            let mut fields = HashMap::new();
-            let mut accessors = HashMap::new();
+            let mut fields = HashMap::default();
+            let mut accessors = HashMap::default();
             let mut parent_classes = Vec::new();
             if let Some(parent_idx) = dc_info.constraint_table {
                 parent_classes.push(parent_idx);
@@ -890,7 +890,7 @@ impl<'a> Analysis<'a> {
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent
                 && let Some(ct) = dc_info.constraint_table {
-                    let mut func_generic_subs = HashMap::new();
+                    let mut func_generic_subs = HashMap::default();
                     if let Some(ref pgn) = dc_info.parent_generic_name {
                         func_generic_subs.insert(pgn.clone(), parent_idx);
                     }
@@ -907,7 +907,7 @@ impl<'a> Analysis<'a> {
 
         // Map local variables whose outermost call has a string arg matching a known class.
         // Enables the dotted-path loop below to resolve roots through local aliases.
-        let mut local_class_vars: HashMap<String, TableIndex> = HashMap::new();
+        let mut local_class_vars: HashMap<String, TableIndex> = HashMap::default();
         for stmt in block.statements() {
             let Statement::LocalAssign(la) = &stmt else { continue };
             let Some(name_list) = la.name_list() else { continue };
@@ -1044,8 +1044,8 @@ impl<'a> Analysis<'a> {
                 call_args.get(idx).and_then(|arg| self.resolve_defclass_parent_arg(arg))
             });
 
-            let mut fields = HashMap::new();
-            let mut accessors = HashMap::new();
+            let mut fields = HashMap::default();
+            let mut accessors = HashMap::default();
             let mut parent_classes = Vec::new();
             if let Some(parent_idx) = constraint_table {
                 parent_classes.push(parent_idx);
@@ -1084,7 +1084,7 @@ impl<'a> Analysis<'a> {
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent
                 && let Some(ct) = constraint_table {
-                    let mut func_generic_subs = HashMap::new();
+                    let mut func_generic_subs = HashMap::default();
                     if let Some(ref pgn) = parent_generic_name {
                         func_generic_subs.insert(pgn.clone(), parent_idx);
                     }
@@ -1192,7 +1192,7 @@ impl<'a> Analysis<'a> {
         implicit_protected_prefix: bool,
     ) -> TableIndex {
         let default_type = index_sig_type.cloned().unwrap_or(ValueType::Any);
-        let mut sub_fields = HashMap::new();
+        let mut sub_fields = HashMap::default();
         for child in children {
             if !child.children.is_empty() {
                 // Recursively create sub-table for deeper nesting
@@ -1295,7 +1295,7 @@ impl<'a> Analysis<'a> {
         if class_type_params.len() != constraint_type_args.len() { return; }
         // Build substitution: class_type_param → concrete table index
         // e.g. S → P → Animal (chain through func_generic_subs)
-        let mut type_param_subs: HashMap<String, TableIndex> = HashMap::new();
+        let mut type_param_subs: HashMap<String, TableIndex> = HashMap::default();
         for (class_param, func_generic) in class_type_params.iter().zip(constraint_type_args.iter()) {
             if let Some(&concrete_idx) = func_generic_subs.get(func_generic) {
                 type_param_subs.insert(class_param.clone(), concrete_idx);
@@ -1741,7 +1741,7 @@ impl<'a> Analysis<'a> {
                 see: Vec::new(),
                 flavors: 0,
                 flavor_guard: 0,
-                return_projections: std::collections::HashMap::new(),
+                return_projections: crate::collections::HashMap::default(),
                 vararg_projection: None,
                 event_params: None,
                 narrows_arg: None,
@@ -1879,11 +1879,11 @@ impl<'a> Analysis<'a> {
                             let t = self.ir.table(*idx);
                             (t.fields.clone(), t.class_name.clone(), t.parent_classes.clone())
                         }
-                        _ => (HashMap::new(), None, Vec::new()),
+                        _ => (HashMap::default(), None, Vec::new()),
                     };
                     let accessors = match &base_vt {
                         Some(ValueType::Table(Some(idx))) => self.ir.table(*idx).accessors.clone(),
-                        _ => HashMap::new(),
+                        _ => HashMap::default(),
                     };
                     let is_explicit_map = base == "table" && class_name.is_none();
                     self.ir.tables.push(TableInfo {
@@ -2225,7 +2225,7 @@ impl<'a> Analysis<'a> {
         };
 
         // Detect `returns<F>` projections in return annotations
-        let mut ret_projections: std::collections::HashMap<usize, crate::types::ProjectionKind> = std::collections::HashMap::new();
+        let mut ret_projections: crate::collections::HashMap<usize, crate::types::ProjectionKind> = crate::collections::HashMap::default();
         if !generic_names_owned.is_empty() {
             for (i, rt) in returns.iter().enumerate() {
                 match crate::annotations::match_projection(rt, &generic_names_owned) {
@@ -2470,8 +2470,8 @@ impl<'a> Analysis<'a> {
                                     })
                                     .collect();
                                 // Inherit fields and accessors from parent classes
-                                let mut fields = HashMap::new();
-                                let mut accessors = HashMap::new();
+                                let mut fields = HashMap::default();
+                                let mut accessors = HashMap::default();
                                 for &parent_idx in &parent_indices {
                                     for (k, v) in &self.ir.table(parent_idx).fields {
                                         fields.entry(k.clone()).or_insert_with(|| v.clone());

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use crate::collections::HashSet;
 
 use crate::analysis::AnalysisResult;
 use crate::annotations::annotation_scanning::ExternalGlobalKind;

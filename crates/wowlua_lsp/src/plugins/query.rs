@@ -3,7 +3,7 @@
 //! This is the stable API boundary between the plugin system and the internal IR.
 //! Internal refactors should only require changes here, not in bridge.rs or plugins.
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::analysis::{AnalysisResult, BinaryOpSite};

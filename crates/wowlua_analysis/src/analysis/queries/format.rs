@@ -227,11 +227,11 @@ pub(super) fn resolve_expr_type_impl(
     // predicates unwraps its secrecy (`secret_context.rs`).
     let cleared = match ir.expr(expr_id) {
         Expr::FunctionCall { func, args, call_range, .. } => {
-            matches!(resolve_expr_type_impl(ir, resolved_expr_cache, *func, &mut HashSet::new(), depth + 1).map(ValueType::into_strip_opaque),
+            matches!(resolve_expr_type_impl(ir, resolved_expr_cache, *func, &mut HashSet::default(), depth + 1).map(ValueType::into_strip_opaque),
                 Some(ValueType::Function(Some(func_idx))) if ir.call_secrecy_cleared(func_idx, args, call_range.0))
         }
         Expr::FieldAccess { table, field_range: Some((start, _)), .. } => {
-            resolve_expr_type_impl(ir, resolved_expr_cache, *table, &mut HashSet::new(), depth + 1)
+            resolve_expr_type_impl(ir, resolved_expr_cache, *table, &mut HashSet::default(), depth + 1)
                 .is_some_and(|receiver| ir.field_secrecy_cleared(&receiver, *start))
         }
         _ => false,
@@ -934,7 +934,7 @@ impl AnalysisResult {
     }
 
     pub fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         resolve_expr_type_impl(&self.ir, &self.resolved_expr_cache, expr_id, &mut visited, 0)
     }
 
@@ -947,7 +947,7 @@ impl AnalysisResult {
     /// resolves. See `refine_any_field_exprs` for the shared resolution rule.
     pub(super) fn refine_any_field_type(&self, fi: &FieldInfo) -> Option<ValueType> {
         let mut types: Vec<ValueType> = Vec::new();
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         let found_specific = refine_any_field_exprs(
             &self.ir, &self.resolved_expr_cache, fi, &mut types, &mut visited, 0,
         );
@@ -960,7 +960,7 @@ impl AnalysisResult {
     /// Method wrapper over [`enrich_class_field_from_local`] for the query-side
     /// callers (`resolve_field_type`, hover). See that free function for the rule.
     pub(super) fn enrich_class_field(&self, fi: &FieldInfo, ann: &ValueType) -> Option<ValueType> {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         enrich_class_field_from_local(&self.ir, &self.resolved_expr_cache, fi, ann, &mut visited, 0)
     }
 
@@ -1108,7 +1108,7 @@ impl AnalysisResult {
         enclosing_class: Option<TableIndex>,
     ) -> Vec<String> {
         let indent = "  ";
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut seen: HashSet<&str> = HashSet::default();
         let mut fields: Vec<String> = Vec::new();
         for &table_idx in table_indices {
             let table = self.table(table_idx);
@@ -1410,7 +1410,7 @@ impl AnalysisResult {
             };
             all_args.push(vararg_str);
         }
-        let no_subs = HashMap::new();
+        let no_subs = HashMap::default();
         let rets: Vec<String> = if func.returns_self {
             vec![self.self_return_text(func, &no_subs)]
         } else if !func.return_annotations.is_empty() {
@@ -1507,7 +1507,7 @@ impl AnalysisResult {
                     }
                     let indent = "  ".repeat(depth + 1);
                     let is_enum = table.enum_kind.is_enum();
-                    let mut seen: HashSet<&str> = HashSet::new();
+                    let mut seen: HashSet<&str> = HashSet::default();
                     let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
                         seen.insert(name.as_str());
                         self.format_enum_field_line(&indent, name, field_info, is_enum, depth)
@@ -1828,7 +1828,7 @@ impl AnalysisResult {
             };
             all_args.push(vararg_str);
         }
-        let no_subs = HashMap::new();
+        let no_subs = HashMap::default();
         let effective_subs = subs.unwrap_or(&no_subs);
         // `func` already reflects any precise cross-file return types via the
         // per-file overlay (`func()` consults it for deferred external functions).
@@ -2395,7 +2395,7 @@ impl AnalysisResult {
         skip_self: bool,
         subs: Option<&HashMap<String, ValueType>>,
     ) -> String {
-        let empty = HashMap::new();
+        let empty = HashMap::default();
         let subs = subs.unwrap_or(&empty);
         let func = self.func(func_idx);
         let args: Vec<String> = func.args.iter().enumerate()

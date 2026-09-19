@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall};
 use crate::syntax::SyntaxKind;
 use crate::syntax::SyntaxNode;
@@ -67,7 +67,7 @@ impl DefclassContext {
             })
             .collect();
 
-        let mut defclass_funcs: HashMap<String, DefclassFuncInfo> = HashMap::new();
+        let mut defclass_funcs: HashMap<String, DefclassFuncInfo> = HashMap::default();
         for g in all_globals.iter().filter(|g| g.defclass.is_some()) {
             let Some(fp) = func_path(g) else { continue };
             let defclass_name = g.defclass.as_ref().unwrap();
@@ -134,7 +134,7 @@ impl DefclassContext {
             });
         }
 
-        let mut constructor_names: HashSet<String> = HashSet::new();
+        let mut constructor_names: HashSet<String> = HashSet::default();
         for class in all_classes {
             for cname in &class.constructor_methods {
                 constructor_names.insert(cname.clone());
@@ -143,9 +143,9 @@ impl DefclassContext {
 
         // Only build global_returns when there are constructors to scan
         let global_returns = if constructor_names.is_empty() {
-            HashMap::new()
+            HashMap::default()
         } else {
-            let mut map: HashMap<String, Vec<AnnotationType>> = HashMap::new();
+            let mut map: HashMap<String, Vec<AnnotationType>> = HashMap::default();
             for g in all_globals {
                 let Some(path) = func_path(g) else { continue };
                 if !g.returns.is_empty() {
@@ -159,7 +159,7 @@ impl DefclassContext {
 
         // Build class field type map from existing class declarations for resolving
         // ClassName._field:Method() patterns (e.g. BaseFrame._STATE_SCHEMA:Extend())
-        let mut class_field_types: HashMap<String, HashMap<String, AnnotationType>> = HashMap::new();
+        let mut class_field_types: HashMap<String, HashMap<String, AnnotationType>> = HashMap::default();
         for class in all_classes {
             for (field_name, field_type, _) in &class.fields {
                 if !matches!(field_type, AnnotationType::Simple(s) if s == "any") {
@@ -176,7 +176,7 @@ impl DefclassContext {
         let class_names: HashSet<String> = if all_globals.iter().any(|g| g.generates_events.is_some()) {
             all_classes.iter().map(|c| c.name.clone()).collect()
         } else {
-            HashSet::new()
+            HashSet::default()
         };
 
         let generates_events = super::scan_callback::build_generates_events_methods(all_globals);
@@ -334,7 +334,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
 
     let mut results: Vec<ClassDecl> = Vec::new();
     // Map local variable name → index in results (for matching constructor definitions)
-    let mut var_to_result: HashMap<String, usize> = HashMap::new();
+    let mut var_to_result: HashMap<String, usize> = HashMap::default();
     let mut stmts = Vec::new();
     collect_statements_recursive(&block, &mut stmts);
 
@@ -392,7 +392,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
             // For nested table constructors, create synthetic sub-classes.
             let default_type = result.index_sig_type.unwrap_or_else(|| AnnotationType::Simple("any".to_string()));
             let mut fields: Vec<(String, AnnotationType, Visibility)> = Vec::new();
-            let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::new();
+            let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::default();
             let mut nested_classes: Vec<ClassDecl> = Vec::new();
             fn collect_nested_classes(
                 parent_name: &str,
@@ -412,7 +412,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                         // Create a synthetic class for this nested group
                         let synthetic_name = format!("{}_{}", parent_name, entry.name);
                         let mut sub_fields = Vec::new();
-                        let mut sub_field_ranges = HashMap::new();
+                        let mut sub_field_ranges = HashMap::default();
                         // Recurse for deeper nesting
                         collect_nested_classes(&synthetic_name, entry.children, default_type, nested_classes, &mut sub_fields, &mut sub_field_ranges, implicit_protected_prefix);
                         // Inherit from the index sig value type (e.g. EnumValue)
@@ -430,20 +430,20 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                             generics: Vec::new(),
                             constructor_methods: Vec::new(),
                             constraint_type_arg_subs: Vec::new(),
-                            field_built_names: HashMap::new(),
+                            field_built_names: HashMap::default(),
                             is_enum: false,
                             is_key_enum: false,
                             correlated_groups: Vec::new(),
                             def_range: None,
                             def_path: None,
                             field_ranges: sub_field_ranges,
-                            field_paths: HashMap::new(),
+                            field_paths: HashMap::default(),
                             see: Vec::new(),
-                            declared_field_names: HashSet::new(),
-                            field_literals: HashMap::new(),
-                            field_descriptions: HashMap::new(),
-                            bare_inferred_field_names: HashSet::new(),
-                            deferred_field_call_ranges: HashMap::new(),
+                            declared_field_names: HashSet::default(),
+                            field_literals: HashMap::default(),
+                            field_descriptions: HashMap::default(),
+                            bare_inferred_field_names: HashSet::default(),
+                            deferred_field_call_ranges: HashMap::default(),
                             secret_when: Vec::new(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name, implicit_protected_prefix)));
@@ -472,20 +472,20 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                 generics: Vec::new(),
                 constructor_methods: Vec::new(),
                 constraint_type_arg_subs: result.constraint_type_arg_subs,
-                field_built_names: HashMap::new(),
+                field_built_names: HashMap::default(),
                 is_enum: false,
                 is_key_enum: false,
                 correlated_groups: Vec::new(),
                 def_range: Some((u32::from(stmt_range.start()), u32::from(stmt_range.end()))),
                 def_path: None,
                 field_ranges,
-                field_paths: HashMap::new(),
+                field_paths: HashMap::default(),
                 see: Vec::new(),
-                declared_field_names: HashSet::new(),
-                field_literals: HashMap::new(),
-                field_descriptions: HashMap::new(),
-                bare_inferred_field_names: HashSet::new(),
-                deferred_field_call_ranges: HashMap::new(),
+                declared_field_names: HashSet::default(),
+                field_literals: HashMap::default(),
+                field_descriptions: HashMap::default(),
+                bare_inferred_field_names: HashSet::default(),
+                deferred_field_call_ranges: HashMap::default(),
                 secret_when: Vec::new(),
             });
         }
@@ -501,9 +501,9 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
         // Also tracks @built-name for fields whose RHS chain contains a @built-name call.
         // `class_field_types` tracks non-any typed fields for constructor method resolution.
         // `class_field_all` tracks ALL discovered fields (including any-typed) for cross-file visibility.
-        let mut class_field_types: HashMap<usize, HashMap<String, AnnotationType>> = HashMap::new();
-        let mut class_field_all: HashMap<usize, HashMap<String, AnnotationType>> = HashMap::new();
-        let mut class_field_built_names: HashMap<usize, HashMap<String, String>> = HashMap::new();
+        let mut class_field_types: HashMap<usize, HashMap<String, AnnotationType>> = HashMap::default();
+        let mut class_field_all: HashMap<usize, HashMap<String, AnnotationType>> = HashMap::default();
+        let mut class_field_built_names: HashMap<usize, HashMap<String, String>> = HashMap::default();
         for stmt in &stmts {
             let Statement::Assign(assign) = stmt else { continue };
             let Some(vl) = assign.variable_list() else { continue };
@@ -520,7 +520,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
                 let exprs = el.expressions();
                 if let Some(expr) = exprs.first() {
                     let field_type = extract_type_annotation_for_assign(assign.syntax())
-                        .unwrap_or_else(|| infer_type_from_expression(expr, global_returns, &HashMap::new(), &HashMap::new(), &ctx.class_field_types));
+                        .unwrap_or_else(|| infer_type_from_expression(expr, global_returns, &HashMap::default(), &HashMap::default(), &ctx.class_field_types));
                     // Skip storing `any`-typed fields when the RHS is a self-referential
                     // method call (X.field = X.field:Method(...)). In this case the parent
                     // class likely has a better type that would be masked by `any`.
@@ -700,7 +700,7 @@ fn collect_generated_event_classes(
         let Some(Expression::TableConstructor(tc)) = exprs.get(spec.events_param.saturating_sub(1)) else { continue };
 
         let mut event_fields: Vec<(String, AnnotationType)> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen: HashSet<String> = HashSet::default();
         for field in tc.fields() {
             let Some(crate::ast::FieldKind::Positional(value)) = field.kind() else { continue };
             let Some(event_name) = super::annotation_scanning::event_name_from_expr(&value) else { continue };
@@ -726,20 +726,20 @@ fn collect_generated_event_classes(
             generics: Vec::new(),
             constructor_methods: Vec::new(),
             constraint_type_arg_subs: Vec::new(),
-            field_built_names: HashMap::new(),
+            field_built_names: HashMap::default(),
             is_enum: false,
             is_key_enum: false,
             correlated_groups: Vec::new(),
             def_range: Some((u32::from(call_range.start()), u32::from(call_range.end()))),
             def_path: None,
-            field_ranges: HashMap::new(),
-            field_paths: HashMap::new(),
+            field_ranges: HashMap::default(),
+            field_paths: HashMap::default(),
             see: Vec::new(),
-            declared_field_names: HashSet::new(),
-            field_literals: HashMap::new(),
-            field_descriptions: HashMap::new(),
-            bare_inferred_field_names: HashSet::new(),
-            deferred_field_call_ranges: HashMap::new(),
+            declared_field_names: HashSet::default(),
+            field_literals: HashMap::default(),
+            field_descriptions: HashMap::default(),
+            bare_inferred_field_names: HashSet::default(),
+            deferred_field_call_ranges: HashMap::default(),
             secret_when: Vec::new(),
         });
     }
@@ -752,7 +752,7 @@ fn collect_generated_event_classes(
 /// `field_built_names` maps field names to their @built-name class names for built table resolution.
 fn extract_self_fields(block: Block<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>, class_field_types: &HashMap<String, HashMap<String, AnnotationType>>) -> Vec<SelfFieldEntry> {
     let mut fields = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut field_types = field_types.clone();
     extract_self_fields_inner(block, &mut fields, &mut seen, global_returns, &mut field_types, field_built_names, class_field_types);
     fields

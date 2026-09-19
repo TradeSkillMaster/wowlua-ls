@@ -40,21 +40,21 @@ pub(in crate::stub_gen) fn scan_le_constants(ui_source_dir: &Path) -> HashSet<St
     // Scan the full Interface/ tree: LE_* references appear in both AddOns/ and FrameXML/.
     let interface_dir = ui_source_dir.join("Interface");
     if !interface_dir.is_dir() {
-        return HashSet::new();
+        return HashSet::default();
     }
     let mut lua_files = Vec::new();
     collect_lua_paths(&interface_dir, &mut lua_files);
 
     // Per-file name sets unioned in parallel — set-union is order-independent.
     lua_files.par_iter().map(|path| {
-        let mut names = HashSet::new();
+        let mut names = HashSet::default();
         if let Ok(content) = std::fs::read_to_string(path) {
             for m in re.find_iter(&content) {
                 names.insert(m.as_str().to_string());
             }
         }
         names
-    }).reduce(HashSet::new, |mut a, b| {
+    }).reduce(HashSet::default, |mut a, b| {
         a.extend(b);
         a
     })
@@ -121,7 +121,7 @@ pub(in crate::stub_gen) fn compute_flavor_map(
     retail_api: &HashSet<String>, classic_api: &HashSet<String>, classic_era_api: &HashSet<String>,
 ) -> HashMap<String, u8> {
     use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_ALL};
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     let all_names: HashSet<&str> = retail_api.iter()
         .chain(classic_api.iter()).chain(classic_era_api.iter())
         .map(|s| s.as_str()).collect();
@@ -158,7 +158,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     let missing_fxml = &diff.missing_fxml;
     let existing_globals = &diff.existing_globals;
 
-    let mut frame_flavor_map: HashMap<String, u8> = HashMap::new();
+    let mut frame_flavor_map: HashMap<String, u8> = HashMap::default();
 
     let overrides = manual_overrides();
     let mut out = vec![
@@ -168,7 +168,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     ];
 
     // Auto-create namespace tables for classic-only C_* APIs and dotted function stubs
-    let mut namespaces: HashSet<String> = HashSet::new();
+    let mut namespaces: HashSet<String> = HashSet::default();
     for name in missing.iter().chain(missing_fxml.iter()) {
         if let Some(dot_idx) = name.find('.') {
             let prefix = &name[..dot_idx];
@@ -255,7 +255,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
         missing_fxml.len());
 
     // Generate classic-only constants and enumerations from wow-ui-source
-    let mut classic_all_enums: HashMap<String, Vec<(String, i64)>> = HashMap::new();
+    let mut classic_all_enums: HashMap<String, Vec<(String, i64)>> = HashMap::default();
     if let Some(retail_api) = retail_api_doc
         && !classic_ui_dirs.is_empty() {
             log::info!("Extracting classic-only constants and enums from wow-ui-source...");
@@ -370,15 +370,15 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     // then scan FrameXML Lua files for field/method assignments on those frames.
     if !all_ui_dirs.is_empty() {
         log::info!("Extracting frame globals from XML templates (all versions)...");
-        let mut all_frames: HashMap<String, String> = HashMap::new();
+        let mut all_frames: HashMap<String, String> = HashMap::default();
         // mixin_name → set of frame names that mix it in. Built across all
         // wow-ui-source branches so a mixin defined for retail can still
         // attribute methods to a classic-only frame and vice versa.
-        let mut mixin_to_frames_set: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut mixin_to_frames_set: HashMap<String, HashSet<String>> = HashMap::default();
         let mut per_branch_frames: Vec<HashSet<String>> = Vec::new();
         for dir in all_ui_dirs {
             let (frames, frame_mixins) = extract_xml_frames_and_mixins(dir);
-            let mut branch_names = HashSet::new();
+            let mut branch_names = HashSet::default();
             for (name, ftype) in frames {
                 branch_names.insert(name.clone());
                 all_frames.entry(name).or_insert(ftype);
@@ -525,8 +525,8 @@ pub(in crate::stub_gen) fn parse_api_doc_dir(ui_source_dir: &Path) -> ApiDocData
     use rayon::prelude::*;
 
     let api_doc_dir = ui_source_dir.join("Interface/AddOns/Blizzard_APIDocumentationGenerated");
-    let mut constants = HashMap::new();
-    let mut enums = HashMap::new();
+    let mut constants = HashMap::default();
+    let mut enums = HashMap::default();
 
     if !api_doc_dir.is_dir() {
         return ApiDocData { constants, enums };
@@ -557,8 +557,8 @@ pub(in crate::stub_gen) fn parse_api_doc_dir(ui_source_dir: &Path) -> ApiDocData
     // path order in collect).
     let partials: Vec<ApiDocPartial> =
         paths.par_iter().map(|path| {
-            let mut c = HashMap::new();
-            let mut e = HashMap::new();
+            let mut c = HashMap::default();
+            let mut e = HashMap::default();
             if let Ok(content) = std::fs::read_to_string(path) {
                 parse_api_doc_file(&content, &mut c, &mut e,
                     &const_re, &upper_snake_re, &name_re, &enum_field_re);
@@ -683,8 +683,8 @@ pub(in crate::stub_gen) fn scan_interface_lua_combined(ui_source_dir: &Path) -> 
     // No dots or colons = not a method or table field.
     let func_re = regex_lite::Regex::new(r"(?m)^function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(").unwrap();
 
-    let mut constants = HashMap::new();
-    let mut global_funcs = HashSet::new();
+    let mut constants = HashMap::default();
+    let mut global_funcs = HashSet::default();
 
     let interface_dir = ui_source_dir.join("Interface");
     if !interface_dir.is_dir() {
@@ -698,8 +698,8 @@ pub(in crate::stub_gen) fn scan_interface_lua_combined(ui_source_dir: &Path) -> 
 
     let partials: Vec<InterfaceLuaPartial> =
         lua_files.par_iter().map(|path| {
-            let mut c = HashMap::new();
-            let mut f = HashSet::new();
+            let mut c = HashMap::default();
+            let mut f = HashSet::default();
             if let Ok(content) = std::fs::read_to_string(path) {
                 // Collect constant assignments (ALL_CAPS = value at top-level)
                 for line in content.lines() {
@@ -883,8 +883,8 @@ pub(in crate::stub_gen) fn collect_classic_only_constants(
     // Collect from all classic branches (union).
     // Use HashMap<name, HashMap<field, value>> as the intermediate for enum fields so that
     // merging across multiple classic branches is O(1) per field rather than O(n) linear scan.
-    let mut classic_constants: HashMap<String, (String, String)> = HashMap::new();
-    let mut classic_enums_map: HashMap<String, HashMap<String, i64>> = HashMap::new();
+    let mut classic_constants: HashMap<String, (String, String)> = HashMap::default();
+    let mut classic_enums_map: HashMap<String, HashMap<String, i64>> = HashMap::default();
 
     for dir in classic_dirs {
         let api_doc = parse_api_doc_dir(dir);

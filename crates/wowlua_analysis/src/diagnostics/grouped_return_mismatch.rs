@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use crate::analysis::AnalysisResult;
 use crate::ast::{AstNode, Return};
 use crate::syntax::SyntaxNode;
@@ -21,8 +21,8 @@ impl DiagnosticPass for GroupedReturnMismatch {
 
             // Group ret symbols by return statement (same def_node range = same statement).
             // Only include explicit expressions (not multi-return expanded slots).
-            let mut groups: HashMap<(u32, u32), Vec<(usize, ExprId)>> = HashMap::new();
-            let mut group_node_ids: HashMap<(u32, u32), crate::syntax::tree::NodeId> = HashMap::new();
+            let mut groups: HashMap<(u32, u32), Vec<(usize, ExprId)>> = HashMap::default();
+            let mut group_node_ids: HashMap<(u32, u32), crate::syntax::tree::NodeId> = HashMap::default();
             for &ret_sym_idx in &func.rets {
                 let sym = analysis.sym(ret_sym_idx);
                 let SymbolIdentifier::FunctionRet(_, ret_index) = &sym.id else { continue };
@@ -281,7 +281,7 @@ fn detect_correlated_through_branches(
     // For each return expression, collect all reachable call_ranges.
     let mut per_expr_ranges: Vec<HashSet<(u32, u32)>> = Vec::new();
     for &expr_id in return_exprs {
-        let mut ranges = HashSet::new();
+        let mut ranges = HashSet::default();
         collect_call_ranges_from_expr(expr_id, analysis, &mut ranges, 0);
         if ranges.is_empty() {
             return false;

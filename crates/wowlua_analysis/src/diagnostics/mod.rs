@@ -296,7 +296,7 @@ pub trait DiagnosticPass {
 // ── Run all diagnostic passes ──────────────────────────────────────────────────
 
 pub fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDiagnostic> {
-    use std::collections::HashSet;
+    use crate::collections::HashSet;
 
     // `@meta` files run only annotation type-integrity passes (see
     // `DiagnosticPass::runs_in_meta`); every other pass — the AST-walk and
@@ -410,7 +410,7 @@ pub fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDiagnosti
         true
     });
 
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     diags.retain(|d| seen.insert((d.code, d.start, d.end)));
 
     if !meta && let Some(ref msg) = analysis.safety_limit_hit {
@@ -717,7 +717,7 @@ pub fn collect_class_indices(t: &ValueType, out: &mut Vec<TableIndex>) {
 /// proportional to the size of the subclass tree, not the workspace.
 fn subclass_overrides_method(analysis: &AnalysisResult, base_idx: TableIndex, method_name: &str) -> bool {
     let subclasses = analysis.direct_subclasses();
-    let mut visited: std::collections::HashSet<TableIndex> = std::collections::HashSet::new();
+    let mut visited: crate::collections::HashSet<TableIndex> = crate::collections::HashSet::default();
     let mut stack: Vec<TableIndex> = subclasses.get(&base_idx).cloned().unwrap_or_default();
     while let Some(idx) = stack.pop() {
         if !visited.insert(idx) { continue; }

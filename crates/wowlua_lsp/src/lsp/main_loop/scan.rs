@@ -170,7 +170,7 @@ pub(super) fn compute_ws_diagnostics(
                 .collect();
             // Convert WowDiagnostic to LSP Diagnostic for each file.
             let utf8 = use_utf8();
-            let mut result = HashMap::new();
+            let mut result = HashMap::default();
             for (fpath, wow_diags) in raw_diags {
                 let file_disabled = configs.disabled_diagnostics_for(&fpath);
                 if file_disabled.contains("unused-function") { continue; }
@@ -206,10 +206,10 @@ pub(super) fn compute_ws_diagnostics(
             }
             result
         } else {
-            HashMap::new()
+            HashMap::default()
         }
     } else {
-        HashMap::new()
+        HashMap::default()
     };
 
     // Merge per-file diagnostics with cross-file diagnostics using O(1) lookups.
@@ -238,7 +238,7 @@ pub(super) fn compute_ws_diagnostics(
     // non-cancelled warm). Incremental/cancelled warms skip this entirely and
     // return `None` so the caller preserves its existing cache.
     let crossfile_result = if crossfile_computed {
-        let mut by_uri = HashMap::new();
+        let mut by_uri = HashMap::default();
         for (fpath, extra_diags) in cross_file_diags {
             let uri_s = match abs_path_to_uri(&fpath) {
                 Some(u) => u.to_string(),
@@ -421,7 +421,7 @@ pub(super) fn collect_lua_paths_filtered(
 /// path (scan-order-stable — see `collect_lua_paths_filtered`).
 fn dedup_paths_in_place(paths: &mut Vec<PathBuf>) {
     // filesystem-identity key -> index of the chosen representative in `paths`.
-    let mut chosen: HashMap<FileKey, usize> = HashMap::new();
+    let mut chosen: HashMap<FileKey, usize> = HashMap::default();
     for (i, p) in paths.iter().enumerate() {
         let key = file_identity(p).map_or_else(|| FileKey::Path(p.clone()), FileKey::Id);
         match chosen.get(&key).copied() {
@@ -556,7 +556,7 @@ pub(super) fn scan_lua_file(path: &Path, correlated_returns: CorrelatedReturns, 
 
 pub fn scan_paths_with_overrides(
     paths: &[PathBuf],
-    override_paths: &std::collections::HashSet<PathBuf>,
+    override_paths: &crate::collections::HashSet<PathBuf>,
     configs: Option<&crate::config::ProjectConfigs>,
     stub_globals: &[ExternalGlobal],
     stub_classes: &[ClassDecl],
@@ -584,8 +584,8 @@ pub fn scan_paths_with_overrides(
     let mut aliases = Vec::new();
     let mut globals = Vec::new();
     let mut events = Vec::new();
-    let mut addon_ns_class_files: HashMap<PathBuf, String> = HashMap::new();
-    let mut callable_classes: HashSet<String> = HashSet::new();
+    let mut addon_ns_class_files: HashMap<PathBuf, String> = HashMap::default();
+    let mut callable_classes: HashSet<String> = HashSet::default();
     let mut dynamic_global_prefixes: Vec<String> = Vec::new();
     for (file_path, r) in results {
         classes.extend(r.scan.classes);
@@ -723,7 +723,7 @@ pub fn scan_paths_with_overrides(
         // Pre-collect @field names so funcall/bare scans can skip fields already declared.
         // Typed self-fields from other files aren't included yet, so a small number of
         // redundant funcall entries may be emitted — build_on_stubs deduplicates them.
-        let mut typed_field_names: HashSet<(String, String)> = HashSet::new();
+        let mut typed_field_names: HashSet<(String, String)> = HashSet::default();
         for decl in &classes {
             for (field_name, _, _) in &decl.fields {
                 typed_field_names.insert((decl.name.clone(), field_name.clone()));
@@ -832,7 +832,7 @@ pub fn scan_paths_with_overrides(
         }
     };
 
-    WorkspaceScanResult { classes, aliases, globals, addon_ns_class_files, events, callable_classes, dynamic_global_prefixes, callback_registries, string_consts, xml_bound_names: HashSet::new() }
+    WorkspaceScanResult { classes, aliases, globals, addon_ns_class_files, events, callable_classes, dynamic_global_prefixes, callback_registries, string_consts, xml_bound_names: HashSet::default() }
 }
 
 /// Partition XML classes into direct classes and overlay classes based on whether
@@ -862,7 +862,7 @@ pub(super) fn partition_xml_classes(
 pub(super) fn partition_xml_overlay_classes(
     ws_file_classes: &HashMap<PathBuf, Vec<ClassDecl>>,
 ) -> (Vec<ClassDecl>, Vec<ClassDecl>) {
-    let mut lua_class_names: HashSet<String> = HashSet::new();
+    let mut lua_class_names: HashSet<String> = HashSet::default();
     let mut lua_classes: Vec<ClassDecl> = Vec::new();
     let mut xml_classes: Vec<ClassDecl> = Vec::new();
     for (path, classes) in ws_file_classes {
@@ -915,7 +915,7 @@ pub(super) fn scan_xml_paths_into(xml_paths: &[PathBuf], result: &mut WorkspaceS
 }
 
 pub fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> WorkspaceScanResult {
-    scan_workspace_with_stubs(dirs, configs, &[], &[], &crate::annotations::CreatesGlobalMap::new())
+    scan_workspace_with_stubs(dirs, configs, &[], &[], &crate::annotations::CreatesGlobalMap::default())
 }
 
 pub fn scan_workspace_with_stubs(
@@ -942,7 +942,7 @@ pub fn scan_workspace_with_stubs(
     // so each is scanned once — mirrors `scan_directory_pass1`.
     dedup_paths_in_place(&mut paths);
     dedup_paths_in_place(&mut xml_paths);
-    let mut result = scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs), stub_globals, stub_classes, creates_global_specs);
+    let mut result = scan_paths_with_overrides(&paths, &crate::collections::HashSet::default(), Some(configs), stub_globals, stub_classes, creates_global_specs);
     scan_xml_paths_into(&xml_paths, &mut result);
     // Apply detected dynamic global prefixes to configs so that reads of
     // PREFIX<anything> across the workspace don't false-positive.
@@ -983,7 +983,7 @@ pub(super) fn scan_lua_file_cached(path: &Path, correlated_returns: CorrelatedRe
     // Pass 1 runs without stubs (overlapped with stub loading), so the
     // `@creates-global` spec map is empty here; those named globals are detected
     // later in `complete_directory_scan` (pass 2) where stubs are available.
-    let (mut file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), correlated_returns, protected_prefix, &crate::annotations::CreatesGlobalMap::new());
+    let (mut file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), correlated_returns, protected_prefix, &crate::annotations::CreatesGlobalMap::default());
     mark_meta_globals(&mut file_globals, scan.has_meta);
     let dynamic_global_prefixes = crate::annotations::scan_dynamic_global_prefixes(root);
     Some(CachedFileScan { tree, scan, file_globals, addon_ns_class, dynamic_global_prefixes })
@@ -1217,7 +1217,7 @@ pub(super) fn complete_directory_scan(
 
 /// Collect all unique dynamic prefix patterns from per-file maps.
 pub(super) fn collect_all_dynamic_prefixes(file_prefixes: &HashMap<PathBuf, Vec<String>>) -> Vec<String> {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut result = Vec::new();
     for prefixes in file_prefixes.values() {
         for pfx in prefixes {

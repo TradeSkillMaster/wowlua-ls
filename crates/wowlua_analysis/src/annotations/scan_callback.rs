@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall, TableConstructor, FieldKind};
 use crate::syntax::SyntaxNode;
 use super::annotation_scanning::{
@@ -22,7 +22,7 @@ pub fn build_generates_events_methods(
 pub fn build_generates_events_methods_iter<'a>(
     globals: impl Iterator<Item = &'a ExternalGlobal>,
 ) -> HashMap<String, GeneratesEventsSpec> {
-    let mut map: HashMap<String, GeneratesEventsSpec> = HashMap::new();
+    let mut map: HashMap<String, GeneratesEventsSpec> = HashMap::default();
     for g in globals.filter(|g| g.generates_events.is_some()) {
         let leaf = match &g.kind {
             ExternalGlobalKind::Method(_, method_name, _) => method_name.clone(),

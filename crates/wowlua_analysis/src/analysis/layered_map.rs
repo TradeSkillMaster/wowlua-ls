@@ -1,6 +1,6 @@
 //! Per-file views of the shared name maps on `PreResolvedGlobals`.
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -20,7 +20,7 @@ pub struct LayeredMap<V: 'static> {
 
 impl<V> LayeredMap<V> {
     pub fn new(ext: Arc<PreResolvedGlobals>, ext_map: fn(&PreResolvedGlobals) -> &HashMap<String, V>) -> Self {
-        Self { ext, ext_map, local: HashMap::new() }
+        Self { ext, ext_map, local: HashMap::default() }
     }
 
     fn ext_map(&self) -> &HashMap<String, V> {

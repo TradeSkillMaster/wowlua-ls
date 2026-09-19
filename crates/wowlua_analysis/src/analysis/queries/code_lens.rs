@@ -8,12 +8,12 @@ impl AnalysisResult {
         // tables). In per-file analysis, methods from `function Class:Method()`
         // end up on the variable-backed table, not the prescan class table.
         // Use function_owner_class to associate methods with classes.
-        let mut class_methods: HashMap<&str, HashSet<&str>> = HashMap::new();
+        let mut class_methods: HashMap<&str, HashSet<&str>> = HashMap::default();
         // (class, method) → the method's defining expr, used to resolve the
         // overridden (parent) method's location for the "overrides X" lens. Same
         // iteration order/source as `class_methods`, so any name in the latter has
         // an entry here; first writer wins (local definitions before external).
-        let mut method_exprs: HashMap<(&str, &str), ExprId> = HashMap::new();
+        let mut method_exprs: HashMap<(&str, &str), ExprId> = HashMap::default();
         for table in &self.ir.tables {
             for (field_name, field) in &table.fields {
                 if let Some(func_idx) = self.field_func_idx(field)
@@ -39,7 +39,7 @@ impl AnalysisResult {
         }
 
         // Build child-count map: parent_class_name → count of direct subclasses.
-        let mut child_counts: HashMap<&str, usize> = HashMap::new();
+        let mut child_counts: HashMap<&str, usize> = HashMap::default();
         for &table_idx in self.ir.classes.values() {
             for &parent_idx in &self.table(table_idx).parent_classes {
                 if let Some(parent_name) = &self.table(parent_idx).class_name {
@@ -118,7 +118,7 @@ impl AnalysisResult {
         method_name: &str,
         class_methods: &HashMap<&str, HashSet<&str>>,
     ) -> Option<String> {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         self.find_overridden_parent_inner(table_idx, method_name, class_methods, &mut visited)
     }
 
@@ -176,7 +176,7 @@ impl AnalysisResult {
         }
 
         // Class/table methods and non-class table functions
-        let mut visited_tables: HashSet<TableIndex> = HashSet::new();
+        let mut visited_tables: HashSet<TableIndex> = HashSet::default();
 
         // Class tables (from ir.classes)
         for &table_idx in self.ir.classes.values() {

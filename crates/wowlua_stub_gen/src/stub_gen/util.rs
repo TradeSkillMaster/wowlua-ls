@@ -63,7 +63,7 @@ pub(in crate::stub_gen) fn get_existing_names_impl(stubs_dir: &Path, exclude_fil
     let func_re = regex_lite::Regex::new(r"(?m)^function ([\w.]+)").unwrap();
     let assign_re = regex_lite::Regex::new(r"(?m)^(\w+)\s*=").unwrap();
     let class_re = regex_lite::Regex::new(r"---@class\s+(\w+)").unwrap();
-    let mut existing = HashSet::new();
+    let mut existing = HashSet::default();
     collect_names_recursive(stubs_dir, &func_re, &assign_re, &class_re, exclude_files, skip_annotated, &mut existing);
     existing
 }
@@ -113,7 +113,7 @@ pub(in crate::stub_gen) fn collect_names_recursive(
 
 
 pub(in crate::stub_gen) fn get_existing_names_with(dir: &Path, re: &regex_lite::Regex, exclude: &[&str]) -> HashSet<String> {
-    let mut out = HashSet::new();
+    let mut out = HashSet::default();
     walk_lua_files(dir, exclude, &mut |content| {
         for c in re.captures_iter(content) {
             out.insert(c.get(1).unwrap().as_str().to_string());
@@ -124,7 +124,7 @@ pub(in crate::stub_gen) fn get_existing_names_with(dir: &Path, re: &regex_lite::
 
 
 pub(in crate::stub_gen) fn get_existing_names_with2(dir: &Path, re1: &regex_lite::Regex, re2: &regex_lite::Regex, exclude: &[&str]) -> HashSet<String> {
-    let mut out = HashSet::new();
+    let mut out = HashSet::default();
     walk_lua_files(dir, exclude, &mut |content| {
         for c in re1.captures_iter(content) {
             out.insert(c.get(1).unwrap().as_str().to_string());
@@ -229,7 +229,7 @@ pub(in crate::stub_gen) fn check_override_stem_collisions(
     vendor_dirs: &[PathBuf],
     override_stems: &HashSet<String>,
 ) {
-    let mut by_stem: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    let mut by_stem: HashMap<String, Vec<PathBuf>> = HashMap::default();
     for vendor_dir in vendor_dirs {
         let mut vendor_paths = Vec::new();
         collect_lua_paths(vendor_dir, &mut vendor_paths);

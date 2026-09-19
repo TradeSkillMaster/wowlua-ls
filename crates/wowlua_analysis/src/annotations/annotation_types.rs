@@ -259,7 +259,7 @@ pub fn detect_event_params_from_generic(
     proj: &crate::types::ProjectionKind,
     generics: &[(String, Option<String>)],
     all_params: &[super::ParamInfo],
-    event_types: &std::collections::HashMap<String, std::collections::HashMap<String, crate::pre_globals::EventPayload>>,
+    event_types: &crate::collections::HashMap<String, crate::collections::HashMap<String, crate::pre_globals::EventPayload>>,
 ) -> Option<(String, usize)> {
     let crate::types::ProjectionKind::Params(gen_name) = proj else { return None };
     let constraint = generics.iter()

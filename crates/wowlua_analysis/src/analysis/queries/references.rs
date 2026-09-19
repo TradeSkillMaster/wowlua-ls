@@ -254,7 +254,7 @@ impl AnalysisResult {
                 let mut results = Vec::new();
                 // Track shadow locals accepted via the scope-0 shadow rule so we can
                 // drop their first-version def-nodes when include_declaration is false.
-                let mut shadow_locals: HashSet<SymbolIndex> = HashSet::new();
+                let mut shadow_locals: HashSet<SymbolIndex> = HashSet::default();
 
                 // Add definition-site Name tokens from all symbol versions.
                 // This catches parameter defs that are outside the function body scope

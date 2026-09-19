@@ -102,9 +102,9 @@ pub(super) fn diff_changed_names<T, F>(old: &[T], new: &[T], name_of: impl Fn(&T
 where
     F: Fn(&T, &T) -> bool,
 {
-    use std::collections::HashMap;
+    use crate::collections::HashMap;
     let group = |items: &[T]| -> HashMap<String, Vec<usize>> {
-        let mut m: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut m: HashMap<String, Vec<usize>> = HashMap::default();
         for (i, it) in items.iter().enumerate() {
             m.entry(name_of(it).to_string()).or_default().push(i);
         }
@@ -112,7 +112,7 @@ where
     };
     let old_groups = group(old);
     let new_groups = group(new);
-    let mut changed = HashSet::new();
+    let mut changed = HashSet::default();
     // Collect the union of keys once to avoid visiting names present in both
     // groups twice (the old chain approach relied on a `changed.contains`
     // guard to skip the duplicate).
@@ -157,9 +157,9 @@ pub(super) fn build_reverse_dep_graph<'a>(
     aliases: impl IntoIterator<Item = &'a AliasDecl>,
     globals: impl IntoIterator<Item = &'a ExternalGlobal>,
 ) -> HashMap<String, HashSet<String>> {
-    let mut rev: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut rev: HashMap<String, HashSet<String>> = HashMap::default();
     for c in classes {
-        let mut names = HashSet::new();
+        let mut names = HashSet::default();
         crate::annotations::class_referenced_names(c, &mut names);
         for r in names {
             if r != c.name {
@@ -168,7 +168,7 @@ pub(super) fn build_reverse_dep_graph<'a>(
         }
     }
     for a in aliases {
-        let mut names = HashSet::new();
+        let mut names = HashSet::default();
         crate::annotations::collect_referenced_type_names(&a.typ, &mut names);
         for r in names {
             if r != a.name {
@@ -180,7 +180,7 @@ pub(super) fn build_reverse_dep_graph<'a>(
     // files calling that global (mentioning its name) must be re-analyzed when
     // the referenced declaration changes.
     for g in globals {
-        let mut names = HashSet::new();
+        let mut names = HashSet::default();
         crate::annotations::global_referenced_names(g, &mut names);
         for r in names {
             if r != g.name {
@@ -198,7 +198,7 @@ pub(super) fn expand_affected_names(
     seed: HashSet<String>,
     rev: &HashMap<String, HashSet<String>>,
 ) -> HashSet<String> {
-    let mut result: HashSet<String> = HashSet::new();
+    let mut result: HashSet<String> = HashSet::default();
     let mut stack: Vec<String> = seed.into_iter().collect();
     while let Some(name) = stack.pop() {
         if !result.insert(name.clone()) {
@@ -332,7 +332,7 @@ pub(super) fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax:
     // new values. These drive *which files* are re-analyzed, not *whether* we
     // rebuild — that is still decided by the `*_changed` booleans above.
     let changed_decl_names: HashSet<String> = {
-        let mut names = HashSet::new();
+        let mut names = HashSet::default();
         if globals_changed {
             match ws.ws_file_globals.get(&file_path) {
                 Some(old) => names.extend(globals_changed_names(old, &new_globals)),

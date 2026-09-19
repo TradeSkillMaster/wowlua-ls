@@ -26,7 +26,7 @@
 //! render in the same constant color the grammar gives them in plain Lua rather
 //! than the keyword color used for `and`/`or`/`not`.
 
-use std::collections::HashSet;
+use crate::collections::HashSet;
 
 use crate::diagnostics::expression_type::compute_content_start;
 use crate::syntax::parser::Parser;

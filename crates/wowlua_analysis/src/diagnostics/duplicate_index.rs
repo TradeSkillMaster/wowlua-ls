@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 use crate::analysis::AnalysisResult;
 use crate::analysis::checks::extract_bracket_string_key;
@@ -16,7 +16,7 @@ impl DiagnosticPass for DuplicateIndex {
             if node.kind() != SyntaxKind::TableConstructor { continue; }
             let Some(tc) = TableConstructor::cast(node) else { continue };
             // Maps field name → (start, end) of first occurrence.
-            let mut seen: HashMap<String, (usize, usize)> = HashMap::new();
+            let mut seen: HashMap<String, (usize, usize)> = HashMap::default();
             for field in tc.fields() {
                 let name = match field.kind() {
                     Some(FieldKind::Named { name, .. }) => Some(name),

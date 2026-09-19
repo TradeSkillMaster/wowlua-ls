@@ -56,19 +56,19 @@ function FakeWidget:Hide() end
     let paths = vec![stub_dir.join("Lib.lua")];
     let scan = crate::lsp::scan_paths_with_overrides(
         &paths,
-        &HashSet::new(),
+        &HashSet::default(),
         None,
         &[],
         &[],
-        &crate::annotations::CreatesGlobalMap::new(),
+        &crate::annotations::CreatesGlobalMap::default(),
     );
     let pg = crate::pre_globals::PreResolvedGlobals::build(
         &scan.globals,
         &scan.classes,
         &scan.aliases,
         false,
-        &HashMap::new(),
-        &HashSet::new(),
+        &HashMap::default(),
+        &HashSet::default(),
     );
     // Sanity: the methods attach to LibObj as (annotation-less) fields, so the
     // pre-fix matcher WOULD have seen a 3-way overlap on Enable/Disable/GetName.
@@ -257,11 +257,11 @@ SomeLocal.field = 1
     )
     .unwrap();
 
-    let mut frame_names = HashSet::new();
+    let mut frame_names = HashSet::default();
     frame_names.insert("TestFrame".to_string());
     frame_names.insert("OtherFrame".to_string());
 
-    let result = scan_framexml_lua_fields(std::slice::from_ref(&tmp), &frame_names, &HashMap::new());
+    let result = scan_framexml_lua_fields(std::slice::from_ref(&tmp), &frame_names, &HashMap::default());
 
     // Check TestFrame fields
     let test_fields = result.get("TestFrame").expect("TestFrame should have fields");
@@ -310,9 +310,9 @@ type XmlScanResult = (
 fn run_xml_scan(xml: &str) -> XmlScanResult {
     let regs = MixinScanRegexes::new();
     let stripped = regs.comment.replace_all(xml, "");
-    let mut frames = HashMap::new();
-    let mut direct = HashMap::new();
-    let mut inh = HashMap::new();
+    let mut frames = HashMap::default();
+    let mut direct = HashMap::default();
+    let mut inh = HashMap::default();
     accumulate_xml_frames_and_mixins(&stripped, &regs,
         &mut frames, &mut direct, &mut inh);
     let resolved = resolve_inherited_mixins(&direct, &inh);
@@ -498,10 +498,10 @@ SpellBookFrameMixin.numTabs = 5
     )
     .unwrap();
 
-    let mut frame_names = HashSet::new();
+    let mut frame_names = HashSet::default();
     frame_names.insert("SpellBookFrame".to_string());
     frame_names.insert("AltSpellBookFrame".to_string());
-    let mut mixin_to_frames = HashMap::new();
+    let mut mixin_to_frames = HashMap::default();
     mixin_to_frames.insert(
         "SpellBookFrameMixin".to_string(),
         vec!["SpellBookFrame".to_string(), "AltSpellBookFrame".to_string()],
@@ -543,9 +543,9 @@ function TooltipMixin:ShowTooltip() end
     )
     .unwrap();
 
-    let mut frame_names = HashSet::new();
+    let mut frame_names = HashSet::default();
     frame_names.insert("MultiButton".to_string());
-    let mut mixin_to_frames = HashMap::new();
+    let mut mixin_to_frames = HashMap::default();
     mixin_to_frames.insert("ButtonMixin".to_string(),  vec!["MultiButton".to_string()]);
     mixin_to_frames.insert("TooltipMixin".to_string(), vec!["MultiButton".to_string()]);
 
@@ -780,7 +780,7 @@ local TestDoc =
 
 #[test]
 fn test_normalize_blizzard_type() {
-    let no_enums = HashSet::new();
+    let no_enums = HashSet::default();
     // C-type names that need normalization (no @alias in BlizzardType.lua)
     assert_eq!(normalize_blizzard_type("bool", None, &no_enums), "boolean");
     assert_eq!(normalize_blizzard_type("cstring", None, &no_enums), "string");
@@ -811,7 +811,7 @@ fn test_normalize_blizzard_type() {
 
 #[test]
 fn test_resolve_blizzard_param_type_mixin_priority() {
-    let no_enums = HashSet::new();
+    let no_enums = HashSet::default();
     // When Mixin is present, it should be used instead of Type
     let p = BlizzardParam {
         name: "location".into(),
@@ -1032,14 +1032,14 @@ fn test_generate_wiki_stubs_dedups_by_emitted_name() {
         \n\
         ==Returns==\n\
         :;handler:{{apitype|function}} - the current error handler.";
-    let mut pages = HashMap::new();
+    let mut pages = HashMap::default();
     pages.insert("Geterrorhandler".to_string(), wikitext.to_string());
     pages.insert("geterrorhandler".to_string(), wikitext.to_string());
-    let mut doc_paths = HashMap::new();
+    let mut doc_paths = HashMap::default();
     doc_paths.insert("Geterrorhandler".to_string(), "API:Geterrorhandler".to_string());
     doc_paths.insert("geterrorhandler".to_string(), "API:Geterrorhandler".to_string());
     let names = vec!["Geterrorhandler".to_string(), "geterrorhandler".to_string()];
-    let out = generate_wiki_stubs(&names, &pages, &HashMap::new(), &doc_paths);
+    let out = generate_wiki_stubs(&names, &pages, &HashMap::default(), &doc_paths);
     let count = out.matches("function geterrorhandler(").count();
     assert_eq!(count, 1, "expected geterrorhandler emitted once, got {count}:\n{out}");
 }
@@ -1457,7 +1457,7 @@ fn test_generate_scriptobject_method_stubs() {
             },
         ],
     };
-    let known_enums = HashSet::new();
+    let known_enums = HashSet::default();
     // Simulate GetText already existing in Ketho's stubs
     let existing: HashSet<(String, String)> = [
         ("FontString".to_string(), "GetText".to_string()),
@@ -1467,7 +1467,7 @@ fn test_generate_scriptobject_method_stubs() {
     let out = generate_scriptobject_method_stubs(&docs, &known_enums, &existing, &declared);
     assert!(!out.contains("---@class"), "a declared class isn't redeclared: {out}");
     // An object no stub declares gets its class, once.
-    let undeclared = generate_scriptobject_method_stubs(&docs, &known_enums, &existing, &HashSet::new());
+    let undeclared = generate_scriptobject_method_stubs(&docs, &known_enums, &existing, &HashSet::default());
     assert_eq!(undeclared.matches("---@class FontString\nlocal FontString = {}\n").count(), 1, "{undeclared}");
 
     // SetSmoothScaling should appear (not in existing). It has a documented
@@ -1639,7 +1639,7 @@ fn test_scan_framexml_utility_tables_no_methods_pruned() {
 
 #[test]
 fn test_generate_framexml_utility_stubs_output() {
-    let mut tables = HashMap::new();
+    let mut tables = HashMap::default();
     tables.insert("TestMixin".to_string(), UtilTableInfo {
         methods: vec![
             UtilMethod { name: "Init".to_string(), params: vec!["x".to_string(), "y".to_string()], is_method: true },
@@ -1658,7 +1658,7 @@ fn test_generate_framexml_utility_stubs_output() {
         is_mixin: false,
     });
 
-    let existing = HashSet::new();
+    let existing = HashSet::default();
     let (output, generated) = generate_framexml_utility_stubs(&tables, &existing);
 
     // Mixin should have @class and global declaration (not local)
@@ -1683,7 +1683,7 @@ fn test_generate_framexml_utility_stubs_output() {
 
 #[test]
 fn test_generate_framexml_utility_stubs_dedup() {
-    let mut tables = HashMap::new();
+    let mut tables = HashMap::default();
     tables.insert("OverriddenUtil".to_string(), UtilTableInfo {
         methods: vec![
             UtilMethod { name: "Func".to_string(), params: vec![], is_method: false },
@@ -1699,7 +1699,7 @@ fn test_generate_framexml_utility_stubs_dedup() {
         is_mixin: false,
     });
 
-    let mut existing = HashSet::new();
+    let mut existing = HashSet::default();
     existing.insert("OverriddenUtil".to_string());
     let (output, generated) = generate_framexml_utility_stubs(&tables, &existing);
 
@@ -1754,8 +1754,8 @@ fn test_generate_blizzard_event_stubs_extra_events() {
         predicates: Vec::new(),
         script_objects: vec![],
     };
-    let known_enums = HashSet::new();
-    let mut extra = HashSet::new();
+    let known_enums = HashSet::default();
+    let mut extra = HashSet::default();
     // One genuinely-new FrameXML-only event and one that's already documented.
     extra.insert("CRAFT_SHOW".to_string());
     extra.insert("PLAYER_LOGIN".to_string());
@@ -2060,7 +2060,7 @@ fn test_param_flag_whole_word() {
 
 #[test]
 fn test_build_secret_index_rules() {
-    let index = build_secret_index(&secret_test_docs(), &[], &HashSet::new());
+    let index = build_secret_index(&secret_test_docs(), &[], &HashSet::default());
 
     // Predicated: every return except NeverSecret ones, with the predicate docs.
     let cast = &index.functions["UnitCastInfo"];
@@ -2124,7 +2124,7 @@ fn test_build_secret_index_rules() {
 
 #[test]
 fn test_apply_secret_annotations_rewrites_stub_text() {
-    let index = build_secret_index(&secret_test_docs(), &[], &HashSet::new());
+    let index = build_secret_index(&secret_test_docs(), &[], &HashSet::default());
     let stub = "\
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_UnitCastInfo)
 ---@param unit UnitToken
@@ -2357,9 +2357,9 @@ local AuraDoc =
     let index = build_secret_index(&docs, &wiki, &table_types);
 
     // A reached wiki structure's non-NeverSecret scalar fields may be secret.
-    assert_eq!(index.structures["AuraInfo"], HashSet::from(["duration".to_string()]));
+    assert_eq!(index.structures["AuraInfo"], HashSet::from_iter(["duration".to_string()]));
     // Reached through a doc structure's array field.
-    assert_eq!(index.structures["AuraBrief"], HashSet::from(["spellId".to_string()]));
+    assert_eq!(index.structures["AuraBrief"], HashSet::from_iter(["spellId".to_string()]));
     assert!(!index.structures.contains_key("TipData"));
     assert!(index.structures["CastData"].contains("spellName"));
     // Structure returns are tables; only their fields carry secrecy.
@@ -2587,7 +2587,7 @@ fn test_build_secret_index_guards_and_preconditions() {
     use crate::secrets::{PreconditionFailure, SecretArgsPolicy, SecretPrecondition};
     let docs = guard_test_docs();
     assert_eq!(docs.predicates.iter().find(|p| p.name == "RequiresUnitAuraAccess").and_then(|p| p.failure_mode.as_deref()), Some("Error"));
-    let index = build_secret_index(&docs, &[], &HashSet::new());
+    let index = build_secret_index(&docs, &[], &HashSet::default());
 
     // Curated `C_Secrets` guards, with their parameters' positions.
     let clears = |name: &str| index.functions[name].clears.clone().expect(name);
@@ -2631,7 +2631,7 @@ fn test_build_secret_index_guards_and_preconditions() {
 
 #[test]
 fn test_apply_secret_annotations_guards_and_preconditions() {
-    let index = build_secret_index(&guard_test_docs(), &[], &HashSet::new());
+    let index = build_secret_index(&guard_test_docs(), &[], &HashSet::default());
     // Stub parameter names differ from the docs'; annotations use the stub's.
     let stub = "\
 ---@param unitToken UnitToken

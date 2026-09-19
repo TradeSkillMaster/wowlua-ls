@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use crate::analysis::{Analysis, AnalysisResult};
 use crate::ast::*;
 use crate::syntax::SyntaxKind;
@@ -16,9 +16,9 @@ impl DiagnosticPass for AnnotationMetadata {
     // ── Part 1: Comment-level checks ──────────────────────────────
     // duplicate_constructor, duplicate_doc_alias, duplicate_doc_field
     let mut current_class: Option<String> = None;
-    let mut class_constructor_count: HashMap<String, u32> = HashMap::new();
-    let mut class_field_names: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut seen_aliases: HashSet<String> = HashSet::new();
+    let mut class_constructor_count: HashMap<String, u32> = HashMap::default();
+    let mut class_field_names: HashMap<String, HashSet<String>> = HashMap::default();
+    let mut seen_aliases: HashSet<String> = HashSet::default();
 
     for event in root.descendants_with_tokens() {
         let NodeOrToken::Token(tok) = event else { continue };
@@ -131,7 +131,7 @@ impl DiagnosticPass for AnnotationMetadata {
             let func_start = node_start as usize;
             let func_end = func_start + "function".len();
 
-            let mut seen_params: HashSet<String> = HashSet::new();
+            let mut seen_params: HashSet<String> = HashSet::default();
             for p in &annotations.params {
                 let (s, e) = comment_ranges.iter()
                     .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@param") && text.contains(&p.name))

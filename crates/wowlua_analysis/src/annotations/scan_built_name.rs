@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall};
 use crate::syntax::SyntaxNode;
 use super::{
@@ -22,12 +22,12 @@ struct BuildsFieldInfo {
 /// Build the `built_name_funcs` map from all globals. Shared between `DefclassContext`
 /// and `BuiltNameContext` to avoid duplicating this logic.
 pub fn build_built_name_map(all_globals: &[ExternalGlobal]) -> HashMap<String, usize> {
-    let mut built_name_funcs: HashMap<String, usize> = HashMap::new();
+    let mut built_name_funcs: HashMap<String, usize> = HashMap::default();
     for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
         let Some(path) = func_path(g) else { continue };
         built_name_funcs.insert(path, g.built_name.unwrap());
     }
-    let mut class_init_built_name: HashMap<String, usize> = HashMap::new();
+    let mut class_init_built_name: HashMap<String, usize> = HashMap::default();
     for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
         if matches!(&g.kind, ExternalGlobalKind::Method(_, _, _)) {
             class_init_built_name.insert(g.name.clone(), g.built_name.unwrap());
@@ -63,13 +63,13 @@ pub struct BuiltNameContext {
 
 impl BuiltNameContext {
     pub fn new(all_globals: &[ExternalGlobal]) -> Self {
-        let mut func_path_to_schema: HashMap<String, String> = HashMap::new();
+        let mut func_path_to_schema: HashMap<String, String> = HashMap::default();
         for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
             let Some(path) = func_path(g) else { continue };
             func_path_to_schema.insert(path, g.name.clone());
         }
         // Also propagate schema mapping for factory functions that return a schema class
-        let mut class_init_built_name: HashMap<String, usize> = HashMap::new();
+        let mut class_init_built_name: HashMap<String, usize> = HashMap::default();
         for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
             if matches!(&g.kind, ExternalGlobalKind::Method(_, _, _)) {
                 class_init_built_name.insert(g.name.clone(), g.built_name.unwrap());
@@ -93,7 +93,7 @@ impl BuiltNameContext {
 
         let built_name_funcs = build_built_name_map(all_globals);
 
-        let mut builds_field_funcs: HashMap<String, BuildsFieldInfo> = HashMap::new();
+        let mut builds_field_funcs: HashMap<String, BuildsFieldInfo> = HashMap::default();
         for g in all_globals.iter().filter(|g| g.builds_field.is_some()) {
             let Some(method_path) = func_path(g) else { continue };
             let (param_idx, field_type) = g.builds_field.clone().unwrap();
@@ -105,7 +105,7 @@ impl BuiltNameContext {
             });
         }
 
-        let mut schema_built_parent: HashMap<String, String> = HashMap::new();
+        let mut schema_built_parent: HashMap<String, String> = HashMap::default();
         for g in all_globals {
             let class_name = match &g.kind {
                 ExternalGlobalKind::Method(_, _, _) => &g.name,
@@ -196,7 +196,7 @@ pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameC
         implicit_protected_prefix: bool,
     ) -> BuiltFields {
         let mut fields = Vec::new();
-        let mut field_ranges = HashMap::new();
+        let mut field_ranges = HashMap::default();
         collect_built_fields(call, schema_class, builds_field_funcs, &mut fields, &mut field_ranges, implicit_protected_prefix);
         (fields, field_ranges)
     }
@@ -268,7 +268,7 @@ pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameC
             return field_type.clone();
         }
         // Build substitution map: generic_name → class_name from backtick params
-        let mut subs: HashMap<String, String> = HashMap::new();
+        let mut subs: HashMap<String, String> = HashMap::default();
         for (gen_name, _) in generics {
             // Find param with Backtick(Simple(gen_name)) type, including inside unions
             for (i, param) in params.iter().enumerate() {
@@ -328,7 +328,7 @@ pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameC
     }
 
     let mut results = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::collections::HashSet::default();
     let mut all_stmts = Vec::new();
     collect_statements_recursive(&block, &mut all_stmts);
     for stmt in &all_stmts {
@@ -375,20 +375,20 @@ pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameC
                     generics: Vec::new(),
                     constructor_methods: Vec::new(),
                     constraint_type_arg_subs: Vec::new(),
-                    field_built_names: HashMap::new(),
+                    field_built_names: HashMap::default(),
                     is_enum: false,
                     is_key_enum: false,
                     correlated_groups: Vec::new(),
                     def_range: Some(name_range),
                     def_path: None,
                     field_ranges,
-                    field_paths: HashMap::new(),
+                    field_paths: HashMap::default(),
                     see: Vec::new(),
-                    declared_field_names: HashSet::new(),
-                    field_literals: HashMap::new(),
-                    field_descriptions: HashMap::new(),
-                    bare_inferred_field_names: HashSet::new(),
-                    deferred_field_call_ranges: HashMap::new(),
+                    declared_field_names: HashSet::default(),
+                    field_literals: HashMap::default(),
+                    field_descriptions: HashMap::default(),
+                    bare_inferred_field_names: HashSet::default(),
+                    deferred_field_call_ranges: HashMap::default(),
                     secret_when: Vec::new(),
                 });
             }

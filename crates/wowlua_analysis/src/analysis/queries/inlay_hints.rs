@@ -56,7 +56,7 @@ impl AnalysisResult {
         range: (u32, u32),
         hints: &mut Vec<InlayHintData>,
     ) {
-        let mut seen_call_ranges: HashSet<(u32, u32)> = HashSet::new();
+        let mut seen_call_ranges: HashSet<(u32, u32)> = HashSet::default();
         for (&expr_id, cr) in &self.ir.call_resolutions {
             let call_range = match self.ir.expr(expr_id) {
                 Expr::FunctionCall { call_range, .. } => *call_range,
@@ -340,7 +340,7 @@ impl AnalysisResult {
     ) {
         // Build a set of expr IDs that are used as the `table` of a FieldAccess.
         // These are the "chained" call results — their return type feeds into the next access.
-        let mut chained_exprs: HashSet<ExprId> = HashSet::new();
+        let mut chained_exprs: HashSet<ExprId> = HashSet::default();
         for expr in &self.ir.exprs {
             if let Expr::FieldAccess { table, .. } = expr {
                 chained_exprs.insert(*table);

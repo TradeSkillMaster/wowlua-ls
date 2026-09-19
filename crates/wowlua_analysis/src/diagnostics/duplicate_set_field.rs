@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use crate::analysis::AnalysisResult;
 use crate::types::*;
 use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
@@ -44,7 +44,7 @@ fn rhs_reads_field(analysis: &AnalysisResult, expr_id: ExprId, root_name: &str, 
 impl DiagnosticPass for DuplicateSetField {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let sites = &analysis.ir.field_assignments;
-        let mut seen: HashMap<(TableIndex, &str, &str, ScopeIndex), usize> = HashMap::new();
+        let mut seen: HashMap<(TableIndex, &str, &str, ScopeIndex), usize> = HashMap::default();
         for (i, site) in sites.iter().enumerate() {
             let Some(class_name) = &analysis.table(site.table_idx).class_name else { continue };
             let key = (site.table_idx, site.root_name.as_str(), site.field_name.as_str(), site.scope_idx);

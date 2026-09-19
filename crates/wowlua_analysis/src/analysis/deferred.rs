@@ -97,7 +97,7 @@
 //! back to the coarse type), keeping the fixpoint convergent.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -152,7 +152,7 @@ thread_local! {
     /// recursion when a deferred resolution re-enters the same file (Stage 1
     /// returns the coarse fallback for that back-edge). Cross-file chains into
     /// *other* files recurse normally and terminate via this same guard on cycles.
-    static IN_PROGRESS: RefCell<HashSet<PathBuf>> = RefCell::new(HashSet::new());
+    static IN_PROGRESS: RefCell<HashSet<PathBuf>> = RefCell::new(HashSet::default());
 }
 
 /// RAII owner of one or more [`IN_PROGRESS`] entries. Clears them on drop —
@@ -335,7 +335,7 @@ impl Analysis<'_> {
     pub fn populate_deferred_overlay(&mut self) {
         // Collect candidate external function indices first, so we don't hold a
         // borrow of `self.ir` across the mutating `ensure_overlay` calls.
-        let mut candidates: HashSet<FunctionIndex> = HashSet::new();
+        let mut candidates: HashSet<FunctionIndex> = HashSet::default();
         for res in self.ir.call_resolutions.values() {
             if res.func_idx.is_external() {
                 candidates.insert(res.func_idx);
@@ -460,7 +460,7 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     // Index local functions by their definition start offset, matching the
     // external `function_locations` start (both are the FunctionDefinition node's
     // text-range start).
-    let mut by_start: HashMap<u32, usize> = HashMap::new();
+    let mut by_start: HashMap<u32, usize> = HashMap::default();
     for (i, f) in ir.functions.iter().enumerate() {
         by_start.insert(f.def_node.start, i);
     }
@@ -766,7 +766,7 @@ pub fn resolve_deferred_class_field_type(
     //     classes, so co-located classes are harvested too — those fully covered below
     //     are cached in the same pass, so a file declaring N classes is analyzed once,
     //     not once per class's first cross-file field read.
-    let mut acc: HashMap<(String, String), (Vec<ValueType>, bool)> = HashMap::new();
+    let mut acc: HashMap<(String, String), (Vec<ValueType>, bool)> = HashMap::default();
 
     // Re-entrancy / cycle guard: mark *every* declaring/assigning file of this class as
     // in-progress for the whole harvest — not one at a time — and clear them only once the
@@ -811,8 +811,8 @@ pub fn resolve_deferred_class_field_type(
     // this set is skipped: its accumulation is partial, so it harvests its own full set
     // when first read.
     let target_files: HashSet<&Path> = paths.iter().map(|p| p.as_path()).collect();
-    let mut covered: HashSet<String> = HashSet::new();
-    let mut checked: HashSet<&str> = HashSet::new();
+    let mut covered: HashSet<String> = HashSet::default();
+    let mut checked: HashSet<&str> = HashSet::default();
     for (cls, _) in acc.keys() {
         if !checked.insert(cls.as_str()) {
             continue;
@@ -893,7 +893,7 @@ fn accumulate_class_fields_in_file(
     // Map each local class table that is a workspace `@class` (a registry key) to its
     // class name. All of them — not just the read's target — so this single analysis
     // warms every co-located class.
-    let mut class_name_of: HashMap<TableIndex, String> = HashMap::new();
+    let mut class_name_of: HashMap<TableIndex, String> = HashMap::default();
     for (idx, info) in ir.local_tables() {
         if let Some(name) = &info.class_name
             && ext.deferred_class_field_paths.contains_key(name)
@@ -1264,8 +1264,8 @@ fn global_tables(
             }
         }
     }
-    let mut map = GlobalTables::new();
-    let mut visited: HashSet<TableIndex> = HashSet::new();
+    let mut map = GlobalTables::default();
+    let mut visited: HashSet<TableIndex> = HashSet::default();
     while let Some((local_idx, ext_idx, depth)) = pending.pop() {
         if !ext_idx.is_external() || !visited.insert(local_idx) {
             continue;
@@ -1603,7 +1603,7 @@ mod tests {
             .find(|(_, t)| t.fields.contains_key("a000"))
             .expect("outer table");
 
-        let lifted = lift_local_type_to_ext_with(&ValueType::Table(Some(outer_idx)), &result.ir, &ext, &result, &GlobalTables::new());
+        let lifted = lift_local_type_to_ext_with(&ValueType::Table(Some(outer_idx)), &result.ir, &ext, &result, &GlobalTables::default());
         let ValueType::TableShape(shape) = lifted else { panic!("expected a record shape, got {lifted:?}") };
         assert_eq!(shape.fields.len(), 100);
         let expanded = shape

@@ -42,16 +42,10 @@ pub(super) fn make_extract_variable_action(
         new_text: EXTRACTED_VAR_NAME.to_string(),
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit_insert, edit_replace]);
-
     Some(CodeAction {
         title: "Extract to local variable".to_string(),
         kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit_insert, edit_replace])),
         ..Default::default()
     })
 }
@@ -152,16 +146,10 @@ pub(super) fn make_extract_function_action(
         new_text: call_text,
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit_insert, edit_replace]);
-
     Some(CodeAction {
         title: "Extract to function".to_string(),
         kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-        edit: Some(lsp_types::WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
+        edit: Some(single_file_edit(uri, vec![edit_insert, edit_replace])),
         ..Default::default()
     })
 }
@@ -286,7 +274,7 @@ pub(super) fn find_outer_variables_used_in_range(
     start: u32,
     end: u32,
 ) -> Vec<String> {
-    let mut seen_syms: HashSet<SymbolIndex> = HashSet::new();
+    let mut seen_syms: HashSet<SymbolIndex> = HashSet::default();
     let mut result = Vec::new();
 
     for token in tree.all_tokens() {
@@ -331,7 +319,7 @@ pub(super) fn find_variables_defined_in_range_used_after(
     // Pass 1 – collect symbols that have any version defined inside [start, end),
     // preserving first-encounter order so the returned list is deterministic.
     let mut defined_in_range_ordered: Vec<(SymbolIndex, String)> = Vec::new();
-    let mut defined_in_range_set: HashSet<SymbolIndex> = HashSet::new();
+    let mut defined_in_range_set: HashSet<SymbolIndex> = HashSet::default();
     for token in tree.all_tokens() {
         if token.kind != SyntaxKind::Name { continue; }
         if token.start < start || token.start >= end { continue; }
@@ -355,7 +343,7 @@ pub(super) fn find_variables_defined_in_range_used_after(
     if defined_in_range_ordered.is_empty() { return Vec::new(); }
 
     // Pass 2 – find which of those symbols are referenced after `end`.
-    let mut used_after: HashSet<SymbolIndex> = HashSet::new();
+    let mut used_after: HashSet<SymbolIndex> = HashSet::default();
     for token in tree.all_tokens() {
         if token.kind != SyntaxKind::Name { continue; }
         if token.start < end || token.start >= file_end { continue; }

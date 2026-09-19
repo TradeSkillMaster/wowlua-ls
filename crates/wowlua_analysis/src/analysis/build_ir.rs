@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::annotations::{AnnotationType, CastMode, Visibility, extract_annotations};
@@ -123,7 +123,7 @@ impl<'a> Analysis<'a> {
         let root_order = self.ir.next_order();
         self.ir.scopes.push(Scope {
             parent: None,
-            symbols: HashMap::new(),
+            symbols: HashMap::default(),
             creation_order: root_order,
             is_loop: false,
         });
@@ -282,7 +282,7 @@ impl<'a> Analysis<'a> {
                             let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                                 self.ir.ext.table(addon_idx).fields.clone()
                             } else {
-                                HashMap::new()
+                                HashMap::default()
                             };
                             self.ir.tables.push(TableInfo { fields, ..Default::default() });
                             Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
@@ -314,7 +314,7 @@ impl<'a> Analysis<'a> {
                             let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                                 self.ir.ext.table(addon_idx).fields.clone()
                             } else {
-                                HashMap::new()
+                                HashMap::default()
                             };
                             self.ir.tables.push(TableInfo { fields, ..Default::default() });
                             Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
@@ -2278,7 +2278,7 @@ impl<'a> Analysis<'a> {
                         let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                             self.ir.ext.table(addon_idx).fields.clone()
                         } else {
-                            HashMap::new()
+                            HashMap::default()
                         };
                         self.ir.tables.push(TableInfo { fields, ..Default::default() });
                         Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
@@ -2528,7 +2528,7 @@ impl<'a> Analysis<'a> {
                 let merge = pending_branch_merges.swap_remove(mi);
                 let branch_scopes = &merge.branch_scopes;
                 // Collect symbols assigned in branch scopes: sym_idx → [(scope, ver_idx)]
-                let mut sym_branch_vers: HashMap<SymbolIndex, Vec<(ScopeIndex, usize)>> = HashMap::new();
+                let mut sym_branch_vers: HashMap<SymbolIndex, Vec<(ScopeIndex, usize)>> = HashMap::default();
                 for (sym_idx_raw, sym) in self.ir.symbols.iter().enumerate() {
                     if sym_idx_raw >= EXT_BASE { break; }
                     let sym_idx = SymbolIndex(sym_idx_raw);
@@ -2994,7 +2994,7 @@ impl<'a> Analysis<'a> {
             see: Vec::new(),
             flavors: 0,
             flavor_guard: 0,
-            return_projections: std::collections::HashMap::new(),
+            return_projections: crate::collections::HashMap::default(),
             vararg_projection: None,
             event_params: None,
             narrows_arg: None,

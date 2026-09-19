@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use crate::collections::HashSet;
 use crate::analysis::AnalysisResult;
 use crate::types::{ExprId, ValueType};
 use super::{DiagnosticPass, WowDiagnostic};
@@ -34,7 +34,7 @@ pub struct NilIndex;
 
 impl DiagnosticPass for NilIndex {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for &(key_expr, start, end) in &analysis.ir.bracket_index_sites {
             if !seen.insert((start, end)) { continue; }
             let Some(vt) = analysis.resolve_expr_type(key_expr) else { continue };

@@ -279,9 +279,9 @@ fn build_per_addon_tables(
     scan: &lsp::WorkspaceScanResult,
     configs: &config::ProjectConfigs,
 ) {
-    use std::collections::HashMap;
+    use wowlua_ls::collections::HashMap;
     if configs.addon_roots().is_empty() { return; }
-    let mut file_addon_roots: HashMap<PathBuf, PathBuf> = HashMap::new();
+    let mut file_addon_roots: HashMap<PathBuf, PathBuf> = HashMap::default();
     for g in &scan.globals {
         if let Some(ref path) = g.source_path
             && let Some(root) = configs.addon_root_for(path) {

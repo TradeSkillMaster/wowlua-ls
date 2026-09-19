@@ -206,7 +206,7 @@ fn expr_range(analysis: &AnalysisResult, expr: ExprId) -> Option<(u32, u32)> {
 
 fn check_table_keys(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
     // The same bracket can be recorded twice; dedupe only what gets reported.
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::collections::HashSet::default();
     for &(key, start, end) in &analysis.ir.bracket_index_sites {
         if crate::secrets::TABLE_KEY != SecretRule::Error
             || !is_secret(analysis, key)
@@ -240,7 +240,7 @@ fn check_access(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
         (site.receiver, (site.start, site.end), rule, action)
     });
     // `local a, b = f()` lowers the call once per name; report each site once.
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::collections::HashSet::default();
     for (value, range, rule, action) in lengths.chain(accesses) {
         if rule != SecretRule::Error
             || !is_secret(analysis, value)

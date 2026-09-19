@@ -272,7 +272,7 @@ impl Ir {
         let mut tables = Vec::new();
         collect_receiver_tables(value, &mut tables)?;
         let mut predicates: Vec<String> = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = crate::collections::HashSet::default();
         while let Some(table_idx) = tables.pop() {
             if !seen.insert(table_idx) {
                 continue;

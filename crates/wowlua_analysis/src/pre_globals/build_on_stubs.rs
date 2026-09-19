@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::types::*;
@@ -111,8 +111,8 @@ impl<'a> BuildOnStubsContext<'a> {
             framexml_scope0_symbols,
             symbol_locations,
             function_locations,
-            function_names: HashMap::new(),
-            function_to_field: HashMap::new(),
+            function_names: HashMap::default(),
+            function_to_field: HashMap::default(),
             field_locations,
             alias_locations,
             string_values: stubs_base.string_values.clone(),
@@ -120,14 +120,14 @@ impl<'a> BuildOnStubsContext<'a> {
             number_literals: stubs_base.number_literals.clone(),
             string_literals: stubs_base.string_literals.clone(),
             addon_table_idx: stubs_base.addon_table_idx,
-            non_class_tables: HashMap::new(),
-            table_source_locations: HashMap::new(),
-            class_globals: HashSet::new(),
-            sub_tables: HashMap::new(),
-            declared_class_fields: HashMap::new(),
-            deferred_returns: HashSet::new(),
-            conflicting_arity_funcs: HashSet::new(),
-            deferred_call_globals: HashMap::new(),
+            non_class_tables: HashMap::default(),
+            table_source_locations: HashMap::default(),
+            class_globals: HashSet::default(),
+            sub_tables: HashMap::default(),
+            declared_class_fields: HashMap::default(),
+            deferred_returns: HashSet::default(),
+            conflicting_arity_funcs: HashSet::default(),
+            deferred_call_globals: HashMap::default(),
             method_stub_overrides: Vec::new(),
             implicit_protected_prefix,
         }
@@ -387,7 +387,7 @@ impl<'a> BuildOnStubsContext<'a> {
         // Build workspace method entries (unified — see `build` for semantics).
         // Collect all known constructor method names so methods matching these names
         // are auto-registered as constructors (e.g. __init from @constructor __init on Class).
-        let mut constructor_method_names: HashSet<&str> = HashSet::new();
+        let mut constructor_method_names: HashSet<&str> = HashSet::default();
         for name in &self.stubs_base.constructor_method_names {
             constructor_method_names.insert(name.as_str());
         }
@@ -422,13 +422,13 @@ impl<'a> BuildOnStubsContext<'a> {
             method_order.sort_by_key(|&i| !is_meta_method_override(&ws_globals[i]));
         }
 
-        let mut seen_methods: HashSet<(String, String)> = HashSet::new();
+        let mut seen_methods: HashSet<(String, String)> = HashSet::default();
         // (table, method) pairs claimed by a `@meta` override (processed first via
         // `method_order`). A `@meta` override is authoritative, so a later duplicate
         // of the same method is *dropped* rather than added as an overload — an
         // overload would let call resolution pick the displaced signature and defeat
         // the override at call sites.
-        let mut meta_overridden_methods: HashSet<(TableIndex, String)> = HashSet::new();
+        let mut meta_overridden_methods: HashSet<(TableIndex, String)> = HashSet::default();
         for &gi in &method_order {
             let g = &ws_globals[gi];
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
@@ -783,7 +783,7 @@ impl<'a> BuildOnStubsContext<'a> {
         let dummy_node = DefNode::DUMMY;
 
         // Build workspace global function entries
-        let mut seen_functions: HashSet<&str> = HashSet::new();
+        let mut seen_functions: HashSet<&str> = HashSet::default();
         for g in ws_globals {
             if let ExternalGlobalKind::Function = &g.kind {
                 if !seen_functions.insert(&g.name) { continue; }
@@ -1207,7 +1207,7 @@ impl<'a> BuildOnStubsContext<'a> {
         // accumulates every distinct workspace declaration so a partial `@class`
         // split across files reports all sites via go-to-definition.
         let mut class_locations = self.stubs_base.class_locations.clone();
-        let mut class_locations_all: HashMap<String, Vec<ExternalLocation>> = HashMap::new();
+        let mut class_locations_all: HashMap<String, Vec<ExternalLocation>> = HashMap::default();
         for class in ws_classes {
             if let Some((start, end)) = class.def_range
                 && let Some(ref path) = class.def_path {
@@ -1226,8 +1226,8 @@ impl<'a> BuildOnStubsContext<'a> {
 
         // Constructor self-fields whose coarse type is `any` — record where their
         // RHS call lives so the precise generic type args can be harvested lazily.
-        let mut deferred_field_type_args: HashMap<(String, String), crate::analysis::deferred::DeferredFieldTypeArgs> = HashMap::new();
-        let mut deferred_field_type_args_by_path: HashMap<PathBuf, Vec<(String, String)>> = HashMap::new();
+        let mut deferred_field_type_args: HashMap<(String, String), crate::analysis::deferred::DeferredFieldTypeArgs> = HashMap::default();
+        let mut deferred_field_type_args_by_path: HashMap<PathBuf, Vec<(String, String)>> = HashMap::default();
         for class in ws_classes {
             let Some(ref path) = class.def_path else { continue };
             for (field_name, &call_range) in &class.deferred_field_call_ranges {
@@ -1264,7 +1264,7 @@ impl<'a> BuildOnStubsContext<'a> {
         //     too (below), so a funcall self-field written by a method in a non-declaring
         //     file is harvested like the typed/bare cases.
         // Workspace classes only — stub classes have no re-analyzable source.
-        let mut deferred_class_field_paths: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let mut deferred_class_field_paths: HashMap<String, Vec<PathBuf>> = HashMap::default();
         for class in ws_classes {
             let paths = deferred_class_field_paths.entry(class.name.clone()).or_default();
             if let Some(ref path) = class.def_path
@@ -1324,15 +1324,15 @@ impl<'a> BuildOnStubsContext<'a> {
             function_names: self.function_names, function_to_field: self.function_to_field,
             string_values: self.string_values, number_values: self.number_values,
             number_literals: self.number_literals, string_literals: self.string_literals,
-            addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),
-            addon_ns_class_own_fields: HashMap::new(),
+            addon_table_idx: self.addon_table_idx, addon_tables: HashMap::default(),
+            addon_ns_class_own_fields: HashMap::default(),
             constructor_method_names, class_locations,
             alias_locations: self.alias_locations, field_locations: self.field_locations,
             // Populated by `build_on_stubs` after `finish` (it has ws_globals/aliases).
-            symbol_locations_by_name: HashMap::new(),
+            symbol_locations_by_name: HashMap::default(),
             class_locations_all,
-            alias_locations_all: HashMap::new(),
-            func_alt_locations: HashMap::new(),
+            alias_locations_all: HashMap::default(),
+            func_alt_locations: HashMap::default(),
             setmetatable_func_idx: self.stubs_base.setmetatable_func_idx,
             getmetatable_func_idx: self.stubs_base.getmetatable_func_idx,
             stub_symbols_end: self.stubs_base.stub_symbols_end,
@@ -1340,22 +1340,22 @@ impl<'a> BuildOnStubsContext<'a> {
             stub_class_names: self.stubs_base.stub_class_names.clone(),
             event_types: self.stubs_base.event_types.clone(),
             event_locations: self.stubs_base.event_locations.clone(),
-            callback_registries: HashMap::new(),
-            callback_event_methods: HashMap::new(),
+            callback_registries: HashMap::default(),
+            callback_event_methods: HashMap::default(),
             declared_class_fields: self.declared_class_fields,
             deferred_returns_by_path,
             deferred_returns: self.deferred_returns,
             conflicting_arity_funcs: self.conflicting_arity_funcs,
-            deferred_sig_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_sig_cache: std::sync::RwLock::new(HashMap::default()),
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,
-            deferred_call_global_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_call_global_cache: std::sync::RwLock::new(HashMap::default()),
             deferred_field_type_args,
             deferred_field_type_args_by_path,
-            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::new()),
+            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::default()),
             deferred_class_field_paths,
-            deferred_class_field_cache: std::sync::RwLock::new(HashMap::new()),
-            document_overrides: std::sync::RwLock::new(HashMap::new()),
+            deferred_class_field_cache: std::sync::RwLock::new(HashMap::default()),
+            document_overrides: std::sync::RwLock::new(HashMap::default()),
             project_configs: None,
         }
     }

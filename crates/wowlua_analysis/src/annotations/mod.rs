@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use crate::ast::AstNode;
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
@@ -303,7 +303,7 @@ pub struct TypedSelfField {
 /// one-element `Union`. Leaves other annotations unchanged.
 pub fn expand_tuple_form_alias(
     ann: &AnnotationType,
-    tuple_form_aliases: &std::collections::HashMap<String, AnnotationType>,
+    tuple_form_aliases: &crate::collections::HashMap<String, AnnotationType>,
 ) -> AnnotationType {
     if let AnnotationType::Simple(name) = ann
         && let Some(body) = tuple_form_aliases.get(name) {
@@ -516,7 +516,7 @@ pub struct ClassDecl {
     /// Maps class field name → @built-name class name for class-level static fields.
     /// Used during inheritance to substitute parent built types with child overrides.
     /// E.g. Element: {"_STATE_SCHEMA": "ElementState"}, BaseFrame: {"_STATE_SCHEMA": "BaseFrameState"}
-    pub field_built_names: std::collections::HashMap<String, String>,
+    pub field_built_names: crate::collections::HashMap<String, String>,
     /// True when the declaration comes from `@enum` rather than `@class`
     pub is_enum: bool,
     /// True when declared with `@enum (key)` — enum type comes from table keys, always String.
@@ -584,20 +584,20 @@ impl ClassDecl {
             generics: Vec::new(),
             constructor_methods: Vec::new(),
             constraint_type_arg_subs: Vec::new(),
-            field_built_names: HashMap::new(),
+            field_built_names: HashMap::default(),
             is_enum: false,
             is_key_enum: false,
             correlated_groups: Vec::new(),
             def_range: None,
             def_path: None,
-            field_ranges: HashMap::new(),
-            field_paths: HashMap::new(),
+            field_ranges: HashMap::default(),
+            field_paths: HashMap::default(),
             see: Vec::new(),
-            declared_field_names: HashSet::new(),
-            field_literals: HashMap::new(),
-            field_descriptions: HashMap::new(),
-            bare_inferred_field_names: HashSet::new(),
-            deferred_field_call_ranges: HashMap::new(),
+            declared_field_names: HashSet::default(),
+            field_literals: HashMap::default(),
+            field_descriptions: HashMap::default(),
+            bare_inferred_field_names: HashSet::default(),
+            deferred_field_call_ranges: HashMap::default(),
             secret_when: Vec::new(),
         }
     }
@@ -719,7 +719,7 @@ pub fn register_event_type_aliases(aliases: &mut Vec<AliasDecl>, events: &[Event
     // are available when later aliases reference them (e.g. `WowEvent →
     // FrameEvent`). Deeper alias chains would need multi-pass resolution.
     let mut to_insert = Vec::new();
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut seen: crate::collections::HashSet<&str> = crate::collections::HashSet::default();
     for ev in events {
         if !seen.insert(&ev.event_type) { continue; }
         if aliases.iter().any(|a| a.name == ev.event_type) { continue; }
@@ -1015,7 +1015,7 @@ fn convert_lua_doc_link(command_url: &str) -> Option<String> {
 
 /// Scan all comments in the syntax tree for @class, @alias, and @event declarations.
 pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
-    let mut result = ScanResult { classes: Vec::new(), aliases: Vec::new(), events: Vec::new(), has_meta: false, callable_classes: HashSet::new() };
+    let mut result = ScanResult { classes: Vec::new(), aliases: Vec::new(), events: Vec::new(), has_meta: false, callable_classes: HashSet::default() };
 
     let mut current_group: Vec<(String, u32, u32)> = Vec::new();
     let mut current_class_range: Option<(u32, u32)> = None;
@@ -1155,12 +1155,12 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
         let Some(Expression::TableConstructor(tc)) = exprs.first() else { continue };
 
         // Collect existing field names to avoid duplicating @field declarations
-        let existing_fields: std::collections::HashSet<&str> = result.classes[class_idx]
+        let existing_fields: crate::collections::HashSet<&str> = result.classes[class_idx]
             .fields.iter().map(|(name, _, _)| name.as_str()).collect();
 
         let mut new_fields: Vec<(String, AnnotationType, Visibility)> = Vec::new();
-        let mut new_field_ranges: HashMap<String, (u32, u32)> = HashMap::new();
-        let mut new_literals: HashMap<String, String> = HashMap::new();
+        let mut new_field_ranges: HashMap<String, (u32, u32)> = HashMap::default();
+        let mut new_literals: HashMap<String, String> = HashMap::default();
         for field in tc.fields() {
             let Some(FieldKind::Named { name, value }) = field.kind() else { continue };
             if existing_fields.contains(name.as_str()) { continue; }
@@ -1359,7 +1359,7 @@ fn flush_group(
     let block = parse_annotation_lines(&line_strs);
     if block.meta { result.has_meta = true; }
     if let Some(class_name) = block.class {
-        let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::new();
+        let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::default();
         for (text, start, end) in lines {
             let content = text.strip_prefix("---@").or_else(|| text.strip_prefix("--- @"));
             if let Some(content) = content
@@ -1372,7 +1372,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone(), declared_field_names, field_literals: HashMap::new(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::new(), deferred_field_call_ranges: HashMap::new(), secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::default(), deferred_field_call_ranges: HashMap::default(), secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -2191,8 +2191,8 @@ mod tests {
 
     // ---- Type-name walkers (incremental warm dependency tracking) ----
 
-    fn referenced(type_str: &str) -> std::collections::HashSet<String> {
-        let mut out = std::collections::HashSet::new();
+    fn referenced(type_str: &str) -> crate::collections::HashSet<String> {
+        let mut out = crate::collections::HashSet::default();
         collect_referenced_type_names(&annotation_types::parse_type(type_str), &mut out);
         out
     }
@@ -2237,7 +2237,7 @@ mod tests {
             fields: vec![("inner".to_string(), AnnotationType::Simple("FieldType".to_string()), Visibility::Public)],
             ..empty_class_for_test("Derived")
         };
-        let mut out = std::collections::HashSet::new();
+        let mut out = crate::collections::HashSet::default();
         class_referenced_names(&class, &mut out);
         assert!(out.contains("BaseType"), "parent must be tracked: {out:?}");
         assert!(out.contains("FieldType"), "field type must be tracked: {out:?}");

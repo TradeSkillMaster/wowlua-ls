@@ -6,7 +6,7 @@
 //! the other). Re-exports the lower layers so the original `crate::annotations::…`
 //! / `crate::types::…` (etc.) paths keep resolving inside the moved code.
 
-pub use wowlua_analysis::{annotations, ast, flavor, pre_globals, syntax, types};
+pub use wowlua_analysis::{annotations, ast, collections, flavor, pre_globals, syntax, types};
 
 pub mod doc_gen;
 pub mod doc_gen_md;

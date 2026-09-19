@@ -193,35 +193,35 @@ pub(super) fn stub_file_contents() -> &'static HashMap<String, String> {
                 Ok(data) => { compressed_owned = data; &compressed_owned }
                 Err(e) => {
                     log::error!("Failed to read stub file contents from disk: {e}");
-                    return HashMap::new();
+                    return HashMap::default();
                 }
             }
             None => {
                 log::warn!("Stubs directory not found next to executable");
-                return HashMap::new();
+                return HashMap::default();
             }
         };
 
         if compressed.len() < 4 {
-            return HashMap::new();
+            return HashMap::default();
         }
         let version = u32::from_le_bytes([compressed[0], compressed[1], compressed[2], compressed[3]]);
         if version != BLOB_VERSION {
             log::warn!("Stub file contents blob version mismatch (got v{version}, expected v{BLOB_VERSION})");
-            return HashMap::new();
+            return HashMap::default();
         }
         let decompressed = match zstd::decode_all(&compressed[4..]) {
             Ok(d) => d,
             Err(e) => {
                 log::error!("Failed to decompress stub file contents: {e}");
-                return HashMap::new();
+                return HashMap::default();
             }
         };
         match bincode::deserialize(&decompressed) {
             Ok(m) => m,
             Err(e) => {
                 log::error!("Failed to deserialize stub file contents: {e}");
-                HashMap::new()
+                HashMap::default()
             }
         }
     })

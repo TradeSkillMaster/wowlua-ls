@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use crate::analysis::AnalysisResult;
 use crate::types::Expr;
 use super::{DiagnosticPass, WowDiagnostic};
@@ -24,7 +24,7 @@ impl DiagnosticPass for MultiReturnProjection {
         // Build a map: call_range_start → max ret_index seen at that call site.
         // This lets us detect when the caller captures multiple return slots via
         // expansion (e.g. `local a, b = wrap(f)` has ret_index 0 and 1).
-        let mut max_ret_at_call: HashMap<u32, usize> = HashMap::new();
+        let mut max_ret_at_call: HashMap<u32, usize> = HashMap::default();
         for (_, expr) in analysis.local_exprs() {
             if let Expr::FunctionCall { call_range, ret_index, .. } = expr
                 && relevant.contains(&call_range.0)
