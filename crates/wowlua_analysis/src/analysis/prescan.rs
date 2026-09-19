@@ -111,18 +111,9 @@ fn collect_defclass_backtick_positions(
 
 impl<'a> Analysis<'a> {
     pub(super) fn prescan_classes_and_aliases(&mut self) {
-        // Import external classes/aliases from PreResolvedGlobals (cheap map clone)
+        // External classes/aliases are visible through the layered `ir.classes` /
+        // `ir.aliases` / `ir.alias_string_literals`; only local declarations follow.
         let ext = Arc::clone(&self.ir.ext);
-        for (name, &table_idx) in &ext.classes {
-            self.ir.classes.insert(name.clone(), table_idx);
-        }
-        for (name, vt) in &ext.aliases {
-            self.ir.aliases.insert(name.clone(), vt.clone());
-        }
-        for (name, literals) in &ext.alias_string_literals {
-            self.ir.alias_string_literals.insert(name.clone(), literals.clone());
-        }
-
         // Process file-local declarations only
         let scan = scan_all_annotations(self.root());
         self.is_meta = scan.has_meta;
@@ -174,10 +165,11 @@ impl<'a> Analysis<'a> {
         // are available during field type resolution.
         for alias in &scan.aliases {
             // A file-local alias shadows any imported/stub alias of the same name.
-            // Clear its stale string-enum completion literals up front (seeded above
-            // from `ext.alias_string_literals`); only a genuine open string-enum
-            // redefinition re-inserts them below. Doing this unconditionally handles
-            // every redefinition form (non-string, parameterized, tuple, function).
+            // Hide the ext entry's string-enum completion literals up front (the
+            // `remove` writes a tombstone into the layered map); only a genuine open
+            // string-enum redefinition re-inserts them below. Doing this
+            // unconditionally handles every redefinition form (non-string,
+            // parameterized, tuple, function).
             self.ir.alias_string_literals.remove(&alias.name);
             if !alias.type_params.is_empty() {
                 // Parameterized alias: store raw template for later instantiation

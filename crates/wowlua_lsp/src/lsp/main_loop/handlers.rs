@@ -1653,7 +1653,7 @@ pub(super) fn rescan_workspace_from_disk(
         file_callback_registries,
         file_string_consts,
         xml_bound_names: _,
-    } = scan_directory_tracked(&ws.roots, &mut new_configs, &ws.stub_classes, &ws.stub_globals, ws.stub_pre_globals.creates_global_specs());
+    } = scan_directory_tracked(&ws.roots, &mut new_configs, ws.stub_classes(), ws.stub_globals(), ws.stub_pre_globals.creates_global_specs());
     ws.configs = Arc::new(new_configs);
     ws.ws_file_globals = file_globals;
     ws.ws_file_classes = file_classes;

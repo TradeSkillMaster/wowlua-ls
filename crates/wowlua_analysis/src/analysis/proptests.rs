@@ -566,7 +566,7 @@ fn table_subtype_respects_class_hierarchy() {
     let names = ["PtA", "PtB", "PtC", "PtD"];
     let idxs: Vec<TableIndex> = names
         .iter()
-        .map(|n| *ir.classes.get(*n).unwrap_or_else(|| panic!("class {n} not registered")))
+        .map(|n| *ir.classes.get(n).unwrap_or_else(|| panic!("class {n} not registered")))
         .collect();
     let (a, b, c, d) = (idxs[0], idxs[1], idxs[2], idxs[3]);
 
@@ -604,7 +604,7 @@ fn table_subtype_properties() {
 
     let idxs: Vec<TableIndex> = ["PtA", "PtB", "PtC", "PtD"]
         .iter()
-        .map(|n| *ir.classes.get(*n).unwrap())
+        .map(|n| *ir.classes.get(n).unwrap())
         .collect();
 
     // Each real class instance is its own subtype (subclass reflexivity).

@@ -126,17 +126,35 @@ pub(super) fn merge_defclass_into_overlays(
 }
 
 impl WorkspaceState {
+    /// Seed the stub prefix of the merged caches. The only way to set it: the two
+    /// lengths and their vectors must agree, and `rebuild_caches` keeps the prefix
+    /// intact by truncating back to it.
+    pub(super) fn set_stubs(&mut self, globals: Vec<ExternalGlobal>, classes: Vec<ClassDecl>) {
+        self.stub_globals_len = globals.len();
+        self.stub_classes_len = classes.len();
+        self.cached_all_globals = globals;
+        self.cached_all_classes = classes;
+    }
+
+    /// The built-in stub globals: the prefix of `cached_all_globals`.
+    pub(super) fn stub_globals(&self) -> &[ExternalGlobal] {
+        debug_assert!(self.cached_all_globals.len() >= self.stub_globals_len);
+        &self.cached_all_globals[..self.stub_globals_len]
+    }
+
+    /// The built-in stub classes: the prefix of `cached_all_classes`.
+    pub(super) fn stub_classes(&self) -> &[ClassDecl] {
+        debug_assert!(self.cached_all_classes.len() >= self.stub_classes_len);
+        &self.cached_all_classes[..self.stub_classes_len]
+    }
+
     /// Rebuild the cached merged globals/classes vectors from stubs + workspace data.
     /// Call this whenever ws_file_globals or ws_file_classes change.
     pub(super) fn rebuild_caches(&mut self) {
-        self.cached_all_globals = self.stub_globals.iter()
-            .chain(self.ws_file_globals.values().flatten())
-            .cloned()
-            .collect();
-        self.cached_all_classes = self.stub_classes.iter()
-            .chain(self.ws_file_classes.values().flatten())
-            .cloned()
-            .collect();
+        self.cached_all_globals.truncate(self.stub_globals_len);
+        self.cached_all_globals.extend(self.ws_file_globals.values().flatten().cloned());
+        self.cached_all_classes.truncate(self.stub_classes_len);
+        self.cached_all_classes.extend(self.ws_file_classes.values().flatten().cloned());
         self.cached_needs_defclass = self.stubs_have_defclass
             || self.ws_file_globals.values().flatten().any(|g| g.defclass.is_some());
         self.cached_needs_built_name = self.stubs_have_built_name
@@ -224,7 +242,7 @@ impl WorkspaceState {
         let defclass_decls: Vec<&ClassDecl> = self.ws_file_defclasses.values().flatten()
             .chain(xml_overlay_classes.iter())
             .collect();
-        let mut ws_classes = merge_defclass_into_overlays(ws_classes_input, &self.stub_classes, defclass_decls);
+        let mut ws_classes = merge_defclass_into_overlays(ws_classes_input, self.stub_classes(), defclass_decls);
 
         // Merge self-field scan results into classes and globals.
         // Typed + bare self-fields are added to ClassDecl.fields; funcall self-fields
@@ -371,8 +389,8 @@ impl WorkspaceState {
             roots: root.iter().cloned().collect(),
             root,
             configs: Arc::new(crate::config::ProjectConfigs::default()),
-            stub_globals: Vec::new(),
-            stub_classes: Vec::new(),
+            stub_globals_len: 0,
+            stub_classes_len: 0,
             stub_pre_globals: Arc::new(PreResolvedGlobals::empty()),
             stubs_have_defclass: false,
             stubs_have_built_name: false,

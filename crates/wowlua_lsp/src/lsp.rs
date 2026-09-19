@@ -6,6 +6,7 @@ pub mod diagnostics;
 pub mod uri;
 
 pub use main_loop::start_ls;
+pub use main_loop::set_release_memory_hook;
 pub use main_loop::scan_workspace;
 pub use main_loop::scan_workspace_with_stubs;
 pub use main_loop::scan_paths_with_overrides;

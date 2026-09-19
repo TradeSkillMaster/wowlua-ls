@@ -225,7 +225,7 @@ pub fn parent_link_with_bindings(parent_name: &str) -> Option<(String, Vec<Annot
 pub fn collect_parent_type_bindings(
     parents: &[String],
     child_type_params: &[String],
-    classes: &std::collections::HashMap<String, crate::types::TableIndex>,
+    classes: &impl crate::analysis::layered_map::NameLookup<crate::types::TableIndex>,
     mut resolve_fn: impl FnMut(&AnnotationType, &[(String, Option<String>)]) -> Option<crate::types::ValueType>,
 ) -> Vec<(crate::types::TableIndex, Vec<crate::types::ValueType>)> {
     let child_generics: Vec<(String, Option<String>)> = child_type_params.iter()
@@ -234,7 +234,7 @@ pub fn collect_parent_type_bindings(
     for p in parents {
         let Some((base, args)) = parent_link_with_bindings(p) else { continue };
         if args.is_empty() { continue; }
-        let Some(&parent_idx) = classes.get(base.as_str()) else { continue };
+        let Some(&parent_idx) = classes.lookup(base.as_str()) else { continue };
         if out.iter().any(|(pi, _)| *pi == parent_idx) { continue; }
         let bindings: Vec<crate::types::ValueType> = args.iter()
             .map(|a| resolve_fn(a, &child_generics).unwrap_or(crate::types::ValueType::Any))

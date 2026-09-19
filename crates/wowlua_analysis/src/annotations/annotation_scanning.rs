@@ -1440,8 +1440,8 @@ pub fn is_number_literal(name: &str) -> bool {
 
 pub fn resolve_annotation_type(
     at: &AnnotationType, generics: &[(String, Option<String>)],
-    classes: &std::collections::HashMap<String, TableIndex>,
-    aliases: &std::collections::HashMap<String, ValueType>,
+    classes: &impl crate::analysis::layered_map::NameLookup<TableIndex>,
+    aliases: &impl crate::analysis::layered_map::NameLookup<ValueType>,
 ) -> Option<ValueType> {
     match at {
         AnnotationType::Simple(name) => {
@@ -1472,8 +1472,8 @@ pub fn resolve_annotation_type(
             if is_number_literal(name) {
                 return Some(ValueType::NumberLiteral(name.clone()));
             }
-            if let Some(&table_idx) = classes.get(name.as_str()) { return Some(ValueType::Table(Some(table_idx))); }
-            if let Some(vt) = aliases.get(name.as_str()) { return Some(vt.clone()); }
+            if let Some(&table_idx) = classes.lookup(name.as_str()) { return Some(ValueType::Table(Some(table_idx))); }
+            if let Some(vt) = aliases.lookup(name.as_str()) { return Some(vt.clone()); }
             None
         }
         AnnotationType::Union(parts) => {

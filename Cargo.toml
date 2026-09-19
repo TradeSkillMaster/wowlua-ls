@@ -67,6 +67,8 @@ lsp-types = "0.97.0"
 log = "0.4"
 env_logger = { version = "0.11", default-features = false }
 mimalloc = "0.1"
+# `extended` for `mi_collect`, the server's release-memory hook (see `main.rs`).
+libmimalloc-sys = { version = "0.1", features = ["extended"] }
 mlua = { version = "0.10", features = ["lua51", "vendored", "send"] }
 
 [features]

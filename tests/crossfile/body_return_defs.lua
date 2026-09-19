@@ -100,3 +100,53 @@ function ns.Core.GetInferredMap(k)
     local m = { [k] = 1 }
     return m
 end
+
+-- Self-referential record (a mixin whose methods take and return `self`): the
+-- back-reference decays to `table` instead of re-expanding the mixin under every
+-- method, which grows exponentially with the method count.
+local WidgetMixin = {}
+
+function WidgetMixin:SetOwner(owner)
+    self.owner = owner
+    return self
+end
+
+function WidgetMixin:GetOwner()
+    return self.owner
+end
+
+function ns.Core.GetWidgetMixin()
+    return WidgetMixin
+end
+
+-- A returned global mixin — or a table nested under a global — is referenced as
+-- that global's table rather than inlined, so its methods keep their definitions
+-- and a `return self` chain keeps the mixin.
+BodyReturnWidgetMixin = {}
+
+function BodyReturnWidgetMixin:SetOwner(owner)
+    self.owner = owner
+    return self
+end
+
+BodyReturnUtil = { PanelMixin = {} }
+
+function BodyReturnUtil.PanelMixin:Show()
+    return self
+end
+
+function ns.Core.GetGlobalWidgetMixin()
+    return BodyReturnWidgetMixin
+end
+
+function ns.Core.GetPanelMixin()
+    return BodyReturnUtil.PanelMixin
+end
+
+-- A global *data* table (no methods) stays inline: its constructor-defined fields
+-- are precise here but not in the global's cross-file table.
+BodyReturnOrigin = { x = 0, y = 0 }
+
+function ns.Core.GetGlobalOrigin()
+    return BodyReturnOrigin
+end

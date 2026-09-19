@@ -1129,7 +1129,7 @@ impl<'a> Analysis<'a> {
     /// and narrows FIELD as non-nil in the parent scope.
     /// Also handles `if FIELD == nil then FIELD = val end`.
     pub(super) fn analyze_ensure_initialized(&mut self, cond: &Expression<'_>, block: &Block<'_>, scope_idx: ScopeIndex) {
-        let guarded_names = self.extract_nil_guard_field(cond);
+        let guarded_names = Self::extract_nil_guard_field(cond);
         if guarded_names.len() < 2 { return; }
         // Check if the then-block assigns to the same field
         if Self::block_assigns_field(block, &guarded_names) {
@@ -1306,7 +1306,7 @@ impl<'a> Analysis<'a> {
     /// Extract the field chain from a negated nil-guard condition.
     /// Returns the names for `not self.field` or `self.field == nil`, empty vec otherwise.
     /// Also handles bracket access with simple variable keys like `tbl[KEY]`.
-    fn extract_nil_guard_field(&self, cond: &Expression<'_>) -> Vec<String> {
+    fn extract_nil_guard_field(cond: &Expression<'_>) -> Vec<String> {
         match cond {
             // `not self.field` or `not tbl[KEY]`
             Expression::UnaryExpression(unary) => {
@@ -1343,7 +1343,7 @@ impl<'a> Analysis<'a> {
             }
             Expression::GroupedExpression(g) => {
                 if let Some(inner) = g.get_expression() {
-                    return self.extract_nil_guard_field(&inner);
+                    return Self::extract_nil_guard_field(&inner);
                 }
                 vec![]
             }

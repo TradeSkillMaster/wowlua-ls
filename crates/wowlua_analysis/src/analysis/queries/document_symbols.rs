@@ -200,14 +200,14 @@ impl AnalysisResult {
         }
 
         // Collect class methods from table fields
-        for (class_name, &table_idx) in &self.ir.classes {
+        for (class_name, &table_idx) in self.ir.classes.iter() {
             if table_idx.is_external() { continue; }
             let children = self.collect_table_func_children(table_idx);
             class_children.entry(class_name.clone()).or_default().extend(children);
         }
 
         // Emit @class declarations as Class symbols with methods as children
-        for (class_name, &table_idx) in &self.ir.classes {
+        for (class_name, &table_idx) in self.ir.classes.iter() {
             if table_idx.is_external() { continue; }
             let (range_start, range_end) = if let Some(&(s, e)) = self.ir.class_def_ranges.get(class_name) {
                 (s, e)

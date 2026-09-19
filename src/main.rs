@@ -6,6 +6,12 @@ use std::env;
 
 mod cli;
 
+/// Return the calling thread's freed pages to the OS (see `set_release_memory_hook`).
+fn release_thread_memory() {
+    // SAFETY: `mi_collect` only acts on the calling thread's own allocator state.
+    unsafe { libmimalloc_sys::mi_collect(true) };
+}
+
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp(None)
@@ -19,5 +25,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         return Ok(());
     }
 
+    wowlua_ls::lsp::set_release_memory_hook(release_thread_memory);
     cli::dispatch()
 }

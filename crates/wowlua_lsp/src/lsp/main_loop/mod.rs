@@ -56,6 +56,7 @@ mod conversions;
 mod diagnostics_handlers;
 mod handlers;
 mod hierarchy;
+mod memory;
 mod rebuild;
 mod refactor;
 mod scan;
@@ -78,6 +79,7 @@ use stub_loading::*;
 pub use scan::{scan_workspace, scan_workspace_with_stubs, scan_paths_with_overrides};
 pub use stub_loading::{load_precomputed_stubs, stub_materialize_dir};
 pub use hierarchy::{search_workspace_symbols};
+pub use memory::set_release_memory_hook;
 pub use code_actions::{compute_quick_fixes, compute_code_actions, make_generate_annotation_stubs_source_action, ConfigEditContext};
 
 /// Whether the negotiated position encoding is UTF-8 (byte offsets).
@@ -176,8 +178,11 @@ struct WorkspaceState {
     // during full scans (init / config reload) by building a fresh value and
     // swapping in a new Arc.
     configs: Arc<crate::config::ProjectConfigs>,
-    stub_globals: Vec<ExternalGlobal>,
-    stub_classes: Vec<ClassDecl>,
+    /// Length of the built-in stub prefix of `cached_all_globals` /
+    /// `cached_all_classes` (see `stub_globals()` / `stub_classes()`). The stub
+    /// declarations are held only there, not in a separate copy.
+    stub_globals_len: usize,
+    stub_classes_len: usize,
     /// Cached stubs-only PreResolvedGlobals, built once at startup.
     /// Used as the base for incremental workspace rebuilds.
     stub_pre_globals: Arc<PreResolvedGlobals>,
@@ -199,10 +204,11 @@ struct WorkspaceState {
     /// Per-file funcall self-field globals (self.field = SomeCall() in methods).
     ws_file_self_field_globals: HashMap<PathBuf, Vec<ExternalGlobal>>,
     pre_globals: Arc<PreResolvedGlobals>,
-    /// Cached merged stubs + workspace globals (avoids ~100K clones per keystroke).
-    /// Rebuilt only when a file's exported globals actually change.
+    /// Cached merged stubs + workspace globals (avoids ~100K clones per keystroke):
+    /// the stub globals, then every workspace file's. Only the workspace suffix is
+    /// rebuilt, and only when a file's exported globals actually change.
     cached_all_globals: Vec<ExternalGlobal>,
-    /// Cached merged stubs + workspace classes.
+    /// Cached merged stubs + workspace classes, laid out like `cached_all_globals`.
     cached_all_classes: Vec<ClassDecl>,
     /// Cached: whether any globals have @defclass
     cached_needs_defclass: bool,
@@ -302,13 +308,17 @@ pub(super) struct CachedAnalyzedFile {
 pub(super) struct XfileAnalysisCache {
     pub(super) generation: u64,
     pub(super) files: HashMap<PathBuf, Arc<CachedAnalyzedFile>>,
+    /// Summed `text.len()` of the cached files — the budget `XFILE_CACHE_MAX_SOURCE_BYTES`
+    /// is spent against.
+    pub(super) source_bytes: usize,
 }
 
-/// Upper bound on cached analyzed files, so an enormous monorepo can't grow the
-/// cache without limit within a single generation. Comfortably above realistic
-/// addon sizes; once reached, further files just aren't cached (they still
-/// resolve correctly, only without the reuse speedup).
-pub(super) const XFILE_CACHE_MAX_FILES: usize = 6000;
+/// Budget for the cross-file analysis cache, counted in cached *source* bytes because
+/// an entry's real cost is its analysis: measured at roughly 100x its source size
+/// (2.75 MB per file on wow-ui-source), so this bounds the cache near 800 MB. One
+/// file's code-lens batch caches a few MB of source, so bursts still hit the cache;
+/// past the budget, files are analyzed without being cached (correct, just not reused).
+pub(super) const XFILE_CACHE_MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 
 /// All inputs a workspace-diagnostic warm needs, snapshotted as owned / `Arc`
 /// data so the warm can run on a background thread (see `spawn_warm`). The
@@ -814,7 +824,8 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         root: workspace_root,
         roots: workspace_roots,
         configs: Arc::new(configs),
-        stub_globals, stub_classes,
+        stub_globals_len: 0,
+        stub_classes_len: 0,
         stub_pre_globals,
         stubs_have_defclass,
         stubs_have_built_name,
@@ -849,6 +860,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         xfile_analysis_cache: std::sync::Mutex::new(XfileAnalysisCache::default()),
         edited_uris: HashSet::new(),
     };
+    ws.set_stubs(stub_globals, stub_classes);
     let plugin_paths = ws.configs.all_plugins();
     if !plugin_paths.is_empty() {
         ws.plugin_engine = Some(crate::plugins::PluginEngine::new(&plugin_paths));
@@ -857,6 +869,8 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     let rebuild_start = std::time::Instant::now();
     ws.rebuild();
     log::debug!("Rebuilt workspace index in {:.1?}", rebuild_start.elapsed());
+    // The scan's parallel parse/scan scratch is garbage now.
+    memory::release_memory(None);
 
     // The workspace-diagnostic cache is warmed on a background thread by
     // `main_loop` immediately after it starts (see the `spawn_warm` call there).
@@ -1066,6 +1080,11 @@ fn main_loop(
         while let Ok(res) = warm_rx.try_recv() {
             ws.warm_in_flight = false;
             if res.generation == ws.ws_generation {
+                // Rebuilds and batch analysis leading up to this warm ran on the global
+                // pool. Only for a warm that ran: a cancelled one (superseded mid-edit,
+                // so `should_cancel()` fired before `compute`) left nothing to release,
+                // and the broadcast would block this single-threaded loop mid-burst.
+                memory::release_memory(None);
                 ws.cached_ws_diagnostics = Some((res.generation, res.diagnostics));
                 // Only a full warm recomputes the cross-file pass; an incremental
                 // warm returns `None` and we keep the prior cache so cross-file
@@ -2411,7 +2430,7 @@ mod tests {
         wrapper.returns = vec![AnnotationType::Simple("SchemaClass".to_string())];
 
         let mut ws = WorkspaceState::for_test(None);
-        ws.stub_globals = vec![init_method, wrapper];
+        ws.set_stubs(vec![init_method, wrapper], Vec::new());
         ws.stubs_have_built_name = true;
         ws.rebuild_caches();
 

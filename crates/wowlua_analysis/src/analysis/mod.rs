@@ -9,6 +9,7 @@ pub mod checks;
 pub mod queries;
 pub mod semantic_tokens;
 pub mod deferred;
+pub mod layered_map;
 
 #[cfg(test)]
 mod proptests;
@@ -431,15 +432,17 @@ pub struct Ir {
     tables: Vec<TableInfo>,
     exprs: Vec<Expr>,
     pub block_scopes: Vec<(u32, u32, ScopeIndex)>,
-    pub classes: HashMap<String, TableIndex>,
-    pub aliases: HashMap<String, ValueType>,
+    /// Class name → table: the file's own `@class`es layered over `ext.classes`.
+    pub classes: layered_map::LayeredMap<TableIndex>,
+    /// Alias name → type: the file's own `@alias`es layered over `ext.aliases`.
+    pub aliases: layered_map::LayeredMap<ValueType>,
     /// String-literal completion suggestions for "open" string-enum aliases
     /// (`@alias Foo string` + `---|"a"` lines) — both stub aliases imported from
     /// `ext` and file-local ones. The resolved type collapses `string | "literal"`
     /// to bare `string`, losing the completion values (see the mirror field on
     /// `PreResolvedGlobals`); they are kept here keyed by alias name for
-    /// string-argument completion.
-    pub alias_string_literals: HashMap<String, Vec<String>>,
+    /// string-argument completion. Layered over `ext.alias_string_literals`.
+    pub alias_string_literals: layered_map::LayeredMap<Vec<String>>,
     /// Raw annotation types for local aliases that resolve to Function(None).
     /// Used by materialize_fun_annotations() to recover function signatures from alias fields.
     pub alias_fun_types: HashMap<String, crate::annotations::AnnotationType>,
@@ -2832,6 +2835,10 @@ impl<'a> Analysis<'a> {
                 }
             });
 
+        let classes = layered_map::LayeredMap::new(Arc::clone(&pre_globals), |e| &e.classes);
+        let aliases = layered_map::LayeredMap::new(Arc::clone(&pre_globals), |e| &e.aliases);
+        let alias_string_literals =
+            layered_map::LayeredMap::new(Arc::clone(&pre_globals), |e| &e.alias_string_literals);
         let mut analysis = Analysis {
             tree,
             ir: Ir {
@@ -2843,9 +2850,9 @@ impl<'a> Analysis<'a> {
                 tables: Vec::new(),
                 exprs: Vec::new(),
                 block_scopes: Vec::new(),
-                classes: HashMap::new(),
-                aliases: HashMap::new(),
-                alias_string_literals: HashMap::new(),
+                classes,
+                aliases,
+                alias_string_literals,
                 alias_fun_types: HashMap::new(),
                 parameterized_aliases: HashMap::new(),
                 parameterized_alias_constraints: HashMap::new(),
@@ -3014,13 +3021,13 @@ impl<'a> Analysis<'a> {
         }
         if !self.ir.classes.is_empty() {
             println!("Classes:");
-            for (name, table_idx) in &self.ir.classes {
+            for (name, table_idx) in self.ir.classes.iter() {
                 println!("    {} -> table[{}]", name, table_idx);
             }
         }
         if !self.ir.aliases.is_empty() {
             println!("Aliases:");
-            for (name, vt) in &self.ir.aliases {
+            for (name, vt) in self.ir.aliases.iter() {
                 println!("    {} -> {:?}", name, vt);
             }
         }

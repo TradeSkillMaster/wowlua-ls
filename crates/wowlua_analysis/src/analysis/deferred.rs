@@ -21,9 +21,10 @@
 //! bare `function`. Everything else nameable (class instances, primitives,
 //! unions) is preserved. An anonymous *array/map* table carries its element type
 //! inline as a `ValueType::TableShape` container (`T[]` / `table<K, V>`), read
-//! from the arena `TableInfo`'s `value_type`/`key_type`; an anonymous *record*
-//! table (named fields only) carries each field's resolved type inline as a
-//! `ValueType::TableShape` record (`{ x: number, y: string }`) — the field types
+//! from the arena `TableInfo`'s `value_type`/`key_type`; a table that is a global
+//! defined in that file (or nested under one) is referenced as the global's ext table;
+//! any other anonymous *record* table (named fields only) carries each field's resolved
+//! type inline as a `ValueType::TableShape` record (`{ x: number, y: string }`) — the field types
 //! come from the source file's resolved-expr cache (`resolve_field_type`), which
 //! every harvest path holding an `AnalysisResult` threads in via
 //! `lift_local_type_to_ext_with` (returns, injected instance fields, created-global
@@ -454,6 +455,7 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     analysis.resolve_types();
     let result = analysis.into_result();
     let ir = &result.ir;
+    let globals = global_tables(&result, &tree, ext);
 
     // Index local functions by their definition start offset, matching the
     // external `function_locations` start (both are the FunctionDefinition node's
@@ -493,9 +495,9 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                         .inferred_return_types(local)
                         .into_iter()
                         .map(|t| {
-                            let lifted = lift_local_type_to_ext_with(&t, ir, ext, &result);
+                            let lifted = lift_local_type_to_ext_with(&t, ir, ext, &result, &globals);
                             if contains_any(&lifted) { ValueType::Any }
-                            else { wrap_overlay_shape(&t, lifted, &result, ext, &local.rets, path) }
+                            else { wrap_overlay_shape(&t, lifted, &result, ext, &local.rets, path, &globals) }
                         })
                         .collect();
                     // Lift the engine-synthesized overloads (precise correlated
@@ -504,7 +506,7 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                     let overloads = local
                         .overloads
                         .iter()
-                        .map(|o| lift_overload_to_ext(o, ir, ext))
+                        .map(|o| lift_overload_to_ext(o, ir, ext, &globals))
                         .collect();
                     DeferredSig { returns, overloads }
                 }
@@ -597,6 +599,7 @@ fn harvest_call_globals_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     let ir = &result.ir;
 
     let Some(syms) = ext.deferred_call_globals_by_path.get(path) else { return };
+    let globals = global_tables(&result, &tree, ext);
 
     let mut harvested: Vec<(SymbolIndex, Option<ValueType>)> = Vec::new();
     for &sym_idx in syms {
@@ -608,7 +611,7 @@ fn harvest_call_globals_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
             .call_exprs_starting_at(offset)
             .find(|(_, e)| matches!(e, Expr::FunctionCall { ret_index: 0, .. }))
             .and_then(|(eid, _)| result.resolved_expr_cache_get(eid).cloned())
-            .map(|t| lift_local_type_to_ext_with(&t, ir, ext, &result))
+            .map(|t| lift_local_type_to_ext_with(&t, ir, ext, &result, &globals))
             .filter(|t| !contains_any(t));
         harvested.push((sym_idx, resolved));
     }
@@ -691,6 +694,7 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     let ir = &result.ir;
 
     let Some(keys) = ext.deferred_field_type_args_by_path.get(path) else { return };
+    let globals = global_tables(&result, &tree, ext);
 
     let mut harvested: Vec<(DeferredFieldKey, Option<Vec<ValueType>>)> = Vec::new();
     for key in keys {
@@ -704,7 +708,7 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
             let args = result.get_type_args_for_expr(eid);
             if !args.is_empty() {
                 let lifted: Vec<ValueType> =
-                    args.iter().map(|a| lift_local_type_to_ext_with(a, ir, ext, &result)).collect();
+                    args.iter().map(|a| lift_local_type_to_ext_with(a, ir, ext, &result, &globals)).collect();
                 // An `any` arg carries no more than the coarse fallback — skip it
                 // so a partial/unresolved harvest doesn't replace the coarse path.
                 if !lifted.iter().any(contains_any) {
@@ -884,6 +888,7 @@ fn accumulate_class_fields_in_file(
     analysis.resolve_types();
     let result = analysis.into_result();
     let ir = &result.ir;
+    let globals = global_tables(&result, &tree, ext);
 
     // Map each local class table that is a workspace `@class` (a registry key) to its
     // class name. All of them — not just the read's target — so this single analysis
@@ -929,7 +934,7 @@ fn accumulate_class_fields_in_file(
         let entry = acc.entry((name, fa.field_name.clone())).or_insert_with(|| (Vec::new(), false));
         entry.1 |= fa.lateinit;
         if let Some(ty) = result.resolve_expr_type(fa.actual_expr) {
-            let lifted = lift_local_type_to_ext_with(&ty, ir, ext, &result);
+            let lifted = lift_local_type_to_ext_with(&ty, ir, ext, &result, &globals);
             if !entry.0.contains(&lifted) {
                 entry.0.push(lifted);
             }
@@ -969,18 +974,18 @@ fn gate_harvested_field(tys: Vec<ValueType>, lateinit: bool) -> Option<ValueType
 /// Lift a per-file `ResolvedOverload` into external-index space: each param type
 /// and return type is converted via `lift_local_type_to_ext`. Flags and labels
 /// pass through unchanged.
-fn lift_overload_to_ext(o: &ResolvedOverload, ir: &Ir, ext: &PreResolvedGlobals) -> ResolvedOverload {
+fn lift_overload_to_ext(o: &ResolvedOverload, ir: &Ir, ext: &PreResolvedGlobals, globals: &GlobalTables) -> ResolvedOverload {
     ResolvedOverload {
         params: o
             .params
             .iter()
             .map(|p| crate::types::ResolvedOverloadParam {
                 name: p.name.clone(),
-                typ: p.typ.as_ref().map(|t| lift_local_type_to_ext(t, ir, ext)),
+                typ: p.typ.as_ref().map(|t| lift_local_type_to_ext(t, ir, ext, globals)),
                 optional: p.optional,
             })
             .collect(),
-        returns: o.returns.iter().map(|t| lift_local_type_to_ext(t, ir, ext)).collect(),
+        returns: o.returns.iter().map(|t| lift_local_type_to_ext(t, ir, ext, globals)).collect(),
         // AnnotationType is name-based (pre-resolution), so it carries no local
         // table indices — clone through unchanged; names re-resolve against ext.
         returns_raw: o.returns_raw.clone(),
@@ -1114,6 +1119,7 @@ fn wrap_overlay_shape(
     ext: &PreResolvedGlobals,
     ret_syms: &[SymbolIndex],
     def_path: &Path,
+    globals: &GlobalTables,
 ) -> ValueType {
     let ValueType::Table(Some(idx)) = orig else { return lifted };
     if !idx.is_external() {
@@ -1166,7 +1172,7 @@ fn wrap_overlay_shape(
             continue;
         }
         let Some(ty) = result.resolve_expr_type(fa.actual_expr) else { continue };
-        let lifted_ty = lift_local_type_to_ext_with(&ty, ir, ext, result);
+        let lifted_ty = lift_local_type_to_ext_with(&ty, ir, ext, result, globals);
         // `Any` carries no information; `Nil` is the "remove method" placeholder
         // idiom (`inst.M = nil`) — neither belongs in the carried shape.
         if matches!(lifted_ty, ValueType::Any | ValueType::Nil) {
@@ -1217,15 +1223,123 @@ fn ext_class_declares(ext: &PreResolvedGlobals, idx: crate::types::TableIndex, f
         })
 }
 
+/// Local tables mapped to the same table in ext space. See [`global_tables`].
+type GlobalTables = HashMap<TableIndex, TableIndex>;
+
+/// Nesting bound for [`global_tables`]'s walk into a global's table fields.
+const GLOBAL_TABLE_MAX_DEPTH: usize = 4;
+
+/// Map each local *mixin* table that is a global defined in the analyzed file — the
+/// global's own table (`WidgetMixin = {}`) or one nested under it
+/// (`Util.WidgetMixin = {}`) — to that table in ext space. The lift references these
+/// instead of inlining them, so cross-file callers get the table every other file sees:
+/// methods keep their definitions, and `self` references stay exact rather than
+/// decaying at the cycle guard. Only tables with a method the ext table also carries
+/// qualify: ext keeps statement-defined methods exactly but not constructor-defined
+/// data (`Point = { x = 1 }`), which stays inline. A file-level `local` sharing a
+/// global's name is a different variable.
+fn global_tables(
+    result: &crate::analysis::AnalysisResult,
+    tree: &crate::syntax::tree::SyntaxTree,
+    ext: &PreResolvedGlobals,
+) -> GlobalTables {
+    let ir = &result.ir;
+    let mut pending: Vec<(TableIndex, TableIndex, usize)> = Vec::new();
+    for (id, sym_idx) in ir.scope0_local_symbols() {
+        let Some(&ext_sym) = ext.scope0_symbols.get(id) else { continue };
+        let Some(ValueType::Table(Some(ext_idx))) =
+            ext.sym(ext_sym).versions.last().and_then(|v| v.resolved_type.as_ref())
+        else {
+            continue;
+        };
+        let sym = ir.sym(sym_idx);
+        if sym.versions.first().is_none_or(|v| result.is_local_declaration_site(tree, v.def_node.start)) {
+            continue;
+        }
+        for ver in &sym.versions {
+            if let Some(ValueType::Table(Some(local_idx))) = &ver.resolved_type
+                && !local_idx.is_external()
+            {
+                pending.push((*local_idx, *ext_idx, 0));
+            }
+        }
+    }
+    let mut map = GlobalTables::new();
+    let mut visited: HashSet<TableIndex> = HashSet::new();
+    while let Some((local_idx, ext_idx, depth)) = pending.pop() {
+        if !ext_idx.is_external() || !visited.insert(local_idx) {
+            continue;
+        }
+        let Some(ext_table) = ext.try_table(ext_idx) else { continue };
+        let local_table = ir.table(local_idx);
+        let has_shared_method = local_table.fields.iter().any(|(name, fi)| {
+            matches!(ir.expr(fi.expr), Expr::FunctionDef(_))
+                && ext_table.fields.get(name).is_some_and(|efi| {
+                    efi.expr.is_external() && matches!(ext.expr(efi.expr), Expr::FunctionDef(_))
+                })
+        });
+        if has_shared_method {
+            map.insert(local_idx, ext_idx);
+        }
+        if depth >= GLOBAL_TABLE_MAX_DEPTH {
+            continue;
+        }
+        for (name, fi) in &local_table.fields {
+            if let Some(ValueType::Table(Some(sub))) = result.resolve_field_type(fi)
+                && !sub.is_external()
+                && let Some(ext_fi) = ext_table.fields.get(name)
+                && let Some(ValueType::Table(Some(ext_sub))) = result.resolve_field_type(ext_fi)
+            {
+                pending.push((sub, ext_sub, depth + 1));
+            }
+        }
+    }
+    map
+}
+
 /// Depth bound for the lift's structural recursion. A returned local function
 /// whose signature references (transitively) another function value can't loop
 /// forever; past this depth we decay to bare `function` to stay terminating.
 const LIFT_MAX_DEPTH: usize = 6;
 
+/// Bound on the inline members (record fields, function params and returns) one
+/// top-level lift may materialize. The depth cap alone doesn't bound breadth: a
+/// table re-expanded under every method of another (mixins whose methods take or
+/// return other mixins) grows exponentially within it — tens of GB on a large
+/// workspace. Past the budget, nested tables and functions decay as at the depth cap.
+const LIFT_MEMBER_BUDGET: usize = 4096;
+
+/// State for one top-level lift: the harvested file's global tables, plus cycle and
+/// breadth bounds.
+struct LiftGuard<'a> {
+    globals: &'a GlobalTables,
+    /// Local tables and functions being expanded on the current path. Re-entering
+    /// one is a recursive type (a mixin method whose `self` is the table being
+    /// lifted) with no finite inline form, so it decays instead of expanding again.
+    tables_on_path: Vec<TableIndex>,
+    funcs_on_path: Vec<FunctionIndex>,
+    /// Members left of [`LIFT_MEMBER_BUDGET`].
+    budget: usize,
+}
+
+impl<'a> LiftGuard<'a> {
+    fn new(globals: &'a GlobalTables) -> Self {
+        Self { globals, tables_on_path: Vec::new(), funcs_on_path: Vec::new(), budget: LIFT_MEMBER_BUDGET }
+    }
+
+    /// Take `n` members from the budget; takes nothing and returns `false` when
+    /// fewer remain.
+    fn reserve(&mut self, n: usize) -> bool {
+        let Some(rest) = self.budget.checked_sub(n) else { return false };
+        self.budget = rest;
+        true
+    }
+}
+
 /// Convert a `ValueType` produced by per-file analysis into external-index space
 /// so it can be stored on `PreResolvedGlobals` and read by other files.
-fn lift_local_type_to_ext(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals) -> ValueType {
-    lift_local_type_to_ext_depth(ty, ir, ext, 0, None)
+fn lift_local_type_to_ext(ty: &ValueType, ir: &Ir, ext: &PreResolvedGlobals, globals: &GlobalTables) -> ValueType {
+    lift_local_type_to_ext_depth(ty, ir, ext, 0, None, &mut LiftGuard::new(globals))
 }
 
 /// Like [`lift_local_type_to_ext`] but with the source file's analysis result in
@@ -1243,11 +1357,12 @@ fn lift_local_type_to_ext_with(
     ir: &Ir,
     ext: &PreResolvedGlobals,
     res: &crate::analysis::AnalysisResult,
+    globals: &GlobalTables,
 ) -> ValueType {
-    lift_local_type_to_ext_depth(ty, ir, ext, 0, Some(res))
+    lift_local_type_to_ext_depth(ty, ir, ext, 0, Some(res), &mut LiftGuard::new(globals))
 }
 
-/// Depth-guarded core of [`lift_local_type_to_ext`].
+/// Depth-, cycle- and budget-guarded core of [`lift_local_type_to_ext`].
 ///
 /// Named (class) tables map by `class_name` through `ext.classes`; tables that
 /// already live in ext space pass through; a returned *local* function value is
@@ -1257,13 +1372,15 @@ fn lift_local_type_to_ext_with(
 /// its named fields' types (from `res.resolve_field_type`, so only when `res` is
 /// threaded — see [`lift_local_type_to_ext_with`]). Only genuinely unrepresentable
 /// types (an anonymous table with neither, an unbound type variable, …) decay to
-/// `Any`.
+/// `Any`. Past the depth cap, on a cycle, or over budget, an anonymous table
+/// decays to bare `table` and a local function to bare `function`.
 fn lift_local_type_to_ext_depth(
     ty: &ValueType,
     ir: &Ir,
     ext: &PreResolvedGlobals,
     depth: usize,
     res: Option<&crate::analysis::AnalysisResult>,
+    guard: &mut LiftGuard<'_>,
 ) -> ValueType {
     match ty {
         ValueType::Table(Some(idx)) => {
@@ -1275,17 +1392,20 @@ fn lift_local_type_to_ext_depth(
                 && let Some(&ext_idx) = ext.classes.get(name)
             {
                 ValueType::Table(Some(ext_idx))
+            } else if let Some(&ext_idx) = guard.globals.get(idx) {
+                ValueType::Table(Some(ext_idx))
             } else if let Some(vt) = &info.value_type {
                 // Anonymous array/map: carry its element type inline (arena-free)
                 // instead of decaying to `any`, so a body-derived cross-file
                 // return of `T[]` / `table<K, V>` stays precise. The element
                 // types live on the arena `TableInfo` (`value_type` / `key_type`
                 // / `is_explicit_map`), so no resolved-expr cache is needed here.
-                // Bounded by the same depth guard as the function-signature lift.
-                if depth >= LIFT_MAX_DEPTH {
+                // Bounded by the same guards as the function-signature lift.
+                if depth >= LIFT_MAX_DEPTH || guard.tables_on_path.contains(idx) || !guard.reserve(1) {
                     return ValueType::Table(None);
                 }
-                let lowered_val = lift_local_type_to_ext_depth(vt, ir, ext, depth + 1, res);
+                guard.tables_on_path.push(*idx);
+                let lowered_val = lift_local_type_to_ext_depth(vt, ir, ext, depth + 1, res, guard);
                 // Carry the key only for a genuine map — an explicit `table<K,V>`
                 // OR an *inferred* non-`Number` key (resolve.rs sets key_type on
                 // inferred maps WITHOUT setting is_explicit_map, so gating on that
@@ -1296,10 +1416,11 @@ fn lift_local_type_to_ext_depth(
                     info.key_type.as_ref(),
                     info.is_explicit_map,
                 ) {
-                    info.key_type.as_ref().map(|k| lift_local_type_to_ext_depth(k, ir, ext, depth + 1, res))
+                    info.key_type.as_ref().map(|k| lift_local_type_to_ext_depth(k, ir, ext, depth + 1, res, guard))
                 } else {
                     None
                 };
+                guard.tables_on_path.pop();
                 ValueType::TableShape(Box::new(crate::types::TableShape::new_container(
                     Vec::new(),
                     lowered_key,
@@ -1318,47 +1439,60 @@ fn lift_local_type_to_ext_depth(
                 // one); otherwise a field falls back to its own annotation, then
                 // `any`. Every field still *exists* in the shape even when its
                 // type is unknown, so no spurious cross-file `undefined-field`.
-                // Same depth bound as the array/map and function-signature lifts.
-                if depth >= LIFT_MAX_DEPTH {
+                // Same guards as the array/map and function-signature lifts. Every
+                // field is reserved up front, so a budget cut-off never drops one.
+                if depth >= LIFT_MAX_DEPTH
+                    || guard.tables_on_path.contains(idx)
+                    || !guard.reserve(info.fields.len())
+                {
                     return ValueType::Table(None);
                 }
-                let fields: Vec<(String, ValueType)> = info
-                    .fields
-                    .iter()
-                    .map(|(name, fi)| {
+                guard.tables_on_path.push(*idx);
+                // Name order, so which nested types a budget cut-off decays is
+                // deterministic (`fields` is a `HashMap`).
+                let mut names: Vec<&String> = info.fields.keys().collect();
+                names.sort_unstable();
+                let fields: Vec<(String, ValueType)> = names
+                    .into_iter()
+                    .map(|name| {
+                        let fi = &info.fields[name];
                         let raw = res
                             .and_then(|r| r.resolve_field_type(fi))
                             .or_else(|| fi.annotation.clone())
                             .unwrap_or(ValueType::Any);
-                        let lifted = lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1, res);
+                        let lifted = lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1, res, guard);
                         (name.clone(), lifted)
                     })
                     .collect();
+                guard.tables_on_path.pop();
                 ValueType::TableShape(Box::new(crate::types::TableShape::new(fields)))
             } else {
                 ValueType::Any
             }
         }
         ValueType::Union(members) => ValueType::make_union(
-            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res)).collect(),
+            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res, guard)).collect(),
         ),
         ValueType::Intersection(members) => ValueType::Intersection(
-            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res)).collect(),
+            members.iter().map(|m| lift_local_type_to_ext_depth(m, ir, ext, depth, res, guard)).collect(),
         ),
         ValueType::OpaqueAlias(name, inner) => {
-            ValueType::OpaqueAlias(name.clone(), Box::new(lift_local_type_to_ext_depth(inner, ir, ext, depth, res)))
+            ValueType::OpaqueAlias(name.clone(), Box::new(lift_local_type_to_ext_depth(inner, ir, ext, depth, res, guard)))
         }
-        ValueType::Secret(inner) => ValueType::secret_of(lift_local_type_to_ext_depth(inner, ir, ext, depth, res)),
+        ValueType::Secret(inner) => ValueType::secret_of(lift_local_type_to_ext_depth(inner, ir, ext, depth, res, guard)),
         // An external function value already lives in ext space; keep it.
         ValueType::Function(Some(idx)) if idx.is_external() => ty.clone(),
         // A returned *local* function value can't be referenced cross-file by
         // index, so carry its signature inline (lossless presentation). Past the
-        // depth bound, decay to bare `function` to keep recursion terminating.
+        // depth bound, on a cycle, or over budget, decay to bare `function`.
         ValueType::Function(Some(idx)) => {
-            if depth >= LIFT_MAX_DEPTH {
+            if depth >= LIFT_MAX_DEPTH || guard.funcs_on_path.contains(idx) {
                 return ValueType::Function(None);
             }
-            ValueType::FunctionSig(Box::new(lift_local_func_to_shape(idx.val(), ir, ext, depth, res)))
+            guard.funcs_on_path.push(*idx);
+            let shape = lift_local_func_to_shape(idx.val(), ir, ext, depth, res, guard);
+            guard.funcs_on_path.pop();
+            shape.map_or(ValueType::Function(None), |s| ValueType::FunctionSig(Box::new(s)))
         }
         // Unbound type variables have no meaning in the caller's context.
         ValueType::TypeVariable(_) => ValueType::Any,
@@ -1370,16 +1504,28 @@ fn lift_local_type_to_ext_depth(
 /// Build an inline [`crate::types::FunctionShape`] from a local function index,
 /// lifting each parameter and return type into ext space. Used by the lift so a
 /// deferred function that returns a local function carries the precise callable
-/// signature cross-file instead of decaying to bare `function`.
+/// signature cross-file instead of decaying to bare `function`. `None` when its
+/// params and returns don't fit the remaining budget.
 fn lift_local_func_to_shape(
     local_idx: usize,
     ir: &Ir,
     ext: &PreResolvedGlobals,
     depth: usize,
     res: Option<&crate::analysis::AnalysisResult>,
-) -> crate::types::FunctionShape {
+    guard: &mut LiftGuard<'_>,
+) -> Option<crate::types::FunctionShape> {
     use crate::types::{ShapeParam, SymbolIdentifier};
     let func = &ir.functions[local_idx];
+    let inferred;
+    let raw_returns: &[ValueType] = if func.return_annotations.is_empty() {
+        inferred = inferred_returns_from_ir(ir, func);
+        &inferred
+    } else {
+        &func.return_annotations
+    };
+    if !guard.reserve(func.args.len() + raw_returns.len()) {
+        return None;
+    }
     let params = func
         .args
         .iter()
@@ -1402,22 +1548,15 @@ fn lift_local_func_to_shape(
                 .unwrap_or(ValueType::Any);
             // The `?` suffix conveys optionality, so strip nil from the display type.
             let raw = if optional { raw.strip_nil() } else { raw };
-            let ty = lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1, res);
+            let ty = lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1, res, guard);
             ShapeParam { name, ty, optional }
         })
         .collect();
-    let returns = if !func.return_annotations.is_empty() {
-        func.return_annotations
-            .iter()
-            .map(|t| lift_local_type_to_ext_depth(t, ir, ext, depth + 1, res))
-            .collect()
-    } else {
-        inferred_returns_from_ir(ir, func)
-            .iter()
-            .map(|t| lift_local_type_to_ext_depth(t, ir, ext, depth + 1, res))
-            .collect()
-    };
-    crate::types::FunctionShape { params, returns, is_vararg: func.is_vararg }
+    let returns = raw_returns
+        .iter()
+        .map(|t| lift_local_type_to_ext_depth(t, ir, ext, depth + 1, res, guard))
+        .collect();
+    Some(crate::types::FunctionShape { params, returns, is_vararg: func.is_vararg })
 }
 
 /// Body-derived per-slot return types for `func`, computed from `ir` alone
@@ -1440,4 +1579,40 @@ fn inferred_returns_from_ir(ir: &Ir, func: &crate::types::Function) -> Vec<Value
             None => ValueType::Any,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Re-expanding one record under every field of another exceeds the member
+    /// budget: the cut-off keeps every field name, decays only the nested shapes past
+    /// the budget, and does so in name order.
+    #[test]
+    fn lift_member_budget_bounds_repeated_expansion() {
+        let inner: Vec<String> = (0..100).map(|i| format!("f{i:03} = 1")).collect();
+        let outer: Vec<String> = (0..100).map(|i| format!("a{i:03} = inner")).collect();
+        let src = format!("local inner = {{ {} }}\nlocal outer = {{ {} }}\n", inner.join(", "), outer.join(", "));
+        let tree = crate::syntax::parser::parse(&src);
+        let ext = Arc::new(PreResolvedGlobals::empty());
+        let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&ext), AnalysisConfig::default());
+        analysis.resolve_types();
+        let result = analysis.into_result();
+        let (outer_idx, _) = result
+            .local_tables()
+            .find(|(_, t)| t.fields.contains_key("a000"))
+            .expect("outer table");
+
+        let lifted = lift_local_type_to_ext_with(&ValueType::Table(Some(outer_idx)), &result.ir, &ext, &result, &GlobalTables::new());
+        let ValueType::TableShape(shape) = lifted else { panic!("expected a record shape, got {lifted:?}") };
+        assert_eq!(shape.fields.len(), 100);
+        let expanded = shape
+            .fields
+            .iter()
+            .take_while(|(_, t)| matches!(t, ValueType::TableShape(s) if s.fields.len() == 100))
+            .count();
+        assert!(expanded > 0 && expanded < 100, "expanded {expanded} nested records");
+        assert!(shape.fields[expanded..].iter().all(|(_, t)| *t == ValueType::Table(None)));
+        assert!(100 + expanded * 100 <= LIFT_MEMBER_BUDGET);
+    }
 }

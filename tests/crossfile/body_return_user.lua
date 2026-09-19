@@ -64,3 +64,22 @@ local place = ns.Core.GetPlacement()
 -- A record field's explicit `@type` annotation is preferred over the inferred RHS.
 local tagged = ns.Core.GetTagged()
 --    ^ hover: (local) tagged: { count: number, names: string[] }  def: local
+
+-- Self-referential record: back-references to the mixin decay to `table`.
+local widget = ns.Core.GetWidgetMixin()
+--    ^ hover: (local) widget: { GetOwner: fun(self: table): any, SetOwner: fun(self: table, owner: any): table, owner: any }  def: local
+
+-- Global mixins (and tables nested under a global) are referenced, not inlined:
+-- methods resolve to their definitions, including through a `return self` chain.
+local globalWidget = ns.Core.GetGlobalWidgetMixin()
+local ownedWidget = globalWidget:SetOwner(nil)
+--                               ^ hover: (method) function SetOwner(owner)  def: external
+ownedWidget:SetOwner(nil)
+--          ^ hover: (method) function SetOwner(owner)  def: external
+local panel = ns.Core.GetPanelMixin():Show()
+panel:Show()
+--    ^ hover: (method) function Show()  def: external
+
+-- A global data table (no methods) keeps its inline field types.
+local origin = ns.Core.GetGlobalOrigin()
+--    ^ hover: (local) origin: { x: number, y: number }  def: local

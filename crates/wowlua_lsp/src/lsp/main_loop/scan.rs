@@ -344,7 +344,9 @@ pub(super) fn spawn_warm(
                             .expect("single-threaded pool should always build")
                     })
             });
-            pool.install(compute)
+            let out = pool.install(compute);
+            memory::release_memory(Some(pool));
+            out
         }));
         match result {
             Ok((diagnostics, crossfile_diagnostics)) => {

@@ -166,12 +166,16 @@ pub(super) fn find_references_across_workspace(
         let mut cache = ws.xfile_analysis_cache.lock().unwrap();
         if cache.generation != generation {
             cache.files.clear();
+            cache.source_bytes = 0;
             cache.generation = generation;
         }
         for hit in &disk_hits {
-            if hit.fresh && cache.files.len() < XFILE_CACHE_MAX_FILES {
-                cache.files.entry(hit.path.clone())
-                    .or_insert_with(|| Arc::clone(&hit.analyzed));
+            if hit.fresh
+                && cache.source_bytes < XFILE_CACHE_MAX_SOURCE_BYTES
+                && !cache.files.contains_key(&hit.path)
+            {
+                cache.source_bytes += hit.analyzed.text.len();
+                cache.files.insert(hit.path.clone(), Arc::clone(&hit.analyzed));
             }
         }
     }
@@ -269,7 +273,7 @@ pub(super) fn build_type_hierarchy_item_for_class(
         }
     }
     // Fall back to precomputed stub class declarations.
-    for class in &ws.stub_classes {
+    for class in ws.stub_classes() {
         if class.name != class_name { continue; }
         if let Some((start, end)) = class.def_range
             && let Some(path) = class.def_path.as_ref()
