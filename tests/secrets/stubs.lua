@@ -207,3 +207,42 @@ end
 -- The player's identity is never secret.
 if playerClass == "WARRIOR" then end
 local _ = colorsByClass[playerClass]
+
+-- ── Untainted APIs: addon code may not pass secrets ────────────────────────────
+
+local targetGuid = UnitGUID("target")
+local targetExists = UnitExists(targetGuid)
+--                   ^ doc: !**Secrecy**
+--                              ^ diag: secret-argument ~`UnitExists` does not accept secret values from addon code
+local playerExists = UnitExists("player")
+if canaccessvalue(targetGuid) then
+    local guardedExists = UnitExists(targetGuid)
+end
+
+-- `math.*`: secure code may do arithmetic on a secret, addon code may not. (`hp`
+-- is narrowed to a plain number by the guard above, so fetch a fresh one.)
+local focusHp = UnitHealth("focus")
+local floored = math.floor(focusHp)
+--                         ^ diag: secret-argument ~`math.floor` does not accept secret values from addon code
+local plainFloored = math.floor(1.5)
+
+-- The builtins that exist to work with secrets take them from anywhere.
+local isHpSecret = issecretvalue(focusHp)
+local bothReadable = canaccessallvalues(focusHp, maxHp)
+local anySecret = hasanysecretvalues(focusHp)
+local scrubbedHp = scrub(focusHp)
+local dumpedHp = dumpobject(focusHp)
+
+-- `tostring` returns a secret string; `tonumber` an ordinary number.
+local hpText = tostring(focusHp)
+--    ^ hover: (local) hpText: secret<string>
+if hpText == "0" then end
+--  ^ diag: secret-comparison ~value from `tostring` may be secret
+local hpNumber = tonumber(hpText)
+--    ^ hover: (local) hpNumber: number?
+
+-- `secretwrap` fabricates a secret; `secretunwrap` gives an ordinary value back.
+local fakeHealth = secretwrap(5)
+--    ^ hover: (local) fakeHealth: secret<number>
+local realHealth = secretunwrap(fakeHealth)
+--    ^ hover: (local) realHealth: any

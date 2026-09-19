@@ -106,7 +106,7 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `plugin_api.lua` | Plugin diagnostic API types |
 | `Pools.lua` | Generic `ObjectPool<T>`/`FramePool`/`FramePoolCollection` types (FrameXML-defined, no upstream source) |
 | `RuntimeMissingGlobals.lua` | Globals used by addons but not in BlizzardInterfaceResources |
-| `SecretValues.lua` | `@secret-guard` on `issecretvalue`/`canaccessvalue`/`canaccessallvalues`/`hasanysecretvalues`, and `@secret-args tainted` on the string functions Blizzard documents as accepting secrets |
+| `SecretValues.lua` | `@secret-guard` on `issecretvalue`/`canaccessvalue`/`canaccessallvalues`/`hasanysecretvalues`, `secret<T>` returns for `secretwrap`, and `@secret-args tainted` on the string functions Blizzard documents as accepting secrets |
 | `select.lua` | `returns<F>` projection for variadic return truncation |
 | `SetScript.lua` | Contextual callback typing with event-param narrowing |
 | `string_match.lua` | Pattern matching return types |

@@ -131,6 +131,10 @@ pub(in crate::stub_gen) struct EntrySecrecy {
     arguments: Option<String>,
     /// `SecretArgumentsAddAspect` / `SecretReturnsForAspect` aspect names.
     aspects: Vec<String>,
+    /// Whether `SecretArgumentsAddAspect` named any of them. That key describes
+    /// what happens *when a secret argument is passed*, so the entry accepts one
+    /// whatever its `SecretArguments` value says.
+    args_add_aspect: bool,
 }
 
 /// An entry of a documentation file's `Predicates` table.
@@ -171,7 +175,7 @@ pub(in crate::stub_gen) struct BlizzardStructure {
     fields: Vec<BlizzardParam>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(in crate::stub_gen) struct BlizzardApiDocs {
     functions: Vec<BlizzardFunction>,
     events: Vec<BlizzardEvent>,

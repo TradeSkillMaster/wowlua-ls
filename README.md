@@ -19,7 +19,7 @@ LuaLS is an excellent general-purpose Lua language server. But WoW addons aren't
 | XML frames & templates | Invisible to the language server | Scanned into typed classes and globals |
 | `.toc` files | Unsupported | Hover, completion, go-to-def, diagnostics |
 | Wrong-flavor API calls | Not detected | Flagged with `wrong-flavor-api` |
-| Secret values (retail 12.x) | Not detected | Comparisons, arithmetic, table keys, and indexing on secrets flagged |
+| Secret values (retail 12.x) | Not detected | Comparisons, arithmetic, table keys, indexing, and API arguments flagged |
 | Mixins & templates | Annotate by hand | `CreateFrame` / `Mixin` infer `A & B` automatically |
 
 And it goes well beyond stubs. The type engine understands the patterns addons are actually written in:

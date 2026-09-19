@@ -779,7 +779,7 @@ impl AnalysisResult {
         let show_deprecated = func.deprecated
             && !(self.ir.is_stub_function(func_idx)
                 && crate::flavor::deprecation_suppressed(self.addon_flavors, flavors_mask));
-        let secrecy = self.format_secrecy_doc(func);
+        let secrecy = self.format_secrecy_doc(func, self.ir.is_stub_function(func_idx));
         if func.doc.is_none() && !has_descriptions && func.see.is_empty()
             && flavors_mask == 0 && !show_deprecated && secrecy.is_none()
         {
@@ -838,7 +838,7 @@ impl AnalysisResult {
     /// `@secret-args` policy, widget aspects, preconditions, and what a
     /// `@secret-guard` / `@secret-clears` / `@secret-restriction-guard` result
     /// means. `None` when nothing applies or the addon doesn't target retail.
-    fn format_secrecy_doc(&self, func: &crate::types::Function) -> Option<String> {
+    fn format_secrecy_doc(&self, func: &crate::types::Function, is_stub: bool) -> Option<String> {
         use crate::secrets::{SecretArgsPolicy, SecretGuardKind};
         if !self.secrets_displayed() {
             return None;
@@ -850,6 +850,9 @@ impl AnalysisResult {
             return None;
         }
         let mut lines = vec!["**Secrecy**".to_string()];
+        // Where the `AllowedWhenUntainted` line landed, to tell a section that says
+        // only that from one where it is context.
+        let mut untainted_args_line = None;
         let when = meta.map(|m| m.when.as_slice()).unwrap_or_default();
         lines.extend(when.iter()
             .filter(|pred| self.secret_predicate_displayed(&pred.name))
@@ -883,6 +886,7 @@ impl AnalysisResult {
                     lines.push(format!("- Secret arguments: `{}` — accepted (results inherit their secrecy)", p.blizzard_name()));
                 }
                 Some(p @ SecretArgsPolicy::AllowedWhenUntainted) => {
+                    untainted_args_line = Some(lines.len());
                     lines.push(format!("- Secret arguments: `{}` — accepted only from Blizzard code", p.blizzard_name()));
                 }
                 None => {}
@@ -929,6 +933,13 @@ impl AnalysisResult {
                 lines.push(format!("- Guard: {} means {restriction} is inactive", result_text(&guard.equals)));
             }
             lines.extend(meta.preconditions.iter().map(crate::secrets::SecretPrecondition::hover_line));
+        }
+        // `AllowedWhenUntainted` is what Blizzard's documentation says about nearly
+        // every API, so a stub section stating only that is noise; `secret-argument`
+        // reports it where it matters. An author who wrote the annotation themselves
+        // meant it, and a stub with anything else to say keeps the line as context.
+        if is_stub && untainted_args_line.is_some_and(|i| i == 1 && lines.len() == i + 1) {
+            return None;
         }
         (lines.len() > 1).then(|| lines.join("\n"))
     }

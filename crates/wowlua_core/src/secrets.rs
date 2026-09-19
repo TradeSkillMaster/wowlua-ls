@@ -128,10 +128,19 @@ pub fn argument_rule(policy: Option<SecretArgsPolicy>) -> SecretRule {
         // for string.format/concat/join); ASSUMED that every such API's results
         // inherit the secrecy of its arguments.
         Some(SecretArgsPolicy::AllowedWhenTainted) => SecretRule::Propagate,
-        // VERIFIED that tainted callers are rejected, but Blizzard's generated
-        // docs mark nearly every function this way — including `issecretvalue`
-        // itself — so the data can't separate real rejections from defaults.
-        Some(SecretArgsPolicy::AllowedWhenUntainted) | None => SecretRule::Allowed,
+        // VERIFIED (12.1.0) rejected for addon code: `UnitExists(secretwrap("player"))`
+        // raises "bad argument #1 to 'UnitExists' (Usage: local result =
+        // UnitExists(unit)). Secret values are only allowed during untainted
+        // execution for this argument", as does
+        // `C_Item.GetItemNameByID(secretwrap(6948))`. Blizzard's generated docs
+        // also attach the key to the secret builtins, which do accept secrets
+        // (`issecretvalue(secretwrap(5))` works from the same chat context), so
+        // those are curated out at stub-generation time.
+        Some(SecretArgsPolicy::AllowedWhenUntainted) => SecretRule::Error,
+        // No policy: nothing is known about the API, so nothing is diagnosed and
+        // the result carries no argument secrecy. This is also how a function that
+        // accepts secrets and returns ordinary values is expressed.
+        None => SecretRule::Allowed,
     }
 }
 

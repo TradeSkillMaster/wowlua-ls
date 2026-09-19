@@ -489,7 +489,7 @@ API call not available in all declared project flavors. See [Flavor Filtering](/
 
 ### `secret-arithmetic` / `secret-comparison` / `secret-condition` / `secret-table-key` / `secret-argument` / `secret-access` <Badge type="warning" text="Warning" />
 
-Retail 12.x only. Flags operations that error when a value is secret: arithmetic, comparisons (including numeric `for` bounds), testing a secret boolean, using it as a table key, passing it to an API that never accepts secrets, and indexing it (`name:upper()` included), calling it, or taking its length. Guard with `canaccessvalue` or `issecretvalue`. See [Secret Values](/guide/secrets).
+Retail 12.x only. Flags operations that error when a value is secret: arithmetic, comparisons (including numeric `for` bounds), testing a secret boolean, using it as a table key, passing it to an API that rejects secrets from addon code (most of the API, `math.*` included), and indexing it (`name:upper()` included), calling it, or taking its length. Guard with `canaccessvalue` or `issecretvalue`. See [Secret Values](/guide/secrets).
 
 ### `access-private` / `access-protected` <Badge type="warning" text="Warning" />
 

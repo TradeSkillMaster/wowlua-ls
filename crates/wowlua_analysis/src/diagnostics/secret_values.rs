@@ -5,7 +5,7 @@
 
 use crate::analysis::{AccessKind, AnalysisResult};
 use crate::ast::Operator;
-use crate::secrets::SecretRule;
+use crate::secrets::{SecretArgsPolicy, SecretRule};
 use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, TextSize};
 use crate::types::{Expr, ExprId, ScopeIndex, SymbolIdentifier, ValueType};
@@ -264,18 +264,28 @@ fn check_arguments(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
         if crate::secrets::argument_rule(policy) != SecretRule::Error {
             continue;
         }
-        let callee = match analysis.expr(*call_expr) {
-            Expr::FunctionCall { func, is_method_call, .. } => callee_name(analysis, *func, *is_method_call),
-            _ => None,
+        // `none` rejects every caller; `untainted` rejects addon code only.
+        let rejection = match policy {
+            Some(SecretArgsPolicy::AllowedWhenUntainted) => "does not accept secret values from addon code",
+            _ => "never accepts secret values",
         };
-        let callee = callee.map_or_else(|| "this function".to_string(), |n| format!("`{n}`"));
+        // Most of the API rejects secrets, so this runs on nearly every call:
+        // name the callee only once a report is certain.
+        let mut callee = None;
         for arg in &cr.expected_args {
             if !is_secret(analysis, arg.arg_expr) || !active_at(analysis, arg.arg_expr, arg.start) {
                 continue;
             }
+            let callee = callee.get_or_insert_with(|| {
+                match analysis.expr(*call_expr) {
+                    Expr::FunctionCall { func, is_method_call, .. } => callee_name(analysis, *func, *is_method_call),
+                    _ => None,
+                }
+                .map_or_else(|| "this function".to_string(), |n| format!("`{n}`"))
+            });
             super::SECRET_ARGUMENT.emit(
                 diags,
-                format!("{callee} never accepts secret values, but this {}; guard with `canaccessvalue`", describe(analysis, arg.arg_expr, "value")),
+                format!("{callee} {rejection}, but this {}; guard with `canaccessvalue`", describe(analysis, arg.arg_expr, "value")),
                 arg.start as usize,
                 arg.end as usize,
             );

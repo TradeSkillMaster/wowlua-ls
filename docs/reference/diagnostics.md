@@ -52,7 +52,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `secret-comparison` | Comparing a value that may be [secret](/guide/secrets), including as a numeric `for` bound (retail) |
 | `secret-condition` | Testing a boolean that may be [secret](/guide/secrets) in a condition or `and`/`or` (retail) |
 | `secret-table-key` | Using a value that may be [secret](/guide/secrets) as a table key (retail) |
-| `secret-argument` | Passing a value that may be [secret](/guide/secrets) to an API that never accepts secrets (retail) |
+| `secret-argument` | Passing a value that may be [secret](/guide/secrets) to an API that rejects secrets from addon code (retail) |
 | `secret-access` | Indexing (including a method call), calling, or taking the length of a value that may be [secret](/guide/secrets) (retail) |
 | `redundant-class-generic` | Method redeclares class-level `@generic` |
 | `cannot-call` | Calling a value whose type is not callable |

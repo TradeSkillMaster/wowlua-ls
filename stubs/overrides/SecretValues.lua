@@ -2,8 +2,14 @@
 -- Secret-value semantics (retail 12.x) that Blizzard's machine-readable API
 -- documentation doesn't carry. Secrecy of ordinary APIs is generated from the
 -- docs' `SecretReturns`/`SecretWhen*`/`SecretArguments` keys; these entries cover
--- the builtins that *test* secrecy (their result narrows the argument) and the
--- Lua string functions Blizzard documents as accepting secrets from addon code.
+-- the builtins that *test* secrecy (their result narrows the argument), the two
+-- that convert between secret and ordinary values, and the Lua string functions
+-- Blizzard documents as accepting secrets from addon code.
+--
+-- Which builtins accept secret arguments is curated in
+-- `stub_gen/secret_stubs.rs` (`DOCUMENTED_ARGS_OVERRIDES`), not here: the
+-- generator rewrites Blizzard's documented policy onto the vendor stubs, so the
+-- decision has to be made where that rewrite happens.
 
 ---Returns true if a supplied value is a secret value.
 ---
@@ -36,6 +42,22 @@ function canaccessallvalues(...) end
 ---@return boolean isAnyValueSecret
 ---@secret-guard ... any-secret
 function hasanysecretvalues(...) end
+
+---Converts all supplied values to secret values, preventing most operations on them from occurring on tainted code paths.
+---
+---[Documentation](https://warcraft.wiki.gg/wiki/API_secretwrap)
+---@generic T
+---@param value T
+---@param ... any
+---@return secret<T> ... wrapped
+function secretwrap(value, ...) end
+
+---Unwraps all supplied secrets, converting them back to regular values.
+---
+---[Documentation](https://warcraft.wiki.gg/wiki/API_secretunwrap)
+---@param ... any values
+---@return any ... unwrapped
+function secretunwrap(...) end
 
 ---Returns a formatted version of its variable number of arguments following the description given in its first argument.
 ---

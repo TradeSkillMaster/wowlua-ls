@@ -38,12 +38,17 @@ Secrecy
 | Testing any other secret (`if name then`) | Allowed | |
 | Table key: `t[secret] = v`, `{ [secret] = v }`, `t[secret]`\* | Error | `secret-table-key` |
 | Argument to an API that never accepts secrets (e.g. `C_ChatInfo.SendAddonMessage`) | Error | `secret-argument` |
+| Argument to an API that accepts secrets only from Blizzard code (`UnitExists`, `C_Item.GetItemNameByID`, most of the API) | Error | `secret-argument` |
+| Argument to `math.*` | Error | `secret-argument` |
 | Length `#`, indexing (`name:upper()`, `name.x`, `name[1]`), or calling a secret | Error | `secret-access` |
-| `..`, `string.format`, `string.join`, `string.concat` | Allowed; the result is secret | |
+| `..`, `string.format`, `string.join`, `string.concat`, `tostring` | Allowed; the result is secret | |
+| `tonumber` | Allowed; the result is an ordinary number or `nil` | |
 | `a and b`, `a or b` | Allowed; the result is secret only if the operand it returns is (`UnitName(unit) and "named" or "unnamed"` is plain) | |
 | `type(secret)` | Allowed; returns the real type | |
 
 Rules marked \* are assumed; the rest are documented by Blizzard. Other APIs documented to accept secrets from addon code are also assumed to return secret results when given secrets.
+
+Most of the API accepts secret values only from Blizzard's own code: calling one from an addon raises `Secret values are only allowed during untainted execution for this argument`. The builtins that exist to work with secrets — `issecretvalue`, `canaccessvalue`, `canaccessallvalues`, `hasanysecretvalues`, `issecrettable`, `canaccesstable`, `secretwrap`, `secretunwrap`, `scrub`, `scrubsecretvalues`, `mapvalues`, `dumpobject`, `securecallmethod`, `Mixin`, and `CreateFromMixins` — take them from anywhere.
 
 An operation that errors is reported once: its result is treated as an ordinary value, so later uses of it aren't flagged again.
 
@@ -158,7 +163,7 @@ Mark your own context guards with [`@secret-clears` and `@secret-restriction-gua
 
 ## Where secrecy comes from
 
-The retail API stubs are generated from Blizzard's API documentation, which marks the functions, event payloads, and structure fields that may be secret, the conditions under which they are, and the APIs that reject secret arguments. A few details:
+The retail API stubs are generated from Blizzard's API documentation, which marks the functions, event payloads, and structure fields that may be secret, the conditions under which they are, and which callers each API accepts secret arguments from. A few details:
 
 - **Player exemptions.** Unit APIs whose restriction never applies to the player (`UnitName`, `UnitClass`, `UnitCastingInfo`, `UnitPowerMax`, …) return ordinary values for a literal `"player"` (and `"pet"` where documented). The stubs express this with `@secret-unless`.
 - **Structures the documentation doesn't describe.** Blizzard's documentation returns `AuraData` without listing its fields, so their secrecy comes from warcraft.wiki.gg: every field may be secret except the ones it marks as never secret (`auraInstanceID`, `isHarmful`, `isHelpful`, …).
@@ -187,7 +192,7 @@ Every restriction can be forced from anywhere, so each report can be reproduced 
 | `addonMapRestrictionsForced` | Map |
 | `addonChatRestrictionsForced` | Chat |
 
-`secretwrap(...)` returns its arguments as secrets, to feed an operation a secret directly (`local hp = secretwrap(100)`).
+`secretwrap(...)` returns its arguments as secrets, to feed an operation a secret directly. The language server types it the same way, so `local hp = secretwrap(100)` is `secret<number>` and the operations below it are reported.
 
 ## Limitations
 

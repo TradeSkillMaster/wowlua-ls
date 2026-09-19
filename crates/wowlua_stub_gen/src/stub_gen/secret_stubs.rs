@@ -9,13 +9,15 @@
 
 use super::*;
 use crate::secrets::{PreconditionFailure, SecretArgsPolicy, SecretPrecondition, SecretPredicate};
+use std::borrow::Cow;
 
 /// How a function, method, or event is annotated.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(in crate::stub_gen) struct StubSecrecy {
     /// `@secret-when` predicates with their documentation.
     pub(in crate::stub_gen) when: Vec<SecretPredicate>,
-    /// `@secret-args`; Blizzard's default `AllowedWhenUntainted` is left implicit.
+    /// `@secret-args`; `None` where the documentation states no policy or a
+    /// curated decision ([`DOCUMENTED_ARGS_OVERRIDES`]) removes one.
     pub(in crate::stub_gen) args: Option<SecretArgsPolicy>,
     /// `@secret-aspect` names.
     pub(in crate::stub_gen) aspects: Vec<String>,
@@ -122,11 +124,29 @@ pub(in crate::stub_gen) struct SecretIndex {
     /// Structure name → the predicates of every API that returns it secret
     /// (`@secret-when` on the `@class`), sorted by name.
     pub(in crate::stub_gen) structure_predicates: HashMap<String, Vec<SecretPredicate>>,
+    /// `@secret-args` that applies to every function of a namespace prefix
+    /// (`math.`), from [`LUA_LIBRARY_ARGS`].
+    namespace_args: Vec<(String, SecretArgsPolicy)>,
+    /// How many of `functions` the documentation itself produced. The curated
+    /// tables add entries unconditionally, so counting the final map would make
+    /// [`Self::is_empty`] — the regen's "the docs carried no secrecy keys" alarm —
+    /// always false.
+    documented_functions: usize,
 }
 
 impl SecretIndex {
     pub(in crate::stub_gen) fn is_empty(&self) -> bool {
-        self.functions.is_empty() && self.events.is_empty() && self.structures.is_empty()
+        self.documented_functions == 0 && self.events.is_empty() && self.structures.is_empty()
+    }
+
+    /// The secrecy of the stub function named `name`, falling back to a
+    /// namespace-wide `@secret-args`.
+    pub(in crate::stub_gen) fn function(&self, name: &str) -> Option<Cow<'_, StubSecrecy>> {
+        if let Some(secrecy) = self.functions.get(name) {
+            return Some(Cow::Borrowed(secrecy));
+        }
+        let (_, args) = self.namespace_args.iter().find(|(prefix, _)| name.starts_with(prefix.as_str()))?;
+        Some(Cow::Owned(StubSecrecy { args: Some(*args), ..StubSecrecy::default() }))
     }
 }
 
@@ -269,6 +289,86 @@ const SECRET_CLEARS: &[GuardSpec] = &[
     ("C_Secrets.ShouldUnitThreatStateBeSecret", "SecretWhenUnitThreatStateRestricted", &["unit", "mobUnit"], None),
     // "Returns true if queries for unit threat values will produce secret values."
     ("C_Secrets.ShouldUnitThreatValuesBeSecret", "SecretWhenUnitThreatValuesRestricted", &["unit", "mobUnit"], None),
+];
+
+/// A curated `@secret-args` decision for one function. `None` emits no
+/// annotation, which is how "accepts secret values and returns ordinary ones"
+/// is spelled: the analysis diagnoses nothing and propagates no secrecy.
+type SecretArgsDecision = (&'static str, Option<SecretArgsPolicy>);
+
+/// Documented functions whose `SecretArguments = "AllowedWhenUntainted"` is the
+/// documentation's default rather than a rejection. Every one of them exists to
+/// inspect, wrap, strip, or forward secret values, and tainted code may call it:
+/// `issecretvalue(secretwrap(5))` answers `true` when run from chat, which is
+/// tainted execution. Each entry quotes its `FrameScriptDocumentation.lua` text.
+///
+/// The rest of that file stays enforced. Most of it takes a value that can't be
+/// secret anyway — a file name (`AddSourceLocationExclude`), a script
+/// (`RunScript`), a Lua function (`CreateSecureDelegate`), window flags
+/// (`CreateWindow`), a profile index (`GetEventTime`), a callstack height
+/// (`SetErrorCallstackHeight`), an event name with a callback and unit
+/// (`Register*EventCallback`, `Unregister*EventCallback`), or the table whose
+/// security is being changed (`settablesecurity`) — and `GetForbiddenObjectTable`
+/// is `Environment = "SecureOnly"`, unreachable from an addon. `securecopy` takes
+/// an arbitrary value, but nothing in its documentation says it takes a secret
+/// one, so its policy is read as written.
+const DOCUMENTED_ARGS_OVERRIDES: &[SecretArgsDecision] = &[
+    // "Returns true if a supplied value is a secret value."
+    ("issecretvalue", None),
+    // "Returns true if the immediate calling function has appropriate permissions
+    // to access and operate on a specific value."
+    ("canaccessvalue", None),
+    // "… to access and operate on all supplied values."
+    ("canaccessallvalues", None),
+    // "Returns true if a supplied value is a secret value." (variadic)
+    ("hasanysecretvalues", None),
+    // "Returns true if a supplied value is a secret table. …"
+    ("issecrettable", None),
+    // "Returns true if the immediate calling function has appropriate permissions
+    // to index secret tables. …"
+    ("canaccesstable", None),
+    // "Converts all supplied values to secret values, preventing most operations
+    // on them from occurring on tainted code paths." The results are secret by
+    // declared type (`stubs/overrides/SecretValues.lua`), not by propagation.
+    ("secretwrap", None),
+    // "Unwraps all supplied secrets, converting them back to regular values."
+    ("secretunwrap", None),
+    // "Returns a transformed list of values with inputs that are secret values
+    // replaced by nil values."
+    ("scrubsecretvalues", None),
+    // "Returns a transformed list of values with inputs that are either secret or
+    // are not string, number, or boolean type replaced by nil values."
+    ("scrub", None),
+    // "Applies a given function over all supplied values individually, replacing
+    // the value with the result of the call."
+    ("mapvalues", None),
+    // "Invokes the '__dump' metamethod on any value (if present), returning its result."
+    ("dumpobject", None),
+    // "Arguments to supply to the method." — the call forwards them unchanged, so
+    // whether a secret is accepted is up to the method being invoked.
+    ("securecallmethod", None),
+    // Mixin helpers: every argument is a table (`LuaValueVariant`), and a table is
+    // never a secret value.
+    ("Mixin", None),
+    ("CreateFromMixins", None),
+];
+
+/// Lua library functions, which Blizzard's API documentation doesn't describe. A
+/// key ending in `.` applies to every function in that namespace.
+const LUA_LIBRARY_ARGS: &[SecretArgsDecision] = &[
+    // VERIFIED (12.1.0): `math.floor(secretwrap(5.5))` and
+    // `math.max(secretwrap(5), 1)` both error from tainted code, which follows
+    // from "Tainted code is not allowed to perform arithmetic on secret values."
+    // Secure code may still do arithmetic, so the policy is `untainted` rather
+    // than `none`.
+    ("math.", Some(SecretArgsPolicy::AllowedWhenUntainted)),
+    // VERIFIED (12.1.0): `issecretvalue(tostring(secretwrap(5)))` is `true` — the
+    // argument is accepted and the string it returns is secret.
+    ("tostring", Some(SecretArgsPolicy::AllowedWhenTainted)),
+    // VERIFIED (12.1.0): `issecretvalue(tonumber(secretwrap("5")))` is `false` —
+    // the argument is accepted and the number (or nil) it returns is ordinary, so
+    // the stub's plain `number?` return is already right.
+    ("tonumber", None),
 ];
 
 /// Guards that prove an addon restriction inactive, and the documentation
@@ -464,15 +564,19 @@ pub(in crate::stub_gen) fn build_secret_index(
             out_entries.push((e.name.clone(), maybe && !table_like));
         }
         let unless = unit_exemption(&when, secrecy, arguments, entries);
-        // "Constant accessors" (wiki `Secret_Values`) apply no aspects for secret
-        // arguments but return secrets when any argument is secret, which is the
-        // `AllowedWhenTainted` rule; the docs still mark them `AllowedWhenUntainted`.
-        let args = if secrecy.flags.iter().any(|f| f == "ConstSecretAccessor") {
+        // Two kinds of entry accept secret arguments whatever `SecretArguments`
+        // says, which is the `AllowedWhenTainted` rule. "Constant accessors" (wiki
+        // `Secret_Values`) apply no aspects but return secrets when any argument is
+        // secret. A `SecretArgumentsAddAspect` setter marks a widget aspect secret
+        // *because* a secret was passed to it — Blizzard tags 28 of those
+        // `AllowedWhenTainted` and 27 `AllowedWhenUntainted` (`FontString:SetText`
+        // and `EditBox:SetText` carry the same `Text` aspect and disagree), so the
+        // latter is the documentation's default rather than a rejection. None of
+        // them returns a value, so nothing inherits the argument's secrecy.
+        let args = if secrecy.flags.iter().any(|f| f == "ConstSecretAccessor") || secrecy.args_add_aspect {
             Some(SecretArgsPolicy::AllowedWhenTainted)
         } else {
-            secrecy.arguments.as_deref()
-                .and_then(SecretArgsPolicy::from_blizzard_name)
-                .filter(|p| *p != SecretArgsPolicy::AllowedWhenUntainted)
+            secrecy.arguments.as_deref().and_then(SecretArgsPolicy::from_blizzard_name)
         };
         StubSecrecy {
             when,
@@ -486,12 +590,15 @@ pub(in crate::stub_gen) fn build_secret_index(
     };
 
     for func in &docs.functions {
-        let s = entry_secrecy(&func.secrecy, &func.arguments, &func.returns, "SecretReturns", true);
+        let mut s = entry_secrecy(&func.secrecy, &func.arguments, &func.returns, "SecretReturns", true);
+        let key = match &func.namespace {
+            Some(ns) => format!("{ns}.{}", func.name),
+            None => func.name.clone(),
+        };
+        if let Some((_, policy)) = DOCUMENTED_ARGS_OVERRIDES.iter().find(|(name, _)| *name == key) {
+            s.args = *policy;
+        }
         if !s.is_empty() {
-            let key = match &func.namespace {
-                Some(ns) => format!("{ns}.{}", func.name),
-                None => func.name.clone(),
-            };
             index.functions.insert(key, s);
         }
     }
@@ -512,6 +619,7 @@ pub(in crate::stub_gen) fn build_secret_index(
             index.events.insert(event.literal_name.clone(), s);
         }
     }
+    index.documented_functions = index.functions.len();
     for spec in SECRET_CLEARS {
         if let Some(guard) = guard_annotation(docs, &predicates, spec, spec.0, true) {
             index.functions.entry(spec.0.to_string()).or_default().clears = Some(guard);
@@ -520,6 +628,17 @@ pub(in crate::stub_gen) fn build_secret_index(
     for (spec, doc_key) in RESTRICTION_GUARDS {
         if let Some(guard) = guard_annotation(docs, &predicates, spec, doc_key, false) {
             index.functions.entry(spec.0.to_string()).or_default().restriction_guard = Some(guard);
+        }
+    }
+    // An upstream rename must drop a curated decision rather than leave a stale one.
+    for (key, _) in DOCUMENTED_ARGS_OVERRIDES.iter().filter(|(key, _)| doc_function(docs, key).is_none()) {
+        log::warn!("  Secret values: `@secret-args` override for {key} is not documented; ignored");
+    }
+    for (key, policy) in LUA_LIBRARY_ARGS {
+        let Some(policy) = policy else { continue };
+        match key.strip_suffix('.') {
+            Some(_) => index.namespace_args.push(((*key).to_string(), *policy)),
+            None => index.functions.entry((*key).to_string()).or_default().args = Some(*policy),
         }
     }
 
@@ -649,11 +768,11 @@ pub(in crate::stub_gen) fn apply_secret_annotations(text: &str, index: &SecretIn
     let mut event: Option<&StubSecrecy> = None;
     for line in text.lines() {
         if let Some((name, params)) = function_line_signature(line) {
-            if let Some(secrecy) = index.functions.get(name) {
+            if let Some(secrecy) = index.function(name) {
                 let mut return_index = 0;
                 for entry in &mut out[block_start..] {
                     if entry.starts_with("---@return ") {
-                        *entry = rewrite_return_line(entry, secrecy, return_index);
+                        *entry = rewrite_return_line(entry, &secrecy, return_index);
                         return_index += 1;
                     }
                 }

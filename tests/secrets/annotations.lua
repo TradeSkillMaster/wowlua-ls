@@ -281,6 +281,25 @@ RejectsSecrets(GetLabel())
 --             ^ diag: secret-argument ~`RejectsSecrets` never accepts secret values
 RejectsSecrets("plain")
 
+---@secret-args untainted
+---@param unit string
+local function BlizzardOnly(unit) end
+BlizzardOnly(GetLabel())
+--           ^ diag: secret-argument ~`BlizzardOnly` does not accept secret values from addon code
+BlizzardOnly("plain")
+-- ^ doc: Secret arguments: `AllowedWhenUntainted` — accepted only from Blizzard code
+local readableLabel = GetLabel()
+if canaccessvalue(readableLabel) then
+    BlizzardOnly(readableLabel)
+end
+
+-- No `@secret-args` at all: the argument is accepted and the result is ordinary.
+---@param value any
+---@return boolean
+local function Inspect(value) return true end
+local inspected = Inspect(hp)
+--    ^ hover: (local) inspected: boolean
+
 ---@secret-args tainted
 ---@param n number
 ---@return string

@@ -248,6 +248,7 @@ pub(in crate::stub_gen) fn extract_entry_secrecy(block: &str, re: &BlizzardDocRe
         match key {
             "SecretArguments" => secrecy.arguments = Some(value.trim_matches('"').to_string()),
             "SecretArgumentsAddAspect" | "SecretReturnsForAspect" => {
+                secrecy.args_add_aspect |= key == "SecretArgumentsAddAspect";
                 let names = value.trim_matches(|c| c == '{' || c == '}').split(',')
                     .filter_map(|a| a.trim().rsplit('.').next())
                     .filter(|a| !a.is_empty());

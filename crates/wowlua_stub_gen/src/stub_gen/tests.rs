@@ -1905,6 +1905,21 @@ local UnitDoc =
 				{ Name = "result", Type = "number", Nilable = true },
 			},
 		},
+		{
+			Name = "issecretvalue",
+			Type = "Function",
+			SecretArguments = "AllowedWhenUntainted",
+
+			Arguments =
+			{
+				{ Name = "value", Type = "LuaValueReference", Nilable = false },
+			},
+
+			Returns =
+			{
+				{ Name = "isSecret", Type = "bool", Nilable = false },
+			},
+		},
 	},
 
 	Events =
@@ -1994,6 +2009,17 @@ local FontAPI =
 				{ Name = "text", Type = "cstring", Nilable = false },
 			},
 		},
+		{
+			Name = "SetAlpha",
+			Type = "Function",
+			SecretArgumentsAddAspect = { Enum.SecretAspect.Alpha },
+			SecretArguments = "AllowedWhenUntainted",
+
+			Arguments =
+			{
+				{ Name = "alpha", Type = "number", Nilable = false },
+			},
+		},
 	},
 };
 "#;
@@ -2067,7 +2093,7 @@ fn test_build_secret_index_rules() {
     assert_eq!(cast.entries, vec![("name".to_string(), true), ("castBarID".to_string(), false)]);
     assert_eq!(cast.when.len(), 1);
     assert!(cast.when[0].doc.as_deref().is_some_and(|d| d.starts_with("Guarded APIs")));
-    assert_eq!(cast.args, None, "AllowedWhenUntainted is the implicit default");
+    assert_eq!(cast.args, Some(crate::secrets::SecretArgsPolicy::AllowedWhenUntainted));
 
     // SecretReturns without a predicate; NotAllowed → `none`. (The `SecretReturns =`
     // key must not be mistaken for the `Returns =` array, which would read the
@@ -2098,6 +2124,20 @@ fn test_build_secret_index_rules() {
 
     assert!(!index.functions.contains_key("UnitPlain"));
 
+    // A curated builtin's documented policy is dropped, which is its whole entry.
+    assert!(!index.functions.contains_key("issecretvalue"));
+    // Lua library functions the documentation doesn't describe.
+    assert_eq!(index.function("math.floor").unwrap().args, Some(crate::secrets::SecretArgsPolicy::AllowedWhenUntainted));
+    assert_eq!(index.function("tostring").unwrap().args, Some(crate::secrets::SecretArgsPolicy::AllowedWhenTainted));
+    assert!(index.function("tonumber").is_none(), "an accepted argument with an ordinary result needs no policy");
+    assert!(index.function("mathematics").is_none(), "the namespace rule matches `math.`, not a prefix of a name");
+    // ... and they must not mask a documentation pass that produced no secrecy at
+    // all, which is what `is_empty` alarms on after a regen.
+    let no_docs = build_secret_index(&BlizzardApiDocs::default(), &[], &HashSet::default());
+    assert!(no_docs.function("tostring").is_some());
+    assert!(no_docs.is_empty());
+    assert!(!index.is_empty());
+
     let sent = &index.events["UNIT_CAST_SENT"];
     assert_eq!(sent.entries, vec![("unitTarget".to_string(), false), ("target".to_string(), true)]);
 
@@ -2105,11 +2145,18 @@ fn test_build_secret_index_rules() {
     assert_eq!(set_text.aspects, vec!["Text", "Alpha"]);
     assert_eq!(set_text.args, Some(crate::secrets::SecretArgsPolicy::AllowedWhenTainted));
 
+    // A setter that marks an aspect secret accepts a secret argument, whichever
+    // `SecretArguments` value the documentation gives it.
+    let set_alpha = &index.functions["FontString:SetAlpha"];
+    assert_eq!(set_alpha.aspects, vec!["Alpha"]);
+    assert_eq!(set_alpha.args, Some(crate::secrets::SecretArgsPolicy::AllowedWhenTainted));
+
     // Widget getters keep their predicates/aspects for hover but aren't tainted.
     let get_text = &index.functions["FontString:GetText"];
     assert_eq!(get_text.aspects, vec!["Text"]);
     assert_eq!(get_text.when.len(), 1);
     assert_eq!(get_text.entries, vec![("text".to_string(), false)]);
+    assert_eq!(get_text.args, None, "`SecretReturnsForAspect` is about returns, not arguments");
 
     // Identity and cast secrecy never apply to the player's own units (a cast
     // predicate's per-spell flags don't cancel that); the exemption names the
@@ -2161,6 +2208,7 @@ function UnitIdentity(unit) end
 ---@return secret<string> name
 ---@return number? castBarID
 ---@secret-when SecretWhenUnitSpellCastRestricted Guarded APIs produce secret values if the unit is not the player. Second sentence.
+---@secret-args untainted
 ---@secret-unless unit player pet
 function UnitCastInfo(unit) end
 
@@ -2199,6 +2247,37 @@ function UnitIdentity(unit) end
     // Text the index doesn't touch comes back as `None`.
     assert!(apply_secret_annotations("---@return number value\nfunction UnitPlain() end\n", &index).is_none());
     assert_eq!(wrap_secret_type("string?"), "secret<string>?");
+
+    // Lua library functions: a namespace rule and a named one.
+    let lua = "\
+---@param x number
+---@return number
+function math.floor(x) end
+
+---@param v any
+---@return string
+function tostring(v) end
+
+---@param e any
+---@return number?
+function tonumber(e) end
+";
+    let expected_lua = "\
+---@param x number
+---@return number
+---@secret-args untainted
+function math.floor(x) end
+
+---@param v any
+---@return string
+---@secret-args tainted
+function tostring(v) end
+
+---@param e any
+---@return number?
+function tonumber(e) end
+";
+    assert_eq!(apply_secret_annotations(lua, &index).expect("stub should change"), expected_lua);
 }
 
 #[test]
