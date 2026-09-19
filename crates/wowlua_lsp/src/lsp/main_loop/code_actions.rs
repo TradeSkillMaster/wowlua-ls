@@ -291,6 +291,12 @@ pub fn compute_quick_fixes(
                 .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
                 .unwrap_or_default()
         }
+        code if code.starts_with("secret-") => {
+            let Some((tree, analysis)) = tree_and_analysis else { return vec![] };
+            make_secret_guard_action(uri, text, diag, tree, analysis)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
         "invalid-op" => {
             let Some((tree, analysis)) = tree_and_analysis else { return vec![] };
             make_nil_coalesce_action(uri, text, diag, tree, analysis)
@@ -1174,13 +1180,18 @@ pub(super) fn make_count_down_loop_action(
 /// enclosing statement, which is what a wrap needs to see (e.g. the leading
 /// `local`). Returns `None` if no block ancestor is found.
 fn enclosing_block_statement(tree: &SyntaxTree, offset: u32) -> Option<(u32, u32)> {
+    enclosing_block_statement_kind(tree, offset).map(|(start, end, _)| (start, end))
+}
+
+/// [`enclosing_block_statement`], plus the statement node's kind.
+fn enclosing_block_statement_kind(tree: &SyntaxTree, offset: u32) -> Option<(u32, u32, SyntaxKind)> {
     let token_id = tree.token_at_offset(offset).right_biased()?;
     let mut node_id = tree.token_parent(token_id);
     loop {
         let parent_id = tree.node_parent(node_id)?;
         if tree.node(parent_id).kind == SyntaxKind::Block {
             let node = tree.node(node_id);
-            return (node.start != u32::MAX).then_some((node.start, node.end));
+            return (node.start != u32::MAX).then_some((node.start, node.end, node.kind));
         }
         node_id = parent_id;
     }
@@ -1212,40 +1223,110 @@ pub(super) fn make_flavor_guard_action(
     let (stmt_start, stmt_end) = (stmt_start as usize, stmt_end as usize);
     if stmt_end > text.len() || stmt_start > stmt_end { return None; }
 
-    let stmt_text = text.get(stmt_start..stmt_end)?;
     // Don't offer the guard for a `local` declaration: wrapping it in an `if`
     // block moves the declared name into that block's scope, breaking every later
     // reference. The correct transform hoists the `local` above the guard, which
     // is beyond a mechanical wrap.
+    let stmt_text = text.get(stmt_start..stmt_end)?;
     if stmt_text.trim_start().strip_prefix("local").is_some_and(|r| r.starts_with(char::is_whitespace)) {
         return None;
     }
 
-    let line_start = text[..stmt_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let line_prefix = &text[line_start..stmt_start];
-
-    // Only the leading whitespace of the statement's line may be swept into the
-    // wrap. When another statement shares the line (`doStuff(); C_Foo.Bar()`),
-    // `find_enclosing_statement_range` returns just this statement's node — wrap it
-    // inline so the preceding code isn't duplicated. Otherwise wrap the whole line,
-    // keeping its indent and pushing the body one level deeper.
-    let (range_start, new_text) = if line_prefix.trim().is_empty() {
-        let block = text.get(line_start..stmt_end)?;
-        let reindented = block.split('\n')
-            .map(|l| if l.trim().is_empty() { l.to_string() } else { format!("    {}", l) })
-            .collect::<Vec<_>>()
-            .join("\n");
-        (line_start, format!("{line_prefix}if WOW_PROJECT_ID == {const_name} then\n{reindented}\n{line_prefix}end"))
-    } else {
-        (stmt_start, format!("if WOW_PROJECT_ID == {const_name} then {stmt_text} end"))
-    };
-
+    let (range_start, new_text) =
+        wrap_statement_in_if(text, stmt_start, stmt_end, &format!("WOW_PROJECT_ID == {const_name}"))?;
     let numbers = crate::lsp::SafeLinePositions::new(text);
     let edit = lsp_types::TextEdit {
         range: numbers.lsp_range(range_start, stmt_end, utf8),
         new_text,
     };
     Some(single_edit_quickfix(uri, diag, format!("Guard with `{}` check", const_name), edit))
+}
+
+/// Wrap the statement at `[stmt_start, stmt_end)` in `if <condition> then … end`,
+/// returning the offset the replacement starts at and its text.
+///
+/// Only the leading whitespace of the statement's line may be swept into the
+/// wrap. When another statement shares the line (`doStuff(); C_Foo.Bar()`), the
+/// caller's range covers just this statement — wrap it inline so the preceding
+/// code isn't duplicated. Otherwise wrap the whole line, keeping its indent and
+/// pushing the body one level deeper with [`detect_indent`].
+fn wrap_statement_in_if(text: &str, stmt_start: usize, stmt_end: usize, condition: &str) -> Option<(usize, String)> {
+    let line_start = text[..stmt_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_prefix = &text[line_start..stmt_start];
+    if !line_prefix.trim().is_empty() {
+        return Some((stmt_start, format!("if {condition} then {} end", text.get(stmt_start..stmt_end)?)));
+    }
+    let indent = detect_indent(text);
+    let reindented = text.get(line_start..stmt_end)?
+        .split('\n')
+        .map(|l| if l.trim().is_empty() { l.to_string() } else { format!("{indent}{l}") })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some((line_start, format!("{line_prefix}if {condition} then\n{reindented}\n{line_prefix}end")))
+}
+
+/// Quick fix for the `secret-*` family: wrap the enclosing statement in a
+/// `canaccessvalue` guard, so the operation only runs on values this addon may
+/// inspect. Every value the statement is flagged for is named in the guard
+/// (`canaccessallvalues` for more than one).
+///
+/// Offered only where the wrap is mechanical: each flagged operand has to be a
+/// name or a field chain the guard can repeat, and the statement has to be one
+/// whose meaning survives being nested — a `local` declaration would move the
+/// name it declares into the guard's scope, and a `return` would fall through to
+/// the end of the function instead.
+pub(super) fn make_secret_guard_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+) -> Option<CodeAction> {
+    let utf8 = use_utf8();
+    let ds = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, utf8);
+    let (stmt_start, stmt_end, kind) = enclosing_block_statement_kind(tree, ds)?;
+    if !matches!(kind,
+        SyntaxKind::FunctionCall | SyntaxKind::MethodCall | SyntaxKind::AssignStatement
+            | SyntaxKind::IfChain | SyntaxKind::WhileLoop | SyntaxKind::RepeatUntilLoop)
+    {
+        return None;
+    }
+    let operands = crate::diagnostics::secret_values::secret_guard_operands(analysis, tree, (stmt_start, stmt_end))?;
+    let (stmt_start, stmt_end) = (stmt_start as usize, stmt_end as usize);
+    if stmt_end > text.len() || stmt_start > stmt_end {
+        return None;
+    }
+
+    let (guard, title) = match operands.as_slice() {
+        [one] => (format!("canaccessvalue({one})"), format!("Guard with `canaccessvalue({one})`")),
+        many => (format!("canaccessallvalues({})", many.join(", ")), "Guard with `canaccessallvalues`".to_string()),
+    };
+
+    let (range_start, new_text) = wrap_statement_in_if(text, stmt_start, stmt_end, &guard)?;
+    let numbers = crate::lsp::SafeLinePositions::new(text);
+    let edit = lsp_types::TextEdit {
+        range: numbers.lsp_range(range_start, stmt_end, utf8),
+        new_text,
+    };
+    Some(single_edit_quickfix(uri, diag, title, edit))
+}
+
+/// One level of the file's own indentation: a tab if any line is indented with
+/// one, otherwise the narrowest run of leading spaces in use (four when the file
+/// has nothing to go by).
+fn detect_indent(text: &str) -> String {
+    let mut spaces: Option<usize> = None;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        match line.chars().next() {
+            Some('\t') => return "\t".to_string(),
+            Some(' ') => {
+                let n = line.len() - line.trim_start_matches(' ').len();
+                spaces = Some(spaces.map_or(n, |prev: usize| prev.min(n)));
+            }
+            _ => {}
+        }
+    }
+    " ".repeat(spaces.unwrap_or(4))
 }
 
 /// Quick fix for type-mismatch family: insert `--[[@as TYPE]]` after the expression.

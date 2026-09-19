@@ -8,22 +8,93 @@ use crate::ast::Operator;
 use crate::secrets::{SecretArgsPolicy, SecretRule};
 use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, TextSize};
-use crate::types::{Expr, ExprId, ScopeIndex, SymbolIdentifier, ValueType};
+use crate::types::{Expr, ExprId, ScopeIndex, SymbolIdentifier, SymbolIndex, ValueType};
 use super::{unwrap_to_inner_expr, DiagnosticDef, DiagnosticPass, WowDiagnostic};
 
 pub struct SecretValues;
 
 impl DiagnosticPass for SecretValues {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-        if !analysis.secrets_enabled() {
-            return;
+        for report in secret_reports(analysis, tree) {
+            report.def.emit(diags, report.message, report.range.0 as usize, report.range.1 as usize);
         }
-        check_operators(analysis, diags);
-        check_for_bounds(analysis, diags);
-        check_conditions(analysis, tree, diags);
-        check_table_keys(analysis, diags);
-        check_access(analysis, diags);
-        check_arguments(analysis, diags);
+    }
+}
+
+/// One `secret-*` report: what to emit, and the operand it blames — which a
+/// quick fix needs in order to name it in a guard.
+pub struct SecretReport {
+    pub def: &'static DiagnosticDef,
+    pub range: (u32, u32),
+    pub message: String,
+    pub culprit: ExprId,
+}
+
+/// Every `secret-*` report for this file, in the order the checks produce them.
+pub fn secret_reports(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<SecretReport> {
+    let mut reports = Vec::new();
+    if !analysis.secrets_enabled() {
+        return reports;
+    }
+    check_operators(analysis, &mut reports);
+    check_for_bounds(analysis, &mut reports);
+    check_conditions(analysis, tree, &mut reports);
+    check_table_keys(analysis, &mut reports);
+    check_access(analysis, &mut reports);
+    check_arguments(analysis, &mut reports);
+    reports
+}
+
+/// The values a guard placed at `start` would have to name to silence every
+/// `secret-*` report in `[start, end)`: each written as the name or field chain
+/// it has in the source, in report order and without repeats.
+///
+/// `None` when some flagged operand can't be named there — a call result or a
+/// computed index has no name at all, and a local declared inside the guarded
+/// region has none *yet* at `start`, where naming it would test a nil global
+/// instead.
+pub fn secret_guard_operands(analysis: &AnalysisResult, tree: &SyntaxTree, (start, end): (u32, u32)) -> Option<Vec<String>> {
+    let scope = analysis.scope_at_offset(start).unwrap_or(ScopeIndex(0));
+    let mut names: Vec<String> = Vec::new();
+    for report in secret_reports(analysis, tree) {
+        if report.range.0 < start || report.range.1 > end {
+            continue;
+        }
+        let (root, name) = operand_name(analysis, report.culprit)?;
+        let root_name = SymbolIdentifier::Name(name.split('.').next()?.to_string());
+        if analysis.get_symbol_at(&root_name, scope, start) != Some(root) {
+            return None;
+        }
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    (!names.is_empty()).then_some(names)
+}
+
+/// `hp`, `self.hp`, `aura.duration` — the source spelling of an operand that a
+/// guard call can repeat, with the symbol its root resolved to. `None` for
+/// anything else.
+fn operand_name(analysis: &AnalysisResult, expr: ExprId) -> Option<(SymbolIndex, String)> {
+    let mut chain = Vec::new();
+    let mut current = unwrap_to_inner_expr(&analysis.ir, expr);
+    loop {
+        match analysis.expr(current) {
+            Expr::CastAdd(inner, _) | Expr::CastRemove(inner, _) | Expr::TypeFilter(inner, _) => {
+                current = unwrap_to_inner_expr(&analysis.ir, *inner);
+            }
+            Expr::FieldAccess { table, field, .. } => {
+                chain.push(field.clone());
+                current = unwrap_to_inner_expr(&analysis.ir, *table);
+            }
+            Expr::SymbolRef(sym, _) => {
+                let SymbolIdentifier::Name(root) = &analysis.sym(*sym).id else { return None };
+                chain.push(root.clone());
+                chain.reverse();
+                return Some((*sym, chain.join(".")));
+            }
+            _ => return None,
+        }
     }
 }
 
@@ -57,17 +128,22 @@ fn describe(analysis: &AnalysisResult, expr: ExprId, noun: &str) -> String {
     }
 }
 
-/// Emit `def` over `range` as "<describe>; <action>".
+/// Record `def` over `range` as "<describe>; <action>".
 fn report(
     analysis: &AnalysisResult,
-    diags: &mut Vec<WowDiagnostic>,
-    def: &DiagnosticDef,
+    reports: &mut Vec<SecretReport>,
+    def: &'static DiagnosticDef,
     culprit: ExprId,
     noun: &str,
     action: &str,
-    (start, end): (u32, u32),
+    range: (u32, u32),
 ) {
-    def.emit(diags, format!("{}; {action}", describe(analysis, culprit, noun)), start as usize, end as usize);
+    reports.push(SecretReport {
+        def,
+        range,
+        message: format!("{}; {action}", describe(analysis, culprit, noun)),
+        culprit,
+    });
 }
 
 /// An arithmetic, comparison, or negation that `crate::secrets` says errors
@@ -96,7 +172,7 @@ fn erroring_secret_op(analysis: &AnalysisResult, expr: ExprId) -> Option<(ExprId
     }
 }
 
-fn check_operators(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
+fn check_operators(analysis: &AnalysisResult, reports: &mut Vec<SecretReport>) {
     let binary = analysis.ir.binary_op_sites.iter().map(|s| (s.expr_id, s.expr_start, s.expr_end));
     let unary = analysis.ir.unary_op_sites.iter().copied();
     for (expr, start, end) in binary.chain(unary) {
@@ -106,12 +182,12 @@ fn check_operators(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
         if !active_at(analysis, expr, start) || erroring_secret_op(analysis, culprit).is_some() {
             continue;
         }
-        report(analysis, diags, def, culprit, "value", action, (start, end));
+        report(analysis, reports, def, culprit, "value", action, (start, end));
     }
 }
 
 /// A numeric `for` loop's start, limit, and step.
-fn check_for_bounds(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
+fn check_for_bounds(analysis: &AnalysisResult, reports: &mut Vec<SecretReport>) {
     if crate::secrets::NUMERIC_FOR_BOUND != SecretRule::Error {
         return;
     }
@@ -120,7 +196,7 @@ fn check_for_bounds(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
             continue;
         }
         report(
-            analysis, diags, &super::SECRET_COMPARISON, bound, "value",
+            analysis, reports, &super::SECRET_COMPARISON, bound, "value",
             "using it as a `for` loop bound errors in addon code; guard with `canaccessvalue`",
             (start, end),
         );
@@ -130,7 +206,7 @@ fn check_for_bounds(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
 /// Every truth test Lua forces: a condition, `not`, and the left operand of
 /// `and`/`or`. Testing an `and`/`or` expression tests its right operand (the
 /// operator tests its left one), so each operand of a chain is checked once.
-fn check_conditions(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
+fn check_conditions(analysis: &AnalysisResult, tree: &SyntaxTree, reports: &mut Vec<SecretReport>) {
     let conditions = analysis.ir.condition_sites.iter().map(|s| (s.expr_id, (s.start, s.end)));
     let nots = analysis.ir.unary_op_sites.iter().filter_map(|&(expr_id, start, end)| match *analysis.expr(expr_id) {
         Expr::UnaryOp { op: Operator::Not, operand } => Some((operand, (start, end))),
@@ -141,7 +217,7 @@ fn check_conditions(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Ve
         _ => None,
     });
     for (tested, range) in conditions.chain(nots).chain(left_operands) {
-        check_truth_test(analysis, tree, tested, range, diags);
+        check_truth_test(analysis, tree, tested, range, reports);
     }
 }
 
@@ -157,7 +233,7 @@ fn tested_operand(analysis: &AnalysisResult, expr: ExprId) -> (ExprId, Option<Ex
     (expr, via)
 }
 
-fn check_truth_test(analysis: &AnalysisResult, tree: &SyntaxTree, expr: ExprId, fallback: (u32, u32), diags: &mut Vec<WowDiagnostic>) {
+fn check_truth_test(analysis: &AnalysisResult, tree: &SyntaxTree, expr: ExprId, fallback: (u32, u32), reports: &mut Vec<SecretReport>) {
     let (operand, via) = tested_operand(analysis, expr);
     if !is_secret(analysis, operand) {
         return;
@@ -174,7 +250,7 @@ fn check_truth_test(analysis: &AnalysisResult, tree: &SyntaxTree, expr: ExprId, 
         })
         .unwrap_or(fallback);
     report(
-        analysis, diags, &super::SECRET_CONDITION, operand, "boolean",
+        analysis, reports, &super::SECRET_CONDITION, operand, "boolean",
         "testing it errors in addon code; guard with `canaccessvalue` or use a `...FromBoolean` API",
         range,
     );
@@ -204,7 +280,7 @@ fn expr_range(analysis: &AnalysisResult, expr: ExprId) -> Option<(u32, u32)> {
     }
 }
 
-fn check_table_keys(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
+fn check_table_keys(analysis: &AnalysisResult, reports: &mut Vec<SecretReport>) {
     // The same bracket can be recorded twice; dedupe only what gets reported.
     let mut seen = crate::collections::HashSet::default();
     for &(key, start, end) in &analysis.ir.bracket_index_sites {
@@ -217,7 +293,7 @@ fn check_table_keys(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
             continue;
         }
         report(
-            analysis, diags, &super::SECRET_TABLE_KEY, key, "value",
+            analysis, reports, &super::SECRET_TABLE_KEY, key, "value",
             "using it as a table key errors in addon code; guard with `canaccessvalue`",
             (start, end),
         );
@@ -226,7 +302,7 @@ fn check_table_keys(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
 
 /// `#`, indexing (`x.y`, `x[k]`, `x:m()`), and calls on a value that may be
 /// secret, reported at that value.
-fn check_access(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
+fn check_access(analysis: &AnalysisResult, reports: &mut Vec<SecretReport>) {
     let lengths = analysis.ir.unary_op_sites.iter().filter_map(|&(expr_id, start, end)| match *analysis.expr(expr_id) {
         Expr::UnaryOp { op: Operator::ArrayLength, operand } => Some((operand, (start, end), crate::secrets::LENGTH, "taking its length")),
         _ => None,
@@ -251,29 +327,33 @@ fn check_access(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
             continue;
         }
         report(
-            analysis, diags, &super::SECRET_ACCESS, value, "value",
+            analysis, reports, &super::SECRET_ACCESS, value, "value",
             &format!("{action} errors in addon code; guard with `canaccessvalue`"),
             range,
         );
     }
 }
 
-fn check_arguments(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
+fn check_arguments(analysis: &AnalysisResult, reports: &mut Vec<SecretReport>) {
     for (call_expr, cr) in &analysis.ir.call_resolutions {
-        let policy = analysis.func(cr.func_idx).secret.as_ref().and_then(|m| m.args);
-        if crate::secrets::argument_rule(policy) != SecretRule::Error {
+        let Some(policy) = analysis.func(cr.func_idx).secret.as_ref().and_then(|m| m.args.as_ref()) else { continue };
+        if crate::secrets::argument_rule(Some(policy.policy)) != SecretRule::Error {
             continue;
         }
         // `none` rejects every caller; `untainted` rejects addon code only.
-        let rejection = match policy {
-            Some(SecretArgsPolicy::AllowedWhenUntainted) => "does not accept secret values from addon code",
+        let rejection = match policy.policy {
+            SecretArgsPolicy::AllowedWhenUntainted => "does not accept secret values from addon code",
             _ => "never accepts secret values",
         };
         // Most of the API rejects secrets, so this runs on nearly every call:
         // name the callee only once a report is certain.
         let mut callee = None;
         for arg in &cr.expected_args {
-            if !is_secret(analysis, arg.arg_expr) || !active_at(analysis, arg.arg_expr, arg.start) {
+            // A policy naming its parameters rejects secrets only there.
+            if !policy.covers(&arg.param_name)
+                || !is_secret(analysis, arg.arg_expr)
+                || !active_at(analysis, arg.arg_expr, arg.start)
+            {
                 continue;
             }
             let callee = callee.get_or_insert_with(|| {
@@ -283,12 +363,12 @@ fn check_arguments(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
                 }
                 .map_or_else(|| "this function".to_string(), |n| format!("`{n}`"))
             });
-            super::SECRET_ARGUMENT.emit(
-                diags,
-                format!("{callee} {rejection}, but this {}; guard with `canaccessvalue`", describe(analysis, arg.arg_expr, "value")),
-                arg.start as usize,
-                arg.end as usize,
-            );
+            reports.push(SecretReport {
+                def: &super::SECRET_ARGUMENT,
+                range: (arg.start, arg.end),
+                message: format!("{callee} {rejection}, but this {}; guard with `canaccessvalue`", describe(analysis, arg.arg_expr, "value")),
+                culprit: arg.arg_expr,
+            });
         }
     }
 }

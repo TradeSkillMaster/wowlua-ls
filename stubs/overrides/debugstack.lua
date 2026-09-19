@@ -9,4 +9,5 @@
 ---@return string
 ---@overload fun(start?: number, count1?: number, count2?: number): string
 ---@nodiscard
+---@secret-args untainted start count1 count2
 function debugstack(coroutine, start, count1, count2) end

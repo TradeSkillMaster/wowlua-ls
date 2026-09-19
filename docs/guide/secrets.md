@@ -40,6 +40,7 @@ Secrecy
 | Argument to an API that never accepts secrets (e.g. `C_ChatInfo.SendAddonMessage`) | Error | `secret-argument` |
 | Argument to an API that accepts secrets only from Blizzard code (`UnitExists`, `C_Item.GetItemNameByID`, most of the API) | Error | `secret-argument` |
 | Argument to `math.*` | Error | `secret-argument` |
+| Number argument to a Lua library function (`string.rep(s, n)`, `string.sub(s, i, j)`, `table.remove(t, pos)`, `select(n, …)`, …) | Error | `secret-argument` |
 | Length `#`, indexing (`name:upper()`, `name.x`, `name[1]`), or calling a secret | Error | `secret-access` |
 | `..`, `string.format`, `string.join`, `string.concat`, `tostring` | Allowed; the result is secret | |
 | `tonumber` | Allowed; the result is an ordinary number or `nil` | |
@@ -50,7 +51,7 @@ Rules marked \* are assumed; the rest are documented by Blizzard. Other APIs doc
 
 Most of the API accepts secret values only from Blizzard's own code: calling one from an addon raises `Secret values are only allowed during untainted execution for this argument`. The builtins that exist to work with secrets — `issecretvalue`, `canaccessvalue`, `canaccessallvalues`, `hasanysecretvalues`, `issecrettable`, `canaccesstable`, `secretwrap`, `secretunwrap`, `scrub`, `scrubsecretvalues`, `mapvalues`, `dumpobject`, `securecallmethod`, `Mixin`, and `CreateFromMixins` — take them from anywhere.
 
-An operation that errors is reported once: its result is treated as an ordinary value, so later uses of it aren't flagged again.
+An operation that errors is reported once: its result is treated as an ordinary value, so later uses of it aren't flagged again. Every report offers a quick fix that wraps the statement in a `canaccessvalue` guard.
 
 ```lua
 local hp, maxHp = UnitHealth("target"), UnitHealthMax("target")
@@ -75,7 +76,7 @@ if issecretvalue(hp) then return end
 local low = hp < 1000          -- hp: number for the rest of the scope
 ```
 
-Narrowing works with `not`, `elseif`, `and` / `or`, `assert`, early exits, field chains (`self.health`), and local aliases. For addons that also load on older clients, it sees through the existence check `if issecretvalue and issecretvalue(hp) then` and the `local issecret = issecretvalue or function() return false end` polyfill.
+Narrowing works with `not`, `elseif`, `and` / `or`, `assert`, early exits, field chains (`self.health`), local aliases, and a boolean holding the guard's result (`local ok = canaccessvalue(hp)`), until that variable is written again. A variable written inside a branch isn't trusted after it, since the other branch may have written something else. For addons that also load on older clients, it sees through the existence check `if issecretvalue and issecretvalue(hp) then` and the `local issecret = issecretvalue or function() return false end` polyfill.
 
 ### Custom guards
 
@@ -117,9 +118,9 @@ if not InCombatLockdown() then
 end
 ```
 
-Guards work in either branch of `if`/`elseif`/`else`, with `not`, on the right side of `and`/`or`, before early exits, in `assert` and `while`, and behind the `C_Secrets and C_Secrets.ShouldAurasBeSecret()` check older clients need. `C_RestrictedActions.GetAddOnRestrictionState(type) == Enum.AddOnRestrictionState.Inactive` counts as an inactive restriction (`Activating` counts as active). Write the restriction as `Enum.AddOnRestrictionType.Combat` or through a local alias of the enum.
+Guards work in either branch of `if`/`elseif`/`else`, with `not`, on the right side of `and`/`or`, before early exits, in `assert` and `while`, through a boolean holding the result (`local secretAuras = C_Secrets.ShouldAurasBeSecret()`) until it is written again — a variable written inside a branch isn't trusted after it — and behind the `C_Secrets and C_Secrets.ShouldAurasBeSecret()` check older clients need. `C_RestrictedActions.GetAddOnRestrictionState(type) == Enum.AddOnRestrictionState.Inactive` counts as an inactive restriction (`Activating` counts as active). Write the restriction as `Enum.AddOnRestrictionType.Combat` or through a local alias of the enum.
 
-A guard covers the code it guards in the same function: an API result fetched before the guard stays secret (fetch it inside), and a function defined inside the guard runs later, so its body isn't covered. Structure fields are the exception — they clear wherever they are *read*, however the structure was obtained. Guards about a unit, spell, or slot clear only later calls passing the same local, field (`self.unit`), or literal in that position; guards about a pair of units need both to match.
+A guard covers the code it guards in the same function: an API result fetched before the guard stays secret (fetch it inside), and a function defined inside the guard runs later, so its body isn't covered. Structure fields are the exception — they clear wherever they are *read*, however the structure was obtained. Guards about a unit, spell, power type, or slot clear only later calls passing the same local, field (`self.unit`), or literal for that value, wherever the API takes it; guards about a pair of units need both to match.
 
 | Guard (`C_Secrets.`) | Clears |
 |---|---|
@@ -133,6 +134,7 @@ A guard covers the code it guards in the same function: an API result fetched be
 | `ShouldUnitHealthMaxBeSecret(unit)` | Maximum health for the same unit |
 | `ShouldUnitIdentityBeSecret(unit)` | Identity and name for the same unit |
 | `ShouldUnitPowerBeSecret(unit, powerType)`, `ShouldUnitPowerMaxBeSecret(unit, powerType)` | Power or maximum power for the same unit and power type |
+| `GetPowerTypeSecrecy(powerType) == Enum.SecrecyLevel.NeverSecret` | Power and maximum power for the same power type |
 | `ShouldUnitSpellCastBeSecret(unit, spell)`, `ShouldUnitSpellCastingBeSecret(unit)` | Cast information for the same unit |
 | `ShouldUnitStatsBeSecret()` | Stats |
 | `ShouldUnitComparisonBeSecret(unit1, unit2)` | `UnitIsUnit` for the same units |
@@ -157,9 +159,8 @@ Limitations:
 - Blizzard lets individual spells be flagged "always secret", overriding restrictions; restriction guards can't see these flags.
 - Assumed, not documented: `InCombatLockdown()` is the `Combat` restriction, `SecretWhenEncounterEvent` depends on the `Encounter` restriction, and the communication-restricted maps of `SecretInChatMessagingLockdown` are the `Chat` restriction.
 - `IsAddOnRestrictionActive` always returns `false` while `ADDON_RESTRICTION_STATE_CHANGED` is being dispatched.
-- A guard stored in a variable (`local secretAuras = C_Secrets.ShouldAurasBeSecret()`) isn't recognized.
 
-Mark your own context guards with [`@secret-clears` and `@secret-restriction-guard`](/reference/annotations#secret-value-annotations).
+Mark your own context guards with [`@secret-clears`, `@secret-restriction-guard` and `@secret-satisfies`](/reference/annotations#secret-value-annotations).
 
 ## Where secrecy comes from
 
@@ -168,7 +169,7 @@ The retail API stubs are generated from Blizzard's API documentation, which mark
 - **Player exemptions.** Unit APIs whose restriction never applies to the player (`UnitName`, `UnitClass`, `UnitCastingInfo`, `UnitPowerMax`, …) return ordinary values for a literal `"player"` (and `"pet"` where documented). The stubs express this with `@secret-unless`.
 - **Structures the documentation doesn't describe.** Blizzard's documentation returns `AuraData` without listing its fields, so their secrecy comes from warcraft.wiki.gg: every field may be secret except the ones it marks as never secret (`auraInstanceID`, `isHarmful`, `isHelpful`, …).
 - **Constant accessors.** Some object methods accept secret arguments without marking their object secret, and return secrets exactly when an argument is secret (`formatter:Format(secretSeconds)` is `secret<string>`, `curve:Evaluate(0.5)` is `number`).
-- **Preconditions.** Some APIs check a precondition first and return nothing (`UnitIsUnit` with units that can't be compared) or raise an error (the `C_UnitAuras` family without aura access) when it fails. Hover lists them, and the returns of the ones that return nothing are nilable.
+- **Preconditions.** Some APIs check a precondition first and return nothing (`UnitIsUnit` with units that can't be compared) or raise an error (the `C_UnitAuras` family without aura access) when it fails. Hover lists them, and the returns of the ones that return nothing are nilable. A guard that proves the precondition holds drops that `nil`: inside `if C_Secrets.CanCompareUnitTokens(a, b) then`, `UnitIsUnit(a, b)` returns a plain `secret<boolean>`.
 - **Widgets.** Passing a secret to a widget setter is allowed. Blizzard marks widgets that received secrets as having a secret *aspect*, after which their getters return secrets. Hover shows these aspects, but getters aren't treated as secret, since most widgets never receive secrets.
 - **Your own code.** Returns and fields assigned from secret values are inferred automatically. To declare secrecy explicitly (for example on a function whose body isn't visible), write `secret<T>` in the type and use the annotations in the [reference](/reference/annotations#secret-value-annotations).
 

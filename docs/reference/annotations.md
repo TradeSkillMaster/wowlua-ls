@@ -82,12 +82,13 @@ Retail only. A value that may be secret is typed `secret<T>` (see [Type syntax](
 | Annotation | Description |
 |---|---|
 | `@secret-guard param kind` | Guard function: its boolean result proves `param` (`...` for varargs) secret or not. `kind` is `is-secret`, `accessible`, or `any-secret`. |
-| `@secret-args none\|tainted\|untainted` | Secret arguments: `none` never accepted, `untainted` accepted only from Blizzard code — both reported in addon code ([`secret-argument`](/reference/diagnostics)); `tainted` accepted from addon code, and the results carry the arguments' secrecy. Leave the annotation off a function that accepts secrets and returns ordinary values. |
+| `@secret-args none\|tainted\|untainted [param...]` | Secret arguments: `none` never accepted, `untainted` accepted only from Blizzard code — both reported in addon code ([`secret-argument`](/reference/diagnostics)); `tainted` accepted from addon code, and the results carry the arguments' secrecy. With parameter names (`...` for the varargs), the policy applies to those parameters only; the Lua library uses this for its number-typed parameters. Leave the annotation off a function that accepts secrets and returns ordinary values. |
 | `@secret-unless param value...` | A call passing one of these string literals for `param` returns ordinary values (`@secret-unless unit player pet`). |
 | `@secret-when Predicate [description]` | The restriction under which results (or an `@event`'s payload) may be secret. Shown in hover; secret results are still typed in `@return`. On a `@class`, the restriction under which its `secret<T>` fields hold secrets. A [context guard](/guide/secrets#guarding-by-context) that clears every predicate of a call or class makes its results or fields ordinary. |
-| `@secret-clears Predicate[,Predicate...] [param...] [== Value]` | Context guard: a `false` result (or one equal to `Value`) clears the listed predicates in the code it guards. With parameters, only for later calls passing the same local, field, or literal at those positions. `*` in place of the predicates clears every secret in that code and takes no parameters. |
+| `@secret-clears Predicate[,Predicate...] [binding...] [== Value]` | Context guard: a `false` result (or one equal to `Value`) clears the listed predicates in the code it guards. Each binding is a parameter of the guard, optionally followed by `=` and the names the cleared APIs give that same value (`unit=unit,unitToken`): a later call is cleared only where its argument for one of those parameters is the same local, field, or literal. `*` in place of the predicates clears every secret in that code and takes no bindings. |
 | `@secret-restriction-guard param\|Restriction [== Value]` | Context guard: a `false` result (or one equal to `Value`) proves an addon restriction inactive: the fixed `Restriction` (`Combat`, `Encounter`, `ChallengeMode`, `PvPMatch`, `Map`, `Chat`), or the one `param` names as `Enum.AddOnRestrictionType.<Restriction>`. |
 | `@secret-precondition Name [FailureMode] [description]` | A precondition the call needs. `FailureMode` is `ReturnNothing`, `ReturnWithError`, or `Error`; the first two make every return nilable in the stubs. Shown in hover. |
+| `@secret-satisfies Name [binding...]` | Context guard: a `true` result proves the `@secret-precondition` `Name` holds, so a guarded call that would return nothing when it fails loses the `nil` from its returns. Bindings work as in `@secret-clears`. |
 | `@secret-aspect Aspect` | Widget aspect (`Text`, `Alpha`, …) the method makes secret or reads. Shown in hover. |
 
 ## Metadata annotations
@@ -292,7 +293,7 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `T[]` | Array |
 | `T[K]` | Indexed access: field type of K on T |
 | `keyof T` | A string that is one of `T`'s field/method names (see below) |
-| `secret<T>` | A `T` that may be a [secret value](/guide/secrets) (retail); `T\|secret<T>` means the same |
+| `secret<T>` | A `T` that may be a [secret value](/guide/secrets) (retail); `T\|secret<T>` means the same. As a parameter type with a generic `T`, it binds `T` to the argument's type without its secrecy (`secretunwrap`) |
 | `[T1, T2]` | Tuple: fixed-shape table (`{ [1]: T1, [2]: T2 }`) |
 | `T?` | Optional (`T \| nil`) |
 | `?T` | Optional, prefix form (same as `T?`) |

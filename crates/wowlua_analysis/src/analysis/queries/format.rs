@@ -219,18 +219,31 @@ pub(super) fn resolve_expr_type_impl(
     visited: &mut HashSet<ExprId>,
     depth: usize,
 ) -> Option<ValueType> {
-    let result = resolve_expr_type_uncleared(ir, resolved_expr_cache, expr_id, visited, depth)?;
-    if !result.has_secret() || ir.secret_context_regions.is_empty() {
+    let mut result = resolve_expr_type_uncleared(ir, resolved_expr_cache, expr_id, visited, depth)?;
+    if ir.secret_context_regions.is_empty() || (!result.has_secret() && !result.contains_nil()) {
         return Some(result);
     }
     // Mirror the fixpoint: a guard clearing a call's or a struct field's
-    // predicates unwraps its secrecy (`secret_context.rs`).
+    // predicates unwraps its secrecy, and one proving a call's precondition
+    // drops the nil its failure would return (`secret_context.rs`). Only a call
+    // can lose a nil, and only a secret can be unwrapped, so each check runs
+    // solely where its result could change the type.
+    let has_secret = result.has_secret();
     let cleared = match ir.expr(expr_id) {
-        Expr::FunctionCall { func, args, call_range, .. } => {
-            matches!(resolve_expr_type_impl(ir, resolved_expr_cache, *func, &mut HashSet::default(), depth + 1).map(ValueType::into_strip_opaque),
-                Some(ValueType::Function(Some(func_idx))) if ir.call_secrecy_cleared(func_idx, args, call_range.0))
+        Expr::FunctionCall { func, args, call_range, is_method_call, .. } => {
+            let callee = resolve_expr_type_impl(ir, resolved_expr_cache, *func, &mut HashSet::default(), depth + 1)
+                .map(ValueType::into_strip_opaque);
+            match callee {
+                Some(ValueType::Function(Some(func_idx))) => {
+                    if result.contains_nil() && ir.call_preconditions_satisfied(func_idx, args, call_range.0, *is_method_call) {
+                        result = result.strip_nil();
+                    }
+                    has_secret && ir.call_secrecy_cleared(func_idx, args, call_range.0, *is_method_call)
+                }
+                _ => false,
+            }
         }
-        Expr::FieldAccess { table, field_range: Some((start, _)), .. } => {
+        Expr::FieldAccess { table, field_range: Some((start, _)), .. } if has_secret => {
             resolve_expr_type_impl(ir, resolved_expr_cache, *table, &mut HashSet::default(), depth + 1)
                 .is_some_and(|receiver| ir.field_secrecy_cleared(&receiver, *start))
         }
@@ -875,21 +888,23 @@ impl AnalysisResult {
                 let values: Vec<String> = unless.values.iter().map(|v| format!("`\"{v}\"`")).collect();
                 lines.push(format!("- Never secret when `{}` is {}", unless.param, values.join(" or ")));
             }
-            match meta.args {
-                Some(p @ SecretArgsPolicy::NotAllowed) => {
-                    lines.push(format!("- Secret arguments: `{}` — never accepted", p.blizzard_name()));
-                }
-                Some(p @ SecretArgsPolicy::AllowedWhenTainted) if func.return_annotations.is_empty() => {
-                    lines.push(format!("- Secret arguments: `{}` — accepted", p.blizzard_name()));
-                }
-                Some(p @ SecretArgsPolicy::AllowedWhenTainted) => {
-                    lines.push(format!("- Secret arguments: `{}` — accepted (results inherit their secrecy)", p.blizzard_name()));
-                }
-                Some(p @ SecretArgsPolicy::AllowedWhenUntainted) => {
-                    untainted_args_line = Some(lines.len());
-                    lines.push(format!("- Secret arguments: `{}` — accepted only from Blizzard code", p.blizzard_name()));
-                }
-                None => {}
+            if let Some(args) = &meta.args {
+                // A policy naming its parameters applies to those only.
+                let scope = match args.params.as_slice() {
+                    [] => String::new(),
+                    params => format!(" for {}", params.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ")),
+                };
+                let p = args.policy;
+                let outcome = match p {
+                    SecretArgsPolicy::NotAllowed => "never accepted".to_string(),
+                    SecretArgsPolicy::AllowedWhenTainted if func.return_annotations.is_empty() => "accepted".to_string(),
+                    SecretArgsPolicy::AllowedWhenTainted => "accepted (results inherit their secrecy)".to_string(),
+                    SecretArgsPolicy::AllowedWhenUntainted => {
+                        untainted_args_line = args.params.is_empty().then_some(lines.len());
+                        "accepted only from Blizzard code".to_string()
+                    }
+                };
+                lines.push(format!("- Secret arguments: `{}` — {outcome}{scope}", p.blizzard_name()));
             }
             if !meta.aspects.is_empty() {
                 let aspects: Vec<String> = meta.aspects.iter().map(|a| format!("`{a}`")).collect();
@@ -912,18 +927,27 @@ impl AnalysisResult {
                 Some(value) => format!("`{value}`"),
                 None => "`false`".to_string(),
             };
+            let bound_names = |bindings: &[crate::secrets::SecretArgBinding]| {
+                bindings.iter().map(|b| format!("`{}`", b.guard_param)).collect::<Vec<_>>().join(", ")
+            };
             if let Some(clears) = &meta.clears {
                 let meaning = if clears.all {
                     "means no API returns secret values".to_string()
                 } else {
                     let names: Vec<String> = clears.predicates.iter().map(|p| format!("`{p}`")).collect();
-                    let params: Vec<String> = clears.params.iter().map(|p| format!("`{p}`")).collect();
-                    match params.is_empty() {
+                    match clears.bindings.is_empty() {
                         true => format!("clears {}", names.join(", ")),
-                        false => format!("clears {} for later calls with the same {}", names.join(", "), params.join(", ")),
+                        false => format!("clears {} for later calls with the same {}", names.join(", "), bound_names(&clears.bindings)),
                     }
                 };
                 lines.push(format!("- Guard: {} {meaning}", result_text(&clears.equals)));
+            }
+            if let Some(satisfies) = &meta.satisfies {
+                let meaning = match satisfies.bindings.is_empty() {
+                    true => format!("`true` means `{}` holds", satisfies.precondition),
+                    false => format!("`true` means `{}` holds for later calls with the same {}", satisfies.precondition, bound_names(&satisfies.bindings)),
+                };
+                lines.push(format!("- Guard: {meaning}"));
             }
             if let Some(guard) = &meta.restriction_guard {
                 let restriction = match guard.fixed_bit() {

@@ -223,11 +223,18 @@ impl<'a> Analysis<'a> {
     /// predicates (`secret_context.rs`), makes it ordinary (also through a
     /// `returns<F>` vararg projection such as `select(2, UnitClass("player"))`),
     /// and a C API that accepts secret arguments (`@secret-args tainted`) returns
-    /// results carrying their secrecy (`crate::secrets::argument_rule`).
+    /// results carrying their secrecy (`crate::secrets::argument_rule`). A guard
+    /// proving the callee's secrecy precondition (`@secret-satisfies`) also drops
+    /// the nil its failure would return.
     fn apply_call_secrecy(&mut self, func: ExprId, args: &[ExprId], is_method_call: bool, call_offset: u32, mut result: ValueType) -> ValueType {
         let Some(ValueType::Function(Some(func_idx))) = self.resolve_expr(func).map(ValueType::into_strip_opaque) else {
             return result;
         };
+        if !self.ir.secret_context_regions.is_empty()
+            && self.ir.call_preconditions_satisfied(func_idx, args, call_offset, is_method_call)
+        {
+            result = result.strip_nil();
+        }
         if result.has_secret() {
             let projected_call = matches!(self.func(func_idx).vararg_projection, Some(crate::types::ProjectionKind::Return(..)))
                 .then(|| args.last().copied())
@@ -238,7 +245,7 @@ impl<'a> Analysis<'a> {
                 });
             let ordinary = |this: &Self, idx: FunctionIndex, call_args: &[ExprId], method: bool| {
                 this.secret_exempt_call(idx, call_args, method)
-                    || (!this.ir.secret_context_regions.is_empty() && this.ir.call_secrecy_cleared(idx, call_args, call_offset))
+                    || (!this.ir.secret_context_regions.is_empty() && this.ir.call_secrecy_cleared(idx, call_args, call_offset, method))
             };
             let exempt = ordinary(self, func_idx, args, is_method_call)
                 || projected_call.is_some_and(|(inner_func, inner_args, inner_method)| {
@@ -251,15 +258,16 @@ impl<'a> Analysis<'a> {
                 result = result.strip_secret();
             }
         }
-        let policy = self.func(func_idx).secret.as_ref().and_then(|m| m.args);
-        if crate::secrets::argument_rule(policy) != crate::secrets::SecretRule::Propagate {
+        let Some(policy) = self.func(func_idx).secret.as_ref().and_then(|m| m.args.clone()) else { return result };
+        if crate::secrets::argument_rule(Some(policy.policy)) != crate::secrets::SecretRule::Propagate {
             return result;
         }
-        if args.iter().any(|&arg| self.resolve_expr(arg).is_some_and(|t| t.has_secret())) {
-            ValueType::secret_of(result)
-        } else {
-            result
-        }
+        // Only an argument the policy covers carries its secrecy into the result.
+        let tainted = args.iter().enumerate().any(|(i, &arg)| {
+            self.ir.param_name_at(func_idx, i, is_method_call).is_some_and(|p| policy.covers(p))
+                && self.resolve_expr(arg).is_some_and(|t| t.has_secret())
+        });
+        if tainted { ValueType::secret_of(result) } else { result }
     }
 
     /// Whether a call to `func_idx` passes a `@secret-unless` value for its
@@ -728,6 +736,17 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                             }
+                    } else if let Some(ValueType::Secret(ref inner)) = param_type
+                        && let ValueType::TypeVariable(name) = &**inner
+                        && generic_names.contains(name)
+                        && !generic_subs.contains_key(name)
+                    {
+                        // `secret<T>` means "a possibly-secret T", so it binds `T`
+                        // to the argument with its secrecy stripped, whether or not
+                        // the argument is secret (`secretunwrap`).
+                        generic_subs.insert(name.clone(), arg_type.strip_secret());
+                        generic_arg_indices.insert(name.clone(), i);
+                        substitutable_generic_names.insert(name.clone());
                     }
                     // Infer generics from structured param annotations (T[], table<K,V>)
                     let prev_len = generic_subs.len();

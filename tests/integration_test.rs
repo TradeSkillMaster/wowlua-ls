@@ -5545,6 +5545,39 @@ fn quick_fix_wrong_flavor_api_wraps_in_guard() {
 }
 
 #[test]
+fn quick_fix_guard_wrap_follows_the_file_indent() {
+    use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range, Uri};
+    // Both guard fixes share one wrap helper, which indents with the file's own
+    // unit — here a tab, not the four spaces an unindented file gets.
+    let src = "local function f()
+	C_Foo.Bar()
+end
+";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = lsp_types::Diagnostic {
+        range: Range {
+            start: Position { line: 1, character: 1 },
+            end:   Position { line: 1, character: 12 },
+        },
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("wrong-flavor-api".to_string())),
+        source: Some("wowlua_ls".to_string()),
+        message: "API 'C_Foo.Bar' not available in flavor 'Classic' (available in: Retail)".to_string(),
+        ..Default::default()
+    };
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
+    let edit = find_action_edit(&actions, "Guard with").expect("expected a flavor guard fix");
+    assert_eq!(apply_text_edit(src, edit),
+        "local function f()
+	if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
+		C_Foo.Bar()
+	end
+end
+");
+}
+
+#[test]
 fn quick_fix_wrong_flavor_api_shared_line_wraps_inline() {
     use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range, Uri};
     // Another statement shares the line: the flagged call must be wrapped inline
@@ -5591,6 +5624,92 @@ fn quick_fix_wrong_flavor_api_skips_local_declaration() {
     let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
     assert!(find_action_edit(&actions, "Guard with").is_none(),
         "should not offer a flavor guard for a local declaration");
+}
+
+#[test]
+fn quick_fix_secret_wraps_statement_in_guard() {
+    let src = "---@type secret<number>\nlocal hp\nif hp > 0 then\n    doStuff()\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "secret-comparison")
+        .expect("expected a secret-comparison diagnostic");
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
+    let edit = find_action_edit(&actions, "Guard with `canaccessvalue(hp)`").expect("expected a secret guard fix");
+    assert_eq!(apply_text_edit(src, edit),
+        "---@type secret<number>\nlocal hp\nif canaccessvalue(hp) then\n    if hp > 0 then\n        doStuff()\n    end\nend\n");
+}
+
+#[test]
+fn quick_fix_secret_guards_every_flagged_operand() {
+    // Two distinct possibly-secret operands in one statement need the plural guard.
+    let src = "---@type secret<number>\nlocal hp\n---@type secret<number>\nlocal maxHp\nif hp > 0 and maxHp > 0 then end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "secret-comparison")
+        .expect("expected a secret-comparison diagnostic");
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
+    let edit = find_action_edit(&actions, "Guard with `canaccessallvalues`").expect("expected a secret guard fix");
+    assert!(apply_text_edit(src, edit).contains("if canaccessallvalues(hp, maxHp) then\n    if hp > 0 and maxHp > 0 then end\nend"),
+        "unexpected fix: {}", apply_text_edit(src, edit));
+}
+
+#[test]
+fn quick_fix_secret_guards_field_chain_with_file_indent() {
+    // The operand is a field chain, and the file indents with two spaces.
+    let src = "---@class Card\n---@field total secret<number>\nlocal card\nlocal function f()\n  card.total = card.total\n  if card.total > 0 then end\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "secret-comparison")
+        .expect("expected a secret-comparison diagnostic");
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
+    let edit = find_action_edit(&actions, "Guard with `canaccessvalue(card.total)`").expect("expected a secret guard fix");
+    assert!(apply_text_edit(src, edit).contains("  if canaccessvalue(card.total) then\n    if card.total > 0 then end\n  end"),
+        "unexpected fix: {}", apply_text_edit(src, edit));
+}
+
+#[test]
+fn quick_fix_secret_withheld_when_an_operand_is_not_yet_in_scope() {
+    // The guard is emitted before the wrapped statement, so an operand declared
+    // inside it has no name there — naming it would test a nil global.
+    let src = "---@type secret<number>\nlocal hp\nif hp > 0 then\n    ---@type secret<number>\n    local inner\n    if inner > 0 then end\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "secret-comparison")
+        .expect("expected a secret-comparison diagnostic");
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
+    assert!(find_action_edit(&actions, "Guard with").is_none(),
+        "should not name an operand declared inside the wrapped statement");
+}
+
+#[test]
+fn quick_fix_secret_withheld_for_local_and_call_operands() {
+    let uri: lsp_types::Uri = "file:///test.lua".parse().unwrap();
+    // Wrapping a `local` declaration would move the name into the guard's scope.
+    let local_src = "---@type secret<number>\nlocal hp\nlocal pct = hp / 2\n";
+    let (tree, analysis) = build_analysis_for_quickfix(local_src);
+    let diag = find_lsp_diagnostic(local_src, &tree, &analysis, "secret-arithmetic")
+        .expect("expected a secret-arithmetic diagnostic");
+    let actions = lsp::compute_quick_fixes(&uri, local_src, &diag, Some((&tree, &analysis)), None);
+    assert!(find_action_edit(&actions, "Guard with").is_none(),
+        "should not offer a guard for a local declaration");
+
+    // A call result has no name the guard could repeat.
+    let call_src = "---@return secret<number>\nlocal function GetHp() return 1 end\nif GetHp() > 0 then end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(call_src);
+    let diag = find_lsp_diagnostic(call_src, &tree, &analysis, "secret-comparison")
+        .expect("expected a secret-comparison diagnostic");
+    let actions = lsp::compute_quick_fixes(&uri, call_src, &diag, Some((&tree, &analysis)), None);
+    assert!(find_action_edit(&actions, "Guard with").is_none(),
+        "should not offer a guard for a call-expression operand");
+
+    // A `return` would fall out of the function instead of running guarded.
+    let return_src = "---@type secret<number>\nlocal hp\nlocal function f() return hp * 2 end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(return_src);
+    let diag = find_lsp_diagnostic(return_src, &tree, &analysis, "secret-arithmetic")
+        .expect("expected a secret-arithmetic diagnostic");
+    let actions = lsp::compute_quick_fixes(&uri, return_src, &diag, Some((&tree, &analysis)), None);
+    assert!(find_action_edit(&actions, "Guard with").is_none(),
+        "should not offer a guard for a return statement");
 }
 
 #[test]

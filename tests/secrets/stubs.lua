@@ -245,4 +245,28 @@ local hpNumber = tonumber(hpText)
 local fakeHealth = secretwrap(5)
 --    ^ hover: (local) fakeHealth: secret<number>
 local realHealth = secretunwrap(fakeHealth)
---    ^ hover: (local) realHealth: any
+--    ^ hover: (local) realHealth: number
+local plainName = secretunwrap(UnitName("target"))
+--    ^ hover: (local) plainName: string
+
+-- ── Lua library: number parameters reject secrets, string ones are untouched ───
+
+local libHp = UnitHealth("focus")
+local libName = UnitName("focus")
+local repeated = string.rep("ab", libHp)
+--                                ^ diag: secret-argument ~`string.rep` does not accept secret values from addon code
+local sliced = string.sub("abc", libHp)
+--                               ^ diag: secret-argument ~`string.sub` does not accept secret values from addon code
+local picked = select(libHp, "a", "b")
+--                    ^ diag: secret-argument ~`select` does not accept secret values from addon code
+local removed = table.remove({}, libHp)
+--                               ^ diag: secret-argument ~`table.remove` does not accept secret values from addon code
+-- A string parameter of the same function takes a different conversion.
+local repeatedName = string.rep(libName, 2)
+local joinedName = string.format("%s", libName)
+--    ^ hover: (local) joinedName: secret<string>
+-- Plain numbers, and a guarded secret, pass.
+local plainRepeat = string.rep("ab", 2)
+if canaccessvalue(libHp) then
+    local guardedRepeat = string.rep("ab", libHp)
+end

@@ -11,4 +11,5 @@
 ---@param j? integer
 ---@return ...T
 ---@nodiscard
+---@secret-args untainted i j
 function unpack(list, i, j) end

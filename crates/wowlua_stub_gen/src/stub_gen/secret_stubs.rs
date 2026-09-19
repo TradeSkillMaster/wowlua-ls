@@ -30,31 +30,38 @@ pub(in crate::stub_gen) struct StubSecrecy {
     pub(in crate::stub_gen) clears: Option<GuardAnnotation>,
     /// `@secret-restriction-guard` of a curated restriction guard ([`RESTRICTION_GUARDS`]).
     pub(in crate::stub_gen) restriction_guard: Option<GuardAnnotation>,
+    /// `@secret-satisfies` of a curated precondition guard ([`SECRET_SATISFIES`]).
+    pub(in crate::stub_gen) satisfies: Option<GuardAnnotation>,
     /// `@secret-precondition`s from the secret predicate table.
     pub(in crate::stub_gen) preconditions: Vec<SecretPrecondition>,
 }
 
 /// A curated guard annotation: its leading word (predicate list, `*`,
-/// restriction type, or the position of the parameter naming the restriction),
-/// the bound parameters (position, documented name), and the `== Value` result
-/// that clears, if not `false`.
+/// restriction type, precondition name, or the position of the parameter naming
+/// the restriction), the bound arguments (position, documented name, the names
+/// the covered APIs give that value), and the `== Value` result that clears, if
+/// not `false`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::stub_gen) struct GuardAnnotation {
     pub(in crate::stub_gen) head: String,
     pub(in crate::stub_gen) head_param: Option<usize>,
-    pub(in crate::stub_gen) params: Vec<(usize, String)>,
+    pub(in crate::stub_gen) params: Vec<(usize, String, &'static [&'static str])>,
     pub(in crate::stub_gen) equals: Option<&'static str>,
 }
 
 impl GuardAnnotation {
-    /// `head param… [== Value]`, naming each parameter as the stub does.
-    fn text(&self, params: &[String]) -> String {
+    /// `head binding… [== Value]`, naming each guard parameter as the stub does.
+    /// A binding whose callee name matches the guard's is written bare.
+    pub(in crate::stub_gen) fn text(&self, params: &[String]) -> String {
         let stub_name = |index: usize, doc_name: &String| params.get(index).unwrap_or(doc_name).clone();
         let mut words = vec![match self.head_param {
             Some(index) => stub_name(index, &self.head),
             None => self.head.clone(),
         }];
-        words.extend(self.params.iter().map(|(index, doc_name)| stub_name(*index, doc_name)));
+        words.extend(self.params.iter().map(|(index, doc_name, callee)| {
+            let name = stub_name(*index, doc_name);
+            if callee == &[name.as_str()] { name } else { format!("{name}={}", callee.join(",")) }
+        }));
         if let Some(value) = self.equals {
             words.push(format!("== {value}"));
         }
@@ -66,7 +73,8 @@ impl StubSecrecy {
     fn is_empty(&self) -> bool {
         self.when.is_empty() && self.args.is_none() && self.aspects.is_empty()
             && !self.entries.iter().any(|(_, secret)| *secret)
-            && self.clears.is_none() && self.restriction_guard.is_none() && self.preconditions.is_empty()
+            && self.clears.is_none() && self.restriction_guard.is_none() && self.satisfies.is_none()
+            && self.preconditions.is_empty()
     }
 
     /// Whether a failing precondition returns nothing, which makes every return nilable.
@@ -94,6 +102,9 @@ impl StubSecrecy {
         }
         if let Some(guard) = &self.restriction_guard {
             lines.push(format!("---@secret-restriction-guard {}", guard.text(params)));
+        }
+        if let Some(guard) = &self.satisfies {
+            lines.push(format!("---@secret-satisfies {}", guard.text(params)));
         }
         lines.extend(self.preconditions.iter().map(|p| {
             let mut words = vec!["---@secret-precondition".to_string(), p.name.clone()];
@@ -185,6 +196,11 @@ impl<'a> PredicateTable<'a> {
         }).collect()
     }
 
+    /// Whether `name` is a documented secrecy precondition.
+    fn is_precondition(&self, name: &str) -> bool {
+        self.preconditions.contains_key(name)
+    }
+
     /// `Some(doc)` when `flag` names a secret predicate. Flags used without a
     /// `Predicates` definition (e.g. `SecretWhenCurveSecret`) are recognized by
     /// Blizzard's `Secret{When,In,On}…` naming convention, without documentation.
@@ -222,73 +238,129 @@ const PREDICATE_EXEMPT_UNITS: &[(&str, &[&str])] = &[
     ("SecretWhenUnitPossessionRestricted", &["player", "pet"]),
 ];
 
+/// One bound argument of a curated guard: the guard's own documented parameter,
+/// and the names the APIs it covers give that same value. Binding by name rather
+/// than by position is what lets a guard cover APIs that take the value
+/// elsewhere (`C_Secrets.ShouldUnitPowerBeSecret(unit, powerType)` covers
+/// `UnitPower(unitToken, powerType, …)`); a callee with none of the names takes
+/// the value nowhere, so the guard says nothing about it.
+type GuardBinding = (&'static str, &'static [&'static str]);
+
 /// A curated guard: the function, the annotation's leading word, the bound
-/// parameters (documented names), and the `== Value` result that clears, if not
-/// `false`.
-type GuardSpec = (&'static str, &'static str, &'static [&'static str], Option<&'static str>);
+/// arguments, and the `== Value` result that clears, if not `false`.
+type GuardSpec = (&'static str, &'static str, &'static [GuardBinding], Option<&'static str>);
+
+/// What a curated guard's leading word names, which decides how it is validated.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GuardHead {
+    /// A `@secret-when` predicate list, or `*`.
+    Predicates,
+    /// An `Enum.AddOnRestrictionType` member, or the parameter naming one.
+    Restriction,
+    /// A `@secret-precondition` name.
+    Precondition,
+}
 
 /// `Enum.SecrecyLevel.NeverSecret`: "Will never yield secret values when queried."
 const NEVER_SECRET: Option<&str> = Some("Enum.SecrecyLevel.NeverSecret");
 
+/// The parameter names the documented APIs give the unit whose auras, identity,
+/// power, casts or threat are queried; the aura family also reaches a unit
+/// through `auraInstanceUnit`.
+pub(in crate::stub_gen) const UNIT_PARAMS: &[&str] = &["unit", "unitToken", "auraInstanceUnit"];
+/// The names the documented APIs give a spell argument.
+const SPELL_PARAMS: &[&str] = &["spellIdentifier", "spellID"];
+
 /// `C_Secrets` guards and the predicates their clearing result rules out. The
 /// docs link no guard to a predicate, so this is curated by name, citing each
-/// guard's documentation. Parameters bind the clear to later calls whose
-/// arguments at the same positions match, so a parameter is listed only where
-/// the guarded APIs take the same value at the same position. Not listed:
-/// `CanCompareUnitTokens` (a precondition check), `GetPowerTypeSecrecy` (power
-/// APIs take the power type second), `GetSpellCastSecrecy` (cast APIs take a
-/// unit, not a spell), and `ShouldTotemSpellBeSecret` (totem APIs take a slot).
+/// guard's documentation. Each bound argument lists the parameter names the
+/// covered APIs use for that value, taken from their documented signatures.
 const SECRET_CLEARS: &[GuardSpec] = &[
     // "If false, all APIs that are tagged as potentially returning secrets will never do so."
     ("C_Secrets.HasSecretRestrictions", "*", &[], None),
     // "Returns true if queries for aura data will generally produce secret values."
     ("C_Secrets.ShouldAurasBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &[], None),
     // "Returns true if a given aura index will produce secret values if queried."
-    ("C_Secrets.ShouldUnitAuraIndexBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &["unit", "index"], None),
+    ("C_Secrets.ShouldUnitAuraIndexBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted",
+        &[("unit", UNIT_PARAMS), ("index", &["index"])], None),
     // "Returns true if a given aura instance ID will produce secret values if queried."
-    ("C_Secrets.ShouldUnitAuraInstanceBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &["unit", "auraInstanceID"], None),
+    ("C_Secrets.ShouldUnitAuraInstanceBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted",
+        &[("unit", UNIT_PARAMS), ("auraInstanceID", &["auraInstanceID"])], None),
     // "Returns true if a given aura slot ID will produce secret values if queried."
-    ("C_Secrets.ShouldUnitAuraSlotBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &["unit", "slot"], None),
+    ("C_Secrets.ShouldUnitAuraSlotBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted",
+        &[("unit", UNIT_PARAMS), ("slot", &["slot"])], None),
     // "Returns true if a given spell identifier would, if applied as an aura,
     // produce secret values when queried."
-    ("C_Secrets.ShouldSpellAuraBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &["spellIdentifier"], None),
+    ("C_Secrets.ShouldSpellAuraBeSecret", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted",
+        &[("spellIdentifier", SPELL_PARAMS)], None),
     // "Queries the base secrecy for a spell if queried as an aura."
-    ("C_Secrets.GetSpellAuraSecrecy", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted", &["spellIdentifier"], NEVER_SECRET),
+    ("C_Secrets.GetSpellAuraSecrecy", "SecretWhenAurasRestricted,SecretWhenUnitAuraRestricted",
+        &[("spellIdentifier", SPELL_PARAMS)], NEVER_SECRET),
     // "Returns true if queries for cooldown data will generally produce secret values."
     ("C_Secrets.ShouldCooldownsBeSecret", "SecretWhenCooldownsRestricted", &[], None),
     // "Returns true if a given spell identifier will produce secret values for cooldowns if queried."
-    ("C_Secrets.ShouldSpellCooldownBeSecret", "SecretWhenCooldownsRestricted", &["spellIdentifier"], None),
+    ("C_Secrets.ShouldSpellCooldownBeSecret", "SecretWhenCooldownsRestricted", &[("spellIdentifier", SPELL_PARAMS)], None),
     // "Queries the base secrecy for a spell if queried as a cooldown."
-    ("C_Secrets.GetSpellCooldownSecrecy", "SecretWhenCooldownsRestricted", &["spellIdentifier"], NEVER_SECRET),
+    ("C_Secrets.GetSpellCooldownSecrecy", "SecretWhenCooldownsRestricted", &[("spellIdentifier", SPELL_PARAMS)], NEVER_SECRET),
     // "Returns true if a given action bar slot ID will produce secret values for cooldowns if queried."
-    ("C_Secrets.ShouldActionCooldownBeSecret", "SecretWhenCooldownsRestricted", &["actionID"], None),
+    ("C_Secrets.ShouldActionCooldownBeSecret", "SecretWhenCooldownsRestricted", &[("actionID", &["actionID"])], None),
     // "Returns true if a given spellbook item will produce secret values for cooldowns if queried."
-    ("C_Secrets.ShouldSpellBookItemCooldownBeSecret", "SecretWhenCooldownsRestricted", &["spellBookItemSlotIndex", "spellBookItemSpellBank"], None),
+    ("C_Secrets.ShouldSpellBookItemCooldownBeSecret", "SecretWhenCooldownsRestricted",
+        &[("spellBookItemSlotIndex", &["spellBookItemSlotIndex"]), ("spellBookItemSpellBank", &["spellBookItemSpellBank"])], None),
     // "Returns true if information about a totem slot will produce secret values if queried."
-    ("C_Secrets.ShouldTotemSlotBeSecret", "SecretWhenTotemSlotSecret", &["slot"], None),
+    ("C_Secrets.ShouldTotemSlotBeSecret", "SecretWhenTotemSlotSecret", &[("slot", &["slot"])], None),
+    // "Returns true if information about a spell when associated with a totem slot
+    // will produce secret values if queried." The totem APIs take a slot, so this
+    // clears only a covered API that takes the spell itself.
+    ("C_Secrets.ShouldTotemSpellBeSecret", "SecretWhenTotemSlotSecret", &[("spellID", SPELL_PARAMS)], None),
     // "Returns true if queries that compare units will produce secret values."
-    ("C_Secrets.ShouldUnitComparisonBeSecret", "SecretWhenUnitComparisonRestricted", &["unit1", "unit2"], None),
+    ("C_Secrets.ShouldUnitComparisonBeSecret", "SecretWhenUnitComparisonRestricted",
+        &[("unit1", &["unit1"]), ("unit2", &["unit2"])], None),
     // "Returns true if queries for maximum unit health will produce secret values."
-    ("C_Secrets.ShouldUnitHealthMaxBeSecret", "SecretWhenUnitHealthMaxRestricted", &["unit"], None),
+    ("C_Secrets.ShouldUnitHealthMaxBeSecret", "SecretWhenUnitHealthMaxRestricted", &[("unit", UNIT_PARAMS)], None),
     // "Returns true if queries for unit identity (such as name or GUID) will produce
     // secret values." Name identity is identity secrecy with a PvP exception.
-    ("C_Secrets.ShouldUnitIdentityBeSecret", "SecretWhenUnitIdentityRestricted,SecretWhenUnitNameIdentityRestricted", &["unit"], None),
+    ("C_Secrets.ShouldUnitIdentityBeSecret", "SecretWhenUnitIdentityRestricted,SecretWhenUnitNameIdentityRestricted",
+        &[("unit", UNIT_PARAMS)], None),
     // "Returns true if queries for unit power will produce secret values."
-    ("C_Secrets.ShouldUnitPowerBeSecret", "SecretWhenUnitPowerRestricted", &["unit", "powerType"], None),
+    ("C_Secrets.ShouldUnitPowerBeSecret", "SecretWhenUnitPowerRestricted",
+        &[("unit", UNIT_PARAMS), ("powerType", &["powerType"])], None),
     // "Returns true if queries for maximum unit power will produce secret values."
-    ("C_Secrets.ShouldUnitPowerMaxBeSecret", "SecretWhenUnitPowerMaxRestricted", &["unit", "powerType"], None),
+    ("C_Secrets.ShouldUnitPowerMaxBeSecret", "SecretWhenUnitPowerMaxRestricted",
+        &[("unit", UNIT_PARAMS), ("powerType", &["powerType"])], None),
+    // "Queries the base secrecy for a power type." The power APIs take the power
+    // type second, so only a name binding reaches them.
+    ("C_Secrets.GetPowerTypeSecrecy", "SecretWhenUnitPowerRestricted,SecretWhenUnitPowerMaxRestricted",
+        &[("powerType", &["powerType"])], NEVER_SECRET),
     // "Returns true if queries for spell casting information for a unit would
     // produce secret values when queried." Bound by unit: cast APIs take no spell.
-    ("C_Secrets.ShouldUnitSpellCastBeSecret", "SecretWhenUnitSpellCastRestricted", &["unit"], None),
+    ("C_Secrets.ShouldUnitSpellCastBeSecret", "SecretWhenUnitSpellCastRestricted", &[("unit", UNIT_PARAMS)], None),
     // "Returns true if queries for spell casting information for a specific unit
     // will generally produce secret values."
-    ("C_Secrets.ShouldUnitSpellCastingBeSecret", "SecretWhenUnitSpellCastRestricted", &["unit"], None),
+    ("C_Secrets.ShouldUnitSpellCastingBeSecret", "SecretWhenUnitSpellCastRestricted", &[("unit", UNIT_PARAMS)], None),
+    // "Queries the base secrecy for a spell if queried as a cast." The cast APIs
+    // take the casting unit, so this clears only a covered API that takes the
+    // spell itself.
+    ("C_Secrets.GetSpellCastSecrecy", "SecretWhenUnitSpellCastRestricted", &[("spellIdentifier", SPELL_PARAMS)], NEVER_SECRET),
     // "Returns true if queries for unit statistics will produce secret values."
     ("C_Secrets.ShouldUnitStatsBeSecret", "SecretWhenUnitStatsRestricted", &[], None),
     // "Returns true if queries for unit threat status will produce secret values."
-    ("C_Secrets.ShouldUnitThreatStateBeSecret", "SecretWhenUnitThreatStateRestricted", &["unit", "mobUnit"], None),
+    // The threat APIs name the second unit `mobGUID`.
+    ("C_Secrets.ShouldUnitThreatStateBeSecret", "SecretWhenUnitThreatStateRestricted",
+        &[("unit", UNIT_PARAMS), ("mobUnit", &["mobGUID", "mobUnit"])], None),
     // "Returns true if queries for unit threat values will produce secret values."
-    ("C_Secrets.ShouldUnitThreatValuesBeSecret", "SecretWhenUnitThreatValuesRestricted", &["unit", "mobUnit"], None),
+    ("C_Secrets.ShouldUnitThreatValuesBeSecret", "SecretWhenUnitThreatValuesRestricted",
+        &[("unit", UNIT_PARAMS), ("mobUnit", &["mobGUID", "mobUnit"])], None),
+];
+
+/// Guards whose *true* result proves a `@secret-precondition` holds, so the
+/// calls it guards no longer return nothing when it fails.
+const SECRET_SATISFIES: &[GuardSpec] = &[
+    // "Returns true if queries to compare two input unit tokens are permitted. If
+    // this returns false, APIs guarded by the RequiresComparableUnitTokens
+    // predicate will fail."
+    ("C_Secrets.CanCompareUnitTokens", "RequiresComparableUnitTokens",
+        &[("unit1", &["unit1"]), ("unit2", &["unit2"])], None),
 ];
 
 /// A curated `@secret-args` decision for one function. `None` emits no
@@ -396,14 +468,15 @@ fn doc_function<'a>(docs: &'a BlizzardApiDocs, key: &str) -> Option<&'a Blizzard
 }
 
 /// A curated guard's annotation, validated against the documentation: `None`
-/// (with a warning) when the function, a parameter, or a predicate is missing,
-/// so an upstream rename drops the guard instead of emitting a stale one.
+/// (with a warning) when the function, a parameter, a predicate, or a
+/// precondition is missing, so an upstream rename drops the guard instead of
+/// emitting a stale one.
 fn guard_annotation(
     docs: &BlizzardApiDocs,
     predicates: &PredicateTable<'_>,
     (_, head, params, equals): &GuardSpec,
     doc_key: &str,
-    head_is_predicates: bool,
+    head_kind: GuardHead,
 ) -> Option<GuardAnnotation> {
     let Some(func) = doc_function(docs, doc_key) else {
         log::warn!("  Secret values: guard {doc_key} is not documented; skipped");
@@ -417,21 +490,31 @@ fn guard_annotation(
         index
     };
     let mut head_param = None;
-    if head_is_predicates {
-        if let Some(unknown) = head.split(',').find(|p| *p != "*" && predicates.secret_predicate(p).is_none()) {
-            log::warn!("  Secret values: guard {doc_key} names unknown predicate {unknown}; skipped");
-            return None;
+    match head_kind {
+        GuardHead::Predicates => {
+            if let Some(unknown) = head.split(',').find(|p| *p != "*" && predicates.secret_predicate(p).is_none()) {
+                log::warn!("  Secret values: guard {doc_key} names unknown predicate {unknown}; skipped");
+                return None;
+            }
+            // `*` states that no restriction is in force, so it binds no argument.
+            if *head == "*" && !params.is_empty() {
+                log::warn!("  Secret values: guard {doc_key} binds parameters to `*`; skipped");
+                return None;
+            }
         }
-        // `*` states that no restriction is in force, so it binds no argument.
-        if *head == "*" && !params.is_empty() {
-            log::warn!("  Secret values: guard {doc_key} binds parameters to `*`; skipped");
-            return None;
+        GuardHead::Restriction if crate::secrets::restriction_bit(head).is_none() => {
+            head_param = Some(param_index(head)?);
         }
-    } else if crate::secrets::restriction_bit(head).is_none() {
-        head_param = Some(param_index(head)?);
+        GuardHead::Restriction => {}
+        GuardHead::Precondition => {
+            if !predicates.is_precondition(head) {
+                log::warn!("  Secret values: guard {doc_key} names unknown precondition {head}; skipped");
+                return None;
+            }
+        }
     }
     let bound = params.iter()
-        .map(|param| Some((param_index(param)?, param.to_string())))
+        .map(|(param, callee)| Some((param_index(param)?, (*param).to_string(), *callee)))
         .collect::<Option<Vec<_>>>()?;
     Some(GuardAnnotation { head: head.to_string(), head_param, params: bound, equals: *equals })
 }
@@ -621,13 +704,18 @@ pub(in crate::stub_gen) fn build_secret_index(
     }
     index.documented_functions = index.functions.len();
     for spec in SECRET_CLEARS {
-        if let Some(guard) = guard_annotation(docs, &predicates, spec, spec.0, true) {
+        if let Some(guard) = guard_annotation(docs, &predicates, spec, spec.0, GuardHead::Predicates) {
             index.functions.entry(spec.0.to_string()).or_default().clears = Some(guard);
         }
     }
     for (spec, doc_key) in RESTRICTION_GUARDS {
-        if let Some(guard) = guard_annotation(docs, &predicates, spec, doc_key, false) {
+        if let Some(guard) = guard_annotation(docs, &predicates, spec, doc_key, GuardHead::Restriction) {
             index.functions.entry(spec.0.to_string()).or_default().restriction_guard = Some(guard);
+        }
+    }
+    for spec in SECRET_SATISFIES {
+        if let Some(guard) = guard_annotation(docs, &predicates, spec, spec.0, GuardHead::Precondition) {
+            index.functions.entry(spec.0.to_string()).or_default().satisfies = Some(guard);
         }
     }
     // An upstream rename must drop a curated decision rather than leave a stale one.
@@ -828,6 +916,103 @@ pub(in crate::stub_gen) fn apply_secret_annotations(text: &str, index: &SecretIn
         result.push('\n');
     }
     Some(result)
+}
+
+/// The `@secret-args` policy for the number-typed parameters of a Lua library C
+/// function.
+///
+/// VERIFIED (12.1.0): `math.max(secretwrap(5), 1)` raises "attempt to perform
+/// numeric conversion on a secret number value" from tainted code. The step that
+/// fails is the C library's conversion of an argument to a number, which is not
+/// specific to `math`, so every Lua library parameter that takes a number
+/// rejects a secret the same way — `string.rep(s, n)`, `string.sub(s, i, j)`,
+/// `unpack(t, i, j)`, `table.remove(t, pos)`, and so on. The generalization from
+/// the one observed call to the rest rests on that shared mechanism. Secure code
+/// may still convert, so the policy is `untainted` rather than `none`. String
+/// parameters go through a different conversion whose behavior is unknown and
+/// are left alone.
+const LUA_NUMBER_ARGS_POLICY: SecretArgsPolicy = SecretArgsPolicy::AllowedWhenUntainted;
+
+/// Whether an annotated type is one the Lua libraries convert to a number:
+/// `number`/`integer`, alone or unioned with `nil` and string literals
+/// (`select`'s `integer|"#"`). A parameter that also accepts an ordinary string
+/// takes the string conversion instead.
+fn is_number_param_type(ty: &str) -> bool {
+    let mut numeric = false;
+    for member in ty.trim_end_matches('?').split('|') {
+        match member.trim() {
+            "number" | "integer" => numeric = true,
+            "nil" => {}
+            quoted if quoted.starts_with('"') && quoted.ends_with('"') && quoted.len() > 1 => {}
+            _ => return false,
+        }
+    }
+    numeric
+}
+
+/// The names of the number-typed parameters an annotation block declares, in
+/// order (`...` for a number-typed vararg).
+fn number_param_names(block: &[String]) -> Vec<String> {
+    block.iter()
+        .filter_map(|line| {
+            let mut words = line.strip_prefix("---@param ")?.split_whitespace();
+            let (name, ty) = (words.next()?, words.next()?);
+            is_number_param_type(ty).then(|| name.trim_end_matches('?').to_string())
+        })
+        .collect()
+}
+
+/// Add `@secret-args untainted <number parameters>` to the Lua library functions
+/// in `dir` (Ketho's `Annotations/Core/Lua`), derived from each function's own
+/// parameter types rather than a list of function names. A block that already
+/// carries a policy keeps it, which leaves the whole-function decisions of
+/// [`LUA_LIBRARY_ARGS`] (`math.*`, `tostring`) and its deliberate omissions
+/// (`tonumber`, which answers `nil` for a secret instead of erroring) alone.
+/// The Lua library functions `stubs/overrides/` replaces carry the annotation
+/// in the override, which this rewrite doesn't reach.
+pub(in crate::stub_gen) fn apply_lua_number_args_to_dir(dir: &Path) {
+    let mut paths = Vec::new();
+    collect_lua_paths(dir, &mut paths);
+    let (mut rewritten, mut annotated) = (0usize, 0usize);
+    for path in &paths {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        let mut out: Vec<String> = Vec::new();
+        let mut block_start = 0;
+        let mut changed = false;
+        for line in text.lines() {
+            if let Some((name, _)) = function_line_signature(line) {
+                let block = &out[block_start..];
+                let curated = LUA_LIBRARY_ARGS.iter()
+                    .any(|(key, _)| *key == name || key.strip_suffix('.').is_some_and(|ns| name.starts_with(ns)));
+                let params = number_param_names(block);
+                if !curated && !params.is_empty() && !block.iter().any(|l| l.starts_with("---@secret-args")) {
+                    let args = crate::secrets::SecretArgs { policy: LUA_NUMBER_ARGS_POLICY, params };
+                    out.push(format!("---@secret-args {}", args.annotation_text()));
+                    changed = true;
+                    annotated += 1;
+                }
+                out.push(line.to_string());
+                block_start = out.len();
+                continue;
+            }
+            out.push(line.to_string());
+            if !line.starts_with("---") {
+                block_start = out.len();
+            }
+        }
+        if !changed {
+            continue;
+        }
+        let mut result = out.join("\n");
+        if text.ends_with('\n') {
+            result.push('\n');
+        }
+        match std::fs::write(path, result) {
+            Ok(()) => rewritten += 1,
+            Err(e) => log::warn!("Failed to write Lua library secret args to {}: {e}", path.display()),
+        }
+    }
+    log::info!("  Secret values: {annotated} Lua library function(s) given numeric-argument policies in {rewritten} file(s)");
 }
 
 /// Rewrite every `.lua` stub file under `dir` in place.

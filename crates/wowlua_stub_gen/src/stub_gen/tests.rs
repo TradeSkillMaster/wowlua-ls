@@ -2673,9 +2673,12 @@ fn test_build_secret_index_guards_and_preconditions() {
     assert_eq!(clears("C_Secrets.ShouldUnitHealthMaxBeSecret"), GuardAnnotation {
         head: "SecretWhenUnitHealthMaxRestricted".to_string(),
         head_param: None,
-        params: vec![(0, "unit".to_string())],
+        params: vec![(0, "unit".to_string(), UNIT_PARAMS)],
         equals: None,
     });
+    // The guard's parameter binds to the names the covered APIs use, not to its position.
+    assert_eq!(clears("C_Secrets.ShouldUnitHealthMaxBeSecret").text(&["unit".to_string()]),
+        "SecretWhenUnitHealthMaxRestricted unit=unit,unitToken,auraInstanceUnit");
     assert_eq!(clears("C_Secrets.HasSecretRestrictions").head, "*");
     assert_eq!(clears("C_Secrets.GetSpellCooldownSecrecy").equals, Some("Enum.SecrecyLevel.NeverSecret"));
     // A curated guard the docs don't define (or whose predicates they don't) is skipped.
@@ -2736,7 +2739,7 @@ function GetAuraCount() end
     let expected = "\
 ---@param unitToken UnitToken
 ---@return boolean isUnitHealthMaxSecret
----@secret-clears SecretWhenUnitHealthMaxRestricted unitToken
+---@secret-clears SecretWhenUnitHealthMaxRestricted unitToken=unit,unitToken,auraInstanceUnit
 function C_Secrets.ShouldUnitHealthMaxBeSecret(unitToken) end
 
 ---@param restrictionType Enum.AddOnRestrictionType

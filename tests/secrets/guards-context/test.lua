@@ -220,3 +220,69 @@ if not InCombatLockdown() then
     if UnitHealthMax(unit) > 0 then end
     -- ^ diag: secret-comparison
 end
+
+-- ── Guards held in a variable ─────────────────────────────────────────────────
+
+local aurasSecret = C_Secrets.ShouldAurasBeSecret()
+if not aurasSecret then
+    local aura = C_UnitAuras.GetAuraDataByIndex(unit, 1, "HARMFUL")
+    if aura and aura.duration > 5 then end
+    --               ^ hover: (field) duration: number
+end
+if aurasSecret then
+    local aura = C_UnitAuras.GetAuraDataByIndex(unit, 1, "HARMFUL")
+    if aura and aura.duration > 5 then end
+    --          ^ diag: secret-comparison
+end
+-- A later write with no guard drops what the variable carried.
+local staleGuard = C_Secrets.ShouldAurasBeSecret()
+staleGuard = UnitAffectingCombat(unit)
+if not staleGuard then
+    local aura = C_UnitAuras.GetAuraDataByIndex(unit, 1, "HARMFUL")
+    if aura and aura.duration > 5 then end
+    --          ^ diag: secret-comparison
+end
+
+-- A write inside a branch proves nothing after the chain: the compat shim's other
+-- branch leaves the variable holding something else.
+local shimSecret
+if C_Secrets then
+    shimSecret = C_Secrets.ShouldAurasBeSecret()
+else
+    shimSecret = UnitAffectingCombat(unit)
+end
+if not shimSecret then
+    local aura = C_UnitAuras.GetAuraDataByIndex(unit, 1, "HARMFUL")
+    if aura and aura.duration > 5 then end
+    --          ^ diag: secret-comparison
+end
+
+-- ── Arguments bound by the callee's parameter name ────────────────────────────
+
+-- The power APIs take the power type second, so the guard reaches them by name.
+local power = Enum.PowerType.Mana
+if C_Secrets.GetPowerTypeSecrecy(power) == Enum.SecrecyLevel.NeverSecret then
+    local mana = UnitPower(unit, power)
+    --    ^ hover: (local) mana: number
+    local rage = UnitPower(unit, Enum.PowerType.Rage)
+    --    ^ hover: (local) rage: secret<number>
+end
+
+-- The threat APIs name their second unit `mobGUID`.
+if not C_Secrets.ShouldUnitThreatStateBeSecret(unit, "boss1") then
+    local threat = UnitThreatSituation(unit, "boss1")
+    --    ^ hover: (local) threat: number?
+    local otherThreat = UnitThreatSituation(unit, "boss2")
+    --    ^ hover: (local) otherThreat: secret<number>?
+end
+
+-- ── Preconditions a guard proves ──────────────────────────────────────────────
+
+local unguardedSame = UnitIsUnit("player", unit)
+--    ^ hover: (local) unguardedSame: secret<boolean>?
+if C_Secrets.CanCompareUnitTokens("player", unit) then
+    local same = UnitIsUnit("player", unit)
+    --    ^ hover: (local) same: secret<boolean>
+    local other = UnitIsUnit("party1", unit)
+    --    ^ hover: (local) other: secret<boolean>?
+end

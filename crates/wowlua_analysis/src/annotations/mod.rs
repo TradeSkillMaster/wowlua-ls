@@ -1954,9 +1954,8 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 });
             }
         } else if let Some(rest) = content.strip_prefix("@secret-args") {
-            if let Some(policy) = rest.split_whitespace().next().and_then(crate::secrets::SecretArgsPolicy::parse) {
-                block.secret.args = Some(policy);
-            }
+            // `@secret-args <policy> [param…]`
+            block.secret.args = crate::secrets::SecretArgs::parse(rest);
         } else if let Some(rest) = content.strip_prefix("@secret-aspect") {
             block.secret.aspects.extend(rest.split_whitespace().map(str::to_string));
         } else if let Some(rest) = content.strip_prefix("@secret-unless") {
@@ -1974,6 +1973,9 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         } else if let Some(rest) = content.strip_prefix("@secret-restriction-guard") {
             // `@secret-restriction-guard <param|RestrictionType> [== Value]`
             block.secret.restriction_guard = crate::secrets::SecretRestrictionGuard::parse(rest);
+        } else if let Some(rest) = content.strip_prefix("@secret-satisfies") {
+            // `@secret-satisfies <Precondition> [binding…]`
+            block.secret.satisfies = crate::secrets::SecretSatisfies::parse(rest);
         } else if let Some(rest) = content.strip_prefix("@secret-precondition") {
             // `@secret-precondition <Name> [FailureMode] [documentation]`
             block.secret.preconditions.extend(crate::secrets::SecretPrecondition::parse(rest));

@@ -28,6 +28,16 @@ pub(super) enum GuardNarrow {
     StripType(ValueType),
 }
 
+impl GuardNarrow {
+    /// Whether this guard constrains a value's *secrecy* rather than which of
+    /// its types it is: `secret<T>` wraps a type instead of replacing it, so a
+    /// secrecy guard still says something new about a symbol an earlier operand
+    /// of the same chain already narrowed (`x and canaccessvalue(x) and x > 0`).
+    pub(super) fn is_secrecy(&self) -> bool {
+        matches!(self, Self::StripType(ValueType::Secret(_)) | Self::FilterTo(ValueType::Secret(_)))
+    }
+}
+
 /// If `lhs/rhs` is `WOW_PROJECT_ID` compared against a `WOW_PROJECT_*`
 /// constant name in either order, return the constant name.
 fn extract_wow_project_comparison(lhs: &Expression<'_>, rhs: &Expression<'_>) -> Option<String> {
@@ -337,6 +347,11 @@ impl<'a> Analysis<'a> {
 
     /// Bare-truthiness guard handling for `Expression::Identifier` conditions.
     fn narrow_identifier_guard(&mut self, ident: &Identifier<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
+                // A boolean holding a guard's result narrows what the guard call
+                // would, on top of its own truthiness.
+                if let Some(fact) = self.secret_guard_fact(&Expression::Identifier(*ident), parent_scope, is_then_branch) {
+                    self.apply_secret_fact(fact, target_scope, false);
+                }
                 if is_then_branch {
                     let names = ident.names_with_brackets();
                     if names.len() == 1 {
@@ -888,6 +903,10 @@ impl<'a> Analysis<'a> {
             // `if x then return end` → x is falsy in the outer scope after.
             // Mainly useful for multi-return sibling narrowing on return-only overloads.
             Expression::Identifier(ident) => {
+                // `local secret = issecretvalue(x); if secret then return end`
+                if let Some(fact) = self.secret_guard_fact(cond, scope_idx, false) {
+                    self.apply_secret_fact(fact, scope_idx, true);
+                }
                 let names = ident.names_with_brackets();
                 if names.len() == 1
                     && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {

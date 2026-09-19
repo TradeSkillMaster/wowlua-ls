@@ -55,9 +55,11 @@ function secretwrap(value, ...) end
 ---Unwraps all supplied secrets, converting them back to regular values.
 ---
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_secretunwrap)
----@param ... any values
----@return any ... unwrapped
-function secretunwrap(...) end
+---@generic T
+---@param value secret<T>
+---@param ... any
+---@return T ... unwrapped
+function secretunwrap(value, ...) end
 
 ---Returns a formatted version of its variable number of arguments following the description given in its first argument.
 ---

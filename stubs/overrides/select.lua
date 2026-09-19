@@ -11,4 +11,5 @@
 ---@return returns<F, index>
 ---@overload fun(index: "#", ...: any): integer
 ---@nodiscard
+---@secret-args untainted index
 function select(index, ...) end

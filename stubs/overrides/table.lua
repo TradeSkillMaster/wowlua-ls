@@ -23,6 +23,7 @@ table = {}
 ---@param j?   integer
 ---@return string
 ---@nodiscard
+---@secret-args untainted i j
 function table.concat(list, sep, i, j) end
 
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_table.count)
@@ -37,6 +38,7 @@ function table.count(tbl) end
 ---@param nodeSizeHint? number
 ---@return table
 ---@nodiscard
+---@secret-args untainted arraySizeHint nodeSizeHint
 function table.create(arraySizeHint, nodeSizeHint) end
 
 ---
@@ -49,6 +51,7 @@ function table.create(arraySizeHint, nodeSizeHint) end
 ---@param list T[]
 ---@param pos integer
 ---@param value T
+---@secret-args untainted pos
 function table.insert(list, pos, value) end
 
 ---Returns the largest positive numerical index of the given table, or zero if the table has no positive numerical indices.
@@ -69,6 +72,7 @@ function table.maxn(tbl) end
 ---@param list V[]
 ---@param pos? integer
 ---@return V
+---@secret-args untainted pos
 function table.remove(list, pos) end
 
 ---
@@ -121,6 +125,7 @@ function table.getn(list) end
 ---@param list table
 ---@param pos? integer
 ---@return any
+---@secret-args untainted pos
 function table.removemulti(list, pos, count) end
 
 ---Wipes a table of all contents.

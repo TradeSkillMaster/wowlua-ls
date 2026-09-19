@@ -198,7 +198,14 @@ impl<'a> Analysis<'a> {
                     // multi-return sibling narrowing.
                     let mut extra_pre_narrow: Vec<(SymbolIndex, usize)> = Vec::new();
                     for (si, narrow_kind) in &extra_chain_guards {
-                        if guard_sym == Some(*si) { continue; } // skip the primary guard (already narrowed)
+                        // Skip what the primary guard already narrowed — unless the
+                        // two constrain different axes, as a secrecy guard on the
+                        // symbol a nil/type guard already covered does.
+                        if guard_sym == Some(*si)
+                            && guard_result.as_ref().is_some_and(|(_, k)| k.is_secrecy() == narrow_kind.is_secrecy())
+                        {
+                            continue;
+                        }
                         let v = self.ir.version_for_scope(*si, scope_idx);
                         match narrow_kind {
                             GuardNarrow::StripNil | GuardNarrow::FilterTo(_) => narrowed_sources.push((*si, false)),
@@ -268,7 +275,9 @@ impl<'a> Analysis<'a> {
                         temp_field_narrows.push((sym_idx, chain.clone(), narrow_kind.clone()));
                     }
                     for (sym_idx, chain, narrow_kind) in &extra_field_guards {
-                        if field_guard.as_ref().is_none_or(|(gs, gc, _)| *gs != *sym_idx || *gc != *chain)
+                        if field_guard.as_ref().is_none_or(|(gs, gc, k)| {
+                            (*gs, gc) != (*sym_idx, chain) || k.is_secrecy() != narrow_kind.is_secrecy()
+                        })
                             && self.insert_temp_field_narrow(scope_idx, *sym_idx, chain, narrow_kind)
                         {
                             temp_field_narrows.push((*sym_idx, chain.clone(), narrow_kind.clone()));

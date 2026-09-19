@@ -378,6 +378,138 @@ local function GetCheckedCard() return 1 end
 local checkedCard = GetCheckedCard()
 --                  ^ doc: Precondition: `RequiresCardAccess` — Cards need access.
 
+-- A guard argument binds to the callee's parameter by name, so it reaches an API
+-- that takes the same value elsewhere in its signature.
+---@secret-clears SecretWhenRankRestricted season=season
+---@param season number
+---@return boolean
+local function ShouldRankBeSecret(season) return true end
+
+---@secret-when SecretWhenRankRestricted
+---@param player string
+---@param season number
+---@return secret<number>
+local function GetRank(player, season) return 1 end
+
+if not ShouldRankBeSecret(11) then
+    local rank = GetRank("alice", 11)
+    --    ^ hover: (local) rank: number
+    local oldRank = GetRank("alice", 10)
+    --    ^ hover: (local) oldRank: secret<number>
+end
+
+-- A guard whose true result proves a precondition holds drops the nil a failure
+-- would return.
+---@secret-satisfies RequiresPair left right
+---@param left string
+---@param right string
+---@return boolean
+local function CanComparePair(left, right) return true end
+
+---@secret-precondition RequiresPair ReturnNothing Pairs must be comparable.
+---@param left string
+---@param right string
+---@return boolean?
+local function SamePair(left, right) return true end
+
+local uncheckedPair = SamePair("a", "b")
+--    ^ hover: (local) uncheckedPair: boolean?
+if CanComparePair("a", "b") then
+    local checkedPair = SamePair("a", "b")
+    --    ^ hover: (local) checkedPair: boolean
+    local otherPair = SamePair("a", "c")
+    --    ^ hover: (local) otherPair: boolean?
+end
+
+-- `@secret-args` may name the parameters it applies to.
+---@secret-args untainted count
+---@param text string
+---@param count number
+local function RepeatText(text, count) end
+RepeatText(GetLabel(), 2)
+RepeatText("plain", GetHealth())
+--                  ^ diag: secret-argument ~`RepeatText` does not accept secret values from addon code
+-- ^ doc: Secret arguments: `AllowedWhenUntainted` — accepted only from Blizzard code for `count`
+
+-- ── Guards held in a variable ──────────────────────────────────────────────────
+
+local storedHp = GetHealth()
+local readable = CanAccess(storedHp)
+if readable then
+    local guardedDouble = storedHp * 2
+    --    ^ hover: (local) guardedDouble: number
+end
+if not readable then
+    local unguardedDouble = storedHp * 2
+    --                      ^ diag: secret-arithmetic
+end
+
+local exitHp = GetHealth()
+local exitReadable = CanAccess(exitHp)
+local function UsesExitGuard()
+    if not exitReadable then return end
+    local scaled = exitHp * 2
+    --    ^ hover: (local) scaled: number
+end
+
+-- A later write with no guard drops what the variable carried.
+local staleHp = GetHealth()
+local staleReadable = CanAccess(staleHp)
+staleReadable = Inspect(staleHp)
+if staleReadable then
+    local staleDouble = staleHp * 2
+    --                  ^ diag: secret-arithmetic
+end
+
+-- A write inside a branch proves nothing after the chain: the sibling branch may
+-- have written something else (the compat-shim shape).
+local branchHp = GetHealth()
+local branchReadable
+if Inspect(branchHp) then
+    branchReadable = CanAccess(branchHp)
+else
+    branchReadable = Inspect(branchHp)
+end
+if branchReadable then
+    local branchDouble = branchHp * 2
+    --                   ^ diag: secret-arithmetic
+end
+
+-- The same in the `is-secret` direction, where trusting the branch write would
+-- make a value that can never be secret look secret.
+---@type number
+local plainScore = 1
+local scoreSecret
+if Inspect(plainScore) then
+    scoreSecret = IsSecret(plainScore)
+else
+    scoreSecret = Inspect(plainScore)
+end
+if scoreSecret then
+    local scoreDouble = plainScore * 2
+    --    ^ hover: (local) scoreDouble: number
+end
+
+-- A `local` inside a branch is scoped to it, so its guard still narrows there.
+if Inspect(branchHp) then
+    local innerReadable = CanAccess(branchHp)
+    if innerReadable then
+        local innerDouble = branchHp * 2
+        --    ^ hover: (local) innerDouble: number
+    end
+end
+
+-- ── A secret guard on a symbol an earlier chain operand already narrowed ───────
+
+local chainHp = GetHealth()
+if chainHp and CanAccess(chainHp) and chainHp > 0 then end
+if chainHp and chainHp > 0 then end
+--             ^ diag: secret-comparison
+-- A `type()` guard on the same symbol keeps narrowing exactly as before.
+---@type string|number
+local mixedValue = 1
+if mixedValue and type(mixedValue) == "string" and mixedValue:upper() then end
+
 -- ── Annotation validation ──────────────────────────────────────────────────────
 
 ---@secret-clears
@@ -385,6 +517,10 @@ local checkedCard = GetCheckedCard()
 ---@secret-clears SecretWhenScoreRestricted player ==
 -- ^ diag: malformed-annotation
 ---@secret-clears * player
+-- ^ diag: malformed-annotation
+---@secret-clears SecretWhenScoreRestricted player=
+-- ^ diag: malformed-annotation
+---@secret-satisfies
 -- ^ diag: malformed-annotation
 ---@secret-restriction-guard
 -- ^ diag: malformed-annotation

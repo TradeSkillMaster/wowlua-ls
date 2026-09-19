@@ -10,4 +10,5 @@
 ---@param init? integer
 ---@return (...string) | (nil)
 ---@nodiscard
+---@secret-args untainted init
 function string.match(s, pattern, init) end

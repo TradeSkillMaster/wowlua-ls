@@ -8,7 +8,7 @@ const FUNCTION_LEVEL_TAGS: &[&str] = &[
     "constructor", "builds-field", "built-name", "built-extends",
     "type-narrows", "returns-class-name", "defclass", "narrows-arg", "creates-global", "generates-events",
     "callback-event-arg", "requires", "secret-when", "secret-args", "secret-aspect", "secret-guard", "secret-unless",
-    "secret-clears", "secret-restriction-guard", "secret-precondition",
+    "secret-clears", "secret-restriction-guard", "secret-precondition", "secret-satisfies",
 ];
 
 const CLASS_VALID_TAGS: &[&str] = &["overload", "deprecated", "constructor", "secret-when"];

@@ -42,7 +42,7 @@ const KNOWN_TAGS: &[&str] = &[
     "builds-field", "built-name", "built-extends", "type-narrows", "returns-class-name", "narrows-arg",
     "creates-global", "generates-events", "callback-event-arg", "correlated", "flavor-narrows", "event", "requires",
     "secret-when", "secret-args", "secret-aspect", "secret-guard", "secret-unless",
-    "secret-clears", "secret-restriction-guard", "secret-precondition",
+    "secret-clears", "secret-restriction-guard", "secret-precondition", "secret-satisfies",
     "see", "vararg", "as", "cast", "operator", "module", "source",
     "version", "package", "async", "nodoc", "public",
 ];
@@ -302,10 +302,8 @@ impl DiagnosticPass for MalformedAnnotation {
                     Some("@secret-when requires a predicate name (e.g. @secret-when SecretWhenInCombat)".to_string()),
                 "secret-aspect" if rest.is_empty() =>
                     Some("@secret-aspect requires an aspect name (e.g. @secret-aspect Text)".to_string()),
-                "secret-args" => match rest.split_whitespace().next() {
-                    Some(policy) if crate::secrets::SecretArgsPolicy::parse(policy).is_some() => None,
-                    _ => Some("@secret-args requires one of: none, untainted, tainted".to_string()),
-                },
+                "secret-args" if crate::secrets::SecretArgs::parse(rest).is_none() =>
+                    Some("@secret-args requires one of: none, untainted, tainted, then optional parameter names (e.g. @secret-args untainted i j)".to_string()),
                 "secret-unless" if rest.split_whitespace().nth(1).is_none() =>
                     Some("@secret-unless requires a parameter name and at least one value (e.g. @secret-unless unit player)".to_string()),
                 "secret-guard" => {
@@ -319,6 +317,8 @@ impl DiagnosticPass for MalformedAnnotation {
                     Some("@secret-clears requires predicate names, then optional parameter names and `== Value` (e.g. @secret-clears SecretWhenUnitHealthMaxRestricted unit); `*` clears everything and takes no parameters".to_string()),
                 "secret-restriction-guard" if crate::secrets::SecretRestrictionGuard::parse(rest).is_none() =>
                     Some("@secret-restriction-guard requires a parameter or restriction type name and an optional `== Value` (e.g. @secret-restriction-guard Combat)".to_string()),
+                "secret-satisfies" if crate::secrets::SecretSatisfies::parse(rest).is_none() =>
+                    Some("@secret-satisfies requires a precondition name, then optional argument bindings (e.g. @secret-satisfies RequiresComparableUnitTokens unit1 unit2)".to_string()),
                 "secret-precondition" if crate::secrets::SecretPrecondition::parse(rest).is_none() =>
                     Some(format!(
                         "@secret-precondition requires a name, then an optional failure mode ({}) and an optional description (e.g. @secret-precondition RequiresUnitAuraAccess Error Requires access to unit aura data)",

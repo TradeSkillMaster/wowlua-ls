@@ -59,8 +59,29 @@ struct SecretDisplay {
     hidden: bool,
     /// The context guards at the position, which filter Secrecy predicates.
     context: Option<crate::analysis::secret_context::SecretContext>,
-    /// The arguments and offset of the call being shown, for clears bound to arguments.
-    call: Option<(Vec<ExprId>, u32)>,
+    /// The callee, arguments and offset of the call being shown, for clears
+    /// bound to arguments.
+    call: Option<DisplayedCall>,
+}
+
+/// The call a Secrecy section is being shown for.
+#[derive(Clone)]
+struct DisplayedCall {
+    func: FunctionIndex,
+    args: Vec<ExprId>,
+    offset: u32,
+    is_method: bool,
+}
+
+impl DisplayedCall {
+    fn clear_args(&self) -> crate::analysis::secret_context::ClearArgs<'_> {
+        crate::analysis::secret_context::ClearArgs::Call {
+            func: self.func,
+            args: &self.args,
+            offset: self.offset,
+            is_method: self.is_method,
+        }
+    }
 }
 
 /// RAII scope of [`SECRET_DISPLAY`]: restores the previous value on drop,
@@ -101,13 +122,18 @@ impl AnalysisResult {
     pub fn secrecy_display_for_function(&self, func_idx: FunctionIndex, call: Option<ExprId>) -> SecrecyDisplayGuard {
         let mut display = SECRET_DISPLAY.with(|d| d.borrow().clone());
         display.call = call.and_then(|c| match self.expr(c) {
-            Expr::FunctionCall { args, call_range, .. } => Some((args.clone(), call_range.0)),
+            Expr::FunctionCall { args, call_range, is_method_call, .. } => Some(DisplayedCall {
+                func: func_idx,
+                args: args.clone(),
+                offset: call_range.0,
+                is_method: *is_method_call,
+            }),
             _ => None,
         });
         if let Some(context) = &display.context {
             let when = self.func(func_idx).secret.as_ref().map(|m| m.when.as_slice()).unwrap_or_default();
             let args = match &display.call {
-                Some((args, offset)) => crate::analysis::secret_context::ClearArgs::Call(args, *offset),
+                Some(call) => call.clear_args(),
                 None => crate::analysis::secret_context::ClearArgs::Unbound,
             };
             display.hidden |= context.predicates_cleared(&self.ir, when.iter().map(|p| p.name.as_str()), args);
@@ -134,7 +160,7 @@ impl AnalysisResult {
         SECRET_DISPLAY.with(|d| {
             let d = d.borrow();
             let args = match &d.call {
-                Some((args, offset)) => crate::analysis::secret_context::ClearArgs::Call(args, *offset),
+                Some(call) => call.clear_args(),
                 None => crate::analysis::secret_context::ClearArgs::Unbound,
             };
             !d.context.as_ref().is_some_and(|c| c.predicate_cleared(&self.ir, predicate, args))

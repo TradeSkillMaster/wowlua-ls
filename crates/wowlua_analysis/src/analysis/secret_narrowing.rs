@@ -5,9 +5,11 @@
 //! wildcard: filtering to it keeps secret values, stripping it unwraps them.
 
 use crate::ast::*;
+use crate::collections::HashMap;
 use crate::syntax::SyntaxKind;
 use crate::types::*;
 use super::narrowing::GuardNarrow;
+use super::secret_context::SecretContext;
 use super::{Analysis, NarrowTarget};
 
 /// Symbol targets with the narrowing each receives.
@@ -21,6 +23,50 @@ pub(super) enum SecretFact {
     Accessible(Vec<NarrowTarget>),
     /// The (single) guarded target is secret.
     Secret(NarrowTarget),
+}
+
+/// What a boolean variable holding a guard's result proves, by that result:
+/// `local ok = canaccessvalue(x)` makes `if ok then` narrow `x` exactly as the
+/// call would. A later write with no guard drops the entry, so only the value
+/// the variable currently holds is trusted.
+#[derive(Default)]
+pub(crate) struct StoredSecretGuards {
+    symbols: HashMap<SymbolIndex, StoredGuard>,
+}
+
+#[derive(Default)]
+struct StoredGuard {
+    fact_true: Option<StoredFact>,
+    fact_false: Option<StoredFact>,
+    context_true: SecretContext,
+    context_false: SecretContext,
+}
+
+/// A value-guard fact, flattened so it survives the guard call's expression.
+struct StoredFact {
+    /// Whether the targets are proven secret rather than accessible.
+    secret: bool,
+    targets: Vec<NarrowTarget>,
+}
+
+impl StoredSecretGuards {
+    /// The value-guard fact `sym` carries for a `truthy` result.
+    fn fact(&self, sym: SymbolIndex, truthy: bool) -> Option<SecretFact> {
+        let guard = self.symbols.get(&sym)?;
+        let stored = if truthy { guard.fact_true.as_ref() } else { guard.fact_false.as_ref() }?;
+        Some(if stored.secret {
+            SecretFact::Secret(stored.targets.first()?.clone())
+        } else {
+            SecretFact::Accessible(stored.targets.clone())
+        })
+    }
+
+    /// The context guards `sym` carries for a `truthy` result.
+    pub(super) fn context(&self, sym: SymbolIndex, truthy: bool) -> Option<SecretContext> {
+        let guard = self.symbols.get(&sym)?;
+        let context = if truthy { &guard.context_true } else { &guard.context_false };
+        (!context.is_empty()).then(|| context.clone())
+    }
 }
 
 impl SecretFact {
@@ -69,6 +115,10 @@ impl<'a> Analysis<'a> {
                 };
                 self.secret_guard_fact(&decider, scope, truthy)
             }
+            // A boolean holding a guard's result (`local ok = canaccessvalue(x)`).
+            Expression::Identifier(ident) => {
+                self.stored_secret_guards.fact(self.stored_guard_symbol(ident, scope)?, truthy)
+            }
             Expression::FunctionCall(call) => {
                 let (kind, targets) = self.secret_guard_call(call, scope)?;
                 if kind.implies_accessible(truthy, targets.len())? {
@@ -80,6 +130,38 @@ impl<'a> Analysis<'a> {
             }
             _ => None,
         }
+    }
+
+    /// The symbol a single-name identifier that may carry a stored guard refers
+    /// to; `None` for a field chain or bracket access, which carry none.
+    pub(super) fn stored_guard_symbol(&self, ident: &Identifier<'_>, scope: ScopeIndex) -> Option<SymbolIndex> {
+        let names = ident.names();
+        let [name] = names.as_slice() else { return None };
+        self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope)
+    }
+
+    /// Record what a write of `expression` to `sym` leaves the variable
+    /// holding: the guard facts a later truth test of it can use, or nothing,
+    /// which drops whatever an earlier write stored.
+    pub(super) fn record_stored_secret_guard(&mut self, sym: SymbolIndex, scope: ScopeIndex, expression: Option<&Expression<'_>>) {
+        let stored = expression.map(|expr| StoredGuard {
+            fact_true: self.stored_fact(expr, scope, true),
+            fact_false: self.stored_fact(expr, scope, false),
+            context_true: self.secret_context_of(expr, scope, true),
+            context_false: self.secret_context_of(expr, scope, false),
+        });
+        match stored.filter(|g| {
+            g.fact_true.is_some() || g.fact_false.is_some() || !g.context_true.is_empty() || !g.context_false.is_empty()
+        }) {
+            Some(guard) => { self.stored_secret_guards.symbols.insert(sym, guard); }
+            None => { self.stored_secret_guards.symbols.remove(&sym); }
+        }
+    }
+
+    fn stored_fact(&self, expr: &Expression<'_>, scope: ScopeIndex, truthy: bool) -> Option<StoredFact> {
+        let fact = self.secret_guard_fact(expr, scope, truthy)?;
+        let secret = matches!(fact, SecretFact::Secret(_));
+        Some(StoredFact { secret, targets: fact.into_targets() })
     }
 
     /// If `call` invokes a `@secret-guard` function, its guard kind and the

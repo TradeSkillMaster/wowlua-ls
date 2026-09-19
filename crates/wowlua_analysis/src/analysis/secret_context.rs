@@ -31,13 +31,32 @@ pub enum SecretArgKey {
     Number(String),
 }
 
-/// Predicates one guard clears, bound to call arguments by position (unbound
-/// when `binding` is empty).
+/// What a guard proved about one argument: the names the covered APIs give that
+/// parameter, and the value the guard was asked about. Empty `params` never
+/// occurs — an unbound guard carries no [`SecretArgMatch`] at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SecretArgMatch {
+    pub params: Vec<String>,
+    pub key: SecretArgKey,
+}
+
+/// Predicates one guard clears, bound to the callee parameters of [`binding`]
+/// (unbound when it is empty).
+///
+/// [`binding`]: SecretClear::binding
 #[derive(Debug, Clone, PartialEq)]
 pub struct SecretClear {
     pub predicates: Vec<String>,
-    pub binding: Vec<(usize, SecretArgKey)>,
+    pub binding: Vec<SecretArgMatch>,
     /// The guarded code, which a write to a bound field chain inside cancels.
+    pub region: (u32, u32),
+}
+
+/// A `@secret-precondition` a guard proved holds, bound the same way.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SecretSatisfied {
+    pub precondition: String,
+    pub binding: Vec<SecretArgMatch>,
     pub region: (u32, u32),
 }
 
@@ -49,6 +68,8 @@ pub struct SecretContext {
     pub clears: Vec<SecretClear>,
     /// Restriction types proven inactive (bits of `secrets::RESTRICTION_TYPES`).
     pub inactive: u8,
+    /// Preconditions proven to hold (`@secret-satisfies`).
+    pub satisfied: Vec<SecretSatisfied>,
 }
 
 /// Source `[start, end)` in `scope` (and its non-function descendants) guarded by `context`.
@@ -63,23 +84,40 @@ pub struct SecretContextRegion {
 /// Which arguments a bound clear is checked against.
 #[derive(Debug, Clone, Copy)]
 pub enum ClearArgs<'a> {
-    /// A call's arguments and offset: a bound clear applies when they match.
-    Call(&'a [ExprId], u32),
+    /// A call: a bound clear applies when the call's argument for each bound
+    /// parameter matches the guard's.
+    Call { func: FunctionIndex, args: &'a [ExprId], offset: u32, is_method: bool },
     /// A struct field read has no arguments; any clear of the predicate applies.
     Any,
     /// Unknown arguments (a function named outside a call): only unbound clears apply.
     Unbound,
 }
 
+/// Which result of a guard call is being interpreted: a clearing one (`false`,
+/// or `== Value`) or a true one, which is what `@secret-satisfies` states.
+#[derive(Debug, Clone, Copy)]
+enum GuardResult<'a> {
+    False,
+    True,
+    Equals(&'a str),
+}
+
+impl GuardResult<'_> {
+    fn of(truthy: bool) -> Self {
+        if truthy { Self::True } else { Self::False }
+    }
+}
+
 impl SecretContext {
     pub fn is_empty(&self) -> bool {
-        !self.all && self.clears.is_empty() && self.inactive == 0
+        !self.all && self.clears.is_empty() && self.inactive == 0 && self.satisfied.is_empty()
     }
 
     fn merge(&mut self, other: &SecretContext) {
         self.all |= other.all;
         self.inactive |= other.inactive;
         self.clears.extend(other.clears.iter().cloned());
+        self.satisfied.extend(other.satisfied.iter().cloned());
     }
 
     /// Whether `predicate` yields no secrets here.
@@ -87,17 +125,14 @@ impl SecretContext {
         if self.all || crate::secrets::predicate_restrictions(predicate).is_some_and(|set| set & !self.inactive == 0) {
             return true;
         }
-        self.clears.iter().any(|clear| clear.predicates.iter().any(|p| p == predicate) && match args {
-            ClearArgs::Any => true,
-            ClearArgs::Unbound => clear.binding.is_empty(),
-            ClearArgs::Call(call_args, offset) => clear.binding.iter().all(|(position, key)| {
-                let arg = match call_args.get(*position) {
-                    Some(&arg) => ir.secret_arg_key(arg),
-                    None => Some(SecretArgKey::Absent),
-                };
-                arg.as_ref() == Some(key) && !ir.field_written_before(key, clear.region, offset)
-            }),
+        self.clears.iter().any(|clear| {
+            clear.predicates.iter().any(|p| p == predicate) && binding_matches(ir, &clear.binding, clear.region, args)
         })
+    }
+
+    /// Whether `precondition` was proven to hold here (`@secret-satisfies`).
+    pub fn precondition_satisfied(&self, ir: &Ir, precondition: &str, args: ClearArgs<'_>) -> bool {
+        self.satisfied.iter().any(|s| s.precondition == precondition && binding_matches(ir, &s.binding, s.region, args))
     }
 
     /// Whether every one of `predicates` is cleared; with no predicates, only `*` clears.
@@ -110,6 +145,26 @@ impl SecretContext {
             any = true;
             self.predicate_cleared(ir, p, args)
         }) && any
+    }
+}
+
+/// Whether a guard's argument bindings hold for the value being resolved: every
+/// bound parameter of the covered call carries the value the guard was asked
+/// about. A callee that has none of a binding's parameter names isn't covered.
+fn binding_matches(ir: &Ir, binding: &[SecretArgMatch], region: (u32, u32), args: ClearArgs<'_>) -> bool {
+    match args {
+        ClearArgs::Any => true,
+        ClearArgs::Unbound => binding.is_empty(),
+        ClearArgs::Call { func, args: call_args, offset, is_method } => binding.iter().all(|bound| {
+            let Some(position) = bound.params.iter().find_map(|p| ir.param_position(func, p, is_method)) else {
+                return false;
+            };
+            let arg = match call_args.get(position) {
+                Some(&arg) => ir.secret_arg_key(arg),
+                None => Some(SecretArgKey::Absent),
+            };
+            arg.as_ref() == Some(&bound.key) && !ir.field_written_before(&bound.key, region, offset)
+        }),
     }
 }
 
@@ -248,13 +303,46 @@ impl Ir {
         if param == "..." { Some(names.count()) } else { names.position(|n| n == param) }
     }
 
+    /// The parameter an argument at `position` binds to — `...` past the last
+    /// named one, for a function that declares varargs. The inverse of
+    /// [`Self::param_position`].
+    pub fn param_name_at(&self, func_idx: FunctionIndex, position: usize, is_method_call: bool) -> Option<&str> {
+        let func = self.func(func_idx);
+        let skip = usize::from(is_method_call && !func.args.is_empty());
+        match func.args.get(position + skip) {
+            Some(&sym) => match &self.sym(sym).id {
+                SymbolIdentifier::Name(name) => Some(name.as_str()),
+                _ => None,
+            },
+            None => func.vararg_annotation.is_some().then_some("..."),
+        }
+    }
+
     /// Whether the guards at `offset` clear every `@secret-when` predicate of a
     /// call to `func_idx` with `args` (with none, only `*` clears).
-    pub fn call_secrecy_cleared(&self, func_idx: FunctionIndex, args: &[ExprId], offset: u32) -> bool {
+    pub fn call_secrecy_cleared(&self, func_idx: FunctionIndex, args: &[ExprId], offset: u32, is_method: bool) -> bool {
         self.secret_context_at(offset).is_some_and(|context| {
             let when = self.func(func_idx).secret.as_ref().map(|m| m.when.as_slice()).unwrap_or_default();
-            context.predicates_cleared(self, when.iter().map(|p| p.name.as_str()), ClearArgs::Call(args, offset))
+            context.predicates_cleared(self, when.iter().map(|p| p.name.as_str()), self.clear_args(func_idx, args, offset, is_method))
         })
+    }
+
+    /// Whether the guards at `offset` prove every precondition under which a
+    /// call to `func_idx` would return nothing, so its returns aren't nilable
+    /// there. False when the callee has no such precondition.
+    pub fn call_preconditions_satisfied(&self, func_idx: FunctionIndex, args: &[ExprId], offset: u32, is_method: bool) -> bool {
+        let Some(meta) = self.func(func_idx).secret.as_deref() else { return false };
+        let mut required = meta.preconditions.iter().filter(|p| p.returns_nothing()).peekable();
+        if required.peek().is_none() {
+            return false;
+        }
+        let Some(context) = self.secret_context_at(offset) else { return false };
+        let args = self.clear_args(func_idx, args, offset, is_method);
+        required.all(|p| context.precondition_satisfied(self, &p.name, args))
+    }
+
+    fn clear_args<'a>(&self, func: FunctionIndex, args: &'a [ExprId], offset: u32, is_method: bool) -> ClearArgs<'a> {
+        ClearArgs::Call { func, args, offset, is_method }
     }
 
     /// Whether the guards at `offset` clear the `@secret-when` predicates of
@@ -357,9 +445,21 @@ impl<'a> Analysis<'a> {
                     _ => {}
                 }
             }
-            Expression::FunctionCall(call) if !truthy => self.collect_guard_call(call, scope, None, out),
+            Expression::FunctionCall(call) => self.collect_guard_call(call, scope, GuardResult::of(truthy), out),
+            // A boolean holding a guard's result (`local secret = C_Secrets.ShouldAurasBeSecret()`).
+            Expression::Identifier(ident) => {
+                if let Some(context) = self.stored_secret_context(ident, scope, truthy) {
+                    out.merge(&context);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// The context a variable holding a guard's result proves when it is
+    /// `truthy`, for a single-name identifier carrying one.
+    fn stored_secret_context(&self, ident: &Identifier<'_>, scope: ScopeIndex, truthy: bool) -> Option<SecretContext> {
+        self.stored_secret_guards.context(self.stored_guard_symbol(ident, scope)?, truthy)
     }
 
     /// Whether `api` names a global (from the API stubs) that `call` — possibly
@@ -396,18 +496,23 @@ impl<'a> Analysis<'a> {
         if value.has_any_dynamic_bracket() {
             return false;
         }
-        self.collect_guard_call(call, scope, Some(&value.names().join(".")), out);
+        self.collect_guard_call(call, scope, GuardResult::Equals(&value.names().join(".")), out);
         true
     }
 
-    /// A clearing result of a `@secret-clears` / `@secret-restriction-guard`
-    /// call: false (`equals` = `None`) or equal to `equals`.
-    fn collect_guard_call(&self, call: &FunctionCall<'_>, scope: ScopeIndex, equals: Option<&str>, out: &mut SecretContext) {
+    /// What a `@secret-clears` / `@secret-restriction-guard` / `@secret-satisfies`
+    /// call proves when it produces `result`.
+    fn collect_guard_call(&self, call: &FunctionCall<'_>, scope: ScopeIndex, result: GuardResult<'_>, out: &mut SecretContext) {
         let Some(func_idx) = self.resolve_call_function_by_path(call, scope) else { return };
         let Some(meta) = self.func(func_idx).secret.as_deref() else { return };
-        if meta.clears.is_none() && meta.restriction_guard.is_none() {
+        let clearing = !matches!(result, GuardResult::True);
+        if (clearing && meta.clears.is_none() && meta.restriction_guard.is_none()) || (!clearing && meta.satisfies.is_none()) {
             return;
         }
+        let equals = match result {
+            GuardResult::Equals(value) => Some(value),
+            _ => None,
+        };
         let range = call.syntax().text_range();
         let call_args = self.ir.call_exprs_at_range((u32::from(range.start()), u32::from(range.end())))
             .find_map(|(_, e)| match e {
@@ -416,33 +521,40 @@ impl<'a> Analysis<'a> {
             })
             .unwrap_or_default();
         let is_method = call.syntax().kind() == SyntaxKind::MethodCall;
-        let arg_key = |param: &str| {
-            let position = self.ir.param_position(func_idx, param, is_method)?;
-            let key = match call_args.get(position) {
-                Some(&arg) => self.ir.secret_arg_key(arg)?,
-                None => SecretArgKey::Absent,
-            };
-            Some((position, key))
+        // A binding whose argument isn't a variable, field chain, or literal
+        // proves nothing about later calls.
+        let binding = |bindings: &[crate::secrets::SecretArgBinding]| {
+            bindings.iter().map(|b| {
+                let position = self.ir.param_position(func_idx, &b.guard_param, is_method)?;
+                let key = match call_args.get(position) {
+                    Some(&arg) => self.ir.secret_arg_key(arg)?,
+                    None => SecretArgKey::Absent,
+                };
+                Some(SecretArgMatch { params: b.callee_params.clone(), key })
+            }).collect::<Option<Vec<_>>>()
         };
-        if let Some(clears) = meta.clears.as_ref().filter(|c| c.equals.as_deref() == equals) {
-            // A clear bound to an argument that isn't a variable, field chain, or
-            // literal proves nothing about later calls.
-            if let Some(binding) = clears.params.iter().map(|p| arg_key(p)).collect::<Option<Vec<_>>>() {
-                // `*` clears the whole region, including reports no call
-                // produced, so it binds no argument (rejected at parse).
-                if clears.all {
-                    out.all = true;
-                } else {
-                    out.clears.push(SecretClear { predicates: clears.predicates.clone(), binding, region: (0, 0) });
-                }
+        if let Some(clears) = meta.clears.as_ref().filter(|c| clearing && c.equals.as_deref() == equals)
+            && let Some(binding) = binding(&clears.bindings)
+        {
+            // `*` clears the whole region, including reports no call produced,
+            // so it binds no argument (rejected at parse).
+            if clears.all {
+                out.all = true;
+            } else {
+                out.clears.push(SecretClear { predicates: clears.predicates.clone(), binding, region: (0, 0) });
             }
         }
-        if let Some(guard) = meta.restriction_guard.as_ref().filter(|g| g.equals.as_deref() == equals) {
+        if let Some(guard) = meta.restriction_guard.as_ref().filter(|g| clearing && g.equals.as_deref() == equals) {
             let bit = guard.fixed_bit().or_else(|| {
                 let position = self.ir.param_position(func_idx, &guard.restriction, is_method)?;
                 self.restriction_bit_of(*call_args.get(position)?)
             });
             out.inactive |= bit.unwrap_or(0);
+        }
+        if let Some(satisfies) = meta.satisfies.as_ref().filter(|_| !clearing)
+            && let Some(binding) = binding(&satisfies.bindings)
+        {
+            out.satisfied.push(SecretSatisfied { precondition: satisfies.precondition.clone(), binding, region: (0, 0) });
         }
     }
 
@@ -492,6 +604,9 @@ impl<'a> Analysis<'a> {
         }
         for clear in &mut context.clears {
             clear.region = (start, end);
+        }
+        for satisfied in &mut context.satisfied {
+            satisfied.region = (start, end);
         }
         // An `elseif` condition is lowered in its branch's scope but sits outside
         // that block, so the region belongs to the nearest scope containing it.

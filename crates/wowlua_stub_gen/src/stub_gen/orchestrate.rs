@@ -426,6 +426,9 @@ pub fn regenerate_stubs() {
         source_errors.push("Secret-value index: empty (expected secrecy keys in retail APIDocumentation)".to_string());
     }
     apply_secret_annotations_to_dir(&clone_dir.join("Annotations/Core"), &secret_index);
+    // The Lua library isn't in Blizzard's documentation; its numeric parameters
+    // get their policy from their own annotated types.
+    apply_lua_number_args_to_dir(&clone_dir.join("Annotations/Core/Lua"));
 
     // Step 4b2: Collect the final set of (class, method) pairs from Ketho's vendor stubs
     // (after wiki enrichment). Used to filter ScriptObject stubs to only new methods.

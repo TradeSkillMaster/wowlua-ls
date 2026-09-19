@@ -3102,6 +3102,37 @@ mod tests {
             RebuildScope::None => panic!("@secret-clears edit must trigger a rebuild"),
         }
 
+        // The parameters a clear binds, and a policy's parameter scope, are semantic too.
+        let bound = |callee: &str| format!(
+            "---@secret-clears SecretWhenRestricted unit{callee}\n---@param unit string\n---@return boolean\nfunction ShouldUnitBeSecret(unit) end\n"
+        );
+        let _ = rebuild(bound(""));
+        match rebuild(bound("=unitToken")) {
+            RebuildScope::Incremental(names) => assert!(names.contains("ShouldUnitBeSecret"), "changed binding must be named: {names:?}"),
+            RebuildScope::Full => panic!("expected Incremental scope, got Full"),
+            RebuildScope::None => panic!("@secret-clears binding edit must trigger a rebuild"),
+        }
+
+        let args = |params: &str| format!(
+            "---@secret-args untainted{params}\n---@param n number\nfunction TakesNumber(n) end\n"
+        );
+        let _ = rebuild(args(""));
+        match rebuild(args(" n")) {
+            RebuildScope::Incremental(names) => assert!(names.contains("TakesNumber"), "changed policy scope must be named: {names:?}"),
+            RebuildScope::Full => panic!("expected Incremental scope, got Full"),
+            RebuildScope::None => panic!("@secret-args parameter edit must trigger a rebuild"),
+        }
+
+        let satisfies = |tag: &str| format!(
+            "{tag}---@param a string\n---@param b string\n---@return boolean\nfunction CanCompare(a, b) end\n"
+        );
+        let _ = rebuild(satisfies(""));
+        match rebuild(satisfies("---@secret-satisfies RequiresPair a b\n")) {
+            RebuildScope::Incremental(names) => assert!(names.contains("CanCompare"), "changed guard must be named: {names:?}"),
+            RebuildScope::Full => panic!("expected Incremental scope, got Full"),
+            RebuildScope::None => panic!("@secret-satisfies edit must trigger a rebuild"),
+        }
+
         let event = |when: &str| format!("---@event MyEvent \"SOMETHING_HAPPENED\"\n{when}---@param id number\n");
         let _ = rebuild(event(""));
         assert!(

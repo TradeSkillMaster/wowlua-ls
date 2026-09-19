@@ -2708,6 +2708,10 @@ pub struct Analysis<'a> {
     pub synth_return_overload_refinements: Vec<SynthOverloadRefinement>,
     // Tracks whether we are currently inside a function during build_ir (None = file scope)
     pub(super) current_func_id: Option<FunctionIndex>,
+    // Whether the statement being built sits in a conditionally-executed block
+    // (if/elseif/else, loop body), so a write in it may not be the one a later
+    // read sees. Set per statement alongside `current_func_id`.
+    pub(super) stmt_is_conditional: bool,
     // Pending function bodies from inline function expressions (used during build_ir)
     pub(super) pending_blocks: Vec<(NodeId, ScopeIndex, Option<FunctionIndex>)>,
     // Config
@@ -2726,6 +2730,9 @@ pub struct Analysis<'a> {
     /// Build-time: which variable/field flavor guards were inferred, so a later
     /// non-guard write can clear them.
     pub(super) inferred_flavor_guards: narrowing::InferredFlavorGuards,
+    /// Build-time: the secret guards boolean variables currently hold, so a
+    /// later truth test of one narrows as the guard call would.
+    pub(super) stored_secret_guards: secret_narrowing::StoredSecretGuards,
     pub backward_param_types: bool,
     /// When true, functions without `@return` annotations whose return statements
     /// match a clear all-set-or-all-nil pattern get synthesized return-only
@@ -2943,6 +2950,7 @@ impl<'a> Analysis<'a> {
             symbol_version_at: HashMap::default(),
             sym_ref_sites: HashMap::default(),
             current_func_id: None,
+            stmt_is_conditional: false,
             pending_blocks: Vec::new(),
             allowed_read_globals,
             allowed_write_globals,
@@ -2952,6 +2960,7 @@ impl<'a> Analysis<'a> {
             addon_flavors,
             scope_flavors: HashMap::default(),
             inferred_flavor_guards: Default::default(),
+            stored_secret_guards: Default::default(),
             backward_param_types,
             correlated_return_overloads,
             explicit_globals: HashSet::default(),

@@ -98,6 +98,9 @@ struct AssignCtx<'a, 'b> {
     node: DefNode,
     annotations: &'b crate::annotations::AnnotationBlock,
     flavor_guard: u8,
+    /// Whether the enclosing block only runs under a condition, so a write here
+    /// may not be the one a later read sees.
+    is_conditional: bool,
 }
 
 /// A single assignment target (one LHS identifier) plus the RHS context needed to
@@ -147,6 +150,7 @@ impl<'a> Analysis<'a> {
             let constructor_of = frame.constructor_of;
             let frame_is_conditional = frame.is_conditional;
             self.current_func_id = func_id;
+            self.stmt_is_conditional = frame_is_conditional;
             if frame.next_stmt == 0 {
                 let br = frame.block.syntax().text_range();
                 self.ir.block_scopes.push((u32::from(br.start()), u32::from(br.end()), scope_idx));
@@ -503,6 +507,11 @@ impl<'a> Analysis<'a> {
                 let current_guard = self.ir.symbols[symbol_idx.val()].flavor_guard;
                 self.ir.symbols[symbol_idx.val()].flavor_guard = self.inferred_flavor_guards
                     .symbol_write(symbol_idx, current_guard, annotated_flavor_guard, expression);
+                // A `local` binds a fresh symbol whose scope is exactly the block
+                // the write runs in, so a reader of it always ran the write —
+                // conditional frames need no special case here (a later write to
+                // the same name goes through `build_stmt_assign`).
+                self.record_stored_secret_guard(symbol_idx, scope_idx, expression);
             }
         }
 
@@ -1308,6 +1317,7 @@ impl<'a> Analysis<'a> {
             node,
             annotations: &assign_annotations,
             flavor_guard: assign_flavor_guard,
+            is_conditional: self.stmt_is_conditional,
         };
         if let Some(var_list) = assign.variable_list() {
             let identifiers = var_list.identifiers();
@@ -2205,7 +2215,7 @@ impl<'a> Analysis<'a> {
         cached_multi_ret_call: &mut Option<ExprId>,
     ) {
         let AssignCtx {
-            assign, scope_idx, func_id, node,
+            assign, scope_idx, func_id, node, is_conditional,
             annotations: assign_annotations, flavor_guard: annotated_flavor_guard, ..
         } = ctx;
         let AssignTarget { names, index, expression, expressions, identifiers_len, .. } = target;
@@ -2297,6 +2307,13 @@ impl<'a> Analysis<'a> {
             let current_guard = self.ir.symbols[symbol_idx.val()].flavor_guard;
             self.ir.symbols[symbol_idx.val()].flavor_guard = self.inferred_flavor_guards
                 .symbol_write(symbol_idx, current_guard, annotated_flavor_guard, expression);
+            // A conditional write leaves the variable holding whichever branch
+            // ran, so a guard written in one of them proves nothing afterwards —
+            // and it must drop what an earlier write recorded, since the sibling
+            // branch may have replaced it (`if C_Secrets then ok = canaccessvalue(v)
+            // else ok = Legacy(v) end`). Passing no expression does both.
+            let stored_guard = expression.filter(|_| !is_conditional);
+            self.record_stored_secret_guard(symbol_idx, scope_idx, stored_guard);
             // Mark narrowing as overridden if this symbol has active narrowing
             if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
                 || self.get_type_filtering(symbol_idx, scope_idx).is_some()

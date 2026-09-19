@@ -35,7 +35,7 @@ mod redefined_local;
 mod redundant_condition;
 mod redundant_logical;
 mod return_mismatch;
-mod secret_values;
+pub mod secret_values;
 mod shadowed_local;
 mod trailing_space;
 mod type_mismatch;

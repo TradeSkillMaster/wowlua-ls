@@ -118,8 +118,8 @@ pub fn truth_test_rule(t: &ValueType) -> SecretRule {
 /// read (`t[secret]`), which would otherwise reveal the value.
 pub const TABLE_KEY: SecretRule = SecretRule::Error;
 
-/// Passing a secret to a C API with the given `SecretArguments` policy (no
-/// policy = unknown, never diagnosed).
+/// Passing a secret to a C API parameter with the given `SecretArguments` policy
+/// (no policy = unknown, never diagnosed).
 pub fn argument_rule(policy: Option<SecretArgsPolicy>) -> SecretRule {
     match policy {
         // VERIFIED: "will never accept secret values, even from untainted callers".
@@ -264,7 +264,32 @@ pub fn predicate_restrictions(predicate: &str) -> Option<u8> {
     })
 }
 
-/// `@secret-clears <Predicate>[,<Predicate>…]|* [param…] [== Value]`: a guard
+/// One argument binding of a context guard: the guard parameter whose argument
+/// must match, and the parameter names the covered APIs give that same value
+/// (`unit` is short for `unit=unit`). Several names cover APIs that spell the
+/// parameter differently (`UnitHealthMax(unit)` vs `UnitPowerMax(unitToken, …)`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SecretArgBinding {
+    pub guard_param: String,
+    pub callee_params: Vec<String>,
+}
+
+impl SecretArgBinding {
+    /// Parse one `guardParam[=calleeParam[,calleeParam…]]` word.
+    fn parse(word: &str) -> Option<Self> {
+        let (guard_param, callee) = word.split_once('=').unwrap_or((word, word));
+        let callee_params: Vec<String> = callee.split(',').filter(|n| !n.is_empty()).map(str::to_string).collect();
+        (!guard_param.is_empty() && !callee_params.is_empty())
+            .then(|| Self { guard_param: guard_param.to_string(), callee_params })
+    }
+
+    /// Parse a whitespace-separated binding list.
+    fn parse_list<'w>(words: impl Iterator<Item = &'w str>) -> Option<Vec<Self>> {
+        words.map(Self::parse).collect()
+    }
+}
+
+/// `@secret-clears <Predicate>[,<Predicate>…]|* [binding…] [== Value]`: a guard
 /// whose result proves the listed predicates yield no secrets.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecretClears {
@@ -272,11 +297,11 @@ pub struct SecretClears {
     pub predicates: Vec<String>,
     /// `*`: no API returns secret values (`C_Secrets.HasSecretRestrictions`).
     pub all: bool,
-    /// Guard parameters that bind the clear: a later call is cleared only when
-    /// its arguments at the same positions are the same local, field chain, or
-    /// literal. Always empty for `*`, which states a property of the client
+    /// Argument bindings: a later call is cleared only when its argument for
+    /// each bound parameter is the same local, field chain, or literal the guard
+    /// was given. Always empty for `*`, which states a property of the client
     /// rather than of an argument.
-    pub params: Vec<String>,
+    pub bindings: Vec<SecretArgBinding>,
     /// `== Value`: the result that proves the predicates clear (`None` = a false
     /// result).
     pub equals: Option<String>,
@@ -297,14 +322,31 @@ impl SecretClears {
         if !all && predicates.is_empty() {
             return None;
         }
-        let params: Vec<String> = words.map(str::to_string).collect();
+        let bindings = SecretArgBinding::parse_list(words)?;
         // `*` is "no restriction is in force", a property of the client and not
         // of any argument, and silences every report in the region it guards.
         // Binding it would have to be honored there too, so reject the form.
-        if all && !params.is_empty() {
+        if all && !bindings.is_empty() {
             return None;
         }
-        Some(Self { predicates, all, params, equals })
+        Some(Self { predicates, all, bindings, equals })
+    }
+}
+
+/// `@secret-satisfies <Precondition> [binding…]`: a guard whose *true* result
+/// proves a [`SecretPrecondition`] holds, so matching calls no longer fail it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SecretSatisfies {
+    pub precondition: String,
+    pub bindings: Vec<SecretArgBinding>,
+}
+
+impl SecretSatisfies {
+    /// Parse the text after `@secret-satisfies`.
+    pub fn parse(rest: &str) -> Option<Self> {
+        let mut words = rest.split_whitespace();
+        let precondition = words.next()?.to_string();
+        Some(Self { precondition, bindings: SecretArgBinding::parse_list(words)? })
     }
 }
 
@@ -510,6 +552,43 @@ impl SecretArgsPolicy {
     }
 }
 
+/// `@secret-args <policy> [param…]`: the policy and the parameters it applies to.
+///
+/// Blizzard states one `SecretArguments` policy per function, but the step a
+/// secret argument trips is per parameter — the Lua library's numeric argument
+/// conversion rejects a secret where the same function's string parameters
+/// don't — so the annotation may name the parameters it covers. An empty list
+/// covers every parameter, which is what a documented policy means.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SecretArgs {
+    pub policy: SecretArgsPolicy,
+    /// Parameter names the policy applies to (`...` for the varargs); empty =
+    /// every parameter.
+    pub params: Vec<String>,
+}
+
+impl SecretArgs {
+    /// Parse the text after `@secret-args`.
+    pub fn parse(rest: &str) -> Option<Self> {
+        let mut words = rest.split_whitespace();
+        let policy = SecretArgsPolicy::parse(words.next()?)?;
+        Some(Self { policy, params: words.map(str::to_string).collect() })
+    }
+
+    /// Whether the policy applies to the parameter named `param`.
+    pub fn covers(&self, param: &str) -> bool {
+        self.params.is_empty() || self.params.iter().any(|p| p == param)
+    }
+
+    /// The annotation text after the tag.
+    pub fn annotation_text(&self) -> String {
+        std::iter::once(self.policy.annotation_name().to_string())
+            .chain(self.params.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 /// What a `@secret-guard` function's boolean result says about its argument(s).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecretGuardKind {
@@ -567,12 +646,13 @@ pub struct SecretExemption {
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SecretMeta {
     pub when: Vec<SecretPredicate>,
-    pub args: Option<SecretArgsPolicy>,
+    pub args: Option<SecretArgs>,
     pub aspects: Vec<String>,
     pub guard: Option<SecretGuard>,
     pub unless: Option<SecretExemption>,
     pub clears: Option<SecretClears>,
     pub restriction_guard: Option<SecretRestrictionGuard>,
+    pub satisfies: Option<SecretSatisfies>,
     pub preconditions: Vec<SecretPrecondition>,
 }
 
@@ -584,16 +664,37 @@ mod tests {
     fn parses_context_guard_annotations() {
         let clears = SecretClears::parse(" SecretWhenA,SecretWhenB unit mobUnit").unwrap();
         assert_eq!(clears.predicates, ["SecretWhenA", "SecretWhenB"]);
-        assert_eq!(clears.params, ["unit", "mobUnit"]);
+        let names = |c: &SecretClears| c.bindings.iter().map(|b| (b.guard_param.clone(), b.callee_params.clone())).collect::<Vec<_>>();
+        assert_eq!(names(&clears), [
+            ("unit".to_string(), vec!["unit".to_string()]),
+            ("mobUnit".to_string(), vec!["mobUnit".to_string()]),
+        ]);
         assert!(!clears.all && clears.equals.is_none());
+        // A guard parameter may bind to differently named callee parameters.
+        let renamed = SecretClears::parse(" SecretWhenA unit=unitToken,unit").unwrap();
+        assert_eq!(names(&renamed), [("unit".to_string(), vec!["unitToken".to_string(), "unit".to_string()])]);
         let all = SecretClears::parse(" *").unwrap();
         assert!(all.all && all.predicates.is_empty());
         let equals = SecretClears::parse(" SecretWhenA spell == Enum.SecrecyLevel.NeverSecret").unwrap();
-        assert_eq!((equals.params.as_slice(), equals.equals.as_deref()), (&["spell".to_string()][..], Some("Enum.SecrecyLevel.NeverSecret")));
+        assert_eq!((names(&equals).as_slice(), equals.equals.as_deref()),
+            (&[("spell".to_string(), vec!["spell".to_string()])][..], Some("Enum.SecrecyLevel.NeverSecret")));
         assert!(SecretClears::parse("").is_none());
         assert!(SecretClears::parse(" SecretWhenA unit ==").is_none());
+        assert!(SecretClears::parse(" SecretWhenA unit=").is_none());
         // `*` clears the whole region, so it cannot be bound to an argument.
         assert!(SecretClears::parse(" * unit").is_none());
+
+        let satisfies = SecretSatisfies::parse(" RequiresX unit1 unit2").unwrap();
+        assert_eq!(satisfies.precondition, "RequiresX");
+        assert_eq!(satisfies.bindings.len(), 2);
+        assert!(SecretSatisfies::parse("  ").is_none());
+
+        let args = SecretArgs::parse(" untainted i j").unwrap();
+        assert_eq!((args.policy, args.params.as_slice()), (SecretArgsPolicy::AllowedWhenUntainted, &["i".to_string(), "j".to_string()][..]));
+        assert!(args.covers("i") && !args.covers("s"));
+        // A bare policy covers every parameter.
+        assert!(SecretArgs::parse(" none").unwrap().covers("anything"));
+        assert!(SecretArgs::parse(" sometimes").is_none());
 
         let fixed = SecretRestrictionGuard::parse(" Combat").unwrap();
         assert_eq!(fixed.fixed_bit(), Some(1));
