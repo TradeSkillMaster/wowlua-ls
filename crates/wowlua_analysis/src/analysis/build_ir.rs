@@ -700,8 +700,8 @@ impl<'a> Analysis<'a> {
             if bi == 0 { first_branch_exits = true; }
             exiting_prefix_len = bi + 1;
             if let Some(cond) = branch.expression() {
-                self.analyze_early_exit_guard(&cond, scope_idx);
                 let (if_start, if_end) = node_range(if_chain.syntax());
+                self.analyze_early_exit_guard(&cond, scope_idx, if_end);
                 if let Some((_, block_end)) = self.block_range_containing(scope_idx, if_start) {
                     self.record_secret_guard(&cond, scope_idx, scope_idx, false, (if_end, block_end));
                 }

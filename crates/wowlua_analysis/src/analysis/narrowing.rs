@@ -848,10 +848,10 @@ impl<'a> Analysis<'a> {
                                 }
                     }
                     // `x == "literal"` or `x == 5` → TypeIs(literal/number)
-                    // Uses extract_literal_eq_sides for strings; for numbers,
-                    // extract inline (Number has no literal variant so it can't
-                    // go through extract_literal_eq_sides which feeds else-branch
-                    // stripping — stripping all numbers on `x ~= 5` is wrong).
+                    // Uses extract_literal_eq_sides for strings/booleans; numbers
+                    // are extracted inline and widened to plain `Number`, since
+                    // extract_literal_eq_sides also feeds else-branch stripping
+                    // and stripping all numbers on `x ~= 5` would be wrong.
                     if is_eq {
                         if let Some((ident, lit_vt)) = Self::extract_literal_eq_sides(lhs, rhs) {
                             let names = ident.names();
@@ -894,7 +894,10 @@ impl<'a> Analysis<'a> {
     /// Early-exit narrowing: if the then-branch always exits and the condition
     /// implies the variable is nil/falsy, narrow it as non-nil in the parent scope.
     /// Patterns: `if not x then error() end`, `if x == nil then return end`
-    pub(super) fn analyze_early_exit_guard(&mut self, cond: &Expression<'_>, scope_idx: ScopeIndex) {
+    /// `from_offset` is the byte offset the narrowing takes effect at (the end of the
+    /// `if` chain). Guard facts are recorded on the *enclosing* scope, which also spans
+    /// the code before the guard, so field narrowings carry it in `narrow_from_offset`.
+    pub(super) fn analyze_early_exit_guard(&mut self, cond: &Expression<'_>, scope_idx: ScopeIndex, from_offset: u32) {
         // If the exit condition is a flavor check (e.g. `if WOW_PROJECT_ID ==
         // WOW_PROJECT_MAINLINE then return end`), exclude that flavor from the
         // active set after the guard — i.e. treat it as the else-branch narrowing.
@@ -983,7 +986,7 @@ impl<'a> Analysis<'a> {
                     let terms = bin.get_terms();
                     if terms.len() >= 2 {
                         for term in &terms {
-                            self.analyze_early_exit_guard(term, scope_idx);
+                            self.analyze_early_exit_guard(term, scope_idx, from_offset);
                         }
                         return;
                     }
@@ -1086,22 +1089,18 @@ impl<'a> Analysis<'a> {
                         if names.len() == 1 {
                             if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                                 if is_eq {
-                                    // For an open literal-union param, skip the body-scope
-                                    // `add_type_stripped` map: it is not position-aware, so
-                                    // stripping members would leak onto references *before*
-                                    // the guard (an empty union renders as `nil`). The pushed
-                                    // version has creation_order gating that correctly limits
-                                    // the narrowing to post-guard code — same rationale as the
-                                    // type() guard early-exit path above — so stripping a
-                                    // tested-and-returned member forward stays sound.
-                                    if !self.ir.is_open_literal_union_symbol(sym_idx) {
-                                        self.add_type_stripped(scope_idx, sym_idx, lit_vt.clone());
-                                    }
+                                    // Don't add to the body-scope `type_stripped` map — it is
+                                    // not position-aware, so the strip would also apply to
+                                    // references *before* the guard. The version pushed below
+                                    // has creation_order gating that correctly limits the
+                                    // narrowing to post-guard code — same rationale as the
+                                    // type() guard early-exit path above.
                                     self.push_strip_type_version(sym_idx, lit_vt, scope_idx, true);
                                 } else {
-                                    // `if x ~= "LIT" then return end` → x IS "LIT" after
-                                    self.narrowing.type_filtered_symbols.entry(scope_idx).or_default()
-                                        .insert(sym_idx, lit_vt.clone());
+                                    // `if x ~= "LIT" then return end` → x IS "LIT" after.
+                                    // Same rationale as the strip above: only the pushed
+                                    // version is position-aware, so the body-scope
+                                    // `type_filtered_symbols` entry is left out.
                                     self.push_type_filter_version(sym_idx, lit_vt, scope_idx, true);
                                 }
                             }
@@ -1112,10 +1111,17 @@ impl<'a> Analysis<'a> {
                             if is_eq {
                                 self.add_type_stripped_field(scope_idx, sym_idx, chain, lit_vt);
                             } else {
+                                // `if h.f ~= "LIT" then return end` → h.f IS "LIT" after.
+                                // These maps are keyed by the enclosing scope, which also
+                                // covers the code before the guard, so record where the
+                                // narrowing starts for readers that run after analysis.
+                                let target = NarrowTarget::Field(sym_idx, chain);
                                 self.narrowing.narrowed.entry(scope_idx).or_default()
-                                    .insert(NarrowTarget::Field(sym_idx, chain.clone()));
+                                    .insert(target.clone());
                                 self.narrowing.type_narrowed.entry(scope_idx).or_default()
-                                    .insert(NarrowTarget::Field(sym_idx, chain), lit_vt);
+                                    .insert(target.clone(), lit_vt);
+                                self.narrowing.narrow_from_offset.entry(scope_idx).or_default()
+                                    .insert(target, from_offset);
                             }
                         }
                     }
@@ -1132,7 +1138,7 @@ impl<'a> Analysis<'a> {
             }
             Expression::GroupedExpression(g) => {
                 if let Some(inner) = g.get_expression() {
-                    self.analyze_early_exit_guard(&inner, scope_idx);
+                    self.analyze_early_exit_guard(&inner, scope_idx, from_offset);
                 }
             }
             // `if issecretvalue(x) then return end` → x is not secret after
@@ -2804,6 +2810,12 @@ impl<'a> Analysis<'a> {
 
     /// Create a new symbol version narrowed to a specific type.
     /// Used for type() guard narrowing in short-circuit `and` expressions.
+    ///
+    /// The version carries a fixed `resolved_type` and no `type_source`, so
+    /// `is_narrowing_only_version` can't classify it by expression shape. A caller
+    /// whose narrowing is scoped to a control-flow region must follow up with
+    /// `Ir::mark_narrowing_only_version`; callers pushing a user assertion
+    /// (`---@cast`) leave it unmarked so branch merging still sees it.
     pub(super) fn push_type_narrowed_version(&mut self, sym_idx: SymbolIndex, narrowed_type: ValueType, scope_idx: ScopeIndex) {
         if !sym_idx.is_external() {
             let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
@@ -2986,12 +2998,13 @@ impl<'a> Analysis<'a> {
         None
     }
 
-    /// Given `lhs == rhs` (or `~=`), if one side is an identifier and the other is
-    /// a non-empty string literal, return the identifier and the corresponding
-    /// `ValueType::String(Some(...))`. Safe to fire alongside the `type()` guard path
-    /// because `type(x)` is a FunctionCall (not Identifier), so real `type()` guards
-    /// never match here. For cached type guards (`local t = type(x); if t == "string"`),
-    /// both paths fire but the type() guard's version is more specific and takes precedence.
+    /// Given `lhs == rhs` (or `~=`), if one side is an identifier and the other is a
+    /// non-empty string literal or a `true`/`false` literal, return the identifier and
+    /// the corresponding `ValueType::String(Some(..))` / `ValueType::Boolean(Some(..))`.
+    /// Safe to fire alongside the `type()` guard path because `type(x)` is a FunctionCall
+    /// (not Identifier), so real `type()` guards never match here. For cached type guards
+    /// (`local t = type(x); if t == "string"`), both paths fire but the type() guard's
+    /// version is more specific and takes precedence.
     fn extract_literal_eq_sides<'b>(lhs: &'b Expression<'_>, rhs: &'b Expression<'_>) -> Option<(&'b crate::ast::Identifier<'b>, ValueType)> {
         let (ident_expr, lit_expr) = Self::extract_ident_and_other(lhs, rhs)?;
         // Skip empty strings (used for completion triggers, not meaningful narrowing)
@@ -3000,6 +3013,16 @@ impl<'a> Analysis<'a> {
                 return None;
             }
             return Some((ident_expr, ValueType::String(Some(s))));
+        }
+        // `x == false` (the `false|T` failure-return idiom) and `x == true`.
+        // Boolean literals are exact on both sides of the guard: `Boolean(Some(b))`
+        // is a single runtime value, so filtering to it and stripping it are both
+        // sound. A plain `boolean` member is left alone by the strip (it still
+        // admits the other value).
+        if let Expression::Literal(lit) = lit_expr
+            && let Some(b) = lit.get_bool()
+        {
+            return Some((ident_expr, ValueType::Boolean(Some(b))));
         }
         None
     }
@@ -3911,9 +3934,10 @@ impl<'a> Analysis<'a> {
         let field_name = &names[1];
 
         let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope)?;
-        let sym = self.sym(sym_idx);
-        let version = sym.versions.last()?;
-        let expr_id = version.type_source?;
+        // The version the guard actually tests — not `versions.last()`, which can be a
+        // refinement pushed inside an earlier sibling branch and carries no `type_source`.
+        let ver_idx = self.ir.version_for_scope(sym_idx, parent_scope);
+        let expr_id = self.sym(sym_idx).versions.get(ver_idx)?.type_source?;
 
         // Get all table indices from the symbol's union type
         let table_indices = self.resolve_expr_to_tables(expr_id);

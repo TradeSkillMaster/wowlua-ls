@@ -267,6 +267,13 @@ pub struct NarrowingState {
     /// Cache for lazily-materialized type-narrowing versions.
     /// Maps (reference_scope, symbol) → version index pushed for that narrowing.
     pub type_narrows_version_cache: HashMap<(ScopeIndex, SymbolIndex), usize>,
+    /// Byte offset from which a `narrowed` / `type_narrowed` entry takes effect.
+    /// An early-exit guard (`if h.f ~= "X" then return end`) records its narrowing on
+    /// the *enclosing* scope, but it only applies to code that follows the guard.
+    /// Lowering consumes those maps in source order and needs no gate; readers that
+    /// run after analysis (diagnostics) must go through the `*_at` accessors.
+    /// Entries without an offset here cover their whole scope.
+    pub narrow_from_offset: HashMap<ScopeIndex, HashMap<NarrowTarget, u32>>,
     /// Symbols whose type-narrowing was overridden by a reassignment in a given scope.
     /// Checked (with scope-chain walk) to skip stale narrowing after assignment.
     /// Maps to the byte offset of the reassignment node.
@@ -333,6 +340,33 @@ impl NarrowingState {
 
     pub fn get_field_type_stripping(&self, scopes: &[Scope], sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
         scope_map_get(&self.type_stripped, scopes, &NarrowTarget::Field(sym_idx, chain.to_vec()), scope_idx)
+    }
+
+    /// True when `scope`'s entry for `key` has not taken effect at `at_offset`.
+    /// See `narrow_from_offset`.
+    fn narrow_pending_at(&self, scope: ScopeIndex, key: &NarrowTarget, at_offset: u32) -> bool {
+        self.narrow_from_offset.get(&scope)
+            .and_then(|m| m.get(key))
+            .is_some_and(|&from| at_offset < from)
+    }
+
+    /// `get_field_type_narrowing` for a reader that knows the byte offset it is
+    /// asking about; skips entries that only take effect later in the scope.
+    pub fn get_field_type_narrowing_at(&self, scopes: &[Scope], sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex, at_offset: u32) -> Option<&ValueType> {
+        let key = NarrowTarget::Field(sym_idx, chain.to_vec());
+        ancestor_scopes(scopes, scope_idx).find_map(|si| {
+            let vt = self.type_narrowed.get(&si)?.get(&key)?;
+            (!self.narrow_pending_at(si, &key, at_offset)).then_some(vt)
+        })
+    }
+
+    /// `is_field_chain_narrowed`, gated the same way as `get_field_type_narrowing_at`.
+    pub fn is_field_chain_narrowed_at(&self, scopes: &[Scope], sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex, at_offset: u32) -> bool {
+        let key = NarrowTarget::Field(sym_idx, chain.to_vec());
+        ancestor_scopes(scopes, scope_idx).any(|si| {
+            self.narrowed.get(&si).is_some_and(|s| s.contains(&key))
+                && !self.narrow_pending_at(si, &key, at_offset)
+        })
     }
 
     // NOTE: Field-chain lookups allocate a Vec<String> for the NarrowTarget key on
@@ -433,6 +467,12 @@ pub struct Ir {
     tables: Vec<TableInfo>,
     exprs: Vec<Expr>,
     pub block_scopes: Vec<(u32, u32, ScopeIndex)>,
+    /// `(symbol, version)` pairs whose version only refines the type for a
+    /// control-flow region. Versions pushed by `push_type_narrowed_version` carry a
+    /// fixed `resolved_type` and no `type_source`, so the expression-shape test in
+    /// [`Self::is_narrowing_only_version`] can't classify them; without this a guard
+    /// narrowing made inside a branch looks like a reassignment and escapes it.
+    narrowing_only_versions: HashSet<(SymbolIndex, usize)>,
     /// Class name → table: the file's own `@class`es layered over `ext.classes`.
     pub classes: layered_map::LayeredMap<TableIndex>,
     /// Alias name → type: the file's own `@alias`es layered over `ext.aliases`.
@@ -1859,10 +1899,17 @@ impl Ir {
         0
     }
 
+    /// Record that version `ver_idx` of `sym_idx` only refines the type for a
+    /// control-flow region. See `Ir::narrowing_only_versions`.
+    pub(super) fn mark_narrowing_only_version(&mut self, sym_idx: SymbolIndex, ver_idx: usize) {
+        self.narrowing_only_versions.insert((sym_idx, ver_idx));
+    }
+
     /// True when version `ver_idx` of `sym_idx` is a synthetic narrowing-only
-    /// version (OverloadNarrow, TypeFilter, CastRemove, or a StripNil/StripFalsy
-    /// that wraps a SymbolRef to the same symbol). These versions refine the
-    /// type for a control-flow region rather than reassigning the symbol.
+    /// version (OverloadNarrow, TypeFilter, CastRemove, a StripNil/StripFalsy
+    /// that wraps a SymbolRef to the same symbol, or one recorded in
+    /// `narrowing_only_versions`). These versions refine the type for a
+    /// control-flow region rather than reassigning the symbol.
     /// Mirrors the predicate used by the BranchMerge pass in build_ir.
     ///
     /// `sym_idx` is only consulted in the StripNil/StripFalsy arms — those
@@ -1873,6 +1920,9 @@ impl Ir {
     /// narrowing machinery and always refer back to their own symbol, so they
     /// are always narrowing-only regardless of `sym_idx`.
     pub fn is_narrowing_only_version(&self, sym_idx: SymbolIndex, ver_idx: usize) -> bool {
+        if self.narrowing_only_versions.contains(&(sym_idx, ver_idx)) {
+            return true;
+        }
         let sym = &self.symbols[sym_idx.val()];
         let Some(ts) = sym.versions[ver_idx].type_source else { return false; };
         match self.expr(ts) {
@@ -2508,12 +2558,16 @@ impl AnalysisResult {
         self.narrowing.get_type_stripping(&self.ir.scopes, sym_idx, scope_idx)
     }
 
-    pub fn get_field_type_narrowing(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
-        self.narrowing.get_field_type_narrowing(&self.ir.scopes, sym_idx, chain, scope_idx)
+    pub fn get_field_type_narrowing_at(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex, at_offset: u32) -> Option<&ValueType> {
+        self.narrowing.get_field_type_narrowing_at(&self.ir.scopes, sym_idx, chain, scope_idx, at_offset)
     }
 
     pub fn is_field_chain_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
         self.narrowing.is_field_chain_narrowed(&self.ir.scopes, sym_idx, fields, scope_idx)
+    }
+
+    pub fn is_field_chain_narrowed_at(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex, at_offset: u32) -> bool {
+        self.narrowing.is_field_chain_narrowed_at(&self.ir.scopes, sym_idx, fields, scope_idx, at_offset)
     }
 
     pub fn is_narrowing_overridden_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
@@ -2864,6 +2918,7 @@ impl<'a> Analysis<'a> {
                 tables: Vec::new(),
                 exprs: Vec::new(),
                 block_scopes: Vec::new(),
+                narrowing_only_versions: HashSet::default(),
                 classes,
                 aliases,
                 alias_string_literals,

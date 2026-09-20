@@ -168,9 +168,9 @@ impl DiagnosticPass for TypeMismatch {
                             }
                         }
                         if let Some((_, chain)) = analysis.ir.extract_field_chain(check.arg_expr) {
-                            if let Some(narrowed_vt) = analysis.get_field_type_narrowing(sym_idx, &chain, scope_idx) {
+                            if let Some(narrowed_vt) = analysis.get_field_type_narrowing_at(sym_idx, &chain, scope_idx, check.start) {
                                 arg_type = narrowed_vt.clone();
-                            } else if analysis.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                            } else if analysis.is_field_chain_narrowed_at(sym_idx, &chain, scope_idx, check.start) {
                                 arg_type = arg_type.strip_nil();
                                 if matches!(arg_type, ValueType::Nil) {
                                     continue;

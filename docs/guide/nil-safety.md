@@ -103,6 +103,40 @@ function handle(obj)
 end
 ```
 
+### Literal equality
+
+Comparing against a string or boolean literal splits a union that contains it. This
+covers the common "returns `false` on failure" idiom:
+
+```lua
+---@return false|number
+function parseId(text) end
+
+local id = parseId(input)
+if id == false then return end
+-- id: number for the rest of the function
+```
+
+When the type is a union containing the literal, both branches narrow — the
+then-branch to the literal, the else-branch to the remaining members. The literal
+may sit on either side of the comparison:
+
+```lua
+---@param status "active"|"paused"|"done"
+function render(status)
+    if "done" == status then
+        status -- "done"
+    else
+        status -- "active" | "paused"
+    end
+end
+```
+
+A value typed as plain `boolean` narrows in the then-branch only: `if flag == false`
+makes `flag` a `false` inside the branch, and leaves it `boolean` in the else.
+
+The narrowing starts at the guard — reads before it still see the full union.
+
 ### `while` post-conditions
 
 After a `while not x do` loop, the LS knows `x` is non-nil (since the loop only exits when the condition is false):

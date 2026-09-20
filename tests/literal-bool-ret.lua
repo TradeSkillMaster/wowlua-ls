@@ -2,6 +2,7 @@
 -- Tests for literal boolean return type narrowing on union discriminators.
 -- When a union type A | B has a method where A:Method() returns literal `false`
 -- and B:Method() returns literal `true`, the LS narrows the union in branches.
+-- Also covers direct `x == false` / `x == true` equality narrowing.
 
 ---@class AuctionRow
 ---@field rowId number
@@ -237,4 +238,142 @@ local function test_early_exit_field_access(holder)
     if not row:IsSubRow() then return end
     local r = row
     --    ^ hover: (local) r: AuctionSubRow
+end
+
+-- ── `x == false` / `x == true` equality narrowing ──────────────────────────
+-- The `false | T` failure-return idiom: comparing against a boolean literal
+-- narrows the union the same way a string literal comparison does. `boolean`
+-- has exactly two inhabitants, so the tested literal is exact on both sides.
+
+---@return false|number
+local function parseId() return 1 end
+
+---@return true|string
+local function loadName() return "n" end
+
+---@param n number
+local function takesNumber(n) end
+
+local function test_bool_eq_branches()
+    local id = parseId()
+    if id == false then
+        local f = id
+        --    ^ hover: (local) f: false
+    else
+        local n = id
+        --    ^ hover: (local) n: number
+    end
+end
+
+local function test_bool_neq_branches()
+    local id = parseId()
+    if id ~= false then
+        local n = id
+        --    ^ hover: (local) n: number
+    else
+        local f = id
+        --    ^ hover: (local) f: false
+    end
+end
+
+local function test_true_literal_branches()
+    local name = loadName()
+    if name == true then
+        local t = name
+        --    ^ hover: (local) t: true
+    else
+        local s = name
+        --    ^ hover: (local) s: string
+    end
+end
+
+-- Early exit, both operand orders (`false == x` reads as a Yoda comparison).
+local function test_bool_early_exit()
+    local id = parseId()
+    if id == false then return end
+    local n = id
+    --    ^ hover: (local) n: number
+end
+
+local function test_bool_early_exit_reversed()
+    local id = parseId()
+    if false == id then return end
+    local n = id
+    --    ^ hover: (local) n: number
+end
+
+-- The strip only applies past the guard: a read *before* it still sees `false`.
+local function test_bool_early_exit_not_retroactive()
+    local id = parseId()
+    takesNumber(id)
+    --          ^ diag: type-mismatch
+    if id == false then return end
+    takesNumber(id)
+end
+
+---@param b false
+local function takesFalse(b) end
+
+-- Same for the `~=` direction, which filters to the literal past the guard.
+local function test_bool_neq_early_exit_not_retroactive()
+    local id = parseId()
+    takesFalse(id)
+    --         ^ diag: type-mismatch
+    if id ~= false then return end
+    takesFalse(id)
+end
+
+-- A plain `boolean` narrows to the tested literal in the then-branch. The strip
+-- leaves the else-branch alone: `boolean` is not the literal, so nothing is
+-- removed (see `extract_literal_eq_sides`).
+---@param flag boolean
+local function test_plain_boolean(flag)
+    if flag == false then
+        local f = flag
+        --    ^ hover: (local) f: false
+    else
+        local t = flag
+        --    ^ hover: (local) t: boolean
+    end
+end
+
+-- The exiting branch may read the guarded symbol (log the failure value, then
+-- return). That in-branch read pushes a narrowed version, which must stay inside
+-- the branch instead of overriding the post-guard type.
+---@param msg string
+local function logMessage(msg) end
+
+local function test_bool_early_exit_with_branch_read()
+    local id = parseId()
+    if id == false then
+        logMessage("bad id: " .. tostring(id))
+        return
+    end
+    local n = id
+    --    ^ hover: (local) n: number
+    takesNumber(id)
+end
+
+-- ── Field chains ───────────────────────────────────────────────────────────
+
+---@class BoolEqHolder
+---@field id false|number
+local BoolEqHolder = {}
+
+---@param h BoolEqHolder
+local function test_field_bool_early_exit(h)
+    takesNumber(h.id)
+    --          ^ diag: type-mismatch
+    if h.id == false then return end
+    takesNumber(h.id)
+end
+
+-- The `~=` direction filters the field to the literal, and likewise only past
+-- the guard.
+---@param h BoolEqHolder
+local function test_field_bool_neq_early_exit(h)
+    takesFalse(h.id)
+    --         ^ diag: type-mismatch
+    if h.id ~= false then return end
+    takesFalse(h.id)
 end

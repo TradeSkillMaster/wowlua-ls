@@ -907,6 +907,7 @@ impl<'a> Analysis<'a> {
                             let combined = narrowed.filter_type_with(&guard, &|idx| self.table(idx).enum_kind);
                             self.push_type_narrowed_version(symbol_idx, combined, scope_idx);
                             let ver = self.sym(symbol_idx).versions.len() - 1;
+                            self.ir.mark_narrowing_only_version(symbol_idx, ver);
                             self.narrowing.type_narrows_version_cache.insert(cache_key, ver);
                             (ver, None)
                         }
@@ -918,6 +919,7 @@ impl<'a> Analysis<'a> {
                         } else {
                             self.push_type_narrowed_version(symbol_idx, narrowed, scope_idx);
                             let ver = self.sym(symbol_idx).versions.len() - 1;
+                            self.ir.mark_narrowing_only_version(symbol_idx, ver);
                             self.narrowing.type_narrows_version_cache.insert(cache_key, ver);
                             (ver, None)
                         }

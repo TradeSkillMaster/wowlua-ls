@@ -321,7 +321,7 @@ local function testMethodHoverOnNarrowedType(parent)
     ---@diagnostic disable-next-line: type-mismatch
     if TypeChecker.IsType(parent, "ScrollChild") then
         parent:_DoScroll(1)
-        --      ^ hover: (method) function ScrollChild:_DoScroll(dir)  def: local
+        --      ^ hover: (method) function ScrollChild:_DoScroll(dir)  def: local  diag: access-private
     end
 end
 
