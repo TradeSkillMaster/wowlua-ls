@@ -141,7 +141,7 @@ Only string-literal arguments are detected; dynamic names (e.g.
 ::: info
 Currently, only functions defined in API stubs are detected as `@creates-global`
 sources. The annotation is parsed on workspace-defined functions but their calls
-are not yet scanned for created globals.
+are not scanned for created globals.
 :::
 
 ### `@generates-events N [Field]`

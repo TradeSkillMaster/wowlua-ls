@@ -8,11 +8,13 @@
 //! secret-producing API is conditional on game state, so "may be" is the only
 //! secrecy there is.
 //!
-//! Every rule below is tagged **VERIFIED** (stated by Blizzard, as quoted on
-//! warcraft.wiki.gg `Secret_Values` and `Patch_12.0.0/Planned_API_changes`) or
-//! **ASSUMED** (undocumented; confirm in-game by feeding `secretwrap(...)` values
-//! to the operation from a tainted addon). Changing a rule here is the only edit
-//! needed to change what propagates and what is diagnosed.
+//! Every rule below is tagged **VERIFIED** — either stated by Blizzard (quoted
+//! from warcraft.wiki.gg `Secret_Values` and `Patch_12.0.0/Planned_API_changes`)
+//! or confirmed in-game with the patch cited, by feeding `secretwrap(...)` values
+//! to the operation from a tainted execution path — or **ASSUMED** (neither
+//! documented nor confirmed; confirm it the same way before relying on it).
+//! Changing a rule here is the only edit needed to change what propagates and
+//! what is diagnosed.
 //!
 //! Facts the engine needs no rule constant for: storing a secret in a table
 //! value, a local, or an upvalue, returning it, and passing it to a Lua function
@@ -100,9 +102,12 @@ pub const INDEX: SecretRule = SecretRule::Error;
 /// they were functions").
 pub const CALL: SecretRule = SecretRule::Error;
 
-/// A secret start, limit, or step of a numeric `for` loop. ASSUMED error: the
-/// loop compares its counter to the limit on every iteration (and the step to
-/// zero), which the comparison rule forbids.
+/// A secret start, limit, or step of a numeric `for` loop. VERIFIED in-game for
+/// the limit (12.1.0: `for i = 1, secretwrap(3) do end` errors), which the loop
+/// compares its counter against on every iteration. The start and the step reach
+/// the same numeric conversion the loop applies to all three values ("attempt to
+/// perform numeric conversion on a secret number value"), and the step is
+/// compared against zero to pick the loop's direction.
 pub const NUMERIC_FOR_BOUND: SecretRule = SecretRule::Error;
 
 /// A truth test that Lua forces on a value: `if`/`elseif`/`while`/`repeat`
@@ -114,8 +119,8 @@ pub fn truth_test_rule(t: &ValueType) -> SecretRule {
 }
 
 /// Using a secret as a table key. VERIFIED error when storing (`t[secret] = v`,
-/// "not allowed to store secret values as keys in tables"); ASSUMED error on
-/// read (`t[secret]`), which would otherwise reveal the value.
+/// "not allowed to store secret values as keys in tables"). VERIFIED in-game
+/// (12.1.0: `t[secretwrap("k")]` errors) when reading.
 pub const TABLE_KEY: SecretRule = SecretRule::Error;
 
 /// Passing a secret to a C API parameter with the given `SecretArguments` policy
@@ -125,8 +130,9 @@ pub fn argument_rule(policy: Option<SecretArgsPolicy>) -> SecretRule {
         // VERIFIED: "will never accept secret values, even from untainted callers".
         Some(SecretArgsPolicy::NotAllowed) => SecretRule::Error,
         // VERIFIED accepted from tainted callers ("resulting in secret strings"
-        // for string.format/concat/join); ASSUMED that every such API's results
-        // inherit the secrecy of its arguments.
+        // for string.format/concat/join), and in-game (12.1.0) that the results
+        // inherit the secrecy of the arguments: `C_Spell.GetSpellName(secretwrap(133))`
+        // is secret. Applied to every API with this policy on that evidence.
         Some(SecretArgsPolicy::AllowedWhenTainted) => SecretRule::Propagate,
         // VERIFIED (12.1.0) rejected for addon code: `UnitExists(secretwrap("player"))`
         // raises "bad argument #1 to 'UnitExists' (Usage: local result =

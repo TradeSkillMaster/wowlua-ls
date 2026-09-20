@@ -31,12 +31,12 @@ Secrecy
 |---|---|---|
 | Arithmetic: `+ - * / % ^`, unary `-` | Error | `secret-arithmetic` |
 | Ordering: `< > <= >=` | Error | `secret-comparison` |
-| Start, limit, or step of a numeric `for` loop (`for i = 1, hp do`)\* | Error | `secret-comparison` |
+| Start, limit, or step of a numeric `for` loop (`for i = 1, hp do`) | Error | `secret-comparison` |
 | `==` / `~=` with a value that may have the same type | Error | `secret-comparison` |
 | `==` / `~=` with `nil` or a value of another type | Allowed | |
 | Testing a secret **boolean** (`if`, `while`, `until`, `not`, left side of `and` / `or`) | Error | `secret-condition` |
 | Testing any other secret (`if name then`) | Allowed | |
-| Table key: `t[secret] = v`, `{ [secret] = v }`, `t[secret]`\* | Error | `secret-table-key` |
+| Table key: `t[secret] = v`, `{ [secret] = v }`, `t[secret]` | Error | `secret-table-key` |
 | Argument to an API that never accepts secrets (e.g. `C_ChatInfo.SendAddonMessage`) | Error | `secret-argument` |
 | Argument to an API that accepts secrets only from Blizzard code (`UnitExists`, `C_Item.GetItemNameByID`, most of the API) | Error | `secret-argument` |
 | Argument to `math.*` | Error | `secret-argument` |
@@ -47,7 +47,7 @@ Secrecy
 | `a and b`, `a or b` | Allowed; the result is secret only if the operand it returns is (`UnitName(unit) and "named" or "unnamed"` is plain) | |
 | `type(secret)` | Allowed; returns the real type | |
 
-Rules marked \* are assumed; the rest are documented by Blizzard. Other APIs documented to accept secrets from addon code are also assumed to return secret results when given secrets.
+Other APIs that accept secrets from addon code (`string.format`, formatters, curves, …) return secret results when given secrets.
 
 Most of the API accepts secret values only from Blizzard's own code: calling one from an addon raises `Secret values are only allowed during untainted execution for this argument`. The builtins that exist to work with secrets — `issecretvalue`, `canaccessvalue`, `canaccessallvalues`, `hasanysecretvalues`, `issecrettable`, `canaccesstable`, `secretwrap`, `secretunwrap`, `scrub`, `scrubsecretvalues`, `mapvalues`, `dumpobject`, `securecallmethod`, `Mixin`, and `CreateFromMixins` — take them from anywhere.
 
@@ -157,7 +157,6 @@ Limitations:
 
 - Structure fields (`AuraData.duration`) clear by what the structure depends on, not by which unit, spell, or aura it describes — nor by when it was obtained, so a structure cached from an earlier frame reads as plain inside a guard.
 - Blizzard lets individual spells be flagged "always secret", overriding restrictions; restriction guards can't see these flags.
-- Assumed, not documented: `InCombatLockdown()` is the `Combat` restriction, `SecretWhenEncounterEvent` depends on the `Encounter` restriction, and the communication-restricted maps of `SecretInChatMessagingLockdown` are the `Chat` restriction.
 - `IsAddOnRestrictionActive` always returns `false` while `ADDON_RESTRICTION_STATE_CHANGED` is being dispatched.
 
 Mark your own context guards with [`@secret-clears`, `@secret-restriction-guard` and `@secret-satisfies`](/reference/annotations#secret-value-annotations).
@@ -199,5 +198,5 @@ Every restriction can be forced from anywhere, so each report can be reproduced 
 
 - A guard helper without `@secret-guard` (or `@secret-clears` / `@secret-restriction-guard`) isn't recognized. Annotate it.
 - A secret stored through a local or an expression (`ns.label = name .. "!"`) and read in another file loses its secrecy.
-- A widget that received a secret doesn't make its getters secret yet.
-- Some restrictions depend on game state the language server can't see (a spell cast by the player, for instance), so a few reports are conservative. Suppress those with `---@diagnostic disable-next-line: secret-comparison` (or the relevant code).
+- Widget getters (`GetText`, `GetValue`, …) are typed as plain values even after the widget was given a secret, so operations on their results aren't reported.
+- Secrecy that depends on runtime state (which spell is being cast, for instance) is reported as if the value were secret. Suppress a report you know is safe with `---@diagnostic disable-next-line: secret-comparison` (or the relevant code).
