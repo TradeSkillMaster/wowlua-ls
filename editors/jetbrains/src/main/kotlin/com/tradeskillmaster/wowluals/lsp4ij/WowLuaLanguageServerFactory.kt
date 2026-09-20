@@ -6,7 +6,9 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import com.redhat.devtools.lsp4ij.LanguageServerEnablementSupport
 import com.redhat.devtools.lsp4ij.LanguageServerFactory
+import com.redhat.devtools.lsp4ij.LanguageServersRegistry
 import com.redhat.devtools.lsp4ij.client.features.LSPClientFeatures
+import com.redhat.devtools.lsp4ij.client.features.LSPSelectionRangeFeature
 import com.redhat.devtools.lsp4ij.client.features.LSPSemanticTokensFeature
 import com.redhat.devtools.lsp4ij.server.ProcessStreamConnectionProvider
 import com.redhat.devtools.lsp4ij.server.StreamConnectionProvider
@@ -37,7 +39,21 @@ class WowLuaLanguageServerFactory : LanguageServerFactory, LanguageServerEnablem
     }
 
     override fun createClientFeatures(): LSPClientFeatures =
-        LSPClientFeatures().setSemanticTokensFeature(object : LSPSemanticTokensFeature() {
+        LSPClientFeatures().setSelectionRangeFeature(object : LSPSelectionRangeFeature() {
+            // Advertising `selectionRange` makes LSP4IJ switch IntelliJ's own word
+            // selectioner off for every file it maps to us, so double-click/Ctrl-W
+            // then selects whatever we answer. Its check for that skips the
+            // `isFileSupported` guard its own selection handler applies, so an
+            // in-memory file whose *name* matches our patterns loses word selection
+            // with nothing to replace it. Concretely: IntelliJ 2026.2 injects a
+            // ```lua markdown fence as a TextMate fragment named `<host>.lua`
+            // (`TextMateFallbackLanguageProvider` + the extension-aware
+            // `startInjecting`), and a double-click in a README fence selected the
+            // whole block. Apply the same guard here.
+            override fun isSelectionRangeSupported(file: PsiFile): Boolean =
+                LanguageServersRegistry.getInstance().isFileSupported(file) &&
+                    super.isSelectionRangeSupported(file)
+        }).setSemanticTokensFeature(object : LSPSemanticTokensFeature() {
             // The server emits the non-standard `builtinConstant` token type for
             // boolean / nil literals inside `expression<>` strings; map it to the
             // IDE's constant color (IntelliJ only maps the standard LSP token types).

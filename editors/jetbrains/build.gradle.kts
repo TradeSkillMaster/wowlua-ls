@@ -1,3 +1,5 @@
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+
 plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "2.1.20"
@@ -23,8 +25,12 @@ dependencies {
         // dependency — LSP4IJ loads its own copy in its plugin classloader and a
         // second copy causes ClassCastExceptions.
         plugin("com.redhat.devtools.lsp4ij:0.20.1")
+        // Test-only: the markdown PSI the editor-behavior tests run against.
+        bundledPlugin("org.intellij.plugins.markdown")
+        testFramework(TestFrameworkType.Platform)
         pluginVerifier()
     }
+    testImplementation("junit:junit:4.13.2")
 }
 
 intellijPlatform {

@@ -38,6 +38,39 @@ pub(super) fn folding_ranges_for_doc(doc: &Document) -> Option<Vec<FoldingRange>
     }
 }
 
+/// Compute selection ranges (double-click / expand-selection units) for a
+/// document, accounting for unsaved edits.
+///
+/// Answering nothing here is not a way to hand selection back to the editor:
+/// JetBrains/LSP4IJ decides whether to leave IntelliJ's own word selectioner
+/// enabled from the *capability* alone (see the `LSPSelectionRangeFeature` guard
+/// in the plugin), never from this response, and normalizes a `null` result to an
+/// empty list before it looks at one. The empty list below is simply "we have
+/// nothing to say about a document we never parsed".
+///
+/// Like folding ranges, these are *spans*, so a stale tree can't be line-shifted
+/// into place; re-parse `pending_text` when `didChange` has left unanalyzed text
+/// behind so the ranges match what the editor is showing.
+pub(super) fn selection_ranges_for_doc(doc: &Document, positions: &[Position]) -> Vec<SelectionRange> {
+    use crate::lsp::selection_range::{compute_selection_ranges, compute_toc_selection_ranges};
+    let pending = doc.pending_text.as_deref();
+    // `.toc` files have no Lua syntax tree; select over the TOC line structure.
+    if let Some(toc) = doc.toc.as_ref() {
+        return match pending {
+            Some(text) => compute_toc_selection_ranges(&crate::toc::parse_toc(text), text, positions),
+            None => compute_toc_selection_ranges(toc, &doc.text, positions),
+        };
+    }
+    // A cached tree is what marks this as a document we parse as Lua — documents
+    // held without one (an unanalyzed stub, a file type we don't parse) get no
+    // ranges rather than a Lua parse of arbitrary text.
+    match (pending, doc.tree.as_ref()) {
+        (Some(text), Some(_)) => compute_selection_ranges(&parse_lua(text), text, positions),
+        (None, Some(tree)) => compute_selection_ranges(tree, &doc.text, positions),
+        (_, None) => Vec::new(),
+    }
+}
+
 /// Convert a list of definition results into LSP `Location`s. Local results
 /// resolve against the current document; external results against their source
 /// file (or embedded stub content). Identical `(uri, range)` pairs are
@@ -800,27 +833,9 @@ pub(super) fn handle_request(
             if let Ok((id, params)) = cast_req::<request::SelectionRangeRequest>(req) {
                 let uri = params.text_document.uri;
                 let positions = params.positions;
-                let result: Option<Vec<SelectionRange>> = documents.get(&uri.to_string())
-                    .and_then(|doc| {
-                        // `.toc` files have no Lua syntax tree; select over the TOC
-                        // line structure instead. Without this the handler returns
-                        // no range and JetBrains/LSP4IJ (which disables native word
-                        // selection) falls back to selecting the whole file on a
-                        // double-click.
-                        if let Some(toc) = doc.toc.as_ref() {
-                            return Some(crate::lsp::selection_range::compute_toc_selection_ranges(
-                                toc,
-                                &doc.text,
-                                &positions,
-                            ));
-                        }
-                        let tree = doc.tree.as_ref()?;
-                        Some(crate::lsp::selection_range::compute_selection_ranges(
-                            tree,
-                            &doc.text,
-                            &positions,
-                        ))
-                    });
+                let result: Vec<SelectionRange> = documents.get(&uri.to_string())
+                    .map(|doc| selection_ranges_for_doc(doc, &positions))
+                    .unwrap_or_default();
                 send_response(connection, id, &result);
             }
         }
@@ -2034,5 +2049,88 @@ mod definition_response_tests {
         let r = origin_selection_range(&tree, 6, &numbers).expect("origin range");
         assert_eq!(r.start, Position { line: 0, character: 6 });
         assert_eq!(r.end, Position { line: 0, character: 12 });
+    }
+}
+
+#[cfg(test)]
+mod selection_range_tests {
+    use super::*;
+
+    fn doc(text: &str, pending: Option<&str>, parse: bool) -> Document {
+        Document {
+            text: text.to_string(),
+            pending_text: pending.map(str::to_string),
+            tree: parse.then(|| parse_lua(text)),
+            analysis: None,
+            toc: None,
+            plugin_diags: Vec::new(),
+            dirty: false,
+            ws_generation: 0,
+            pending_line_delta: None,
+            pending_edit_map: None,
+            cached_diagnostics: None,
+            stub_open_seq: 0,
+        }
+    }
+
+    fn toc_doc(text: &str, pending: Option<&str>) -> Document {
+        Document {
+            text: text.to_string(),
+            pending_text: pending.map(str::to_string),
+            tree: None,
+            analysis: None,
+            toc: Some(crate::toc::parse_toc(text)),
+            plugin_diags: Vec::new(),
+            dirty: false,
+            ws_generation: 0,
+            pending_line_delta: None,
+            pending_edit_map: None,
+            cached_diagnostics: None,
+            stub_open_seq: 0,
+        }
+    }
+
+    // A document held without a cached tree is one we don't parse as Lua (an
+    // unanalyzed stub, a file type we don't handle): it must yield no ranges
+    // rather than ranges from a Lua parse of whatever text it holds.
+    #[test]
+    fn unparsed_document_yields_no_ranges() {
+        let d = doc("not lua\n", None, false);
+        assert!(selection_ranges_for_doc(&d, &[Position { line: 0, character: 2 }]).is_empty());
+        let edited = doc("not lua\n", Some("still not lua\n"), false);
+        assert!(selection_ranges_for_doc(&edited, &[Position { line: 0, character: 2 }]).is_empty());
+    }
+
+    // Unanalyzed `didChange` text shifts every span, so the cached tree/TOC line
+    // structure can't be reused: re-parse `pending_text` (as folding ranges do) or
+    // a double-click lands on the pre-edit token.
+    #[test]
+    fn pending_edits_are_reparsed() {
+        let d = doc("local alpha = 1\n", Some("-- note\nlocal alpha = 1\n"), true);
+        // `alpha` on the second line of the *pending* text.
+        let ranges = selection_ranges_for_doc(&d, &[Position { line: 1, character: 8 }]);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(
+            ranges[0].range,
+            Range {
+                start: Position { line: 1, character: 6 },
+                end: Position { line: 1, character: 11 },
+            },
+        );
+    }
+
+    #[test]
+    fn toc_pending_edits_are_reparsed() {
+        let d = toc_doc("## Title: Foo\n", Some("## Interface: 110000\n## Title: Foo\n"));
+        // `Title` on the second line of the *pending* text.
+        let ranges = selection_ranges_for_doc(&d, &[Position { line: 1, character: 5 }]);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(
+            ranges[0].range,
+            Range {
+                start: Position { line: 1, character: 3 },
+                end: Position { line: 1, character: 8 },
+            },
+        );
     }
 }
