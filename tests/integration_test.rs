@@ -2595,6 +2595,46 @@ fn flavor_filter_toc_header_restrict() {
     });
 }
 
+// `ExcludeLoadGameType`, the inverse of `AllowLoadGameType`, in both the per-line
+// and header positions.
+#[test]
+fn flavor_filter_toc_exclude_per_line_retail() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/toc-exclude/Retail.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_toc_exclude_per_line_classic() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/toc-exclude/Classic.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_toc_exclude_header() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/toc-exclude-header/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+// Excluding one game type must not take the others sharing its flavor bit with
+// it (`mists` vs the rest of Classic).
+#[test]
+fn flavor_filter_toc_exclude_partial() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/toc-exclude-partial/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
 // Flavor-aware `deprecated`: a retail-sourced `@deprecated` API that is still
 // live on a flavor the addon targets must not be flagged there.
 #[test]

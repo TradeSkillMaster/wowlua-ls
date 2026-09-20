@@ -1,0 +1,4 @@
+## Interface: 110002, 11503
+## Title: MyAddon
+## ExcludeLoadGameType: mainline
+test.lua

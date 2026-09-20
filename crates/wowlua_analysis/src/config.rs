@@ -977,8 +977,9 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
                 }
             };
 
-            // Parse ## AllowLoadGameType header and file listings
+            // Parse ## Allow/ExcludeLoadGameType headers and file listings
             let mut allow_load_mask = 0u8;
+            let mut exclude_load_mask = 0u8;
             let mut file_lines: Vec<(PathBuf, u8)> = Vec::new();
 
             for line in entry.text.lines() {
@@ -988,12 +989,14 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
                         let rest = rest.trim_start();
                         if let Some(value) = rest.strip_prefix("AllowLoadGameType:") {
                             allow_load_mask = crate::flavor::parse_game_type_list(value);
+                        } else if let Some(value) = rest.strip_prefix("ExcludeLoadGameType:") {
+                            exclude_load_mask = crate::flavor::parse_excluded_flavors(value);
                         }
                     }
                     continue;
                 }
 
-                // Parse optional [AllowLoadGameType ...] directive on file lines
+                // Parse optional [Allow/ExcludeLoadGameType ...] directives on file lines
                 let (file_str, line_flavor) = parse_file_line_directives(line);
 
                 let file_str = file_str.trim();
@@ -1006,12 +1009,12 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
                 expand_toc_path_variables(dir, &normalized, line_flavor, &mut file_lines);
             }
 
-            // Intersect TOC suffix flavor with AllowLoadGameType header
-            let effective_toc_flavor = if allow_load_mask != 0 {
-                toc_flavor & allow_load_mask
-            } else {
-                toc_flavor
-            };
+            // Intersect TOC suffix flavor with the Allow/ExcludeLoadGameType headers
+            let effective_toc_flavor = crate::flavor::apply_load_game_type(
+                toc_flavor,
+                allow_load_mask,
+                exclude_load_mask,
+            );
 
             if effective_toc_flavor == 0 {
                 continue;
@@ -1019,11 +1022,7 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
 
             // Accumulate per-file flavors (union across TOCs that list the file)
             for (path, line_flavor) in file_lines {
-                let effective = if line_flavor != 0 {
-                    effective_toc_flavor & line_flavor
-                } else {
-                    effective_toc_flavor
-                };
+                let effective = effective_toc_flavor & line_flavor;
                 if effective != 0 {
                     *file_flavors.entry(path).or_insert(0) |= effective;
                 }
@@ -1040,6 +1039,12 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
 /// Expand `[Family]` and `[Game]` variables in a TOC file path. Each expansion
 /// value maps to a flavor mask. For paths without variables, emits a single entry.
 /// Only includes expansions whose resolved file exists on disk.
+///
+/// `line_flavor` is the set of flavors the line loads on, as returned by
+/// `parse_file_line_directives`: `FLAVOR_ALL` when the line carries no game-type
+/// condition, 0 when its conditions leave nothing. It is intersected with each
+/// expansion's own flavor, so passing 0 to mean "unrestricted" would silently
+/// drop every expansion.
 fn expand_toc_path_variables(
     dir: &Path,
     path_str: &str,
@@ -1053,7 +1058,7 @@ fn expand_toc_path_variables(
             let expanded = format!("{}{}{}", prefix, value, suffix);
             let absolute = dir.join(&expanded);
             if absolute.exists() {
-                let combined = if line_flavor != 0 { line_flavor & flavor } else { flavor };
+                let combined = line_flavor & flavor;
                 if combined != 0 {
                     out.push((absolute, combined));
                 }
@@ -1066,7 +1071,7 @@ fn expand_toc_path_variables(
             let expanded = format!("{}{}{}", prefix, value, suffix);
             let absolute = dir.join(&expanded);
             if absolute.exists() {
-                let combined = if line_flavor != 0 { line_flavor & flavor } else { flavor };
+                let combined = line_flavor & flavor;
                 if combined != 0 {
                     out.push((absolute, combined));
                 }
@@ -1079,16 +1084,22 @@ fn expand_toc_path_variables(
 }
 
 /// Parse inline `[...]` directives out of a TOC file line. Load *conditions*
-/// (`[AllowLoadGameType ...]`, `[AllowLoadTextLocale ...]`, `[AllowLoad ...]`, …)
-/// may appear before or after the path — anywhere on the line — and are stripped;
-/// only `AllowLoadGameType` contributes to the returned flavor mask (other
-/// conditions restrict on locale/environment, not flavor). Path *variables*
-/// (`[Family]`, `[Game]`, `[TextLocale]`) are part of the path and are kept for
-/// later expansion. Returns `(remaining_file_path, game_type_mask)`; mask is 0 if
-/// no `AllowLoadGameType` condition is present.
+/// (`[AllowLoadGameType ...]`, `[ExcludeLoadGameType ...]`, `[AllowLoadTextLocale
+/// ...]`, `[AllowLoad ...]`, …) may appear before or after the path — anywhere on
+/// the line — and are stripped; only the two game-type conditions contribute to
+/// the returned flavor mask (the others restrict on locale/environment, not
+/// flavor). Path *variables* (`[Family]`, `[Game]`, `[TextLocale]`) are part of
+/// the path and are kept for later expansion. Returns `(remaining_file_path,
+/// flavors_the_line_loads_on)`; the mask is `FLAVOR_ALL` when no game-type
+/// condition is present and 0 when the conditions exclude every flavor.
 fn parse_file_line_directives(line: &str) -> (String, u8) {
     let mut path = String::new();
-    let mut flavor_mask = 0u8;
+    let mut allow_mask = 0u8;
+    // Exclusion names accumulate: two separate conditions on one line exclude the
+    // union of their game types, which `parse_excluded_flavors` can only see if
+    // it resolves them together (a flavor bit survives until every type behind it
+    // is listed, so OR-ing two independently parsed masks under-excludes).
+    let mut exclude_names = String::new();
     let mut rest = line;
 
     while let Some(bracket_start) = rest.find('[') {
@@ -1104,16 +1115,23 @@ fn parse_file_line_directives(line: &str) -> (String, u8) {
         } else {
             // A load condition — strip it, keeping the surrounding path text.
             path.push_str(&rest[..bracket_start]);
-            if keyword == "AllowLoadGameType" {
-                let args = directive[keyword.len()..].trim_start();
-                flavor_mask |= crate::flavor::parse_game_type_list(args);
+            let args = directive[keyword.len()..].trim_start();
+            match keyword {
+                "AllowLoadGameType" => allow_mask |= crate::flavor::parse_game_type_list(args),
+                "ExcludeLoadGameType" => {
+                    exclude_names.push(' ');
+                    exclude_names.push_str(args);
+                }
+                _ => {}
             }
         }
         rest = &rest[bracket_end + 1..];
     }
     path.push_str(rest);
 
-    (path.trim().to_string(), flavor_mask)
+    let exclude_mask = crate::flavor::parse_excluded_flavors(&exclude_names);
+    let flavors = crate::flavor::apply_load_game_type(crate::flavor::FLAVOR_ALL, allow_mask, exclude_mask);
+    (path.trim().to_string(), flavors)
 }
 
 /// Parse `.toc` files in a directory for `SavedVariables` and
@@ -2414,6 +2432,31 @@ NormalFile.lua
     }
 
     #[test]
+    fn test_toc_exclude_load_game_type() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_exclude");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // `ExcludeLoadGameType` is the inverse of `AllowLoadGameType`, both as a
+        // header and as a per-line directive (space-separated, as Blizzard writes it).
+        std::fs::write(dir.join("MyAddon.toc"), "\
+## ExcludeLoadGameType: vanilla
+Everywhere.lua
+RetailOnly.lua [ExcludeLoadGameType classic]
+").unwrap();
+
+        let result = parse_toc_files(&dir);
+        // Header excludes classic_era → retail + classic
+        assert_eq!(*result.file_flavors.get(&dir.join("Everywhere.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_CLASSIC);
+        // Per-line `classic` also covers classic_era → only retail is left
+        assert_eq!(*result.file_flavors.get(&dir.join("RetailOnly.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_toc_suffix_allow_load_game_type() {
         // The wiki-documented syntax lists the directive AFTER the file path:
         //   File.lua [AllowLoadGameType mainline]
@@ -2548,7 +2591,8 @@ UI\\Panel.lua
     #[test]
     fn test_parse_file_line_directives() {
         let parse = parse_file_line_directives;
-        assert_eq!(parse("Normal.lua"), ("Normal.lua".to_string(), 0));
+        // No game-type condition: the line loads on every flavor.
+        assert_eq!(parse("Normal.lua"), ("Normal.lua".to_string(), crate::flavor::FLAVOR_ALL));
         // Prefix form (directive before the path)
         assert_eq!(parse("[AllowLoadGameType mainline] Retail.lua"),
                    ("Retail.lua".to_string(), crate::flavor::FLAVOR_RETAIL));
@@ -2567,16 +2611,35 @@ UI\\Panel.lua
         assert_eq!(parse("Locale/[Family].lua [AllowLoadGameType mainline]"),
                    ("Locale/[Family].lua".to_string(), crate::flavor::FLAVOR_RETAIL));
 
-        // Non-flavor conditions are stripped but contribute no flavor mask, in
-        // either position.
+        // `ExcludeLoadGameType` is the inverse: everything but the listed types.
+        // Blizzard's own TOCs separate these with spaces rather than commas.
+        // `vanilla tbc wrath` still loads on Cata and Mists, so Classic survives.
+        assert_eq!(parse("TableBuilder.lua [ExcludeLoadGameType vanilla tbc wrath]"),
+                   ("TableBuilder.lua".to_string(),
+                    crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_CLASSIC));
+        // Excluding one of the game types sharing the Classic bit changes nothing.
+        assert_eq!(parse("PetCollection.lua [ExcludeLoadGameType mists]"),
+                   ("PetCollection.lua".to_string(), crate::flavor::FLAVOR_ALL));
+        assert_eq!(parse("[ExcludeLoadGameType mainline] NoRetail.lua"),
+                   ("NoRetail.lua".to_string(),
+                    crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA));
+        // Both conditions on one line: the exclusion is applied to the allow-list.
+        assert_eq!(parse("Both.lua [AllowLoadGameType classic] [ExcludeLoadGameType vanilla]"),
+                   ("Both.lua".to_string(), crate::flavor::FLAVOR_CLASSIC));
+        // Two exclusions on one line resolve together, not as separate masks.
+        assert_eq!(parse("Split.lua [ExcludeLoadGameType vanilla tbc] [ExcludeLoadGameType wrath cata mists]"),
+                   ("Split.lua".to_string(), crate::flavor::FLAVOR_RETAIL));
+
+        // Non-flavor conditions are stripped but don't restrict the flavor mask,
+        // in either position.
         assert_eq!(parse("Strings.lua [AllowLoadTextLocale enUS, frFR]"),
-                   ("Strings.lua".to_string(), 0));
+                   ("Strings.lua".to_string(), crate::flavor::FLAVOR_ALL));
         assert_eq!(parse("[AllowLoad ingame] InGameOnly.lua"),
-                   ("InGameOnly.lua".to_string(), 0));
+                   ("InGameOnly.lua".to_string(), crate::flavor::FLAVOR_ALL));
         // Path variables (Family/Game/TextLocale) are kept in the path.
-        assert_eq!(parse("[Game]Data.lua"), ("[Game]Data.lua".to_string(), 0));
+        assert_eq!(parse("[Game]Data.lua"), ("[Game]Data.lua".to_string(), crate::flavor::FLAVOR_ALL));
         assert_eq!(parse("Localization/[TextLocale].lua"),
-                   ("Localization/[TextLocale].lua".to_string(), 0));
+                   ("Localization/[TextLocale].lua".to_string(), crate::flavor::FLAVOR_ALL));
         // A flavor condition combined with a locale condition on one line: the
         // path is recovered and only the game-type mask is applied.
         assert_eq!(parse("Core.lua [AllowLoadGameType mainline] [AllowLoadTextLocale enUS]"),

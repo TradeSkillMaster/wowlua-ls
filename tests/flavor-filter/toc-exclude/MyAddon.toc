@@ -1,0 +1,4 @@
+## Interface: 110002, 50500, 11503
+## Title: MyAddon
+Retail.lua [ExcludeLoadGameType vanilla tbc wrath cata mists]
+Classic.lua [ExcludeLoadGameType mainline]

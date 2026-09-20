@@ -144,6 +144,16 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
         value_kind: TocValueKind::GameTypeList,
         aliases: &[],
     },
+    // Provenance: the per-line `[ExcludeLoadGameType ...]` form appears throughout
+    // Blizzard's own TOCs; this header form does not (and the wiki documents
+    // neither), and is included on a maintainer report that the client honors it.
+    TocFieldDef {
+        name: "ExcludeLoadGameType",
+        doc: "The inverse of `AllowLoadGameType`: the addon loads on every game flavor *except* the ones listed. Comma- or space-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`.",
+        required: false,
+        value_kind: TocValueKind::GameTypeList,
+        aliases: &[],
+    },
     TocFieldDef {
         name: "LoadWith",
         doc: "Comma-separated list of addon names. When *any* listed addon loads, this addon loads too (for LoadOnDemand addons).",
@@ -195,7 +205,8 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
     },
 ];
 
-/// Known values for `AllowLoadGameType` and the `[AllowLoadGameType ...]` directive.
+/// Known values for the `AllowLoadGameType` / `ExcludeLoadGameType` headers and
+/// their per-line directive forms.
 pub static GAME_TYPE_VALUES: &[(&str, &str)] = &[
     ("mainline", "Retail (The War Within, etc.)"),
     ("standard", "Retail, excluding Plunderstorm"),
@@ -211,7 +222,8 @@ pub static GAME_TYPE_VALUES: &[(&str, &str)] = &[
 
 /// Known `[Directive]` names for file path lines (load conditions + path variables).
 pub static FILE_DIRECTIVES: &[(&str, &str)] = &[
-    ("AllowLoadGameType", "Restricts this file to specific game flavors (comma-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, plunderstorm, wowhack)."),
+    ("AllowLoadGameType", "Restricts this file to specific game flavors (comma- or space-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, plunderstorm, wowhack)."),
+    ("ExcludeLoadGameType", "Loads this file on every game flavor except the ones listed (comma- or space-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, plunderstorm, wowhack)."),
     ("AllowLoadTextLocale", "Restricts this file to specific client text locales (comma-separated, e.g. enUS, frFR)."),
     ("AllowLoad", "Restricts this file to an environment (ingame / glue). Functionally inoperable for addons."),
     ("Family", "Path variable that expands to the game family subdirectory."),

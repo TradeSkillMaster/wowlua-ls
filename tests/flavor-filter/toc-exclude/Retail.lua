@@ -1,0 +1,14 @@
+-- `ExcludeLoadGameType` is the inverse of `AllowLoadGameType`: the base TOC lists
+-- this file as `Retail.lua [ExcludeLoadGameType vanilla tbc wrath cata mists]`,
+-- leaving Retail as the only flavor it loads on. The addon itself targets all
+-- flavors (.wowluarc.json), so the directive is what narrows this file, and a
+-- retail-only API must NOT warn.
+--
+-- Blizzard's own TOCs write these values space-separated rather than
+-- comma-separated, so the list splitter has to accept both.
+--
+-- (No `diag:` assertion here: the harness checks diagnostics exhaustively, so any
+-- stray wrong-flavor-api on this line fails the test. The `def:` gives the file
+-- the one annotation the harness requires to run.)
+PlayerGetTimerunningSeasonID()
+-- ^ def: external

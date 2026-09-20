@@ -3,7 +3,8 @@ pub mod diagnostics;
 pub mod queries;
 
 /// A parsed `[...]` bracket on a file path line — either a load condition
-/// (`[AllowLoadGameType mainline]`, `[AllowLoadTextLocale enUS]`, `[AllowLoad ...]`)
+/// (`[AllowLoadGameType mainline]`, `[ExcludeLoadGameType vanilla]`,
+/// `[AllowLoadTextLocale enUS]`, `[AllowLoad ...]`)
 /// or a path variable (`[Family]`, `[Game]`, `[TextLocale]`). May appear before,
 /// after, or within the path. `kind` is the first token; `args` is the remainder.
 #[derive(Debug, Clone, PartialEq)]

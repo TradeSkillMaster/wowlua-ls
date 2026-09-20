@@ -146,48 +146,42 @@ fn check_nonexistent_files(doc: &TocDocument, toc_dir: &Path, diags: &mut Vec<To
     }
 }
 
+/// The two game-type load conditions. Header keys are matched case-insensitively
+/// like every other header; directive keywords are matched exactly, the way
+/// `config.rs::parse_file_line_directives` and the `FILE_DIRECTIVES` hover lookup
+/// match them — so a miscased directive stays uniformly unrecognized.
+const GAME_TYPE_CONDITIONS: [&str; 2] = ["AllowLoadGameType", "ExcludeLoadGameType"];
+
 fn check_invalid_game_types(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
     let known_names: Vec<&str> = schema::GAME_TYPE_VALUES.iter().map(|(k, _)| *k).collect();
+    // Report only the first unknown name per condition — one squiggle per bracket.
+    let emit = |value: &str, range: (u32, u32), diags: &mut Vec<TocDiagnostic>| {
+        if let Some(unknown) = crate::flavor::split_game_type_list(value).find(|n| !known_names.contains(n)) {
+            diags.push(TocDiagnostic {
+                code: "toc-invalid-value",
+                message: format!("Unknown game type `{}`. Known values: {}.", unknown, known_names.join(", ")),
+                severity: TocSeverity::Warning,
+                start: range.0,
+                end: range.1,
+            });
+        }
+    };
 
     for line in &doc.lines {
-        // Check header value
-        if let TocLine::Header { key, value, value_range, .. } = line
-            && key.eq_ignore_ascii_case("AllowLoadGameType") && !value.is_empty()
-        {
-            for part in value.split(',') {
-                let trimmed = part.trim();
-                if !trimmed.is_empty() && !known_names.contains(&trimmed) {
-                    diags.push(TocDiagnostic {
-                        code: "toc-invalid-value",
-                        message: format!("Unknown game type `{}`. Known values: {}.", trimmed, known_names.join(", ")),
-                        severity: TocSeverity::Warning,
-                        start: value_range.0,
-                        end: value_range.1,
-                    });
-                    break;
+        match line {
+            // `## AllowLoadGameType:` / `## ExcludeLoadGameType:` header values
+            TocLine::Header { key, value, value_range, .. }
+                if GAME_TYPE_CONDITIONS.iter().any(|c| key.eq_ignore_ascii_case(c)) =>
+            {
+                emit(value, *value_range, diags);
+            }
+            // Per-file `[AllowLoadGameType ...]` / `[ExcludeLoadGameType ...]` args
+            TocLine::FilePath { directives, .. } => {
+                for dir in directives.iter().filter(|d| GAME_TYPE_CONDITIONS.contains(&d.kind.as_str())) {
+                    emit(&dir.args, dir.range, diags);
                 }
             }
-        }
-        // Check each per-file `[AllowLoadGameType ...]` condition's args
-        if let TocLine::FilePath { directives, .. } = line {
-            for dir in directives {
-                if dir.kind != "AllowLoadGameType" || dir.args.is_empty() {
-                    continue;
-                }
-                for part in dir.args.split(',') {
-                    let trimmed = part.trim();
-                    if !trimmed.is_empty() && !known_names.contains(&trimmed) {
-                        diags.push(TocDiagnostic {
-                            code: "toc-invalid-value",
-                            message: format!("Unknown game type `{}`. Known values: {}.", trimmed, known_names.join(", ")),
-                            severity: TocSeverity::Warning,
-                            start: dir.range.0,
-                            end: dir.range.1,
-                        });
-                        break;
-                    }
-                }
-            }
+            _ => {}
         }
     }
 }
@@ -342,6 +336,37 @@ mod tests {
         // ...but an invalid game type in that condition is still reported.
         let diags = run("## Interface: 110002\n[Family]Shared/Core.lua [AllowLoadGameType bogus]\n");
         assert!(diags.iter().any(|d| d.code == "toc-invalid-value" && d.message.contains("bogus")));
+    }
+
+    #[test]
+    fn exclude_load_game_type_header_known() {
+        // `ExcludeLoadGameType` is a real (wiki-undocumented) header: no
+        // unknown-field hint, and its values are validated like AllowLoadGameType.
+        let diags = run("## Interface: 110002\n## ExcludeLoadGameType: vanilla\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-unknown-header"));
+        assert!(!diags.iter().any(|d| d.code == "toc-invalid-value"));
+
+        let diags = run("## Interface: 110002\n## ExcludeLoadGameType: bogustype\n");
+        assert!(diags.iter().any(|d| d.code == "toc-invalid-value" && d.message.contains("bogustype")));
+    }
+
+    #[test]
+    fn exclude_load_game_type_directive() {
+        let diags = run("## Interface: 110002\nTableBuilder.lua [ExcludeLoadGameType vanilla tbc wrath]\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-invalid-value"));
+        let file_diag = diags.iter().find(|d| d.code == "toc-nonexistent-file").unwrap();
+        assert!(!file_diag.message.contains("ExcludeLoadGameType"));
+
+        let diags = run("## Interface: 110002\nData.lua [ExcludeLoadGameType bogustype]\n");
+        assert!(diags.iter().any(|d| d.code == "toc-invalid-value" && d.message.contains("bogustype")));
+    }
+
+    #[test]
+    fn space_separated_game_types_not_flagged() {
+        // Blizzard's TOCs write these without commas — each name must be validated
+        // separately rather than as one run-together value.
+        let diags = run("## Interface: 110002\nCore.lua [AllowLoadGameType tbc wrath cata mists]\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-invalid-value"));
     }
 
     #[test]

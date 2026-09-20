@@ -190,16 +190,79 @@ pub fn is_toc_path_variable(name: &str) -> bool {
     matches!(name, "Family" | "Game" | "TextLocale")
 }
 
-/// Parse a comma-separated list of game type names into a flavor mask.
-/// Unknown names are ignored.
+/// Split a game type list into its individual names. Blizzard's own TOCs use
+/// both separators — `[AllowLoadGameType tbc, wrath]` and
+/// `[ExcludeLoadGameType vanilla tbc wrath]` — so accept commas and whitespace.
+pub fn split_game_type_list(names: &str) -> impl Iterator<Item = &str> {
+    names
+        .split([',', ' ', '\t'])
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+}
+
+/// Parse a list of game type names into a flavor mask. Unknown names are ignored.
 pub fn parse_game_type_list(names: &str) -> u8 {
     let mut mask = 0u8;
-    for name in names.split(',') {
+    for name in split_game_type_list(names) {
         if let Some(bit) = parse_game_type_name(name) {
             mask |= bit;
         }
     }
     mask
+}
+
+/// The individual game types behind each flavor bit. Several collapse into one
+/// bit — `tbc`, `wrath`, `cata` and `mists` are all `FLAVOR_CLASSIC` — which is
+/// why exclusion works off these names instead of a parsed mask.
+const GAME_TYPE_LEAVES: &[(&str, u8)] = &[
+    ("standard", FLAVOR_RETAIL),
+    ("plunderstorm", FLAVOR_RETAIL),
+    ("wowhack", FLAVOR_RETAIL),
+    ("vanilla", FLAVOR_CLASSIC_ERA),
+    ("tbc", FLAVOR_CLASSIC),
+    ("wrath", FLAVOR_CLASSIC),
+    ("cata", FLAVOR_CLASSIC),
+    ("mists", FLAVOR_CLASSIC),
+];
+
+/// Game type names that stand for a whole group of leaf types.
+const GAME_TYPE_FAMILIES: &[(&str, &[&str])] = &[
+    ("mainline", &["standard", "plunderstorm", "wowhack"]),
+    ("classic", &["vanilla", "tbc", "wrath", "cata", "mists"]),
+];
+
+/// Parse an `ExcludeLoadGameType` list into the flavor bits it removes.
+///
+/// Exclusion cannot subtract `parse_game_type_list`'s mask: our three flavors
+/// collapse several game types into one bit, so subtracting would take Cata,
+/// Wrath and TBC down with `[ExcludeLoadGameType mists]`. A flavor is removed
+/// only when *no* game type behind it survives the list — `mainline` and
+/// `classic` count as all of their members. Unioning bits (the allow direction)
+/// stays sound under the collapse; only subtraction needs this treatment.
+pub fn parse_excluded_flavors(names: &str) -> u8 {
+    let mut listed: Vec<String> = Vec::new();
+    for name in split_game_type_list(names) {
+        let lower = name.to_ascii_lowercase();
+        match GAME_TYPE_FAMILIES.iter().find(|(family, _)| *family == lower) {
+            Some((_, members)) => listed.extend(members.iter().map(|m| (*m).to_string())),
+            None => listed.push(lower),
+        }
+    }
+    let surviving = GAME_TYPE_LEAVES
+        .iter()
+        .filter(|(leaf, _)| !listed.iter().any(|l| l == leaf))
+        .fold(0u8, |acc, (_, bit)| acc | bit);
+    FLAVOR_ALL & !surviving
+}
+
+/// Apply `AllowLoadGameType` / `ExcludeLoadGameType` masks to the flavors `base`
+/// would otherwise cover. An `allow` of 0 means "no allow-list" (all of `base`
+/// stays permitted); `exclude` bits — which must come from
+/// `parse_excluded_flavors`, not `parse_game_type_list` — are always removed. A
+/// result of 0 means the file or TOC loads on no flavor at all.
+pub fn apply_load_game_type(base: u8, allow: u8, exclude: u8) -> u8 {
+    let allowed = if allow != 0 { base & allow } else { base };
+    allowed & !exclude
 }
 
 /// `[Family]` variable expansions: each value and its flavor mask.
@@ -331,6 +394,46 @@ mod tests {
         assert_eq!(parse_game_type_list("classic"), FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA);
         assert_eq!(parse_game_type_list("bogus"), 0);
         assert_eq!(parse_game_type_list("mainline, bogus"), FLAVOR_RETAIL);
+        // Blizzard's TOCs also separate with plain whitespace.
+        assert_eq!(parse_game_type_list("vanilla tbc wrath"), FLAVOR_CLASSIC_ERA | FLAVOR_CLASSIC);
+        assert_eq!(parse_game_type_list("tbc,  wrath"), FLAVOR_CLASSIC);
+    }
+
+    #[test]
+    fn excluded_flavors_from_leaf_game_types() {
+        // A flavor survives while any game type behind it is unlisted. `mists`
+        // alone must not take Cata/Wrath/TBC with it — they share the bit.
+        assert_eq!(parse_excluded_flavors("mists"), 0);
+        assert_eq!(parse_excluded_flavors("tbc, wrath"), 0);
+        // Blizzard_SharedXML.toc: `[ExcludeLoadGameType vanilla tbc wrath]` still
+        // loads on Cata and Mists, so only Classic Era is removed.
+        assert_eq!(parse_excluded_flavors("vanilla tbc wrath"), FLAVOR_CLASSIC_ERA);
+        assert_eq!(parse_excluded_flavors("vanilla tbc wrath cata"), FLAVOR_CLASSIC_ERA);
+        // Every classic game type listed — now the bit really is gone.
+        assert_eq!(parse_excluded_flavors("vanilla tbc wrath cata mists"),
+                   FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA);
+        // Family names count as all of their members.
+        assert_eq!(parse_excluded_flavors("classic"), FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA);
+        assert_eq!(parse_excluded_flavors("mainline"), FLAVOR_RETAIL);
+        assert_eq!(parse_excluded_flavors("standard, plunderstorm, wowhack"), FLAVOR_RETAIL);
+        // `standard` leaves the event game types, which share the retail bit.
+        assert_eq!(parse_excluded_flavors("standard"), 0);
+        // Nothing listed, or nothing recognized, excludes nothing.
+        assert_eq!(parse_excluded_flavors(""), 0);
+        assert_eq!(parse_excluded_flavors("bogus"), 0);
+    }
+
+    #[test]
+    fn allow_and_exclude_game_type_masks() {
+        // No conditions: the base is untouched.
+        assert_eq!(apply_load_game_type(FLAVOR_ALL, 0, 0), FLAVOR_ALL);
+        // Allow-list narrows; exclude removes.
+        assert_eq!(apply_load_game_type(FLAVOR_ALL, FLAVOR_RETAIL, 0), FLAVOR_RETAIL);
+        assert_eq!(apply_load_game_type(FLAVOR_ALL, 0, FLAVOR_CLASSIC_ERA), FLAVOR_RETAIL | FLAVOR_CLASSIC);
+        // Exclude wins over allow when both name the same flavor.
+        assert_eq!(apply_load_game_type(FLAVOR_ALL, FLAVOR_RETAIL, FLAVOR_RETAIL), 0);
+        // Exclusion is clamped to the base flavors.
+        assert_eq!(apply_load_game_type(FLAVOR_CLASSIC, 0, FLAVOR_RETAIL), FLAVOR_CLASSIC);
     }
 
     #[test]

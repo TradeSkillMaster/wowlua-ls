@@ -105,12 +105,10 @@ fn hover_field_value(key: &str, value: &str) -> Option<TocHover> {
             }
         }
         TocValueKind::GameTypeList => {
-            let descs: Vec<String> = value
-                .split(',')
-                .filter_map(|part| {
-                    let trimmed = part.trim();
-                    let (_, desc) = schema::GAME_TYPE_VALUES.iter().find(|(k, _)| *k == trimmed)?;
-                    Some(format!("`{}` — {}", trimmed, desc))
+            let descs: Vec<String> = crate::flavor::split_game_type_list(value)
+                .filter_map(|name| {
+                    let (_, desc) = schema::GAME_TYPE_VALUES.iter().find(|(k, _)| *k == name)?;
+                    Some(format!("`{}` — {}", name, desc))
                 })
                 .collect();
             if descs.is_empty() {

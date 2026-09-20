@@ -48,9 +48,9 @@ MyAddon/
 
 A file listed in `MyAddon_Mainline.toc` is treated as retail-only. A file listed in both `_Mainline.toc` and `_Vanilla.toc` is available on retail and classic era. A file in the base `MyAddon.toc` covers whichever flavors don't have a suffixed TOC.
 
-**`AllowLoadGameType` restrictions:**
+**`AllowLoadGameType` / `ExcludeLoadGameType` restrictions:**
 
-The LS also respects `## AllowLoadGameType:` headers and per-line `[AllowLoadGameType]` directives:
+The LS also respects `## AllowLoadGameType:` / `## ExcludeLoadGameType:` headers and their per-line directive forms:
 
 ```toc
 ## AllowLoadGameType: vanilla
@@ -59,12 +59,17 @@ Core.lua
 
 ```toc
 RetailUI.lua [AllowLoadGameType mainline]
+TableBuilder.lua [ExcludeLoadGameType vanilla tbc wrath]
 SharedCode.lua
 ```
 
+`ExcludeLoadGameType` is the inverse of `AllowLoadGameType`: the file loads on every flavor except the ones listed. Values may be separated by commas or plain whitespace.
+
+Because wowlua-ls groups WoW's game types into three flavors, an exclusion removes a flavor only once every game type in it is listed. `[ExcludeLoadGameType vanilla tbc wrath]` above still loads on Cataclysm and Mists, so it counts as Retail + Classic; `[ExcludeLoadGameType vanilla tbc wrath cata mists]` is what leaves Retail alone. `classic` and `mainline` stand for all of their game types.
+
 The directive may follow the file path (the form the WoW client documents, shown above) or precede it (`[AllowLoadGameType mainline] RetailUI.lua`). These intersect with the TOC's suffix flavor, further restricting which flavors a file is loaded for.
 
-Other per-line conditions (`[AllowLoadTextLocale ...]`, `[AllowLoad ...]`) and path variables (`[Family]`, `[Game]`, `[TextLocale]`) are recognized in either position, but only `AllowLoadGameType` affects flavor: the rest are parsed so they don't corrupt the file path. See the [TOC file guide](./toc-files.md#per-line-directives) for the full list.
+Other per-line conditions (`[AllowLoadTextLocale ...]`, `[AllowLoad ...]`) and path variables (`[Family]`, `[Game]`, `[TextLocale]`) are recognized in either position, but only the game-type conditions affect flavor: the rest are parsed so they don't corrupt the file path. See the [TOC file guide](./toc-files.md#per-line-directives) for the full list.
 
 **Path variables (`[Family]` and `[Game]`):**
 
