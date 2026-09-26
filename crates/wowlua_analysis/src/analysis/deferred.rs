@@ -110,15 +110,25 @@ use crate::analysis::{Analysis, AnalysisConfig, Ir};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::types::{Expr, FunctionIndex, ResolvedOverload, SymbolIndex, TableIndex, ValueType};
 
-/// Locates the creating call for a `@creates-global` side-effect global (e.g.
-/// the `_G.MyFrame` from `CreateFrame("Frame", "MyFrame", ...)`) so its type can
-/// be harvested from that call's *resolved* return type rather than reconstructed
-/// from annotations. `call_offset` is the creating call's start offset within
-/// `path` — it matches `Expr::FunctionCall.call_range.0` in the defining file.
+/// Locates the call a global's type is harvested from — the creating call of a
+/// `@creates-global` side-effect global (e.g. the `_G.MyFrame` from
+/// `CreateFrame("Frame", "MyFrame", ...)`), or the right-hand side of an
+/// unannotated `X = f(...)` global — so its type comes from that call's
+/// *resolved* return type rather than being reconstructed from annotations.
+/// `call_offset` is the call's start offset within `path` — it matches
+/// `Expr::FunctionCall.call_range.0` in the defining file. The offset is
+/// positional, so it goes stale when an edit above the call causes no rebuild;
+/// the harvest therefore only accepts a call there that still defines `global`.
 #[derive(Debug, Clone)]
 pub struct DeferredCallGlobal {
     pub path: PathBuf,
     pub call_offset: u32,
+    /// The global the call creates or is assigned to (for an `X = Y` alias
+    /// sharing `Y`'s harvest, `Y`).
+    pub global: String,
+    /// A `@creates-global` creating call, rather than an `X = <call>` right-hand
+    /// side.
+    pub created: bool,
 }
 
 /// `(class_name, field_name)` identifying a deferred constructor self-field.
@@ -570,13 +580,14 @@ impl Ir {
     }
 
     /// Ensure the per-file `symbol_overlay` holds a precise `Symbol` for an
-    /// external `@creates-global` side-effect global. Idempotent: an overlay hit,
-    /// a non-external index, or a non-created/unresolvable global is a no-op.
+    /// external global typed by a call (a `@creates-global` side-effect global or
+    /// an `X = f(...)` global). Idempotent: an overlay hit, a non-external index,
+    /// or a global without a deferred call / with an unresolvable one is a no-op.
     ///
     /// The overlay value is the coarse external `Symbol` with its last version's
-    /// `resolved_type` replaced by the type harvested from the creating call. After
-    /// this call, `sym()` transparently returns the precise symbol, so the created
-    /// global resolves to the full call type (e.g. `Frame & Template`) everywhere.
+    /// `resolved_type` replaced by the type harvested from the call. After this
+    /// call, `sym()` transparently returns the precise symbol, so the global
+    /// resolves to the full call type (e.g. `Frame & Template`) everywhere.
     pub fn ensure_symbol_overlay(&mut self, sym_idx: SymbolIndex) {
         if !sym_idx.is_external() || self.symbol_overlay.contains_key(&sym_idx) {
             return;
@@ -730,13 +741,14 @@ pub fn resolve_deferred_sig(
     read_unit(ext, Unit::File(path), |h| h.file().and_then(|f| f.sigs.get(&func_idx).cloned())).flatten()
 }
 
-/// Resolve the type of a `@creates-global` side-effect global (e.g. the
-/// `_G.MyFrame` from `CreateFrame("Frame", "MyFrame", ...)`) by harvesting the
-/// *resolved* return type of the creating call from its defining file (memoized).
-/// This is what makes a created global carry the full call type — including any
-/// template/mixin intersection — rather than a coarse annotation-reconstructed
-/// base type. Returns `None` when the global isn't a created global or the call
-/// can't be resolved (the caller then leaves the symbol untyped).
+/// Resolve the type of a global harvested from a call — a `@creates-global`
+/// side-effect global (e.g. the `_G.MyFrame` from `CreateFrame("Frame",
+/// "MyFrame", ...)`) or an `X = f(...)` global — from the *resolved* return type
+/// of that call in its defining file (memoized). This is what makes such a global
+/// carry the full call type — including any template/mixin intersection — rather
+/// than a coarse annotation-reconstructed base type. Returns `None` when the
+/// global has no deferred call or the call can't be resolved (the caller then
+/// keeps the symbol's coarse type).
 pub fn resolve_deferred_call_global_type(
     ext: &Arc<PreResolvedGlobals>,
     sym_idx: SymbolIndex,
@@ -1178,7 +1190,7 @@ fn analyze_file(
 
 /// Harvest everything cross-file readers take from an analysis of `path`: the precise
 /// signature bundle (returns + correlated overloads) of every deferred function, the
-/// resolved type of every created global, and the type args of every deferred
+/// resolved type of every call-typed global, and the type args of every deferred
 /// constructor self-field.
 fn file_harvest(
     ext: &Arc<PreResolvedGlobals>,
@@ -1189,7 +1201,7 @@ fn file_harvest(
     let globals = global_tables(result, tree, ext);
     FileHarvest {
         sigs: harvest_sigs(ext, path, result, &globals),
-        call_globals: harvest_call_globals(ext, path, result, &globals),
+        call_globals: harvest_call_globals(ext, path, tree, result, &globals),
         field_args: harvest_field_args(ext, path, result, &globals),
     }
 }
@@ -1268,33 +1280,66 @@ fn harvest_sigs(
     harvested
 }
 
-/// The resolved type of every created global defined in `path` (`None` when
-/// unresolvable, so the file is not re-analyzed). For each created global, locate the
-/// creating call by its recorded start offset (matching
-/// `Expr::FunctionCall.call_range.0`), read the call's first-return resolved type from
-/// the engine's expression cache, and lift it into ext-index space.
+/// The resolved type of every call-typed global defined in `path` (`None` when
+/// unresolvable, so the file is not re-analyzed). For each global, locate its call by
+/// the recorded start offset (matching `Expr::FunctionCall.call_range.0`) — accepting
+/// only a call there that still defines the global ([`call_defines_global`]) — read
+/// the call's first-return resolved type from the engine's expression cache, and lift
+/// it into ext-index space.
 fn harvest_call_globals(
     ext: &Arc<PreResolvedGlobals>,
     path: &Path,
+    tree: &crate::syntax::tree::SyntaxTree,
     result: &crate::analysis::AnalysisResult,
     globals: &GlobalTables,
 ) -> HashMap<SymbolIndex, Option<ValueType>> {
     let ir = &result.ir;
+    let root = crate::syntax::SyntaxNode::new_root(tree);
     let mut harvested: HashMap<SymbolIndex, Option<ValueType>> = HashMap::default();
     for &sym_idx in ext.deferred_call_globals_by_path.get(path).into_iter().flatten() {
         let Some(dcg) = ext.deferred_call_globals.get(&sym_idx) else { continue };
-        let offset = dcg.call_offset;
-        // The first-return value of the creating call (ret_index 0) is the created
-        // object; its resolved type is the global's type.
+        // The call's first return (ret_index 0) is the global's value; its
+        // resolved type is the global's type.
         let resolved = ir
-            .call_exprs_starting_at(offset)
-            .find(|(_, e)| matches!(e, Expr::FunctionCall { ret_index: 0, .. }))
+            .call_exprs_starting_at(dcg.call_offset)
+            .filter_map(|(eid, e)| match e {
+                Expr::FunctionCall { ret_index: 0, call_range, .. } => Some((eid, *call_range)),
+                _ => None,
+            })
+            .find(|&(_, range)| call_defines_global(root, range, dcg, ext.creates_global_specs()))
             .and_then(|(eid, _)| result.resolved_expr_cache_get(eid).cloned())
             .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, globals))
             .filter(|t| !contains_any(t));
         harvested.insert(sym_idx, resolved);
     }
     harvested
+}
+
+/// Whether the call spanning `range` in `root` still defines `dcg`'s global —
+/// creates it, or is the value assigned to it — rather than being another call a
+/// stale offset now lands on.
+fn call_defines_global(
+    root: crate::syntax::SyntaxNode<'_>,
+    range: (u32, u32),
+    dcg: &DeferredCallGlobal,
+    specs: &crate::annotations::CreatesGlobalMap,
+) -> bool {
+    use crate::ast::{AstNode, FunctionCall};
+    use crate::annotations::scan_globals::{call_assigns_global, extract_created_global};
+    let Some(token) = root.token_at_offset(crate::syntax::TextSize::from(range.0)).right_biased() else {
+        return false;
+    };
+    let Some(call) = token.ancestors().filter_map(FunctionCall::cast).find(|call| {
+        let r = call.syntax().text_range();
+        (u32::from(r.start()), u32::from(r.end())) == range
+    }) else {
+        return false;
+    };
+    if dcg.created {
+        extract_created_global(&call, specs).as_deref() == Some(dcg.global.as_str())
+    } else {
+        call_assigns_global(&call, &dcg.global)
+    }
 }
 
 /// The type args of every deferred constructor self-field defined in `path` (`None`

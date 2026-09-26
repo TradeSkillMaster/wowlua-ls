@@ -659,13 +659,13 @@ pub struct Ir {
     /// consults this map first for external indices, so resolution, diagnostics,
     /// and hover all see the precise type without any `effective_*` plumbing.
     pub overlay: HashMap<FunctionIndex, Function>,
-    /// Per-file overlay of precise `Symbol`s for external `@creates-global`
-    /// side-effect globals this file references. Populated lazily
-    /// (`ensure_symbol_overlay`) by harvesting the creating call's resolved
-    /// return type. The value is the coarse external `Symbol` with its last
-    /// version's `resolved_type` replaced by the harvested type. `sym()` consults
-    /// this map first for external indices, so resolution, diagnostics, hover,
-    /// and completion all see the precise created-global type.
+    /// Per-file overlay of precise `Symbol`s for external call-typed globals
+    /// (`@creates-global` side-effect globals, `X = f(...)` globals) this file
+    /// references. Populated lazily (`ensure_symbol_overlay`) by harvesting the
+    /// call's resolved return type. The value is the coarse external `Symbol` with
+    /// its last version's `resolved_type` replaced by the harvested type. `sym()`
+    /// consults this map first for external indices, so resolution, diagnostics,
+    /// hover, and completion all see the precise type.
     pub symbol_overlay: HashMap<SymbolIndex, Symbol>,
     /// Defining files this file harvested a deferred cross-file type from during
     /// analysis (a body-derived return, a `@creates-global`, a `@class` field, or a

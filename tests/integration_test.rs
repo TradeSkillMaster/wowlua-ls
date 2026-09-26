@@ -3575,6 +3575,23 @@ fn crossfile_partial_class_field_types() {
     });
 }
 
+/// Cross-file `PreResolvedGlobals` for the workspace `dir`, built on the stubs
+/// (mirrors `run_annotation_tests`' `with_stubs` + `scan_dir` path).
+fn crossfile_pre_globals_with_stubs(dir: &str) -> Arc<PreResolvedGlobals> {
+    let mut project_configs = ProjectConfigs::default();
+    let scan = lsp::scan_workspace_with_stubs(
+        &[std::path::PathBuf::from(dir)], &mut project_configs, &[], &[], STUB_GLOBALS.creates_global_specs(),
+    );
+    let (sc, mut sa, sg, ans, se, ws_callable) =
+        (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
+    wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
+    let mut pg = PreResolvedGlobals::build_on_stubs(&STUB_GLOBALS, &sg, &sc, &sa, false, &ans, &ws_callable);
+    pg.merge_events(&se);
+    // The deferred harvester reads per-file inference flags from project configs.
+    pg.set_project_configs(Arc::new(project_configs));
+    Arc::new(pg)
+}
+
 #[test]
 fn crossfile_class_field_type_invalidation() {
     // When the *defining* file changes in a way the coarse workspace scan can't see
@@ -3582,20 +3599,8 @@ fn crossfile_class_field_type_invalidation() {
     // harvested cross-file field type must be recomputed. The demand-driven memo is
     // dropped by `invalidate_deferred_for_file`; the consumer records the defining
     // file in `deferred_dep_files` so the LSP knows which docs to re-analyze.
-    let dir = std::path::PathBuf::from("tests/crossfile");
     let user_text = std::fs::read_to_string("tests/crossfile/class_field_type_user.lua").unwrap();
-
-    let mut project_configs = ProjectConfigs::default();
-    let scan = lsp::scan_workspace_with_stubs(
-        std::slice::from_ref(&dir), &mut project_configs, &[], &[], STUB_GLOBALS.creates_global_specs(),
-    );
-    let (sc, mut sa, sg, ans, se, ws_callable) =
-        (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
-    wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
-    let mut pg = PreResolvedGlobals::build_on_stubs(&STUB_GLOBALS, &sg, &sc, &sa, false, &ans, &ws_callable);
-    pg.merge_events(&se);
-    pg.set_project_configs(Arc::new(project_configs.clone()));
-    let pre_globals = Arc::new(pg);
+    let pre_globals = crossfile_pre_globals_with_stubs("tests/crossfile");
 
     let tree = wowlua_ls::syntax::parser::parse(&user_text);
     // `local p = r.plain` — hover the `plain` field token.
@@ -3747,23 +3752,9 @@ fn crossfile_frame_factory_overlay_gotodef() {
     // and `function recv:Method()` (method-style, incl. on the method call). The
     // location precision is what the annotation harness's `def: external` can't
     // assert (it only checks the result is external).
-    let dir = std::path::PathBuf::from("tests/crossfile");
     let user_text = std::fs::read_to_string("tests/crossfile/frame_factory_user.lua").unwrap();
     let defs_text = std::fs::read_to_string("tests/crossfile/frame_factory_defs.lua").unwrap();
-
-    // Build cross-file pre_globals with stubs (mirrors run_annotation_tests' with_stubs path).
-    let mut project_configs = ProjectConfigs::default();
-    let scan = lsp::scan_workspace_with_stubs(
-        std::slice::from_ref(&dir), &mut project_configs, &[], &[], STUB_GLOBALS.creates_global_specs(),
-    );
-    let (sc, mut sa, sg, ans, se, ws_callable) =
-        (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
-    wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
-    let mut pg = PreResolvedGlobals::build_on_stubs(&STUB_GLOBALS, &sg, &sc, &sa, false, &ans, &ws_callable);
-    pg.merge_events(&se);
-    // The deferred harvester reads per-file inference flags from project configs.
-    pg.set_project_configs(Arc::new(project_configs.clone()));
-    let pre_globals = Arc::new(pg);
+    let pre_globals = crossfile_pre_globals_with_stubs("tests/crossfile");
 
     let tree = wowlua_ls::syntax::parser::parse(&user_text);
     let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), AnalysisConfig::default());
@@ -5355,6 +5346,120 @@ fn createframe_named() {
         with_stubs: true,
         scan_dir: Some("tests/createframe-named"),
     });
+}
+
+#[test]
+fn assigned_globals_crossfile() {
+    // Workspace globals assigned a call, a reference, or a table constructor keep
+    // their type in other files (the `build_on_stubs` global build).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/assigned-globals-crossfile/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/assigned-globals-crossfile"),
+    });
+}
+
+#[test]
+fn assigned_globals_ctor_entry_gotodef() {
+    // Go-to-definition on a global table's constructor entry read cross-file lands
+    // on the entry's key (the annotation harness's `def: external` only checks
+    // that the result is external).
+    let user_text = std::fs::read_to_string("tests/assigned-globals-crossfile/user.lua").unwrap();
+    let defs_text = std::fs::read_to_string("tests/assigned-globals-crossfile/defs.lua").unwrap();
+    let pre_globals = crossfile_pre_globals_with_stubs("tests/assigned-globals-crossfile");
+    let tree = wowlua_ls::syntax::parser::parse(&user_text);
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let query_at = user_text.find("Options.Title").unwrap() + "Options.".len();
+    let Some(DefinitionResult::External(loc)) = result.definition_at(&tree, query_at as u32) else {
+        panic!("expected an external definition for `Options.Title`");
+    };
+    assert!(loc.path.ends_with("defs.lua"), "wrong file: {:?}", loc.path);
+    let key_at = defs_text.find("Title = ").unwrap();
+    assert_eq!((loc.start as usize, loc.end as usize), (key_at, key_at + "Title".len()));
+}
+
+/// Hover of `local <name>` in `user_src` (analyzed against the workspace `dir`)
+/// before and after `edit` rewrites `defs_file` as an unsaved buffer: no rebuild,
+/// just the deferred-harvest invalidation such an edit triggers, so the recorded
+/// call offsets go stale.
+fn hover_before_after_defs_edit(
+    dir: &str,
+    defs_file: &str,
+    user_src: &str,
+    name: &str,
+    edit: impl Fn(&str) -> String,
+) -> (String, String) {
+    let pre_globals = crossfile_pre_globals_with_stubs(dir);
+    let tree = wowlua_ls::syntax::parser::parse(user_src);
+    let offset = (user_src.find(&format!("local {name}")).unwrap() + "local ".len()) as u32;
+    let analyze = || {
+        let mut a = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), AnalysisConfig::default());
+        a.resolve_types();
+        a.into_result()
+    };
+    let before = analyze();
+    let defs_path = before.deferred_dep_files().iter()
+        .find(|p| p.ends_with(std::path::Path::new(dir).join(defs_file)))
+        .cloned()
+        .unwrap_or_else(|| panic!("the reader must record {defs_file} as a deferred dependency"));
+    let text = std::fs::read_to_string(&defs_path).unwrap();
+    let edited = edit(&text);
+    assert_ne!(edited, text);
+    pre_globals.document_overrides.write().unwrap().insert(defs_path.clone(), edited);
+    pre_globals.invalidate_deferred_for_file(&defs_path);
+    let hover = |r: &wowlua_ls::analysis::AnalysisResult| r.hover_at(&tree, offset).expect("hover").type_str;
+    (hover(&before), hover(&analyze()))
+}
+
+/// Insert a comment line at the top of `text` that moves the call starting at
+/// `earlier` to where the call starting at `later` was.
+fn shift_call_onto(text: &str, earlier: &str, later: &str) -> String {
+    let distance = text.find(later).unwrap() - text.find(earlier).unwrap();
+    format!("--{}\n{text}", "x".repeat(distance - 3))
+}
+
+#[test]
+fn assigned_global_harvest_survives_call_arg_edit() {
+    // Editing only a call's arguments (here its template) leaves the coarse scan
+    // unchanged, so no rebuild re-records where the call is. The re-harvest must
+    // still find the call — by its start offset, which such an edit keeps — and
+    // pick up the new type.
+    let (before, after) = hover_before_after_defs_edit(
+        "tests/assigned-globals-crossfile", "defs.lua", "local row = RowFrame\n", "row",
+        |text| text.replace(r#"UIParent, "AssignedRowTemplate")"#, r#"UIParent, "BackdropTemplate")"#),
+    );
+    assert!(before.contains("Frame & AssignedRowTemplate"), "baseline: got {before:?}");
+    assert!(after.contains("BackdropTemplate") && !after.contains("AssignedRowTemplate"),
+        "after the argument edit: got {after:?}");
+}
+
+#[test]
+fn assigned_global_harvest_rejects_a_shifted_call() {
+    // An edit above a call shifts it without a rebuild; if another call then sits
+    // at the stale offset, the harvest must not take its type: `RowFrame`'s call
+    // moved onto `MainFrameName`'s is not `MainFrameName`'s value.
+    let (before, after) = hover_before_after_defs_edit(
+        "tests/assigned-globals-crossfile", "defs.lua", "local name = MainFrameName\n", "name",
+        |text| shift_call_onto(text, r#"CreateFrame("Frame", nil, UIParent"#, r#"CreateFrame("Frame"):GetName()"#),
+    );
+    assert!(before.contains("string"), "baseline: got {before:?}");
+    assert!(after.contains("string") && !after.contains("AssignedRowTemplate"),
+        "after the shift: got {after:?}");
+}
+
+#[test]
+fn created_global_harvest_rejects_a_shifted_call() {
+    // Same for a `@creates-global` global: the `CreateFrame(..., "MyAddonFrame")`
+    // call shifted onto `MyAddonGameFont`'s creating call doesn't create it.
+    let (before, after) = hover_before_after_defs_edit(
+        "tests/createframe-named", "creator.lua", "local font = MyAddonGameFont\n", "font",
+        |text| shift_call_onto(text, r#"CreateFrame("Frame", "MyAddonFrame""#, r#"CreateFont("MyAddonGameFont")"#),
+    );
+    assert!(before.contains("Font"), "baseline: got {before:?}");
+    assert!(!after.contains("Frame"), "after the shift: got {after:?}");
 }
 
 #[test]

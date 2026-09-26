@@ -10,6 +10,9 @@ use super::*;
 // callee lives in `kind` (→ rebuild on a callee change), so two globals equal on every
 // field below but differing only in `source_path` harvest the identical field type.
 // IMPORTANT: Update this function when adding semantic fields to ExternalGlobal.
+// assigned_call_offset: positional (RHS call byte offset) — the call harvest only
+// accepts a call there that still assigns the global, so a stale offset misses and
+// falls back to the coarse type until the next real rebuild.
 pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool {
     x.name == y.name
         && x.kind == y.kind
@@ -38,6 +41,10 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.returns_class_name == y.returns_class_name
         && x.returns_enum == y.returns_enum
         && x.secret == y.secret
+        && x.declares_class == y.declares_class
+        // Constructor entries, ignoring their positional key ranges.
+        && x.ctor_fields.len() == y.ctor_fields.len()
+        && x.ctor_fields.iter().zip(&y.ctor_fields).all(|(a, b)| a.name == b.name && a.kind == b.kind)
         // `@meta` status gates stub overriding (build_on_stubs), so toggling
         // `---@meta` on a file must re-run the cross-file build. Unlike
         // path-derived `is_override`, `is_meta` is content-derived and can change

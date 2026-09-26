@@ -442,18 +442,19 @@ pub struct PreResolvedGlobals {
     pub conflicting_arity_funcs: HashSet<FunctionIndex>,
     /// The deferred harvests (see `analysis/deferred.rs`): for each defining file, the
     /// precise signature bundle (returns + correlated overloads) of every deferred
-    /// function, the type of every created global, and the type args of every deferred
+    /// function, the type of every call-typed global, and the type args of every deferred
     /// constructor self-field; for each workspace class, its harvested fields — all in
     /// ext-index space. Filled lazily on first read; lives behind the shared `Arc`, so
     /// a wholesale `Arc` rebuild naturally invalidates it. `#[serde(skip)]`
     /// (interior-mutable, runtime only).
     #[serde(skip)]
     pub deferred_harvests: crate::analysis::deferred::DeferredHarvests,
-    /// `@creates-global` side-effect globals whose type is harvested lazily from
-    /// the creating call's resolved return type (keyed by the global's scope0
-    /// symbol). Populated at build time from `deferred_call_type` globals; the
-    /// type is filled on first read via the deferred-call-global harvest in
-    /// `analysis/deferred.rs`. Runtime only — `#[serde(skip)]`.
+    /// Globals whose type is harvested lazily from a call's resolved return type
+    /// (keyed by the global's scope0 symbol): `@creates-global` side-effect
+    /// globals (`deferred_call_type`) and, in `build_on_stubs`, unannotated
+    /// `X = f(...)` globals (`assigned_call_offset`). The type is filled on first
+    /// read via the deferred-call-global harvest in `analysis/deferred.rs`.
+    /// Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
     pub deferred_call_globals:
         HashMap<SymbolIndex, crate::analysis::deferred::DeferredCallGlobal>,
@@ -587,6 +588,60 @@ fn populate_table_fields(
             description: None,
             from_scan: false,
         });
+    }
+}
+
+/// [`populate_table_fields`] onto a table that may already have fields: a field
+/// already present is kept (e.g. a method defined on the table), except that a
+/// nested constructor merges into an existing anonymous sub-table (e.g. one a deep
+/// `function X.sub.f()` definition created). Every `(table, field)` it adds, at
+/// any depth, goes into `added`.
+fn merge_table_fields(
+    table_idx: TableIndex,
+    fields: &[(String, crate::annotations::FieldValueKind)],
+    tables: &mut Vec<TableInfo>,
+    exprs: &mut Vec<Expr>,
+    number_literals: &mut HashMap<ExprId, String>,
+    string_literals: &mut HashMap<ExprId, String>,
+    added: &mut HashSet<(TableIndex, String)>,
+) {
+    use crate::annotations::FieldValueKind;
+    let mut missing = Vec::new();
+    for (name, kind) in fields {
+        let Some(fi) = tables[table_idx.ext_offset()].fields.get(name) else {
+            missing.push((name.clone(), kind.clone()));
+            continue;
+        };
+        if let FieldValueKind::Table(sub_fields) = kind
+            && fi.expr.is_external()
+            && let Expr::Literal(ValueType::Table(Some(sub_idx))) = exprs[fi.expr.ext_offset()]
+            && tables[sub_idx.ext_offset()].class_name.is_none()
+        {
+            merge_table_fields(sub_idx, sub_fields, tables, exprs, number_literals, string_literals, added);
+        }
+    }
+    populate_table_fields(table_idx.ext_offset(), &missing, tables, exprs, number_literals, string_literals);
+    record_added_fields(table_idx, &missing, tables, exprs, added);
+}
+
+/// Insert `(table_idx, name)` for each of `fields`, and for a nested constructor
+/// the fields [`populate_table_fields`] created in its sub-table.
+fn record_added_fields(
+    table_idx: TableIndex,
+    fields: &[(String, crate::annotations::FieldValueKind)],
+    tables: &[TableInfo],
+    exprs: &[Expr],
+    added: &mut HashSet<(TableIndex, String)>,
+) {
+    use crate::annotations::FieldValueKind;
+    for (name, kind) in fields {
+        added.insert((table_idx, name.clone()));
+        if let FieldValueKind::Table(sub_fields) = kind
+            && let Some(fi) = tables[table_idx.ext_offset()].fields.get(name)
+            && let Expr::Literal(ValueType::Table(Some(sub_idx))) = exprs[fi.expr.ext_offset()]
+        {
+            record_added_fields(sub_idx, sub_fields, tables, exprs, added);
+        }
     }
 }
 
@@ -996,12 +1051,22 @@ fn resolve_field_ref_chain(
         return ctx.symbols[sym_idx.ext_offset()].versions.last()?.resolved_type.clone();
     }
 
-    // Multi-name: walk tables to find the field value.
+    let root = *ctx.non_class_tables.get(&chain[0]).or_else(|| ctx.classes.get(&chain[0]))?;
+    resolve_field_ref_chain_from(root, chain, ctx)
+}
+
+/// The multi-name case of [`resolve_field_ref_chain`], with the table `chain[0]`
+/// names already resolved to `root`.
+fn resolve_field_ref_chain_from(
+    root: TableIndex,
+    chain: &[String],
+    ctx: &GlobalLookupCtx,
+) -> Option<ValueType> {
+    // Walk tables to find the field value.
     // At each step, if a field's table index is missing (Table(None)), fall back
     // to looking up the dotted class name (e.g. "Enum.BagIndex") in the class map.
-    let root = &chain[0];
-    let mut current_table = (*ctx.non_class_tables.get(root).or_else(|| ctx.classes.get(root))?).ext_offset();
-    let mut dotted_name = root.clone();
+    let mut current_table = root.ext_offset();
+    let mut dotted_name = chain[0].clone();
 
     // Walk intermediate names (all but last)
     for name in &chain[1..chain.len()-1] {
@@ -1440,8 +1505,7 @@ impl BuildContext {
                             path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                         });
                     }
-                } else if let Some(crate::annotations::AnnotationType::Simple(cn)) = g.returns.first()
-                    && let Some(&class_idx) = self.classes.get(cn.as_str()) {
+                } else if let Some(class_idx) = shared::table_global_class_alias(g, &self.classes, true) {
                     // Global variable name differs from its class name
                     // (e.g. `---@class tablelib\ntable = {}`). Alias the
                     // global name into self.classes so the global symbol
@@ -1902,7 +1966,7 @@ impl BuildContext {
                     && let Some(path) = &g.source_path
                 {
                     self.deferred_call_globals.insert(sym_idx, crate::analysis::deferred::DeferredCallGlobal {
-                        path: path.clone(), call_offset: g.def_start,
+                        path: path.clone(), call_offset: g.def_start, global: g.name.clone(), created: true,
                     });
                 }
                 if g.flavor_guard != 0 {
@@ -4224,6 +4288,29 @@ mod tests {
                 && matches!(args.as_slice(), [ValueType::TypeVariable(t)] if t == "T")),
             "Child should record a parent_type_binding for Parent<T>, got {:?}", bindings,
         );
+    }
+
+    #[test]
+    fn build_on_stubs_alias_chain_shares_call_harvest() {
+        // `A1 = A2`, `A2 = A3`, `A3 = A4` with `A4 = <call>` typed only by its
+        // harvest: every alias shares A4's harvest, not one hop per resolve round.
+        use crate::annotations::{ExternalGlobal, ExternalGlobalKind, FieldValueKind};
+        let alias = |name: &str, target: &str| ExternalGlobal::for_test(
+            name, ExternalGlobalKind::Variable(FieldValueKind::FieldRef(vec![target.to_string()])),
+        );
+        let mut call = ExternalGlobal::for_test(
+            "A4", ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(vec!["MakeThing".to_string()], None, Vec::new())),
+        );
+        call.source_path = Some(PathBuf::from("defs.lua"));
+        call.assigned_call_offset = Some(40);
+        let globals = vec![alias("A1", "A2"), alias("A2", "A3"), alias("A3", "A4"), call];
+
+        let result = PreResolvedGlobals::build_on_stubs(
+            &PreResolvedGlobals::empty(), &globals, &[], &[], false, &HashMap::default(), &HashSet::default(),
+        );
+        let a1 = result.scope0_symbols[&SymbolIdentifier::Name("A1".to_string())];
+        let shared = result.deferred_call_globals.get(&a1).expect("A1 shares A4's call harvest");
+        assert_eq!((shared.global.as_str(), shared.call_offset), ("A4", 40));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::collections::{HashMap, HashSet};
 use std::path::Path;
-use crate::ast::{AstNode, Block, Statement, Expression, ExpressionList, FunctionCall, Operator,
+use crate::ast::{AstNode, Assign, BinaryExpression, Block, Statement, Expression, ExpressionList, FunctionCall, Operator,
     LocalAssign, FunctionDefinition, ForCountLoop, ForInLoop, ParameterList};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
@@ -10,7 +10,7 @@ use super::{
 };
 use super::annotation_types::{parse_overload, OverloadSig};
 use super::annotation_scanning::{
-    ADDON_NS_NAME, ExternalGlobal, ExternalGlobalKind, FieldValueKind, InferredTypeCategory,
+    ADDON_NS_NAME, CtorField, ExternalGlobal, ExternalGlobalKind, FieldValueKind, InferredTypeCategory,
     is_select_varargs, collect_statements_recursive, infer_type_category, receiver_name,
     build_var_to_class, funcall_has_chained_receiver,
 };
@@ -263,6 +263,41 @@ fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>) -> Vec<(Stri
         }
     }
     fields
+}
+
+/// [`extract_table_field_kinds`] for a global's constructor, keeping each entry's
+/// key range for go-to-definition.
+fn extract_ctor_fields(tc: &crate::ast::TableConstructor<'_>) -> Vec<CtorField> {
+    let mut fields = Vec::new();
+    for field in tc.fields() {
+        if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
+            let r = field.syntax().children_with_tokens()
+                .find_map(|c| match c {
+                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text_range()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| field.syntax().text_range());
+            fields.push(CtorField {
+                name,
+                kind: nil_entries_unknown(classify_expression_value_kind(&value)),
+                range: (u32::from(r.start()), u32::from(r.end())),
+            });
+        }
+    }
+    fields
+}
+
+/// A `key = nil` constructor entry declares a field assigned later (often inside a
+/// function the scan doesn't type), so it is existence-only, not `nil`: typing it
+/// `nil` makes every cross-file use a false `cannot-call` / `type-mismatch`.
+fn nil_entries_unknown(kind: FieldValueKind) -> FieldValueKind {
+    match kind {
+        FieldValueKind::Nil => FieldValueKind::Unknown,
+        FieldValueKind::Table(fields) => FieldValueKind::Table(
+            fields.into_iter().map(|(name, kind)| (name, nil_entries_unknown(kind))).collect(),
+        ),
+        other => other,
+    }
 }
 
 /// Like [`classify_expression_value_kind`], but resolves a bare single-name
@@ -596,6 +631,9 @@ fn build_func_external(
         requires: annotations.requires,
         body_derived_returns: is_body_derived,
         deferred_call_type: false,
+        assigned_call_offset: None,
+        ctor_fields: Vec::new(),
+        declares_class: false,
         name_start,
         name_end,
         mixin_parents: Vec::new(),
@@ -1323,24 +1361,24 @@ pub fn scan_file_globals_with_synth(
                                 // (`Expression::Function` is handled by the early branch above.)
                                 Expression::Identifier(ident) => {
                                     let mut rhs_names = ident.names();
-                                    if rhs_names.len() == 2 {
-                                        let table_name = local_aliases.get(&rhs_names[0])
-                                            .cloned().unwrap_or_else(|| rhs_names[0].clone());
-                                        (ExternalGlobalKind::FieldRef(table_name, rhs_names[1].clone()), None, None, Vec::new())
-                                    } else if rhs_names.len() >= 2 {
-                                        // Multi-part reference (e.g. Enum.BagIndex.Backpack)
+                                    // Canonicalize the root of a field reference (e.g. Enum.BagIndex.Backpack)
+                                    if rhs_names.len() >= 2 {
                                         if addon_ns_var.as_deref() == Some(rhs_names[0].as_str()) {
                                             rhs_names[0] = ADDON_NS_NAME.to_string();
                                         } else if let Some(cn) = class_vars.get(&rhs_names[0]) {
                                             rhs_names[0] = cn.clone();
                                         } else if let Some(type_name) = local_type_vars.get(&rhs_names[0]) {
                                             rhs_names[0] = type_name.clone();
+                                        } else if let Some(alias) = local_aliases.get(&rhs_names[0]) {
+                                            rhs_names[0] = alias.clone();
                                         }
-                                        (ExternalGlobalKind::Variable(FieldValueKind::FieldRef(rhs_names)), None, None, Vec::new())
-                                    } else if rhs_names.len() == 1 {
-                                        (ExternalGlobalKind::Variable(FieldValueKind::FieldRef(rhs_names)), None, None, Vec::new())
-                                    } else {
+                                    }
+                                    if rhs_names.len() == 2 {
+                                        (ExternalGlobalKind::FieldRef(rhs_names[0].clone(), rhs_names[1].clone()), None, None, Vec::new())
+                                    } else if rhs_names.is_empty() {
                                         (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None, Vec::new())
+                                    } else {
+                                        (ExternalGlobalKind::Variable(FieldValueKind::FieldRef(rhs_names)), None, None, Vec::new())
                                     }
                                 }
                                 Expression::FunctionCall(call) => {
@@ -1375,10 +1413,24 @@ pub fn scan_file_globals_with_synth(
                             }};
                             // Extract @type or @class annotation for the variable
                             let annotations = extract_annotations(assign.syntax());
+                            let declares_class = class_vars.contains_key(&names[0]);
                             let returns: Vec<AnnotationType> = if let Some(class_name) = class_vars.get(&names[0]) {
                                 vec![AnnotationType::Simple(class_name.clone())]
                             } else {
                                 annotations.var_type.into_iter().collect()
+                            };
+                            // An unannotated call's resolved return type is harvested
+                            // as the global's type; a constructor's named entries
+                            // become the global table's fields.
+                            let assigned_call_offset = match &effective {
+                                Expression::FunctionCall(call) if returns.is_empty() => {
+                                    Some(u32::from(call.syntax().text_range().start()))
+                                }
+                                _ => None,
+                            };
+                            let ctor_fields = match &effective {
+                                Expression::TableConstructor(tc) => extract_ctor_fields(tc),
+                                _ => Vec::new(),
                             };
                             // Name-token range for precise navigation. Uses the LAST
                             // Name token so a redirected `_G.X = ...` points at the
@@ -1423,6 +1475,9 @@ pub fn scan_file_globals_with_synth(
                                 requires: Vec::new(),
                                 body_derived_returns: false,
                                 deferred_call_type: false,
+                                assigned_call_offset,
+                                ctor_fields,
+                                declares_class,
                                 name_start: ns, name_end: ne,
                                 mixin_parents,
                                 returns_class_name: false,
@@ -1645,6 +1700,9 @@ pub fn scan_file_globals_with_synth(
                                 requires: Vec::new(),
                                 body_derived_returns: false,
                                 deferred_call_type: false,
+                                assigned_call_offset: None,
+                                ctor_fields: Vec::new(),
+                                declares_class: false,
                                 name_start: u32::from(range.start()),
                                 name_end: u32::from(range.end()),
                                 mixin_parents: Vec::new(),
@@ -1816,6 +1874,9 @@ pub fn scan_file_globals_with_synth(
                     requires: Vec::new(),
                     body_derived_returns: false,
                     deferred_call_type: false,
+                    assigned_call_offset: None,
+                    ctor_fields: Vec::new(),
+                    declares_class: false,
                     name_start: ns,
                     name_end: ne,
                     mixin_parents: Vec::new(),
@@ -1977,6 +2038,9 @@ pub fn scan_file_globals_with_synth(
                 requires: Vec::new(),
                 body_derived_returns: false,
                 deferred_call_type: false,
+                assigned_call_offset: None,
+                ctor_fields: Vec::new(),
+                declares_class: false,
                 name_start: ns,
                 name_end: ne,
                 mixin_parents: Vec::new(),
@@ -2250,6 +2314,9 @@ pub fn scan_created_globals(
                 requires: Vec::new(),
                 body_derived_returns: false,
                 deferred_call_type: true,
+                assigned_call_offset: None,
+                ctor_fields: Vec::new(),
+                declares_class: false,
                 name_start: u32::from(range.start()),
                 name_end: u32::from(range.end()),
                 mixin_parents: Vec::new(),
@@ -2262,11 +2329,42 @@ pub fn scan_created_globals(
     out
 }
 
+/// Whether `call` is the value a single-target `name = ...` (or `_G.name = ...`)
+/// assignment gives the global: its right-hand side, or the effective operand of an
+/// `and`/`or` chain there ([`unwrap_logical_chain`]) — where the main scan takes an
+/// `assigned_call_offset` from.
+pub(crate) fn call_assigns_global(call: &FunctionCall<'_>, name: &str) -> bool {
+    let mut node = call.syntax();
+    let mut parent = node.parent();
+    while let Some(p) = parent
+        && let Some(bin) = BinaryExpression::cast(p)
+        && matches!(bin.kind(), Operator::And | Operator::Or)
+        && bin.get_terms().get(1).is_some_and(|rhs| rhs.syntax().text_range() == node.text_range())
+    {
+        node = p;
+        parent = p.parent();
+    }
+    let Some(expr_list) = parent.and_then(ExpressionList::cast) else { return false };
+    let Some(assign) = expr_list.syntax().parent().and_then(Assign::cast) else { return false };
+    let Some(var_list) = assign.variable_list() else { return false };
+    let idents = var_list.identifiers();
+    if idents.len() != 1 || expr_list.expressions().len() != 1
+        || idents[0].has_prefix_expr_base() || idents[0].has_non_string_bracket_tail()
+    {
+        return false;
+    }
+    let mut names = idents[0].names();
+    if names.len() == 2 && names[0] == "_G" {
+        names.remove(0);
+    }
+    names.len() == 1 && names[0] == name
+}
+
 /// If `call` invokes a `@creates-global` function (per `specs`) with a
 /// string-literal at the name parameter, return the created global's name (e.g.
 /// `CreateFrame("Button", "X")` → `Some("X")`). The global's *type* is not
 /// derived here — it is harvested from the call's resolved return type.
-fn extract_created_global(call: &FunctionCall<'_>, specs: &CreatesGlobalMap) -> Option<String> {
+pub(crate) fn extract_created_global(call: &FunctionCall<'_>, specs: &CreatesGlobalMap) -> Option<String> {
     let ident = call.identifier()?;
     if ident.is_call_to_self() { return None; }
     let names = ident.names();
@@ -2295,7 +2393,8 @@ pub fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor<'_>) -
                         if lit.get_string().is_some() { AnnotationType::Simple("string".into()) }
                         else if lit.get_number().is_some() { AnnotationType::Simple("number".into()) }
                         else if lit.get_bool().is_some() { AnnotationType::Simple("boolean".into()) }
-                        else if lit.is_nil() { AnnotationType::Simple("nil".into()) }
+                        // `key = nil` declares a field assigned later: untyped (see
+                        // `nil_entries_unknown`).
                         else { AnnotationType::Simple("any".into()) }
                     }
                     Expression::UnaryExpression(u) if matches!(u.kind(), crate::ast::Operator::Subtract) => {

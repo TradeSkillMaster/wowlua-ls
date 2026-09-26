@@ -2173,7 +2173,7 @@ pub use annotation_types::OverloadSig;
 pub use annotation_types::parse_overload;
 
 pub use annotation_scanning::{
-    FieldValueKind, ExternalGlobalKind, ExternalGlobal, CreatesGlobalSpec, GeneratesEventsSpec,
+    FieldValueKind, ExternalGlobalKind, ExternalGlobal, CtorField, CreatesGlobalSpec, GeneratesEventsSpec,
     CallbackRegistryDecl, StringArrayConstDecl,
     SuppressionKind, DiagnosticSuppression, scan_diagnostic_directives,
     DIAGNOSTIC_DIRECTIVE_MARKER, find_diagnostic_directive, strip_trailing_diagnostic_directive,

@@ -289,6 +289,16 @@ pub struct GeneratesEventsSpec {
     pub field_name: String,
 }
 
+/// A named entry of the table constructor a `Table` global is assigned
+/// (`X = { a = 1 }`). See [`ExternalGlobal::ctor_fields`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CtorField {
+    pub name: String,
+    pub kind: FieldValueKind,
+    /// Byte range of the entry's key, for go-to-definition. Positional only.
+    pub range: (u32, u32),
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExternalGlobal {
     pub name: String,
@@ -395,6 +405,22 @@ pub struct ExternalGlobal {
     /// (workspace-detected, never stubs) — `#[serde(skip)]`, no BLOB_VERSION bump.
     #[serde(skip)]
     pub deferred_call_type: bool,
+    /// For an unannotated `X = f(...)` global, the start offset of the call, so the
+    /// global's type can be harvested from the call's resolved return type the same
+    /// way as a `deferred_call_type` global's. Runtime only — `#[serde(skip)]`, no
+    /// BLOB_VERSION bump.
+    #[serde(skip)]
+    pub assigned_call_offset: Option<u32>,
+    /// For a `Table` global assigned a constructor (`X = { a = 1 }`), the
+    /// constructor's named entries, which `build_on_stubs` materializes onto the
+    /// global's table. Runtime only — `#[serde(skip)]`, no BLOB_VERSION bump.
+    #[serde(skip)]
+    pub ctor_fields: Vec<CtorField>,
+    /// `returns` is the class this global *is* — a `---@class Foo` on its own
+    /// assignment (`Bar = {}`) — rather than a `---@type` for its value. Runtime
+    /// only — `#[serde(skip)]`, no BLOB_VERSION bump.
+    #[serde(skip)]
+    pub declares_class: bool,
     /// Byte range of the function/variable *name* token (for precise diagnostic
     /// positioning). Falls back to `def_start`/`def_end` when unavailable.
     #[serde(default)]
@@ -465,6 +491,9 @@ impl ExternalGlobal {
             requires: Vec::new(),
             body_derived_returns: false,
             deferred_call_type: false,
+            assigned_call_offset: None,
+            ctor_fields: Vec::new(),
+            declares_class: false,
             name_start: 0,
             name_end: 0,
             mixin_parents: Vec::new(),
@@ -1031,6 +1060,9 @@ pub fn scan_method_funcall_self_fields(
                 requires: Vec::new(),
                 body_derived_returns: false,
                 deferred_call_type: false,
+                assigned_call_offset: None,
+                ctor_fields: Vec::new(),
+                declares_class: false,
                 name_start: range.0,
                 name_end: range.1,
                 mixin_parents: Vec::new(),

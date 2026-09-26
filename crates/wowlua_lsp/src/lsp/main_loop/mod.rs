@@ -2472,6 +2472,9 @@ mod tests {
                 requires: Vec::new(),
                 body_derived_returns: false,
                 deferred_call_type: false,
+                assigned_call_offset: None,
+                ctor_fields: Vec::new(),
+                declares_class: false,
                 name_start: 0,
                 name_end: 0,
                 mixin_parents: Vec::new(),
@@ -2969,6 +2972,9 @@ mod tests {
             requires: Vec::new(),
             body_derived_returns: false,
             deferred_call_type: false,
+            assigned_call_offset: None,
+            ctor_fields: Vec::new(),
+            declares_class: false,
             name_start: 0,
             name_end: 0,
             mixin_parents: Vec::new(),
@@ -3246,6 +3252,33 @@ mod tests {
         assert!(
             matches!(rebuild(named("\n", "\"A\", \"B\"")), RebuildScope::None),
             "moving the call without changing its members must not trigger a rebuild",
+        );
+    }
+
+    #[test]
+    fn table_ctor_entry_edits_trigger_rebuild() {
+        // A global table's constructor entries are its fields in other files, so
+        // editing one must rebuild; moving the constructor must not.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let mut rebuild = |src: &str| {
+            let tree = crate::syntax::parser::parse(src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws)
+        };
+
+        let _ = rebuild("Settings = { size = 1 }\n");
+        match rebuild("Settings = { size = \"large\" }\n") {
+            RebuildScope::Incremental(names) => assert!(names.contains("Settings"), "changed table must be named: {names:?}"),
+            RebuildScope::Full => panic!("expected Incremental scope, got Full"),
+            RebuildScope::None => panic!("a constructor entry edit must trigger a rebuild"),
+        }
+        assert!(
+            !matches!(rebuild("Settings = { size = \"large\", scale = 2 }\n"), RebuildScope::None),
+            "an added constructor entry must trigger a rebuild",
+        );
+        assert!(
+            matches!(rebuild("\n\nSettings = {\n    size = \"large\", scale = 2,\n}\n"), RebuildScope::None),
+            "moving the constructor must not trigger a rebuild",
         );
     }
 

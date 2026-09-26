@@ -23,10 +23,11 @@
 //!   function indices and partitions FrameXML names. Their shared *leaf* — the
 //!   scan-field `FieldInfo` construction — is factored into [`scan_literal_field`].
 //! - `build_methods_and_table_fields` — the warm path skips stub names, marks
-//!   constructors by name from the merged stub+workspace set, and copies
-//!   self-scanned fields off auto-created sub-tables; the cold path has the
-//!   `Simple(cn)` class-alias branch and the `is_override` insert. Same shared
-//!   leaf via [`scan_literal_field`].
+//!   constructors by name from the merged stub+workspace set, copies
+//!   self-scanned fields off auto-created sub-tables, and merges global table
+//!   constructors; the cold path has the `is_override` insert. Same shared leaf
+//!   via [`scan_literal_field`]; both decide a table global's class alias with
+//!   [`table_global_class_alias`], under different rules (see there).
 //! - `finish` — the cold path builds a fresh `PreResolvedGlobals` and partitions
 //!   FrameXML scope-0 symbols; the warm path layers onto `stubs_base` (inheriting
 //!   `creates_global_specs`, metatable indices, stub end markers, event maps,
@@ -190,6 +191,26 @@ pub fn scan_literal_field(
         description: None,
         from_scan: true,
     }
+}
+
+/// The class table a `Bar = { ... }` table global aliases (the global name is
+/// added to `classes` and points at it): the differently-named class its own
+/// `---@class Foo` declares (`---@class tablelib` on `table = {}`). With
+/// `alias_type_annotations`, a `---@type Foo` on it aliases too — the cold
+/// build's rule, which the generated named-frame stubs (`---@type Template` on
+/// `Name = {}`) rely on. The workspace build passes `false`: a `---@type` global is
+/// an instance, and aliasing would add its own fields and methods to `Foo` (and
+/// make `---@type table` alias the stdlib `tablelib`).
+pub fn table_global_class_alias(
+    g: &crate::annotations::ExternalGlobal,
+    classes: &HashMap<String, TableIndex>,
+    alias_type_annotations: bool,
+) -> Option<TableIndex> {
+    if !g.declares_class && !alias_type_annotations {
+        return None;
+    }
+    let Some(AnnotationType::Simple(cn)) = g.returns.first() else { return None };
+    classes.get(cn.as_str()).copied()
 }
 
 /// Group deferred-return function indices by their defining file path. Identical

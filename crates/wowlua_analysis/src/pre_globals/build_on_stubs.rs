@@ -7,7 +7,8 @@ use crate::annotations::{AnnotationType, ClassDecl, AliasDecl};
 use super::{
     PreResolvedGlobals,
     record_field_location, walk_deep_path,
-    resolve_funcall_chain, GlobalLookupCtx, populate_table_fields,
+    resolve_funcall_chain, resolve_field_ref_chain_from, GlobalLookupCtx,
+    populate_table_fields, merge_table_fields,
     FnBuildCtx, FnMeta, DeepPathCtx,
     apply_mixin_parent_inheritance,
 };
@@ -51,6 +52,13 @@ struct BuildOnStubsContext<'a> {
     table_source_locations: HashMap<String, ExternalLocation>,
     class_globals: HashSet<String>,
     sub_tables: HashMap<(String, String), TableIndex>,
+    /// `(table, field)` entries created from a global table constructor. A typed
+    /// write to one (a literal, a resolved call, a reference) replaces it; an
+    /// untyped write keeps it.
+    ctor_entries: HashSet<(TableIndex, String)>,
+    /// `---@type` annotation of each table global that has one (`---@type Foo` on
+    /// `Bar = {}`); see `annotated_table_global_type`.
+    table_global_types: HashMap<String, AnnotationType>,
 
     // Doc generation
     declared_class_fields: HashMap<String, HashSet<String>>,
@@ -124,6 +132,8 @@ impl<'a> BuildOnStubsContext<'a> {
             table_source_locations: HashMap::default(),
             class_globals: HashSet::default(),
             sub_tables: HashMap::default(),
+            ctor_entries: HashSet::default(),
+            table_global_types: HashMap::default(),
             declared_class_fields: HashMap::default(),
             deferred_returns: HashSet::default(),
             conflicting_arity_funcs: HashSet::default(),
@@ -137,10 +147,25 @@ impl<'a> BuildOnStubsContext<'a> {
         super::shared::register_global(&mut self.symbols, &mut self.scope0_symbols, name, resolved_type)
     }
 
+    /// True when the built-in stubs already define the global `name`.
+    fn is_stub_global(&self, name: &str) -> bool {
+        let id = SymbolIdentifier::Name(name.to_string());
+        self.stubs_base.scope0_symbols.contains_key(&id) || self.stubs_base.framexml_scope0_symbols.contains_key(&id)
+    }
+
     /// Returns true if this global entry has a deep path rooted at a class global,
     /// meaning it should be skipped to avoid fabricating sub-tables on class tables.
     fn is_deep_class_global(&self, name: &str, path: &[String]) -> bool {
         !path.is_empty() && self.class_globals.contains(name)
+    }
+
+    /// The resolved type of the scope-0 global `name` (`scope0_symbols`, then the
+    /// FrameXML-only `framexml_scope0_symbols`).
+    fn scope0_global_type(&self, name: &str) -> Option<&ValueType> {
+        let id = SymbolIdentifier::Name(name.to_string());
+        let &sym_idx = self.scope0_symbols.get(&id)
+            .or_else(|| self.framexml_scope0_symbols.get(&id))?;
+        self.symbols[sym_idx.ext_offset()].versions.last()?.resolved_type.as_ref()
     }
 
     /// Resolve `name` to the table it names via the built-in stub scope-0 symbols
@@ -149,10 +174,7 @@ impl<'a> BuildOnStubsContext<'a> {
     /// stub namespace tables (`Settings`, `C_Timer`) and stub globals typed as a
     /// class instance alike — callers needing to exclude the latter check `class_name`.
     fn scope0_table_idx(&self, name: &str) -> Option<TableIndex> {
-        let id = SymbolIdentifier::Name(name.to_string());
-        let &sym_idx = self.scope0_symbols.get(&id)
-            .or_else(|| self.framexml_scope0_symbols.get(&id))?;
-        match self.symbols[sym_idx.ext_offset()].versions.last()?.resolved_type.as_ref()? {
+        match self.scope0_global_type(name)? {
             ValueType::Table(Some(idx)) => Some(*idx),
             _ => None,
         }
@@ -290,6 +312,9 @@ impl<'a> BuildOnStubsContext<'a> {
 
         for g in ws_globals {
             if let ExternalGlobalKind::Table = &g.kind {
+                if !g.declares_class && let Some(at) = g.returns.first() {
+                    self.table_global_types.entry(g.name.clone()).or_insert_with(|| at.clone());
+                }
                 if self.classes.contains_key(&g.name) {
                     self.class_globals.insert(g.name.clone());
                     if let Some(path) = &g.source_path {
@@ -298,14 +323,17 @@ impl<'a> BuildOnStubsContext<'a> {
                         });
                     }
                 } else if !self.non_class_tables.contains_key(&g.name) {
-                    // Check if stubs already registered this as a scope0 symbol
-                    if self.stubs_base.scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone()))
-                        || self.stubs_base.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone())) {
-                        continue;
+                    if self.is_stub_global(&g.name) { continue; }
+                    if let Some(class_idx) = super::shared::table_global_class_alias(g, &self.classes, false) {
+                        // Declared as a differently-named class (`---@class Foo` on
+                        // `Bar = {}`): the global is that class, so its members land there.
+                        self.classes.insert(g.name.clone(), class_idx);
+                        self.class_globals.insert(g.name.clone());
+                    } else {
+                        let table_idx = TableIndex(EXT_BASE + self.tables.len());
+                        self.tables.push(TableInfo::default());
+                        self.non_class_tables.insert(g.name.clone(), table_idx);
                     }
-                    let table_idx = TableIndex(EXT_BASE + self.tables.len());
-                    self.tables.push(TableInfo::default());
-                    self.non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         self.table_source_locations.insert(g.name.clone(), ExternalLocation {
                             path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
@@ -622,6 +650,34 @@ impl<'a> BuildOnStubsContext<'a> {
             }
         }
 
+        // Materialize each global table's constructor entries (`X = { a = 1 }`).
+        // After the method pass so a same-named `function X.a()` keeps its
+        // signature, and before the field-write passes so other fields can refer to
+        // the entries and a deep `X.sub.b = v` extends the constructor's `sub`; those
+        // passes let a typed write replace an entry (`ctor_entries`). Not onto a
+        // built-in namespace table: `X = X or { ... }` keeps the stub's.
+        for g in ws_globals {
+            if !matches!(g.kind, ExternalGlobalKind::Table) || g.ctor_fields.is_empty() { continue; }
+            if self.is_stub_global(&g.name) { continue; }
+            let Some(&table_idx) = self.non_class_tables.get(&g.name) else { continue };
+            let local_idx = table_idx.ext_offset();
+            if let Some(path) = &g.source_path {
+                for f in &g.ctor_fields {
+                    if !self.tables[local_idx].fields.contains_key(&f.name) {
+                        self.field_locations.entry(table_idx).or_default()
+                            .entry(f.name.clone())
+                            .or_insert_with(|| ExternalLocation {
+                                path: path.clone(), start: f.range.0, end: f.range.1, ..Default::default()
+                            });
+                    }
+                }
+            }
+            let fields: Vec<(String, FieldValueKind)> = g.ctor_fields.iter()
+                .map(|f| (f.name.clone(), f.kind.clone()))
+                .collect();
+            merge_table_fields(table_idx, &fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.ctor_entries);
+        }
+
         // Build workspace table field entries (unified — see `build` for semantics).
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
@@ -716,6 +772,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     };
                     self.tables[local_idx].fields.insert(field_name.clone(),
                         super::shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
+                    self.ctor_entries.remove(&(leaf_idx, field_name.clone()));
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                 }
             }
@@ -813,7 +870,11 @@ impl<'a> BuildOnStubsContext<'a> {
             }
         }
 
-        // Register workspace simple global variables
+        // Register workspace simple global variables. `variable_syms` holds the
+        // symbols registered here (for the call/reference pass below), and
+        // `created_syms` the `@creates-global` ones among them.
+        let mut variable_syms: HashSet<SymbolIndex> = HashSet::default();
+        let mut created_syms: HashSet<SymbolIndex> = HashSet::default();
         for g in ws_globals {
             if let ExternalGlobalKind::Variable(vk) = &g.kind {
                 if self.scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone()))
@@ -834,11 +895,19 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                 };
                 let sym_idx = self.register_global(&g.name, resolved_type);
-                if g.deferred_call_type
+                variable_syms.insert(sym_idx);
+                // A created global's def range is its creating call.
+                let call_offset = if g.deferred_call_type {
+                    created_syms.insert(sym_idx);
+                    Some(g.def_start)
+                } else {
+                    g.assigned_call_offset
+                };
+                if let Some(call_offset) = call_offset
                     && let Some(path) = &g.source_path
                 {
                     self.deferred_call_globals.insert(sym_idx, crate::analysis::deferred::DeferredCallGlobal {
-                        path: path.clone(), call_offset: g.def_start,
+                        path: path.clone(), call_offset, global: g.name.clone(), created: g.deferred_call_type,
                     });
                 }
                 if g.flavor_guard != 0 {
@@ -861,6 +930,7 @@ impl<'a> BuildOnStubsContext<'a> {
         // Register workspace non-class tables as scope0 symbols
         let nct_entries: Vec<(String, TableIndex)> = self.non_class_tables.iter()
             .map(|(name, &idx)| (name.clone(), idx)).collect();
+        let mut annotated_table_syms: Vec<(String, TableIndex, SymbolIndex)> = Vec::new();
         for (name, table_idx) in nct_entries {
             // A reused stub namespace table already owns its scope-0 symbol (from the
             // stubs); re-registering would push a fresh symbol and orphan the stub's
@@ -868,7 +938,11 @@ impl<'a> BuildOnStubsContext<'a> {
             if self.scope0_resolves_to(&name, table_idx) {
                 continue;
             }
-            let sym_idx = self.register_global(&name, Some(ValueType::Table(Some(table_idx))));
+            let annotated = self.annotated_table_global_type(&name, table_idx);
+            let sym_idx = self.register_global(&name, Some(annotated.clone().unwrap_or(ValueType::Table(Some(table_idx)))));
+            if annotated.is_some() {
+                annotated_table_syms.push((name.clone(), table_idx, sym_idx));
+            }
             if let Some(loc) = self.table_source_locations.get(&name) {
                 self.symbol_locations.insert(sym_idx, loc.clone());
             }
@@ -892,6 +966,49 @@ impl<'a> BuildOnStubsContext<'a> {
             }
         }
 
+        // Type the globals assigned a call or a reference: the variables registered
+        // above (created globals are left to the harvest, as in the cold path) and
+        // the `X = t.field` field-ref globals, registered here even when the field
+        // can't be typed so the global still exists. Resolved now so the field
+        // passes below see them (`ns.x = X`), and again at the end for references
+        // to fields those passes type. A call's precise type is harvested lazily
+        // (`deferred_call_globals`); this coarse type is its fallback.
+        let mut pending: Vec<(FieldValueKind, SymbolIndex)> = Vec::new();
+        for g in ws_globals {
+            match &g.kind {
+                ExternalGlobalKind::Variable(vk @ (FieldValueKind::FunctionCall(..) | FieldValueKind::FieldRef(_))) => {
+                    if let Some(&sym_idx) = self.scope0_symbols.get(&SymbolIdentifier::Name(g.name.clone()))
+                        && variable_syms.contains(&sym_idx)
+                        && !created_syms.contains(&sym_idx)
+                    {
+                        pending.push((vk.clone(), sym_idx));
+                    }
+                }
+                ExternalGlobalKind::FieldRef(table_name, field_name) => {
+                    let id = SymbolIdentifier::Name(g.name.clone());
+                    let sym_idx = if let Some(&existing) = self.scope0_symbols.get(&id) {
+                        // Already a variable: this assignment may still type it.
+                        if !variable_syms.contains(&existing) || created_syms.contains(&existing) { continue; }
+                        existing
+                    } else if self.framexml_scope0_symbols.contains_key(&id) {
+                        continue;
+                    } else {
+                        let sym_idx = self.register_global(&g.name, None);
+                        variable_syms.insert(sym_idx);
+                        if let Some(path) = &g.source_path {
+                            self.symbol_locations.insert(sym_idx, ExternalLocation {
+                                path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
+                            });
+                        }
+                        sym_idx
+                    };
+                    pending.push((FieldValueKind::FieldRef(vec![table_name.clone(), field_name.clone()]), sym_idx));
+                }
+                _ => {}
+            }
+        }
+        self.resolve_assigned_types(&mut pending);
+
         // Resolve workspace FunctionCall table fields
         for g in ws_globals {
             if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg, _)) = &g.kind {
@@ -902,9 +1019,11 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
+                let ctor_entry = (table_idx, field_name.clone());
+                let is_ctor_entry = self.ctor_entries.contains(&ctor_entry);
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
                 // Even when skipping, record the source location for go-to-definition.
-                if self.tables[local_idx].fields.get(field_name)
+                if !is_ctor_entry && self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     continue;
@@ -920,19 +1039,26 @@ impl<'a> BuildOnStubsContext<'a> {
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
                             super::shared::scan_literal_field(expr_idx, field_name, Some(vt), 0, self.implicit_protected_prefix, g.visibility));
+                        self.ctor_entries.remove(&ctor_entry);
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                     continue;
                 }
                 let return_type = resolve_funcall_chain(callee_chain, &self.global_lookup_ctx())
                     .and_then(strip_unbound_type_vars);
-                let vt = return_type.or_else(|| {
+                let resolved = return_type.or_else(|| {
                     first_string_arg.as_ref()
                         .and_then(|name| self.classes.get(name.as_str()))
                         .map(|&idx| ValueType::Table(Some(idx)))
                 }).or_else(|| {
                     self.classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
-                }).or_else(|| {
+                });
+                // A call the scan can't type leaves a constructor entry in place.
+                if resolved.is_none() && is_ctor_entry {
+                    record_field_location(&mut self.field_locations, table_idx, field_name, g);
+                    continue;
+                }
+                let vt = resolved.or_else(|| {
                     // Last resort: the named call resolved to nothing — an unresolvable
                     // callee (a chained/wrapped receiver, a file-local factory the
                     // cross-file scan can't follow, a generic whose return was filtered
@@ -967,6 +1093,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     };
                     self.tables[local_idx].fields.insert(field_name.clone(),
                         super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
+                    self.ctor_entries.remove(&ctor_entry);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
             }
@@ -983,9 +1110,10 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
+                let ctor_entry = (table_idx, field_name.clone());
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
                 // Even when skipping, record the source location for go-to-definition.
-                if self.tables[local_idx].fields.get(field_name)
+                if !self.ctor_entries.contains(&ctor_entry) && self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     continue;
@@ -994,14 +1122,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 // Single-element ref: direct global reference (e.g. `Debug.Stack = debugstack`).
                 // Look up the global in scope0 symbols and use its type directly.
                 if ref_chain.len() == 1 {
-                    let sym_id = SymbolIdentifier::Name(ref_chain[0].clone());
-                    let resolved = self.scope0_symbols.get(&sym_id)
-                        .or_else(|| self.framexml_scope0_symbols.get(&sym_id))
-                        .and_then(|sym_idx| {
-                            let sym = &self.symbols[sym_idx.ext_offset()];
-                            sym.versions.last()?.resolved_type.clone()
-                        });
-                    if let Some(vt) = resolved {
+                    if let Some(vt) = self.scope0_global_type(&ref_chain[0]).cloned() {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         // A field aliasing a resolved global (`X.LS = LibStub`) is a real
@@ -1014,6 +1135,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         let annotation = matches!(vt, ValueType::Table(_)).then_some(vt);
                         self.tables[local_idx].fields.insert(field_name.clone(),
                             super::shared::scan_literal_field(expr_idx, field_name, annotation, 0, self.implicit_protected_prefix, g.visibility));
+                        self.ctor_entries.remove(&ctor_entry);
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                     continue;
@@ -1064,6 +1186,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
                             super::shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix, g.visibility));
+                        self.ctor_entries.remove(&ctor_entry);
                     }
                 }
             }
@@ -1164,33 +1287,101 @@ impl<'a> BuildOnStubsContext<'a> {
             }
         }
 
-        // Register workspace field-ref globals
-        for g in ws_globals {
-            if let ExternalGlobalKind::FieldRef(table_name, field_name) = &g.kind {
-                if self.scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone()))
-                    || self.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone())) {
-                    continue;
-                }
-                let table_local_idx = self.non_class_tables.get(table_name)
-                    .or_else(|| self.classes.get(table_name))
-                    .map(|idx| idx.ext_offset());
-                if let Some(local_idx) = table_local_idx
-                    && let Some(field) = self.tables[local_idx].fields.get(field_name) {
-                        let resolved_type = match &self.exprs[field.expr.ext_offset()] {
-                            Expr::FunctionDef(func_idx) => Some(ValueType::Function(Some(*func_idx))),
-                            _ => None,
-                        };
-                        if let Some(resolved_type) = resolved_type {
-                            let sym_idx = self.register_global(&g.name, Some(resolved_type));
-                            if let Some(path) = &g.source_path {
-                                self.symbol_locations.insert(sym_idx, ExternalLocation {
-                                    path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
-                                });
-                            }
-                        }
-                    }
+        // The field passes above may have given a `---@type` table global members
+        // its class lacks; retype it with the final set.
+        for (name, own, sym_idx) in &annotated_table_syms {
+            if let Some(ty) = self.annotated_table_global_type(name, *own)
+                && let Some(ver) = self.symbols[sym_idx.ext_offset()].versions.last_mut()
+            {
+                ver.resolved_type = Some(ty);
             }
         }
+
+        // Now that the field passes above have typed every table field, resolve the
+        // references to them still pending (`X = ns.Foo` with `ns.Foo = f()`).
+        self.resolve_assigned_types(&mut pending);
+    }
+
+    /// The type of a `---@type Foo` table global whose own table is `own`: `Foo`,
+    /// or `Foo & own` when it has members `Foo` lacks (its defining file sees them)
+    /// — without adding them to `Foo`. `None` keeps `own`: no annotation, one that
+    /// doesn't resolve, or a bare `table`, which its own table already satisfies.
+    fn annotated_table_global_type(&self, name: &str, own: TableIndex) -> Option<ValueType> {
+        let at = self.table_global_types.get(name)?;
+        match crate::annotations::resolve_annotation_type(at, &[], &self.classes, &self.aliases)? {
+            ValueType::Table(None) => None,
+            ValueType::Table(Some(class)) if self.tables[class.ext_offset()].class_name.is_some() => {
+                let has_own_members = self.tables[own.ext_offset()].fields.keys()
+                    .any(|k| super::lookup_field_with_parents(&self.tables, class.ext_offset(), k).is_none());
+                Some(if has_own_members {
+                    ValueType::Intersection(vec![ValueType::Table(Some(class)), ValueType::Table(Some(own))])
+                } else {
+                    ValueType::Table(Some(class))
+                })
+            }
+            vt => Some(vt),
+        }
+    }
+
+    /// Type each pending `(value, symbol)` global assigned a call or a reference
+    /// (`X = CreateFont(...)`, `X = Enum.Foo.Bar`, `X = OtherGlobal`) and drop it
+    /// once typed. Repeats until no progress so `X = Y` resolves whichever of the
+    /// two was scanned first. A reference to a global whose type is only harvested
+    /// from a call (`X = Y` with `Y = CreateFrame(...)`) harvests from the same call.
+    fn resolve_assigned_types(&mut self, pending: &mut Vec<(crate::annotations::FieldValueKind, SymbolIndex)>) {
+        use crate::annotations::FieldValueKind;
+        // Typing an entry or sharing a harvest with it both unblock others; each
+        // symbol is typed or given a harvest at most once, so this terminates.
+        let mut progressed = true;
+        while progressed {
+            progressed = false;
+            pending.retain(|(vk, sym_idx)| {
+                let sym_idx = *sym_idx;
+                if self.symbols[sym_idx.ext_offset()].versions.last().is_some_and(|v| v.resolved_type.is_some()) {
+                    return false;
+                }
+                if let Some(vt) = self.assigned_value_type(vk) {
+                    if let Some(ver) = self.symbols[sym_idx.ext_offset()].versions.last_mut() {
+                        ver.resolved_type = Some(vt);
+                    }
+                    progressed = true;
+                    return false;
+                }
+                if let FieldValueKind::FieldRef(names) = vk
+                    && let [name] = names.as_slice()
+                    && !self.deferred_call_globals.contains_key(&sym_idx)
+                    && let Some(dcg) = self.scope0_symbols.get(&SymbolIdentifier::Name(name.clone()))
+                        .and_then(|referent| self.deferred_call_globals.get(referent))
+                        .cloned()
+                {
+                    self.deferred_call_globals.insert(sym_idx, dcg);
+                    progressed = true;
+                }
+                true
+            });
+        }
+    }
+
+    /// Coarse type of a global assigned `vk`: a call's declared return, or the
+    /// type of the referenced global / table field. A reference may be rooted at a
+    /// built-in stub table (`Enum.BagIndex.Backpack`).
+    fn assigned_value_type(&self, vk: &crate::annotations::FieldValueKind) -> Option<ValueType> {
+        use crate::annotations::FieldValueKind;
+        match vk {
+            FieldValueKind::FunctionCall(callee, _, _) => {
+                resolve_funcall_chain(callee, &self.global_lookup_ctx()).and_then(strip_unbound_type_vars)
+            }
+            FieldValueKind::FieldRef(names) => match names.as_slice() {
+                [] => None,
+                [name] => self.scope0_global_type(name).cloned(),
+                [root, ..] => {
+                    let root_idx = self.non_class_tables.get(root).or_else(|| self.classes.get(root)).copied()
+                        .or_else(|| self.scope0_table_idx(root))?;
+                    resolve_field_ref_chain_from(root_idx, names, &self.global_lookup_ctx())
+                }
+            },
+            _ => None,
+        }.filter(|vt| !vt.contains_type_variable())
     }
 
     fn finish(self, ws_classes: &[ClassDecl], ws_globals: &[crate::annotations::ExternalGlobal]) -> PreResolvedGlobals {
@@ -1396,7 +1587,8 @@ impl PreResolvedGlobals {
             match &g.kind {
                 ExternalGlobalKind::Function
                 | ExternalGlobalKind::Variable(_)
-                | ExternalGlobalKind::Table => {
+                | ExternalGlobalKind::Table
+                | ExternalGlobalKind::FieldRef(..) => {
                     if let Some(path) = &g.source_path {
                         push_distinct_location(
                             pg.symbol_locations_by_name.entry(g.name.clone()).or_default(),
