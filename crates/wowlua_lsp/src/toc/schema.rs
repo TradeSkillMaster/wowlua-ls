@@ -139,7 +139,7 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
     },
     TocFieldDef {
         name: "AllowLoadGameType",
-        doc: "Restricts which game flavors can load this addon. Comma-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`. If omitted, the addon loads on all flavors.",
+        doc: "Restricts which game flavors can load this addon. Comma-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot`. If omitted, the addon loads on all flavors.",
         required: false,
         value_kind: TocValueKind::GameTypeList,
         aliases: &[],
@@ -149,7 +149,7 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
     // neither), and is included on a maintainer report that the client honors it.
     TocFieldDef {
         name: "ExcludeLoadGameType",
-        doc: "The inverse of `AllowLoadGameType`: the addon loads on every game flavor *except* the ones listed. Comma- or space-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`.",
+        doc: "The inverse of `AllowLoadGameType`: the addon loads on every game flavor *except* the ones listed. Comma- or space-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot`.",
         required: false,
         value_kind: TocValueKind::GameTypeList,
         aliases: &[],
@@ -208,8 +208,9 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
 /// Known values for the `AllowLoadGameType` / `ExcludeLoadGameType` headers and
 /// their per-line directive forms.
 pub static GAME_TYPE_VALUES: &[(&str, &str)] = &[
-    ("mainline", "Retail (The War Within, etc.)"),
+    ("mainline", "Retail and Forever"),
     ("standard", "Retail, excluding Plunderstorm"),
+    ("camelot", "World of Warcraft: Forever"),
     ("classic", "All Classic flavors (Classic Era, Cata, Wrath, TBC, Mists)"),
     ("vanilla", "Classic Era (Vanilla only)"),
     ("cata", "Cataclysm Classic"),
@@ -222,8 +223,8 @@ pub static GAME_TYPE_VALUES: &[(&str, &str)] = &[
 
 /// Known `[Directive]` names for file path lines (load conditions + path variables).
 pub static FILE_DIRECTIVES: &[(&str, &str)] = &[
-    ("AllowLoadGameType", "Restricts this file to specific game flavors (comma- or space-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, plunderstorm, wowhack)."),
-    ("ExcludeLoadGameType", "Loads this file on every game flavor except the ones listed (comma- or space-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, plunderstorm, wowhack)."),
+    ("AllowLoadGameType", "Restricts this file to specific game flavors (comma- or space-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, camelot, plunderstorm, wowhack)."),
+    ("ExcludeLoadGameType", "Loads this file on every game flavor except the ones listed (comma- or space-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, camelot, plunderstorm, wowhack)."),
     ("AllowLoadTextLocale", "Restricts this file to specific client text locales (comma-separated, e.g. enUS, frFR)."),
     ("AllowLoad", "Restricts this file to an environment (ingame / glue). Functionally inoperable for addons."),
     ("Family", "Path variable that expands to the game family subdirectory."),
@@ -282,6 +283,8 @@ pub fn interface_version_label(version: u32) -> Option<&'static str> {
         70300..=70399 => Some("Legion 7.3.x"),
         70000..=70299 => Some("Legion 7.x"),
         60000..=69999 => Some("Warlords of Draenor 6.x"),
+        // Forever: 1MMPP on its own 1.60 line
+        16000..=16099 => Some("Forever 1.60.x"),
         // Classic Era: 1MMPP
         11500..=11599 => Some("Classic Era 1.15.x"),
         11400..=11499 => Some("Classic Era 1.14.x"),
@@ -350,6 +353,7 @@ mod tests {
         assert_eq!(interface_version_label(120001), Some("Midnight 12.0.x"));
         assert_eq!(interface_version_label(100200), Some("Dragonflight 10.2.x"));
         assert_eq!(interface_version_label(11503), Some("Classic Era 1.15.x"));
+        assert_eq!(interface_version_label(16001), Some("Forever 1.60.x"));
         assert_eq!(interface_version_label(40400), Some("Cataclysm Classic 4.4.0"));
         assert_eq!(interface_version_label(50503), Some("Mists Classic 5.5.x"));
         assert_eq!(interface_version_label(20505), Some("TBC Classic 2.5.x"));

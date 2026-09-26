@@ -42,7 +42,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "enum": ["retail", "mainline", "classic", "classic_era"]
+        "enum": ["retail", "mainline", "classic", "classic_era", "forever"]
       },
       "default": [],
       "description": "WoW flavor names the project targets. Enables the wrong-flavor-api diagnostic when non-empty. 'mainline' is an alias for 'retail'."

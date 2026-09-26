@@ -109,28 +109,32 @@ pub(in crate::stub_gen) fn camel_to_upper_snake(s: &str) -> String {
 // ── Phase 2: Frame globals from XML parsing (all versions) ────────────────────
 
 
-/// Compute flavor bitmasks from per-branch API name sets.
+/// Compute flavor bitmasks from per-branch API name sets, given as
+/// `(flavor bit, GlobalAPI.lua names)` per branch.
 /// Only stores entries where the API is NOT available on all flavors.
 ///
 /// Flavor is determined by `GlobalAPI.lua` presence only — `FrameXML.lua` entries
 /// are implementation-level functions that may exist as compatibility shims across
 /// branches (e.g. `AbbreviateLargeNumbers` is a retail API but has a FrameXML
 /// shim in classic). Using FrameXML presence would incorrectly mark retail-only
-/// APIs as available everywhere.
+/// APIs as available everywhere. The reverse is skipped entirely: a name retail
+/// defines in FrameXML stays a FrameXML function where a client implements it in
+/// C (Forever's `tContains`, `Clamp`, …), so `retail_fxml` names get no mask.
 pub(in crate::stub_gen) fn compute_flavor_map(
-    retail_api: &HashSet<String>, classic_api: &HashSet<String>, classic_era_api: &HashSet<String>,
+    branch_apis: &[(u8, &HashSet<String>)], retail_fxml: &HashSet<String>,
 ) -> HashMap<String, u8> {
-    use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_ALL};
+    use crate::flavor::FLAVOR_ALL;
     let mut map = HashMap::default();
-    let all_names: HashSet<&str> = retail_api.iter()
-        .chain(classic_api.iter()).chain(classic_era_api.iter())
-        .map(|s| s.as_str()).collect();
+    let all_names: HashSet<&str> = branch_apis.iter()
+        .flat_map(|(_, api)| api.iter())
+        .map(|s| s.as_str())
+        .filter(|name| !retail_fxml.contains(*name))
+        .collect();
 
     for name in all_names {
-        let mut mask = 0u8;
-        if retail_api.contains(name) { mask |= FLAVOR_RETAIL; }
-        if classic_api.contains(name) { mask |= FLAVOR_CLASSIC; }
-        if classic_era_api.contains(name) { mask |= FLAVOR_CLASSIC_ERA; }
+        let mask = branch_apis.iter()
+            .filter(|(_, api)| api.contains(name))
+            .fold(0u8, |acc, (bit, _)| acc | bit);
         if mask != FLAVOR_ALL && mask != 0 {
             map.insert(name.to_string(), mask);
         }
@@ -163,7 +167,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     let overrides = manual_overrides();
     let mut out = vec![
         "---@meta _".to_string(),
-        "-- Classic-only WoW API stubs (auto-generated from warcraft.wiki.gg)".to_string(),
+        "-- WoW API stubs missing from retail: Classic, Classic Era, Forever (auto-generated from warcraft.wiki.gg)".to_string(),
         String::new(),
     ];
 
@@ -180,7 +184,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     if !namespaces.is_empty() {
         let mut ns_list: Vec<_> = namespaces.into_iter().collect();
         ns_list.sort();
-        out.push("-- Classic-only namespace tables".to_string());
+        out.push("-- Namespace tables missing from retail".to_string());
         out.push(String::new());
         for ns in &ns_list {
             out.push(format!("---@class {ns}"));
@@ -224,7 +228,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     }
 
     if !missing_fxml.is_empty() {
-        out.push("-- Classic-only FrameXML functions".to_string());
+        out.push("-- FrameXML functions missing from retail".to_string());
         out.push(String::new());
         for name in missing_fxml {
             out.push("---@return ...any".to_string());
@@ -237,7 +241,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     // These are C-level widget API methods present in classic but not retail.
     // Flavor bitmasks are applied post-scan via apply_flavor_data.
     if !diff.missing_widget_methods.is_empty() {
-        out.push("-- Classic-only widget methods".to_string());
+        out.push("-- Widget methods missing from retail".to_string());
         out.push(String::new());
         for (type_name, method_name) in &diff.missing_widget_methods {
             let wiki_name = format!("{type_name}_{method_name}");
@@ -274,7 +278,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
                 .collect();
 
             if !only_constants.is_empty() {
-                out.push("-- Classic-only API constants (auto-generated from Blizzard APIDocumentation + FrameXML)".to_string());
+                out.push("-- API constants missing from retail (auto-generated from Blizzard APIDocumentation + FrameXML)".to_string());
                 out.push(String::new());
                 for (name, typ, val) in &only_constants {
                     out.push(format!("---@type {typ}"));
@@ -286,7 +290,7 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
 
             if !only_enums.is_empty() {
                 out.push(
-                    "-- Classic-only enumerations (auto-generated from Blizzard APIDocumentation)"
+                    "-- Enumerations missing from retail (auto-generated from Blizzard APIDocumentation)"
                         .to_string(),
                 );
                 out.push(String::new());
@@ -317,16 +321,18 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     // Note: some constants (e.g. LE_PET_JOURNAL_FILTER_FAVORITES) are absent from
     // both LuaEnum.lua and FrameXML and must be added to RuntimeMissingGlobals.lua.
     {
-        // Fetch LuaEnum.lua from both branches for comprehensive LE_* coverage.
+        // Fetch LuaEnum.lua from several branches for comprehensive LE_* coverage.
         // classic_era covers Classic-only constants; live covers retail-only constants
-        // such as LE_EXPANSION_SHADOWLANDS (Shadowlands was retail-only).
-        log::info!("Fetching LuaEnum.lua for LE_* constants (classic_era + live)...");
+        // such as LE_EXPANSION_SHADOWLANDS (Shadowlands was retail-only); forever
+        // covers its own additions.
+        log::info!("Fetching LuaEnum.lua for LE_* constants (classic_era + live + forever)...");
         let mut le_values = fetch_and_parse_lua_enum("classic_era");
-        let live_le_values = fetch_and_parse_lua_enum("live");
-        // live supplements classic_era without overriding (classic_era values are
-        // authoritative for constants present in both, e.g. LE_EXPANSION_CLASSIC).
-        for (name, val) in live_le_values {
-            le_values.entry(name).or_insert(val);
+        // live, then forever, supplement classic_era without overriding (classic_era
+        // values are authoritative for constants present in both, e.g. LE_EXPANSION_CLASSIC).
+        for branch in ["live", "forever"] {
+            for (name, val) in fetch_and_parse_lua_enum(branch) {
+                le_values.entry(name).or_insert(val);
+            }
         }
         log::info!("  Combined LE_* map: {} candidate names from LuaEnum.lua", le_values.len());
 

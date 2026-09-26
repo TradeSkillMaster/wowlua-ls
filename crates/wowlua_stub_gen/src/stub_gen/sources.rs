@@ -106,7 +106,7 @@ pub(in crate::stub_gen) fn fetch_resource(branch: &str, file: &str) -> HashSet<S
     match fetch_url(&url, None) {
         Ok(text) => parse_resource_names(&text),
         Err(e) => {
-            log::error!("FAILED to fetch {file} from {branch}: {e} — classic-only API diff will be incomplete");
+            log::error!("FAILED to fetch {file} from {branch}: {e} — flavor masks would be wrong, the regen will abort");
             HashSet::default()
         }
     }
@@ -606,17 +606,18 @@ pub(in crate::stub_gen) fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<Str
 }
 
 
-/// Fetch BlizzardInterfaceResources lists, compute the classic-only API diff,
-/// derive the retail global name universe, and compute flavor bitmasks from
-/// branch presence. `lua_widget_methods` are `Type:Method` keys retail defines in
-/// Lua, which its WidgetAPI.lua doesn't list.
+/// Fetch BlizzardInterfaceResources lists, compute the classic-only (absent from
+/// retail) API diff, derive the retail global name universe, and compute flavor
+/// bitmasks from branch presence. `lua_widget_methods` are `Type:Method` keys
+/// retail defines in Lua, which its WidgetAPI.lua doesn't list.
 pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_methods: &HashSet<String>) -> BranchResourceData {
+    use crate::flavor::FLAVOR_RETAIL;
     log::info!("Downloading BlizzardInterfaceResources (parallel)...");
 
-    // Fetch resources in parallel: 3 branches × 2 file types (GlobalAPI, FrameXML)
+    // Fetch resources in parallel: 4 branches × 2 file types (GlobalAPI, FrameXML)
     let specs: &[(&str, &str)] = &[
-        ("live", "GlobalAPI.lua"), ("classic_era", "GlobalAPI.lua"), ("classic", "GlobalAPI.lua"),
-        ("live", "FrameXML.lua"),  ("classic_era", "FrameXML.lua"),  ("classic", "FrameXML.lua"),
+        ("live", "GlobalAPI.lua"), ("classic_era", "GlobalAPI.lua"), ("classic", "GlobalAPI.lua"), ("forever", "GlobalAPI.lua"),
+        ("live", "FrameXML.lua"),  ("classic_era", "FrameXML.lua"),  ("classic", "FrameXML.lua"),  ("forever", "FrameXML.lua"),
     ];
     let results: Vec<HashSet<String>> = std::thread::scope(|s| {
         let handles: Vec<_> = specs.iter()
@@ -624,9 +625,13 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_m
             .collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    // Unpack: [retail, classic_era, classic] × [GlobalAPI, FrameXML]
-    let [retail, classic_era, classic,
-         retail_fxml, classic_era_fxml, classic_fxml]: [_; 6] =
+    let empty_resources: Vec<String> = specs.iter().zip(&results)
+        .filter(|(_, names)| names.is_empty())
+        .map(|((branch, file), _)| format!("{branch}/{file}"))
+        .collect();
+    // Unpack: [retail, classic_era, classic, forever] × [GlobalAPI, FrameXML]
+    let [retail, classic_era, classic, forever,
+         retail_fxml, classic_era_fxml, classic_fxml, forever_fxml]: [_; 8] =
         results.try_into().unwrap();
 
     // Retail global name universe: GlobalAPI ∪ FrameXML
@@ -634,17 +639,24 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_m
     log::info!("  Retail globals from BlizzardInterfaceResources: {} names", retail_all_names.len());
 
     // Flavor map from GlobalAPI.lua branch presence (not FrameXML — see doc comment)
-    let flavor_map = compute_flavor_map(&retail, &classic, &classic_era);
+    let flavor_map = compute_flavor_map(&[
+        (FLAVOR_RETAIL, &retail),
+        (FLAVOR_CLASSIC, &classic),
+        (FLAVOR_CLASSIC_ERA, &classic_era),
+        (FLAVOR_FOREVER, &forever),
+    ], &retail_fxml);
     log::info!("  Flavor map: {} non-universal entries", flavor_map.len());
 
     // Classic-only API diff
-    let mut all_classic_only: Vec<_> = classic_era.union(&classic).cloned().collect::<HashSet<_>>()
-        .difference(&retail).cloned().collect();
+    let mut all_classic_only: Vec<_> = classic_era.iter().chain(&classic).chain(&forever)
+        .filter(|name| !retail.contains(*name))
+        .cloned().collect::<HashSet<_>>().into_iter().collect();
     all_classic_only.sort();
     log::info!("  Found {} classic-only APIs", all_classic_only.len());
 
-    let mut classic_only_fxml: Vec<_> = classic_era_fxml.union(&classic_fxml).cloned().collect::<HashSet<_>>()
-        .difference(&retail_fxml).cloned().collect();
+    let mut classic_only_fxml: Vec<_> = classic_era_fxml.iter().chain(&classic_fxml).chain(&forever_fxml)
+        .filter(|name| !retail_fxml.contains(*name))
+        .cloned().collect::<HashSet<_>>().into_iter().collect();
     classic_only_fxml.sort();
     log::info!("  Found {} classic-only FrameXML functions", classic_only_fxml.len());
 
@@ -670,11 +682,12 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_m
     // WidgetAPI.lua lists per-type method names; methods absent from retail but
     // present in classic branches need stubs added to the GameTooltip class etc.
     log::info!("Downloading WidgetAPI.lua for all branches (parallel)...");
-    let (widget_live, widget_classic_era, widget_classic) = std::thread::scope(|s| {
+    let (widget_live, widget_classic_era, widget_classic, widget_forever) = std::thread::scope(|s| {
         let h1 = s.spawn(|| fetch_widget_api("live"));
         let h2 = s.spawn(|| fetch_widget_api("classic_era"));
         let h3 = s.spawn(|| fetch_widget_api("classic"));
-        (h1.join().unwrap(), h2.join().unwrap(), h3.join().unwrap())
+        let h4 = s.spawn(|| fetch_widget_api("forever"));
+        (h1.join().unwrap(), h2.join().unwrap(), h3.join().unwrap(), h4.join().unwrap())
     });
 
     // Find methods defined in colon syntax (TypeName:Method) in existing stubs,
@@ -683,8 +696,8 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_m
     let existing_widget_methods = get_existing_names_with(stubs_dir, &colon_method_re, replaced_vendor_files);
     log::info!("  Existing widget methods in stubs: {}", existing_widget_methods.len());
 
-    // Compute classic-only widget methods: present in (classic_era ∪ classic) but
-    // absent from retail WidgetAPI.lua AND absent from vendor stubs (which cover
+    // Compute classic-only widget methods: present in (classic_era ∪ classic ∪ forever)
+    // but absent from retail WidgetAPI.lua AND absent from vendor stubs (which cover
     // retail APIs not listed in retail's WidgetAPI.lua, like GameTooltip:SetHyperlink).
     //
     // If the retail fetch failed (empty map), skip the diff entirely — an empty retail
@@ -697,26 +710,29 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_m
     } else {
         let all_widget_types: HashSet<String> = widget_classic_era.keys()
             .chain(widget_classic.keys())
+            .chain(widget_forever.keys())
             .cloned()
             .collect();
         let empty_set: HashSet<String> = HashSet::default();
 
         for type_name in &all_widget_types {
-            let classic_era_methods = widget_classic_era.get(type_name).unwrap_or(&empty_set);
-            let classic_methods = widget_classic.get(type_name).unwrap_or(&empty_set);
+            let branch_methods = [
+                (FLAVOR_CLASSIC_ERA, widget_classic_era.get(type_name).unwrap_or(&empty_set)),
+                (FLAVOR_CLASSIC, widget_classic.get(type_name).unwrap_or(&empty_set)),
+                (FLAVOR_FOREVER, widget_forever.get(type_name).unwrap_or(&empty_set)),
+            ];
             let retail_methods = widget_live.get(type_name).unwrap_or(&empty_set);
 
-            // Union of both classic branches
-            let all_classic: HashSet<&String> = classic_era_methods.iter()
-                .chain(classic_methods.iter())
+            // Union of the non-retail branches
+            let all_classic: HashSet<&String> = branch_methods.iter()
+                .flat_map(|(_, methods)| methods.iter())
                 .collect();
 
             for method in all_classic {
-                // Compute flavor mask from which classic branches have this method
-                let in_ce = classic_era_methods.contains(method);
-                let in_c = classic_methods.contains(method);
-                let mask = (if in_ce { FLAVOR_CLASSIC_ERA } else { 0 })
-                    | (if in_c { FLAVOR_CLASSIC } else { 0 });
+                // Compute flavor mask from which non-retail branches have this method
+                let mask = branch_methods.iter()
+                    .filter(|(_, methods)| methods.contains(method))
+                    .fold(0u8, |acc, (bit, _)| acc | bit);
 
                 if retail_methods.contains(method) {
                     // Also present in retail WidgetAPI.lua — not classic-only, but if the
@@ -745,6 +761,7 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_m
         retail_all_names,
         retail_api_names: retail,
         flavor_map,
+        empty_resources,
     }
 }
 

@@ -163,9 +163,10 @@ fn substitute_annotation_type_inner(
 
 /// Magic number + version for the precomputed stubs blob.
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
-/// or any serialized type changes shape.
+/// or any serialized type changes shape — or when serialized data changes
+/// meaning, like a new flavor bit in the `flavors` masks.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 40;
+pub const BLOB_VERSION: u32 = 41;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).

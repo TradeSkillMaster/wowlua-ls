@@ -35,7 +35,7 @@ UI/MainFrame.xml
 UI/MainFrame.lua
 ```
 
-Hovering `Interface` shows its documentation. Hovering `110100` shows "The War Within 11.1.x". Hovering `mainline` shows "Retail (The War Within, etc.)".
+Hovering `Interface` shows its documentation. Hovering `110100` shows "The War Within 11.1.x". Hovering `mainline` shows "Retail and Forever".
 
 Completions after `## ` suggest `Title`, `Notes`, `Author`, `SavedVariables`, etc., filtered to exclude fields you've already declared.
 
@@ -62,7 +62,7 @@ wowlua-ls recognizes all standard TOC fields:
 | `AddonCompartmentFunc` | Compartment click handler |
 | `AddonCompartmentFuncOnEnter` | Compartment hover-enter handler |
 | `AddonCompartmentFuncOnLeave` | Compartment hover-leave handler |
-| `AllowLoadGameType` | Restrict to specific game flavors: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists` |
+| `AllowLoadGameType` | Restrict to specific game flavors: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot` |
 | `ExcludeLoadGameType` | Load on every game flavor *except* the ones listed (the inverse of `AllowLoadGameType`) |
 | `OnlyBetaAndPTR` | Restrict to test realms only |
 | `Secure` | Blizzard-signed secure code marker |
@@ -91,7 +91,7 @@ The prefix form (`[AllowLoadGameType mainline] File.lua`) is also accepted.
 
 | Bracket | Kind | Description |
 |---|---|---|
-| `[AllowLoadGameType ...]` | Condition | Only load this file on specified game flavors (`mainline`, `standard`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `plunderstorm`, `wowhack`) |
+| `[AllowLoadGameType ...]` | Condition | Only load this file on specified game flavors (`mainline`, `standard`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot`, `plunderstorm`, `wowhack`) |
 | `[ExcludeLoadGameType ...]` | Condition | Load this file on every game flavor except the listed ones |
 | `[AllowLoadTextLocale ...]` | Condition | Only load on specified client locales (e.g. `enUS, frFR`) |
 | `[AllowLoad ...]` | Condition | Restrict to an environment (ingame / glue) |

@@ -291,8 +291,9 @@ pub struct ProjectConfigs {
     /// Per-addon-directory flavor mask derived from `.toc` `## Interface:`
     /// version numbers (union across the dir's TOCs). Unlike `toc_file_flavors`
     /// this keeps `FLAVOR_ALL` entries and is keyed by directory, since it is
-    /// the addon's *declared* flavor breadth — used only by `addon_flavors_for`
-    /// (flavor-aware `deprecated`), never by `wrong-flavor-api`.
+    /// the addon's *declared* flavor breadth — used by `addon_flavors_for`
+    /// (flavor-aware `deprecated`), and by `flavors_for` only to tell whether
+    /// the addon declares Forever.
     toc_interface_flavors: HashMap<PathBuf, u8>,
     /// Workspace-wide dynamic global prefix patterns detected from
     /// `_G["PREFIX"..k] = v` assignments in scanned files. Merged into
@@ -521,19 +522,33 @@ impl ProjectConfigs {
     /// declares flavors). If the file also has a TOC-derived flavor mask (from
     /// being listed in a flavor-specific TOC), the two are intersected. Returns 0
     /// if the nearest config declares no flavors (disables flavor filtering).
+    ///
+    /// Without a config, Forever counts only for an addon whose `.toc` lists a
+    /// Forever `## Interface:` version: the client loads mainline-family TOCs and
+    /// files there too (`_Mainline`, `mainline`, `[Family]`), but an addon that
+    /// never declares Forever doesn't target it. One that does is held to the
+    /// flavors its `## Interface:` lines declare.
     pub fn flavors_for(&self, file_path: &Path) -> u8 {
+        use crate::flavor::{FLAVOR_FOREVER, IMPLICIT_FLAVORS};
         let project_flavors = self.nearest_config(file_path)
             .map(|c| c.flavors)
             .unwrap_or(0);
 
-        if let Some(&toc_flavors) = self.toc_file_flavors.get(file_path) {
-            if project_flavors != 0 {
-                project_flavors & toc_flavors
-            } else {
-                toc_flavors
-            }
-        } else {
-            project_flavors
+        let Some(&toc_flavors) = self.toc_file_flavors.get(file_path) else {
+            return project_flavors;
+        };
+        if project_flavors != 0 {
+            return project_flavors & toc_flavors;
+        }
+        let interface = self.toc_interface_flavors_for(file_path);
+        if interface & FLAVOR_FOREVER != 0 {
+            return toc_flavors & interface;
+        }
+        // Loading on every implicit flavor is no restriction, as a `FLAVOR_ALL`
+        // entry would be.
+        match toc_flavors & IMPLICIT_FLAVORS {
+            IMPLICIT_FLAVORS => 0,
+            m => m,
         }
     }
 
@@ -552,9 +567,13 @@ impl ProjectConfigs {
         if declared != 0 {
             return declared;
         }
-        // Walk up to the nearest ancestor directory with a TOC `## Interface:`
-        // mask. Keyed by directory (not by listed file) so files pulled in via
-        // XML includes or nested loaders still resolve to their addon's breadth.
+        self.toc_interface_flavors_for(file_path)
+    }
+
+    /// The `## Interface:` flavors of the nearest ancestor directory whose TOCs
+    /// declare any. Keyed by directory (not by listed file) so files pulled in via
+    /// XML includes or nested loaders still resolve to their addon's breadth.
+    fn toc_interface_flavors_for(&self, file_path: &Path) -> u8 {
         let mut dir = file_path.parent();
         while let Some(d) = dir {
             if let Some(&mask) = self.toc_interface_flavors.get(d) {
@@ -858,15 +877,16 @@ struct TocParseResult {
     interface_flavor: u8,
 }
 
-/// Extract the flavor suffix from a TOC filename stem. Returns `(base_name, flavor_mask)`
-/// if the stem ends with a known suffix like `_Mainline`, otherwise returns `None`.
-fn extract_toc_suffix(stem: &str) -> Option<(&str, u8)> {
+/// Extract the flavor suffix from a TOC filename stem. Returns `(base_name, suffix,
+/// flavor_mask)` if the stem ends with a known suffix like `_Mainline`, otherwise
+/// returns `None`.
+fn extract_toc_suffix(stem: &str) -> Option<(&str, &str, u8)> {
     let (base, suffix) = stem.rsplit_once('_')?;
     if base.is_empty() {
         return None;
     }
     let mask = crate::flavor::parse_toc_suffix(suffix)?;
-    Some((base, mask))
+    Some((base, suffix, mask))
 }
 
 /// Parse all `.toc` files in a directory. Extracts:
@@ -886,7 +906,8 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
     struct TocEntry {
         text: String,
         base_name: String,
-        suffix_flavor: Option<u8>, // None = unsuffixed (base) TOC
+        /// `(suffix, its flavors)`; None = unsuffixed (base) TOC.
+        suffix: Option<(String, u8)>,
     }
     let mut toc_entries: Vec<TocEntry> = Vec::new();
 
@@ -905,8 +926,8 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
             None => continue,
         };
 
-        let (base_name, suffix_flavor) = match extract_toc_suffix(stem) {
-            Some((base, mask)) => (base.to_string(), Some(mask)),
+        let (base_name, suffix) = match extract_toc_suffix(stem) {
+            Some((base, suffix, mask)) => (base.to_string(), Some((suffix.to_string(), mask))),
             None => (stem.to_string(), None),
         };
 
@@ -937,7 +958,7 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
             }
         }
 
-        toc_entries.push(TocEntry { text, base_name, suffix_flavor });
+        toc_entries.push(TocEntry { text, base_name, suffix });
     }
 
     // Group TOCs by base addon name to compute effective flavors.
@@ -954,7 +975,7 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
         // Compute union of all suffix flavors for this addon group
         let mut suffix_union = 0u8;
         for &i in indices {
-            if let Some(sf) = toc_entries[i].suffix_flavor {
+            if let Some((_, sf)) = &toc_entries[i].suffix {
                 suffix_union |= sf;
             }
         }
@@ -963,9 +984,20 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
             let entry = &toc_entries[i];
 
             // Effective flavor for this TOC: suffixed TOCs use their suffix flavor,
-            // the base TOC covers all flavors NOT claimed by any suffix.
-            let toc_flavor = match entry.suffix_flavor {
-                Some(sf) => sf,
+            // minus the flavors a more specific sibling TOC takes (`_Camelot` over
+            // `_Mainline`); the base TOC covers all flavors NOT claimed by any suffix.
+            let toc_flavor = match &entry.suffix {
+                Some((suffix, sf)) => {
+                    let siblings = indices.iter()
+                        .filter_map(|&j| toc_entries[j].suffix.as_ref())
+                        .map(|(s, _)| s.as_str())
+                        .filter(|s| *s != suffix.as_str());
+                    let flavor = sf & !crate::flavor::flavors_claimed_by_toc_suffixes(siblings);
+                    if flavor == 0 {
+                        continue;
+                    }
+                    flavor
+                }
                 None => {
                     let remaining = crate::flavor::FLAVOR_ALL & !suffix_union;
                     if remaining == 0 {
@@ -2304,14 +2336,16 @@ mod tests {
 
     #[test]
     fn test_extract_toc_suffix() {
-        assert_eq!(extract_toc_suffix("MyAddon_Mainline"), Some(("MyAddon", crate::flavor::FLAVOR_RETAIL)));
-        assert_eq!(extract_toc_suffix("MyAddon_Classic"), Some(("MyAddon", crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA)));
-        assert_eq!(extract_toc_suffix("MyAddon_Vanilla"), Some(("MyAddon", crate::flavor::FLAVOR_CLASSIC_ERA)));
-        assert_eq!(extract_toc_suffix("MyAddon_Cata"), Some(("MyAddon", crate::flavor::FLAVOR_CLASSIC)));
+        use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_FOREVER};
+        assert_eq!(extract_toc_suffix("MyAddon_Mainline"), Some(("MyAddon", "Mainline", FLAVOR_RETAIL | FLAVOR_FOREVER)));
+        assert_eq!(extract_toc_suffix("MyAddon_Classic"), Some(("MyAddon", "Classic", FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA)));
+        assert_eq!(extract_toc_suffix("MyAddon_Vanilla"), Some(("MyAddon", "Vanilla", FLAVOR_CLASSIC_ERA)));
+        assert_eq!(extract_toc_suffix("MyAddon_Cata"), Some(("MyAddon", "Cata", FLAVOR_CLASSIC)));
+        assert_eq!(extract_toc_suffix("MyAddon_Camelot"), Some(("MyAddon", "Camelot", FLAVOR_FOREVER)));
         assert_eq!(extract_toc_suffix("MyAddon_Options"), None);
         assert_eq!(extract_toc_suffix("MyAddon"), None);
         // Multi-word addon names
-        assert_eq!(extract_toc_suffix("My_Addon_Mainline"), Some(("My_Addon", crate::flavor::FLAVOR_RETAIL)));
+        assert_eq!(extract_toc_suffix("My_Addon_Mainline"), Some(("My_Addon", "Mainline", FLAVOR_RETAIL | FLAVOR_FOREVER)));
     }
 
     #[test]
@@ -2334,13 +2368,14 @@ Shared.lua
 ").unwrap();
 
         let result = parse_toc_files(&dir);
+        // Forever loads `_Mainline` TOCs too (see `flavors_for` for when it counts).
         assert_eq!(*result.file_flavors.get(&dir.join("RetailOnly.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
         assert_eq!(*result.file_flavors.get(&dir.join("ClassicOnly.lua")).unwrap(),
                    crate::flavor::FLAVOR_CLASSIC_ERA);
-        // Shared.lua is in both TOCs: retail | classic_era
+        // Shared.lua is in both TOCs: retail | forever | classic_era
         assert_eq!(*result.file_flavors.get(&dir.join("Shared.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_CLASSIC_ERA);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER | crate::flavor::FLAVOR_CLASSIC_ERA);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2357,9 +2392,9 @@ Shared.lua
         std::fs::write(dir.join("MyAddon_Mainline.toc"), "RetailFile.lua\n").unwrap();
 
         let result = parse_toc_files(&dir);
-        // RetailFile.lua → retail only
+        // RetailFile.lua → the mainline family: retail + forever
         assert_eq!(*result.file_flavors.get(&dir.join("RetailFile.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
         // BaseFile.lua → classic + classic_era (all remaining)
         assert_eq!(*result.file_flavors.get(&dir.join("BaseFile.lua")).unwrap(),
                    crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
@@ -2381,6 +2416,115 @@ Shared.lua
         // classic covers classic+classic_era, mainline covers retail → union = ALL
         // FLAVOR_ALL entries are pruned (no restriction needed)
         assert!(!result.file_flavors.contains_key(&dir.join("Everywhere.lua")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_specific_suffix_beats_family() {
+        use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_FOREVER};
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_specific_suffix");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Forever loads `_Camelot` over `_Mainline`; Classic Era loads `_Vanilla`
+        // over `_Classic`. `_Mists` leaves TBC/Wrath/Cata on `_Classic`.
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "## Interface: 120100\nRetail.lua\nShared.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Camelot.toc"), "## Interface: 16001\nForever.lua\nShared.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Classic.toc"), "## Interface: 50503\nClassic.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Vanilla.toc"), "## Interface: 11508\nVanilla.lua\n").unwrap();
+        std::fs::write(dir.join("Other_Classic.toc"), "OtherClassic.lua\n").unwrap();
+        std::fs::write(dir.join("Other_Mists.toc"), "OtherMists.lua\n").unwrap();
+
+        let result = parse_toc_files(&dir);
+        let flavors = |f: &str| *result.file_flavors.get(&dir.join(f)).unwrap();
+        assert_eq!(flavors("Retail.lua"), FLAVOR_RETAIL);
+        assert_eq!(flavors("Forever.lua"), FLAVOR_FOREVER);
+        assert_eq!(flavors("Shared.lua"), FLAVOR_RETAIL | FLAVOR_FOREVER);
+        assert_eq!(flavors("Classic.lua"), FLAVOR_CLASSIC);
+        assert_eq!(flavors("Vanilla.lua"), FLAVOR_CLASSIC_ERA);
+        assert_eq!(flavors("OtherClassic.lua"), FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA);
+        assert_eq!(flavors("OtherMists.lua"), FLAVOR_CLASSIC);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_forever_counts_once_declared() {
+        use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_FOREVER};
+        let root = std::env::temp_dir().join("wowlua_ls_test_toc_forever_declared");
+        let _ = std::fs::remove_dir_all(&root);
+        let (plain, declared, configured) = (root.join("Plain"), root.join("Declared"), root.join("Configured"));
+        for dir in [&plain, &declared, &configured] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("MyAddon_Vanilla.toc"), "## Interface: 11508\nShared.lua\n").unwrap();
+            // A separate addon name, so its unsuffixed TOC covers every flavor.
+            std::fs::write(dir.join("Lib.toc"), "## Interface: 50503\nNotForever.lua [ExcludeLoadGameType camelot]\n").unwrap();
+        }
+        // An addon that never lists a Forever interface version doesn't target
+        // Forever, even though Forever would load its `_Mainline` TOC.
+        std::fs::write(plain.join("MyAddon_Mainline.toc"), "## Interface: 120100\nRetail.lua\nShared.lua\n").unwrap();
+        std::fs::write(declared.join("MyAddon_Mainline.toc"), "## Interface: 120100, 16001\nRetail.lua\nShared.lua\n").unwrap();
+        std::fs::write(configured.join("MyAddon_Mainline.toc"), "## Interface: 120100\nRetail.lua\nShared.lua\n").unwrap();
+        std::fs::write(configured.join(".wowluarc.json"), r#"{ "flavors": ["retail", "forever"] }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        for dir in [&plain, &declared, &configured] {
+            configs.try_load(dir);
+            configs.try_load_toc(dir);
+        }
+
+        assert_eq!(configs.flavors_for(&plain.join("Retail.lua")), FLAVOR_RETAIL);
+        assert_eq!(configs.flavors_for(&plain.join("Shared.lua")), FLAVOR_RETAIL | FLAVOR_CLASSIC_ERA);
+        // Every flavor but Forever, in an addon without Forever: no restriction.
+        assert_eq!(configs.flavors_for(&plain.join("NotForever.lua")), 0);
+        assert_eq!(configs.addon_flavors_for(&plain.join("Unlisted.lua")),
+                   FLAVOR_RETAIL | FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA);
+
+        assert_eq!(configs.flavors_for(&declared.join("Retail.lua")), FLAVOR_RETAIL | FLAVOR_FOREVER);
+        assert_eq!(configs.flavors_for(&declared.join("Shared.lua")),
+                   FLAVOR_RETAIL | FLAVOR_FOREVER | FLAVOR_CLASSIC_ERA);
+        assert_eq!(configs.flavors_for(&declared.join("NotForever.lua")),
+                   FLAVOR_RETAIL | FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA);
+        assert_eq!(configs.addon_flavors_for(&declared.join("Unlisted.lua")),
+                   FLAVOR_RETAIL | FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA | FLAVOR_FOREVER);
+
+        // A `flavors` config naming Forever opts in by itself.
+        assert_eq!(configs.flavors_for(&configured.join("Retail.lua")), FLAVOR_RETAIL | FLAVOR_FOREVER);
+        assert_eq!(configs.flavors_for(&configured.join("Shared.lua")), FLAVOR_RETAIL | FLAVOR_FOREVER);
+
+        // A Retail + Forever addon replacing a file on Forever: the file runs on
+        // Retail alone, not on the Classic flavors the addon never declares.
+        let mainline = root.join("Mainline");
+        std::fs::create_dir_all(&mainline).unwrap();
+        std::fs::write(mainline.join("MyAddon.toc"),
+            "## Interface: 120100, 16001\nConstants.lua [ExcludeLoadGameType camelot]\nCore.lua [AllowLoadGameType mainline]\n").unwrap();
+        let mut configs = ProjectConfigs::default();
+        configs.try_load_toc(&mainline);
+        assert_eq!(configs.flavors_for(&mainline.join("Constants.lua")), FLAVOR_RETAIL);
+        assert_eq!(configs.flavors_for(&mainline.join("Core.lua")), FLAVOR_RETAIL | FLAVOR_FOREVER);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_toc_camelot_path_variables() {
+        use crate::flavor::{FLAVOR_RETAIL, FLAVOR_FOREVER};
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_camelot_vars");
+        let _ = std::fs::remove_dir_all(&dir);
+        for sub in ["Standard", "Camelot", "Mainline"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+            std::fs::write(dir.join(sub).join("Init.lua"), "").unwrap();
+        }
+        // On Forever `[Game]` is `Camelot` and `[Family]` is `Mainline`, so a
+        // `_Camelot` TOC loads `Mainline/` files.
+        std::fs::write(dir.join("MyAddon_Camelot.toc"), "## Interface: 16001\n[Game]/Init.lua\n[Family]/Init.lua\n").unwrap();
+        std::fs::write(dir.join("Other.toc"), "[Game]/Init.lua\n").unwrap();
+
+        let result = parse_toc_files(&dir);
+        assert_eq!(*result.file_flavors.get(&dir.join("Camelot/Init.lua")).unwrap(), FLAVOR_FOREVER);
+        assert_eq!(*result.file_flavors.get(&dir.join("Standard/Init.lua")).unwrap(), FLAVOR_RETAIL);
+        assert_eq!(*result.file_flavors.get(&dir.join("Mainline/Init.lua")).unwrap(), FLAVOR_FOREVER);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2421,9 +2565,9 @@ NormalFile.lua
         let result = parse_toc_files(&dir);
         // NormalFile: all flavors → not stored (FLAVOR_ALL pruned)
         assert!(!result.file_flavors.contains_key(&dir.join("NormalFile.lua")));
-        // RetailOnly: mainline only
+        // RetailOnly: the mainline family (retail + forever)
         assert_eq!(*result.file_flavors.get(&dir.join("RetailOnly.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
         // MixedFile: vanilla (classic_era) + cata (classic)
         assert_eq!(*result.file_flavors.get(&dir.join("MixedFile.lua")).unwrap(),
                    crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
@@ -2446,12 +2590,12 @@ RetailOnly.lua [ExcludeLoadGameType classic]
 ").unwrap();
 
         let result = parse_toc_files(&dir);
-        // Header excludes classic_era → retail + classic
+        // Header excludes classic_era → retail + classic + forever
         assert_eq!(*result.file_flavors.get(&dir.join("Everywhere.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_CLASSIC);
-        // Per-line `classic` also covers classic_era → only retail is left
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_FOREVER);
+        // Per-line `classic` also covers classic_era → only retail + forever are left
         assert_eq!(*result.file_flavors.get(&dir.join("RetailOnly.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2473,11 +2617,11 @@ Display/AuraIconClassic.lua [AllowLoadGameType classic]
 ").unwrap();
 
         let result = parse_toc_files(&dir);
-        // mainline → retail only
+        // mainline → retail + forever
         assert_eq!(*result.file_flavors.get(&dir.join("Display/AuraFromItem.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
         assert_eq!(*result.file_flavors.get(&dir.join("Display/AuraIconRetail.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
         // classic → classic | classic_era
         assert_eq!(*result.file_flavors.get(&dir.join("Display/AuraIconClassic.lua")).unwrap(),
                    crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
@@ -2498,10 +2642,10 @@ UI\\Panel.lua
 
         let result = parse_toc_files(&dir);
         assert_eq!(*result.file_flavors.get(&dir.join("Core/Init.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
         // Backslash paths are normalized to forward slashes
         assert_eq!(*result.file_flavors.get(&dir.join("UI/Panel.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2522,15 +2666,15 @@ UI\\Panel.lua
         // MyAddon base → remaining after Mainline = classic + classic_era
         assert_eq!(*result.file_flavors.get(&dir.join("Core.lua")).unwrap(),
                    crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
-        // MyAddon_Mainline → retail
+        // MyAddon_Mainline → retail + forever
         assert_eq!(*result.file_flavors.get(&dir.join("Retail.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
         // MyAddon_Options base → remaining after Options_Mainline = classic + classic_era
         assert_eq!(*result.file_flavors.get(&dir.join("Options.lua")).unwrap(),
                    crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
-        // MyAddon_Options_Mainline → retail
+        // MyAddon_Options_Mainline → retail + forever
         assert_eq!(*result.file_flavors.get(&dir.join("OptionsRetail.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2595,12 +2739,16 @@ UI\\Panel.lua
         assert_eq!(parse("Normal.lua"), ("Normal.lua".to_string(), crate::flavor::FLAVOR_ALL));
         // Prefix form (directive before the path)
         assert_eq!(parse("[AllowLoadGameType mainline] Retail.lua"),
-                   ("Retail.lua".to_string(), crate::flavor::FLAVOR_RETAIL));
+                   ("Retail.lua".to_string(), crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER));
+        assert_eq!(parse("[AllowLoadGameType standard] Standard.lua"),
+                   ("Standard.lua".to_string(), crate::flavor::FLAVOR_RETAIL));
+        assert_eq!(parse("Forever.lua [AllowLoadGameType camelot]"),
+                   ("Forever.lua".to_string(), crate::flavor::FLAVOR_FOREVER));
         assert_eq!(parse("[AllowLoadGameType vanilla, cata] Mixed.lua"),
                    ("Mixed.lua".to_string(), crate::flavor::FLAVOR_CLASSIC_ERA | crate::flavor::FLAVOR_CLASSIC));
         // Suffix form (the wiki-documented syntax: path first, directive after)
         assert_eq!(parse("Display/AuraIconRetail.lua [AllowLoadGameType mainline]"),
-                   ("Display/AuraIconRetail.lua".to_string(), crate::flavor::FLAVOR_RETAIL));
+                   ("Display/AuraIconRetail.lua".to_string(), crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER));
         assert_eq!(parse("Display/AuraIconClassic.lua [AllowLoadGameType classic]"),
                    ("Display/AuraIconClassic.lua".to_string(),
                     crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA));
@@ -2609,14 +2757,14 @@ UI\\Panel.lua
                     crate::flavor::FLAVOR_CLASSIC_ERA | crate::flavor::FLAVOR_CLASSIC));
         // Suffix directive with a [Family] path variable preserved for expansion
         assert_eq!(parse("Locale/[Family].lua [AllowLoadGameType mainline]"),
-                   ("Locale/[Family].lua".to_string(), crate::flavor::FLAVOR_RETAIL));
+                   ("Locale/[Family].lua".to_string(), crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER));
 
         // `ExcludeLoadGameType` is the inverse: everything but the listed types.
         // Blizzard's own TOCs separate these with spaces rather than commas.
         // `vanilla tbc wrath` still loads on Cata and Mists, so Classic survives.
         assert_eq!(parse("TableBuilder.lua [ExcludeLoadGameType vanilla tbc wrath]"),
                    ("TableBuilder.lua".to_string(),
-                    crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_CLASSIC));
+                    crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_FOREVER));
         // Excluding one of the game types sharing the Classic bit changes nothing.
         assert_eq!(parse("PetCollection.lua [ExcludeLoadGameType mists]"),
                    ("PetCollection.lua".to_string(), crate::flavor::FLAVOR_ALL));
@@ -2628,7 +2776,11 @@ UI\\Panel.lua
                    ("Both.lua".to_string(), crate::flavor::FLAVOR_CLASSIC));
         // Two exclusions on one line resolve together, not as separate masks.
         assert_eq!(parse("Split.lua [ExcludeLoadGameType vanilla tbc] [ExcludeLoadGameType wrath cata mists]"),
-                   ("Split.lua".to_string(), crate::flavor::FLAVOR_RETAIL));
+                   ("Split.lua".to_string(), crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER));
+        // Blizzard's shape for a file Forever replaces with its own copy.
+        assert_eq!(parse("[Family]\\Constants.lua [ExcludeLoadGameType camelot]"),
+                   ("[Family]\\Constants.lua".to_string(),
+                    crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA));
 
         // Non-flavor conditions are stripped but don't restrict the flavor mask,
         // in either position.
@@ -2643,7 +2795,7 @@ UI\\Panel.lua
         // A flavor condition combined with a locale condition on one line: the
         // path is recovered and only the game-type mask is applied.
         assert_eq!(parse("Core.lua [AllowLoadGameType mainline] [AllowLoadTextLocale enUS]"),
-                   ("Core.lua".to_string(), crate::flavor::FLAVOR_RETAIL));
+                   ("Core.lua".to_string(), crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER));
     }
 
     #[test]
@@ -2710,8 +2862,9 @@ Real.lua
         std::fs::write(dir.join("MyAddon.toc"), "[Family]/Compat.lua\n").unwrap();
 
         let result = parse_toc_files(&dir);
+        // Forever's `[Family]` is `Mainline`.
         assert_eq!(*result.file_flavors.get(&dir.join("Mainline/Compat.lua")).unwrap(),
-                   crate::flavor::FLAVOR_RETAIL);
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_FOREVER);
         assert_eq!(*result.file_flavors.get(&dir.join("Classic/Compat.lua")).unwrap(),
                    crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
 

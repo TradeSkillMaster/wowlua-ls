@@ -2607,9 +2607,9 @@ impl AnalysisResult {
             .unwrap_or_else(|| self.active_flavors_at(scope_idx))
     }
 
-    /// Whether secret values apply to this file (the addon targets retail, or
-    /// declares no flavor). Otherwise `secret<T>` displays as plain `T` and no
-    /// `secret-*` diagnostic fires.
+    /// Whether secret values apply to this file (the addon targets the retail
+    /// client — retail or Forever — or declares no flavor). Otherwise `secret<T>`
+    /// displays as plain `T` and no `secret-*` diagnostic fires.
     pub fn secrets_enabled(&self) -> bool {
         crate::flavor::guard_base(self.project_flavors, self.addon_flavors) & crate::flavor::SECRET_VALUE_FLAVORS != 0
     }
@@ -3175,7 +3175,7 @@ impl<'a> Analysis<'a> {
     /// Look up the active flavor mask at `scope_idx` by walking ancestor
     /// scopes for the first explicit override; falls back to
     /// `flavor::guard_base` (declared flavors, else the `.toc` breadth, else
-    /// every flavor).
+    /// `IMPLICIT_FLAVORS`, every flavor but Forever).
     pub fn active_flavors_at(&self, scope_idx: ScopeIndex) -> u8 {
         ancestor_scopes(&self.ir.scopes, scope_idx)
             .find_map(|si| self.scope_flavors.get(&si).copied())

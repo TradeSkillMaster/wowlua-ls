@@ -11,7 +11,7 @@
 pub(in crate::stub_gen) use crate::collections::{HashMap, HashSet};
 pub(in crate::stub_gen) use std::path::{Path, PathBuf};
 
-pub(in crate::stub_gen) use crate::flavor::{FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA};
+pub(in crate::stub_gen) use crate::flavor::{FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_FOREVER};
 
 mod sources;
 mod blizzard;
@@ -262,8 +262,9 @@ const WIKI_CACHE_VERSION: u32 = 2;
 
 /// Gethe/wow-ui-source repo for APIDocumentation and FrameXML constant extraction.
 const WOW_UI_SOURCE_REPO: &str = "https://github.com/Gethe/wow-ui-source.git";
-/// Classic branches to union when diffing against retail.
-const CLASSIC_UI_BRANCHES: &[&str] = &["classic_era", "classic"];
+/// Non-retail branches to union when diffing against retail: the Classic flavors
+/// and Forever.
+const NON_RETAIL_UI_BRANCHES: &[&str] = &["classic_era", "classic", "forever"];
 
 // ── Validation thresholds ─────────────────────────────────────────────────────
 // Minimum expected counts — set well below actual values to catch major data loss
@@ -499,6 +500,8 @@ impl MixinScanRegexes {
 /// `retail_api_doc` / `retail_fxml_consts` are pre-scanned retail data for diffing classic-only items.
 /// `all_ui_dirs` includes all branches (classic + retail) for XML frame extraction.
 /// Pre-computed classic API diff: which APIs are classic-only and not already covered.
+/// "Classic-only" throughout this pipeline means absent from retail, so it covers
+/// Forever's additions too.
 pub(in crate::stub_gen) struct ClassicApiDiff {
     /// Classic-only API names needing wiki stubs.
     missing: Vec<String>,
@@ -524,6 +527,9 @@ pub(in crate::stub_gen) struct BranchResourceData {
     retail_api_names: HashSet<String>,
     /// Flavor map derived from branch presence diffs.
     flavor_map: HashMap<String, u8>,
+    /// `branch/file` of each resource list that came back empty (a failed fetch):
+    /// a missing list silently rewrites every flavor mask, so the regen aborts.
+    empty_resources: Vec<String>,
 }
 
 /// Parse all *Documentation.lua files in Blizzard_APIDocumentationGenerated.

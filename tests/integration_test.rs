@@ -2662,6 +2662,53 @@ fn flavor_filter_toc_exclude_partial() {
     });
 }
 
+// WoW Forever: `_Camelot.toc` takes Forever away from `_Mainline.toc`, and a
+// `_Mainline`-listed file counts toward Forever only once the addon declares it.
+#[test]
+fn flavor_filter_forever_toc_forever_only() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/forever-toc/Forever.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_forever_toc_retail_only() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/forever-toc/Retail.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_forever_toc_shared() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/forever-toc/Shared.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_forever_undeclared() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/forever-undeclared/Retail.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_forever_config() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/forever-config/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
 // Flavor-aware `deprecated`: a retail-sourced `@deprecated` API that is still
 // live on a flavor the addon targets must not be flagged there.
 #[test]
@@ -2713,6 +2760,15 @@ fn deprecated_flavor_toc_multi_version() {
 fn deprecated_flavor_toc_retail() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/deprecated-flavor/toc-retail/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn deprecated_flavor_toc_forever() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deprecated-flavor/toc-forever/test.lua",
         with_stubs: true,
         scan_dir: None,
     });
@@ -5683,6 +5739,37 @@ fn quick_fix_wrong_flavor_api_wraps_in_guard() {
 }
 
 #[test]
+fn quick_fix_wrong_flavor_api_mainline_guard_covers_forever() {
+    use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range, Uri};
+    // Forever reports `WOW_PROJECT_MAINLINE` too, so that guard fits an API on
+    // Retail and Forever, but not a Retail-only API in a project targeting Forever.
+    let src = "C_Foo.Bar()\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let guard_for = |message: &str| {
+        let diag = lsp_types::Diagnostic {
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end:   Position { line: 0, character: 11 },
+            },
+            severity: Some(DiagnosticSeverity::WARNING),
+            code: Some(NumberOrString::String("wrong-flavor-api".to_string())),
+            source: Some("wowlua_ls".to_string()),
+            message: message.to_string(),
+            ..Default::default()
+        };
+        let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
+        find_action_edit(&actions, "Guard with").map(|edit| apply_text_edit(src, edit))
+    };
+    assert_eq!(
+        guard_for("API 'C_Foo.Bar' not available in flavor 'Classic Era' (available in: Retail, Forever)").as_deref(),
+        Some("if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then\n    C_Foo.Bar()\nend\n"));
+    assert_eq!(guard_for("API 'C_Foo.Bar' not available in flavor 'Forever' (available in: Retail)"), None);
+    assert_eq!(guard_for("API 'C_Foo.Bar' not available in flavor 'Classic, Forever' (available in: Retail)"), None);
+    assert_eq!(guard_for("API 'C_Foo.Bar' not available in flavor 'Retail' (available in: Forever)"), None);
+}
+
+#[test]
 fn quick_fix_guard_wrap_follows_the_file_indent() {
     use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range, Uri};
     // Both guard fixes share one wrap helper, which indents with the file's own
@@ -7597,6 +7684,16 @@ fn secrets_toc_suffix() {
     // The file is listed only in a `_Vanilla` .toc → per-file Classic Era → secrets off.
     run_annotation_tests(&TestConfig {
         lua_file: "tests/secrets/toc-suffix/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn secrets_toc_forever() {
+    // `## Interface: 16001` → Forever, which runs the retail client → secrets on.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/secrets/toc-forever/test.lua",
         with_stubs: true,
         scan_dir: None,
     });

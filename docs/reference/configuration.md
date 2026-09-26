@@ -143,7 +143,7 @@ Whether FrameXML API globals are available. Set to `false` to treat FrameXML-spe
 
 - **Type:** `string[]`
 - **Default:** `[]` (flavor filtering disabled)
-- **Values:** `"retail"` (alias `"mainline"`), `"classic"`, `"classic_era"`
+- **Values:** `"retail"` (alias `"mainline"`), `"classic"`, `"classic_era"`, `"forever"`
 
 WoW flavor names the project targets. Enables `wrong-flavor-api` diagnostic when non-empty.
 

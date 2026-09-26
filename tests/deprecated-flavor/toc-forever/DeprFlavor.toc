@@ -1,0 +1,4 @@
+## Interface: 16001
+## Title: DeprFlavor
+## Notes: Forever-only TOC Interface, no .wowluarc.json
+test.lua

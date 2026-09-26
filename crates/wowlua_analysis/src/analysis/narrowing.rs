@@ -66,9 +66,10 @@ fn extract_wow_project_comparison(lhs: &Expression<'_>, rhs: &Expression<'_>) ->
 }
 
 /// The flavors in which `expr`, a `WOW_PROJECT_ID` comparison, is truthy:
-/// `WOW_PROJECT_ID == WOW_PROJECT_<const>` (either operand order) → the
-/// constant's flavor, `~=` → every other flavor. `not` complements and
-/// parentheses unwrap. Purely syntactic, so the cross-file scan uses it too.
+/// `WOW_PROJECT_ID == WOW_PROJECT_<const>` (either operand order) → the flavors
+/// reporting that constant (`WOW_PROJECT_MAINLINE`: retail and Forever), `~=` →
+/// every other flavor. `not` complements and parentheses unwrap. Purely
+/// syntactic, so the cross-file scan uses it too.
 pub fn wow_project_guard_mask(expr: &Expression<'_>) -> Option<u8> {
     match expr {
         Expression::BinaryExpression(bin) => {
@@ -79,8 +80,8 @@ pub fn wow_project_guard_mask(expr: &Expression<'_>) -> Option<u8> {
             };
             let terms = bin.get_terms();
             let [lhs, rhs] = terms.as_slice() else { return None };
-            let bit = crate::flavor::wow_project_constant_flavor(&extract_wow_project_comparison(lhs, rhs)?)?;
-            Some(if is_eq { bit } else { crate::flavor::FLAVOR_ALL & !bit })
+            let mask = crate::flavor::wow_project_constant_flavor(&extract_wow_project_comparison(lhs, rhs)?)?;
+            Some(if is_eq { mask } else { crate::flavor::FLAVOR_ALL & !mask })
         }
         Expression::GroupedExpression(g) => wow_project_guard_mask(&g.get_expression()?),
         Expression::UnaryExpression(u) if u.kind() == Operator::Not => {
@@ -4606,7 +4607,7 @@ mod flavor_guard_tests {
     use std::sync::Arc;
     use super::*;
     use crate::analysis::{AnalysisConfig, AnalysisResult};
-    use crate::flavor::{FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_RETAIL};
+    use crate::flavor::{FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_FOREVER, FLAVOR_RETAIL};
     use crate::pre_globals::PreResolvedGlobals;
 
     /// Guard mask of `<expr>` parsed from `local x = <expr>`.
@@ -4619,14 +4620,18 @@ mod flavor_guard_tests {
 
     #[test]
     fn wow_project_comparison_masks() {
+        // Forever reports `WOW_PROJECT_MAINLINE` too.
+        let mainline = FLAVOR_RETAIL | FLAVOR_FOREVER;
         let not_retail = FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA;
-        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE"), Some(FLAVOR_RETAIL));
-        assert_eq!(guard_mask("WOW_PROJECT_MAINLINE == WOW_PROJECT_ID"), Some(FLAVOR_RETAIL));
+        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE"), Some(mainline));
+        assert_eq!(guard_mask("WOW_PROJECT_MAINLINE == WOW_PROJECT_ID"), Some(mainline));
         assert_eq!(guard_mask("WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE"), Some(not_retail));
         assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MISTS_CLASSIC"), Some(FLAVOR_CLASSIC));
         assert_eq!(guard_mask("(WOW_PROJECT_ID == WOW_PROJECT_CLASSIC)"), Some(FLAVOR_CLASSIC_ERA));
         assert_eq!(guard_mask("not (WOW_PROJECT_ID == WOW_PROJECT_MAINLINE)"), Some(not_retail));
-        assert_eq!(guard_mask("not (WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE)"), Some(FLAVOR_RETAIL));
+        assert_eq!(guard_mask("not (WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE)"), Some(mainline));
+        assert_eq!(guard_mask("WOW_PROJECT_ID ~= WOW_PROJECT_CLASSIC"),
+                   Some(FLAVOR_RETAIL | FLAVOR_CLASSIC | FLAVOR_FOREVER));
         // `not X == Y` is `(not X) == Y`.
         assert_eq!(guard_mask("not WOW_PROJECT_ID == WOW_PROJECT_MAINLINE"), None);
         assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_UNKNOWN"), None);
@@ -4641,7 +4646,7 @@ mod flavor_guard_tests {
         let tree = crate::syntax::parser::Parser::new(src).parse();
         let assign = SyntaxNode::new_root(&tree).descendants().find_map(LocalAssign::cast).unwrap();
         let rhs = assign.expression_list().unwrap().expressions();
-        assert_eq!(assignment_flavor_guard(0, rhs.first()), FLAVOR_RETAIL);
+        assert_eq!(assignment_flavor_guard(0, rhs.first()), FLAVOR_RETAIL | FLAVOR_FOREVER);
         assert_eq!(assignment_flavor_guard(FLAVOR_CLASSIC_ERA, rhs.first()), FLAVOR_CLASSIC_ERA);
         assert_eq!(assignment_flavor_guard(0, None), 0);
     }

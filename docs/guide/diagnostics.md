@@ -34,7 +34,7 @@ Many diagnostics offer **quick fixes** (code actions — the lightbulb / <kbd>Ct
 | `incomplete-signature-doc` | Generate the missing `@param` / `@return` annotations |
 | `trailing-space` | Remove the trailing whitespace |
 
-The config-editing fixes (`undefined-global`, `create-global`) only appear when a `.wowluarc.json` governs the file. The `wrong-flavor-api` guard is offered only when the API is available on a single flavor with an unambiguous `WOW_PROJECT_*` constant (Retail or Classic Era).
+The config-editing fixes (`undefined-global`, `create-global`) only appear when a `.wowluarc.json` governs the file. The `wrong-flavor-api` guard is offered only when one `WOW_PROJECT_*` constant covers exactly the flavors the API is available on: `WOW_PROJECT_MAINLINE` (Retail and Forever, or Retail alone when your project doesn't target Forever) or `WOW_PROJECT_CLASSIC` (Classic Era).
 
 ## Suppressing diagnostics
 

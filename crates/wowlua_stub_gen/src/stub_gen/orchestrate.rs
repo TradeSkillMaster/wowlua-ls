@@ -119,19 +119,21 @@ pub fn regenerate_stubs() {
         copy_dir_recursive(&overrides_dir, &combined_stubs.join("overrides"));
     }
 
-    // Step 2: Clone wow-ui-source branches
+    // Step 2: Clone wow-ui-source branches. The non-retail clones feed the
+    // pipeline's "classic" side (`classic_ui_dirs`), which Forever shares.
     log::info!("Cloning wow-ui-source branches...");
     let mut classic_ui_dirs = Vec::new();
     let mut classic_branch_flavors = Vec::new();
-    for branch in CLASSIC_UI_BRANCHES {
+    for branch in NON_RETAIL_UI_BRANCHES {
         let dest = clones_dir.join(format!("wow-ui-source-{branch}"));
         if ensure_shallow_clone(WOW_UI_SOURCE_REPO, branch, &dest, refresh_clones) {
             log::info!("  Cloned {branch}");
             classic_branch_flavors.push(match *branch {
                 "classic_era" => crate::flavor::FLAVOR_CLASSIC_ERA,
                 "classic" => crate::flavor::FLAVOR_CLASSIC,
+                "forever" => crate::flavor::FLAVOR_FOREVER,
                 other => {
-                    log::warn!("Unrecognized CLASSIC_UI_BRANCHES entry '{other}' — frame flavor mask will be 0");
+                    log::warn!("Unrecognized NON_RETAIL_UI_BRANCHES entry '{other}' — frame flavor mask will be 0");
                     0
                 }
             });
@@ -147,7 +149,7 @@ pub fn regenerate_stubs() {
     } else {
         log::warn!("could not clone live branch");
     }
-    phase!("clone wow-ui-source (3 branches)");
+    phase!("clone wow-ui-source (4 branches)");
 
     // Capture wow-ui-source branch commits for provenance tracking.
     let mut ui_source_commits: Vec<(String, String)> = Vec::new();
@@ -196,12 +198,12 @@ pub fn regenerate_stubs() {
         source_errors.push(format!("Tooltip data accessors: {} (expected ≥50)", tooltip_accessors.len()));
     }
 
-    // Step 2c: Fetch BlizzardInterfaceResources lists (all 3 branches), compute classic API
+    // Step 2c: Fetch BlizzardInterfaceResources lists (all 4 branches), compute classic API
     // diff, derive retail global name universe, and compute flavor bitmasks from branch presence.
     log::info!("Fetching BlizzardInterfaceResources and computing branch diffs...");
     let mut branch_data = fetch_branch_resources(&combined_stubs, &tooltip_accessor_keys(&tooltip_accessors));
-    if branch_data.retail_all_names.is_empty() {
-        source_errors.push("BlizzardInterfaceResources retail names: empty (fetch failed)".to_string());
+    for resource in &branch_data.empty_resources {
+        source_errors.push(format!("BlizzardInterfaceResources {resource}: empty (fetch failed)"));
     }
     let mut classic_diff = branch_data.classic_diff;
     let class_re = regex_lite::Regex::new(r"---@class\s+(\w+)").unwrap();

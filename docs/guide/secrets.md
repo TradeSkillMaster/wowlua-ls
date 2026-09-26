@@ -174,9 +174,9 @@ The retail API stubs are generated from Blizzard's API documentation, which mark
 
 ## Flavors
 
-Secret values only exist on retail, so the checks follow the same flavor signals as [flavor filtering](/guide/flavor-filtering):
+Secret values only exist on the retail client (retail and [Forever](/guide/flavor-filtering#world-of-warcraft-forever)), so the checks follow the same flavor signals as [flavor filtering](/guide/flavor-filtering):
 
-- **Declared flavors.** A `.wowluarc.json` `flavors` list, or the `.toc` files (`## Interface:` versions, `_Vanilla`/`_Classic` suffixes, `AllowLoadGameType`). A file that never loads on retail sees plain types, no **Secrecy** hover section, and no `secret-*` diagnostics. No flavor signal at all counts as retail.
+- **Declared flavors.** A `.wowluarc.json` `flavors` list, or the `.toc` files (`## Interface:` versions, `_Vanilla`/`_Classic` suffixes, `AllowLoadGameType`). A file that never loads on retail or Forever sees plain types, no **Secrecy** hover section, and no `secret-*` diagnostics. No flavor signal at all counts as retail.
 - **Guards.** Nothing is reported inside `if WOW_PROJECT_ID == WOW_PROJECT_CLASSIC then`, inside `if WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE then`, after an early exit like `if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then return end`, under a [`@flavor-narrows`](/guide/flavor-filtering#conditional-narrowing) guard or a boolean initialized from a `WOW_PROJECT_ID` comparison (`local isClassic = WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE`), or on the right side of an `and` whose left side is such a guard (`if isClassic and hp > 0 then`). This works with or without a `flavors` declaration, and hover, inlay hints, completion, and signature help hide secrecy there too.
 
 ## Testing

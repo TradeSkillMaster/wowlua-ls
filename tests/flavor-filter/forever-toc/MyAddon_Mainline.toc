@@ -1,0 +1,4 @@
+## Interface: 120100
+## Title: MyAddon
+Retail.lua
+Shared.lua

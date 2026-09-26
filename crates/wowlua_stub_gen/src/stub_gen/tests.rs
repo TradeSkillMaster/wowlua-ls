@@ -1501,19 +1501,29 @@ fn test_apply_tooltip_accessor_signatures() {
 
 #[test]
 fn test_compute_flavor_map_from_branch_sets() {
-    use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA};
+    use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_FOREVER};
 
-    let retail: HashSet<String> = ["GetItemInfo", "C_Map.GetBestMapForUnit", "RetailOnly", "SharedRetailClassicEra"]
-        .iter().map(|s| s.to_string()).collect();
-    let classic: HashSet<String> = ["GetItemInfo", "ClassicOnly"]
-        .iter().map(|s| s.to_string()).collect();
-    let classic_era: HashSet<String> = ["GetItemInfo", "ClassicEraOnly", "SharedRetailClassicEra"]
-        .iter().map(|s| s.to_string()).collect();
+    let set = |names: &[&str]| -> HashSet<String> { names.iter().map(|s| s.to_string()).collect() };
+    let retail = set(&["GetItemInfo", "C_Map.GetBestMapForUnit", "RetailOnly", "SharedRetailClassicEra", "OnRetailClient"]);
+    let classic = set(&["GetItemInfo", "ClassicOnly"]);
+    let classic_era = set(&["GetItemInfo", "ClassicEraOnly", "SharedRetailClassicEra"]);
+    let forever = set(&["GetItemInfo", "OnRetailClient", "ForeverOnly", "tContains"]);
+    // `tContains` is FrameXML on retail; Forever implements it in C.
+    let retail_fxml = set(&["tContains"]);
 
-    let map = compute_flavor_map(&retail, &classic, &classic_era);
+    let map = compute_flavor_map(&[
+        (FLAVOR_RETAIL, &retail),
+        (FLAVOR_CLASSIC, &classic),
+        (FLAVOR_CLASSIC_ERA, &classic_era),
+        (FLAVOR_FOREVER, &forever),
+    ], &retail_fxml);
 
-    // GetItemInfo is in all three → FLAVOR_ALL → not stored
+    // GetItemInfo is in all four → FLAVOR_ALL → not stored
     assert!(!map.contains_key("GetItemInfo"));
+    assert_eq!(map["OnRetailClient"], FLAVOR_RETAIL | FLAVOR_FOREVER);
+    assert_eq!(map["ForeverOnly"], FLAVOR_FOREVER);
+    // A retail FrameXML function doesn't become Forever-only.
+    assert!(!map.contains_key("tContains"));
     // RetailOnly → only retail
     assert_eq!(map["RetailOnly"], FLAVOR_RETAIL);
     // ClassicOnly → only classic

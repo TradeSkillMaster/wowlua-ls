@@ -27,7 +27,7 @@ features:
   - title: Cross-file intelligence
     details: "Addon namespace resolution, class inheritance across files, defclass factories, XML templates, and metatable chains - all resolved workspace-wide with parallel scanning. Multi-addon workspaces supported."
   - title: Flavor filtering
-    details: "Declare target flavors (retail, classic, classic_era) and get warnings on APIs that don't exist in all your targets. WOW_PROJECT_ID guards and @flavor-narrows are understood."
+    details: "Declare target flavors (retail, classic, classic_era, forever) and get warnings on APIs that don't exist in all your targets. WOW_PROJECT_ID guards and @flavor-narrows are understood."
   - title: CI-ready CLI
     details: "wowlua_ls check path/to/addon lints your addon from the command line. Exit code 1 on diagnostics. Drop it straight into your CI pipeline."
   - title: LuaLS-compatible annotations

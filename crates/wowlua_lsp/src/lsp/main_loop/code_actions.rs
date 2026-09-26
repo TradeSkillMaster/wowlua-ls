@@ -1199,20 +1199,24 @@ fn enclosing_block_statement_kind(tree: &SyntaxTree, offset: u32) -> Option<(u32
 
 /// Quick fix for `wrong-flavor-api`: wrap the enclosing statement in a
 /// `if WOW_PROJECT_ID == WOW_PROJECT_* then … end` guard so the call only runs on
-/// the flavor where the API exists. Only offered when the API is available on a
-/// single flavor with an unambiguous `WOW_PROJECT_*` constant (Retail or Classic
-/// Era) — the rolling Classic flavor spans several expansion constants, so no one
-/// guard is correct there.
+/// the flavors where the API exists. Only offered when one `WOW_PROJECT_*`
+/// constant covers exactly those flavors: `WOW_PROJECT_MAINLINE` (Retail and
+/// Forever — Retail alone when the project doesn't target Forever) or
+/// `WOW_PROJECT_CLASSIC` (Classic Era). The rolling Classic flavor spans several
+/// expansion constants, so no one guard is correct there.
 pub(super) fn make_flavor_guard_action(
     uri: &lsp_types::Uri,
     text: &str,
     diag: &lsp_types::Diagnostic,
     tree: &SyntaxTree,
 ) -> Option<CodeAction> {
-    // Message tail: "… (available in: <flavors>)".
-    let available = diag.message.rsplit_once("(available in: ")?.1.strip_suffix(')')?;
+    // Message: "… not available in flavor '<flavors>' (available in: <flavors>)".
+    let (head, available) = diag.message.rsplit_once("(available in: ")?;
+    let available = available.strip_suffix(')')?;
+    let missing = head.rsplit_once("not available in flavor '")?.1;
     let const_name = match available.trim() {
-        "Retail" => "WOW_PROJECT_MAINLINE",
+        "Retail, Forever" => "WOW_PROJECT_MAINLINE",
+        "Retail" if !missing.contains("Forever") => "WOW_PROJECT_MAINLINE",
         "Classic Era" => "WOW_PROJECT_CLASSIC",
         _ => return None,
     };

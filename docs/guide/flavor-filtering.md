@@ -1,6 +1,6 @@
 # Flavor Filtering
 
-WoW ships three game versions (retail, classic, and classic era) and their APIs differ. If your addon targets more than one, calling an API that doesn't exist in one of your targets is a runtime error you won't catch until someone reports it. wowlua-ls catches it at edit time.
+WoW ships four game versions (retail, classic, classic era, and World of Warcraft: Forever) and their APIs differ. If your addon targets more than one, calling an API that doesn't exist in one of your targets is a runtime error you won't catch until someone reports it. wowlua-ls catches it at edit time.
 
 ## Setup
 
@@ -23,6 +23,7 @@ Accepted values:
 | `retail` (alias: `mainline`) | The live retail game |
 | `classic` | Rolling Classic progression (including MoP Classic) |
 | `classic_era` | Classic Era (vanilla) |
+| `forever` | [World of Warcraft: Forever](#world-of-warcraft-forever) |
 
 ### Option 2: TOC-based detection (per-file)
 
@@ -32,12 +33,14 @@ If your addon uses [flavor-specific TOC files](https://warcraft.wiki.gg/wiki/TOC
 
 | TOC suffix | Flavors |
 |---|---|
-| `_Mainline`, `_Standard` | Retail |
+| `_Mainline` | Retail + Forever |
+| `_Standard` | Retail |
+| `_Camelot` | Forever |
 | `_Classic` | Classic + Classic Era |
 | `_Vanilla` | Classic Era |
 | `_Cata`, `_Wrath`, `_TBC`, `_Mists` | Classic |
 
-The unsuffixed (base) TOC covers whichever flavors aren't claimed by any suffixed TOC in the same addon.
+The unsuffixed (base) TOC covers whichever flavors aren't claimed by any suffixed TOC in the same addon. Like the game, the LS prefers a game-specific TOC over its family's: with both `_Vanilla.toc` and `_Classic.toc`, Classic Era loads `_Vanilla.toc`, so `_Classic.toc` counts as Classic only; `_Camelot.toc` takes Forever away from `_Mainline.toc` the same way.
 
 ```
 MyAddon/
@@ -65,7 +68,7 @@ SharedCode.lua
 
 `ExcludeLoadGameType` is the inverse of `AllowLoadGameType`: the file loads on every flavor except the ones listed. Values may be separated by commas or plain whitespace.
 
-Because wowlua-ls groups WoW's game types into three flavors, an exclusion removes a flavor only once every game type in it is listed. `[ExcludeLoadGameType vanilla tbc wrath]` above still loads on Cataclysm and Mists, so it counts as Retail + Classic; `[ExcludeLoadGameType vanilla tbc wrath cata mists]` is what leaves Retail alone. `classic` and `mainline` stand for all of their game types.
+Because wowlua-ls groups WoW's game types into four flavors, an exclusion removes a flavor only once every game type in it is listed. `[ExcludeLoadGameType vanilla tbc wrath]` above still loads on Cataclysm and Mists, so it counts as Retail + Classic; `[ExcludeLoadGameType vanilla tbc wrath cata mists]` is what leaves Retail alone. `classic` and `mainline` stand for all of their game types, and `mainline` includes Forever's `camelot`.
 
 The directive may follow the file path (the form the WoW client documents, shown above) or precede it (`[AllowLoadGameType mainline] RetailUI.lua`). These intersect with the TOC's suffix flavor, further restricting which flavors a file is loaded for.
 
@@ -83,8 +86,8 @@ The LS expands each variable to all possible values and checks which files exist
 
 | Variable | Values |
 |---|---|
-| `[Family]` | `Mainline` (retail), `Classic` (classic + classic era) |
-| `[Game]` | `Standard` (retail), `Vanilla` (classic era), `Cata`/`Wrath`/`TBC`/`Mists` (classic) |
+| `[Family]` | `Mainline` (retail + Forever), `Classic` (classic + classic era) |
+| `[Game]` | `Standard` (retail), `Camelot` (Forever), `Vanilla` (classic era), `Cata`/`Wrath`/`TBC`/`Mists` (classic) |
 
 Each expanded file gets the flavor mask of its expansion value. Files that don't exist on disk are skipped.
 
@@ -106,7 +109,7 @@ Hovering over a WoW API function shows its availability: `Flavors: Retail, Class
 
 ## Flavor-aware deprecation
 
-WoW API deprecations are retail-side: many functions Blizzard marks `@deprecated`
+WoW API deprecations are retail-side (Forever, which runs the retail client, included): many functions Blizzard marks `@deprecated`
 (e.g. `GetMerchantItemInfo`, replaced on retail by `C_MerchantFrame.GetItemInfo`)
 remain the live, correct API on Classic and Classic Era. The `deprecated`
 diagnostic accounts for this. It won't flag a call when the API is still live in
@@ -137,7 +140,7 @@ The LS understands flavor-conditional code:
 
 ```lua
 if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
-    -- Narrowed to retail only
+    -- Narrowed to retail (and Forever, which reports WOW_PROJECT_MAINLINE too)
     AbbreviateLargeNumbers(100) -- no warning
 else
     -- Narrowed to non-retail flavors
@@ -204,6 +207,30 @@ local isRetail = select(4, GetBuildInfo()) >= 100000
 Flavor guards work with all narrowing patterns: if/else, early exit, `not`, and `and`.
 
 Flavor guards also scope the retail-only [secret-value](/guide/secrets) diagnostics, and for those no `flavors` declaration is needed.
+
+## World of Warcraft: Forever
+
+Forever (game type `camelot`) is a vanilla-era game running on the retail client. It has retail's API, minus some systems and plus its own, and shares retail's secret values and deprecations. Its interface versions start at `1.60` (`## Interface: 16001`), well above Classic Era's `1.15`.
+
+An addon targets Forever when its `.wowluarc.json` `flavors` includes `forever` or one of its `.toc` files lists a Forever `## Interface:` version. Until then, Forever is left out even though the game would load the addon's `_Mainline.toc`, so a retail addon doesn't get warnings about APIs that Forever lacks.
+
+```
+MyAddon/
+├── MyAddon_Mainline.toc  # ## Interface: 120100 — Retail
+└── MyAddon_Camelot.toc   # ## Interface: 16001 — Forever
+```
+
+Forever reports `WOW_PROJECT_ID == WOW_PROJECT_MAINLINE`, so that guard covers both retail and Forever. To tell the two apart, write your own guard and mark it with `@flavor-narrows`. Check the project ID as well as the interface version, since Classic Era's `1.15` is also below `2.0`:
+
+```lua
+---@flavor-narrows forever
+---@return boolean
+local function IsForever()
+    return WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and select(4, GetBuildInfo()) < 20000
+end
+```
+
+Also mark a retail guard built on `WOW_PROJECT_MAINLINE` as `@flavor-narrows retail, forever`, or its `not` branch counts as running on Forever.
 
 ## When to use it
 

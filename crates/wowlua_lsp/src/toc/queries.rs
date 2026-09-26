@@ -338,6 +338,9 @@ mod tests {
         let doc = parse_toc("## AllowLoadGameType: mainline\n");
         let hover = hover_at(&doc, 25).unwrap(); // in "mainline"
         assert!(hover.type_str.contains("Retail"));
+        let doc = parse_toc("## AllowLoadGameType: camelot\n");
+        let hover = hover_at(&doc, 25).unwrap(); // in "camelot"
+        assert!(hover.type_str.contains("Forever"));
     }
 
     #[test]

@@ -1,0 +1,4 @@
+## Interface: 16001
+## Title: MyAddon
+Forever.lua
+Shared.lua
