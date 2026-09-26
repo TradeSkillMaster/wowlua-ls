@@ -94,12 +94,17 @@
 //! Resolution is re-entrant: when the nested analysis reads a deferred return
 //! defined in *another* file it recurses, so multi-hop chains resolve precisely.
 //! A thread-local set of in-progress files breaks cycles (the back-edge falls
-//! back to the coarse type), keeping the fixpoint convergent.
+//! back to the coarse type), keeping the fixpoint convergent. [`DeferredHarvests`]
+//! orders harvests by a dependency graph and memoizes each per cut context, so what
+//! a reader sees never depends on which harvest happened to run first (on thread
+//! timing or analysis order), and a cycle costs a bounded number of analyses.
 
 use std::cell::RefCell;
 use crate::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 
 use crate::analysis::{Analysis, AnalysisConfig, Ir};
 use crate::pre_globals::PreResolvedGlobals;
@@ -119,11 +124,6 @@ pub struct DeferredCallGlobal {
 /// `(class_name, field_name)` identifying a deferred constructor self-field.
 pub type DeferredFieldKey = (String, String);
 
-/// Memo of harvested type arguments per deferred field. `None` means "harvested
-/// but unresolvable" (don't re-harvest).
-pub type DeferredFieldArgsCache =
-    std::sync::RwLock<HashMap<DeferredFieldKey, Option<Vec<ValueType>>>>;
-
 /// Locates the RHS call of a constructor self-field whose coarse type is `any`
 /// (e.g. `self._manager = UIManager.Create(...):SuppressActionLog(...)`), so the
 /// field's precise generic type *arguments* can be harvested from that call's
@@ -138,7 +138,7 @@ pub struct DeferredFieldTypeArgs {
 /// The whole-file harvest's precise signature for one deferred function, in
 /// external-index space. One bundle holds *everything* body-derived inference
 /// produces, so adding the next datum costs a struct field, not a new cache.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeferredSig {
     /// Per-slot precise return types (coarse `any` slots upgraded).
     pub returns: Vec<ValueType>,
@@ -147,12 +147,347 @@ pub struct DeferredSig {
     pub overloads: Vec<ResolvedOverload>,
 }
 
+/// A unit of deferred harvest: one file analyzed on its own (its deferred returns,
+/// created globals and constructor field type args), or the files of a workspace
+/// `@class` analyzed together (its fields).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Unit {
+    File(PathBuf),
+    Class(String),
+}
+
+impl Unit {
+    /// The files a harvest of this unit analyzes (and marks in-progress).
+    fn files<'a>(&'a self, ext: &'a PreResolvedGlobals) -> &'a [PathBuf] {
+        match self {
+            Unit::File(path) => std::slice::from_ref(path),
+            Unit::Class(name) => ext.deferred_class_field_paths.get(name).map_or(&[], Vec::as_slice),
+        }
+    }
+}
+
+/// Everything cross-file readers take from one analysis of a defining file.
+#[derive(Debug, PartialEq)]
+struct FileHarvest {
+    /// The signature bundle of every deferred function defined in it.
+    sigs: HashMap<FunctionIndex, DeferredSig>,
+    /// The type of every created global defined in it (`None`: unresolvable).
+    call_globals: HashMap<SymbolIndex, Option<ValueType>>,
+    /// The type args of every deferred constructor self-field defined in it
+    /// (`None`: unresolvable).
+    field_args: HashMap<DeferredFieldKey, Option<Vec<ValueType>>>,
+}
+
+/// A class's harvested fields: the upgraded type of every field its files assign
+/// (`None`: harvested but not upgradable; absent: assigned in none of them).
+type ClassFields = HashMap<String, Option<ValueType>>;
+
+/// What a harvest of a [`Unit`] yields.
+#[derive(Debug, Clone, PartialEq)]
+enum Harvest {
+    File(Arc<FileHarvest>),
+    Class(Arc<ClassFields>),
+}
+
+impl Harvest {
+    fn file(&self) -> Option<&FileHarvest> {
+        match self {
+            Harvest::File(h) => Some(h),
+            Harvest::Class(_) => None,
+        }
+    }
+
+    fn class(&self) -> Option<&ClassFields> {
+        match self {
+            Harvest::Class(fields) => Some(fields),
+            Harvest::File(_) => None,
+        }
+    }
+}
+
+/// A memoized harvest result and the cut context it was computed in.
+///
+/// A harvest cuts every read into a file that a harvest further up its thread's stack
+/// is analyzing, so its result is determined by which of the files it read were in
+/// progress: `deps` holds every file whose in-progress state it depended on (each one
+/// it read, transitively) and `cut` the subset that was in progress. Wherever the
+/// in-progress files meet `deps` in exactly `cut`, a fresh harvest would make the same
+/// reads with the same outcomes and reproduce `value`.
+#[derive(Debug)]
+struct MemoEntry {
+    cut: Vec<PathBuf>,
+    deps: HashSet<PathBuf>,
+    /// The files of the whole component the entry was harvested with (see
+    /// [`harvest_component`]), so an edit to any of them drops it.
+    group: Arc<[PathBuf]>,
+    value: Harvest,
+}
+
+/// The files harvests running on this thread are analyzing, sorted: the context a
+/// harvest started now would run in.
+type Context = Vec<PathBuf>;
+
+/// A harvest result to memoize: the unit, its dependencies, the files of the component
+/// it was harvested with, and the result (see [`MemoEntry`]).
+type Harvested = (Unit, HashSet<PathBuf>, Arc<[PathBuf]>, Harvest);
+
+/// The deferred harvests of a workspace, behind the shared `Arc<PreResolvedGlobals>`
+/// (a wholesale rebuild drops them).
+///
+/// A harvest cuts reads into files already being analyzed up the thread's stack (the
+/// back-edge falls back to the coarse type), so what it computes depends on which of
+/// them are in progress. Two things keep that from leaking harvest order — thread
+/// timing — into results, and keep the work linear:
+/// - **Discovery.** Each file is first analyzed with every deferred read cut, which
+///   records the units it reads (`reads`) — a dependency graph no context affects. A
+///   missed read harvests the strongly connected components of that graph reachable
+///   from its unit, dependencies first, one component at a time with all its files in
+///   progress ([`harvest_component`]); a cycle is harvested as one unit instead of
+///   being entered from whichever side a reader happened to reach first.
+/// - **Cut contexts.** Each memo entry records the files it depended on and which of
+///   them were in progress ([`MemoEntry`]); a reader only takes an entry valid in its
+///   own context.
+#[derive(Debug, Default)]
+pub struct DeferredHarvests {
+    memo: RwLock<HashMap<Unit, Vec<MemoEntry>>>,
+    /// The units each file's discovery analysis reads.
+    reads: RwLock<HashMap<PathBuf, Arc<[Unit]>>>,
+    /// Components being harvested on some thread, by their first unit and context:
+    /// another thread about to harvest the same one waits for its result instead of
+    /// duplicating the work. That can't deadlock — a waiter's context never includes
+    /// the files it waits on, so a chain of waits leading back to it would need a read
+    /// the chain's context cuts.
+    harvesting: Flights<(Unit, Context)>,
+    /// Discovery analyses running on some thread, likewise (one never waits on
+    /// anything, so neither can this).
+    discovering: Flights<PathBuf>,
+    /// File analyses run for discovery and harvests.
+    analyses: AtomicUsize,
+}
+
+impl DeferredHarvests {
+    /// Drop what depends on `path`'s content: its discovery reads, and every entry
+    /// harvested from it or from a component that includes it.
+    pub fn invalidate(&self, path: &Path) {
+        if let Ok(mut reads) = self.reads.write() {
+            reads.remove(path);
+        }
+        if let Ok(mut memo) = self.memo.write() {
+            memo.retain(|_, entries| {
+                entries.retain(|e| !e.group.iter().any(|p| p == path));
+                !entries.is_empty()
+            });
+        }
+    }
+
+    /// File analyses run so far for discovery and harvests.
+    pub fn analyses(&self) -> usize {
+        self.analyses.load(Ordering::Relaxed)
+    }
+
+    /// `class`'s harvested fields as a top-level analysis sees them (harvested with
+    /// nothing in progress), read through `read`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn top_level_class_fields<R>(&self, class: &str, read: impl FnOnce(&ClassFields) -> R) -> Option<R> {
+        let memo = self.memo.read().ok()?;
+        let entry = memo.get(&Unit::Class(class.to_string()))?.iter().find(|e| e.cut.is_empty())?;
+        entry.value.class().map(read)
+    }
+
+    /// Read `unit`'s result for this thread's current context through `read`, noting
+    /// its dependencies on the enclosing harvest. `None` if it hasn't been harvested
+    /// in this context.
+    fn lookup<R>(&self, unit: &Unit, read: impl FnOnce(&Harvest) -> R) -> Option<R> {
+        let memo = self.memo.read().ok()?;
+        let entry = memo.get(unit)?.iter().find(|e| valid_here(&e.cut, &e.deps))?;
+        note_deps(entry.deps.iter().map(PathBuf::as_path));
+        Some(read(&entry.value))
+    }
+
+    /// Whether `unit` has a result valid in this thread's current context.
+    fn harvested(&self, unit: &Unit) -> bool {
+        self.memo
+            .read()
+            .is_ok_and(|memo| memo.get(unit).is_some_and(|es| es.iter().any(|e| valid_here(&e.cut, &e.deps))))
+    }
+
+    /// Store results harvested in this thread's current context — each with its
+    /// dependencies and component files — unless one is already stored for the same
+    /// unit and cut (it is the same result). All at once, so another thread never sees
+    /// part of a component harvested.
+    fn insert_all(&self, results: Vec<Harvested>) {
+        let Ok(mut memo) = self.memo.write() else { return };
+        for (unit, deps, group, value) in results {
+            let cut = cut_of(&deps);
+            let entries = memo.entry(unit).or_default();
+            if !entries.iter().any(|e| e.cut == cut) {
+                entries.push(MemoEntry { cut, deps, group, value });
+            }
+        }
+    }
+}
+
+/// Work in flight on some thread, by key, so another thread about to do the same waits
+/// for it instead of duplicating it.
+#[derive(Debug)]
+struct Flights<K>(Mutex<HashMap<K, Arc<Flight>>>);
+
+impl<K> Default for Flights<K> {
+    fn default() -> Self {
+        Self(Mutex::new(HashMap::default()))
+    }
+}
+
+impl<K: Eq + Hash + Clone> Flights<K> {
+    /// Claim the work for `key`. `None` once another thread's claim on it has landed —
+    /// its result is then memoized (unless it failed).
+    fn claim(&self, key: K) -> Option<FlightClaim<'_, K>> {
+        let flight = {
+            let mut flights = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            match flights.get(&key) {
+                Some(flight) => Arc::clone(flight),
+                None => {
+                    flights.insert(key.clone(), Arc::default());
+                    return Some(FlightClaim { flights: self, key: Some(key) });
+                }
+            }
+        };
+        let mut landed = flight.landed.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*landed {
+            landed = flight.signal.wait(landed).unwrap_or_else(PoisonError::into_inner);
+        }
+        None
+    }
+}
+
+/// Work in flight, which [`Flights::claim`] waiters block on.
+#[derive(Debug, Default)]
+struct Flight {
+    landed: Mutex<bool>,
+    signal: Condvar,
+}
+
+/// The claim on work in flight; landing it (on drop, including on unwind) wakes every
+/// waiter.
+struct FlightClaim<'a, K: Eq + Hash> {
+    flights: &'a Flights<K>,
+    key: Option<K>,
+}
+
+impl<K: Eq + Hash> Drop for FlightClaim<'_, K> {
+    fn drop(&mut self) {
+        let Some(key) = self.key.take() else { return };
+        let flight = self.flights.0.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+        if let Some(flight) = flight {
+            *flight.landed.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            flight.signal.notify_all();
+        }
+    }
+}
+
 thread_local! {
     /// Files currently being analyzed on this thread. Guards against infinite
     /// recursion when a deferred resolution re-enters the same file (Stage 1
     /// returns the coarse fallback for that back-edge). Cross-file chains into
     /// *other* files recurse normally and terminate via this same guard on cycles.
     static IN_PROGRESS: RefCell<HashSet<PathBuf>> = RefCell::new(HashSet::default());
+    /// The dependencies (see [`MemoEntry`]) each harvest running on this thread has
+    /// collected so far, innermost last.
+    static DEPS: RefCell<Vec<HashSet<PathBuf>>> = const { RefCell::new(Vec::new()) };
+    /// The harvest analyses running on this thread, innermost last.
+    static ANALYSES: RefCell<Vec<AnalysisFrame>> = const { RefCell::new(Vec::new()) };
+    /// The units read so far by the discovery analysis running on this thread.
+    static DISCOVERY: RefCell<Option<Vec<Unit>>> = const { RefCell::new(None) };
+}
+
+/// A harvest analysis running on this thread.
+struct AnalysisFrame {
+    /// The files of the unit being harvested: reads of anything defined in them are
+    /// always back-edges.
+    own: Vec<PathBuf>,
+    /// For a member of a dependency cycle being harvested: the round it is analyzed in
+    /// (see [`harvest_component`]).
+    round: Option<Arc<Round>>,
+}
+
+/// One round of a cycle's harvest (see [`harvest_component`]): its members, and their
+/// results from the previous round (`None` in the first).
+struct Round {
+    members: Vec<Unit>,
+    previous: Option<Arc<HashMap<Unit, Harvest>>>,
+}
+
+/// Whether a harvest up this thread's stack is analyzing `path`, making a read of
+/// anything defined in it a cycle back-edge that takes the coarse fallback.
+fn in_progress(path: &Path) -> bool {
+    IN_PROGRESS.with(|set| set.borrow().contains(path))
+}
+
+/// Record that the innermost running harvest's result depends on whether `paths` are
+/// in progress. A no-op outside any harvest (a top-level analysis).
+fn note_deps<'a>(paths: impl IntoIterator<Item = &'a Path>) {
+    DEPS.with(|deps| {
+        if let Some(top) = deps.borrow_mut().last_mut() {
+            for path in paths {
+                if !top.contains(path) {
+                    top.insert(path.to_path_buf());
+                }
+            }
+        }
+    });
+}
+
+/// Whether a result harvested with `cut` of its `deps` in progress holds in this
+/// thread's current context (see [`MemoEntry`]).
+fn valid_here(cut: &[PathBuf], deps: &HashSet<PathBuf>) -> bool {
+    IN_PROGRESS.with(|set| {
+        let set = set.borrow();
+        cut.iter().all(|c| set.contains(c))
+            && set.iter().filter(|p| deps.contains(*p)).count() == cut.len()
+    })
+}
+
+/// The files among `deps` in progress on this thread, sorted.
+fn cut_of(deps: &HashSet<PathBuf>) -> Vec<PathBuf> {
+    IN_PROGRESS.with(|set| {
+        let set = set.borrow();
+        let mut cut: Vec<PathBuf> = deps.iter().filter(|d| set.contains(*d)).cloned().collect();
+        cut.sort();
+        cut
+    })
+}
+
+/// This thread's current [`Context`].
+fn current_context() -> Context {
+    IN_PROGRESS.with(|set| {
+        let mut context: Context = set.borrow().iter().cloned().collect();
+        context.sort();
+        context
+    })
+}
+
+/// RAII frame collecting one harvest's dependencies (see [`note_deps`]); popped on
+/// drop, including on unwind, so a panicking harvest can't leave it on the stack.
+struct DepsScope;
+
+impl DepsScope {
+    fn open() -> Self {
+        DEPS.with(|deps| deps.borrow_mut().push(HashSet::default()));
+        Self
+    }
+
+    /// Close the frame, returning what it collected.
+    fn close(self) -> HashSet<PathBuf> {
+        DEPS.with(|deps| deps.borrow_mut().last_mut().map(std::mem::take)).unwrap_or_default()
+    }
+}
+
+impl Drop for DepsScope {
+    fn drop(&mut self) {
+        DEPS.with(|deps| {
+            deps.borrow_mut().pop();
+        });
+    }
 }
 
 /// RAII owner of one or more [`IN_PROGRESS`] entries. Clears them on drop —
@@ -164,36 +499,15 @@ thread_local! {
 struct InProgressGuard(Vec<PathBuf>);
 
 impl InProgressGuard {
-    /// Mark `path` in-progress and take ownership of clearing it. `None` if a caller
-    /// up the stack already holds it — a cycle; the caller bails to the coarse
+    /// Mark every path in `paths` in-progress and take ownership of clearing them.
+    /// `None` if any of them already is: a cycle; the caller bails to the coarse
     /// fallback for this edge.
-    fn enter(path: PathBuf) -> Option<Self> {
-        IN_PROGRESS
-            .with(|set| set.borrow_mut().insert(path.clone()))
-            .then(|| Self(vec![path]))
-    }
-
-    /// Multi-path variant: start empty, then [`Self::mark`] each path. Every path
-    /// this guard actually enters is cleared together on drop.
-    fn empty() -> Self {
-        Self(Vec::new())
-    }
-
-    /// Mark `path` in-progress under this guard unless it is already in-progress
-    /// (held by this guard or a caller up the stack). Returns whether it was newly
-    /// entered.
-    fn mark(&mut self, path: &Path) -> bool {
-        if IN_PROGRESS.with(|set| set.borrow_mut().insert(path.to_path_buf())) {
-            self.0.push(path.to_path_buf());
-            true
-        } else {
-            false
+    fn enter(paths: &[PathBuf]) -> Option<Self> {
+        if paths.iter().any(|p| in_progress(p)) {
+            return None;
         }
-    }
-
-    /// The paths this guard owns (and will clear on drop).
-    fn owned(&self) -> &[PathBuf] {
-        &self.0
+        IN_PROGRESS.with(|set| set.borrow_mut().extend(paths.iter().cloned()));
+        Some(Self(paths.to_vec()))
     }
 }
 
@@ -204,6 +518,24 @@ impl Drop for InProgressGuard {
             for path in &self.0 {
                 set.remove(path);
             }
+        });
+    }
+}
+
+/// RAII entry on [`ANALYSES`], popped on drop (including on unwind).
+struct AnalysisScope;
+
+impl AnalysisScope {
+    fn enter(own: Vec<PathBuf>, round: Option<Arc<Round>>) -> Self {
+        ANALYSES.with(|frames| frames.borrow_mut().push(AnalysisFrame { own, round }));
+        Self
+    }
+}
+
+impl Drop for AnalysisScope {
+    fn drop(&mut self) {
+        ANALYSES.with(|frames| {
+            frames.borrow_mut().pop();
         });
     }
 }
@@ -394,36 +726,425 @@ pub fn resolve_deferred_sig(
     if !ext.deferred_returns.contains(&func_idx) {
         return None;
     }
-
-    // Memo hit.
-    if let Ok(cache) = ext.deferred_sig_cache.read()
-        && let Some(hit) = cache.get(&func_idx)
-    {
-        return Some(hit.clone());
-    }
-
     let path = ext.function_locations.get(&func_idx)?.path.clone();
-
-    // Re-entrancy / cycle guard: if this file is already being analyzed on the
-    // stack, bail to the coarse fallback for this edge. The guard clears the entry
-    // on drop, even if `harvest_file` panics.
-    let _guard = InProgressGuard::enter(path.clone())?;
-
-    harvest_file(ext, &path);
-
-    // The harvest filled the memo for every deferred function in this file
-    // (including `func_idx`, if it was resolvable). Read it back out.
-    ext.deferred_sig_cache
-        .read()
-        .ok()
-        .and_then(|cache| cache.get(&func_idx).cloned())
+    read_unit(ext, Unit::File(path), |h| h.file().and_then(|f| f.sigs.get(&func_idx).cloned())).flatten()
 }
 
-/// Analyze `path` once and harvest the precise signature bundle (returns +
-/// correlated overloads) for every deferred function defined in it, writing them
-/// all into the memo. Does nothing on I/O failure (the caller then uses the
-/// coarse fallback for that read).
-fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
+/// Resolve the type of a `@creates-global` side-effect global (e.g. the
+/// `_G.MyFrame` from `CreateFrame("Frame", "MyFrame", ...)`) by harvesting the
+/// *resolved* return type of the creating call from its defining file (memoized).
+/// This is what makes a created global carry the full call type — including any
+/// template/mixin intersection — rather than a coarse annotation-reconstructed
+/// base type. Returns `None` when the global isn't a created global or the call
+/// can't be resolved (the caller then leaves the symbol untyped).
+pub fn resolve_deferred_call_global_type(
+    ext: &Arc<PreResolvedGlobals>,
+    sym_idx: SymbolIndex,
+) -> Option<ValueType> {
+    let path = ext.deferred_call_globals.get(&sym_idx)?.path.clone();
+    read_unit(ext, Unit::File(path), |h| h.file().and_then(|f| f.call_globals.get(&sym_idx).cloned()))
+        .flatten()
+        .flatten()
+}
+
+/// Resolve the precise generic type arguments for a deferred constructor
+/// self-field — a `self.x = <funcall>` whose coarse type is `any` because the
+/// chained/generic call couldn't be resolved by the scan. Re-analyzes the
+/// defining file (memoized) and reads the type args off the RHS call's resolved
+/// type. Returns `None` when the field isn't deferred or the args are
+/// unresolvable; callers then keep the coarse (arg-less) behavior.
+pub fn resolve_deferred_field_type_args(
+    ext: &Arc<PreResolvedGlobals>,
+    class_name: &str,
+    field_name: &str,
+) -> Option<Vec<ValueType>> {
+    let key = (class_name.to_string(), field_name.to_string());
+    let path = ext.deferred_field_type_args.get(&key)?.path.clone();
+    read_unit(ext, Unit::File(path), |h| h.file().and_then(|f| f.field_args.get(&key).cloned()))
+        .flatten()
+        .flatten()
+}
+
+/// Resolve the precise type of a cross-file `@class` field whose coarse scan type
+/// decayed to a placeholder (`any` or a bare `table`), by re-running the real engine
+/// on *every* file that declares or
+/// assigns the class's fields (memoized). A class whose fields are split across files —
+/// a `@class (partial)` or a method that assigns `self.x` from a file that does not
+/// declare the class — is harvested as a whole: each field's RHS types are accumulated
+/// across all those files and unioned once, so a field assigned a class in one file and
+/// cleared to nil in another keeps its nilability. The same pass also caches any
+/// *co-located* workspace class whose entire path set (declaring + assigning files) is
+/// among these files, so one analysis of a file warms every such class (not one
+/// analysis per class). Returns `None` when the class isn't a workspace class, the
+/// field is not assigned in any of those files, or the harvested type is no more precise
+/// than the coarse placeholder (touches a type variable / is purely nil / is itself a
+/// bare `table`); callers then keep the coarse placeholder.
+pub fn resolve_deferred_class_field_type(
+    ext: &Arc<PreResolvedGlobals>,
+    class_name: &str,
+    field_name: &str,
+) -> Option<ValueType> {
+    // `Some(None)`: harvested but not upgradable; a field absent from the harvest is
+    // assigned in none of the class's files.
+    read_unit(ext, Unit::Class(class_name.to_string()), |h| {
+        h.class().and_then(|fields| fields.get(field_name).cloned().flatten())
+    })
+    .flatten()
+}
+
+/// How the innermost harvest analysis on this thread sees a read (see [`read_unit`]).
+enum Reach {
+    /// Of the analyzed unit's own files.
+    Own,
+    /// Of another member of the cycle being harvested.
+    Member(Arc<Round>),
+    Outside,
+}
+
+/// How the innermost harvest analysis on this thread sees a read of `unit` (with
+/// `files`).
+fn reach(unit: &Unit, files: &[PathBuf]) -> Reach {
+    ANALYSES.with(|frames| {
+        let frames = frames.borrow();
+        let Some(frame) = frames.last() else { return Reach::Outside };
+        if files.iter().any(|f| frame.own.contains(f)) {
+            return Reach::Own;
+        }
+        match &frame.round {
+            Some(round) if round.members.contains(unit) => Reach::Member(Arc::clone(round)),
+            _ => Reach::Outside,
+        }
+    })
+}
+
+/// Read `read` off `unit`'s harvest for this thread's current context, harvesting it
+/// first if needed. `None` on a cycle back-edge or if a file can't be read — the caller
+/// keeps its coarse fallback.
+fn read_unit<R>(ext: &Arc<PreResolvedGlobals>, unit: Unit, read: impl Fn(&Harvest) -> R) -> Option<R> {
+    let files = unit.files(ext);
+    if files.is_empty() {
+        return None;
+    }
+    let recorded = DISCOVERY.with(|d| d.borrow_mut().as_mut().map(|units| units.push(unit.clone())).is_some());
+    if recorded {
+        return None;
+    }
+    note_deps(files.iter().map(PathBuf::as_path));
+
+    // Re-entrancy / cycle guard: a read of the analyzed unit's own data (a file's own
+    // created global, a class whose files include it) is always a back-edge that takes
+    // the coarse fallback; a member of a component being harvested reads the other
+    // members' results from the previous round; anything else being analyzed up the
+    // stack is a back-edge too.
+    match reach(&unit, files) {
+        Reach::Own => return None,
+        Reach::Member(round) => return round.previous.as_ref()?.get(&unit).map(read),
+        Reach::Outside => {}
+    }
+    if files.iter().any(|p| in_progress(p)) {
+        return None;
+    }
+
+    let harvests = &ext.deferred_harvests;
+    if let Some(hit) = harvests.lookup(&unit, &read) {
+        return Some(hit);
+    }
+    for component in components(ext, &unit) {
+        if component.iter().all(|u| harvests.harvested(u)) {
+            continue;
+        }
+        // `components` sorts each one, so every thread claims it by the same unit.
+        if let Some(_claim) = harvests.harvesting.claim((component[0].clone(), current_context())) {
+            harvest_component(ext, &component);
+        }
+    }
+    harvests.lookup(&unit, &read)
+}
+
+/// The strongly connected components of the discovery graph ([`successors`]) reachable
+/// from `root`, dependencies first, each sorted.
+fn components(ext: &Arc<PreResolvedGlobals>, root: &Unit) -> Vec<Vec<Unit>> {
+    struct Visit {
+        index: usize,
+        low: usize,
+        on_stack: bool,
+    }
+    let mut visits: HashMap<Unit, Visit> = HashMap::default();
+    let mut stack: Vec<Unit> = Vec::new();
+    // Tarjan's algorithm, iteratively: per unit on the path, its successors and the
+    // next one to visit.
+    let mut path: Vec<(Unit, Vec<Unit>, usize)> = Vec::new();
+    let mut out = Vec::new();
+
+    visits.insert(root.clone(), Visit { index: 0, low: 0, on_stack: true });
+    stack.push(root.clone());
+    path.push((root.clone(), successors(ext, root), 0));
+    while let Some((unit, next, i)) = path.last_mut() {
+        let unit = unit.clone();
+        if let Some(succ) = next.get(*i).cloned() {
+            *i += 1;
+            match visits.get(&succ).map(|v| (v.index, v.on_stack)) {
+                None => {
+                    let index = visits.len();
+                    visits.insert(succ.clone(), Visit { index, low: index, on_stack: true });
+                    stack.push(succ.clone());
+                    let next = successors(ext, &succ);
+                    path.push((succ, next, 0));
+                }
+                Some((index, true)) => {
+                    if let Some(v) = visits.get_mut(&unit) {
+                        v.low = v.low.min(index);
+                    }
+                }
+                Some(_) => {}
+            }
+            continue;
+        }
+        path.pop();
+        let (index, low) = visits.get(&unit).map_or((0, 0), |v| (v.index, v.low));
+        if let Some((parent, _, _)) = path.last()
+            && let Some(v) = visits.get_mut(parent)
+        {
+            v.low = v.low.min(low);
+        }
+        if low == index {
+            let mut component = Vec::new();
+            while let Some(member) = stack.pop() {
+                if let Some(v) = visits.get_mut(&member) {
+                    v.on_stack = false;
+                }
+                let done = member == unit;
+                component.push(member);
+                if done {
+                    break;
+                }
+            }
+            component.sort();
+            out.push(component);
+        }
+    }
+    out
+}
+
+/// The units a harvest of `unit` reads, per its files' discovery analyses, that still
+/// need harvesting in this thread's current context: not reads of its own files, which
+/// are always back-edges, nor of files in progress, nor of units already harvested.
+fn successors(ext: &Arc<PreResolvedGlobals>, unit: &Unit) -> Vec<Unit> {
+    let own = unit.files(ext);
+    let mut next: Vec<Unit> = Vec::new();
+    for path in own {
+        for read in discovery_reads(ext, path).iter() {
+            let files = read.files(ext);
+            if files.is_empty()
+                || files.iter().any(|f| own.contains(f) || in_progress(f))
+                || next.contains(read)
+                || ext.deferred_harvests.harvested(read)
+            {
+                continue;
+            }
+            next.push(read.clone());
+        }
+    }
+    next.sort();
+    next
+}
+
+/// The units `path`'s analysis reads when every deferred read is cut — so they depend
+/// on nothing but the file. Memoized.
+fn discovery_reads(ext: &Arc<PreResolvedGlobals>, path: &Path) -> Arc<[Unit]> {
+    let harvests = &ext.deferred_harvests;
+    let known = || harvests.reads.read().ok().and_then(|r| r.get(path).cloned());
+    if let Some(reads) = known() {
+        return reads;
+    }
+    let Some(_claim) = harvests.discovering.claim(path.to_path_buf()) else {
+        return known().unwrap_or_else(|| Arc::from([]));
+    };
+    let discovery = DiscoveryScope::start();
+    let _ = analyze_file(ext, path);
+    let mut units = discovery.finish();
+    units.sort();
+    units.dedup();
+    let units: Arc<[Unit]> = units.into();
+    if let Ok(mut reads) = harvests.reads.write() {
+        reads.entry(path.to_path_buf()).or_insert_with(|| Arc::clone(&units));
+    }
+    units
+}
+
+/// RAII recorder of the units a discovery analysis reads (see [`DISCOVERY`]); stops
+/// recording on drop, including on unwind.
+struct DiscoveryScope;
+
+impl DiscoveryScope {
+    fn start() -> Self {
+        DISCOVERY.with(|d| *d.borrow_mut() = Some(Vec::new()));
+        Self
+    }
+
+    fn finish(self) -> Vec<Unit> {
+        DISCOVERY.with(|d| d.borrow_mut().take()).unwrap_or_default()
+    }
+}
+
+impl Drop for DiscoveryScope {
+    fn drop(&mut self) {
+        DISCOVERY.with(|d| *d.borrow_mut() = None);
+    }
+}
+
+/// How many times the members of a dependency cycle are analyzed at most (see
+/// [`harvest_component`]).
+const COMPONENT_ROUNDS: usize = 4;
+
+/// Harvest `component` — one unit, or the units of a dependency cycle — in this
+/// thread's current context with all its files in progress, and memoize each member's
+/// result.
+///
+/// A member's analysis cuts reads of its own files, as a lone unit's always does. A
+/// cycle's members are analyzed in rounds: each reads the others' results from the
+/// previous round (nothing in the first, so those reads are cut), until a round
+/// reproduces the previous one or [`COMPONENT_ROUNDS`] run out; anything else sees the
+/// members as in progress. So what a member resolves to doesn't depend on which of them
+/// a reader reached first, and the cycle costs a bounded number of analyses however
+/// densely its members read each other.
+fn harvest_component(ext: &Arc<PreResolvedGlobals>, component: &[Unit]) {
+    let mut files: Vec<PathBuf> = component.iter().flat_map(|u| u.files(ext).iter().cloned()).collect();
+    files.sort();
+    files.dedup();
+    let Some(guard) = InProgressGuard::enter(&files) else { return };
+    let cycle = component.len() > 1;
+
+    let mut deps: HashSet<PathBuf> = files.iter().cloned().collect();
+    let mut previous: Option<Arc<HashMap<Unit, Harvest>>> = None;
+    let mut siblings = Vec::new();
+    for _ in 0..if cycle { COMPONENT_ROUNDS } else { 1 } {
+        let round = cycle.then(|| Arc::new(Round { members: component.to_vec(), previous: previous.clone() }));
+        let scope = DepsScope::open();
+        let mut values: HashMap<Unit, Harvest> = HashMap::default();
+        for unit in component {
+            let own = unit.files(ext).to_vec();
+            let _analysis = AnalysisScope::enter(own.clone(), round.clone());
+            match unit {
+                Unit::File(path) => {
+                    if let Some((tree, result)) = analyze_file(ext, path) {
+                        values.insert(unit.clone(), Harvest::File(Arc::new(file_harvest(ext, path, &tree, &result))));
+                    }
+                }
+                Unit::Class(name) => {
+                    let (fields, warmed) = harvest_class(ext, name, &own, !cycle);
+                    values.insert(unit.clone(), Harvest::Class(Arc::new(fields)));
+                    siblings = warmed;
+                }
+            }
+        }
+        deps.extend(scope.close());
+        let stable = previous.as_deref() == Some(&values);
+        previous = Some(Arc::new(values));
+        if stable {
+            break;
+        }
+    }
+    drop(guard);
+
+    let group: Arc<[PathBuf]> = files.into();
+    let mut entries: Vec<Harvested> = previous
+        .map(|values| {
+            let values = Arc::try_unwrap(values).unwrap_or_else(|shared| (*shared).clone());
+            values.into_iter().map(|(unit, value)| (unit, deps.clone(), Arc::clone(&group), value)).collect()
+        })
+        .unwrap_or_default();
+    entries.extend(siblings);
+    ext.deferred_harvests.insert_all(entries);
+}
+
+/// Accumulate `class`'s fields over its files, analyzed with them all in progress —
+/// and, when `warm` (a lone class, not a cycle member), the fields of each co-located
+/// class whose result that equally is, with its dependencies and files.
+fn harvest_class(
+    ext: &Arc<PreResolvedGlobals>,
+    class: &str,
+    paths: &[PathBuf],
+    warm: bool,
+) -> (ClassFields, Vec<Harvested>) {
+    // Accumulate the RHS types of every field of every workspace class found in the
+    // target's declaring files, keyed by `(class, field)` with nils included. Two
+    // reasons to accumulate across the whole file set at once rather than per file:
+    //   - **partial classes**: the union+gate must run once over all a class's files so
+    //     a field assigned a class in one file and cleared to nil in another lands `T?`
+    //     (per-file gating would drop the nil-only file → a non-optional false positive);
+    //   - **whole-file warming**: analyzing a file already pays for resolving *all* its
+    //     classes, so co-located classes are harvested too — those fully covered below
+    //     are cached in the same pass, so a file declaring N classes is analyzed once,
+    //     not once per class's first cross-file field read.
+    // All of the class's files are in progress for the whole harvest (see
+    // `harvest_component`), so a re-entrant read of this class through any of them is
+    // a back-edge. Each file's dependencies are collected separately, for the
+    // co-located classes below.
+    let mut acc: HashMap<(String, String), (Vec<ValueType>, bool)> = HashMap::default();
+    let file_deps: Vec<HashSet<PathBuf>> = paths
+        .iter()
+        .map(|path| {
+            let scope = DepsScope::open();
+            if let Some((tree, result)) = analyze_file(ext, path) {
+                accumulate_class_fields_in_file(ext, path, &tree, &result, &mut acc);
+            }
+            let deps = scope.close();
+            note_deps(deps.iter().map(PathBuf::as_path));
+            deps
+        })
+        .collect();
+
+    // Gate every accumulated field, per class (consuming `acc`: the owned RHS vec goes
+    // straight into the union — no clones).
+    let mut by_class: HashMap<String, ClassFields> = HashMap::default();
+    for ((cls, fname), (tys, lateinit)) in acc {
+        by_class.entry(cls).or_default().insert(fname, gate_harvested_field(tys, lateinit));
+    }
+    let fields = by_class.remove(class).unwrap_or_default();
+    if !warm {
+        return (fields, Vec::new());
+    }
+
+    // Only cache a co-located class whose *entire* path set (declaring + assigning
+    // files) is among the files we just analyzed — which means we accumulated its
+    // *complete* field set here. Accumulating from extra files (in the target's set but
+    // not the sibling's) contributes nothing because `accumulate_class_fields_in_file`'s
+    // external-path gate only counts a file's `self.x = ...` writes for a class the file
+    // is *indexed* for — so a sibling's fields are only ever gathered from the sibling's
+    // own paths. A sibling with a path *outside* this set is skipped: its accumulation is
+    // partial, so it harvests its own full set when first read. So is one whose files
+    // read anything of those extra files: the reads were cut here, as they wouldn't be in
+    // the sibling's own harvest.
+    let target_files: HashSet<&Path> = paths.iter().map(|p| p.as_path()).collect();
+    let mut siblings = Vec::new();
+    for (cls, fields) in by_class {
+        let Some(cls_paths) = ext.deferred_class_field_paths.get(&cls) else { continue };
+        if !cls_paths.iter().all(|p| target_files.contains(p.as_path())) {
+            continue;
+        }
+        let mut deps: HashSet<PathBuf> = HashSet::default();
+        for (path, fd) in paths.iter().zip(&file_deps) {
+            if cls_paths.contains(path) {
+                deps.extend(fd.iter().cloned());
+            }
+        }
+        if deps.iter().any(|dep| target_files.contains(dep.as_path()) && !cls_paths.contains(dep)) {
+            continue;
+        }
+        deps.extend(cls_paths.iter().cloned());
+        let group: Arc<[PathBuf]> = cls_paths.as_slice().into();
+        siblings.push((Unit::Class(cls), deps, group, Harvest::Class(Arc::new(fields))));
+    }
+    (fields, siblings)
+}
+
+/// Analyze `path` — its open-buffer content if the editor has one, else the file on
+/// disk — the way harvests and discovery do. `None` if it can't be read.
+fn analyze_file(
+    ext: &Arc<PreResolvedGlobals>,
+    path: &Path,
+) -> Option<(crate::syntax::tree::SyntaxTree, crate::analysis::AnalysisResult)> {
     // Prefer in-memory document content (unsaved editor buffer) over disk.
     let text = ext
         .document_overrides
@@ -432,10 +1153,7 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
         .and_then(|docs| docs.get(path).cloned());
     let text = match text {
         Some(t) => t,
-        None => match crate::syntax::read_source_file(path) {
-            Ok(t) => t,
-            Err(_) => return,
-        },
+        None => crate::syntax::read_source_file(path).ok()?,
     };
 
     // Build per-file AnalysisConfig from project configs if available,
@@ -454,9 +1172,36 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(ext), config);
     analysis.resolve_types();
     let result = analysis.into_result();
-    let ir = &result.ir;
-    let globals = global_tables(&result, &tree, ext);
+    ext.deferred_harvests.analyses.fetch_add(1, Ordering::Relaxed);
+    Some((tree, result))
+}
 
+/// Harvest everything cross-file readers take from an analysis of `path`: the precise
+/// signature bundle (returns + correlated overloads) of every deferred function, the
+/// resolved type of every created global, and the type args of every deferred
+/// constructor self-field.
+fn file_harvest(
+    ext: &Arc<PreResolvedGlobals>,
+    path: &Path,
+    tree: &crate::syntax::tree::SyntaxTree,
+    result: &crate::analysis::AnalysisResult,
+) -> FileHarvest {
+    let globals = global_tables(result, tree, ext);
+    FileHarvest {
+        sigs: harvest_sigs(ext, path, result, &globals),
+        call_globals: harvest_call_globals(ext, path, result, &globals),
+        field_args: harvest_field_args(ext, path, result, &globals),
+    }
+}
+
+/// The precise signature bundle of every deferred function defined in `path`.
+fn harvest_sigs(
+    ext: &Arc<PreResolvedGlobals>,
+    path: &Path,
+    result: &crate::analysis::AnalysisResult,
+    globals: &GlobalTables,
+) -> HashMap<FunctionIndex, DeferredSig> {
+    let ir = &result.ir;
     // Index local functions by their definition start offset, matching the
     // external `function_locations` start (both are the FunctionDefinition node's
     // text-range start).
@@ -472,7 +1217,7 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
     // Collect a signature bundle for every deferred function defined in this
     // file. Insert an entry for *every* one (bundle may have empty overloads) so
     // the memo is complete and no re-harvest occurs.
-    let mut harvested: Vec<(FunctionIndex, DeferredSig)> = Vec::new();
+    let mut harvested: HashMap<FunctionIndex, DeferredSig> = HashMap::default();
     if let Some(func_indices) = deferred_in_file {
         for &fidx in func_indices {
             let Some(loc) = ext.function_locations.get(&fidx) else { continue };
@@ -495,9 +1240,9 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                         .inferred_return_types(local)
                         .into_iter()
                         .map(|t| {
-                            let lifted = lift_local_type_to_ext_with(&t, ir, ext, &result, &globals);
+                            let lifted = lift_local_type_to_ext_with(&t, ir, ext, result, globals);
                             if contains_any(&lifted) { ValueType::Any }
-                            else { wrap_overlay_shape(&t, lifted, &result, ext, &local.rets, path, &globals) }
+                            else { wrap_overlay_shape(&t, lifted, result, ext, &local.rets, path, globals) }
                         })
                         .collect();
                     // Lift the engine-synthesized overloads (precise correlated
@@ -506,7 +1251,7 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                     let overloads = local
                         .overloads
                         .iter()
-                        .map(|o| lift_overload_to_ext(o, ir, ext, &globals))
+                        .map(|o| lift_overload_to_ext(o, ir, ext, globals))
                         .collect();
                     DeferredSig { returns, overloads }
                 }
@@ -517,92 +1262,26 @@ fn harvest_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                     overloads: ext.func(fidx).overloads.clone(),
                 },
             };
-            harvested.push((fidx, sig));
+            harvested.insert(fidx, sig);
         }
     }
-
-    if let Ok(mut cache) = ext.deferred_sig_cache.write() {
-        for (fidx, sig) in harvested {
-            cache.insert(fidx, sig);
-        }
-    }
+    harvested
 }
 
-/// Resolve the type of a `@creates-global` side-effect global (e.g. the
-/// `_G.MyFrame` from `CreateFrame("Frame", "MyFrame", ...)`) by harvesting the
-/// *resolved* return type of the creating call from its defining file (memoized).
-/// This is what makes a created global carry the full call type — including any
-/// template/mixin intersection — rather than a coarse annotation-reconstructed
-/// base type. Returns `None` when the global isn't a created global or the call
-/// can't be resolved (the caller then leaves the symbol untyped).
-pub fn resolve_deferred_call_global_type(
+/// The resolved type of every created global defined in `path` (`None` when
+/// unresolvable, so the file is not re-analyzed). For each created global, locate the
+/// creating call by its recorded start offset (matching
+/// `Expr::FunctionCall.call_range.0`), read the call's first-return resolved type from
+/// the engine's expression cache, and lift it into ext-index space.
+fn harvest_call_globals(
     ext: &Arc<PreResolvedGlobals>,
-    sym_idx: SymbolIndex,
-) -> Option<ValueType> {
-    // Memo hit. `Some(None)` means "harvested but unresolvable" — don't re-harvest.
-    if let Ok(cache) = ext.deferred_call_global_cache.read()
-        && let Some(hit) = cache.get(&sym_idx)
-    {
-        return hit.clone();
-    }
-
-    let path = ext.deferred_call_globals.get(&sym_idx)?.path.clone();
-
-    // Re-entrancy / cycle guard: if this file is already being analyzed on the
-    // stack (e.g. the defining file reads its own created global), bail for this
-    // edge — the nested harvest below still fills the memo from a fresh analysis.
-    // The guard clears the entry on drop, even if the harvest panics.
-    let _guard = InProgressGuard::enter(path.clone())?;
-
-    harvest_call_globals_in_file(ext, &path);
-
-    ext.deferred_call_global_cache
-        .read()
-        .ok()
-        .and_then(|cache| cache.get(&sym_idx).cloned())
-        .flatten()
-}
-
-/// Analyze `path` once and harvest the resolved type of *every* created global
-/// defined in it, writing each into the memo (`None` when unresolvable, so the
-/// file is not re-analyzed). For each created global, locate the creating call by
-/// its recorded start offset (matching `Expr::FunctionCall.call_range.0`), read
-/// the call's first-return resolved type from the engine's expression cache, and
-/// lift it into ext-index space. Does nothing on I/O failure.
-fn harvest_call_globals_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
-    let text = ext
-        .document_overrides
-        .read()
-        .ok()
-        .and_then(|docs| docs.get(path).cloned());
-    let text = match text {
-        Some(t) => t,
-        None => match crate::syntax::read_source_file(path) {
-            Ok(t) => t,
-            Err(_) => return,
-        },
-    };
-
-    let config = match &ext.project_configs {
-        Some(configs) => AnalysisConfig {
-            correlated_return_overloads: configs.correlated_return_overloads_for(path),
-            backward_param_types: configs.backward_param_types_for(path),
-            ..AnalysisConfig::default()
-        },
-        None => AnalysisConfig::default(),
-    };
-
-    let tree = crate::syntax::parser::parse(&text);
-    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(ext), config);
-    analysis.resolve_types();
-    let result = analysis.into_result();
+    path: &Path,
+    result: &crate::analysis::AnalysisResult,
+    globals: &GlobalTables,
+) -> HashMap<SymbolIndex, Option<ValueType>> {
     let ir = &result.ir;
-
-    let Some(syms) = ext.deferred_call_globals_by_path.get(path) else { return };
-    let globals = global_tables(&result, &tree, ext);
-
-    let mut harvested: Vec<(SymbolIndex, Option<ValueType>)> = Vec::new();
-    for &sym_idx in syms {
+    let mut harvested: HashMap<SymbolIndex, Option<ValueType>> = HashMap::default();
+    for &sym_idx in ext.deferred_call_globals_by_path.get(path).into_iter().flatten() {
         let Some(dcg) = ext.deferred_call_globals.get(&sym_idx) else { continue };
         let offset = dcg.call_offset;
         // The first-return value of the creating call (ret_index 0) is the created
@@ -611,93 +1290,26 @@ fn harvest_call_globals_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
             .call_exprs_starting_at(offset)
             .find(|(_, e)| matches!(e, Expr::FunctionCall { ret_index: 0, .. }))
             .and_then(|(eid, _)| result.resolved_expr_cache_get(eid).cloned())
-            .map(|t| lift_local_type_to_ext_with(&t, ir, ext, &result, &globals))
+            .map(|t| lift_local_type_to_ext_with(&t, ir, ext, result, globals))
             .filter(|t| !contains_any(t));
-        harvested.push((sym_idx, resolved));
+        harvested.insert(sym_idx, resolved);
     }
-
-    if let Ok(mut cache) = ext.deferred_call_global_cache.write() {
-        for (sym_idx, ty) in harvested {
-            cache.insert(sym_idx, ty);
-        }
-    }
+    harvested
 }
 
-/// Resolve the precise generic type arguments for a deferred constructor
-/// self-field — a `self.x = <funcall>` whose coarse type is `any` because the
-/// chained/generic call couldn't be resolved by the scan. Re-analyzes the
-/// defining file (memoized) and reads the type args off the RHS call's resolved
-/// type. Returns `None` when the field isn't deferred or the args are
-/// unresolvable; callers then keep the coarse (arg-less) behavior.
-pub fn resolve_deferred_field_type_args(
+/// The type args of every deferred constructor self-field defined in `path` (`None`
+/// when unresolvable). Each field is located by its RHS call's byte range (matching
+/// `Expr::FunctionCall.call_range`), and the call's bound type args are read from the
+/// engine and lifted into ext-index space.
+fn harvest_field_args(
     ext: &Arc<PreResolvedGlobals>,
-    class_name: &str,
-    field_name: &str,
-) -> Option<Vec<ValueType>> {
-    let key = (class_name.to_string(), field_name.to_string());
-
-    // Memo hit. `Some(None)` means "harvested but unresolvable" — don't re-harvest.
-    if let Ok(cache) = ext.deferred_field_type_args_cache.read()
-        && let Some(hit) = cache.get(&key)
-    {
-        return hit.clone();
-    }
-
-    let path = ext.deferred_field_type_args.get(&key)?.path.clone();
-
-    // Re-entrancy / cycle guard: if this file is already being analyzed on the
-    // stack, bail for this edge — the nested harvest still fills the memo. The
-    // guard clears the entry on drop, even if the harvest panics.
-    let _guard = InProgressGuard::enter(path.clone())?;
-
-    harvest_field_type_args_in_file(ext, &path);
-
-    ext.deferred_field_type_args_cache
-        .read()
-        .ok()
-        .and_then(|cache| cache.get(&key).cloned())
-        .flatten()
-}
-
-/// Analyze `path` once and harvest the precise type args of *every* deferred
-/// constructor self-field defined in it, writing each into the memo (`None` when
-/// unresolvable). Each field is located by its RHS call's byte range (matching
-/// `Expr::FunctionCall.call_range`), and the call's bound type args are read from
-/// the engine and lifted into ext-index space. Does nothing on I/O failure.
-fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
-    let text = ext
-        .document_overrides
-        .read()
-        .ok()
-        .and_then(|docs| docs.get(path).cloned());
-    let text = match text {
-        Some(t) => t,
-        None => match crate::syntax::read_source_file(path) {
-            Ok(t) => t,
-            Err(_) => return,
-        },
-    };
-
-    let config = match &ext.project_configs {
-        Some(configs) => AnalysisConfig {
-            correlated_return_overloads: configs.correlated_return_overloads_for(path),
-            backward_param_types: configs.backward_param_types_for(path),
-            ..AnalysisConfig::default()
-        },
-        None => AnalysisConfig::default(),
-    };
-
-    let tree = crate::syntax::parser::parse(&text);
-    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(ext), config);
-    analysis.resolve_types();
-    let result = analysis.into_result();
+    path: &Path,
+    result: &crate::analysis::AnalysisResult,
+    globals: &GlobalTables,
+) -> HashMap<DeferredFieldKey, Option<Vec<ValueType>>> {
     let ir = &result.ir;
-
-    let Some(keys) = ext.deferred_field_type_args_by_path.get(path) else { return };
-    let globals = global_tables(&result, &tree, ext);
-
-    let mut harvested: Vec<(DeferredFieldKey, Option<Vec<ValueType>>)> = Vec::new();
-    for key in keys {
+    let mut harvested: HashMap<DeferredFieldKey, Option<Vec<ValueType>>> = HashMap::default();
+    for key in ext.deferred_field_type_args_by_path.get(path).into_iter().flatten() {
         let Some(dfta) = ext.deferred_field_type_args.get(key) else { continue };
         let target = dfta.call_range;
         let mut resolved: Option<Vec<ValueType>> = None;
@@ -708,7 +1320,7 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
             let args = result.get_type_args_for_expr(eid);
             if !args.is_empty() {
                 let lifted: Vec<ValueType> =
-                    args.iter().map(|a| lift_local_type_to_ext_with(a, ir, ext, &result, &globals)).collect();
+                    args.iter().map(|a| lift_local_type_to_ext_with(a, ir, ext, result, globals)).collect();
                 // An `any` arg carries no more than the coarse fallback — skip it
                 // so a partial/unresolved harvest doesn't replace the coarse path.
                 if !lifted.iter().any(contains_any) {
@@ -716,179 +1328,28 @@ fn harvest_field_type_args_in_file(ext: &Arc<PreResolvedGlobals>, path: &Path) {
                 }
             }
         }
-        harvested.push((key.clone(), resolved));
+        harvested.insert(key.clone(), resolved);
     }
-
-    if let Ok(mut cache) = ext.deferred_field_type_args_cache.write() {
-        for (key, args) in harvested {
-            cache.insert(key, args);
-        }
-    }
+    harvested
 }
 
-/// Resolve the precise type of a cross-file `@class` field whose coarse scan type
-/// decayed to a placeholder (`any` or a bare `table`), by re-running the real engine
-/// on *every* file that declares or
-/// assigns the class's fields (memoized). A class whose fields are split across files —
-/// a `@class (partial)` or a method that assigns `self.x` from a file that does not
-/// declare the class — is harvested as a whole: each field's RHS types are accumulated
-/// across all those files and unioned once, so a field assigned a class in one file and
-/// cleared to nil in another keeps its nilability. The same pass also caches any
-/// *co-located* workspace class whose entire path set (declaring + assigning files) is
-/// among these files, so one analysis of a file warms every such class (not one
-/// analysis per class). Returns `None` when the class isn't a workspace class, the
-/// field is not assigned in any of those files, or the harvested type is no more precise
-/// than the coarse placeholder (touches a type variable / is purely nil / is itself a
-/// bare `table`); callers then keep the coarse placeholder.
-pub fn resolve_deferred_class_field_type(
-    ext: &Arc<PreResolvedGlobals>,
-    class_name: &str,
-    field_name: &str,
-) -> Option<ValueType> {
-    let key = (class_name.to_string(), field_name.to_string());
-
-    // Memo hit. `Some(None)` means "harvested but not upgradable" — don't re-harvest.
-    if let Ok(cache) = ext.deferred_class_field_cache.read()
-        && let Some(hit) = cache.get(&key)
-    {
-        return hit.clone();
-    }
-
-    let paths = ext.deferred_class_field_paths.get(class_name)?;
-
-    // Accumulate the RHS types of every field of every workspace class found in the
-    // target's declaring files, keyed by `(class, field)` with nils included. Two
-    // reasons to accumulate across the whole file set at once rather than per file:
-    //   - **partial classes**: the union+gate must run once over all a class's files so
-    //     a field assigned a class in one file and cleared to nil in another lands `T?`
-    //     (per-file gating would drop the nil-only file → a non-optional false positive);
-    //   - **whole-file warming**: analyzing a file already pays for resolving *all* its
-    //     classes, so co-located classes are harvested too — those fully covered below
-    //     are cached in the same pass, so a file declaring N classes is analyzed once,
-    //     not once per class's first cross-file field read.
-    let mut acc: HashMap<(String, String), (Vec<ValueType>, bool)> = HashMap::default();
-
-    // Re-entrancy / cycle guard: mark *every* declaring/assigning file of this class as
-    // in-progress for the whole harvest — not one at a time — and clear them only once the
-    // harvest is done (when `guard` drops). A class assigned across several files (e.g. an
-    // addon table whose fields are set in many modules) is analyzed here file by file;
-    // while analyzing one file, the fresh sub-analysis resolves this same class's fields
-    // again. If the guard cleared each path right after its own accumulate (as an earlier
-    // per-file guard did), an *already-accumulated sibling* file would no longer be marked
-    // and the re-entrant read would sail through — re-analyzing the whole file set, never
-    // satisfying `complete`, never caching, and recursing without bound (an unbounded
-    // re-harvest that hung the server on load of such a workspace). Holding all paths for
-    // the harvest's duration means any re-entrant read of this class through any of its
-    // files sees them in-progress, keeps the coarse placeholder, and returns — breaking
-    // the cycle. Files already in-progress from an outer harvest on this thread's stack
-    // aren't ours (the guard owns only the paths it actually entered), and their presence
-    // marks this accumulation incomplete so it isn't cached, letting the eventual outer
-    // (non-cyclic) read fill the memo.
-    let mut guard = InProgressGuard::empty();
-    let mut complete = true;
-    for path in paths {
-        if !guard.mark(path) {
-            complete = false;
-        }
-    }
-    for path in guard.owned() {
-        accumulate_class_fields_in_file(ext, path, &mut acc);
-    }
-    if !complete {
-        // A cyclic edge left the accumulation partial — keep the coarse placeholder for
-        // this read without caching, so the eventual complete (non-cyclic) read fills the memo.
-        return None;
-    }
-
-    // Only cache a class whose *entire* path set (declaring + assigning files) is among
-    // the files we just analyzed (`target_files`). The target qualifies by construction;
-    // a co-located sibling qualifies exactly when all its own indexed paths are in this
-    // set — which means we accumulated its *complete* field set here. Accumulating from
-    // extra files (in `target_files` but not the sibling's path set) contributes nothing
-    // because `accumulate_class_fields_in_file`'s external-path gate only counts a file's
-    // `self.x = ...` writes for a class the file is *indexed* for — so a sibling's fields
-    // are only ever gathered from the sibling's own paths. A sibling with a path *outside*
-    // this set is skipped: its accumulation is partial, so it harvests its own full set
-    // when first read.
-    let target_files: HashSet<&Path> = paths.iter().map(|p| p.as_path()).collect();
-    let mut covered: HashSet<String> = HashSet::default();
-    let mut checked: HashSet<&str> = HashSet::default();
-    for (cls, _) in acc.keys() {
-        if !checked.insert(cls.as_str()) {
-            continue;
-        }
-        let is_covered = ext
-            .deferred_class_field_paths
-            .get(cls)
-            .is_some_and(|ps| ps.iter().all(|p| target_files.contains(p.as_path())));
-        if is_covered {
-            covered.insert(cls.clone());
-        }
-    }
-
-    // Gate + memoize every covered class's fields (consuming `acc`: the field name moves
-    // into the cache key and the owned RHS vec straight into the union — no clones).
-    let mut cache = ext.deferred_class_field_cache.write().ok()?;
-    for ((cls, fname), (tys, lateinit)) in acc {
-        if !covered.contains(&cls) {
-            continue;
-        }
-        let upgrade = gate_harvested_field(tys, lateinit);
-        cache.insert((cls, fname), upgrade);
-    }
-    // The requested field may not be assigned in any declaring file — record `None` so
-    // a repeat read doesn't re-harvest the whole class.
-    match cache.get(&key) {
-        Some(hit) => hit.clone(),
-        None => {
-            cache.insert(key, None);
-            None
-        }
-    }
-}
-
-/// Analyze `path` once and accumulate, into `acc`, the RHS-resolved types of every
-/// field of every workspace `@class` assigned in it — keyed by `(class, field)`, with
+/// Accumulate, into `acc`, the RHS-resolved types of every field of every workspace
+/// `@class` assigned in `path` (analyzed as `result`) — keyed by `(class, field)`, with
 /// nils included so a field's nilability survives the later union. `acc` spans all the
 /// files the caller harvests, so the union+gate can run once over the complete set.
 /// Records, per field, whether any assignment site was `lateinit`. Reads the RHS-aware
 /// `field_assignments` (not the coarse class surface). Every workspace class in the file
 /// is accumulated (not just the read's target) so one analysis warms all co-located
-/// classes; the caller decides which are fully covered and cacheable. Does nothing on
-/// I/O failure or when the file declares no workspace-class local table.
+/// classes; the caller decides which are fully covered and cacheable.
 fn accumulate_class_fields_in_file(
     ext: &Arc<PreResolvedGlobals>,
     path: &Path,
+    tree: &crate::syntax::tree::SyntaxTree,
+    result: &crate::analysis::AnalysisResult,
     acc: &mut HashMap<(String, String), (Vec<ValueType>, bool)>,
 ) {
-    let text = ext
-        .document_overrides
-        .read()
-        .ok()
-        .and_then(|docs| docs.get(path).cloned());
-    let text = match text {
-        Some(t) => t,
-        None => match crate::syntax::read_source_file(path) {
-            Ok(t) => t,
-            Err(_) => return,
-        },
-    };
-
-    let config = match &ext.project_configs {
-        Some(configs) => AnalysisConfig {
-            correlated_return_overloads: configs.correlated_return_overloads_for(path),
-            backward_param_types: configs.backward_param_types_for(path),
-            ..AnalysisConfig::default()
-        },
-        None => AnalysisConfig::default(),
-    };
-
-    let tree = crate::syntax::parser::parse(&text);
-    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(ext), config);
-    analysis.resolve_types();
-    let result = analysis.into_result();
     let ir = &result.ir;
-    let globals = global_tables(&result, &tree, ext);
+    let globals = global_tables(result, tree, ext);
 
     // Map each local class table that is a workspace `@class` (a registry key) to its
     // class name. All of them — not just the read's target — so this single analysis
@@ -934,7 +1395,7 @@ fn accumulate_class_fields_in_file(
         let entry = acc.entry((name, fa.field_name.clone())).or_insert_with(|| (Vec::new(), false));
         entry.1 |= fa.lateinit;
         if let Some(ty) = result.resolve_expr_type(fa.actual_expr) {
-            let lifted = lift_local_type_to_ext_with(&ty, ir, ext, &result, &globals);
+            let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, &globals);
             if !entry.0.contains(&lifted) {
                 entry.0.push(lifted);
             }

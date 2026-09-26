@@ -3597,6 +3597,77 @@ end
         "after invalidation r.plain should be number, got {ty_fresh:?}");
 }
 
+/// A fresh workspace `PreResolvedGlobals` for `dir` (stubs + scan), so each call
+/// starts with no deferred harvests.
+fn fresh_workspace_globals(dir: &std::path::Path) -> Arc<PreResolvedGlobals> {
+    let mut project_configs = ProjectConfigs::default();
+    let scan = lsp::scan_workspace_with_stubs(
+        &[dir.to_path_buf()], &mut project_configs, &[], &[], STUB_GLOBALS.creates_global_specs(),
+    );
+    let (sc, mut sa, sg, ans, se, ws_callable) =
+        (scan.classes, scan.aliases, scan.globals, scan.addon_ns_class_files, scan.events, scan.callable_classes);
+    wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
+    let mut pg = PreResolvedGlobals::build_on_stubs(&STUB_GLOBALS, &sg, &sc, &sa, false, &ans, &ws_callable);
+    pg.merge_events(&se);
+    pg.set_project_configs(Arc::new(project_configs));
+    Arc::new(pg)
+}
+
+/// The hover of the local declared on the last line of `dir`/`reader`, analyzed
+/// against `pg`.
+fn last_local_hover(pg: &Arc<PreResolvedGlobals>, dir: &std::path::Path, reader: &str) -> String {
+    let text = std::fs::read_to_string(dir.join(reader)).unwrap();
+    let offset = (text.rfind("local ").unwrap() + "local ".len()) as u32;
+    let tree = wowlua_ls::syntax::parser::parse(&text);
+    let mut a = Analysis::new_with_tree(&tree, Arc::clone(pg), AnalysisConfig::default());
+    a.resolve_types();
+    a.into_result().hover_at(&tree, offset).expect("hover on the reader's local").type_str
+}
+
+#[test]
+fn deferred_harvest_independent_of_harvest_order() {
+    // A cross-file deferred type must not depend on which harvest happened to run
+    // first — under parallel analysis, on thread timing. Each reader is analyzed on a
+    // cold memo and again after another reader warmed it:
+    //   - `alpha.lua` and `beta.lua` read each other's body-inferred returns, so a
+    //     harvest of beta harvests alpha with its read of beta cut;
+    //   - `widget.lua`'s `GetOffset` returns a field of its own class, whose harvest
+    //     re-analyzes `widget.lua`: a back-edge, cut even when the field was harvested
+    //     first (reading that memo entry used to make the return `number`);
+    //   - a harvest of `Owner` also accumulates the co-located `Helper`, but with
+    //     `owner_lib.lua` in progress, which `Helper:Init` reads — so that result must
+    //     not be kept for `Helper` (it used to be, making `amount` a bare `table`).
+    let dir = std::path::Path::new("tests/deferred-harvest-order");
+    for (warm_first, reader, expected) in [
+        ("reads_beta.lua", "reads_alpha.lua", "(local) description: string"),
+        ("reads_field.lua", "reads_method.lua", "(local) offset: any"),
+        ("reads_owner.lua", "reads_helper.lua", "(local) amount: number"),
+    ] {
+        let cold = last_local_hover(&fresh_workspace_globals(dir), dir, reader);
+        let pg = fresh_workspace_globals(dir);
+        last_local_hover(&pg, dir, warm_first);
+        let warm = last_local_hover(&pg, dir, reader);
+        assert_eq!(
+            (cold.as_str(), warm.as_str()),
+            (expected, expected),
+            "{reader}: (cold, after {warm_first})",
+        );
+    }
+}
+
+#[test]
+fn deferred_harvest_dense_cycle_is_linear() {
+    // Each of the 18 files' un-annotated `Get` reads the next three files' `Get`, so a
+    // search through the cycle reaches every file under a different set of files in
+    // progress along every path. The cycle must be harvested as one unit: each file
+    // analyzed once for discovery and once per round, not once per path.
+    let dir = std::path::Path::new("tests/deferred-dense-cycle");
+    let pg = fresh_workspace_globals(dir);
+    assert_eq!(last_local_hover(&pg, dir, "reader.lua"), "(local) got: any");
+    let analyses = pg.deferred_harvests.analyses();
+    assert!(analyses <= 5 * 18, "{analyses} harvest analyses for an 18-file cycle");
+}
+
 #[test]
 fn crossfile_frame_factory_overlay() {
     // A cross-file factory returning a Frame with extra fields injected on the

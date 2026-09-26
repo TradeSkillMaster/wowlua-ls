@@ -414,14 +414,15 @@ pub struct PreResolvedGlobals {
     /// Recomputed per-workspace at build time — `#[serde(skip)]`, no blob impact.
     #[serde(skip)]
     pub conflicting_arity_funcs: HashSet<FunctionIndex>,
-    /// Memoized precise signature bundle (returns + correlated overloads, in
-    /// ext-index space) for deferred functions. One whole-file harvest warms
-    /// every body-derived datum at once. Filled lazily on first read; lives
-    /// behind the shared `Arc`, so a wholesale `Arc` rebuild naturally
-    /// invalidates it. `#[serde(skip)]` (interior-mutable, runtime only).
+    /// The deferred harvests (see `analysis/deferred.rs`): for each defining file, the
+    /// precise signature bundle (returns + correlated overloads) of every deferred
+    /// function, the type of every created global, and the type args of every deferred
+    /// constructor self-field; for each workspace class, its harvested fields — all in
+    /// ext-index space. Filled lazily on first read; lives behind the shared `Arc`, so
+    /// a wholesale `Arc` rebuild naturally invalidates it. `#[serde(skip)]`
+    /// (interior-mutable, runtime only).
     #[serde(skip)]
-    pub deferred_sig_cache:
-        std::sync::RwLock<HashMap<FunctionIndex, crate::analysis::deferred::DeferredSig>>,
+    pub deferred_harvests: crate::analysis::deferred::DeferredHarvests,
     /// `@creates-global` side-effect globals whose type is harvested lazily from
     /// the creating call's resolved return type (keyed by the global's scope0
     /// symbol). Populated at build time from `deferred_call_type` globals; the
@@ -434,11 +435,6 @@ pub struct PreResolvedGlobals {
     /// whole-file harvest warms every created global in the file at once.
     #[serde(skip)]
     pub deferred_call_globals_by_path: HashMap<PathBuf, Vec<SymbolIndex>>,
-    /// Memoized harvested type (in ext-index space) per created-global symbol.
-    /// `None` means "harvested but unresolvable" (don't re-harvest). Lives behind
-    /// the shared `Arc`, so a wholesale rebuild invalidates it. `#[serde(skip)]`.
-    #[serde(skip)]
-    pub deferred_call_global_cache: std::sync::RwLock<HashMap<SymbolIndex, Option<ValueType>>>,
     /// Constructor self-fields whose coarse type is `any` (the RHS is an
     /// unresolvable function call), keyed by `(class_name, field_name)`. The
     /// per-file engine *can* resolve the call — including generic type args — so
@@ -453,11 +449,6 @@ pub struct PreResolvedGlobals {
     #[serde(skip)]
     pub deferred_field_type_args_by_path:
         HashMap<PathBuf, Vec<crate::analysis::deferred::DeferredFieldKey>>,
-    /// Memoized harvested type arguments (in ext-index space) per deferred field.
-    /// Lives behind the shared `Arc`, so a wholesale rebuild invalidates it.
-    /// `#[serde(skip)]`.
-    #[serde(skip)]
-    pub deferred_field_type_args_cache: crate::analysis::deferred::DeferredFieldArgsCache,
     /// Workspace `@class` name → **every** file that declares it. Populated at build
     /// time (build_on_stubs) for workspace classes only, so it is inherently empty
     /// for a stub-only build — a cross-file `@class` *field* whose coarse scan type
@@ -469,17 +460,6 @@ pub struct PreResolvedGlobals {
     /// than harvested from a single first-seen file. Runtime only — `#[serde(skip)]`.
     #[serde(skip)]
     pub deferred_class_field_paths: HashMap<String, Vec<PathBuf>>,
-    /// Memoized harvested precise type (in ext-index space) per `(class_name,
-    /// field_name)`. `None` means "harvested but not upgradable" (the precise type
-    /// is still coarse `any`, touches a type variable, or is purely nil) — so the
-    /// coarse `any` is kept and no re-harvest occurs. One harvest (re-analyzing all the
-    /// target class's declaring files) warms every field of that class *and* of every
-    /// co-located class fully covered by those files, so a file declaring N classes is
-    /// analyzed once, not once per class. Lives behind the shared `Arc`, so a wholesale
-    /// rebuild invalidates it. `#[serde(skip)]`.
-    #[serde(skip)]
-    pub deferred_class_field_cache:
-        std::sync::RwLock<HashMap<crate::analysis::deferred::DeferredFieldKey, Option<ValueType>>>,
     /// In-memory document content for files the editor has open. When set,
     /// the deferred harvester reads from here instead of disk, so unsaved
     /// edits are picked up immediately. Updated by the LSP layer on
@@ -2279,18 +2259,15 @@ impl BuildContext {
             deferred_returns_by_path,
             deferred_returns: self.deferred_returns,
             conflicting_arity_funcs: self.conflicting_arity_funcs,
-            deferred_sig_cache: std::sync::RwLock::new(HashMap::default()),
+            deferred_harvests: Default::default(),
             deferred_call_globals: self.deferred_call_globals,
             deferred_call_globals_by_path,
-            deferred_call_global_cache: std::sync::RwLock::new(HashMap::default()),
             // Stubs carry no defclass constructor self-fields needing harvest, and
             // these maps are #[serde(skip)] anyway; the workspace path
             // (build_on_stubs) populates them at runtime.
             deferred_field_type_args: HashMap::default(),
             deferred_field_type_args_by_path: HashMap::default(),
-            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::default()),
             deferred_class_field_paths: HashMap::default(),
-            deferred_class_field_cache: std::sync::RwLock::new(HashMap::default()),
             document_overrides: std::sync::RwLock::new(HashMap::default()),
             project_configs: None,
         }
@@ -2370,22 +2347,7 @@ impl PreResolvedGlobals {
     /// the coarse scan stayed identical. Cheap — the caches hold only entries
     /// actually read cross-file, and each `retain` walks its map once.
     pub fn invalidate_deferred_for_file(&self, path: &Path) {
-        if let Ok(mut c) = self.deferred_sig_cache.write() {
-            c.retain(|fidx, _| self.function_locations.get(fidx).map(|l| l.path.as_path()) != Some(path));
-        }
-        if let Ok(mut c) = self.deferred_call_global_cache.write() {
-            c.retain(|sym, _| self.deferred_call_globals.get(sym).map(|d| d.path.as_path()) != Some(path));
-        }
-        if let Ok(mut c) = self.deferred_field_type_args_cache.write() {
-            c.retain(|key, _| self.deferred_field_type_args.get(key).map(|d| d.path.as_path()) != Some(path));
-        }
-        if let Ok(mut c) = self.deferred_class_field_cache.write() {
-            // A class field's harvest reads *every* declaring file, so drop the entry
-            // when `path` is any of them.
-            c.retain(|(class, _), _| {
-                !self.deferred_class_field_paths.get(class).is_some_and(|paths| paths.iter().any(|p| p == path))
-            });
-        }
+        self.deferred_harvests.invalidate(path);
     }
 
     /// Drop untyped own class fields that shadow a concretely-typed field inherited
@@ -2678,15 +2640,12 @@ impl PreResolvedGlobals {
             deferred_returns: HashSet::default(),
             deferred_returns_by_path: HashMap::default(),
             conflicting_arity_funcs: HashSet::default(),
-            deferred_sig_cache: std::sync::RwLock::new(HashMap::default()),
+            deferred_harvests: Default::default(),
             deferred_call_globals: HashMap::default(),
             deferred_call_globals_by_path: HashMap::default(),
-            deferred_call_global_cache: std::sync::RwLock::new(HashMap::default()),
             deferred_field_type_args: HashMap::default(),
             deferred_field_type_args_by_path: HashMap::default(),
-            deferred_field_type_args_cache: std::sync::RwLock::new(HashMap::default()),
             deferred_class_field_paths: HashMap::default(),
-            deferred_class_field_cache: std::sync::RwLock::new(HashMap::default()),
             document_overrides: std::sync::RwLock::new(HashMap::default()),
             project_configs: None,
         }

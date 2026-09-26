@@ -1,0 +1,3 @@
+local addonName, ns = ...
+
+local got = ns.F0.Get(1)

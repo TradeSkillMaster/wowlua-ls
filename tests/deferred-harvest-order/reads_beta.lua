@@ -1,0 +1,3 @@
+local addonName, ns = ...
+
+local formatted = ns.Beta.Format(1)

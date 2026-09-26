@@ -3705,8 +3705,7 @@ mod tests {
         let user_text = std::fs::read_to_string(&user_path).unwrap();
 
         let cached = |pg: &Arc<PreResolvedGlobals>| {
-            pg.deferred_class_field_cache.read().unwrap()
-                .get(&("PCS_Split".to_string(), "fromB".to_string())).cloned()
+            pg.deferred_harvests.top_level_class_fields("PCS_Split", |fields| fields.get("fromB").cloned()).flatten()
         };
         let analyze = |pg: &Arc<PreResolvedGlobals>| {
             let tree = parse_lua(&user_text);
