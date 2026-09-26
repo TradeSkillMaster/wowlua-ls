@@ -165,7 +165,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 39;
+pub const BLOB_VERSION: u32 = 40;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -260,6 +260,12 @@ pub struct PreResolvedGlobals {
     /// via [`PreResolvedGlobals::creates_global_specs`].
     #[serde(skip)]
     pub creates_global_specs: crate::annotations::CreatesGlobalMap,
+    /// Name chains of the `@returns-enum` functions, as call sites spell them
+    /// (see [`crate::annotations::build_returns_enum_paths`]). Confirms the
+    /// string-literal calls the annotation scan records for `@class`/`@enum`
+    /// declarations. Computed at runtime from stub and workspace globals.
+    #[serde(skip)]
+    pub returns_enum_paths: HashSet<Vec<String>>,
     pub scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub symbol_locations: HashMap<SymbolIndex, ExternalLocation>,
@@ -842,6 +848,7 @@ pub struct FnMeta<'a> {
     pub type_narrows_raw: Option<(usize, usize)>,
     pub type_narrows_class_raw: Option<String>,
     pub returns_class_name_raw: bool,
+    pub returns_enum_raw: bool,
     pub secret_raw: Option<Box<crate::secrets::SecretMeta>>,
     pub narrows_arg_raw: Option<usize>,
     pub requires_raw: Vec<(String, String)>,
@@ -883,6 +890,7 @@ impl<'a> FnMeta<'a> {
             type_narrows_raw: None,
             type_narrows_class_raw: None,
             returns_class_name_raw: false,
+            returns_enum_raw: false,
             secret_raw: None,
             narrows_arg_raw: None,
             requires_raw: Vec::new(),
@@ -924,6 +932,7 @@ impl<'a> FnMeta<'a> {
             type_narrows_raw: g.type_narrows,
             type_narrows_class_raw: g.type_narrows_class.clone(),
             returns_class_name_raw: g.returns_class_name,
+            returns_enum_raw: g.returns_enum,
             secret_raw: g.secret.clone(),
             narrows_arg_raw: g.narrows_arg,
             requires_raw: g.requires.clone(),
@@ -1996,7 +2005,7 @@ impl BuildContext {
         //      `DEFAULT_CHAT_FRAME = ChatFrame1` → look up ChatFrame1's type (Frame).
         for g in globals {
             let resolved_type = match &g.kind {
-                ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee, _)) => {
+                ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee, _, _)) => {
                     resolve_funcall_chain(callee, &self.global_lookup_ctx())
                 }
                 ExternalGlobalKind::Variable(FieldValueKind::FieldRef(names)) => {
@@ -2027,7 +2036,7 @@ impl BuildContext {
 
         // Deferred: resolve FunctionCall table fields now that all functions/tables are built
         for g in globals {
-            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg)) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg, _)) = &g.kind {
                 if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _)) = walk_deep_path(
@@ -2239,6 +2248,7 @@ impl BuildContext {
             parameterized_alias_constraints: self.parameterized_alias_constraints,
             tuple_form_aliases: self.tuple_form_aliases,
             creates_global_specs: HashMap::default(),
+            returns_enum_paths: HashSet::default(),
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
             function_names: self.function_names, function_to_field: self.function_to_field,
@@ -2634,6 +2644,7 @@ impl PreResolvedGlobals {
             parameterized_alias_constraints: HashMap::default(),
             tuple_form_aliases: HashMap::default(),
             creates_global_specs: HashMap::default(),
+            returns_enum_paths: HashSet::default(),
             scope0_symbols,
             framexml_scope0_symbols: HashMap::default(),
             symbol_locations: HashMap::default(),
@@ -2704,6 +2715,9 @@ impl PreResolvedGlobals {
         addon_ns_class_files: &HashMap<PathBuf, String>,
         callable_classes: &HashSet<String>,
     ) -> PreResolvedGlobals {
+        let returns_enum_paths = crate::annotations::build_returns_enum_paths(globals);
+        let external_classes = &*crate::annotations::apply_enum_calls(external_classes, &returns_enum_paths);
+        let globals = &*crate::annotations::apply_enum_call_globals(globals, &returns_enum_paths);
         let mut ctx = BuildContext::new();
         ctx.implicit_protected_prefix = implicit_protected_prefix;
         ctx.register_classes_and_aliases(external_classes, external_aliases);
@@ -2715,6 +2729,7 @@ impl PreResolvedGlobals {
         ctx.build_global_entries(globals);
         let mut pg = ctx.finish();
         pg.creates_global_specs = crate::annotations::build_creates_global_map(globals);
+        pg.returns_enum_paths = returns_enum_paths;
         // Two merge passes: (1) copy methods from addon ns sub-tables (ns.Foo fields)
         // into @class Foo tables, then (2) copy top-level addon ns fields into classes
         // declared on the ns variable itself (---@class MyAddon on `local _, ns = ...`).
@@ -3490,6 +3505,7 @@ impl PreResolvedGlobals {
             type_narrows: None,
             type_narrows_class: None,
             returns_class_name: false,
+            returns_enum: false,
             secret: None,
             has_vararg_return,
             see: Vec::new(),
@@ -3530,6 +3546,7 @@ impl PreResolvedGlobals {
             type_narrows_raw,
             type_narrows_class_raw,
             returns_class_name_raw,
+            returns_enum_raw,
             secret_raw,
             narrows_arg_raw,
             requires_raw,
@@ -3963,6 +3980,7 @@ impl PreResolvedGlobals {
             type_narrows: type_narrows_raw,
             type_narrows_class: type_narrows_class_raw,
             returns_class_name: returns_class_name_raw,
+            returns_enum: returns_enum_raw,
             secret: secret_raw,
             has_vararg_return: non_self_returns.last().is_some_and(|r| matches!(r, AnnotationType::VarArgs(_)))
                 || tuple_ret.has_vararg_tail,
@@ -4014,6 +4032,7 @@ mod tests {
             field_descriptions: crate::collections::HashMap::default(),
             bare_inferred_field_names: crate::collections::HashSet::default(),
             deferred_field_call_ranges: crate::collections::HashMap::default(),
+            enum_call: None,
             secret_when: Vec::new(),
         }
     }

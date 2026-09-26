@@ -105,6 +105,7 @@ Retail only. A value that may be secret is typed `secret<T>` (see [Type syntax](
 | `@accessor name [visibility]` | Set visibility for methods defined through a sub-table accessor. [Guide](/guide/classes#accessor-visibility-accessor) |
 | `@creates-global N` | Calling this function with a string literal at param `N` creates a named global. The global's type is taken from the call's return type. |
 | `@generates-events N [Field]` | Calling this method with an array table at param `N` synthesizes an enum-like `Field` table (default `Event`) on the receiver class, one member per array entry. |
+| `@returns-enum` | A call passing only string literals returns an enum-like table: each argument becomes a member numbered by its position (`EnumUtil.MakeEnum`). |
 | `@callback-event-arg N` | Marks a callback-registry consumer method (`RegisterCallback`/`TriggerEvent`/…) whose argument `N` is an event name, enabling event-name completion and the `unknown-callback-event` diagnostic. |
 
 ### `@creates-global N`
@@ -210,6 +211,44 @@ declaration and the call sites agree across files, and scoped by addon so separa
 addons in one workspace don't share an event set). When a registry's event set
 can't be fully determined, validation is suppressed for it so no false positives
 are reported.
+
+### `@returns-enum`
+
+World of Warcraft's `EnumUtil.MakeEnum("Idle", "Running", "Done")` returns the
+table `{ Idle = 1, Running = 2, Done = 3 }`. Mark such a function with
+`@returns-enum` and a call whose arguments are all string literals is typed as
+that table: each argument becomes a `number` member, numbered from 1 in argument
+order. Members complete and resolve like the fields of the equivalent table
+constructor, and a misspelled member is reported as
+[`undefined-field`](/reference/diagnostics):
+
+```lua
+---@param ... string
+---@return table
+---@returns-enum
+function EnumUtil.MakeEnum(...) end
+
+local State = EnumUtil.MakeEnum("Idle", "Running", "Done")
+local s = State.Running  -- number
+local t = State.Runing   -- warning: undefined-field
+```
+
+Put `---@enum Name` above the call to name the enum, so it can be used as a type:
+
+```lua
+---@enum State
+local State = EnumUtil.MakeEnum("Idle", "Running", "Done")
+
+---@param state State
+local function setState(state) end
+
+setState(State.Running)  -- OK
+```
+
+An enum assigned to a global or a table field (`addon.State = EnumUtil.MakeEnum(...)`)
+keeps its members in other files. A call with any other argument
+(`EnumUtil.MakeEnum(unpack(names))`) returns the function's declared type. The
+built-in stubs annotate `EnumUtil.MakeEnum`.
 
 ### `@meta` and overriding built-in stubs
 

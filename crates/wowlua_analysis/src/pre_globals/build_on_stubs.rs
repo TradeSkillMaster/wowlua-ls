@@ -894,7 +894,7 @@ impl<'a> BuildOnStubsContext<'a> {
 
         // Resolve workspace FunctionCall table fields
         for g in ws_globals {
-            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg)) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg, _)) = &g.kind {
                 if self.is_deep_class_global(&g.name, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _leaf_parent_name)) = walk_deep_path(
@@ -1319,6 +1319,7 @@ impl<'a> BuildOnStubsContext<'a> {
             parameterized_alias_constraints: self.parameterized_alias_constraints,
             tuple_form_aliases: self.tuple_form_aliases,
             creates_global_specs: self.stubs_base.creates_global_specs.clone(),
+            returns_enum_paths: HashSet::default(),
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols: self.framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
             function_names: self.function_names, function_to_field: self.function_to_field,
@@ -1371,6 +1372,10 @@ impl PreResolvedGlobals {
         addon_ns_class_files: &HashMap<PathBuf, String>,
         callable_classes: &HashSet<String>,
     ) -> PreResolvedGlobals {
+        let mut returns_enum_paths = stubs_base.returns_enum_paths.clone();
+        returns_enum_paths.extend(crate::annotations::build_returns_enum_paths(ws_globals));
+        let ws_classes = &*crate::annotations::apply_enum_calls(ws_classes, &returns_enum_paths);
+        let ws_globals = &*crate::annotations::apply_enum_call_globals(ws_globals, &returns_enum_paths);
         let mut ctx = BuildOnStubsContext::new(stubs_base, implicit_protected_prefix);
         ctx.register_classes_and_aliases(ws_classes, ws_aliases);
         ctx.populate_class_fields(ws_classes);
@@ -1383,6 +1388,7 @@ impl PreResolvedGlobals {
         // alternate go-to-definition sites are recorded onto `pg` below.
         let method_stub_overrides = std::mem::take(&mut ctx.method_stub_overrides);
         let mut pg = ctx.finish(ws_classes, ws_globals);
+        pg.returns_enum_paths = returns_enum_paths;
         // Record every workspace definition site per global/alias name (independent
         // of the name-dedup that registration applies) so go-to-definition can
         // offer all of them when a name is defined in more than one file.

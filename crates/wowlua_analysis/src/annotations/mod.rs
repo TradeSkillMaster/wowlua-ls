@@ -498,6 +498,20 @@ pub fn is_cast_comment(text: &str) -> bool {
     }
 }
 
+/// A `@class`/`@enum` assignment whose value is a call passing only string
+/// literals (`---@enum State` over `local State = EnumUtil.MakeEnum("A", "B")`).
+/// The annotation scan can't see whether the callee is `@returns-enum`, so it
+/// records the call; the class build adds one member per argument once the
+/// callee resolves to such a function, as it would for the equivalent table
+/// constructor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumCallDecl {
+    /// The callee's name chain (`["EnumUtil", "MakeEnum"]`).
+    pub callee: Vec<String>,
+    /// Each argument's string value and source range, in order.
+    pub args: Vec<(String, (u32, u32))>,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClassDecl {
     pub name: String,
@@ -562,6 +576,10 @@ pub struct ClassDecl {
     /// arguments from the per-file engine. Workspace-only (not in the stub blob).
     #[serde(skip)]
     pub deferred_field_call_ranges: HashMap<String, (u32, u32)>,
+    /// The string-literal call the declaration is assigned from, if any — see
+    /// [`EnumCallDecl`]. Workspace-only (not in the stub blob).
+    #[serde(skip)]
+    pub enum_call: Option<EnumCallDecl>,
     /// `@secret-when` predicates on the class: the conditions under which its
     /// secret fields hold secrets, so a guard clearing all of them unwraps field
     /// reads.
@@ -570,6 +588,27 @@ pub struct ClassDecl {
 }
 
 impl ClassDecl {
+    /// Turn the string-literal call this declaration is assigned from into the
+    /// fields its equivalent table constructor would contribute, when the callee
+    /// is `@returns-enum` (its name chain is in `returns_enum_paths`): one `number`
+    /// member per argument, valued by its position. Names declared by `@field`
+    /// keep their declaration.
+    pub fn apply_enum_call(&mut self, returns_enum_paths: &HashSet<Vec<String>>) {
+        let Some(call) = self.enum_call.take_if(|c| returns_enum_paths.contains(&c.callee)) else { return };
+        let declared: HashSet<String> = self.fields.iter().map(|(name, _, _)| name.clone()).collect();
+        let mut added: HashSet<String> = HashSet::default();
+        for (i, (name, range)) in call.args.into_iter().enumerate() {
+            if declared.contains(&name) { continue; }
+            if added.insert(name.clone()) {
+                let vis = default_visibility_for_name(&name, false);
+                self.fields.push((name.clone(), AnnotationType::Simple("number".into()), vis));
+            }
+            // A repeated name keeps its last position, as `tInvert` does at runtime.
+            self.field_literals.insert(name.clone(), (i + 1).to_string());
+            self.field_ranges.insert(name, range);
+        }
+    }
+
     /// Construct a minimal `ClassDecl` with only its name set and all other
     /// fields defaulted.
     pub fn empty_named(name: String) -> Self {
@@ -598,6 +637,7 @@ impl ClassDecl {
             field_descriptions: HashMap::default(),
             bare_inferred_field_names: HashSet::default(),
             deferred_field_call_ranges: HashMap::default(),
+            enum_call: None,
             secret_when: Vec::new(),
         }
     }
@@ -631,6 +671,20 @@ impl ClassDecl {
             crate::types::EnumKind::NotEnum
         }
     }
+}
+
+/// `classes` with every confirmed `@returns-enum` call applied (see
+/// [`ClassDecl::apply_enum_call`]); borrowed unchanged when there is none.
+pub fn apply_enum_calls<'a>(classes: &'a [ClassDecl], returns_enum_paths: &HashSet<Vec<String>>) -> std::borrow::Cow<'a, [ClassDecl]> {
+    let applies = |c: &ClassDecl| c.enum_call.as_ref().is_some_and(|call| returns_enum_paths.contains(&call.callee));
+    if !classes.iter().any(applies) {
+        return std::borrow::Cow::Borrowed(classes);
+    }
+    let mut owned = classes.to_vec();
+    for class in &mut owned {
+        class.apply_enum_call(returns_enum_paths);
+    }
+    std::borrow::Cow::Owned(owned)
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -794,6 +848,9 @@ pub struct AnnotationBlock {
     /// receiver's class (e.g. `GetObjectType`), used for equality-comparison
     /// type narrowing.
     pub returns_class_name: bool,
+    /// `@returns-enum` — a call passing only string literals returns a table with
+    /// one member per argument, valued by its position (`EnumUtil.MakeEnum`).
+    pub returns_enum: bool,
     /// `@secret-when` / `@secret-args` / `@secret-aspect` / `@secret-guard`.
     pub secret: crate::secrets::SecretMeta,
     pub is_enum: bool,
@@ -1089,7 +1146,7 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
 /// After scanning annotations, walk statements to find table constructor fields
 /// for `@class` declarations. This makes constructor fields visible cross-file.
 fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut ScanResult) {
-    use crate::ast::{Statement, Expression, FieldKind};
+    use crate::ast::{Block, Statement, Expression, FieldKind};
     use crate::syntax::tree::SyntaxToken;
 
     if result.classes.is_empty() { return; }
@@ -1098,6 +1155,9 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
     let class_by_name: HashMap<String, usize> = result.classes.iter().enumerate()
         .map(|(i, c)| (c.name.clone(), i))
         .collect();
+    // The addon-namespace local and `@class` locals, built on the first recorded
+    // string-literal call to spell its callee as declarations are keyed.
+    let mut callee_roots: Option<(Option<String>, HashMap<String, String>)> = None;
 
     // Walk every assignment statement at any nesting depth (not just the file's
     // top-level block) so that `@class` declarations on nested locals — e.g.
@@ -1152,7 +1212,32 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
         // Check if the RHS is a table constructor
         let Some(expr_list) = expr_list else { continue };
         let exprs = expr_list.expressions();
-        let Some(Expression::TableConstructor(tc)) = exprs.first() else { continue };
+        let tc = match exprs.first() {
+            Some(Expression::TableConstructor(tc)) => tc,
+            // A string-literal call may be `@returns-enum` (`EnumUtil.MakeEnum`); the
+            // class build adds its members once the callee is known.
+            Some(Expression::FunctionCall(call)) => {
+                if let Some(mut enum_call) = annotation_scanning::string_literal_call(call) {
+                    // Rename the callee's root as `scan_funcall_callee` does, so it
+                    // matches the declaration's name chain (`build_returns_enum_paths`).
+                    let (ns_var, var_to_class) = callee_roots.get_or_insert_with(|| {
+                        let stmts: Vec<_> = Block::cast(root)
+                            .map(|b| b.statements().into_iter().collect())
+                            .unwrap_or_default();
+                        (annotation_scanning::detect_addon_ns_var(root), annotation_scanning::build_var_to_class(&stmts))
+                    });
+                    let callee_root = &mut enum_call.callee[0];
+                    if ns_var.as_deref() == Some(callee_root.as_str()) {
+                        *callee_root = ADDON_NS_NAME.to_string();
+                    } else if let Some(class_name) = var_to_class.get(callee_root.as_str()) {
+                        *callee_root = class_name.clone();
+                    }
+                    result.classes[class_idx].enum_call = Some(enum_call);
+                }
+                continue;
+            }
+            _ => continue,
+        };
 
         // Collect existing field names to avoid duplicating @field declarations
         let existing_fields: crate::collections::HashSet<&str> = result.classes[class_idx]
@@ -1372,7 +1457,7 @@ fn flush_group(
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
         let is_key_enum = block.is_key_enum;
         let declared_field_names: HashSet<String> = block.fields.iter().map(|(name, _, _)| name.clone()).collect();
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::default(), deferred_field_call_ranges: HashMap::default(), secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::default(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::default(), see: block.see.clone(), declared_field_names, field_literals: HashMap::default(), field_descriptions: block.field_descriptions, bare_inferred_field_names: HashSet::default(), deferred_field_call_ranges: HashMap::default(), enum_call: None, secret_when: block.secret.when.iter().map(|p| p.name.clone()).collect() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -1761,6 +1846,12 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             // bogus `undefined-doc-name` for the `s-class-name` fragment. The tag
             // takes no arguments, so any trailing text is ignored.
             block.returns_class_name = true;
+        } else if content.strip_prefix("@returns-enum")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
+            // `@returns-enum` — like `@returns-class-name`, must precede the greedy
+            // `@return` arm. Takes no arguments; trailing text is ignored.
+            block.returns_enum = true;
         } else if let Some(rest) = content.strip_prefix("@return") {
             let rest = rest.trim();
             if !rest.is_empty() {
@@ -2106,7 +2197,7 @@ pub use scan_globals::scan_file_globals;
 pub use scan_globals::scan_dynamic_global_prefixes;
 pub use scan_globals::scan_file_globals_with_synth;
 pub use scan_globals::{CorrelatedReturns, ProtectedPrefix};
-pub use scan_globals::{CreatesGlobalMap, build_creates_global_map};
+pub use scan_globals::{CreatesGlobalMap, build_creates_global_map, build_returns_enum_paths, apply_enum_call_globals};
 pub use scan_globals::scan_created_globals;
 pub use scan_defclass::scan_defclass_calls;
 pub use scan_defclass::{DefclassContext, scan_defclass_calls_with_context};

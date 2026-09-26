@@ -1572,6 +1572,33 @@ fn callback_registry_generates_events_workspace_synth() {
 }
 
 #[test]
+fn returns_enum_workspace_factory() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/returns-enum/defs.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/returns-enum"),
+    });
+}
+
+#[test]
+fn returns_enum_enumutil() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/returns-enum/enumutil.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/returns-enum"),
+    });
+}
+
+#[test]
+fn returns_enum_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/returns-enum/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/returns-enum"),
+    });
+}
+
+#[test]
 fn callback_registry_event_validation() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/callback-registry/user.lua",

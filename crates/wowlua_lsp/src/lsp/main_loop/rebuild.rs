@@ -36,6 +36,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.callback_event_arg == y.callback_event_arg
         && x.mixin_parents == y.mixin_parents
         && x.returns_class_name == y.returns_class_name
+        && x.returns_enum == y.returns_enum
         && x.secret == y.secret
         // `@meta` status gates stub overriding (build_on_stubs), so toggling
         // `---@meta` on a file must re-run the cross-file build. Unlike
@@ -73,6 +74,9 @@ pub(super) fn class_semantic_eq(x: &ClassDecl, y: &ClassDecl) -> bool {
         && x.is_key_enum == y.is_key_enum
         && x.correlated_groups == y.correlated_groups
         && x.secret_when == y.secret_when
+        // The call's argument *values* are the members; their ranges are positional.
+        && x.enum_call.as_ref().map(|c| (&c.callee, c.args.iter().map(|(v, _)| v).collect::<Vec<_>>()))
+            == y.enum_call.as_ref().map(|c| (&c.callee, c.args.iter().map(|(v, _)| v).collect::<Vec<_>>()))
 }
 
 pub(super) fn classes_match(a: &[ClassDecl], b: &[ClassDecl]) -> bool {

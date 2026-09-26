@@ -187,7 +187,15 @@ pub enum FieldValueKind {
     Nil,
     Table(Vec<(std::string::String, FieldValueKind)>),
     Function,
-    FunctionCall(Vec<std::string::String>, Option<std::string::String>),
+    /// A call: the callee's name chain, its first string-literal argument (a
+    /// class-name hint for factories), and — when every argument is a string
+    /// literal — all of their values (the members an `@returns-enum` call builds;
+    /// empty otherwise).
+    FunctionCall(
+        Vec<std::string::String>,
+        Option<std::string::String>,
+        Vec<std::string::String>,
+    ),
     FieldRef(Vec<std::string::String>),
     /// Existence-only field the coarse scan couldn't type — registered as `any`
     /// (the honest "unknown") so reads stay clean without fabricating a shape. NOT
@@ -404,6 +412,11 @@ pub struct ExternalGlobal {
     /// override is the canonical source), so adding it bumped `BLOB_VERSION`.
     #[serde(default)]
     pub returns_class_name: bool,
+    /// `@returns-enum` — a call passing only string literals returns a table with
+    /// one member per argument, valued by its position. Rides the stub blob (the
+    /// `EnumUtil.MakeEnum` override is the canonical source).
+    #[serde(default)]
+    pub returns_enum: bool,
     /// `@secret-*` metadata (retail secret values). Rides the stub blob.
     #[serde(default)]
     pub secret: Option<Box<crate::secrets::SecretMeta>>,
@@ -456,6 +469,7 @@ impl ExternalGlobal {
             name_end: 0,
             mixin_parents: Vec::new(),
             returns_class_name: false,
+            returns_enum: false,
             secret: None,
         }
     }
@@ -925,6 +939,34 @@ pub(crate) fn funcall_has_chained_receiver(call: &FunctionCall<'_>) -> bool {
     })
 }
 
+/// A call's callee name chain and its arguments' values and ranges, when every
+/// argument is a string literal (`EnumUtil.MakeEnum("A", "B")`). The scan can't
+/// tell whether the callee is `@returns-enum`, so such calls are recorded for the
+/// class/global build to confirm. `None` for no arguments, a non-literal argument,
+/// or a callee that isn't a plain name chain.
+pub fn string_literal_call(call: &FunctionCall<'_>) -> Option<super::EnumCallDecl> {
+    if funcall_has_chained_receiver(call) {
+        return None;
+    }
+    let callee = call.identifier()?.names();
+    if callee.is_empty() {
+        return None;
+    }
+    let args: Vec<(String, (u32, u32))> = call.arguments()?.expressions().iter()
+        .map(|arg| {
+            let Expression::Literal(lit) = arg else { return None };
+            let raw = lit.get_string()?;
+            let value = raw[crate::analysis::lower_expression::string_content_range(&raw)].to_string();
+            let r = arg.syntax().text_range();
+            Some((value, (u32::from(r.start()), u32::from(r.end()))))
+        })
+        .collect::<Option<_>>()?;
+    if args.is_empty() {
+        return None;
+    }
+    Some(super::EnumCallDecl { callee, args })
+}
+
 /// Scan method bodies for `self.field = funcall()` without explicit `---@type`.
 /// Returns ExternalGlobal entries with FieldValueKind::FunctionCall so that
 /// build_on_stubs can resolve the return type through the normal funcall chain.
@@ -969,7 +1011,7 @@ pub fn scan_method_funcall_self_fields(
                 kind: ExternalGlobalKind::TableField(
                     Vec::new(),
                     field_name,
-                    FieldValueKind::FunctionCall(callee_names, first_string_arg),
+                    FieldValueKind::FunctionCall(callee_names, first_string_arg, Vec::new()),
                 ),
                 params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(),
                 overloads: Vec::new(), doc: None, deprecated: false, deprecated_message: None, nodiscard: false,
@@ -993,6 +1035,7 @@ pub fn scan_method_funcall_self_fields(
                 name_end: range.1,
                 mixin_parents: Vec::new(),
                 returns_class_name: false,
+                returns_enum: false,
                 secret: None,
             });
         }

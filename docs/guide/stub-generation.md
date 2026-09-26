@@ -66,7 +66,7 @@ Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments 
 
 ### 6. Local overrides
 
-Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (44 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
+Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (45 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
 
 | File | Purpose |
 |------|---------|
@@ -82,6 +82,7 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `CreateFont.lua` | `@creates-global` for `CreateFont`/`CreateFontFamily` named-font side effect |
 | `CreateFrame.lua` | Intersection types (`CreateFrame(..., template) → T & Tp`) and `@creates-global` for the named-frame side effect |
 | `debugstack.lua` | Debug stack trace function |
+| `EnumUtil.lua` | `@returns-enum` on `EnumUtil.MakeEnum`, so `EnumUtil.MakeEnum("A", "B")` is typed as `{ A = 1, B = 2 }` |
 | `EquipmentManager.lua` | Full-arity `@return` for `EquipmentManager_UnpackLocation` (deprecated on retail with no `@return`, still live on Classic) so destructuring its result doesn't false-positive `unbalanced-assignments` |
 | `EventRegistry.lua` | `@class EventRegistry : CallbackRegistryMixin` with `FrameEvent`-typed callback params |
 | `GameTooltip.lua` | `GameTooltip` frame class + script-handler (`GetScript`/`SetScript`) typing |

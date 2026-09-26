@@ -298,6 +298,10 @@ goto myLabel
 ---@flavor-narrows retail, classic
 -- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ storage.type.annotation.lua
 
+-- Annotation: @returns-enum (one tag, not `@return` followed by a type `s-enum`)
+---@returns-enum
+-- ^^^^^^^^^^^^^ storage.type.annotation.lua
+
 -- Annotation: @secret-when (description stays plain)
 ---@secret-when SecretWhenUnitRestricted Results are secret for other units.
 -- ^^^^^^^^^^^^ storage.type.annotation.lua

@@ -516,6 +516,16 @@ pub struct Ir {
     /// Bracket-keyed field pairs `[key_expr] = value_expr` from table constructors.
     /// Stored per-table for deferred `table<K, V>` type inference in Phase 2.
     pub bracket_key_fields: HashMap<TableIndex, Vec<(ExprId, ExprId)>>,
+    /// `@returns-enum` call → the table its string-literal arguments synthesize
+    /// (`resolve_call.rs::try_returns_enum`). Memoized so the fixpoint reuses one
+    /// table per call; also lets `undefined-field` treat `local E = MakeEnum(...)`
+    /// as the closed record its equivalent table constructor would be.
+    pub enum_call_tables: HashMap<ExprId, TableIndex>,
+    /// Local `@class`/`@enum` tables declared over a string-literal call that the
+    /// declared `@returns-enum` name chains didn't confirm (e.g. an aliased callee),
+    /// keyed by the call's first argument offset. `try_returns_enum` fills the class
+    /// from the call's table if the callee turns out to be `@returns-enum`.
+    pub pending_enum_classes: HashMap<u32, TableIndex>,
     /// Bracket-indexed access sites for `nil-index` diagnostic.
     /// Each entry is (key_expr_id, key_start, key_end) covering both reads and writes.
     pub bracket_index_sites: Vec<(ExprId, u32, u32)>,
@@ -2932,6 +2942,8 @@ impl<'a> Analysis<'a> {
                 table_ranges: HashMap::default(),
                 overlay_fields: HashMap::default(),
                 bracket_key_fields: HashMap::default(),
+                enum_call_tables: HashMap::default(),
+                pending_enum_classes: HashMap::default(),
                 bracket_index_sites: Vec::new(),
                 bracket_table_sites: Vec::new(),
                 binary_op_sites: Vec::new(),

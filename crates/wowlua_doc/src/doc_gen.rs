@@ -632,6 +632,7 @@ mod tests {
             type_narrows: None,
             type_narrows_class: None,
             returns_class_name: false,
+            returns_enum: false,
             secret: None,
             has_vararg_return: false,
             see: Vec::new(),

@@ -42,6 +42,14 @@ fn first_string_literal_arg(call: &FunctionCall<'_>) -> Option<String> {
     })
 }
 
+/// Every argument's value when all of a call's arguments are string literals
+/// (the members of an `@returns-enum` call), else empty.
+fn literal_call_args(call: &FunctionCall<'_>) -> Vec<String> {
+    super::annotation_scanning::string_literal_call(call)
+        .map(|c| c.args.into_iter().map(|(value, _)| value).collect())
+        .unwrap_or_default()
+}
+
 /// For the `Ident("Name"):Method(...)` idiom — a plain (non-colon) call on a
 /// string literal, itself invoked with a colon method — return `(Name, Method)`.
 /// This is the ubiquitous LibStub / registry-accessor pattern
@@ -592,6 +600,7 @@ fn build_func_external(
         name_end,
         mixin_parents: Vec::new(),
         returns_class_name: annotations.returns_class_name,
+        returns_enum: annotations.returns_enum,
         secret,
     }
 }
@@ -1090,22 +1099,29 @@ pub fn scan_file_globals_with_synth(
     // Track local variable return types from annotated function calls
     let mut local_return_types: HashMap<String, AnnotationType> = HashMap::default();
     // Track local variables assigned from function calls whose return type isn't known
-    // locally (e.g. stub/external methods).  Stores (canonicalized callee chain, first
-    // string arg) so that `ns.Field = localVar` can emit FieldValueKind::FunctionCall
-    // instead of FieldRef, letting build_on_stubs resolve the return type.
-    let mut local_call_origins: HashMap<String, (Vec<String>, Option<String>)> = HashMap::default();
+    // locally (e.g. stub/external methods), as the `FieldValueKind::FunctionCall` that a
+    // `ns.Field = localVar` export forwards instead of a FieldRef, letting build_on_stubs
+    // resolve the return type.
+    let mut local_call_origins: HashMap<String, FieldValueKind> = HashMap::default();
     for stmt in &all_stmts {
         if let Statement::LocalAssign(assign) = stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
                 let names = name_list.names();
                 let exprs = expr_list.expressions();
-                if names.len() == 1 && exprs.len() == 1 && !class_vars.contains_key(&names[0])
+                if names.len() == 1 && exprs.len() == 1
                     && let Expression::FunctionCall(call) = &exprs[0]
                     && let Some(call_ident) = call.identifier() {
                         let call_names = call_ident.names();
-                        if !call_names.is_empty() {
+                        // A `class_vars` local (a `@class` local, or the defclass-style guess
+                        // that `F("Name", ...)` builds class `Name`) is exported as that
+                        // class. Its call is still recorded when every argument is a string
+                        // literal: a `@returns-enum` call's members replace the guess
+                        // (`apply_enum_call_globals`).
+                        let literal_args = literal_call_args(call);
+                        let class_typed = class_vars.contains_key(&names[0]);
+                        if !call_names.is_empty() && (!class_typed || !literal_args.is_empty()) {
                             let func_key = call_names.join(".");
-                            if let Some(ret_type) = func_return_types.get(&func_key) {
+                            if !class_typed && let Some(ret_type) = func_return_types.get(&func_key) {
                                 local_return_types.insert(names[0].clone(), ret_type.clone());
                             } else {
                                 // Return type not known from same-file definitions; store the
@@ -1116,7 +1132,10 @@ pub fn scan_file_globals_with_synth(
                                 let (callee_chain, first_string_arg) = scan_funcall_callee(
                                     call, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
                                 );
-                                local_call_origins.insert(names[0].clone(), (callee_chain, first_string_arg));
+                                local_call_origins.insert(
+                                    names[0].clone(),
+                                    FieldValueKind::FunctionCall(callee_chain, first_string_arg, literal_args),
+                                );
                             }
                         }
                     }
@@ -1333,7 +1352,7 @@ pub fn scan_file_globals_with_synth(
                                         call, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
                                     );
                                     let mp = extract_mixin_parents(call, &callee_names, &class_vars);
-                                    (ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee_names, first_string_arg)), None, None, mp)
+                                    (ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee_names, first_string_arg, literal_call_args(call))), None, None, mp)
                                 }
                                 Expression::BinaryExpression(bin) => {
                                     let vk = match bin.kind() {
@@ -1407,6 +1426,7 @@ pub fn scan_file_globals_with_synth(
                                 name_start: ns, name_end: ne,
                                 mixin_parents,
                                 returns_class_name: false,
+                                returns_enum: false,
                                 secret: None,
                             });
                         } else if names.len() >= 2 {
@@ -1467,7 +1487,7 @@ pub fn scan_file_globals_with_synth(
                                     let (callee_names, first_string_arg) = scan_funcall_callee(
                                         call, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
                                     );
-                                    FieldValueKind::FunctionCall(callee_names, first_string_arg)
+                                    FieldValueKind::FunctionCall(callee_names, first_string_arg, literal_call_args(call))
                                 }
                                 Expression::Identifier(ident) => {
                                     let mut rhs_names = ident.names();
@@ -1481,11 +1501,11 @@ pub fn scan_file_globals_with_synth(
                                             local_table_field_kinds.get(&rhs_names[0]).cloned().unwrap_or_default(),
                                         )
                                     } else if rhs_names.len() == 1 {
-                                        if let Some((callee_chain, first_string_arg)) = local_call_origins.get(&rhs_names[0]) {
+                                        if let Some(call_origin) = local_call_origins.get(&rhs_names[0]) {
                                             // Local was assigned from a function call whose return type
                                             // isn't known locally — forward the call origin so
                                             // build_on_stubs can resolve the return type cross-file.
-                                            FieldValueKind::FunctionCall(callee_chain.clone(), first_string_arg.clone())
+                                            call_origin.clone()
                                         } else {
                                             // Single-name reference (e.g. a local or global);
                                             // preserve so cross-file resolution can look it up
@@ -1629,6 +1649,7 @@ pub fn scan_file_globals_with_synth(
                                 name_end: u32::from(range.end()),
                                 mixin_parents: Vec::new(),
                                 returns_class_name: false,
+                                returns_enum: false,
                                 secret: None,
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
@@ -1799,6 +1820,7 @@ pub fn scan_file_globals_with_synth(
                     name_end: ne,
                     mixin_parents: Vec::new(),
                     returns_class_name: false,
+                    returns_enum: false,
                     secret: None,
                 });
                 continue;
@@ -1959,6 +1981,7 @@ pub fn scan_file_globals_with_synth(
                 name_end: ne,
                 mixin_parents: Vec::new(),
                 returns_class_name: false,
+                returns_enum: false,
                 secret: None,
             });
         }
@@ -2082,6 +2105,78 @@ pub fn build_creates_global_map(globals: &[ExternalGlobal]) -> CreatesGlobalMap 
         .collect()
 }
 
+/// Name chains of the `@returns-enum` functions among `globals`, as a call site
+/// spells them (`function EnumUtil.MakeEnum` → `["EnumUtil", "MakeEnum"]`). Matched
+/// against the callee of a string-literal call the annotation scan recorded for a
+/// `@class`/`@enum` declaration ([`super::EnumCallDecl`]).
+pub fn build_returns_enum_paths<'a>(globals: impl IntoIterator<Item = &'a ExternalGlobal>) -> HashSet<Vec<String>> {
+    globals.into_iter()
+        .filter(|g| g.returns_enum)
+        .filter_map(|g| match &g.kind {
+            ExternalGlobalKind::Function => Some(vec![g.name.clone()]),
+            ExternalGlobalKind::Method(path, method, _) => {
+                Some(std::iter::once(&g.name).chain(path).chain(std::iter::once(method)).cloned().collect())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// `globals` with every value assigned from an `@returns-enum` call (callee in
+/// `returns_enum_paths`, all arguments string literals) rewritten to what its
+/// equivalent table constructor scans to: a field `X.f = MakeEnum("A", "B")`
+/// becomes `X.f = { A = 1, B = 2 }`, and a global `X = MakeEnum("A", "B")` becomes
+/// `X = {}` plus the writes `X.A = 1`, `X.B = 2`. An explicit `@type`/`@class`
+/// annotation keeps governing the value. Borrowed unchanged when nothing applies.
+/// Runs in the global build, which (unlike the file scan) knows the stubs.
+pub fn apply_enum_call_globals<'a>(
+    globals: &'a [ExternalGlobal],
+    returns_enum_paths: &HashSet<Vec<String>>,
+) -> std::borrow::Cow<'a, [ExternalGlobal]> {
+    let enum_members = |g: &ExternalGlobal| -> Option<Vec<(String, FieldValueKind)>> {
+        let (ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee, _, args))
+            | ExternalGlobalKind::TableField(_, _, FieldValueKind::FunctionCall(callee, _, args))) = &g.kind
+        else { return None };
+        if args.is_empty() || !returns_enum_paths.contains(callee) { return None; }
+        // The one `returns` the scan infers for such a call is the defclass-style guess
+        // that `F("Name", ...)` builds class `Name` (on an exported local), which the
+        // enum replaces; any other is an explicit annotation and keeps the value.
+        let guessed = matches!(g.returns.as_slice(), [AnnotationType::Simple(name)] if *name == args[0]);
+        if !g.returns.is_empty() && !guessed { return None; }
+        let mut members: Vec<(String, FieldValueKind)> = Vec::new();
+        for (i, name) in args.iter().enumerate() {
+            let value = FieldValueKind::Number(Some((i + 1).to_string()));
+            // A repeated name keeps its last position, as `tInvert` does at runtime.
+            match members.iter_mut().find(|(n, _)| n == name) {
+                Some(member) => member.1 = value,
+                None => members.push((name.clone(), value)),
+            }
+        }
+        Some(members)
+    };
+    if !globals.iter().any(|g| enum_members(g).is_some()) {
+        return std::borrow::Cow::Borrowed(globals);
+    }
+    let mut out = Vec::with_capacity(globals.len());
+    for g in globals {
+        let Some(members) = enum_members(g) else {
+            out.push(g.clone());
+            continue;
+        };
+        if let ExternalGlobalKind::TableField(path, field, _) = &g.kind {
+            let kind = ExternalGlobalKind::TableField(path.clone(), field.clone(), FieldValueKind::Table(members));
+            out.push(ExternalGlobal { kind, returns: Vec::new(), ..g.clone() });
+        } else {
+            out.push(ExternalGlobal { kind: ExternalGlobalKind::Table, returns: Vec::new(), ..g.clone() });
+            for (name, value) in members {
+                let kind = ExternalGlobalKind::TableField(Vec::new(), name, value);
+                out.push(ExternalGlobal { kind, returns: Vec::new(), ..g.clone() });
+            }
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// Scan a file for calls to `@creates-global` functions and return the implicit
 /// named globals they create as a side effect (e.g. WoW's
 /// `CreateFrame(type, "Name")` creates `_G.Name`). Registering these eliminates
@@ -2116,6 +2211,7 @@ pub fn scan_created_globals(
                 kind: ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(
                     callee_names,
                     None,
+                    Vec::new(),
                 )),
                 params: Vec::new(),
                 returns: Vec::new(),
@@ -2158,6 +2254,7 @@ pub fn scan_created_globals(
                 name_end: u32::from(range.end()),
                 mixin_parents: Vec::new(),
                 returns_class_name: false,
+                returns_enum: false,
                 secret: None,
             });
         }

@@ -2394,6 +2394,7 @@ mod tests {
                 type_narrows: None,
                 type_narrows_class: None,
                 returns_class_name: false,
+                returns_enum: false,
                 secret: None,
                 string_value: None,
                 number_value: None,
@@ -2890,6 +2891,7 @@ mod tests {
             type_narrows: None,
             type_narrows_class: None,
             returns_class_name: false,
+            returns_enum: false,
             secret: None,
             string_value: None,
             number_value: None,
@@ -3146,6 +3148,43 @@ mod tests {
         assert!(
             !matches!(rebuild(class("---@secret-when SecretWhenRestricted\n")), RebuildScope::None),
             "@secret-when edit on a class must trigger a rebuild",
+        );
+    }
+
+    #[test]
+    fn returns_enum_edits_trigger_rebuild() {
+        // A `@returns-enum` call's argument values are the members other files see.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let mut rebuild = |src: String| {
+            let tree = crate::syntax::parser::parse(&src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws)
+        };
+
+        let factory = |tag: &str| format!("{tag}---@param ... string\n---@return table\nfunction MakeEnum(...) end\n");
+        let _ = rebuild(factory(""));
+        assert!(
+            !matches!(rebuild(factory("---@returns-enum\n")), RebuildScope::None),
+            "@returns-enum edit must trigger a rebuild",
+        );
+
+        let field = |args: &str| format!("Enums = {{}}\nEnums.State = MakeEnum({args})\n");
+        let _ = rebuild(field("\"A\""));
+        assert!(
+            !matches!(rebuild(field("\"A\", \"B\"")), RebuildScope::None),
+            "adding a member must trigger a rebuild",
+        );
+
+        // `@enum` over the call: the members are compared by value, not position.
+        let named = |lead: &str, args: &str| format!("{lead}---@enum State\nlocal State = MakeEnum({args})\n");
+        let _ = rebuild(named("", "\"A\""));
+        assert!(
+            !matches!(rebuild(named("", "\"A\", \"B\"")), RebuildScope::None),
+            "adding a member to an `@enum` call must trigger a rebuild",
+        );
+        assert!(
+            matches!(rebuild(named("\n", "\"A\", \"B\"")), RebuildScope::None),
+            "moving the call without changing its members must not trigger a rebuild",
         );
     }
 

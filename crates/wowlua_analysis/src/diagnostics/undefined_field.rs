@@ -86,7 +86,14 @@ fn collect_pure_record_symbols(analysis: &AnalysisResult, tree: &SyntaxTree) -> 
                     .unwrap_or_default();
                 if let Some(name_list) = assign.name_list() {
                     for (i, token) in name_list.name_tokens().iter().enumerate() {
-                        if !matches!(rhs.get(i), Some(Expression::TableConstructor(_))) { continue; }
+                        let is_record_rhs = match rhs.get(i) {
+                            Some(Expression::TableConstructor(_)) => true,
+                            // An `@returns-enum` call builds the table its constructor
+                            // would; `closed_record_base` confirms the call was one.
+                            Some(Expression::FunctionCall(_)) => !analysis.ir.enum_call_tables.is_empty(),
+                            _ => false,
+                        };
+                        if !is_record_rhs { continue; }
                         let start = u32::from(token.text_range().start());
                         let Some((sym_idx, _, _)) = analysis.find_symbol_at(tree, start) else { continue };
                         if !sym_idx.is_external() && analysis.sym(sym_idx).versions.len() == 1 {
@@ -135,7 +142,7 @@ fn closed_record_base(
     let ts = sym.versions[0].type_source?;
     match *analysis.ir.expr(ts) {
         Expr::TableConstructor(idx) => Some((idx, name)),
-        _ => None,
+        _ => analysis.ir.enum_call_tables.get(&ts).map(|&idx| (idx, name)),
     }
 }
 

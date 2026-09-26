@@ -935,6 +935,7 @@ fn build_mixin_augment(mixin_name: &str, ctx: &FrameContext, path: &Path) -> Cla
         field_descriptions: HashMap::default(),
         bare_inferred_field_names: HashSet::default(),
         deferred_field_call_ranges: HashMap::default(),
+        enum_call: None,
         secret_when: Vec::new(),
     }
 }
@@ -1011,6 +1012,7 @@ fn finalize_frame(
         field_descriptions: HashMap::default(),
         bare_inferred_field_names: HashSet::default(),
         deferred_field_call_ranges: HashMap::default(),
+        enum_call: None,
         secret_when: Vec::new(),
     };
     classes.push(class_decl);
@@ -1061,6 +1063,7 @@ fn finalize_frame(
             name_end: ctx.def_end,
             mixin_parents: Vec::new(),
             returns_class_name: false,
+            returns_enum: false,
             secret: None,
         });
     }
@@ -1111,6 +1114,7 @@ fn finalize_frame(
             name_end: ctx.def_end,
             mixin_parents: Vec::new(),
             returns_class_name: false,
+            returns_enum: false,
             secret: None,
         });
     }

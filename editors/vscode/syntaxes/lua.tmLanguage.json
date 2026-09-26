@@ -299,6 +299,10 @@
           "name": "storage.type.annotation.lua"
         },
         {
+          "match": "(?<=---)[ \\t]*@returns-enum\\b.*",
+          "name": "storage.type.annotation.lua"
+        },
+        {
           "match": "(?<=---)[ \\t]*@flavor-narrows\\b.*",
           "name": "storage.type.annotation.lua"
         },

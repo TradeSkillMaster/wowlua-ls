@@ -1657,6 +1657,7 @@ impl AnalysisResult {
             ("diagnostic",     "Control diagnostic suppression",          F|C|S,     Some("diagnostic ${1|enable,disable|}:${2:code}")),
             ("type-narrows",   "Type guard that narrows target param",    F,         None),
             ("returns-class-name", "Return value names receiver's class (narrows on ==)", F, None),
+            ("returns-enum",   "String arguments become members of the returned table", F, None),
             ("flavor-narrows", "Flavor guard that narrows WoW API availability", F,  None),
             ("narrows-arg",    "In-place argument type narrowing",        F,         Some("narrows-arg ${1:N}")),
             ("creates-global", "Call creates a named global (e.g. CreateFrame)", F,   Some("creates-global ${1:N}")),
@@ -1739,7 +1740,7 @@ impl AnalysisResult {
                         let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
                         match tag {
                             "param" | "return" | "generic" | "builds-field" | "built-name"
-                            | "built-extends" | "type-narrows" | "returns-class-name" | "defclass" | "flavor-narrows"
+                            | "built-extends" | "type-narrows" | "returns-class-name" | "returns-enum" | "defclass" | "flavor-narrows"
                             | "narrows-arg" | "creates-global" | "requires"
                             | "secret-args" | "secret-aspect" | "secret-guard" | "secret-unless" => {
                                 has_function_tag = true;

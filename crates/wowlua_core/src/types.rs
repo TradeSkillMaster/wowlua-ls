@@ -1274,6 +1274,13 @@ pub struct Function {
     /// rather than a boolean guard call.
     #[serde(default)]
     pub returns_class_name: bool,
+    /// `@returns-enum` — a call whose arguments are all string literals returns a
+    /// table with one `number` member per argument, valued by its position, as if
+    /// the table constructor `{ A = 1, B = 2, ... }` had been written
+    /// (`EnumUtil.MakeEnum`). Resolved per call in `resolve_call.rs`
+    /// (`try_returns_enum`); cross-file sites are synthesized in `pre_globals`.
+    #[serde(default)]
+    pub returns_enum: bool,
     /// `@secret-when` / `@secret-args` / `@secret-aspect` / `@secret-guard`
     /// metadata (retail secret values). Secret *returns* live in the return
     /// types themselves (`secret<T>`).

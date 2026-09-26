@@ -478,6 +478,20 @@ Key enums are always string enums (since Lua table constructor keys are identifi
 
 WoW's built-in `Enum.*` types (like `Enum.PowerType`, `Enum.UnitSex`) are automatically treated as number enums, so `UnitPower("player", 0)` doesn't produce a type-mismatch warning.
 
+### Enums from `EnumUtil.MakeEnum`
+
+`EnumUtil.MakeEnum` builds an enum from its arguments, numbering them from 1. Its result has one `number` member per argument, and `@enum` above the call names it:
+
+```lua
+---@enum Priority
+local Priority = EnumUtil.MakeEnum("Low", "Medium", "High")
+
+setPriority(Priority.High) -- OK, Priority.High is 3
+setPriority(Priority.Hgih) -- warning: undefined-field
+```
+
+Without `@enum`, the members are still typed (`Priority.High` is a `number`). To get the same typing from your own enum function, mark it with [`@returns-enum`](/reference/annotations#returns-enum).
+
 ## `@class` with metatable patterns
 
 The most common WoW addon class pattern combines `@class` with metatables:

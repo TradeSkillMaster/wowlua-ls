@@ -115,7 +115,10 @@ impl<'a> Analysis<'a> {
         // `ir.aliases` / `ir.alias_string_literals`; only local declarations follow.
         let ext = Arc::clone(&self.ir.ext);
         // Process file-local declarations only
-        let scan = scan_all_annotations(self.root());
+        let mut scan = scan_all_annotations(self.root());
+        for class in &mut scan.classes {
+            class.apply_enum_call(&ext.returns_enum_paths);
+        }
         self.is_meta = scan.has_meta;
 
         // Pass 1: Register local class names with empty tables (local indices).
@@ -159,6 +162,12 @@ impl<'a> Analysis<'a> {
                 self.ir.class_def_ranges.insert(class.name.clone(), (start, end));
                 // Positional map for disambiguation when multiple @class share the same name
                 self.ir.class_table_by_offset.insert(start, ti);
+            }
+        }
+
+        for (class, &table_idx) in scan.classes.iter().zip(&class_table_indices) {
+            if let Some((_, (arg_start, _))) = class.enum_call.as_ref().and_then(|call| call.args.first()) {
+                self.ir.pending_enum_classes.insert(*arg_start, table_idx);
             }
         }
 
@@ -1736,6 +1745,7 @@ impl<'a> Analysis<'a> {
                 type_narrows: None,
                 type_narrows_class: None,
                 returns_class_name: false,
+                returns_enum: false,
                 secret: None,
                 has_vararg_return,
                 see: Vec::new(),
@@ -2281,6 +2291,7 @@ impl<'a> Analysis<'a> {
             type_narrows: None,
             type_narrows_class: None,
             returns_class_name: false,
+            returns_enum: false,
             secret: None,
             has_vararg_return: tuple_has_vararg_tail || non_tuple_vararg_return,
             see: Vec::new(),

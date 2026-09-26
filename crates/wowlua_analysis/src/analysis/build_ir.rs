@@ -3038,6 +3038,7 @@ impl<'a> Analysis<'a> {
             type_narrows: None,
             type_narrows_class: None,
             returns_class_name: false,
+            returns_enum: false,
             secret: None,
             has_vararg_return: false,
             see: Vec::new(),
@@ -3452,6 +3453,9 @@ impl<'a> Analysis<'a> {
         // Apply @returns-class-name annotation (return value names receiver's class).
         if annotations.returns_class_name {
             self.ir.functions[func_idx.val()].returns_class_name = true;
+        }
+        if annotations.returns_enum {
+            self.ir.functions[func_idx.val()].returns_enum = true;
         }
 
         // Apply @secret-* annotations (retail secret values).

@@ -6,7 +6,7 @@ use super::{DiagnosticPass, WowDiagnostic};
 const FUNCTION_LEVEL_TAGS: &[&str] = &[
     "param", "return", "overload", "generic", "nodiscard", "deprecated",
     "constructor", "builds-field", "built-name", "built-extends",
-    "type-narrows", "returns-class-name", "defclass", "narrows-arg", "creates-global", "generates-events",
+    "type-narrows", "returns-class-name", "returns-enum", "defclass", "narrows-arg", "creates-global", "generates-events",
     "callback-event-arg", "requires", "secret-when", "secret-args", "secret-aspect", "secret-guard", "secret-unless",
     "secret-clears", "secret-restriction-guard", "secret-precondition", "secret-satisfies",
 ];

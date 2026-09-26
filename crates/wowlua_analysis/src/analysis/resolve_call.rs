@@ -549,6 +549,11 @@ impl<'a> Analysis<'a> {
             return Some(rt);
         }
 
+        // @returns-enum: string-literal arguments build an enum-like table.
+        if let Some(rt) = self.try_returns_enum(func_idx, args, arg_ranges, ret_index, expr_id) {
+            return Some(rt);
+        }
+
         // returns<F> projection for this return slot.
         if let Some(vt) = self.try_returns_projection(func_idx, ret_index, matching_overload, &generic_subs, &func_args, self_offset, args, func, expr_id) {
             return Some(vt);
@@ -1646,6 +1651,67 @@ impl<'a> Analysis<'a> {
             }
         }
         None
+    }
+
+    /// `@returns-enum`: a call whose arguments are all string literals returns the
+    /// table its equivalent constructor `{ A = 1, B = 2, ... }` would build — one
+    /// `number` member per argument, valued by its position and defined at the
+    /// literal. Any other call keeps the declared return type.
+    fn try_returns_enum(
+        &mut self,
+        func_idx: FunctionIndex,
+        args: &[ExprId],
+        arg_ranges: &[(u32, u32)],
+        ret_index: usize,
+        expr_id: ExprId,
+    ) -> Option<ValueType> {
+        if ret_index != 0 || !self.func(func_idx).returns_enum {
+            return None;
+        }
+        if let Some(&idx) = self.ir.enum_call_tables.get(&expr_id) {
+            return Some(ValueType::Table(Some(idx)));
+        }
+        let names: Vec<String> = args.iter()
+            .map(|&arg| match self.ir.expr(arg) {
+                Expr::Literal(ValueType::String(_)) => self.ir.string_literals.get(&arg).cloned(),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        if names.is_empty() {
+            return None;
+        }
+        let mut fields: HashMap<String, FieldInfo> = HashMap::default();
+        for (i, name) in names.into_iter().enumerate() {
+            let value = self.ir.push_expr(Expr::Literal(ValueType::Number));
+            self.ir.number_literals.insert(value, (i + 1).to_string());
+            let visibility = crate::annotations::default_visibility_for_name(&name, self.implicit_protected_prefix);
+            // A repeated name keeps its last position, as `tInvert` does at runtime.
+            fields.insert(name, FieldInfo {
+                expr: value,
+                extra_exprs: Vec::new(),
+                visibility,
+                annotation: None,
+                annotation_text: None,
+                annotation_type_raw: None,
+                lateinit: false,
+                def_range: arg_ranges.get(i).copied(),
+                flavor_guard: 0,
+                description: None,
+                from_scan: false,
+            });
+        }
+        // A `@class`/`@enum` over this call whose callee the annotation scan couldn't
+        // confirm (`local EU = EnumUtil`) gets the members too; `@field`s win.
+        if let Some(class_idx) = arg_ranges.first().and_then(|(start, _)| self.ir.pending_enum_classes.remove(start)) {
+            let class_fields = &mut self.ir.tables[class_idx.val()].fields;
+            for (name, field) in &fields {
+                class_fields.entry(name.clone()).or_insert_with(|| field.clone());
+            }
+        }
+        let idx = TableIndex(self.ir.tables.len());
+        self.ir.tables.push(TableInfo { fields, ..Default::default() });
+        self.ir.enum_call_tables.insert(expr_id, idx);
+        Some(ValueType::Table(Some(idx)))
     }
 
     /// `returns<F>` projection: when this return slot carries a `returns<F>`
@@ -4033,6 +4099,7 @@ impl<'a> Analysis<'a> {
                     type_narrows: None,
                     type_narrows_class: None,
                     returns_class_name: false,
+                    returns_enum: false,
                     secret: None,
                     has_vararg_return: has_vararg_return_clone,
                     see: Vec::new(),
