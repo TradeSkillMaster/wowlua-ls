@@ -89,8 +89,8 @@ pub struct ConditionSite {
     /// Whether this is a loop condition (`while` or `repeat...until`).
     pub is_loop: bool,
     /// For `while` and `repeat...until` conditions, the loop body scope.
-    /// Both are lowered in the parent scope, so `scope_at_offset` won't
-    /// find the loop — this field bridges the gap.
+    /// A `while` condition is lowered in the parent scope, so `scope_at_offset`
+    /// won't find the loop — this field bridges the gap.
     pub loop_scope: Option<ScopeIndex>,
     /// True when this condition belongs to an `if`/`elseif` chain whose
     /// `else` block always exits (calls `error()` or executes `return`).

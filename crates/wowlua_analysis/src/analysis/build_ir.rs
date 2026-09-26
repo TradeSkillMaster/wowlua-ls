@@ -121,6 +121,21 @@ fn node_range(node: SyntaxNode<'_>) -> (u32, u32) {
     (u32::from(r.start()), u32::from(r.end()))
 }
 
+/// The source range of the scope a block opens. A `repeat` body's scope also
+/// spans its `until` condition, which can read the body's locals (Lua 5.1 §2.4.4).
+fn block_scope_range(block: Block<'_>) -> (u32, u32) {
+    let (start, end) = node_range(block.syntax());
+    let until = block.syntax().parent()
+        .and_then(RepeatUntilLoop::cast)
+        .and_then(|repeat_loop| repeat_loop.condition());
+    match until.map(|cond| node_range(cond.syntax())) {
+        // An empty block's range is `0..0`, so its scope is just the condition.
+        Some(cond) if start == end => cond,
+        Some((_, cond_end)) => (start, cond_end),
+        None => (start, end),
+    }
+}
+
 impl<'a> Analysis<'a> {
     pub(super) fn build_ir(&mut self) {
         let root_order = self.ir.next_order();
@@ -152,8 +167,8 @@ impl<'a> Analysis<'a> {
             self.current_func_id = func_id;
             self.stmt_is_conditional = frame_is_conditional;
             if frame.next_stmt == 0 {
-                let br = frame.block.syntax().text_range();
-                self.ir.block_scopes.push((u32::from(br.start()), u32::from(br.end()), scope_idx));
+                let (start, end) = block_scope_range(frame.block);
+                self.ir.block_scopes.push((start, end, scope_idx));
             }
             let statements = frame.block.statements();
 
@@ -174,7 +189,13 @@ impl<'a> Analysis<'a> {
                 let popped_scope = scope_idx;
                 let popped_func_id = func_id;
                 stack.pop();
+                if let Some(repeat_loop) = popped_block.syntax().parent().and_then(RepeatUntilLoop::cast) {
+                    self.build_repeat_condition(&repeat_loop, popped_scope, frame_is_conditional);
+                }
                 self.finalize_popped_frame(popped_block, popped_scope, popped_func_id, &stack, &mut pending_while_narrowings);
+                // Closures in the `until` condition: pushed only after finalizing,
+                // which reads `stack.last()` to detect the end of a function body.
+                self.push_pending_blocks(&mut stack);
                 continue;
             }
 
@@ -218,19 +239,22 @@ impl<'a> Analysis<'a> {
                 }
             }
 
-            // Drain any inline function bodies queued by lower_expression
-            for (block_id, block_scope, block_func_id) in self.pending_blocks.drain(..).collect::<Vec<_>>() {
-                let block = Block::cast(SyntaxNode { tree: self.tree, id: block_id }).expect("pending_blocks should contain Block nodes");
-                stack.push(Frame {
-                    block,
-                    next_stmt: 0,
-                    scope_idx: block_scope,
-                    func_id: block_func_id,
-                    constructor_of: None,
-                    is_conditional: false,
-                });
-            }
+            self.push_pending_blocks(&mut stack);
+        }
+    }
 
+    /// Push a frame for each inline function body queued by `lower_expression`.
+    fn push_pending_blocks(&mut self, stack: &mut Vec<Frame<'a>>) {
+        for (block_id, block_scope, block_func_id) in self.pending_blocks.drain(..).collect::<Vec<_>>() {
+            let block = Block::cast(SyntaxNode { tree: self.tree, id: block_id }).expect("pending_blocks should contain Block nodes");
+            stack.push(Frame {
+                block,
+                next_stmt: 0,
+                scope_idx: block_scope,
+                func_id: block_func_id,
+                constructor_of: None,
+                is_conditional: false,
+            });
         }
     }
 
@@ -586,19 +610,11 @@ impl<'a> Analysis<'a> {
     }
 
     fn build_stmt_repeat(&mut self, repeat_loop: &RepeatUntilLoop<'a>, scope_idx: ScopeIndex, func_id: Option<FunctionIndex>, constructor_of: Option<TableIndex>, frame_is_conditional: bool, stack: &mut Vec<Frame<'a>>) {
-        let cond_info = repeat_loop.condition().map(|cond| {
-            let expr_id = self.lower_expression(&cond, scope_idx);
-            (expr_id, cond.syntax().text_range())
-        });
         if let Some(inner_block) = repeat_loop.block() {
             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
             self.ir.scopes[new_scope_idx.val()].is_loop = true;
-            // Record condition site after loop scope exists so the
-            // diagnostic can find it (the `until` condition is lowered
-            // in the parent scope, not the loop body scope).
-            if let Some((expr_id, range)) = cond_info {
-                self.ir.record_loop_condition_site(expr_id, range, new_scope_idx);
-            }
+            // The `until` condition is lowered when this frame pops
+            // (`build_repeat_condition`).
             stack.push(Frame {
                 block: inner_block,
                 next_stmt: 0,
@@ -608,8 +624,24 @@ impl<'a> Analysis<'a> {
                 // Repeat body always executes at least once; inherit parent.
                 is_conditional: frame_is_conditional,
             });
-        } else if let Some((expr_id, range)) = cond_info {
-            self.ir.record_condition_site(expr_id, range, ConditionKind::Loop, ExitElse::Absent);
+        } else if let Some(cond) = repeat_loop.condition() {
+            let expr_id = self.lower_expression(&cond, scope_idx);
+            self.ir.record_condition_site(expr_id, cond.syntax().text_range(), ConditionKind::Loop, ExitElse::Absent);
+        }
+    }
+
+    /// Lower a `repeat` loop's `until` condition once the body has been walked:
+    /// it runs after the body's last statement, in the body's scope, so it reads
+    /// the body's locals and their final versions.
+    fn build_repeat_condition(&mut self, repeat_loop: &RepeatUntilLoop<'a>, body_scope: ScopeIndex, is_conditional: bool) {
+        let Some(cond) = repeat_loop.condition() else { return };
+        let expr_start = self.ir.exprs.len();
+        let expr_id = self.lower_expression(&cond, body_scope);
+        self.ir.record_loop_condition_site(expr_id, cond.syntax().text_range(), body_scope);
+        if is_conditional {
+            for eid in expr_start..self.ir.exprs.len() {
+                self.conditionally_reached_exprs.insert(ExprId(eid));
+            }
         }
     }
 

@@ -89,8 +89,8 @@ fn lhs_symbol_has_self_and_reassignment(analysis: &AnalysisResult, lhs: ExprId) 
 /// Returns true when the LHS symbol is defined outside a loop but has a
 /// genuine (non-narrowing-only) reassignment created inside that loop body.
 /// The binary-op site must also be inside the loop body or in the loop's
-/// condition (while/repeat conditions are lowered in the parent scope but
-/// logically belong to the loop). This catches loop-carried variables like
+/// condition (a `while` condition is lowered in the parent scope but
+/// logically belongs to the loop). This catches loop-carried variables like
 /// `local ranThread = true; while ranThread and ... do ranThread = false ...`
 /// where the back-edge makes the truthiness uncertain.
 fn lhs_symbol_has_loop_body_reassignment(analysis: &AnalysisResult, lhs: ExprId, op_start: u32) -> bool {
@@ -103,8 +103,8 @@ fn lhs_symbol_has_loop_body_reassignment(analysis: &AnalysisResult, lhs: ExprId,
     };
 
     // Walk ancestor scopes of the binary-op site to find enclosing loops.
-    // Also check condition_sites: `while` and `repeat` conditions are lowered
-    // in the parent scope, so `scope_at_offset` won't find the loop body.
+    // Also check condition_sites: a `while` condition is lowered in the
+    // parent scope, so `scope_at_offset` won't find the loop body.
     let enclosing_loops: Vec<ScopeIndex> = {
         let mut loops: Vec<ScopeIndex> = ir.ancestor_scopes(site_scope)
             .filter(|&s| ir.scope(s).is_loop)

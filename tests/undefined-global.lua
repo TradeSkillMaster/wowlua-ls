@@ -196,3 +196,61 @@ local function _ugUseShadow()
     local ugOuter = { innerField = 2 }
     return ugOuter.innerField
 end
+
+-- ── repeat…until: the body's locals stay in scope through `until` ───────────
+-- The repeat body's block ends after its condition (Lua 5.1 §2.4.4), so the
+-- `until` expression reads the body's locals rather than globals.
+repeat
+    local rptDone = math.random() > 0.5
+until rptDone
+--    ^ hover: (local) rptDone: boolean  def: local 204:5  refs: 204:11, 205:7
+
+repeat
+    local rptCompletion = 1
+until rptCompletion == 1
+--           ^ comp: rptCompletion
+
+-- An inner local shadows the outer one only from its declaration on, and the
+-- condition sees the inner one.
+local rptShadow = "outer"
+repeat
+    _consume(rptShadow)
+    --       ^ hover: (local) rptShadow: string = "outer"
+    ---@diagnostic disable-next-line: shadowed-local
+    local rptShadow = 1
+until rptShadow == 1
+--    ^ hover: (local) rptShadow: number = 1  def: local 220:5
+
+-- The condition runs after the body, so it reads the body's last assignment.
+local rptLast = nil
+repeat
+    rptLast = math.random() > 0.5 and "x" or nil
+until rptLast
+--    ^ hover: (local) rptLast: string?
+
+-- A local of a block nested in the body is out of scope by the condition.
+repeat
+    if math.random() > 0.5 then
+        local rptNested = 1
+        _consume(rptNested)
+    end
+until rptNested
+--    ^ diag: undefined-global
+
+-- A closure in the condition doesn't end the enclosing function early, which
+-- would add an implicit nil return.
+local function rptClosureReturn()
+    repeat
+        local rptCaptured = math.random() > 0.5
+    until (function() return rptCaptured end)()
+    return 1
+end
+local rptClosureResult = rptClosureReturn()
+--    ^ hover: (local) rptClosureResult: number
+_consume(rptClosureResult)
+
+-- A closure in the condition of the file's last statement is still walked, so
+-- `rptTail` counts as read. Keep this last in the file.
+repeat
+    local rptTail = 1
+until (function() return rptTail == 1 end)()

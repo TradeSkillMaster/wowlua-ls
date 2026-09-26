@@ -498,7 +498,7 @@ fn has_uncertain_reassignment(
 
     let cond_scope = ir.scope_at_offset(offset);
 
-    // Case 1: condition is inside a loop (or in while/repeat...until position
+    // Case 1: condition is inside a loop (or in `while` condition position,
     // where ancestor-walking won't find the loop body — use the stored hint).
     let enclosing_loop = loop_scope_hint.or_else(|| {
         find_enclosing_loop(ir, cond_scope?)

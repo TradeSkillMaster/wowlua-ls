@@ -183,6 +183,18 @@ local function SecretBranch()
     end
 end
 
+-- A guard in a `repeat` body also covers its `until` condition.
+local function SecretRepeat()
+    repeat
+        local raw = UnitHealth("target")
+        if not canaccessvalue(raw) then return end
+    until raw > 0
+    repeat
+        local raw = UnitHealth("target")
+    until raw > 0
+    --    ^ diag: secret-comparison
+end
+
 -- Guarded by the builtins: no diagnostics.
 if issecretvalue(hp) or issecretvalue(maxHp) then return end
 if hp < maxHp then end
