@@ -360,6 +360,22 @@ mod tests {
         assert!(stub_materialize_dir_from(Some(OsString::from("/x"))).ends_with(BLOB_VERSION.to_string()));
     }
 
+    /// Regression: the stub blob carried the generating machine's absolute paths
+    /// (clone cache, temp dir, checkout) on every stub class and global. Every
+    /// path it serializes must be a key of the embedded file-contents blob.
+    #[test]
+    fn stub_blob_paths_are_embedded_file_keys() {
+        let Some(mut stubs) = load_precomputed_stubs() else { return };
+        let contents = stub_file_contents();
+        let mut bad = std::collections::BTreeSet::new();
+        stubs.for_each_path_mut(|path| {
+            if path.is_absolute() || !contents.contains_key(path.to_string_lossy().as_ref()) {
+                bad.insert(path.clone());
+            }
+        });
+        assert!(bad.is_empty(), "{} blob path(s) are not embedded-file keys, e.g. {:?}", bad.len(), bad.iter().take(5).collect::<Vec<_>>());
+    }
+
     #[test]
     fn materialize_stub_file_writes_then_skips() {
         let dir = std::env::temp_dir().join(format!("wowlua-mat-test-{}", std::process::id()));

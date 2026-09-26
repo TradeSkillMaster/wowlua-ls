@@ -3044,3 +3044,16 @@ fn test_parse_wiki_export_own_page_beats_redirect() {
     assert_eq!(redirects["StartDuelUnit"], "StartDuel");
     assert_eq!(doc_paths["StartDuelUnit"], "API:StartDuel");
 }
+
+#[test]
+fn generation_dir_found_in_any_serialized_field() {
+    // The generator scans the serialized blobs for its own directories, so a
+    // path-typed field its path rewrite misses still stops the write.
+    let tmp = Path::new("/tmp/example/wowlua-ls-stub-gen");
+    let dirs = [Path::new("/home/example/.cache/wowlua-ls/clones"), tmp];
+    let mut class = crate::annotations::ClassDecl::empty_named("Foo".to_string());
+    class.def_path = Some(tmp.join("scan-stubs/generated/Foo.lua"));
+    assert_eq!(find_generation_dir(&bincode::serialize(&class).unwrap(), &dirs), Some(tmp));
+    class.def_path = Some(PathBuf::from("generated/Foo.lua"));
+    assert_eq!(find_generation_dir(&bincode::serialize(&class).unwrap(), &dirs), None);
+}

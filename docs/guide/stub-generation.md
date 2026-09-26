@@ -143,7 +143,7 @@ The pipeline produces these intermediate Lua files (written to a temp directory 
 | `stubs/precomputed-files.bin.zst` | Version (4B) + zstd-9 payload | Bincode-serialized `HashMap<String, String>` of stub file contents for go-to-definition |
 | `stubs/precomputed-provenance.txt` | Text | Generation timestamp, source repo, commit hash, symbol/function/table/file counts |
 
-The main blob contains the fully resolved type database (~150k symbols, ~45k functions, ~24k tables, ~21k classes, ~103k globals). The files blob contains the source text of all referenced stub files (~2,800 files) so the LSP can support go-to-definition into stub code.
+The main blob contains the fully resolved type database (~150k symbols, ~45k functions, ~24k tables, ~21k classes, ~103k globals). The files blob contains the source text of all referenced stub files (~2,800 files) so the LSP can support go-to-definition into stub code. Every source path in the main blob is a key of the files blob (`vendor/…` for the vscode-wow-api clone, `overrides/…`, `generated/…`), so neither blob contains paths from the machine that generated it.
 
 The blob version is incremented whenever `PreResolvedGlobals`, `ClassDecl`, `ExternalGlobal`, or any serialized type changes shape.
 
@@ -153,7 +153,7 @@ The `embedded-stubs` Cargo feature (default on) bakes both blobs into the binary
 
 ## Validation
 
-Before writing, the pipeline validates minimum counts (symbols ≥ 50k, functions ≥ 20k, tables ≥ 10k, files ≥ 1k, globals ≥ 50k, classes ≥ 10k) to catch truncated data from network failures or upstream structure changes.
+Before writing, the pipeline validates minimum counts (symbols ≥ 50k, functions ≥ 20k, tables ≥ 10k, files ≥ 1k, globals ≥ 50k, classes ≥ 10k) to catch truncated data from network failures or upstream structure changes. It also refuses to write the blobs if either one contains a directory the run used (the clone cache, its temp directory, or `stubs/overrides`).
 
 The `dump-stubs` CLI subcommand outputs every global name and its resolved type as a tab-separated list, sorted alphabetically. This is useful for diffing before and after stub regeneration to catch regressions:
 

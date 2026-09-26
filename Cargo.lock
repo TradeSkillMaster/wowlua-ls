@@ -1434,6 +1434,7 @@ version = "0.0.0"
 dependencies = [
  "bincode",
  "log",
+ "memchr",
  "rayon",
  "regex-lite",
  "serde_json",

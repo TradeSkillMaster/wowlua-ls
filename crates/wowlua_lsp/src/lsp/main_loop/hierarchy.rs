@@ -231,93 +231,72 @@ pub(super) fn find_implementations_across_workspace(
     locations
 }
 
-/// Build a `TypeHierarchyItem` for `class_name`, looking up its definition in:
-/// 1. Per-file workspace class declarations (`ws_file_classes`)
-/// 2. Precomputed stub classes (`stub_classes`)
-/// 3. Pre-resolved globals class locations (`pre_globals.class_locations`)
+/// Build a `TypeHierarchyItem` for `class_name` (see [`TypeHierarchyItems`]).
 pub(super) fn build_type_hierarchy_item_for_class(
     class_name: &str,
     documents: &HashMap<String, Document>,
     ws: &WorkspaceState,
 ) -> Option<TypeHierarchyItem> {
-    // Search workspace file classes first.
-    for classes in ws.ws_file_classes.values() {
-        for class in classes {
-            if class.name != class_name { continue; }
-            let (start, end) = class.def_range?;
-            let path = class.def_path.as_ref()?;
-            let uri = abs_path_to_uri(path)?;
-            let uri_str = uri.to_string();
-            let owned_text;
-            let text = if let Some(doc) = documents.get(&uri_str) {
-                doc.text.as_str()
-            } else {
-                owned_text = crate::syntax::read_source_file(path).ok()?;
-                owned_text.as_str()
-            };
-            let numbers = crate::lsp::SafeLinePositions::new(text);
-            let range = Range {
-                start: pos_from_numbers(&numbers, start),
-                end: pos_from_numbers(&numbers, end),
-            };
-            return Some(TypeHierarchyItem {
-                name: class_name.to_string(),
-                kind: SymbolKind::CLASS,
-                tags: None,
-                detail: None,
-                uri,
-                range,
-                selection_range: range,
-                data: Some(serde_json::json!({ "className": class_name })),
-            });
+    TypeHierarchyItems::new(documents, ws).item(class_name)
+}
+
+/// Builds `TypeHierarchyItem`s, looking each class's definition up in:
+/// 1. Per-file workspace class declarations (`ws_file_classes`)
+/// 2. Precomputed stub classes (`stub_classes`)
+/// 3. Pre-resolved globals class locations (`pre_globals.class_locations`)
+///
+/// The lookup tables and each declaring file's line index are built once per
+/// request: a built-in class can have thousands of subtypes.
+struct TypeHierarchyItems<'a> {
+    ws: &'a WorkspaceState,
+    ws_classes: HashMap<&'a str, &'a ClassDecl>,
+    stub_classes: HashMap<&'a str, &'a ClassDecl>,
+    locations: LocationResolver<'a>,
+}
+
+impl<'a> TypeHierarchyItems<'a> {
+    fn new(documents: &'a HashMap<String, Document>, ws: &'a WorkspaceState) -> Self {
+        // The first declaration of a name wins.
+        let mut ws_classes = HashMap::default();
+        for class in ws.ws_file_classes.values().flatten() {
+            ws_classes.entry(class.name.as_str()).or_insert(class);
         }
-    }
-    // Fall back to precomputed stub class declarations.
-    for class in ws.stub_classes() {
-        if class.name != class_name { continue; }
-        if let Some((start, end)) = class.def_range
-            && let Some(path) = class.def_path.as_ref()
-            && let Some(uri) = abs_path_to_uri(path)
-            && let Ok(text) = crate::syntax::read_source_file(path)
-        {
-            let numbers = crate::lsp::SafeLinePositions::new(text.as_str());
-            let range = Range {
-                start: pos_from_numbers(&numbers, start),
-                end: pos_from_numbers(&numbers, end),
-            };
-            return Some(TypeHierarchyItem {
-                name: class_name.to_string(),
-                kind: SymbolKind::CLASS,
-                tags: None,
-                detail: None,
-                uri,
-                range,
-                selection_range: range,
-                data: Some(serde_json::json!({ "className": class_name })),
-            });
+        let mut stub_classes = HashMap::default();
+        for class in ws.stub_classes() {
+            if class.def_range.is_some() && class.def_path.is_some() {
+                stub_classes.entry(class.name.as_str()).or_insert(class);
+            }
         }
+        Self { ws, ws_classes, stub_classes, locations: LocationResolver::with_documents(documents) }
     }
-    // Fall back to pre_globals class locations (external stubs without ClassDecl).
-    if let Some(loc) = ws.pre_globals.class_locations.get(class_name) {
-        let uri = abs_path_to_uri(&loc.path)?;
-        let text = crate::syntax::read_source_file(&loc.path).ok()?;
-        let numbers = crate::lsp::SafeLinePositions::new(text.as_str());
-        let range = Range {
-            start: pos_from_numbers(&numbers, loc.start),
-            end: pos_from_numbers(&numbers, loc.end),
+
+    fn item(&mut self, class_name: &str) -> Option<TypeHierarchyItem> {
+        let location = if let Some(class) = self.ws_classes.get(class_name) {
+            self.locations.resolve(&declaration_location(class)?)?
+        } else {
+            let stub = self.stub_classes.get(class_name).and_then(|class| declaration_location(class));
+            match stub.and_then(|loc| self.locations.resolve(&loc)) {
+                Some(location) => location,
+                None => self.locations.resolve(self.ws.pre_globals.class_locations.get(class_name)?)?,
+            }
         };
-        return Some(TypeHierarchyItem {
+        Some(TypeHierarchyItem {
             name: class_name.to_string(),
             kind: SymbolKind::CLASS,
             tags: None,
             detail: None,
-            uri,
-            range,
-            selection_range: range,
+            uri: location.uri,
+            range: location.range,
+            selection_range: location.range,
             data: Some(serde_json::json!({ "className": class_name })),
-        });
+        })
     }
-    None
+}
+
+/// Where a class's `@class` declaration is, when the scan recorded it.
+fn declaration_location(class: &ClassDecl) -> Option<crate::types::ExternalLocation> {
+    let (start, end) = class.def_range?;
+    Some(crate::types::ExternalLocation { path: class.def_path.clone()?, start, end, ..Default::default() })
 }
 
 /// Return the direct supertypes (parent classes) of the class identified by `item`.
@@ -337,11 +316,12 @@ pub(super) fn handle_type_hierarchy_supertypes(
         .map(|c| c.parents.clone())
         .unwrap_or_default();
 
+    let mut items = TypeHierarchyItems::new(documents, ws);
     let mut results = Vec::new();
     for parent_name in &parents {
         // Strip generic parameters, e.g. "Base<T>" → "Base".
         let base = parent_name.split('<').next().unwrap_or(parent_name);
-        if let Some(parent_item) = build_type_hierarchy_item_for_class(base, documents, ws) {
+        if let Some(parent_item) = items.item(base) {
             results.push(parent_item);
         }
     }
@@ -359,6 +339,7 @@ pub(super) fn handle_type_hierarchy_subtypes(
         .and_then(|v| v.as_str())
         .unwrap_or(item.name.as_str());
 
+    let mut items = TypeHierarchyItems::new(documents, ws);
     let mut results = Vec::new();
     let mut seen = HashSet::default();
     for class in &ws.cached_all_classes {
@@ -368,7 +349,7 @@ pub(super) fn handle_type_hierarchy_subtypes(
         });
         if !is_child { continue; }
         if !seen.insert(class.name.clone()) { continue; }
-        if let Some(child_item) = build_type_hierarchy_item_for_class(&class.name, documents, ws) {
+        if let Some(child_item) = items.item(&class.name) {
             results.push(child_item);
         }
     }
@@ -402,8 +383,8 @@ pub(super) fn build_call_hierarchy_item(
         .or_else(|| display_name.rsplit_once('.'))
         .map_or(display_name, |(_, n)| n);
 
-    let selection_range = tree
-        .and_then(|t| analysis.def_name_token_range(t, def_node.start, def_node.end, short_name))
+    let name_range = tree.and_then(|t| analysis.def_name_token_range(t, def_node.start, def_node.end, short_name));
+    let selection_range = name_range
         .map(|tr| Range {
             start: pos_from_numbers(&numbers, u32::from(tr.start())),
             end: pos_from_numbers(&numbers, u32::from(tr.end())),
@@ -426,36 +407,35 @@ pub(super) fn build_call_hierarchy_item(
         selection_range,
         data: Some(serde_json::json!({
             "uri": uri.as_str(),
-            "offset": def_node.start,
+            // The name: the incoming/outgoing requests find the function again
+            // with `call_hierarchy_item_at`, which resolves only a name.
+            "offset": name_range.map_or(def_node.start, |tr| u32::from(tr.start())),
         })),
     })
 }
 
+/// A call hierarchy item for a function defined in another file: a workspace
+/// file, or a built-in stub (an embedded-file key, materialized to open it).
 pub(super) fn build_call_hierarchy_item_for_external(
     display_name: &str,
     loc: &crate::types::ExternalLocation,
+    locations: &mut LocationResolver,
 ) -> Option<CallHierarchyItem> {
-    let ext_uri = abs_path_to_uri(&loc.path)?;
-    let text = crate::syntax::read_source_file(&loc.path).ok()?;
-    let numbers = crate::lsp::SafeLinePositions::new(text.as_str());
-    let range = Range {
-        start: pos_from_numbers(&numbers, loc.start),
-        end: pos_from_numbers(&numbers, loc.end),
-    };
-    let selection_range = range;
-
+    let location = locations.resolve(loc)?;
+    let data = serde_json::json!({
+        "uri": location.uri.as_str(),
+        // The name, as for items in the current file (see `build_call_hierarchy_item`).
+        "offset": if loc.name_end > loc.name_start { loc.name_start } else { loc.start },
+    });
     Some(CallHierarchyItem {
         name: display_name.to_string(),
         kind: SymbolKind::FUNCTION,
         tags: None,
         detail: None,
-        uri: ext_uri.clone(),
-        range,
-        selection_range,
-        data: Some(serde_json::json!({
-            "uri": ext_uri.as_str(),
-            "offset": loc.start,
-        })),
+        uri: location.uri,
+        range: location.range,
+        selection_range: location.range,
+        data: Some(data),
     })
 }
 
@@ -699,6 +679,7 @@ pub(super) fn handle_outgoing_calls(
     let outgoing = analysis.outgoing_calls_from_function(func_idx);
 
     let numbers = crate::lsp::SafeLinePositions::new(doc.text.as_str());
+    let mut locations = LocationResolver::default();
     let mut results: Vec<CallHierarchyOutgoingCall> = Vec::new();
 
     for call in &outgoing {
@@ -710,11 +691,8 @@ pub(super) fn handle_outgoing_calls(
             .collect();
 
         let target_item = if call.func_idx.is_external() {
-            if let Some(loc) = ws.pre_globals.function_locations.get(&call.func_idx) {
-                build_call_hierarchy_item_for_external(&call.name, loc)
-            } else {
-                None
-            }
+            ws.pre_globals.function_locations.get(&call.func_idx)
+                .and_then(|loc| build_call_hierarchy_item_for_external(&call.name, loc, &mut locations))
         } else {
             build_call_hierarchy_item(analysis, call.func_idx, &call.name, &uri, &doc.text, Some(tree))
         };
@@ -898,38 +876,68 @@ pub fn search_workspace_symbols(
     results
 }
 
-/// Resolve an external definition location to an LSP `Location`, reading from
-/// disk (dev mode) or lazily-materialized embedded stub content. Drives the
-/// go-to-definition / go-to-type-definition responses.
-pub(super) fn resolve_external_location(
-    loc: &crate::types::ExternalLocation,
-) -> Option<lsp_types::Location> {
-    use lsp_types::Location;
+/// Resolve an external definition location to an LSP `Location` (see
+/// [`LocationResolver`]). Drives the go-to-definition / go-to-type-definition
+/// responses.
+pub(super) fn resolve_external_location(loc: &crate::types::ExternalLocation) -> Option<Location> {
+    LocationResolver::default().resolve(loc)
+}
 
-    // Try reading the file on disk first (works in dev mode with stubs checkout)
-    let (text, file_uri) = if loc.path.exists() {
-        let text = crate::syntax::read_source_file(&loc.path).ok()?;
-        let file_uri = abs_path_to_uri(&loc.path)?;
-        (text, file_uri)
-    } else {
-        // Fall back to lazily-loaded embedded stub content, materialized to a
-        // deterministic path so the editor can open the file. Defaults to a temp
-        // dir; the JetBrains plugin redirects it (via `WOWLUA_LS_STUB_DIR`) to a
-        // directory it watches and loads into the VFS so IntelliJ can navigate in.
-        let rel_key = loc.path.to_string_lossy();
-        let content = stub_file_contents().get(rel_key.as_ref())?;
-        let tmp_dir = crate::lsp::stub_materialize_dir();
-        // Best-effort: fall back to the computed path even if the write failed, so
-        // an editor that already has the file (or a later retry) can still open it.
-        let tmp_path = materialize_stub_file(&tmp_dir, &rel_key, content)
-            .unwrap_or_else(|_| tmp_dir.join(&*rel_key));
-        let file_uri = abs_path_to_uri(&tmp_path)?;
-        (content.clone(), file_uri)
-    };
+/// Resolves source locations to LSP `Location`s, loading each file and building
+/// its line index once. One request can resolve thousands of locations in the
+/// same multi-megabyte stub file (the subtypes of `Frame`), so doing that per
+/// location would stall the main loop.
+#[derive(Default)]
+pub(super) struct LocationResolver<'a> {
+    /// Open documents, whose live text is read in place of the file on disk.
+    documents: Option<&'a HashMap<String, Document>>,
+    files: HashMap<PathBuf, Option<(lsp_types::Uri, crate::lsp::SafeLinePositions<'a>)>>,
+}
 
-    let numbers = crate::lsp::SafeLinePositions::new(text.as_ref());
-    Some(Location {
-        uri: file_uri,
-        range: numbers.lsp_range(loc.start as usize, loc.end as usize, use_utf8()),
-    })
+impl<'a> LocationResolver<'a> {
+    pub(super) fn with_documents(documents: &'a HashMap<String, Document>) -> Self {
+        Self { documents: Some(documents), files: HashMap::default() }
+    }
+
+    pub(super) fn resolve(&mut self, loc: &crate::types::ExternalLocation) -> Option<Location> {
+        if !self.files.contains_key(&loc.path) {
+            let file = load_source_file(&loc.path, self.documents);
+            self.files.insert(loc.path.clone(), file);
+        }
+        let (uri, numbers) = self.files[&loc.path].as_ref()?;
+        Some(Location {
+            uri: uri.clone(),
+            range: numbers.lsp_range(loc.start as usize, loc.end as usize, use_utf8()),
+        })
+    }
+}
+
+/// A source file's URI and line index: an open document's live text, else the
+/// file on disk (a workspace file, or the stubs checkout in dev mode), else the
+/// embedded stub content keyed by `path`, materialized to a deterministic path so
+/// the editor can open it. That defaults to a temp dir; the JetBrains plugin
+/// redirects it (via `WOWLUA_LS_STUB_DIR`) to a directory it watches and loads
+/// into the VFS so IntelliJ can navigate in.
+fn load_source_file<'a>(
+    path: &Path,
+    documents: Option<&'a HashMap<String, Document>>,
+) -> Option<(lsp_types::Uri, crate::lsp::SafeLinePositions<'a>)> {
+    if let Some(documents) = documents
+        && let Some(uri) = abs_path_to_uri(path)
+        && let Some(doc) = documents.get(uri.as_str())
+    {
+        return Some((uri, crate::lsp::SafeLinePositions::new(&doc.text)));
+    }
+    if path.exists() {
+        let text = crate::syntax::read_source_file(path).ok()?;
+        return Some((abs_path_to_uri(path)?, crate::lsp::SafeLinePositions::owned(text)));
+    }
+    let rel_key = path.to_string_lossy();
+    let content: &'static str = stub_file_contents().get(rel_key.as_ref())?;
+    let tmp_dir = crate::lsp::stub_materialize_dir();
+    // Best-effort: fall back to the computed path even if the write failed, so
+    // an editor that already has the file (or a later retry) can still open it.
+    let tmp_path = materialize_stub_file(&tmp_dir, &rel_key, content)
+        .unwrap_or_else(|_| tmp_dir.join(&*rel_key));
+    Some((abs_path_to_uri(&tmp_path)?, crate::lsp::SafeLinePositions::new(content)))
 }

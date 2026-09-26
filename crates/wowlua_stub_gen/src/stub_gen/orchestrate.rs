@@ -796,38 +796,32 @@ pub fn regenerate_stubs() {
         pre_globals.event_types.len(),
         pre_globals.event_types.values().map(|m| m.len()).sum::<usize>());
 
-    // Step 7: Populate stub_file_contents for go-to-def
+    let mut blob = crate::pre_globals::PrecomputedStubs {
+        pre_globals,
+        stub_classes: classes,
+        stub_globals: globals,
+    };
+
+    // Step 7: Embed every stub file the blob references for go-to-def, and rewrite
+    // each path to its embedded-file key so no path from this machine (clone cache,
+    // temp dir, checkout) ships in the blob.
     log::info!("Embedding stub file contents for go-to-definition...");
     let mut referenced_paths: HashSet<PathBuf> = HashSet::default();
-    for loc in pre_globals.symbol_locations.values() {
-        referenced_paths.insert(loc.path.clone());
-    }
-    for loc in pre_globals.function_locations.values() {
-        referenced_paths.insert(loc.path.clone());
-    }
-    for loc in pre_globals.class_locations.values() {
-        referenced_paths.insert(loc.path.clone());
-    }
-    for loc in pre_globals.alias_locations.values() {
-        referenced_paths.insert(loc.path.clone());
-    }
-    for inner in pre_globals.field_locations.values() {
-        for loc in inner.values() {
-            referenced_paths.insert(loc.path.clone());
-        }
-    }
-    for inner in pre_globals.event_locations.values() {
-        for loc in inner.values() {
-            referenced_paths.insert(loc.path.clone());
-        }
-    }
+    blob.for_each_path_mut(|path| {
+        referenced_paths.insert(path.clone());
+    });
 
-    let mut stub_file_contents = HashMap::default();
+    // Sorted, so the files blob's entry order doesn't follow the insertion order
+    // (which follows the absolute paths' hashes).
+    let mut stub_file_contents = std::collections::BTreeMap::new();
+    let mut path_keys: HashMap<PathBuf, String> = HashMap::default();
     let mut file_read_failures = 0usize;
-    for abs_path in &referenced_paths {
-        match std::fs::read_to_string(abs_path) {
+    for abs_path in referenced_paths {
+        let rel = make_relative_path(&abs_path, &clone_dir, &overrides_dir, &gen_dir).unwrap_or_else(|| {
+            panic!("Stub file {} is outside the vendor/overrides/generated roots, so its absolute path would ship in the blob", abs_path.display())
+        });
+        match std::fs::read_to_string(&abs_path) {
             Ok(content) => {
-                let rel = make_relative_path(abs_path, &clone_dir, &overrides_dir, &gen_dir);
                 stub_file_contents.insert(rel.clone(), content);
             }
             Err(e) => {
@@ -835,34 +829,12 @@ pub fn regenerate_stubs() {
                 log::warn!("Could not read stub file for go-to-def: {}: {e}", abs_path.display());
             }
         }
+        path_keys.insert(abs_path, rel);
     }
     if file_read_failures > 0 {
         log::error!("{file_read_failures} stub file(s) could not be read for go-to-definition embedding");
     }
-
-    // Convert absolute ExternalLocation paths to relative
-    for loc in pre_globals.symbol_locations.values_mut() {
-        loc.path = PathBuf::from(make_relative_path(&loc.path, &clone_dir, &overrides_dir, &gen_dir));
-    }
-    for loc in pre_globals.function_locations.values_mut() {
-        loc.path = PathBuf::from(make_relative_path(&loc.path, &clone_dir, &overrides_dir, &gen_dir));
-    }
-    for loc in pre_globals.class_locations.values_mut() {
-        loc.path = PathBuf::from(make_relative_path(&loc.path, &clone_dir, &overrides_dir, &gen_dir));
-    }
-    for loc in pre_globals.alias_locations.values_mut() {
-        loc.path = PathBuf::from(make_relative_path(&loc.path, &clone_dir, &overrides_dir, &gen_dir));
-    }
-    for inner in pre_globals.field_locations.values_mut() {
-        for loc in inner.values_mut() {
-            loc.path = PathBuf::from(make_relative_path(&loc.path, &clone_dir, &overrides_dir, &gen_dir));
-        }
-    }
-    for inner in pre_globals.event_locations.values_mut() {
-        for loc in inner.values_mut() {
-            loc.path = PathBuf::from(make_relative_path(&loc.path, &clone_dir, &overrides_dir, &gen_dir));
-        }
-    }
+    blob.for_each_path_mut(|path| *path = PathBuf::from(&path_keys[path]));
 
     let file_count = stub_file_contents.len();
 
@@ -882,20 +854,33 @@ pub fn regenerate_stubs() {
     // Validate aggregate counts — catch truncated blobs from partial failures
     // that individual source checks might not cover.
     validate_stub_counts(
-        pre_globals.symbols_len(),
-        pre_globals.functions_len(),
-        pre_globals.tables_len(),
+        blob.pre_globals.symbols_len(),
+        blob.pre_globals.functions_len(),
+        blob.pre_globals.tables_len(),
         file_count,
-        globals.len(),
-        classes.len(),
+        blob.stub_globals.len(),
+        blob.stub_classes.len(),
     );
 
-    // Step 8a: Serialize and compress the separate stub file contents blob
+    // Step 8a: Serialize both blobs, and refuse to write them if either still holds
+    // one of this machine's directories: a path field `for_each_path_mut` doesn't
+    // visit would ship it.
     log::info!("Serializing stub file contents ({file_count} files)...");
     let files_encoded = bincode::serialize(&stub_file_contents).expect("bincode serialize files failed");
     log::info!("  Uncompressed: {:.1} MB", files_encoded.len() as f64 / 1_048_576.0);
+    log::info!("Serializing main stubs...");
+    let encoded = bincode::serialize(&blob).expect("bincode serialize failed");
+    log::info!("  Uncompressed: {:.1} MB", encoded.len() as f64 / 1_048_576.0);
+    let generation_dirs = [clone_dir.as_path(), clones_dir.as_path(), tmp_dir.as_path(), overrides_dir.as_path()];
+    for (name, bytes) in [("precomputed-files.bin.zst", &files_encoded), ("precomputed.bin.zst", &encoded)] {
+        if let Some(dir) = find_generation_dir(bytes, &generation_dirs) {
+            panic!("{name} would contain the generation path {}; add the field holding it to PrecomputedStubs::for_each_path_mut", dir.display());
+        }
+    }
+
+    // Step 8b: Compress and write the stub file contents blob
     let files_compressed = zstd::encode_all(files_encoded.as_slice(), 9).expect("zstd compress files failed");
-    log::info!("  Compressed:   {:.1} MB", files_compressed.len() as f64 / 1_048_576.0);
+    log::info!("  Compressed files blob: {:.1} MB", files_compressed.len() as f64 / 1_048_576.0);
     phase!("embed file contents + serialize/compress files blob");
 
     // Prepend version header (4 bytes) before the zstd payload
@@ -907,17 +892,7 @@ pub fn regenerate_stubs() {
     std::fs::write(&files_output_path, &files_output).unwrap();
     log::info!("Files blob written to: {} ({:.1} MB)", files_output_path.display(), files_output.len() as f64 / 1_048_576.0);
 
-    // Step 8b: Serialize and compress main stubs blob (without file contents)
-    let blob = crate::pre_globals::PrecomputedStubs {
-        pre_globals,
-        stub_classes: classes,
-        stub_globals: globals,
-    };
-
-    log::info!("Serializing main stubs...");
-    let encoded = bincode::serialize(&blob).expect("bincode serialize failed");
-    log::info!("  Uncompressed: {:.1} MB", encoded.len() as f64 / 1_048_576.0);
-
+    // Step 8c: Compress the main stubs blob (without file contents)
     log::info!("Compressing with zstd...");
     let compressed = zstd::encode_all(encoded.as_slice(), 9).expect("zstd compress failed");
     log::info!("  Compressed:   {:.1} MB", compressed.len() as f64 / 1_048_576.0);

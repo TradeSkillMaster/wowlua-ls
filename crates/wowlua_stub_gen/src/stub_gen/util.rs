@@ -278,16 +278,24 @@ pub(in crate::stub_gen) fn collect_lua_paths(dir: &Path, out: &mut Vec<PathBuf>)
 }
 
 
-/// Make a path relative to the known stubs root directories.
-pub(in crate::stub_gen) fn make_relative_path(abs: &Path, clone_dir: &Path, overrides_dir: &Path, gen_dir: &Path) -> String {
+/// The first of `dirs` whose path occurs in the serialized `blob`. The generator
+/// refuses to write a blob that still carries one of its own directories; scanning
+/// the bytes finds the path whatever field it sits in.
+pub(in crate::stub_gen) fn find_generation_dir<'a>(blob: &[u8], dirs: &[&'a Path]) -> Option<&'a Path> {
+    dirs.iter().copied().find(|dir| memchr::memmem::find(blob, dir.to_string_lossy().as_bytes()).is_some())
+}
+
+/// Make a path relative to the known stubs root directories, or `None` when it
+/// is under none of them.
+pub(in crate::stub_gen) fn make_relative_path(abs: &Path, clone_dir: &Path, overrides_dir: &Path, gen_dir: &Path) -> Option<String> {
     if let Ok(rel) = abs.strip_prefix(clone_dir) {
-        format!("vendor/{}", rel.display())
+        Some(format!("vendor/{}", rel.display()))
     } else if let Ok(rel) = abs.strip_prefix(overrides_dir) {
-        format!("overrides/{}", rel.display())
+        Some(format!("overrides/{}", rel.display()))
     } else if let Ok(rel) = abs.strip_prefix(gen_dir) {
-        format!("generated/{}", rel.display())
+        Some(format!("generated/{}", rel.display()))
     } else {
-        abs.display().to_string()
+        None
     }
 }
 

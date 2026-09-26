@@ -25,13 +25,23 @@ pub use main_loop::ConfigEditContext;
 pub struct SafeLinePositions<'a> {
     inner: line_numbers::LinePositions,
     len: usize,
-    text: &'a str,
+    text: std::borrow::Cow<'a, str>,
 }
 
 impl<'a> SafeLinePositions<'a> {
     pub fn new(text: &'a str) -> Self {
+        Self::from_cow(std::borrow::Cow::Borrowed(text))
+    }
+
+    /// Index text the positions take ownership of, for callers that keep the
+    /// index around after the text's owner is gone.
+    pub fn owned(text: String) -> SafeLinePositions<'static> {
+        SafeLinePositions::from_cow(std::borrow::Cow::Owned(text))
+    }
+
+    fn from_cow(text: std::borrow::Cow<'a, str>) -> Self {
         Self {
-            inner: line_numbers::LinePositions::from(text),
+            inner: line_numbers::LinePositions::from(text.as_ref()),
             len: text.len(),
             text,
         }
@@ -50,8 +60,11 @@ impl<'a> SafeLinePositions<'a> {
         let character = if utf8 {
             byte_col as u32
         } else {
-            let line_text = self.text.split('\n').nth(line.0 as usize).unwrap_or("");
-            byte_col_to_utf16(line_text, byte_col)
+            // The column counts bytes from the line start, so the line's text
+            // before the position ends at the (clamped) offset. Slicing it directly
+            // keeps this O(column) rather than rescanning every earlier line.
+            let end = offset.min(self.len);
+            self.text[end - byte_col..end].encode_utf16().count() as u32
         };
         lsp_types::Position { line: line.0, character }
     }
@@ -77,12 +90,6 @@ impl<'a> SafeLinePositions<'a> {
             slice.encode_utf16().count() as u32
         }
     }
-}
-
-/// Convert a byte column offset to a UTF-16 code unit offset within a line.
-fn byte_col_to_utf16(line_text: &str, byte_col: usize) -> u32 {
-    let clamped = byte_col.min(line_text.len());
-    line_text[..clamped].encode_utf16().count() as u32
 }
 
 /// Convert a UTF-16 code unit offset to a byte offset within a line.
@@ -114,4 +121,28 @@ pub fn lsp_position_to_offset(text: &str, line: u32, character: u32, utf8: bool)
         offset += line_text.len() as u32 + 1;
     }
     text.len() as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// UTF-16 columns are sliced straight from the offset instead of rescanning
+    /// the text line by line; they must match that line-by-line computation at
+    /// every offset, including multibyte characters, CRLF, and clamped offsets.
+    #[test]
+    fn utf16_positions_match_line_scan() {
+        let text = "local a = 1\r\n\n-- é 日本 😀 x\nfoo(\"ü\")\n\nlast 😀";
+        let numbers = SafeLinePositions::new(text);
+        for offset in (0..=text.len() + 3).filter(|&o| o > text.len() || text.is_char_boundary(o)) {
+            let clamped = offset.min(text.len());
+            let line = text[..clamped].matches('\n').count();
+            let line_start = text[..clamped].rfind('\n').map_or(0, |i| i + 1);
+            let expected = lsp_types::Position {
+                line: line as u32,
+                character: text[line_start..clamped].encode_utf16().count() as u32,
+            };
+            assert_eq!(numbers.lsp_position(offset, false), expected, "offset {offset}");
+        }
+    }
 }

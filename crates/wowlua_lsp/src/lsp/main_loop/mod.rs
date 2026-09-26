@@ -2191,6 +2191,67 @@ mod tests {
         }
     }
 
+    /// Type hierarchy on a built-in class resolves its declaration through the
+    /// embedded blob, like go-to-definition: stub class paths are embedded-file
+    /// keys, not files on disk, so reading them directly found nothing.
+    #[test]
+    fn stub_class_type_hierarchy_item_resolves_through_embedded_blob() {
+        let Some(stubs) = load_precomputed_stubs() else { return };
+        let mut ws = WorkspaceState::for_test(None);
+        ws.pre_globals = Arc::new(stubs.pre_globals);
+        ws.set_stubs(stubs.stub_globals, stubs.stub_classes);
+
+        let item = build_type_hierarchy_item_for_class("Frame", &HashMap::default(), &ws)
+            .expect("the built-in Frame class must yield a type hierarchy item");
+        let path = uri_to_abs_path(&item.uri).expect("item URI is a file path");
+        assert!(path.starts_with(stub_materialize_dir()), "item must point at the materialized stub file, got {path:?}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let line = text.lines().nth(item.range.start.line as usize).unwrap_or_default();
+        assert_eq!(line.split_whitespace().take(2).collect::<Vec<_>>(), ["---@class", "Frame"], "range must cover the declaration, got {line:?}");
+    }
+
+    /// Call hierarchy from a prepared item: the incoming/outgoing requests find the
+    /// function again from the offset the item stores, which was the definition's
+    /// start (where nothing resolves), so both always came back empty. An outgoing
+    /// call into a built-in function reaches its stub declaration through the
+    /// embedded blob, like go-to-definition.
+    #[test]
+    fn call_hierarchy_expands_local_and_stub_calls() {
+        let Some(stubs) = load_precomputed_stubs() else { return };
+        let mut ws = WorkspaceState::for_test(None);
+        ws.pre_globals = Arc::new(stubs.pre_globals);
+        ws.set_stubs(stubs.stub_globals, stubs.stub_classes);
+
+        let uri = lsp_types::Uri::from_str("file:///tmp/wowlua-call-hierarchy-test/Caller.lua").unwrap();
+        let text = "local function Helper()\n  return 1\nend\n\nlocal function Build()\n  Helper()\n  return CreateFrame(\"Frame\")\nend\n";
+        let (tree, analysis) = analyze_lua(&uri, text, &ws.pre_globals, &ws.configs);
+        // Items as `textDocument/prepareCallHierarchy` builds them.
+        let item_for = |name: &str| {
+            let (func_idx, display) = analysis.call_hierarchy_item_at(&tree, text.find(name).unwrap() as u32).unwrap();
+            build_call_hierarchy_item(&analysis, func_idx, &display, &uri, text, Some(&tree)).unwrap()
+        };
+        let (helper, build) = (item_for("Helper"), item_for("Build"));
+        let mut documents = HashMap::default();
+        documents.insert(uri.to_string(), Document { analysis: Some(analysis), tree: Some(tree), ..pending_stub_doc(text, 0) });
+
+        let incoming = handle_incoming_calls(&helper, &documents, &ws).unwrap();
+        assert!(incoming.iter().any(|call| call.from.name == "Build"), "Helper is called from Build");
+
+        let outgoing = handle_outgoing_calls(&build, &documents, &ws).unwrap();
+        assert!(outgoing.iter().any(|call| call.to.name == "Helper"), "Build calls Helper");
+        let target = &outgoing.iter().find(|call| call.to.name == "CreateFrame").expect("Build calls CreateFrame").to;
+        let path = uri_to_abs_path(&target.uri).expect("target URI is a file path");
+        assert!(path.starts_with(stub_materialize_dir()), "target must be the materialized stub file, got {path:?}");
+        let stub_text = std::fs::read_to_string(&path).unwrap();
+        let line = stub_text.lines().nth(target.range.start.line as usize).unwrap_or_default();
+        assert!(line.starts_with("function CreateFrame("), "range must cover the declaration, got {line:?}");
+        let data = target.data.as_ref().expect("target carries data");
+        assert_eq!(data["uri"].as_str(), Some(target.uri.as_str()));
+        // Like a local item's, the target's offset is the function name.
+        let offset = data["offset"].as_u64().expect("target offset") as usize;
+        assert!(stub_text[offset..].starts_with("CreateFrame("), "offset must be the name");
+    }
+
     fn pending_stub_doc(text: &str, stub_open_seq: u64) -> Document {
         Document {
             text: text.to_string(),

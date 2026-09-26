@@ -176,6 +176,31 @@ pub struct PrecomputedStubs {
     pub stub_globals: Vec<crate::annotations::ExternalGlobal>,
 }
 
+impl PrecomputedStubs {
+    /// Visit every source-file path the blob serializes. The stub generator
+    /// rewrites each one to its key in the embedded file-contents blob
+    /// (`vendor/…`, `overrides/…`, `generated/…`), so a new path-carrying field
+    /// on a serialized type must be added here.
+    pub fn for_each_path_mut(&mut self, mut f: impl FnMut(&mut PathBuf)) {
+        let pg = &mut self.pre_globals;
+        let locations = pg.symbol_locations.values_mut()
+            .chain(pg.function_locations.values_mut())
+            .chain(pg.class_locations.values_mut())
+            .chain(pg.alias_locations.values_mut())
+            .chain(pg.field_locations.values_mut().flat_map(|m| m.values_mut()))
+            .chain(pg.event_locations.values_mut().flat_map(|m| m.values_mut()));
+        for loc in locations {
+            f(&mut loc.path);
+        }
+        for class in &mut self.stub_classes {
+            class.def_path.iter_mut().chain(class.field_paths.values_mut()).for_each(&mut f);
+        }
+        for global in &mut self.stub_globals {
+            global.source_path.iter_mut().for_each(&mut f);
+        }
+    }
+}
+
 // ── Event payload metadata ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
