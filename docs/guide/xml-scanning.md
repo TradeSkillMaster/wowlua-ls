@@ -104,29 +104,17 @@ local list
 list.Items  -- Frame[]
 ```
 
-### Implicit `parentKey`
-
-Special child elements get implicit parentKey names without an explicit attribute:
-
-| Element | Implicit parentKey |
-|---|---|
-| `NormalTexture` | `NormalTexture` |
-| `HighlightTexture` | `HighlightTexture` |
-| `PushedTexture` | `PushedTexture` |
-| `ThumbTexture` | `ThumbTexture` |
-| `ScrollChild` | `ScrollChild` |
-
 ### Supported element types
 
-The scanner recognizes all standard WoW frame types:
+The scanner recognizes every frame, region, and animation element in the WoW UI schema and types it with its widget type, so a `<PlayerModel parentKey="Portrait">` field is a `PlayerModel` with methods such as `SetUnit`:
 
 | Category | Elements |
 |---|---|
-| Frames | `Frame`, `Button`, `CheckButton`, `EditBox`, `ScrollFrame`, `StatusBar`, `Slider`, `Cooldown`, `GameTooltip`, `MessageFrame`, `Minimap`, `ColorSelect`, `SimpleHTML`, `Browser`, `MovieFrame`, `DropdownButton` |
+| Frames | `Frame`, `Button`, `CheckButton`, `EditBox`, `ScrollFrame`, `StatusBar`, `Slider`, `Cooldown`, `GameTooltip`, `MessageFrame`, `ScrollingMessageFrame`, `Minimap`, `ColorSelect`, `SimpleHTML`, `Browser`, `MovieFrame`, `DropdownButton`, and the other frame types in the schema |
 | Models | `Model`, `ModelScene`, `ModelFFX`, `CinematicModel`, `DressUpModel`, `PlayerModel`, `TabardModel` |
-| Textures | `Texture`, `MaskTexture`, and all special texture elements |
-| Text | `FontString` and header variants |
-| Animation | `AnimationGroup`, `Alpha`, `Scale`, `Translation`, `Rotation` |
+| Textures | `Texture`, `MaskTexture`, `Line`, and the widget textures (`NormalTexture`, `PushedTexture`, `DisabledTexture`, `HighlightTexture`, `CheckedTexture`, `BarTexture`, `ThumbTexture`, ...) |
+| Text | `FontString`, `ButtonText`, and header variants |
+| Animation | `AnimationGroup`, `Animation`, `Alpha`, `Scale`, `Translation`, `Rotation`, `Path`, `FlipBook`, `VertexColor`, ... |
 | Font | `FontFamily` |
 
 ## Limitations

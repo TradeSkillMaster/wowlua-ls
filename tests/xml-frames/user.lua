@@ -25,8 +25,9 @@ local en = base.enabled
 -- Template inheriting another template gets inherited fields + own fields
 ---@type MyButtonTemplate
 local btn
+-- A special texture child without parentKey sets no key at runtime
 local nt = btn.NormalTexture
---    ^ hover: (local) nt: Texture
+--             ^ diag: undefined-field
 local glow = btn.Glow
 --    ^ hover: (local) glow: Texture
 local fade = btn.FadeAnim
@@ -60,7 +61,7 @@ local wt
 ---@type FadeInTemplate
 local fi
 local aa = fi.AlphaAnim
---    ^ hover: (local) aa: Animation
+--    ^ hover: (local) aa: Alpha
 
 -- Child inheriting a template: field type uses template (not base element type),
 -- since the template already inherits from the base element type.
@@ -142,6 +143,38 @@ local slbl = styled.Label
 --    ^ hover: (local) slbl: FontString
 local sico = styled.Icon
 --    ^ hover: (local) sico: Texture
+
+-- Widget child regions and subtype elements with an explicit parentKey become
+-- fields typed with the element's own class, so subtype methods resolve.
+---@class WidgetChildMixin
+WidgetChildMixin = {}
+
+function WidgetChildMixin:OnLoad()
+    self.Label:SetText("x")
+    --   ^ hover: (field) Label: FontString
+    self.Disabled:SetAlpha(0.5)
+    --   ^ hover: (field) Disabled: Texture
+    self.Bar.Fill:SetAlpha(1)
+    --       ^ hover: (field) Fill: Texture
+    self.Toggle.Check:SetAlpha(1)
+    --          ^ hover: (field) Check: Texture
+    self.Portrait:SetUnit("player")
+    --   ^ hover: (field) Portrait: PlayerModel
+    local n = self.Scene:GetNumActors()
+    --             ^ hover: (field) Scene: ModelScene
+    self.Pulse.Fade:SetFromAlpha(0)
+    --         ^ hover: (field) Fade: Alpha
+    -- Frame types only Blizzard's ScriptObject docs declare: their own methods plus
+    -- the ones inherited from their UI.xsd base (Frame / Model).
+    self.Web:SetPoint("CENTER")
+    --   ^ hover: (field) Web: Browser
+    self.Shop:OpenCheckout(1)
+    --   ^ hover: (field) Shop: Checkout
+    self.Offscreen:Flush()
+    --   ^ hover: (field) Offscreen: OffScreenFrame
+    self.Effect:ClearModel()
+    --   ^ hover: (field) Effect: ModelFFX
+end
 
 -- Mixin self typed as Frame: when a mixin is referenced by mixin= on a <Frame>
 -- element, the mixin inherits from Frame, so Frame methods are accessible on

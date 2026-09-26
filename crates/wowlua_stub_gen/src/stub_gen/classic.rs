@@ -489,21 +489,8 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
         // `<GameTooltip>` element). Emit supplementary `@class` declarations that
         // correct the parent to the true widget type so the class inherits the
         // proper widget methods (e.g. GameTooltip:AddLine, ColorSelect:SetColorRGB).
-        //
-        // Skip classes already declared in override files — overrides intentionally
-        // set the parent class and a correction here could contradict that intent.
-        let mut parent_corrections: Vec<_> = all_frames.iter()
-            .filter(|(name, ftype)| {
-                existing_globals.contains(*name)
-                    // Skip Frame and Font — they're the default base classes that
-                    // nearly all XML elements inherit from, so "correcting" to them
-                    // adds no useful methods.
-                    && *ftype != "Frame" && *ftype != "Font"
-                    && !diff.override_classes.contains(*name)
-            })
-            .map(|(name, ftype)| (name.clone(), ftype.clone()))
-            .collect();
-        parent_corrections.sort_by(|a, b| a.0.cmp(&b.0));
+        let parent_corrections =
+            parent_class_corrections(&all_frames, existing_globals, &diff.override_classes);
 
         if !parent_corrections.is_empty() {
             out.push("-- Parent-class corrections for vendor-defined frame globals".to_string());
@@ -518,6 +505,34 @@ pub(in crate::stub_gen) fn generate_classic_stubs(
     }
 
     (out.join("\n"), classic_all_enums, frame_flavor_map)
+}
+
+
+/// Vendor-declared frame globals to re-parent to their XML widget type, sorted by name.
+///
+/// Skips classes already declared in override files — overrides intentionally set the
+/// parent class and a correction here could contradict that intent.
+pub(in crate::stub_gen) fn parent_class_corrections(
+    all_frames: &HashMap<String, String>,
+    existing_globals: &HashSet<String>,
+    override_classes: &HashSet<String>,
+) -> Vec<(String, String)> {
+    let mut corrections: Vec<_> = all_frames.iter()
+        .filter(|(name, ftype)| {
+            existing_globals.contains(*name)
+                // Skip Frame and Font — they're the default base classes that
+                // nearly all XML elements inherit from, so "correcting" to them
+                // adds no useful methods.
+                && *ftype != "Frame" && *ftype != "Font"
+                // A frame named after its own widget class (`Minimap`, `TabardModel`)
+                // would become its own parent.
+                && name != ftype
+                && !override_classes.contains(*name)
+        })
+        .map(|(name, ftype)| (name.clone(), ftype.clone()))
+        .collect();
+    corrections.sort_by(|a, b| a.0.cmp(&b.0));
+    corrections
 }
 
 

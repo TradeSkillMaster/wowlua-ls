@@ -336,6 +336,83 @@ fn test_extract_xml_mixins_single() {
 }
 
 #[test]
+fn test_extract_xml_frames_keep_widget_subtype() {
+    // Named frames use the workspace XML scanner's element map: a subtype keeps its
+    // own class (a DressUpModel has TryOn; a ModelScene isn't a Model at all).
+    let xml = r#"
+        <Ui>
+            <DressUpModel name="PreviewModelFrame" parent="UIParent"/>
+            <ModelScene name="PreviewModelScene" parent="UIParent"/>
+            <FogOfWarFrame name="PreviewFog" parent="UIParent"/>
+            <POIFrame name="PreviewPOI"/>
+            <Font name="PreviewFont" virtual="true"/>
+            <DropdownButton name="PreviewDropdown" parent="UIParent"/>
+            <ItemButton name="PreviewItem" parent="UIParent"/>
+            <Frame name="PreviewHost" parent="UIParent">
+                <Attributes>
+                    <Attribute name="PreviewAttribute" type="string" value="x"/>
+                </Attributes>
+            </Frame>
+            <ModelScene name="PreviewActorScene" parent="UIParent">
+                <Actors>
+                    <Actor name="PreviewActor"/>
+                </Actors>
+            </ModelScene>
+        </Ui>
+    "#;
+    let (frames, _, _, _) = run_xml_scan(xml);
+    let ty = |name: &str| frames.get(name).map(String::as_str);
+    assert_eq!(ty("PreviewModelFrame"), Some("DressUpModel"));
+    assert_eq!(ty("PreviewModelScene"), Some("ModelScene"));
+    assert_eq!(ty("PreviewFog"), Some("FogOfWarFrame"));
+    assert_eq!(ty("PreviewPOI"), Some("Frame"));
+    assert_eq!(ty("PreviewFont"), Some("Font"));
+    // Every element the map knows is a named-frame candidate, not a fixed tag list...
+    assert_eq!(ty("PreviewDropdown"), Some("DropdownButton"));
+    assert_eq!(ty("PreviewItem"), Some("ItemButton"));
+    // ...while non-frame elements carrying a `name` attribute stay out.
+    assert_eq!(ty("PreviewAttribute"), None);
+    assert_eq!(ty("PreviewActor"), None);
+}
+
+#[test]
+fn test_extract_xml_frames_skip_templates_but_not_fonts() {
+    // A virtual template creates no global, but a virtual font is still a global
+    // font object; the template's mixins still resolve through inheritance.
+    let xml = r#"
+        <Ui>
+            <ContainedAlertFrame name="PreviewAlertTemplate" virtual="true" mixin="AlertMixin"/>
+            <ContainedAlertFrame name="PreviewAlert" inherits="PreviewAlertTemplate"/>
+            <Font name="PreviewFontNormal" virtual="true"/>
+            <FontFamily name="PreviewFontFamily" virtual="true"/>
+        </Ui>
+    "#;
+    let (frames, resolved, _, _) = run_xml_scan(xml);
+    assert!(!frames.contains_key("PreviewAlertTemplate"));
+    assert_eq!(frames.get("PreviewAlert").map(String::as_str), Some("ContainedAlertFrame"));
+    assert_eq!(frames.get("PreviewFontNormal").map(String::as_str), Some("Font"));
+    assert_eq!(frames.get("PreviewFontFamily").map(String::as_str), Some("Font"));
+    assert_eq!(resolved.get("PreviewAlert"), Some(&vec!["AlertMixin".to_string()]));
+}
+
+#[test]
+fn test_parent_class_corrections_skip_self_parent() {
+    let all_frames: HashMap<String, String> = [
+        ("PreviewTooltip", "GameTooltip"),
+        ("TabardModel", "TabardModel"),
+        ("PreviewFrame", "Frame"),
+        ("OverriddenTooltip", "GameTooltip"),
+    ].into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect();
+    let existing: HashSet<String> = all_frames.keys().cloned().collect();
+    let overrides: HashSet<String> = ["OverriddenTooltip".to_string()].into_iter().collect();
+    // A frame named after its own widget class would be declared its own parent.
+    assert_eq!(
+        parent_class_corrections(&all_frames, &existing, &overrides),
+        vec![("PreviewTooltip".to_string(), "GameTooltip".to_string())],
+    );
+}
+
+#[test]
 fn test_extract_xml_mixins_multi_space_separated() {
     // Real Blizzard XML uses spaces between multiple mixins.
     let xml = r#"
@@ -1485,6 +1562,40 @@ fn test_generate_scriptobject_method_stubs() {
     assert!(!out.contains("GetText"), "GetText should be filtered out: {out}");
     // Unknown API should not appear
     assert!(!out.contains("DoSomething"), "unmapped ScriptObject should be filtered: {out}");
+}
+
+#[test]
+fn test_scriptobject_frame_class_gets_schema_parent() {
+    // A frame type no vendor stub declares gets its UI.xsd base as parent, so
+    // inherited methods (`Browser:SetPoint`, `ModelFFX:SetModel`) resolve.
+    let object = |api: &str, method: &str| BlizzardScriptObjectApi {
+        name: api.to_string(),
+        functions: vec![BlizzardFunction {
+            name: method.to_string(),
+            namespace: None,
+            arguments: Vec::new(),
+            returns: Vec::new(),
+            may_return_nothing: false,
+            secrecy: Default::default(),
+        }],
+    };
+    let docs = BlizzardApiDocs {
+        functions: Vec::new(),
+        events: Vec::new(),
+        structures: Vec::new(),
+        predicates: Vec::new(),
+        script_objects: vec![
+            object("SimpleBrowserAPI", "NavigateHome"),
+            object("SimpleModelFFXAPI", "ClearLights"),
+            object("SecondsFormatterAPI", "Format"),
+        ],
+    };
+    let out = generate_scriptobject_method_stubs(
+        &docs, &HashSet::default(), &HashSet::default(), &HashSet::default());
+    assert!(out.contains("---@class Browser : Frame\n"), "{out}");
+    assert!(out.contains("---@class ModelFFX : Model\n"), "{out}");
+    // Non-widget objects keep a plain class.
+    assert!(out.contains("---@class SecondsFormatter\n"), "{out}");
 }
 
 #[test]

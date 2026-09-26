@@ -42,6 +42,7 @@
 
     <!-- Template inheriting another template -->
     <Button name="MyButtonTemplate" virtual="true" inherits="MyBaseTemplate" mixin="MyButtonMixin">
+        <!-- No parentKey: the game sets no NormalTexture key -->
         <NormalTexture />
         <HighlightTexture parentKey="Glow" />
         <Animations>
@@ -142,6 +143,33 @@
             </Layer>
         </Layers>
     </Frame>
+
+    <!-- Widget child regions (ButtonText, DisabledTexture, BarTexture,
+         CheckedTexture) and subtype elements (PlayerModel, ModelScene, Alpha)
+         with an explicit parentKey: fields typed with the element's own class. -->
+    <Button name="WidgetChildTemplate" virtual="true" mixin="WidgetChildMixin">
+        <ButtonText parentKey="Label" />
+        <DisabledTexture parentKey="Disabled" />
+        <Frames>
+            <StatusBar parentKey="Bar">
+                <BarTexture parentKey="Fill" />
+            </StatusBar>
+            <CheckButton parentKey="Toggle">
+                <CheckedTexture parentKey="Check" />
+            </CheckButton>
+            <PlayerModel parentKey="Portrait" />
+            <ModelScene parentKey="Scene" />
+            <Browser parentKey="Web" />
+            <Checkout parentKey="Shop" />
+            <OffScreenFrame parentKey="Offscreen" />
+            <ModelFFX parentKey="Effect" />
+        </Frames>
+        <Animations>
+            <AnimationGroup parentKey="Pulse">
+                <Alpha parentKey="Fade" />
+            </AnimationGroup>
+        </Animations>
+    </Button>
 
     <!-- Mixin self typed as Frame: a mixin referenced by mixin= on a Frame
          element should have its self typed as inheriting Frame, so Frame

@@ -371,6 +371,17 @@ const SCRIPTOBJECT_CLASS_MAP: &[(&str, &str)] = &[
     ("PingPinFrameAPI", "PingPinFrame"),
 ];
 
+/// `UI.xsd` base widget of the `SCRIPTOBJECT_CLASS_MAP` frame types no vendor stub
+/// declares. Blizzard's ScriptObject docs don't state inheritance, so without this the
+/// generated class is parentless and loses every inherited method (`Browser:SetPoint`).
+const SCRIPTOBJECT_CLASS_PARENTS: &[(&str, &str)] = &[
+    ("Browser", "Frame"),
+    ("Checkout", "Frame"),
+    ("OffScreenFrame", "Frame"),
+    ("MapScene", "Model"),
+    ("ModelFFX", "Model"),
+];
+
 /// Raw CSV payloads fetched from wago.tools, plus the resolved retail build string.
 /// Fetched up front (concurrently with git clones) and passed into `generate_global_stubs`.
 pub(in crate::stub_gen) struct GlobalCsvData {
@@ -458,30 +469,25 @@ pub(in crate::stub_gen) struct MixinScanRegexes {
     /// Strips `<!-- ... -->` (multiline) before regex matching so commented-out
     /// frame definitions don't leak into the output.
     comment: regex_lite::Regex,
-    /// Matches the opening tag of any frame-like element. `[^>]*` happily spans
-    /// newlines because `.` semantics don't apply to character classes.
+    /// Matches the opening tag of any element; `accumulate_xml_frames_and_mixins` keeps
+    /// the frame-like ones. `[^>]*` happily spans newlines because `.` semantics don't
+    /// apply to character classes.
     opener: regex_lite::Regex,
     name: regex_lite::Regex,
     mixin: regex_lite::Regex,
     inherits: regex_lite::Regex,
+    virtual_attr: regex_lite::Regex,
 }
 
 impl MixinScanRegexes {
     fn new() -> Self {
         Self {
             comment: regex_lite::Regex::new(r"(?s)<!--.*?-->").unwrap(),
-            opener: regex_lite::Regex::new(
-                // Named leaf-region elements (FontString/Texture/Line/MaskTexture) are also
-                // matched: a `<FontString name="TradeSkillDescription" ...>` nested inside a
-                // frame is a real global region object in-game, yet was never emitted (false
-                // `undefined-global`). `is_valid_frame_global_name` still excludes
-                // `$parent`-anchored anonymous regions, and the per-branch flavor map tags
-                // classic-only regions automatically.
-                r#"<\s*(Frame|Button|CheckButton|EditBox|ScrollFrame|StatusBar|Slider|GameTooltip|Model|ModelScene|ColorSelect|Cooldown|MessageFrame|Minimap|SimpleHTML|Browser|MovieFrame|FogOfWarFrame|ModelFFX|CinematicModel|DressUpModel|PlayerModel|TabardModel|WorldFrame|POIFrame|Font|FontString|Texture|Line|MaskTexture)\b([^>]*)>"#
-            ).unwrap(),
+            opener: regex_lite::Regex::new(r#"<\s*([A-Za-z][A-Za-z0-9]*)\b([^>]*)>"#).unwrap(),
             name: regex_lite::Regex::new(r#"\bname\s*=\s*"([^"]+)""#).unwrap(),
             mixin: regex_lite::Regex::new(r#"\bmixin\s*=\s*"([^"]+)""#).unwrap(),
             inherits: regex_lite::Regex::new(r#"\binherits\s*=\s*"([^"]+)""#).unwrap(),
+            virtual_attr: regex_lite::Regex::new(r#"\bvirtual\s*=\s*"(?i:true)""#).unwrap(),
         }
     }
 }

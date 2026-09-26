@@ -33,10 +33,23 @@ struct ScanContext {
 
 /// Map an XML element name to the corresponding WoW Lua frame type.
 /// Returns `None` for elements that are not frame-like (containers, etc.).
-fn xml_element_to_frame_type(element: &str) -> Option<&'static str> {
+///
+/// Covers every frame, region, and animation element in Blizzard's `UI.xsd`. An
+/// element with a stub class of its own maps to that class; collapsing it to a base
+/// type would lose its methods (`PlayerModel:SetUnit`, `Alpha:SetFromAlpha`) and
+/// cause false `undefined-field`. The rest map to their schema base type.
+pub fn xml_element_to_frame_type(element: &str) -> Option<&'static str> {
     match element {
-        "Frame" | "FogOfWarFrame" | "POIFrame" | "WorldFrame" => Some("Frame"),
-        "Button" => Some("Button"),
+        "Frame" | "POIFrame" | "AuraContainer" | "TaxiRouteFrame" | "TestFrame" => Some("Frame"),
+        "WorldFrame" => Some("WorldFrame"),
+        "Checkout" => Some("Checkout"),
+        "OffScreenFrame" => Some("OffScreenFrame"),
+        "FogOfWarFrame" => Some("FogOfWarFrame"),
+        "ArchaeologyDigSiteFrame" => Some("ArchaeologyDigSiteFrame"),
+        "QuestPOIFrame" => Some("QuestPOIFrame"),
+        "ScenarioPOIFrame" => Some("ScenarioPOIFrame"),
+        "UnitPositionFrame" => Some("UnitPositionFrame"),
+        "Button" | "AuraButton" => Some("Button"),
         "CheckButton" => Some("CheckButton"),
         "EditBox" => Some("EditBox"),
         "ScrollFrame" => Some("ScrollFrame"),
@@ -51,27 +64,42 @@ fn xml_element_to_frame_type(element: &str) -> Option<&'static str> {
         "SimpleHTML" => Some("SimpleHTML"),
         "Browser" => Some("Browser"),
         "MovieFrame" => Some("MovieFrame"),
-        "Model" | "ModelScene" | "ModelFFX" | "CinematicModel" | "DressUpModel"
-        | "PlayerModel" | "TabardModel" => Some("Model"),
-        "Texture" | "NormalTexture" | "HighlightTexture" | "PushedTexture" | "ThumbTexture"
+        "Model" | "UiCamera" => Some("Model"),
+        "ModelFFX" => Some("ModelFFX"),
+        "MapScene" => Some("MapScene"),
+        "PlayerModel" => Some("PlayerModel"),
+        "DressUpModel" => Some("DressUpModel"),
+        "CinematicModel" => Some("CinematicModel"),
+        "TabardModel" => Some("TabardModel"),
+        "ModelScene" => Some("ModelScene"),
+        "Texture" | "NormalTexture" | "PushedTexture" | "DisabledTexture" | "HighlightTexture"
+        | "CheckedTexture" | "DisabledCheckedTexture" | "BarTexture" | "ThumbTexture"
         | "SwipeTexture" | "EdgeTexture" | "BlingTexture" | "ColorWheelTexture"
         | "ColorWheelThumbTexture" | "ColorValueTexture" | "ColorValueThumbTexture"
         | "ColorAlphaTexture" | "ColorAlphaThumbTexture" => Some("Texture"),
         "MaskTexture" => Some("MaskTexture"),
         "Line" => Some("Line"),
-        "FontString" | "FontStringHeader1" | "FontStringHeader2" | "FontStringHeader3" => {
-            Some("FontString")
-        }
+        "FontString" | "ButtonText" | "FontStringHeader1" | "FontStringHeader2"
+        | "FontStringHeader3" => Some("FontString"),
         "AnimationGroup" => Some("AnimationGroup"),
+        "Animation" => Some("Animation"),
+        "Alpha" => Some("Alpha"),
+        "Scale" => Some("Scale"),
+        "LineScale" => Some("LineScale"),
+        "Translation" => Some("Translation"),
+        "LineTranslation" => Some("LineTranslation"),
+        "Rotation" => Some("Rotation"),
+        "Path" => Some("Path"),
+        "TextureCoordTranslation" => Some("TextureCoordTranslation"),
+        "FlipBook" => Some("FlipBook"),
+        "VertexColor" => Some("VertexColor"),
         "DropdownButton" => Some("DropdownButton"),
         // Modern Blizzard intrinsic widget element types (defined `intrinsic="true"`
         // in SharedXML and friends). Addons use these as element tags even though the
         // intrinsic isn't declared in the addon's own XML, so they must be recognized
         // as frame elements — otherwise their `mixin=` names leak `create-global` and
-        // no template `@class` is generated. Each has its own stub class of the same
-        // name (carrying the intrinsic-specific methods, e.g. ItemButton:GetItemID),
-        // so map to self like the native widget arms above rather than collapsing to a
-        // base type, which would lose those methods and cause false `undefined-field`.
+        // no template `@class` is generated. Each has its own stub class carrying the
+        // intrinsic-specific methods (e.g. ItemButton:GetItemID).
         "ItemButton" => Some("ItemButton"),
         "EventFrame" => Some("EventFrame"),
         "EventButton" => Some("EventButton"),
@@ -80,31 +108,7 @@ fn xml_element_to_frame_type(element: &str) -> Option<&'static str> {
         "UIThemeContainerFrame" => Some("UIThemeContainerFrame"),
         "ContainedAlertFrame" => Some("ContainedAlertFrame"),
         "DropDownToggleButton" => Some("DropDownToggleButton"),
-        "Alpha" | "Scale" | "Translation" | "Rotation" | "LineScale" | "LineTranslation"
-        | "Path" | "TextureCoordTranslation" => Some("Animation"),
         "FontFamily" => Some("Font"),
-        _ => None,
-    }
-}
-
-/// Elements that have an implicit parentKey matching their XML element name
-/// when no explicit parentKey attribute is provided.
-fn implicit_parent_key(element: &str) -> Option<&'static str> {
-    match element {
-        "NormalTexture" => Some("NormalTexture"),
-        "HighlightTexture" => Some("HighlightTexture"),
-        "PushedTexture" => Some("PushedTexture"),
-        "ThumbTexture" => Some("ThumbTexture"),
-        "SwipeTexture" => Some("SwipeTexture"),
-        "EdgeTexture" => Some("EdgeTexture"),
-        "BlingTexture" => Some("BlingTexture"),
-        "ColorWheelTexture" => Some("ColorWheelTexture"),
-        "ColorWheelThumbTexture" => Some("ColorWheelThumbTexture"),
-        "ColorValueTexture" => Some("ColorValueTexture"),
-        "ColorValueThumbTexture" => Some("ColorValueThumbTexture"),
-        "ColorAlphaTexture" => Some("ColorAlphaTexture"),
-        "ColorAlphaThumbTexture" => Some("ColorAlphaThumbTexture"),
-        "ScrollChild" => Some("ScrollChild"),
         _ => None,
     }
 }
@@ -396,7 +400,7 @@ fn process_open_tag(
         // For intrinsic usages, the parent class is the intrinsic name itself
         // (e.g. <ItemButton name="Foo"> → parents: ["ItemButton"], not ["Button"])
         let effective_type = if is_intrinsic_usage { tag_name } else { &frame_type };
-        handle_frame_element(e, tag_name, effective_type, tag_start, &mut ctx.stack, &mut ctx.intrinsics, &mut ctx.xml_bound_names);
+        handle_frame_element(e, effective_type, tag_start, &mut ctx.stack, &mut ctx.intrinsics, &mut ctx.xml_bound_names);
         if is_empty {
             // Self-closing: immediately finalize
             if let Some(entry) = ctx.stack.pop()
@@ -422,7 +426,6 @@ fn process_open_tag(
 /// Handle a frame-like XML element (Start or Empty event).
 fn handle_frame_element(
     e: &quick_xml::events::BytesStart<'_>,
-    tag_name: &str,
     frame_type: &str,
     tag_start: u32,
     stack: &mut Vec<StackEntry>,
@@ -466,19 +469,10 @@ fn handle_frame_element(
     // Resolve $parent in name
     let resolved_name = raw_name.as_ref().and_then(|n| resolve_parent_name(n, stack));
 
-    // Determine the parentKey for this element on its parent
-    let effective_parent_key = parent_key_attr
-        .or_else(|| {
-            // Only apply implicit parentKey when nested inside another frame
-            if stack.iter().any(|e| e.is_frame) {
-                implicit_parent_key(tag_name).map(String::from)
-            } else {
-                None
-            }
-        });
-
-    // Register as a field on the nearest frame ancestor
-    if let Some(ref pk) = effective_parent_key {
+    // Register as a field on the nearest frame ancestor. Only an explicit
+    // `parentKey` sets a key: the game gives special children such as
+    // `<NormalTexture>` no implicit one (they're reached via `GetNormalTexture()`).
+    if let Some(ref pk) = parent_key_attr {
         register_parent_key_field(stack, pk, frame_type, &inherits, &mixins, tag_start);
     }
     if let Some(ref pa) = parent_array_attr {
@@ -507,7 +501,7 @@ fn handle_frame_element(
         def_start: tag_start,
         def_end: tag_start,
         global_key_values: Vec::new(),
-        parent_key: effective_parent_key.clone(),
+        parent_key: parent_key_attr,
     };
 
     stack.push(StackEntry {
@@ -1433,22 +1427,97 @@ mod tests {
     }
 
     #[test]
-    fn implicit_parent_key_textures() {
+    fn special_textures_have_no_implicit_parent_key() {
         let r = scan(r#"
             <Ui>
                 <Button name="MyButton" virtual="true">
-                    <NormalTexture />
+                    <NormalTexture file="Interface\Buttons\White8x8" />
+                    <PushedTexture parentKey="PushedTexture" />
                     <HighlightTexture parentKey="HighlightOverlay" />
                 </Button>
             </Ui>
         "#);
         let c = &r.classes[0];
-        // NormalTexture gets implicit parentKey="NormalTexture"
-        assert!(c.fields.iter().any(|(n, t, _)| n == "NormalTexture"
-            && matches!(t, AnnotationType::Simple(s) if s == "Texture")));
-        // Explicit parentKey overrides implicit
-        assert!(c.fields.iter().any(|(n, _, _)| n == "HighlightOverlay"));
+        // The game sets no key for a special texture without `parentKey`
+        assert!(!c.fields.iter().any(|(n, _, _)| n == "NormalTexture"));
         assert!(!c.fields.iter().any(|(n, _, _)| n == "HighlightTexture"));
+        // An explicit parentKey still registers a Texture field
+        assert!(c.fields.iter().any(|(n, t, _)| n == "PushedTexture"
+            && matches!(t, AnnotationType::Simple(s) if s == "Texture")));
+        assert!(c.fields.iter().any(|(n, _, _)| n == "HighlightOverlay"));
+    }
+
+    /// Formatted type of field `name` on `class`, if present.
+    fn field_type(class: &ClassDecl, name: &str) -> Option<String> {
+        class.fields.iter().find(|(n, _, _)| n == name)
+            .map(|(_, t, _)| crate::annotations::annotation_types::format_annotation_type(t))
+    }
+
+    #[test]
+    fn widget_child_regions_honor_explicit_parent_key() {
+        let r = scan(r#"
+            <Ui>
+                <Button name="MyButton" virtual="true">
+                    <ButtonText parentKey="Label" />
+                    <DisabledTexture parentKey="Disabled" />
+                    <Frames>
+                        <StatusBar parentKey="Bar">
+                            <BarTexture parentKey="Fill" />
+                        </StatusBar>
+                        <CheckButton parentKey="Toggle">
+                            <CheckedTexture parentKey="Check" />
+                            <DisabledCheckedTexture parentKey="DisabledCheck" />
+                        </CheckButton>
+                    </Frames>
+                </Button>
+            </Ui>
+        "#);
+        let c = &r.classes[0];
+        assert_eq!(field_type(c, "Label").as_deref(), Some("FontString"));
+        assert_eq!(field_type(c, "Disabled").as_deref(), Some("Texture"));
+        assert_eq!(field_type(c, "Bar").as_deref(), Some("StatusBar & {Fill: Texture}"));
+        assert_eq!(
+            field_type(c, "Toggle").as_deref(),
+            Some("CheckButton & {Check: Texture, DisabledCheck: Texture}")
+        );
+    }
+
+    #[test]
+    fn subtype_elements_keep_their_own_class() {
+        let r = scan(r#"
+            <Ui>
+                <Frame name="MyFrame" virtual="true">
+                    <Frames>
+                        <PlayerModel parentKey="Portrait" />
+                        <DressUpModel parentKey="Preview" />
+                        <ModelScene parentKey="Scene" />
+                        <MapScene parentKey="Map" />
+                        <Checkout parentKey="Shop" />
+                        <UiCamera parentKey="Camera" />
+                    </Frames>
+                    <Animations>
+                        <AnimationGroup parentKey="Pulse">
+                            <Alpha parentKey="Fade" />
+                            <FlipBook parentKey="Flip" />
+                            <VertexColor parentKey="Tint" />
+                            <Animation parentKey="Wait" />
+                        </AnimationGroup>
+                    </Animations>
+                </Frame>
+            </Ui>
+        "#);
+        let c = &r.classes[0];
+        assert_eq!(field_type(c, "Portrait").as_deref(), Some("PlayerModel"));
+        assert_eq!(field_type(c, "Preview").as_deref(), Some("DressUpModel"));
+        assert_eq!(field_type(c, "Scene").as_deref(), Some("ModelScene"));
+        assert_eq!(field_type(c, "Map").as_deref(), Some("MapScene"));
+        assert_eq!(field_type(c, "Shop").as_deref(), Some("Checkout"));
+        // No stub class of its own: the schema base type
+        assert_eq!(field_type(c, "Camera").as_deref(), Some("Model"));
+        assert_eq!(
+            field_type(c, "Pulse").as_deref(),
+            Some("AnimationGroup & {Fade: Alpha, Flip: FlipBook, Tint: VertexColor, Wait: Animation}")
+        );
     }
 
     #[test]
@@ -1522,7 +1591,7 @@ mod tests {
     }
 
     #[test]
-    fn scroll_child_implicit_parent_key() {
+    fn scroll_child_parent_key_lands_on_scroll_frame() {
         let r = scan(r#"
             <Ui>
                 <ScrollFrame name="MyScroll" virtual="true">
@@ -1534,6 +1603,7 @@ mod tests {
         "#);
         let c = &r.classes[0];
         assert!(c.fields.iter().any(|(n, _, _)| n == "Content"));
+        assert!(!c.fields.iter().any(|(n, _, _)| n == "ScrollChild"));
     }
 
     #[test]

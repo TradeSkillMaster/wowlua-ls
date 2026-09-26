@@ -567,7 +567,11 @@ pub(in crate::stub_gen) fn generate_scriptobject_method_stubs(
         // Objects no stub declares (e.g. `SecondsFormatter`, returned by
         // `C_StringUtil.CreateSecondsFormatter`) get a class so values of the type resolve.
         if !existing_classes.contains(class_name) && declared.insert(class_name) {
-            writeln!(out, "---@class {class_name}\nlocal {class_name} = {{}}\n").unwrap();
+            let parent = SCRIPTOBJECT_CLASS_PARENTS.iter()
+                .find(|(cls, _)| *cls == class_name)
+                .map(|(_, parent)| format!(" : {parent}"))
+                .unwrap_or_default();
+            writeln!(out, "---@class {class_name}{parent}\nlocal {class_name} = {{}}\n").unwrap();
         }
         for func in new_methods {
             for arg in &func.arguments {

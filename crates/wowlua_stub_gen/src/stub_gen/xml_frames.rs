@@ -138,6 +138,13 @@ pub(in crate::stub_gen) fn accumulate_xml_frames_and_mixins(
 ) {
     for cap in regs.opener.captures_iter(content) {
         let frame_type = cap.get(1).unwrap().as_str();
+        // Named frames, regions (a `<FontString name="...">` nested in a frame is a real
+        // global), animations, and fonts: the element map workspace scanning uses, so
+        // `<Attribute name=...>`/`<Actor name=...>` stay out. `is_valid_frame_global_name`
+        // still drops `$parent`-anchored names.
+        if crate::xml_scan::xml_element_to_frame_type(frame_type).is_none() && frame_type != "Font" {
+            continue;
+        }
         let attrs = cap.get(2).unwrap().as_str();
 
         let Some(name_cap) = regs.name.captures(attrs) else { continue };
@@ -146,8 +153,13 @@ pub(in crate::stub_gen) fn accumulate_xml_frames_and_mixins(
             continue;
         }
 
-        frames.entry(name.to_string())
-            .or_insert_with(|| normalize_frame_type(frame_type));
+        // A virtual element is a template, not a global — except a font, which is a
+        // global font object even when declared virtual (`GameFontNormal`). Templates
+        // still record their mixins/inherits below for the chain resolution.
+        let ty = normalize_frame_type(frame_type);
+        if ty == "Font" || !regs.virtual_attr.is_match(attrs) {
+            frames.entry(name.to_string()).or_insert(ty);
+        }
 
         if let Some(mixin_cap) = regs.mixin.captures(attrs) {
             push_attr_list(direct_mixins.entry(name.to_string()).or_default(),
@@ -240,16 +252,12 @@ pub(in crate::stub_gen) fn is_valid_frame_global_name(name: &str) -> bool {
 }
 
 
-/// Normalize XML element type to the Lua frame class name.
-/// Model variants map to "Model"; unrecognized types (FogOfWarFrame, POIFrame,
-/// WorldFrame, etc.) fall back to "Frame".
+/// Normalize XML element type to the Lua frame class name, using the same element map
+/// as workspace XML scanning. An element outside it (`Font`) keeps its own name.
 pub(in crate::stub_gen) fn normalize_frame_type(xml_type: &str) -> String {
-    match xml_type {
-        "ModelScene" | "ModelFFX" | "CinematicModel"
-        | "DressUpModel" | "PlayerModel" | "TabardModel" => "Model".to_string(),
-        "FogOfWarFrame" | "POIFrame" | "WorldFrame" => "Frame".to_string(),
-        _ => xml_type.to_string(),
-    }
+    crate::xml_scan::xml_element_to_frame_type(xml_type)
+        .unwrap_or(xml_type)
+        .to_string()
 }
 
 
