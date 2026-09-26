@@ -1294,15 +1294,20 @@ local _fsPool = CreateFontStringPool(_poolParent, "OVERLAY", 0, "MyTemplate")
 
 -- ── Missing WoW API method stubs ──────────────────────────────────────────────
 
--- GameTooltip:SetItemByGUID (not in Blizzard APIDocumentation; hand-written override)
+-- GameTooltip:SetItemByGUID (a tooltip data accessor Ketho's stubs lack, typed from
+-- C_TooltipInfo.GetItemByGUID)
 ---@type GameTooltip
 local _gtip = nil
 _gtip:SetItemByGUID("item-guid-123")
---    ^ hover: (method) function GameTooltip:SetItemByGUID(itemGUID: string)
+--    ^ hover: (method) function GameTooltip:SetItemByGUID(guid: WOWGUID)
 
--- GameTooltip:SetUnitAuraByAuraInstanceID (not in Blizzard APIDocumentation; hand-written override)
+-- GameTooltip:SetUnitAuraByAuraInstanceID (likewise, from C_TooltipInfo.GetUnitAuraByAuraInstanceID)
 _gtip:SetUnitAuraByAuraInstanceID("player", 42, "HELPFUL")
 --    ^ hover: (method) function GameTooltip:SetUnitAuraByAuraInstanceID(
+
+-- GameTooltip:SetInboxItem takes C_TooltipInfo.GetInboxItem's optional attachment index
+_gtip:SetInboxItem(1, 2)
+--    ^ hover: (method) function GameTooltip:SetInboxItem(index: number, attachmentIndex?: number)
 
 -- BattlePetTooltip:AddLine (Lua-injected method from BattlePetTooltipTemplate OnLoad)
 BattlePetTooltip:AddLine("hello")

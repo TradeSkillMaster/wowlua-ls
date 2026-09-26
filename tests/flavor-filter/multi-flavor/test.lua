@@ -16,3 +16,7 @@ AbandonQuest()
 -- GameTooltip:SetHyperlink is defined in vendor stubs but absent from Blizzard's
 -- retail WidgetAPI.lua. It works in all flavors — no false positive.
 GameTooltip:SetHyperlink("item:12345")
+
+-- GameTooltip:SetOutfit is a C method on Classic but a Lua tooltip data accessor on
+-- retail, so retail's WidgetAPI.lua doesn't list it either. No false positive.
+GameTooltip:SetOutfit(1)

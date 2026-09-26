@@ -183,10 +183,23 @@ pub fn regenerate_stubs() {
     }
     phase!("parse_blizzard_api_docs (retail)");
 
+    // Step 2b1: Retail's tooltip data accessors, GameTooltip methods FrameXML defines in
+    // Lua. Retail's WidgetAPI.lua lists only C methods, so the classic-only diff below
+    // needs these to know retail has them.
+    let tooltip_accessors = if has_retail_ui {
+        collect_tooltip_accessors(&retail_ui_dir, &blizzard_docs)
+    } else {
+        Vec::new()
+    };
+    log::info!("  Tooltip data accessors: {} documented", tooltip_accessors.len());
+    if tooltip_accessors.len() < 50 {
+        source_errors.push(format!("Tooltip data accessors: {} (expected ≥50)", tooltip_accessors.len()));
+    }
+
     // Step 2c: Fetch BlizzardInterfaceResources lists (all 3 branches), compute classic API
     // diff, derive retail global name universe, and compute flavor bitmasks from branch presence.
     log::info!("Fetching BlizzardInterfaceResources and computing branch diffs...");
-    let mut branch_data = fetch_branch_resources(&combined_stubs);
+    let mut branch_data = fetch_branch_resources(&combined_stubs, &tooltip_accessor_keys(&tooltip_accessors));
     if branch_data.retail_all_names.is_empty() {
         source_errors.push("BlizzardInterfaceResources retail names: empty (fetch failed)".to_string());
     }
@@ -403,6 +416,16 @@ pub fn regenerate_stubs() {
     log::info!("Enriching widget stubs with wiki annotations...");
     enrich_widget_stubs(&widget_methods, &wiki_pages, &wiki_redirects);
 
+    // Build set of known enum names for Blizzard type resolution (bare name → Enum.*)
+    let known_enum_names: HashSet<String> = retail_enums.keys().cloned().collect();
+
+    // Step 4b0: Widen GameTooltip's tooltip data accessors to the C_TooltipInfo getters
+    // retail forwards them to. Runs after the enrichment above, which inserts at line
+    // indices recorded before the wiki fetch.
+    if let Err(e) = apply_tooltip_accessor_signatures(&clone_dir.join("Annotations/Core/Widget"), &tooltip_accessors, &known_enum_names) {
+        source_errors.push(format!("Tooltip data accessors: {e}"));
+    }
+
     // Step 4b1: Secret-value annotations from the retail docs' secrecy keys, applied
     // to Ketho's vendor stubs (which drop those keys) and later to our generated files.
     log::info!("Applying secret-value annotations...");
@@ -493,9 +516,6 @@ pub fn regenerate_stubs() {
     std::fs::write(gen_dir.join("CVars.lua"), &cvar_lua).unwrap();
     std::fs::write(gen_dir.join("FrameXMLUtilities.lua"), &fxml_util_lua).unwrap();
     log::info!("  Existing names for dedup: {}", existing_for_dedup.len());
-
-    // Build set of known enum names for Blizzard type resolution (bare name → Enum.*)
-    let known_enum_names: HashSet<String> = retail_enums.keys().cloned().collect();
 
     let blizzard_api_lua = generate_blizzard_api_stubs(&blizzard_docs, &existing_for_dedup, &known_enum_names);
     std::fs::write(gen_dir.join("BlizzardAPI.lua"), &blizzard_api_lua).unwrap();

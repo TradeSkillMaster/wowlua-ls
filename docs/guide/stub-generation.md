@@ -45,6 +45,7 @@ The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Ann
 - **`Interface/AddOns/**/*.xml`**: XML files parsed via regex to extract `<Frame>`, `<Button>` elements with `name=`, `mixin=`, and `inherits=` attributes, producing frame global names with type and mixin associations. Inheritance is resolved transitively with cycle detection.
 - **`Interface/AddOns/Blizzard_APIDocumentationGenerated/*.lua`**: Parsed directly for structured function/event/structure data. Each file is a Lua table with `Type = "System"` (game APIs) or `Type = "ScriptObject"` (widget methods, skipped). Functions include namespace, arguments, returns, and `MayReturnNothing`. Events include `LiteralName` and `Payload`. Structures include typed `Fields`. Params with a `Mixin` field use the mixin name (Lua class) instead of the C++ `Type`. Types are normalized minimally: `bool`→`boolean`, `cstring`→`string`, `luaIndex`→`number`; all other type names (e.g. `WOWGUID`, `fileID`, `time_t`) are kept as-is since they have `@alias` definitions in Ketho's `BlizzardType.lua`. Array params (`Type = "table", InnerType = "Foo"`) produce `Foo[]`. Generated stubs only fill gaps: functions/structures already covered by Ketho's richer annotations are skipped via name deduplication. Also parsed for classic-only constants (structured `{Name, Type, Value}` entries) and enumerations (`{Name, EnumValue}` entries). On the retail branch, secret-value keys (`SecretReturns`, `SecretWhen…` predicates, `SecretArguments`, `ConstSecretAccessor`, the secret predicate table's preconditions, per-field `NeverSecret`/`ConditionalSecret`/`SecretValue`, widget aspects) become `secret<T>` types and `@secret-*` annotations on the matching functions, widget methods, events, and structure fields (a structure's class also records the predicates of the APIs that return it), both in the generated files and in Ketho's vendor stubs (rewritten in place before scanning). The docs link no `C_Secrets` guard or restriction query to the secrecy it tests, so `@secret-clears`, `@secret-restriction-guard` and `@secret-satisfies` on those come from a curated table in `secret_stubs.rs` that quotes each guard's documentation, naming the parameters the covered APIs bind each guard argument to. The Lua library isn't documented there at all: its number-typed parameters get `@secret-args untainted` from their own annotated types in a separate pass over Ketho's `Annotations/Core/Lua`. See [Secret Values](/guide/secrets).
 - **`Interface/AddOns/**/*.lua`**: All FrameXML Lua files scanned for: top-level `UPPER_SNAKE` constant assignments (classic vs retail diff), `LE_*` name references (cross-referenced with BlizzardInterfaceResources `LuaEnum.lua` for values), and field/method assignments on frame globals (`FrameName.field = rhs`, `function FrameName:method(...)`) to infer field types. Also detects `PanelTemplates_SetNumTabs` calls to inject `numTabs`/`selectedTab` fields.
+- **`Interface/AddOns/Blizzard_SharedXMLGame/Tooltip/TooltipDataHandler.lua`** (retail): its accessor table defines `GameTooltip:SetInboxItem`, `SetHyperlink` and the other tooltip data accessors in Lua, each forwarding its arguments to the `C_TooltipInfo` getter of the same name (`SetInboxItem` → `GetInboxItem`). Ketho's `GameTooltip` stub is widened in place to accept each getter's documented arguments, and accessors it lacks are added.
 
 ### 5. warcraft.wiki.gg
 
@@ -66,7 +67,7 @@ Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments 
 
 ### 6. Local overrides
 
-Hand-written override files in `stubs/overrides/` take precedence over vendor stubs when matched by filename stem. These handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (45 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
+Hand-written override files in `stubs/overrides/` take precedence over vendor stubs: an override's function and method definitions replace the vendor's, whatever the file is named. An override whose filename stem matches a vendor file (such as `LibStub.lua`) also replaces that whole vendor file, along with the pipeline's in-place rewrites of it (wiki enrichment, secret-value annotations, tooltip data accessors), so an override that changes individual methods gets a stem of its own (such as `SetOwner.lua`). Overrides handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (45 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
 
 | File | Purpose |
 |------|---------|
@@ -85,7 +86,6 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `EnumUtil.lua` | `@returns-enum` on `EnumUtil.MakeEnum`, so `EnumUtil.MakeEnum("A", "B")` is typed as `{ A = 1, B = 2 }` |
 | `EquipmentManager.lua` | Full-arity `@return` for `EquipmentManager_UnpackLocation` (deprecated on retail with no `@return`, still live on Classic) so destructuring its result doesn't false-positive `unbalanced-assignments` |
 | `EventRegistry.lua` | `@class EventRegistry : CallbackRegistryMixin` with `FrameEvent`-typed callback params |
-| `GameTooltip.lua` | `GameTooltip` frame class + script-handler (`GetScript`/`SetScript`) typing |
 | `GetCursorInfo.lua` | Cursor info return type overloads |
 | `GetObjectType.lua` | `@returns-class-name` on `FrameScriptObject:GetObjectType` for equality-comparison receiver narrowing (`region:GetObjectType() == "FontString"`) |
 | `HookScript.lua` | Event handler hook typing |
@@ -109,6 +109,7 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `RuntimeMissingGlobals.lua` | Globals used by addons but not in BlizzardInterfaceResources |
 | `SecretValues.lua` | `@secret-guard` on `issecretvalue`/`canaccessvalue`/`canaccessallvalues`/`hasanysecretvalues`, `secret<T>` returns for `secretwrap` and unwrapped returns for `secretunwrap`, and `@secret-args tainted` on the string functions Blizzard documents as accepting secrets |
 | `select.lua` | `returns<F>` projection for variadic return truncation |
+| `SetOwner.lua` | `GameTooltip:SetOwner` with an untyped `owner`, so any region (including an addon mixin passing `self`) can own the tooltip |
 | `SetScript.lua` | Contextual callback typing with event-param narrowing |
 | `string_match.lua` | Pattern matching return types |
 | `table.lua` | Generic overloads for `insert`, `remove`, etc. |

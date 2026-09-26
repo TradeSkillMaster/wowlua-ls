@@ -1356,6 +1356,149 @@ Gets the item."#;
     assert_eq!(result, vec!["---@return string name", "---@return number id"]);
 }
 
+/// A `C_TooltipInfo` getter fixture: `(name, Blizzard type, nilable)` arguments.
+fn tooltip_getter(name: &str, args: &[(&str, &str, bool)]) -> BlizzardFunction {
+    BlizzardFunction {
+        name: name.to_string(),
+        namespace: Some("C_TooltipInfo".to_string()),
+        arguments: args.iter().map(|(arg, type_name, nilable)| BlizzardParam {
+            name: arg.to_string(),
+            type_name: type_name.to_string(),
+            nilable: *nilable,
+            inner_type: None,
+            mixin: None,
+            secrecy: Default::default(),
+        }).collect(),
+        returns: Vec::new(),
+        may_return_nothing: true,
+        secrecy: Default::default(),
+    }
+}
+
+#[test]
+fn test_parse_tooltip_data_accessors() {
+    let source = "TooltipDataHandlerMixin = {\n\tAllTypes = \"ALL\";\n};\n\ndo\n\tlocal accessors = {\n\t\tSetInboxItem = \"GetInboxItem\",\n\t\tSetHyperlink = \"GetHyperlink\",\n\t};\n\n\tfor accessor, getterName in pairs(accessors) do\n\t\tAddTooltipDataAccessorDelegate(handler, accessor, getterName);\n\tend\nend\n";
+    assert_eq!(parse_tooltip_data_accessors(source), vec![
+        ("AllTypes".to_string(), "ALL".to_string()),
+        ("SetInboxItem".to_string(), "GetInboxItem".to_string()),
+        ("SetHyperlink".to_string(), "GetHyperlink".to_string()),
+    ]);
+}
+
+#[test]
+fn test_merge_tooltip_accessor_signatures() {
+    let inbox = tooltip_getter("GetInboxItem", &[("messageIndex", "luaIndex", false), ("attachmentIndex", "luaIndex", true)]);
+    let hyperlink = tooltip_getter("GetHyperlink", &[("hyperlink", "cstring", false), ("optionalArg1", "number", true), ("hideVendorPrice", "bool", true)]);
+    let inventory = tooltip_getter("GetInventoryItem", &[("unit", "UnitToken", false), ("slot", "luaIndex", false), ("hideUselessStats", "bool", true)]);
+    let pvp_talent = tooltip_getter("GetPvpTalent", &[("talentID", "number", false), ("isInspect", "bool", true), ("groupIndex", "luaIndex", true), ("talentIndex", "number", true)]);
+    let bag_item = tooltip_getter("GetBagItem", &[("bagIndex", "BagIndex", false), ("slotIndex", "luaIndex", false)]);
+    let trait_entry = tooltip_getter("GetTraitEntry", &[("entryID", "number", false), ("rank", "number", true)]);
+    let accessors: Vec<(String, &BlizzardFunction)> = [
+        ("SetInboxItem", &inbox),
+        ("SetHyperlink", &hyperlink),
+        ("SetInventoryItem", &inventory),
+        ("SetPvpTalent", &pvp_talent),
+        ("SetBagItem", &bag_item),
+        ("SetTraitEntry", &trait_entry),
+    ].into_iter().map(|(method, getter)| (method.to_string(), getter)).collect();
+    let known_enums: HashSet<String> = ["BagIndex".to_string()].into_iter().collect();
+    let text = "\
+---@class GameTooltip : Frame
+GameTooltip = {}
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GameTooltip_SetInboxItem)
+---@param index number
+function GameTooltip:SetInboxItem(index) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GameTooltip_SetHyperlink)
+function GameTooltip:SetHyperlink(itemString_or_itemLink) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GameTooltip_SetInventoryItem)
+---@param unit string
+---@param slot number
+---@param nameOnly boolean
+---@param hideUselessStats boolean
+---@return boolean hasItem
+function GameTooltip:SetInventoryItem(unit, slot, nameOnly, hideUselessStats) end
+
+function GameTooltip:SetPvpTalent(talentID, talentIndex) end
+
+function GameTooltip:SetBagItem(bag, slot) end
+
+---@param text string
+function GameTooltip:AddLine(text) end
+";
+    let (out, widened, added) = merge_tooltip_accessor_signatures(text, &accessors, &known_enums);
+    assert_eq!(out, "\
+---@class GameTooltip : Frame
+GameTooltip = {}
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GameTooltip_SetInboxItem)
+---@param index number
+---@param attachmentIndex? number
+function GameTooltip:SetInboxItem(index, attachmentIndex) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GameTooltip_SetHyperlink)
+---@param optionalArg1? number
+---@param hideVendorPrice? boolean
+function GameTooltip:SetHyperlink(itemString_or_itemLink, optionalArg1, hideVendorPrice) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GameTooltip_SetInventoryItem)
+---@param unit string
+---@param slot number
+---@param nameOnly? boolean
+---@param hideUselessStats? boolean
+---@return boolean hasItem
+function GameTooltip:SetInventoryItem(unit, slot, nameOnly, hideUselessStats) end
+
+---@param groupIndex? number
+---@param talentIndex4? number
+function GameTooltip:SetPvpTalent(talentID, talentIndex, groupIndex, talentIndex4) end
+
+function GameTooltip:SetBagItem(bag, slot) end
+
+---@param text string
+function GameTooltip:AddLine(text) end
+
+-- Tooltip data accessors: each forwards its arguments to C_TooltipInfo's same-named getter (Set → Get)
+
+---@param entryID number
+---@param rank? number
+function GameTooltip:SetTraitEntry(entryID, rank) end
+");
+    assert_eq!((widened, added), (4, 1));
+
+    // Nothing to widen or add leaves the text untouched.
+    let (same, widened, added) = merge_tooltip_accessor_signatures(&out, &accessors, &known_enums);
+    assert_eq!((same.as_str(), widened, added), (out.as_str(), 0, 0));
+
+    // A vararg definition already accepts the getter's arguments.
+    let vararg = "function GameTooltip:SetInboxItem(...) end\n";
+    let (unchanged, widened, _) = merge_tooltip_accessor_signatures(vararg, &accessors[..1], &known_enums);
+    assert_eq!((unchanged.as_str(), widened), (vararg, 0));
+}
+
+#[test]
+fn test_apply_tooltip_accessor_signatures() {
+    let dir = std::env::temp_dir().join("wowlua-ls-test-tooltip-accessors");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Frame.lua"), "---@class Frame\nFrame = {}\n").unwrap();
+    let known_enums = HashSet::default();
+    let inbox = tooltip_getter("GetInboxItem", &[("messageIndex", "luaIndex", false), ("attachmentIndex", "luaIndex", true)]);
+    let accessors = vec![("SetInboxItem".to_string(), &inbox)];
+
+    let err = apply_tooltip_accessor_signatures(&dir, &accessors, &known_enums).unwrap_err();
+    assert!(err.contains("declares GameTooltip"), "{err}");
+
+    let stub = dir.join("GameTooltip.lua");
+    std::fs::write(&stub, "---@class GameTooltip : Frame\nfunction GameTooltip:SetInboxItem(index) end\n").unwrap();
+    apply_tooltip_accessor_signatures(&dir, &accessors, &known_enums).unwrap();
+    let text = std::fs::read_to_string(&stub).unwrap();
+    assert!(text.contains("function GameTooltip:SetInboxItem(index, attachmentIndex) end"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_compute_flavor_map_from_branch_sets() {
     use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA};

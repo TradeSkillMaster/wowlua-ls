@@ -608,8 +608,9 @@ pub(in crate::stub_gen) fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<Str
 
 /// Fetch BlizzardInterfaceResources lists, compute the classic-only API diff,
 /// derive the retail global name universe, and compute flavor bitmasks from
-/// branch presence.
-pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path) -> BranchResourceData {
+/// branch presence. `lua_widget_methods` are `Type:Method` keys retail defines in
+/// Lua, which its WidgetAPI.lua doesn't list.
+pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path, lua_widget_methods: &HashSet<String>) -> BranchResourceData {
     log::info!("Downloading BlizzardInterfaceResources (parallel)...");
 
     // Fetch resources in parallel: 3 branches × 2 file types (GlobalAPI, FrameXML)
@@ -724,9 +725,10 @@ pub(in crate::stub_gen) fn fetch_branch_resources(stubs_dir: &Path) -> BranchRes
                     continue;
                 }
                 let stub_key = format!("{type_name}:{method}");
-                if existing_widget_methods.contains(&stub_key) {
+                if existing_widget_methods.contains(&stub_key) || lua_widget_methods.contains(&stub_key) {
                     // Vendor stubs cover retail APIs not listed in retail's WidgetAPI.lua
-                    // (e.g. GameTooltip:SetHyperlink). Don't restrict these to classic-only.
+                    // (e.g. GameTooltip:SetHyperlink), as do the methods retail defines in
+                    // Lua (e.g. GameTooltip:SetOutfit). Don't restrict these to classic-only.
                     continue;
                 }
                 // Not in vendor stubs and not in retail WidgetAPI — genuinely classic-only.

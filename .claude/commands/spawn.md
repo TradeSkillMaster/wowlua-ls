@@ -14,16 +14,11 @@ Steps:
    - `repo_id`: the repo ID from `get_context` (same repository as the current workspace)
    - `branch`: `main` (the base branch to branch from)
    - `configuration`: leave unset to use the default agent configuration (Settings → Agents); pass a configuration name only if the user asks for a specific agent or model
-   - `prompt`: a detailed prompt describing the task, including:
-     - What the problem is and how to reproduce it
-     - Relevant file paths and line numbers
-     - Suggested approach if known
-     - Reminder to check CLAUDE.md for conventions
-     - Reminder to ensure zero warnings from `cargo build` and all tests pass with `cargo test`
+   - `prompt`: a description of the problem and nothing else: what is wrong, as it is observed, and why it matters if that isn't obvious
 
 Rules:
+- The prompt only describes the problem. Leave out your own analysis (suspected cause, hypotheses, pointers to the code you think is responsible), any suggested fix or approach, and anything about how to work (repro recipes, conventions, build or test reminders). The new agent reads CLAUDE.md and investigates on its own.
 - Do NOT create kanban issues — only start the workspace
 - If the user references an existing GitHub issue, pass its number as `github_issue_number` (e.g. `42`) to `start_workspace`. This links the issue and auto-closes it when the workspace PR merges — there is no separate issue-lookup tool to call first.
-- If the task comes from a `.context/ACTION-*.md` file, include the relevant details from that file in the prompt
+- If the task comes from a `.context/ACTION-*.md` file, carry over only the problem it describes, not its analysis, code locations, or fix suggestions
 - Keep the workspace name under 50 characters
-- Include this git instruction in the prompt: "IMPORTANT: This repo uses a local-only main branch (no remote tracking). Do NOT try to push, pull, fetch, or rebase against origin/main. Just commit your changes to the local branch — the workspace tooling handles merging."
