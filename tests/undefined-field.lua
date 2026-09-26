@@ -352,6 +352,61 @@ _consume(inlineRec.sum)
 _consume(inlineRec.z)
 --                 ^ diag: undefined-field
 
+-- A string-literal bracket write (`t["k"] = v`) is the field write `t.k = v`:
+-- the key becomes a known field and the record stays closed.
+local bracketRec = { first = 1 }
+bracketRec["second"] = 2
+_consume(bracketRec.second)
+--                  ^ hover: (field) second: number
+_consume(bracketRec.thrid)
+--                  ^ diag: undefined-field
+
+-- Also when the receiver's table is only known after type resolution.
+---@class BracketLateRec
+local BracketLateRec = {}
+_consume(BracketLateRec)
+
+---@type fun(): BracketLateRec
+local getBracketLateRec
+local lateRec = getBracketLateRec()
+lateRec["added"] = 1
+_consume(lateRec.added)
+--               ^ hover: (field) added: number
+
+-- On a map the key is an entry typed by the map's value type, not a field (it
+-- is not injected into a dictionary class), whether the map is known at the
+-- write or only after type resolution. A key naming a declared field still
+-- writes that field.
+---@type table<string, TestFieldObj>
+local objMap = {}
+objMap["one"] = { name = "a", health = 1 }
+local _entry = objMap.one
+--    ^ hover: (local) _entry: TestFieldObj
+
+---@class BracketMapHolder
+---@field map table<string, TestFieldObj>
+
+---@type fun(): BracketMapHolder
+local getBracketMapHolder
+local mapHolder = getBracketMapHolder()
+mapHolder.map["one"] = { name = "a", health = 1 }
+_consume(mapHolder.map.one)
+--                     ^ comp: none
+
+---@class BracketDict : table<string, number>
+---@field size number
+local BracketDict = {}
+function BracketDict:Put()
+    self["entry"] = 1
+    self["size"] = "x"
+    --             ^ diag: field-type-mismatch
+end
+
+---@type fun(): BracketDict
+local getBracketDict
+local lateDict = getBracketDict()
+lateDict["entry"] = 1
+
 -- ═══════════════════════════════════════════════════════════
 -- Membership-test suppression: a field read used as a defensive
 -- existence check ("does this field exist?") — and the access it

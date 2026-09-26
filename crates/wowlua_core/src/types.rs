@@ -1495,6 +1495,9 @@ pub struct DeepFieldInjection {
     pub field_name: String,
     pub expr_id: ExprId,
     pub scope_idx: ScopeIndex,
+    /// Written `t["a"] = v`: an element write, not a field, if `t` resolves to a
+    /// map or array with no field `a`.
+    pub bracket_key: bool,
 }
 
 /// Records a `@narrows-arg` mixin applied to a *field* target (e.g.
@@ -1544,6 +1547,9 @@ pub struct DeferredFieldAssignment {
     /// a later branch `Mixin(frame, M)` (`@narrows-arg`). The write must attach to
     /// the frame as it was at the write, not the post-mixin merge.
     pub receiver_version: usize,
+    /// Written `t["a"] = v`: an element write, not a field, if `t` resolves to a
+    /// map or array with no field `a`.
+    pub bracket_key: bool,
 }
 
 #[derive(Debug, Clone)]

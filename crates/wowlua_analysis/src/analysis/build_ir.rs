@@ -1173,6 +1173,7 @@ impl<'a> Analysis<'a> {
                         expr_end: u32::from(func_r.end()),
                         is_method_def: is_method,
                         receiver_version,
+                        bracket_key: false,
                     });
                 }
 
@@ -1569,11 +1570,17 @@ impl<'a> Analysis<'a> {
         // the assignment targets an element of the field, not the field
         // itself. Lower the RHS for side effects but skip field type
         // modification, inject-field checks, and field_assignment_sites.
-        if ident.is_indexed_expression()
-            || ident.has_non_string_bracket_in_chain()
+        // A string-literal key (`t["a"] = v`; `names` ends with `a`) is the
+        // field write `t.a = v`, unless it writes a map or array element.
+        if ident.has_non_string_bracket_in_chain()
+            || (ident.is_indexed_expression() && self.bracket_write_is_element(names, scope_idx))
         {
             self.build_field_indexed_write(ctx, target, cached_multi_ret_call);
             return;
+        }
+        // The nil-check site above needs a `.`; keep the bracket form's own.
+        if ident.is_indexed_expression() {
+            self.record_indexed_write_sites(ident, names, scope_idx);
         }
 
         // RHS expression id for assignment-based field narrowing
@@ -1610,7 +1617,6 @@ impl<'a> Analysis<'a> {
     ) {
         let AssignCtx { scope_idx, .. } = ctx;
         let AssignTarget { ident, index, expressions, identifiers_len, names, .. } = target;
-        let root_name = &names[0];
         if let Some(expr) = expressions.get(index) {
             let expr_id = self.lower_expression(expr, scope_idx);
             // Cache for multi-return if applicable
@@ -1619,6 +1625,32 @@ impl<'a> Analysis<'a> {
                     *cached_multi_ret_call = Some(expr_id);
                 }
         }
+        self.record_indexed_write_sites(ident, names, scope_idx);
+    }
+
+    /// Whether a string-keyed bracket write (`m["a"] = v`, `self.m["a"] = v`)
+    /// is known at build time to write a map or array element
+    /// (`Ir::is_element_write`). A table that only resolves later is checked
+    /// by the deferred resolvers (`bracket_key`).
+    fn bracket_write_is_element(&self, names: &[String], scope_idx: ScopeIndex) -> bool {
+        let Some((key, [root, intermediates @ ..])) = names.split_last() else { return false };
+        let Some(root_idx) = self.ir.find_table_for_symbol(root, scope_idx) else { return false };
+        self.walk_field_chain(root_idx, intermediates)
+            .is_some_and(|idx| self.ir.is_element_write(idx, key))
+    }
+
+    /// The table a field-write chain reaches at build time from `root` through
+    /// `intermediates` (each field's assigned table), if every step is known.
+    fn walk_field_chain(&self, root: TableIndex, intermediates: &[String]) -> Option<TableIndex> {
+        intermediates.iter().try_fold(root, |idx, name| {
+            self.ir.get_field(idx, name).and_then(|f| self.ir.find_table_index(f.expr))
+        })
+    }
+
+    /// Record the side sites of a bracket-indexed write target: the chain's
+    /// field reads, and its bracket base for need-check-nil.
+    fn record_indexed_write_sites(&mut self, ident: Identifier<'a>, names: &[String], scope_idx: ScopeIndex) {
+        let root_name = &names[0];
         // Record intermediate field accesses so the plugin query layer
         // can see that e.g. `state.names[k] = v` reads `state.names`.
         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
@@ -1693,6 +1725,7 @@ impl<'a> Analysis<'a> {
                     field_name: field_name.clone(),
                     expr_id: func_def_expr,
                     scope_idx,
+                    bracket_key: ident.is_indexed_expression(),
                 });
             } else {
                 let existing_field = self.ir.get_field(table_idx, field_name);
@@ -1746,6 +1779,7 @@ impl<'a> Analysis<'a> {
                 field_name: field_name.clone(),
                 expr_id: func_def_expr,
                 scope_idx,
+                bracket_key: ident.is_indexed_expression(),
             });
         } else if names.len() == 2 {
             // Table not found during Phase 1 (e.g. type comes from
@@ -1769,6 +1803,7 @@ impl<'a> Analysis<'a> {
                 expr_end: u32::from(func_r.end()),
                 is_method_def: true,
                 receiver_version,
+                bracket_key: ident.is_indexed_expression(),
             });
         }
         if let Some(inner_block) = func.block() {
@@ -1859,24 +1894,7 @@ impl<'a> Analysis<'a> {
             // the same file (e.g. function ns.sub.field:M()).
             // Fall back to deferred resolution if any
             // intermediate can't be resolved yet.
-            let mut cur_table = table_idx;
-            let mut resolved = true;
-            for intermediate in &names[1..names.len()-1] {
-                if let Some(field) = self.ir.get_field(cur_table, intermediate) {
-                    let field_expr = field.expr;
-                    if let Some(sub_idx) = self.ir.find_table_index(field_expr) {
-                        cur_table = sub_idx;
-                    } else {
-                        resolved = false;
-                        break;
-                    }
-                } else {
-                    resolved = false;
-                    break;
-                }
-            }
-
-            if resolved {
+            if let Some(cur_table) = self.walk_field_chain(table_idx, &names[1..names.len()-1]) {
                 // Insert field directly (matching the deferred
                 // resolve_deep_field_injections path).
                 if !self.ir.has_field(cur_table, field_name) {
@@ -1911,6 +1929,7 @@ impl<'a> Analysis<'a> {
                     field_name: field_name.clone(),
                     expr_id,
                     scope_idx,
+                    bracket_key: ident.is_indexed_expression(),
                 });
             }
           } else {
@@ -2077,6 +2096,7 @@ impl<'a> Analysis<'a> {
                 field_name: field_name.clone(),
                 expr_id,
                 scope_idx,
+                bracket_key: ident.is_indexed_expression(),
             });
         } else if names.len() == 2 {
             // Table not found during Phase 1 (e.g. type comes from
@@ -2100,6 +2120,7 @@ impl<'a> Analysis<'a> {
                 expr_end: trimmed_node_end(expr.syntax()),
                 is_method_def: false,
                 receiver_version,
+                bracket_key: ident.is_indexed_expression(),
             });
         }
     }

@@ -3580,7 +3580,7 @@ do
     F["a"]["b"] = nil
     if F["a"]["b"] then
         local _r = F["a"]["b"]
-        --         ^ hover: (local) F: table
+        --         ^ hover: (local) F: {\n  a: {b: nil}\n}
     end
 end
 

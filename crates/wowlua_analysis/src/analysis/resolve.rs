@@ -2409,6 +2409,7 @@ impl<'a> Analysis<'a> {
                 }
             }
             if !resolved { continue; }
+            if inj.bracket_key && self.ir.is_element_write(current_table, &inj.field_name) { continue; }
 
             // Add field to the correct target table
             if !self.ir.has_field(current_table, &inj.field_name) {
@@ -2524,6 +2525,7 @@ impl<'a> Analysis<'a> {
             let Some(mut table_idx) = self.deferred_receiver_table_idx(sym_idx, ver_idx) else {
                 continue;
             };
+            if assign.bracket_key && self.ir.is_element_write(table_idx, &assign.field_name) { continue; }
 
             // A colliding method-style def is mirrored onto the receiver's own
             // per-instance table so a *direct* hover/signature/definition on

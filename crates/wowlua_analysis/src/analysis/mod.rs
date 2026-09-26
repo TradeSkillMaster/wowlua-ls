@@ -1613,6 +1613,15 @@ impl Ir {
         }
     }
 
+    /// Whether `t["key"] = v` writes an element of `t` (table `idx`) rather than
+    /// a field: `t` is a map or array, whose entries its key/value types
+    /// describe, and `key` doesn't name one of its fields (a read of `t["key"]`
+    /// resolves such a field first).
+    pub(super) fn is_element_write(&self, idx: TableIndex, key: &str) -> bool {
+        let t = self.table(idx);
+        (t.key_type.is_some() || t.value_type.is_some()) && !self.has_field(idx, key)
+    }
+
     pub(super) fn find_table_index(&self, expr_id: ExprId) -> Option<TableIndex> {
         match self.expr(expr_id) {
             Expr::TableConstructor(idx) => Some(*idx),
