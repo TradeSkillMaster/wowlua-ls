@@ -7645,6 +7645,56 @@ fn test_unused_function_cross_file() {
         unused_names.contains("HandlerHost.UnusedHostMethod"),
         "HandlerHost.UnusedHostMethod should be flagged as unused, got: {:?}", unused_names,
     );
+
+    // Interface detection only covers methods taking `self`: a static function
+    // sharing its name with another module's is still flagged.
+    assert!(
+        unused_names.contains("QueryModuleB.CreateQuery"),
+        "QueryModuleB.CreateQuery should be flagged — a static function isn't a duck-typed interface method, got: {:?}", unused_names,
+    );
+    assert!(
+        !unused_names.contains("QueryModuleA.CreateQuery"),
+        "QueryModuleA.CreateQuery should not be flagged — called in user.lua",
+    );
+    for name in ["PollerA:IsReady", "PollerB:IsReady", "PollerA.Describe", "PollerB.Describe"] {
+        assert!(
+            !unused_names.contains(name),
+            "{name} should not be flagged — shared `self` method called through an untyped receiver, got: {:?}", unused_names,
+        );
+    }
+
+    // References from the defining file resolve to its file-local copy of the method.
+    assert!(
+        !unused_names.contains("NS.CalledInDefiningFile"),
+        "NS.CalledInDefiningFile should not be flagged — called in defs.lua, got: {:?}", unused_names,
+    );
+    assert!(
+        !unused_names.contains("NS.StoredInDefiningFile"),
+        "NS.StoredInDefiningFile should not be flagged — stored in a table constructor in defs.lua, got: {:?}", unused_names,
+    );
+    assert!(
+        unused_names.contains("NS.BracketDefinedUnused"),
+        "NS.BracketDefinedUnused should be flagged — its `NS[\"...\"] = function` definition is not a reference, got: {:?}", unused_names,
+    );
+    assert!(
+        !unused_names.contains("NS:DefinedInTwoFiles"),
+        "NS:DefinedInTwoFiles should not be flagged — user.lua calls its own copy, got: {:?}", unused_names,
+    );
+    // A call resolving to a synthetic function (a `fun()`-typed param) has a dummy
+    // definition offset of 0, which must not match a method defined at byte 0.
+    assert!(
+        unused_names.contains("NS.DefinedAtFileStartUnused"),
+        "NS.DefinedAtFileStartUnused should be flagged — the `cb()` call is not a reference to it, got: {:?}", unused_names,
+    );
+    // A static function sharing the name doesn't make a `self` method an interface.
+    assert!(
+        unused_names.contains("ResetWidget:Reset"),
+        "ResetWidget:Reset should be flagged — the only other `Reset` is static, got: {:?}", unused_names,
+    );
+    assert!(
+        unused_names.contains("SettingsStore.Reset"),
+        "SettingsStore.Reset should be flagged, got: {:?}", unused_names,
+    );
 }
 
 #[test]

@@ -10,7 +10,7 @@ use super::WowDiagnostic;
 
 /// Per-file reference data collected during analysis. Used by the cross-file
 /// unused function check to aggregate which external symbols are referenced.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct FileReferenceData {
     /// External `SymbolIndex` values (>= `EXT_BASE`) referenced by this file.
     pub referenced_externals: HashSet<SymbolIndex>,
@@ -19,6 +19,29 @@ pub struct FileReferenceData {
     /// External `FunctionIndex` values (>= `EXT_BASE`) called by this file.
     /// Used for top-level global function usage tracking.
     pub referenced_external_functions: HashSet<FunctionIndex>,
+    /// Definition start offsets of this file's own functions that it calls or
+    /// reads as a value. A method referenced only from its defining file
+    /// resolves to the file-local `FunctionIndex`, not the workspace one, so the
+    /// method pass matches it to its workspace definition by location.
+    pub referenced_local_function_defs: HashSet<u32>,
+}
+
+impl FileReferenceData {
+    /// Record a function the file calls or reads as a value: a workspace
+    /// function by index, one of the file's own functions by definition offset.
+    /// Synthetic local functions (materialized `fun()` annotation types, clones
+    /// of external generics) have no definition node — their dummy offset 0
+    /// would match a method defined at the start of the file.
+    fn record_function(&mut self, analysis: &AnalysisResult, func_idx: FunctionIndex) {
+        if func_idx.is_external() {
+            self.referenced_external_functions.insert(func_idx);
+        } else {
+            let def = analysis.func(func_idx).def_node;
+            if def.node_id.is_some() {
+                self.referenced_local_function_defs.insert(def.start);
+            }
+        }
+    }
 }
 
 /// Visit every `FunctionIndex` carried by a resolved type: a bare
@@ -36,10 +59,10 @@ fn visit_function_members(vt: &ValueType, visitor: &mut impl FnMut(FunctionIndex
     }
 }
 
-/// Resolve a simple `NS.Method` field access to its external `FunctionIndex`
-/// without relying on `resolved_expr_cache`. Returns `Some(func_idx)` only when
-/// `base_expr` is a `SymbolRef` whose resolved type is an external `Table` that
-/// contains a `FunctionDef` field at `field_name`. All other cases return `None`.
+/// Resolve a simple `NS.Method` field access to its `FunctionIndex` without
+/// relying on `resolved_expr_cache`. Returns `Some(func_idx)` only when
+/// `base_expr` is a `SymbolRef` whose resolved type is a `Table` that contains a
+/// `FunctionDef` field at `field_name`. All other cases return `None`.
 ///
 /// Used as a fallback for `FieldAccess` nodes that the fixpoint never evaluated
 /// (e.g. values inside a table constructor that nothing reads back).
@@ -54,7 +77,7 @@ fn resolve_field_func(ir: &Ir, base_expr: ExprId, field_name: &str) -> Option<Fu
     };
     let field_expr = ir.table(table_idx).fields.get(field_name)?.expr;
     match ir.expr(field_expr) {
-        Expr::FunctionDef(func_idx) if func_idx.is_external() => Some(*func_idx),
+        Expr::FunctionDef(func_idx) => Some(*func_idx),
         _ => None,
     }
 }
@@ -85,26 +108,22 @@ fn record_keyof_handler_ref(ir: &Ir, target: TableIndex, name: &str, out: &mut H
 
 /// Extract cross-file reference data from a per-file `AnalysisResult`.
 /// Uses `call_resolutions` (already computed during analysis) to track
-/// external function references. No additional tree walk is performed.
+/// function references. No additional tree walk is performed.
 pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceData {
-    let mut referenced_externals = HashSet::default();
-    let mut scope0_referenced_names = HashSet::default();
-    let mut referenced_external_functions = HashSet::default();
+    let mut refs = FileReferenceData::default();
 
     for &idx in &analysis.referenced_symbols {
         if idx.is_external() {
-            referenced_externals.insert(idx);
+            refs.referenced_externals.insert(idx);
         }
     }
 
-    // Collect external function indices from call resolutions.
+    // Collect function indices from call resolutions.
     for cr in analysis.ir.call_resolutions.values() {
-        if cr.func_idx.is_external() {
-            referenced_external_functions.insert(cr.func_idx);
-        }
+        refs.record_function(analysis, cr.func_idx);
     }
 
-    // Collect external functions referenced as values (not called).
+    // Collect functions referenced as values (not called).
     // When a method is passed as a callback argument (e.g. `Register(NS.Method)`) or
     // stored in a table constructor (e.g. `{ handler = NS.Method }`), no call_resolution
     // entry is produced. Scanning FieldAccess IR nodes catches these.
@@ -115,34 +134,38 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
     //    the fixpoint, including direct arguments and local-variable assignments.
     // 2. Manual resolve — for FieldAccess nodes whose cache slot is empty (e.g. table
     //    constructor field values that are never read back), walk the base SymbolRef
-    //    directly to the external table field's FunctionDef.
+    //    directly to the table field's FunctionDef.
+    //
+    // Only source reads count: the synthetic chains lowering builds without a
+    // `field_range` include the target of a `t["key"] = function() end` write,
+    // which would make the definition its own reference.
     for (eid, expr) in analysis.local_exprs() {
-        let Expr::FieldAccess { table: base_expr, field, .. } = expr else { continue };
+        let Expr::FieldAccess { table: base_expr, field, field_range: Some(_) } = expr else { continue };
 
         // Path 1: cache hit. The field-access type is a single function or a
         // union of functions (method access on a union receiver `A | B`); record
-        // every external member so a method reached only through a union-typed
-        // receiver isn't reported as unused.
+        // every member so a method reached only through a union-typed receiver
+        // isn't reported as unused.
         if let Some(cached) = analysis.resolved_expr_cache_get(eid) {
-            let mut recorded = false;
+            let mut recorded_external = false;
             visit_function_members(cached, &mut |func_idx| {
-                if func_idx.is_external() {
-                    referenced_external_functions.insert(func_idx);
-                    recorded = true;
-                }
+                refs.record_function(analysis, func_idx);
+                recorded_external |= func_idx.is_external();
             });
-            if recorded {
+            if recorded_external {
                 continue;
             }
         }
 
-        // Path 2: manual resolve for uncached entries.
+        // Path 2: manual resolve for uncached entries, and for file-local
+        // functions whose workspace entry is another file's definition of the
+        // same method (the field on the external table points to it).
         if let Some(func_idx) = resolve_field_func(&analysis.ir, *base_expr, field) {
-            referenced_external_functions.insert(func_idx);
+            refs.record_function(analysis, func_idx);
         }
     }
 
-    // Collect external methods referenced via dynamic dispatch: a string literal
+    // Collect methods referenced via dynamic dispatch: a string literal
     // passed to a `keyof T`-constrained generic parameter names a method on the
     // `T` target (e.g. `publisher:CallMethod(obj, "MethodName")` with
     // `@generic Obj, K: keyof Obj`). The string is a genuine reference to that
@@ -181,9 +204,8 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
             };
             if let Some(field) = analysis.ir.get_field(table_idx, key)
                 && let Expr::FunctionDef(func_idx) = analysis.ir.expr(field.expr)
-                && func_idx.is_external()
             {
-                referenced_external_functions.insert(*func_idx);
+                refs.record_function(analysis, *func_idx);
             }
         }
     }
@@ -202,7 +224,7 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
         for (&arg_idx, &target) in &cr.keyof_arg_targets {
             let Some(&arg_expr) = args.get(arg_idx) else { continue };
             let Some(key) = analysis.ir.string_literals.get(&arg_expr) else { continue };
-            record_keyof_handler_ref(&analysis.ir, target, key, &mut referenced_external_functions);
+            record_keyof_handler_ref(&analysis.ir, target, key, &mut refs.referenced_external_functions);
         }
     }
 
@@ -212,15 +234,11 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
         if analysis.referenced_symbols.contains(&sym_idx)
             && let SymbolIdentifier::Name(name) = id
         {
-            scope0_referenced_names.insert(name.clone());
+            refs.scope0_referenced_names.insert(name.clone());
         }
     }
 
-    FileReferenceData {
-        referenced_externals,
-        scope0_referenced_names,
-        referenced_external_functions,
-    }
+    refs
 }
 
 /// Pre-aggregated cross-file reference data for O(1) lookups in the
@@ -355,6 +373,7 @@ fn is_used_or_excluded(
 fn find_unused_methods(
     pre_globals: &PreResolvedGlobals,
     agg: &AggregatedRefs,
+    file_refs: &HashMap<PathBuf, FileReferenceData>,
     is_library: &dyn Fn(&Path) -> bool,
     is_meta_path: &dyn Fn(&Path) -> bool,
 ) -> Vec<UnusedWorkspaceFunction> {
@@ -363,9 +382,12 @@ fn find_unused_methods(
     // Pre-compute interface detection: count distinct TableIndex values per method name.
     // If 2+ distinct tables define the same method name, it's likely a duck-typing
     // framework callback (e.g. GetFrame, Show, Hide) called via dynamic dispatch.
+    // Only methods taking `self` count (and are exempted below): a static function
+    // is called through its module's path, so a same-named function on another
+    // module (`Settings.Reset` / `Cache.Reset`) is a coincidence, not an interface.
     let mut method_name_tables: HashMap<&str, HashSet<TableIndex>> = HashMap::default();
     for (func_idx, display_name) in &pre_globals.function_names {
-        if func_idx.ext_offset() < pre_globals.stub_functions_end {
+        if func_idx.ext_offset() < pre_globals.stub_functions_end || !takes_self(pre_globals, *func_idx) {
             continue;
         }
         let short = display_name.rsplit(['.', ':']).next().unwrap_or(display_name);
@@ -407,11 +429,21 @@ fn find_unused_methods(
             continue;
         }
 
-        // Interface detection — if 2+ distinct tables define the same method
-        // name, it's likely a framework callback called via dynamic/string dispatch.
-        if method_name_tables
-            .get(method_name)
-            .is_some_and(|tables| tables.len() >= 2)
+        // Referenced from its own file (where it resolves to the file-local copy).
+        if file_refs
+            .get(&loc.path)
+            .is_some_and(|r| r.referenced_local_function_defs.contains(&loc.start))
+        {
+            continue;
+        }
+
+        // Interface detection — if 2+ distinct tables define the same `self`
+        // method name, it's likely a framework callback called via dynamic/string
+        // dispatch.
+        if takes_self(pre_globals, *func_idx)
+            && method_name_tables
+                .get(method_name)
+                .is_some_and(|tables| tables.len() >= 2)
         {
             continue;
         }
@@ -426,6 +458,17 @@ fn find_unused_methods(
     }
 
     unused
+}
+
+/// Whether a workspace function takes a `self` receiver: a colon-defined method
+/// (its implicit `self` is the first arg) or a dot-defined function whose first
+/// parameter is named `self`.
+fn takes_self(pre_globals: &PreResolvedGlobals, func_idx: FunctionIndex) -> bool {
+    pre_globals
+        .func(func_idx)
+        .args
+        .first()
+        .is_some_and(|&arg| matches!(&pre_globals.sym(arg).id, SymbolIdentifier::Name(n) if n == "self"))
 }
 
 /// Extract the name range from an `ExternalLocation`, returning `None` if both
@@ -488,7 +531,7 @@ pub fn find_unused_workspace_functions(
     }
 
     // Pass 2: method functions (shared helper).
-    unused.extend(find_unused_methods(pre_globals, &agg, is_library, is_meta_path));
+    unused.extend(find_unused_methods(pre_globals, &agg, file_refs, is_library, is_meta_path));
 
     unused
 }
@@ -550,7 +593,7 @@ pub fn find_unused_from_pre_globals(
     }
 
     // Pass 2: method functions (shared helper).
-    unused.extend(find_unused_methods(pre_globals, &agg, is_library, is_meta_path));
+    unused.extend(find_unused_methods(pre_globals, &agg, file_refs, is_library, is_meta_path));
 
     unused
 }

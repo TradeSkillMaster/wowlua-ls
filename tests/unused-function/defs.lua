@@ -182,3 +182,88 @@ EventRegistrar = {}
 ---@param event E
 ---@param handler fun(...params<E>)
 function EventRegistrar.Register(owner, event, handler) end
+
+-- Static functions sharing a name across unrelated modules. A static function
+-- is called through its module's path, so the name match is a coincidence,
+-- not a duck-typed interface: the unused one must still be flagged.
+---@class QueryModuleA
+QueryModuleA = {}
+
+function QueryModuleA.CreateQuery()
+    return 60
+end
+
+---@class QueryModuleB
+QueryModuleB = {}
+
+function QueryModuleB.CreateQuery()
+    return 61
+end
+
+-- Methods taking `self` that share a name across unrelated classes, reached
+-- only through an untyped receiver in user.lua. Interface detection keeps both
+-- (colon-defined and dot-defined with an explicit `self`).
+---@class PollerA
+PollerA = {}
+
+function PollerA:IsReady()
+    return true
+end
+
+function PollerA.Describe(self)
+    return self
+end
+
+---@class PollerB
+PollerB = {}
+
+function PollerB:IsReady()
+    return false
+end
+
+function PollerB.Describe(self)
+    return self
+end
+
+-- Referenced only from this file: a same-file call resolves to the file-local
+-- copy of the method, which must still count as a reference.
+function NS.CalledInDefiningFile()
+    return 70
+end
+
+function NS.StoredInDefiningFile()
+    return 71
+end
+
+local function useOwnMethods()
+    local handlers = { run = NS.StoredInDefiningFile }
+    return NS.CalledInDefiningFile(), handlers
+end
+useOwnMethods()
+
+-- A string-key write defines the method; the write itself is not a reference.
+NS["BracketDefinedUnused"] = function()
+    return 72
+end
+
+-- Also defined in user.lua (e.g. a flavor-specific file), which calls its own
+-- copy: that call is still a reference to the method.
+function NS:DefinedInTwoFiles()
+    return 73
+end
+
+-- A static function and a `self` method sharing a name on unrelated tables:
+-- the static one doesn't make the name an interface, so both are flagged.
+---@class SettingsStore
+SettingsStore = {}
+
+function SettingsStore.Reset()
+    return 90
+end
+
+---@class ResetWidget
+ResetWidget = {}
+
+function ResetWidget:Reset()
+    return 91
+end

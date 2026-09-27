@@ -153,7 +153,7 @@ Flags function definitions that are never referenced anywhere in the workspace. 
 
 - Functions whose name starts with `_` (convention for intentionally unused)
 - Functions defined in library files (directories marked with `library` in `.wowluarc.json`)
-- Interface methods: if 2+ distinct tables define the same method name, the method is assumed to be a framework callback pattern (duck-typing dispatch)
+- Interface methods: if 2+ distinct tables define a method taking `self` (`function T:Method()` or `function T.Method(self)`) with the same name, those methods are assumed to be a framework callback pattern (duck-typing dispatch). Static functions such as `function Module.Reset()` are always checked and don't count toward the 2.
 - Inherited methods: if a parent class's field is referenced, child overrides are also considered used
 
 **Cross-file behavior:**

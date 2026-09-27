@@ -64,3 +64,17 @@ local host = {}
 function host.OnThing(value) end
 function host.UnusedHostMethod() end
 EventRegistrar.Register(host, "ThingHappened", "OnThing")
+
+-- Static function on one of two modules defining `CreateQuery`.
+local q = QueryModuleA.CreateQuery()
+
+-- Untyped receiver: the call can't be resolved, so interface detection is what
+-- keeps PollerA/PollerB's shared `self` methods from being flagged.
+local function poll(poller)
+    return poller:IsReady(), poller:Describe()
+end
+
+function NS:DefinedInTwoFiles()
+    return 74
+end
+NS:DefinedInTwoFiles()
