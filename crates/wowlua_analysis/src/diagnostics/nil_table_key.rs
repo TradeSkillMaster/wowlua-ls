@@ -182,7 +182,7 @@ impl DiagnosticPass for NilTableKey {
             match node.kind() {
                 crate::syntax::SyntaxKind::LocalAssignStatement | crate::syntax::SyntaxKind::AssignStatement => {
                     let annotations = crate::annotations::extract_annotations(node);
-                    if let Some(ref at) = annotations.var_type {
+                    for at in annotations.var_types() {
                         let violations = collect_nil_table_keys(at);
                         if !violations.is_empty() {
                             let comment_ranges = Analysis::collect_preceding_annotation_ranges(node);

@@ -16,6 +16,15 @@ function SFChild:DoWork()
     -- Spaced annotation (--- @type with space after ---)
     local s = self._spaced
     --                ^ hover: (field) _spaced: SFQuery  def: external
+    -- Multi-target `@type` lists, preceding and trailing
+    local cnt = self._count
+    --                  ^ hover: (field) _count: number  def: external
+    local qry = self._query
+    --                  ^ hover: (field) _query: SFQuery  def: external
+    local lft = self._left
+    --                  ^ hover: (field) _left: string  def: external
+    local rgt = self._right
+    --                  ^ hover: (field) _right: SFQuery  def: external
 end
 
 -- Cross-file self-field test: global variable with @class name different from var name

@@ -124,6 +124,15 @@ local entries = {}
 local cachedValue = nil
 ```
 
+When a statement assigns several targets, list one type per target, in order, either above the statement or at the end of its line:
+
+```lua
+---@type number, string
+local count, label = GetCountAndLabel()
+
+local addonName, ns = ... ---@type string, MyAddonNamespace
+```
+
 ::: tip When to use `@type`
 `@type` is most useful when the LS can't infer the type from the right-hand side: empty tables, `nil` initializers, or values from external APIs. For simple assignments like `local x = 5`, the LS already knows the type, so the annotation is optional.
 :::

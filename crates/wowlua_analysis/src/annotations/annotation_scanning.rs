@@ -8,7 +8,7 @@ use super::{
     AnnotationType, ParamInfo, TypedSelfField, Visibility,
     default_visibility_for_name,
 };
-use super::annotation_types::{parse_type, parse_type_annotation, OverloadSig};
+use super::annotation_types::{parse_type_annotation_list, OverloadSig};
 use super::scan_globals::string_keyed_receiver_method;
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
@@ -628,11 +628,11 @@ pub struct StringArrayConstDecl {
 
 // ── Shared helpers (used by scan_defclass + scan_method_typed_self_fields) ───
 
-/// Try to extract a `---@type X` annotation from the comments preceding an assignment statement.
-/// Only considers standalone annotation comments (on their own line), not inline trailing comments.
-pub(super) fn extract_type_annotation_for_assign(node: SyntaxNode<'_>) -> Option<AnnotationType> {
-    let first_token = node.first_token()?;
-    let mut tok = first_token.prev_token();
+/// Extract a `---@type` annotation (one type per target) from the comments preceding an
+/// assignment statement. Only considers standalone annotation comments (on their own line),
+/// not inline trailing comments.
+pub(super) fn extract_type_annotations_for_assign(node: SyntaxNode<'_>) -> Vec<AnnotationType> {
+    let mut tok = node.first_token().and_then(|t| t.prev_token());
     while let Some(token) = tok {
         let kind = token.kind();
         if kind == SyntaxKind::Whitespace || kind == SyntaxKind::Newline {
@@ -660,16 +660,13 @@ pub(super) fn extract_type_annotation_for_assign(node: SyntaxNode<'_>) -> Option
             if let Some(stripped) = text.strip_prefix("---") {
                 let stripped = stripped.trim_start_matches([' ', '\t']);
                 if let Some(rest) = stripped.strip_prefix("@type ").or_else(|| stripped.strip_prefix("@type\t")) {
-                    let trimmed = rest.trim();
-                    if !trimmed.is_empty() {
-                        return Some(parse_type(trimmed));
-                    }
+                    return parse_type_annotation_list(rest);
                 }
             }
         }
         break;
     }
-    None
+    Vec::new()
 }
 
 /// Extract an inline `---@class ClassName` from a trailing comment on the same line as
@@ -733,44 +730,82 @@ pub fn extract_inline_class_with_offset(node: SyntaxNode<'_>) -> Option<(String,
     None
 }
 
-/// Try to extract a `---@type X` annotation from an inline trailing comment on the same line
-/// as an assignment statement. Finds the last "content" token (non-trivia) in the statement,
-/// then walks forward looking for a `---@type` comment before any newline.
-pub(super) fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<AnnotationType> {
-    // Find the last non-trivia token in the statement (e.g. `nil`, `true`, `"str"`)
-    let mut last_content = None;
-    for item in node.descendants_with_tokens() {
-        if let NodeOrToken::Token(ref t) = item {
-            match t.kind() {
-                SyntaxKind::Comment | SyntaxKind::Whitespace | SyntaxKind::Newline => {}
-                _ => last_content = Some(*t),
-            }
-        }
-    }
-    let last_content = last_content?;
-    // Walk forward from the last content token looking for a ---@type comment on the same line
-    let mut tok = last_content.next_token();
+/// The same-line trailing `---@type` comment of a statement (`local Options ---@type Foo`,
+/// `local a, b = f() ---@type A, B`). The parser folds a trailing comment into the
+/// statement node as trivia, so walk backward from the node's last token.
+pub fn trailing_type_comment(stmt: SyntaxNode<'_>) -> Option<crate::syntax::SyntaxToken<'_>> {
+    let mut tok = stmt.last_token();
     while let Some(t) = tok {
         match t.kind() {
-            SyntaxKind::Whitespace => { tok = t.next_token(); }
-            SyntaxKind::Newline => return None,
+            SyntaxKind::Whitespace | SyntaxKind::Newline => {
+                tok = t.prev_token();
+            }
             SyntaxKind::Comment => {
-                let text = t.text().to_string();
-                if let Some(stripped) = text.strip_prefix("---") {
-                    let stripped = stripped.trim_start_matches([' ', '\t']);
-                    if let Some(rest) = stripped.strip_prefix("@type ").or_else(|| stripped.strip_prefix("@type\t")) {
-                        let trimmed = rest.trim();
-                        if !trimmed.is_empty() {
-                            return Some(parse_type(trimmed));
-                        }
+                // Accept only a comment on the *same line* as the statement's code
+                // (`local Options ---@type Foo`). A `---@type` on a following line
+                // is a *leading* annotation for the next statement, which the
+                // parser folds into this node as trailing trivia. Skip past such
+                // newline-separated comments and keep walking, so a genuine
+                // same-line trailing `---@type` is still found even when a
+                // next-statement annotation block sits between it and the node
+                // end (`local Options ---@type Foo` / `---@type Bar` / `local X`).
+                let mut prev = t.prev_token();
+                let mut same_line = false;
+                while let Some(ref p) = prev {
+                    match p.kind() {
+                        SyntaxKind::Whitespace => prev = p.prev_token(),
+                        SyntaxKind::Newline => break,
+                        _ => { same_line = true; break; }
                     }
                 }
-                return None;
+                if !same_line {
+                    tok = t.prev_token();
+                    continue;
+                }
+                let content = t.text().trim_start_matches('-').trim();
+                let rest = content.strip_prefix("@type")?;
+                return (!rest.trim().is_empty()).then_some(t);
             }
             _ => return None,
         }
     }
     None
+}
+
+/// The types of a statement's same-line trailing `---@type` (one per target).
+pub fn extract_trailing_types(stmt: SyntaxNode<'_>) -> Vec<AnnotationType> {
+    trailing_type_comment(stmt)
+        .and_then(|t| t.text().trim_start_matches('-').trim().strip_prefix("@type"))
+        .map(parse_type_annotation_list)
+        .unwrap_or_default()
+}
+
+/// The explicit `---@type` of each target of an assignment, applied as the
+/// per-file engine does: a same-line trailing `---@type T1, T2` list types the
+/// targets positionally, a single trailing type belongs to the expression it
+/// follows, and otherwise a preceding `---@type` (list) types them positionally.
+pub(super) struct AssignTargetTypes {
+    preceding: Vec<AnnotationType>,
+    trailing: Vec<AnnotationType>,
+}
+
+impl AssignTargetTypes {
+    pub(super) fn new(assign: SyntaxNode<'_>) -> Self {
+        let mut trailing = extract_trailing_types(assign);
+        if trailing.len() < 2 { trailing.clear(); }
+        Self { preceding: extract_type_annotations_for_assign(assign), trailing }
+    }
+
+    /// The type of target `index`, whose value is `expr` (`None` past the last
+    /// expression of a multi-return assignment).
+    pub(super) fn get(&self, index: usize, expr: Option<&Expression<'_>>) -> Option<AnnotationType> {
+        if self.trailing.is_empty() {
+            expr.and_then(|e| extract_inline_type_from_node(e.syntax()))
+        } else {
+            self.trailing.get(index).cloned()
+        }
+        .or_else(|| self.preceding.get(index).cloned())
+    }
 }
 
 // ── Typed self-field scanning ───────────────────────────────────────────────
@@ -888,15 +923,15 @@ fn scan_typed_self_fields_inner(
         match &stmt {
             Statement::Assign(assign) => {
                 if let Some(vl) = assign.variable_list() {
-                    for ident in vl.identifiers() {
+                    let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
+                    let target_types = AssignTargetTypes::new(assign.syntax());
+                    for (i, ident) in vl.identifiers().iter().enumerate() {
                         let names = ident.names();
                         if names.len() == 2 && names[0] == "self" {
                             let field_name = &names[1];
                             if !seen.insert(field_name.clone()) { continue; }
                             // Only capture fields with explicit ---@type annotations
-                            let ann_type = extract_type_annotation_for_assign(assign.syntax())
-                                .or_else(|| extract_inline_type_annotation(assign.syntax()));
-                            if let Some(ann_type) = ann_type {
+                            if let Some(ann_type) = target_types.get(i, exprs.get(i)) {
                                 let field_range = ident.syntax().children_with_tokens()
                                     .filter_map(|c| c.into_token()).find(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
                                     .map(|t| {
@@ -1090,15 +1125,14 @@ fn scan_funcall_self_fields_inner(
             Statement::Assign(assign) => {
                 if let Some(vl) = assign.variable_list() {
                     let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
+                    let target_types = AssignTargetTypes::new(assign.syntax());
                     for (i, ident) in vl.identifiers().iter().enumerate() {
                         let names = ident.names();
                         if names.len() == 2 && names[0] == "self" {
                             let field_name = &names[1];
                             if !seen.insert(field_name.clone()) { continue; }
                             // Skip if there's an explicit @type annotation
-                            if extract_type_annotation_for_assign(assign.syntax()).is_some()
-                                || extract_inline_type_annotation(assign.syntax()).is_some()
-                            {
+                            if target_types.get(i, exprs.get(i)).is_some() {
                                 continue;
                             }
                             // Only handle function call expressions
@@ -1260,15 +1294,14 @@ fn scan_bare_self_fields_inner(
             Statement::Assign(assign) => {
                 if let Some(vl) = assign.variable_list() {
                     let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
+                    let target_types = AssignTargetTypes::new(assign.syntax());
                     for (i, ident) in vl.identifiers().iter().enumerate() {
                         let names = ident.names();
                         if names.len() == 2 && names[0] == "self" {
                             let field_name = &names[1];
                             if !seen.insert(field_name.clone()) { continue; }
                             // Skip if there's an explicit @type annotation (handled by typed scan)
-                            if extract_type_annotation_for_assign(assign.syntax()).is_some()
-                                || extract_inline_type_annotation(assign.syntax()).is_some()
-                            {
+                            if target_types.get(i, exprs.get(i)).is_some() {
                                 continue;
                             }
                             // Infer type from RHS expression
@@ -1724,8 +1757,24 @@ fn parse_diagnostic_directive(rest: &str, line: u32) -> Option<DiagnosticSuppres
 /// 2. Sibling comment after the node (same line)
 /// 3. Preceding standalone comment on the line above the node
 ///
+/// A node is a single target, so a `---@type T1, T2` list yields its first type.
 /// Used by both per-file analysis (build_ir) and cross-file scanning (scan_globals).
 pub fn extract_inline_type_from_node(field_node: SyntaxNode<'_>) -> Option<AnnotationType> {
+    extract_inline_types_from_node(field_node).into_iter().next()
+}
+
+/// Every type of the `---@type` comment `extract_inline_type_from_node` reads.
+pub fn extract_inline_types_from_node(field_node: SyntaxNode<'_>) -> Vec<AnnotationType> {
+    inline_type_body(field_node).map(parse_type_annotation_list).unwrap_or_default()
+}
+
+/// The body of a `---@type` comment at one of `extract_inline_type_from_node`'s
+/// locations.
+fn inline_type_body(field_node: SyntaxNode<'_>) -> Option<&str> {
+    fn type_body(text: &str) -> Option<&str> {
+        let rest = text.trim_start_matches('-').trim().strip_prefix("@type")?.trim();
+        (!rest.is_empty()).then_some(rest)
+    }
     // Check within the node itself: find the last Name token and walk forward
     // on the same line. This handles Identifier nodes that capture trailing comments.
     let mut last_name_tok = None;
@@ -1745,13 +1794,8 @@ pub fn extract_inline_type_from_node(field_node: SyntaxNode<'_>) -> Option<Annot
                     tok = t.next_token();
                 }
                 SyntaxKind::Comment => {
-                    let text = t.text();
-                    let content = text.trim_start_matches('-').trim();
-                    if let Some(rest) = content.strip_prefix("@type") {
-                        let rest = rest.trim();
-                        if !rest.is_empty() {
-                            return Some(parse_type_annotation(rest));
-                        }
+                    if let Some(body) = type_body(t.text()) {
+                        return Some(body);
                     }
                     break;
                 }
@@ -1768,13 +1812,8 @@ pub fn extract_inline_type_from_node(field_node: SyntaxNode<'_>) -> Option<Annot
                 tok = t.next_token();
             }
             SyntaxKind::Comment => {
-                let text = t.text();
-                let content = text.trim_start_matches('-').trim();
-                if let Some(rest) = content.strip_prefix("@type") {
-                    let rest = rest.trim();
-                    if !rest.is_empty() {
-                        return Some(parse_type_annotation(rest));
-                    }
+                if let Some(body) = type_body(t.text()) {
+                    return Some(body);
                 }
                 break;
             }
@@ -1815,15 +1854,7 @@ pub fn extract_inline_type_from_node(field_node: SyntaxNode<'_>) -> Option<Annot
                     }
                 }
                 if !standalone { return None; }
-                let text = t.text();
-                let content = text.trim_start_matches('-').trim();
-                if let Some(rest) = content.strip_prefix("@type") {
-                    let rest = rest.trim();
-                    if !rest.is_empty() {
-                        return Some(parse_type_annotation(rest));
-                    }
-                }
-                return None;
+                return type_body(t.text());
             }
             _ => return None,
         }

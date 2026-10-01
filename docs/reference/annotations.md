@@ -10,7 +10,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@return type [name]` | Return type. Use multiple lines or one comma-separated line (`@return A, B`) for multi-return. | [Basic Annotations](/guide/basic-annotations) |
 | `@return (A, B) \| (C, D)` | Tuple-union return with correlated narrowing. | [Multi-Return](/guide/multi-return) |
 | `@return ...T` | Variadic return: fills remaining positions with T. | [Multi-Return](/guide/multi-return) |
-| `@type type` | Variable type annotation. | [Basic Annotations](/guide/basic-annotations) |
+| `@type type` | Variable type annotation. `@type A, B` types each target of a multi-target assignment (`local a, b = ...`) in order. | [Basic Annotations](/guide/basic-annotations) |
 | `@as type` | Inline expression type assertion (`--[[@as T]]`). | [Basic Annotations](/guide/basic-annotations) |
 | `@cast var [+\|-]type` | Change variable type: replace, add (`+`), remove (`-`). | [Basic Annotations](/guide/basic-annotations) |
 

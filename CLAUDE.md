@@ -178,6 +178,7 @@ These annotation-syntax and `ValueType` features are conventions — load-bearin
 - `[T1, T2, ...]` — LuaLS tuple syntax, lowered to an integer-keyed `TableLiteral`. [→](.claude/ARCHITECTURE.md#t1-t2--luals-tuple-syntax)
 - `?T` — prefix-optional shorthand, identical to `T?`. [→](.claude/ARCHITECTURE.md#t-prefix-optional-shorthand)
 - Comma-separated `@return T1, T2` — LuaLS single-line multi-return. [→](.claude/ARCHITECTURE.md#comma-separated-return-t1-t2-luals-single-line-multi-return)
+- Multi-target `@type T1, T2` — types assignment targets positionally; read via `AnnotationBlock::var_types`/`var_type_at` (scanners: `AssignTargetTypes`), never `var_type` alone. [→](.claude/ARCHITECTURE.md#multi-target-type-t1-t2-positional)
 - LuaLS-only `@diagnostic` codes — accepted silently (`LUALS_ONLY_CODES`), suppress nothing. [→](.claude/ARCHITECTURE.md#luals-only-diagnostic-codes)
 - Number-literal types (`0` / `-1` / `0xFF` → `ValueType::NumberLiteral`, kept last in the enum). [→](.claude/ARCHITECTURE.md#number-literal-types-0---1--0xff)
 - `ValueType::FunctionSig(Box<FunctionShape>)` — inline, cross-file-safe function signature (runtime-only). [→](.claude/ARCHITECTURE.md#valuetypefunctionsigboxfunctionshape-inline-function-signature)

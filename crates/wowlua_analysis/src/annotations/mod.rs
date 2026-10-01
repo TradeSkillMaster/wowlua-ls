@@ -793,6 +793,19 @@ pub fn register_event_type_aliases(aliases: &mut Vec<AliasDecl>, events: &[Event
 }
 
 impl AnnotationBlock {
+    /// Every `@type` type, in assignment-target order (`@type T1, T2`).
+    pub fn var_types(&self) -> impl Iterator<Item = &AnnotationType> {
+        self.var_type.iter().chain(&self.var_type_rest)
+    }
+
+    /// The `@type` type for the `index`-th (0-based) assignment target.
+    pub fn var_type_at(&self, index: usize) -> Option<&AnnotationType> {
+        match index.checked_sub(1) {
+            None => self.var_type.as_ref(),
+            Some(rest) => self.var_type_rest.get(rest),
+        }
+    }
+
     /// The block's `@secret-*` metadata, or `None` when it carries none.
     pub fn secret_meta(&self) -> Option<Box<crate::secrets::SecretMeta>> {
         (self.secret != crate::secrets::SecretMeta::default()).then(|| Box::new(self.secret.clone()))
@@ -806,6 +819,9 @@ pub struct AnnotationBlock {
     pub return_names: Vec<Option<String>>,
     pub return_descriptions: Vec<Option<String>>,
     pub var_type: Option<AnnotationType>,
+    /// Types for the 2nd, 3rd, … targets of a multi-target `@type T1, T2, …`
+    /// (`var_type` holds the first). Read through `var_types`/`var_type_at`.
+    var_type_rest: Vec<AnnotationType>,
     pub class: Option<String>,
     pub class_type_params: Vec<String>,
     pub class_type_param_constraints: Vec<Option<String>>,
@@ -1952,7 +1968,11 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@type") {
             let rest = rest.trim();
-            if !rest.is_empty() { block.var_type = Some(annotation_types::parse_type_annotation(rest)); }
+            let mut types = annotation_types::parse_type_annotation_list(rest).into_iter();
+            if let Some(first) = types.next() {
+                block.var_type = Some(first);
+                block.var_type_rest = types.collect();
+            }
         } else if content.starts_with("@cast") {
             // @cast directives are handled via raw comment lines in build_ir.rs
         } else if let Some(rest) = content.strip_prefix("@event") {

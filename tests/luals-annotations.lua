@@ -3,6 +3,7 @@
 --   1. comma-separated multi-return `@return T1, T2`
 --   2. `[T, T]` tuple type syntax
 --   3. `?T` prefix-optional shorthand
+--   4. multi-target `@type T1, T2`
 -- None of these should produce a diagnostic or hint.
 
 local function _consume(...) end
@@ -199,3 +200,72 @@ local _ = pr
 local described = nil
 local _ = described
 --        ^ hover: (local) described: table<number, number[]>
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- 4. Multi-target `@type T1, T2` (types each target positionally)
+-- ══════════════════════════════════════════════════════════════════════════
+
+local function untypedPair() return nil, nil end
+
+---@type number, string?
+local pairNum, pairStr = untypedPair()
+local _ = pairNum
+--        ^ hover: (local) pairNum: number
+local _ = pairStr
+--        ^ hover: (local) pairStr: string?
+
+-- Forward declarations, with the list continuing across nested commas.
+---@type table<string, number>, string[], boolean # note, with a comma
+local fwdMap, fwdTup, fwdFlag
+local _ = fwdMap
+--        ^ hover: (local) fwdMap: table<string, number>
+local _ = fwdTup
+--        ^ hover: (local) fwdTup: string[]
+local _ = fwdFlag
+--        ^ hover: (local) fwdFlag: boolean
+
+-- A `fun()` return list is part of one type, not a second target.
+---@type fun(): string, number
+local pairFn, notTyped
+local fnStr, fnNum = pairFn()
+local _ = fnNum
+--        ^ hover: (local) fnNum: number
+local _ = notTyped
+--        ^ hover: (local) notTyped: ?
+
+-- A same-line trailing list types the names the same way.
+local trailC, trailD ---@type string?, number?
+local _ = trailC
+--        ^ hover: (local) trailC: string?
+local _ = trailD
+--        ^ hover: (local) trailD: number?
+
+local trailE, trailF = untypedPair() ---@type number, boolean
+local _ = trailE
+--        ^ hover: (local) trailE: number
+local _ = trailF
+--        ^ hover: (local) trailF: boolean
+
+local trailG, trailH = nil, nil ---@type string, number
+local _ = trailG
+--        ^ hover: (local) trailG: string
+local _ = trailH
+--        ^ hover: (local) trailH: number
+
+local addonName, addonLocals = ... ---@type string, table<string, number>
+local _ = addonLocals
+--        ^ hover: (local) addonLocals: table<string, number>
+
+-- Field targets, including those past the last expression of a multi-return call.
+local fields = {}
+---@type number, string
+fields.a, fields.b = nil, nil
+local _ = fields.b
+--               ^ hover: (field) b: string
+---@type number, string
+fields.c, fields.d = untypedPair()
+local _ = fields.d
+--               ^ hover: (field) d: string
+fields.e, fields.f = untypedPair() ---@type boolean, number
+local _ = fields.f
+--               ^ hover: (field) f: number

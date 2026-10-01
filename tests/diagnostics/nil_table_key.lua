@@ -41,6 +41,11 @@ local _nilUnionKeyVar
 ---@type table<string, number>
 local _goodKeyVar
 
+-- Every type of a multi-target `@type` is checked.
+---@type string, table<nil, number>
+local _firstOk, _secondNilKey
+-- ^ diag: nil-table-key
+
 -- Value type nil is fine
 ---@type table<string, number?>
 local _nilValueVar

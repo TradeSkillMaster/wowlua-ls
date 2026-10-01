@@ -8,7 +8,7 @@ use super::{
 };
 use super::annotation_scanning::{
     ExternalGlobal, GeneratesEventsSpec, func_path,
-    extract_type_annotation_for_assign, extract_inline_type_annotation,
+    extract_type_annotations_for_assign, AssignTargetTypes,
     collect_statements_recursive,
 };
 use super::scan_built_name::build_built_name_map;
@@ -521,7 +521,7 @@ pub fn scan_defclass_calls_with_context(root: SyntaxNode<'_>, ctx: &DefclassCont
             if let Some(el) = assign.expression_list() {
                 let exprs = el.expressions();
                 if let Some(expr) = exprs.first() {
-                    let field_type = extract_type_annotation_for_assign(assign.syntax())
+                    let field_type = extract_type_annotations_for_assign(assign.syntax()).into_iter().next()
                         .unwrap_or_else(|| infer_type_from_expression(expr, global_returns, &HashMap::default(), &HashMap::default(), &ctx.class_field_types));
                     // Skip storing `any`-typed fields when the RHS is a self-referential
                     // method call (X.field = X.field:Method(...)). In this case the parent
@@ -1006,14 +1006,14 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>,
             Statement::Assign(assign) => {
                 if let Some(vl) = assign.variable_list() {
                     let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
+                    let target_types = AssignTargetTypes::new(assign.syntax());
                     for (i, ident) in vl.identifiers().iter().enumerate() {
                         let names = ident.names();
                         if names.len() == 2 && names[0] == "self" {
                             let field_name = &names[1];
                             if seen.insert(field_name.clone()) {
-                                // Try @type annotation (preceding line, then inline), then infer from expression
-                                let explicit = extract_type_annotation_for_assign(assign.syntax())
-                                    .or_else(|| extract_inline_type_annotation(assign.syntax()));
+                                // Try the target's @type annotation, then infer from expression
+                                let explicit = target_types.get(i, exprs.get(i));
                                 let inferred = explicit.is_none();
                                 let ann_type = explicit.unwrap_or_else(|| {
                                     exprs.get(i)

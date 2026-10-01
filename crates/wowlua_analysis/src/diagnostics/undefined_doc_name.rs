@@ -1,4 +1,5 @@
 use crate::analysis::{Analysis, AnalysisResult};
+use crate::annotations::annotation_scanning::{extract_inline_types_from_node, extract_trailing_types, trailing_type_comment};
 use crate::ast::{AstNode, ExpressionList};
 use crate::syntax::{SyntaxKind, SyntaxNode};
 use crate::syntax::tree::{NodeOrToken, SyntaxTree};
@@ -36,7 +37,7 @@ impl DiagnosticPass for UndefinedDocName {
                     let eff_generics = generics.as_deref().unwrap_or(&no_generics);
 
                     // Check @type on preceding annotations
-                    if let Some(ref at) = annotations.var_type {
+                    if annotations.var_type.is_some() {
                         let (type_start, type_end) = comment_ranges.iter()
                             .find(|(text, _, _)| Analysis::comment_is_tag(text, "---@type"))
                             .map(|(_, s, e)| (*s, *e))
@@ -44,28 +45,37 @@ impl DiagnosticPass for UndefinedDocName {
                                 let s = u32::from(node.text_range().start()) as usize;
                                 (s, s + 10)
                             });
-                        analysis.ir.check_annotation_type_names(at, eff_generics, type_start, type_end, diags);
+                        for at in annotations.var_types() {
+                            analysis.ir.check_annotation_type_names(at, eff_generics, type_start, type_end, diags);
+                        }
                     }
 
                     // Check inline @type on RHS expressions
                     if let Some(expr_list) = node.children().find_map(ExpressionList::cast) {
                         for expr in expr_list.expressions() {
-                            if let Some(ref at) = Analysis::extract_inline_type(expr.syntax())
-                                && let Some((start, end)) = Analysis::inline_type_comment_range(expr.syntax())
-                            {
-                                analysis.ir.check_annotation_type_names(at, eff_generics, start, end, diags);
+                            if let Some((start, end)) = Analysis::inline_type_comment_range(expr.syntax()) {
+                                for at in &extract_inline_types_from_node(expr.syntax()) {
+                                    analysis.ir.check_annotation_type_names(at, eff_generics, start, end, diags);
+                                }
                             }
+                        }
+                    } else if let Some(comment) = trailing_type_comment(node) {
+                        // A forward declaration's trailing @type (`local x ---@type T`).
+                        let r = comment.text_range();
+                        let (start, end) = (u32::from(r.start()) as usize, u32::from(r.end()) as usize);
+                        for at in &extract_trailing_types(node) {
+                            analysis.ir.check_annotation_type_names(at, eff_generics, start, end, diags);
                         }
                     }
                 }
                 SyntaxKind::Field => {
-                    if let Some(ref at) = Analysis::extract_inline_type(node)
-                        && let Some((start, end)) = Analysis::inline_type_comment_range(node)
-                    {
+                    if let Some((start, end)) = Analysis::inline_type_comment_range(node) {
                         let generics = analysis.find_enclosing_function_generics(node, &func_by_start);
                         let no_generics: Vec<(String, Option<String>)> = Vec::new();
                         let eff_generics = generics.as_deref().unwrap_or(&no_generics);
-                        analysis.ir.check_annotation_type_names(at, eff_generics, start, end, diags);
+                        for at in &extract_inline_types_from_node(node) {
+                            analysis.ir.check_annotation_type_names(at, eff_generics, start, end, diags);
+                        }
                     }
                 }
                 _ => {}

@@ -97,6 +97,10 @@ struct AssignCtx<'a, 'b> {
     stmt_index: usize,
     node: DefNode,
     annotations: &'b crate::annotations::AnnotationBlock,
+    /// A same-line trailing `---@type T1, T2` list, which types the targets
+    /// positionally (empty for none or a single type, which belongs to the
+    /// expression it follows).
+    trailing_types: &'b [AnnotationType],
     flavor_guard: u8,
     /// Whether the enclosing block only runs under a condition, so a write here
     /// may not be the one a later read sees.
@@ -271,6 +275,16 @@ impl<'a> Analysis<'a> {
             .map(|el| el.expressions())
             .unwrap_or_default();
 
+        let annotations = extract_annotations(assign.syntax());
+        // A same-line trailing `---@type` types the names positionally when it
+        // lists several types, or when there is no initializer for a single one
+        // to follow (`local Options ---@type Foo`); a single trailing type on an
+        // initializer belongs to the expression it follows (`extract_inline_type`).
+        let mut trailing_types = crate::annotations::annotation_scanning::extract_trailing_types(assign.syntax());
+        if trailing_types.len() < 2 && !expressions.is_empty() {
+            trailing_types.clear();
+        }
+
         // Collect multi-return siblings for return-only overload narrowing
         let mut multi_return_group: Vec<(usize, SymbolIndex)> = Vec::new();
 
@@ -400,45 +414,12 @@ impl<'a> Analysis<'a> {
                         }
                     }
                 }
-                // Apply @type and @class annotations (first variable only)
+                // Apply @type and @class annotations (@class to the first variable
+                // only; a multi-target `@type T1, T2` types names positionally)
                 let mut annotated_flavor_guard = 0;
                 if index == 0 {
-                    let annotations = extract_annotations(assign.syntax());
                     if let Some(ref at) = annotations.var_type {
-                        // If the annotation reduces to a function-typed alias,
-                        // materialize a real Function entry so the signature
-                        // survives propagation through `local y = x`.
-                        let vt_opt = self.resolve_annotation_type_mut_gen(at, &[])
-                            .map(|vt| self.materialize_fun_alias(vt, at));
-                        if let Some(vt) = vt_opt {
-                            let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
-                            self.ir.set_type_source(symbol_idx, expr_id);
-                            // Store resolved type args for parameterized class annotations
-                            // (e.g. @type Future<number> → type_args = [Number])
-                            if let crate::annotations::AnnotationType::Parameterized(_param_class_name, type_arg_annotations) = at {
-                                let type_args: Vec<ValueType> = type_arg_annotations.iter()
-                                    .filter_map(|ta| {
-                                        let vt = self.resolve_annotation_type_mut_gen(ta, &[]);
-                                        if matches!(&vt, Some(ValueType::Function(None)))
-                                            && let crate::annotations::AnnotationType::Simple(name) = ta {
-                                                let body = self.ir.alias_fun_types.get(name)
-                                                    .or_else(|| self.ir.ext.alias_fun_types.get(name))
-                                                    .cloned();
-                                                if let Some(body) = body {
-                                                    return self.resolve_annotation_type_mut_gen(&body, &[]);
-                                                }
-                                            }
-                                        vt
-                                    })
-                                    .collect();
-                                if !type_args.is_empty()
-                                    && let Some(ver) = self.ir.symbols[symbol_idx.val()].versions.last_mut()
-                                {
-                                    ver.type_args = type_args;
-                                }
-                            }
-                            self.record_symbol_annotation(symbol_idx, at, vt);
-                        }
+                        self.apply_local_var_type(symbol_idx, at);
                     }
                     let effective_class = self.ir.resolve_class_annotation(
                         &annotations.class, annotations.class_comment_start, assign.syntax(),
@@ -473,11 +454,10 @@ impl<'a> Analysis<'a> {
                     // eagerly set its type to the auto-created class table
                     // Inline ---@type on expression (e.g. `local x = {} ---@type Foo`)
                     // Also checks inside table constructor opening: `{ ---@type Foo ... }`.
-                    // For a forward declaration with no initializer
-                    // (`local Options ---@type Foo`) the trailing @type sits on the
-                    // local statement node itself, so fall back to that node.
+                    // Otherwise the positional trailing @type (a forward declaration's
+                    // `local Options ---@type Foo`, or a `---@type T1, T2` list).
                     if annotations.var_type.is_none() && effective_class.is_none() {
-                        let inline_at = if let Some(expr) = expression {
+                        let inline_at = expression.and_then(|expr| {
                             Self::extract_inline_type(expr.syntax())
                                 .or_else(|| {
                                     if let Expression::TableConstructor(tc) = expr {
@@ -486,9 +466,7 @@ impl<'a> Analysis<'a> {
                                         None
                                     }
                                 })
-                        } else {
-                            Self::extract_trailing_local_type(assign.syntax())
-                        };
+                        }).or_else(|| trailing_types.first().cloned());
                         if let Some(inline_at) = inline_at {
                             let vt_opt = self.resolve_annotation_type_mut_gen(&inline_at, &[])
                                 .map(|vt| self.materialize_fun_alias(vt, &inline_at));
@@ -527,6 +505,17 @@ impl<'a> Analysis<'a> {
                             self.ir.set_type_source(symbol_idx, expr_id);
                         }
                     annotated_flavor_guard = annotations.flavor_guard;
+                } else {
+                    // Later names take their position in a preceding @type list,
+                    // else in a positional trailing one.
+                    let at = if annotations.var_type.is_some() {
+                        annotations.var_type_at(index)
+                    } else {
+                        trailing_types.get(index)
+                    };
+                    if let Some(at) = at {
+                        self.apply_local_var_type(symbol_idx, at);
+                    }
                 }
                 let current_guard = self.ir.symbols[symbol_idx.val()].flavor_guard;
                 self.ir.symbols[symbol_idx.val()].flavor_guard = self.inferred_flavor_guards
@@ -1341,6 +1330,10 @@ impl<'a> Analysis<'a> {
         let node = DefNode::from_node(assign.syntax());
         let assign_annotations = extract_annotations(assign.syntax());
         let assign_flavor_guard = assign_annotations.flavor_guard;
+        let mut trailing_types = crate::annotations::annotation_scanning::extract_trailing_types(assign.syntax());
+        if trailing_types.len() < 2 {
+            trailing_types.clear();
+        }
         let ctx = AssignCtx {
             assign,
             scope_idx,
@@ -1349,6 +1342,7 @@ impl<'a> Analysis<'a> {
             stmt_index,
             node,
             annotations: &assign_annotations,
+            trailing_types: &trailing_types,
             flavor_guard: assign_flavor_guard,
             is_conditional: self.stmt_is_conditional,
         };
@@ -1831,7 +1825,7 @@ impl<'a> Analysis<'a> {
     ) {
         let AssignCtx {
             assign, scope_idx, func_id, constructor_of, stmt_index,
-            annotations: assign_annotations, flavor_guard: annotated_flavor_guard, ..
+            annotations: assign_annotations, trailing_types, flavor_guard: annotated_flavor_guard, ..
         } = ctx;
         let AssignTarget { ident, index, expressions, identifiers_len, names, .. } = target;
         // An explicit inline `@private`/`@protected` on the assignment sets the
@@ -1863,10 +1857,15 @@ impl<'a> Analysis<'a> {
                     ValueType::Table(Some(class_table_idx))
                 ));
         }
-        // Check for inline ---@type annotation after the expression
+        // Check for inline ---@type annotation after the expression (or the
+        // target's position in a trailing `---@type T1, T2` list)
         // Also checks inside table constructor opening: `{ ---@type Foo ... }`
-        // Falls back to preceding-line ---@type for the first target.
-        let inline_type = Self::extract_inline_type(expr.syntax())
+        // Falls back to the target's position in a preceding-line ---@type.
+        let inline_type = if trailing_types.is_empty() {
+            Self::extract_inline_type(expr.syntax())
+        } else {
+            trailing_types.get(index).cloned()
+        }
             .or_else(|| {
                 if let Expression::TableConstructor(tc) = expr {
                     Self::extract_table_constructor_type(tc.syntax())
@@ -1874,9 +1873,7 @@ impl<'a> Analysis<'a> {
                     None
                 }
             })
-            .or_else(|| {
-                if index == 0 { assign_annotations.var_type.clone() } else { None }
-            });
+            .or_else(|| assign_annotations.var_type_at(index).cloned());
         let inline_is_lateinit = inline_type.as_ref().is_some_and(|at| matches!(at, AnnotationType::NonNil(_)));
         let inline_annotation_text = inline_type.as_ref()
             .map(crate::annotations::format_annotation_type);
@@ -2126,14 +2123,15 @@ impl<'a> Analysis<'a> {
     }
 
     /// Lower a multi-return field assignment (`t.a, t.b = f()`): reuses the cached
-    /// call's args at the appropriate return index and registers the field.
+    /// call's args at the appropriate return index and registers the field, typed
+    /// by the target's position in a `---@type T1, T2` list.
     fn build_field_multi_return(
         &mut self,
         ctx: AssignCtx<'a, '_>,
         target: AssignTarget<'a, '_>,
         cached_multi_ret_call: &mut Option<ExprId>,
     ) {
-        let AssignCtx { scope_idx, .. } = ctx;
+        let AssignCtx { scope_idx, annotations, trailing_types, .. } = ctx;
         let AssignTarget { ident, index, expressions, names, .. } = target;
         let root_name = &names[0];
         let field_name = &names[names.len() - 1];
@@ -2147,9 +2145,16 @@ impl<'a> Analysis<'a> {
                     let expr_id = self.ir.push_expr(Expr::FunctionCall { func: f, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
                     if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
                         && names.len() <= 2 {
+                            let raw = trailing_types.get(index).or_else(|| annotations.var_type_at(index)).cloned();
+                            let annotation = raw.as_ref().and_then(|at| self.resolve_annotation_type_mut_gen(at, &[]));
+                            // Like `build_field_value`, keep the text only for a resolved annotation.
+                            let text = raw.as_ref().filter(|_| annotation.is_some())
+                                .map(crate::annotations::format_annotation_type);
+                            let lateinit = matches!(raw, Some(AnnotationType::NonNil(_)));
                             if !table_idx.is_external() {
                                 if let Some(field_info) = self.ir.tables[table_idx.val()].fields.get_mut(field_name) {
                                     field_info.extra_exprs.push(expr_id);
+                                    Self::annotate_written_field(field_info, annotation, text, raw, lateinit);
                                 } else {
                                     let vis = if root_name == "self" {
                                         crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
@@ -2161,10 +2166,10 @@ impl<'a> Analysis<'a> {
                                         expr: expr_id,
                                         extra_exprs: Vec::new(),
                                         visibility: vis,
-                                        annotation: None,
-                                        annotation_text: None,
-                                        annotation_type_raw: None,
-                                        lateinit: false,
+                                        annotation,
+                                        annotation_text: text,
+                                        annotation_type_raw: raw,
+                                        lateinit,
                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
                                         flavor_guard: 0,
                                         description: None,
@@ -2173,10 +2178,33 @@ impl<'a> Analysis<'a> {
                                 }
                             } else if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
                                 overlay_fi.extra_exprs.push(expr_id);
+                                Self::annotate_written_field(overlay_fi, annotation, text, raw, lateinit);
                             }
                         }
                 }
         }
+    }
+
+    /// Give a field its write's `---@type` when it declares none yet.
+    fn annotate_written_field(
+        field_info: &mut FieldInfo,
+        annotation: Option<ValueType>,
+        text: Option<String>,
+        raw: Option<AnnotationType>,
+        lateinit: bool,
+    ) {
+        if field_info.annotation.is_none() {
+            if annotation.is_some() {
+                field_info.annotation = annotation;
+            }
+            if text.is_some() {
+                field_info.annotation_text = text;
+            }
+            if field_info.annotation_type_raw.is_none() {
+                field_info.annotation_type_raw = raw;
+            }
+        }
+        field_info.lateinit |= lateinit;
     }
 
 
@@ -4016,51 +4044,41 @@ impl<'a> Analysis<'a> {
         names.len() == 1 && names[0] == "CreateFromMixins"
     }
 
-    /// Extract a trailing `---@type X` from a forward-declared `local` statement
-    /// (`local Options ---@type Foo`, no initializer). The parser folds the
-    /// trailing comment into the statement node as trivia, so the comment is the
-    /// last non-newline token of the node rather than a following sibling — the
-    /// general `extract_inline_type_from_node` can't see it (its within-node Name
-    /// search only walks direct children, and the names are nested in a NameList).
-    /// Walk backward from the node's last token through trailing trivia to find it.
-    fn extract_trailing_local_type(local_node: SyntaxNode<'_>) -> Option<AnnotationType> {
-        let mut tok = local_node.last_token();
-        while let Some(t) = tok {
-            match t.kind() {
-                SyntaxKind::Whitespace | SyntaxKind::Newline => {
-                    tok = t.prev_token();
-                }
-                SyntaxKind::Comment => {
-                    // Accept only a comment on the *same line* as the local's code
-                    // (`local Options ---@type Foo`). A `---@type` on a following
-                    // line is a *leading* annotation for the next statement, which
-                    // the parser folds into this node as trailing trivia. Skip past
-                    // such newline-separated comments and keep walking, so a genuine
-                    // same-line trailing `---@type` is still found even when a
-                    // next-statement annotation block sits between it and the node
-                    // end (`local Options ---@type Foo` / `---@type Bar` / `local X`).
-                    let mut prev = t.prev_token();
-                    let mut same_line = false;
-                    while let Some(ref p) = prev {
-                        match p.kind() {
-                            SyntaxKind::Whitespace => prev = p.prev_token(),
-                            SyntaxKind::Newline => break,
-                            _ => { same_line = true; break; }
+    /// Apply a preceding `---@type` annotation to a `local` name.
+    fn apply_local_var_type(&mut self, symbol_idx: SymbolIndex, at: &AnnotationType) {
+        // If the annotation reduces to a function-typed alias,
+        // materialize a real Function entry so the signature
+        // survives propagation through `local y = x`.
+        let vt_opt = self.resolve_annotation_type_mut_gen(at, &[])
+            .map(|vt| self.materialize_fun_alias(vt, at));
+        let Some(vt) = vt_opt else { return };
+        let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
+        self.ir.set_type_source(symbol_idx, expr_id);
+        // Store resolved type args for parameterized class annotations
+        // (e.g. @type Future<number> → type_args = [Number])
+        if let AnnotationType::Parameterized(_param_class_name, type_arg_annotations) = at {
+            let type_args: Vec<ValueType> = type_arg_annotations.iter()
+                .filter_map(|ta| {
+                    let vt = self.resolve_annotation_type_mut_gen(ta, &[]);
+                    if matches!(&vt, Some(ValueType::Function(None)))
+                        && let AnnotationType::Simple(name) = ta {
+                            let body = self.ir.alias_fun_types.get(name)
+                                .or_else(|| self.ir.ext.alias_fun_types.get(name))
+                                .cloned();
+                            if let Some(body) = body {
+                                return self.resolve_annotation_type_mut_gen(&body, &[]);
+                            }
                         }
-                    }
-                    if !same_line {
-                        tok = t.prev_token();
-                        continue;
-                    }
-                    let content = t.text().trim_start_matches('-').trim();
-                    let rest = content.strip_prefix("@type")?.trim();
-                    if rest.is_empty() { return None; }
-                    return Some(crate::annotations::parse_type(rest));
-                }
-                _ => return None,
+                    vt
+                })
+                .collect();
+            if !type_args.is_empty()
+                && let Some(ver) = self.ir.symbols[symbol_idx.val()].versions.last_mut()
+            {
+                ver.type_args = type_args;
             }
         }
-        None
+        self.record_symbol_annotation(symbol_idx, at, vt);
     }
 
     /// Record a `---@type` annotation against a local symbol: store the resolved

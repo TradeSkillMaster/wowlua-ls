@@ -513,6 +513,13 @@ Some authors (and LuaLS) write the optional marker as a prefix (`?number`) rathe
 ### Comma-separated `@return T1, T2` (LuaLS single-line multi-return)
 One return slot per top-level comma segment, each `<type> [name]`, with an optional trailing `# description` or free-text description on the final segment. Parsed by `annotation_types::parse_multi_return_line()` (left-to-right, matching LuaLS: the type list continues only when a `<type> [name]` is *immediately* followed by a top-level comma), so a single return whose **description** contains a comma (`@return number red Red color, from 0 to 1`) stays one return — the helper returns `None` there and the caller falls back to `parse_return_line` (which still owns parenthesized tuple / tuple-union / vararg / `built` forms). The old "comma-separated return types are not supported" `malformed-annotation` was removed.
 
+### Multi-target `@type T1, T2` (positional)
+`annotation_types::parse_type_annotation_list()` splits a `@type` body by the same rule as the comma-separated `@return` (a type immediately followed by a top-level comma), so `fun(): A, B` return lists and commas in a description stay inside one type. Type *i* goes to assignment target *i*, as in LuaLS:
+- **Preceding `@type`**: `AnnotationBlock` keeps the first type in `var_type` and the rest private — read them through `var_types()` (every type, for validation) or `var_type_at(i)` (target *i*), never `var_type` alone when the statement can have several targets.
+- **Same-line trailing `@type`** (`annotation_scanning::extract_trailing_types`): positional when it lists several types, or on a forward declaration (`local a, b ---@type A, B`). A single trailing type on an initializer belongs to the expression it follows (`extract_inline_type_from_node`, which yields a list's first type for single-target sites such as table fields).
+
+The per-file engine applies both in `build_stmt_local_assign`, `build_field_value` and `build_field_multi_return` (targets past the last expression of `t.a, t.b = f()`). The cross-file self-field scanners resolve each target through `AssignTargetTypes`, which mirrors those rules so other files see the same field types. `build_assign_simple` (plain-name targets such as `a, b = f()`) applies no `@type` in-file, single or multi.
+
 ### LuaLS-only `@diagnostic` codes
 `diagnostics/mod.rs::LUALS_ONLY_CODES` lists codes LuaLS defines but wowlua_ls has no equivalent for (e.g. `lowercase-global`). They're folded into `known_codes()` so `unknown-diag-code` accepts them silently; they suppress nothing (no mapping). Codes that *do* map to one of ours go in `CODE_ALIASES` instead.
 

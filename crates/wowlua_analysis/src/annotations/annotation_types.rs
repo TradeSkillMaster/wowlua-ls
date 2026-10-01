@@ -849,6 +849,28 @@ pub fn parse_type_annotation(body: &str) -> AnnotationType {
     parse_type(body.trim())
 }
 
+/// Parse a `@type` body into one type per assignment target: the LuaLS
+/// multi-target `@type T1, T2` types `local a, b = ...` positionally. Like
+/// `parse_multi_return_line`, the list continues only while a type is
+/// immediately followed by a top-level comma, so a single type whose
+/// description contains a comma stays one (`parse_type_annotation`). Empty for
+/// an empty body.
+pub fn parse_type_annotation_list(body: &str) -> Vec<AnnotationType> {
+    if body.trim().is_empty() { return Vec::new(); }
+    let mut types = Vec::new();
+    let mut rem = find_hash_comment(body).map_or(body, |i| &body[..i]).trim();
+    loop {
+        let ty = extract_type_prefix(rem);
+        if ty.trim().is_empty() { break; }
+        types.push(parse_type(ty.trim()));
+        match rem[ty.len()..].trim_start().strip_prefix(',') {
+            Some(next) => rem = next.trim_start(),
+            None => break,
+        }
+    }
+    if types.len() >= 2 { types } else { vec![parse_type_annotation(body)] }
+}
+
 pub fn extract_type_prefix(s: &str) -> &str {
     let mut depth = 0usize;
     let mut after_colon = false;

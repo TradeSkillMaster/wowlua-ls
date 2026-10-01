@@ -132,6 +132,19 @@ local _badVar = nil
 ---@type KnownClass
 local _goodVar = {}
 
+-- A multi-target `@type` checks every listed type.
+---@type KnownClass, MissingSecondType
+local _goodFirst, _badSecond = {}, nil
+-- ^ diag: undefined-doc-name
+
+-- So does a same-line trailing one, including on a forward declaration.
+local _fwdBad ---@type MissingTrailingType
+-- ^ diag: undefined-doc-name
+local _fwdFirst, _fwdBadSecond ---@type KnownClass, MissingTrailingSecond
+-- ^ diag: undefined-doc-name
+local _initFirst, _initBadSecond = {}, nil ---@type KnownClass, MissingInlineSecond
+-- ^ diag: undefined-doc-name
+
 -- ── Parameterized unknown names ──────────────────────────────────────────
 
 ---@param x MissingParamed<number>
