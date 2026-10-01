@@ -2053,11 +2053,20 @@ impl<'a> Analysis<'a> {
         let synthesized_return_only = !has_return_annotations
             && self.func(func_idx).overloads.iter().any(|o| o.is_return_only);
         let ret_type = if has_return_annotations {
-            let has_vararg_return = self.func(func_idx).has_vararg_return;
+            let callee = self.func(func_idx);
+            // Past the end of a complete `@return` list the call produces nil. Not
+            // for stubs, whose return lists can be incomplete (an absent stub
+            // `@return` means unknown, see the implicit-nil note below), nor when
+            // overloads or a `returns<F>` projection can supply more values.
+            let fixed_arity = callee.overloads.is_empty()
+                && callee.return_projections.is_empty()
+                && !self.ir.is_stub_function(func_idx);
             func_return_annotations.get(ret_index).cloned()
                 .or_else(|| {
-                    if has_vararg_return {
+                    if callee.has_vararg_return {
                         func_return_annotations.last().cloned()
+                    } else if fixed_arity {
+                        Some(ValueType::Nil)
                     } else {
                         None
                     }

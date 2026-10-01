@@ -88,10 +88,10 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `redundant-and` | `and` where left side is always falsy (RHS is dead code) or always truthy (operator is a no-op) **(off by default)** |
 | `redundant-condition` | `if`/`elseif`/`while` condition is [provably constant](#redundant-condition) **(off by default)** |
 | `implicit-nil-return` | Bare `return` in function with optional `@return` **(off by default)** |
-| `unknown-param-type` | Parameter type can't be inferred **(off by default)** |
-| `unknown-return-type` | Return value has no resolvable type **(off by default)** |
-| `unknown-local-type` | Local assignment has unknown type **(off by default)** |
-| `unknown-field-type` | Field assignment has unknown type **(off by default)** |
+| `unknown-param-type` | Parameter has an unknown or `any` type **(off by default)** |
+| `unknown-return-type` | Returned value has an unknown or `any` type **(off by default)** |
+| `unknown-local-type` | Local, `for`, or global variable has an unknown or `any` type **(off by default)** |
+| `unknown-field-type` | Class field has an unknown or `any` type **(off by default)** |
 
 ### `missing-param-annotation` / `missing-return-annotation`
 

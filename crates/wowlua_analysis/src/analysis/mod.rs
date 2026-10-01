@@ -2465,6 +2465,18 @@ pub struct AnalysisResult {
     pub direct_subclasses_cache: OnceLock<HashMap<TableIndex, Vec<TableIndex>>>,
 }
 
+/// Whether a resolved type counts as unknown: no type, `any`, or `any?` (which
+/// narrows to `any`). Shared by `check`'s type coverage and the `unknown-*`
+/// diagnostics so the two always agree.
+pub fn is_unknown_type(t: Option<&ValueType>) -> bool {
+    match t {
+        None | Some(ValueType::Any) => true,
+        Some(ValueType::Union(members)) => members.iter().any(|m| matches!(m, ValueType::Any))
+            && members.iter().all(|m| matches!(m, ValueType::Any | ValueType::Nil)),
+        _ => false,
+    }
+}
+
 /// Summary statistics from a single file's analysis, for the `check` command.
 pub struct AnalysisStats {
     pub functions: usize,
@@ -2482,13 +2494,19 @@ impl AnalysisResult {
             .filter(|f| !f.param_annotations.is_empty() || !f.return_annotations.is_empty())
             .count();
         let classes = self.ir.classes.values().filter(|idx| !idx.is_external()).count();
-        let symbols = self.ir.symbols.len();
-        let resolved_symbols = self.ir.symbols.iter()
-            .filter(|s| {
-                s.versions.last().is_some_and(|v| {
-                    v.resolved_type.as_ref().is_some_and(|t| !matches!(t, ValueType::Any))
-                })
-            })
+        // Params/returns of functions the LS builds from `fun(...)` types have no source
+        // location (so no `unknown-*` diagnostic can point at them), and the types they
+        // carry are already counted where the user's code receives them.
+        let synthesized: HashSet<SymbolIndex> = self.ir.functions.iter()
+            .filter(|f| f.def_node == DefNode::DUMMY)
+            .flat_map(|f| f.args.iter().chain(&f.rets).copied())
+            .collect();
+        let counted = || self.ir.symbols.iter().enumerate()
+            .filter(|(i, _)| !synthesized.contains(&SymbolIndex(*i)))
+            .map(|(_, s)| s);
+        let symbols = counted().count();
+        let resolved_symbols = counted()
+            .filter(|s| !is_unknown_type(s.versions.last().and_then(|v| v.resolved_type.as_ref())))
             .count();
         AnalysisStats { functions, annotated_functions, classes, symbols, resolved_symbols }
     }
@@ -3818,5 +3836,35 @@ fn collect_class_fields_inner_impl(
             result.retain(|(n, _, _)| n != name);
             result.push((name.clone(), ft, field.lateinit));
         }
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    fn analyze(src: &str) -> AnalysisResult {
+        let tree = crate::syntax::parser::Parser::new(src).parse();
+        let mut analysis = Analysis::new_with_tree(&tree, Arc::new(PreResolvedGlobals::empty()), AnalysisConfig::default());
+        analysis.resolve_types();
+        analysis.into_result()
+    }
+
+    /// The params/returns of a function materialized from a `fun(...)` type are not
+    /// source symbols, so `check`'s type coverage doesn't count them.
+    #[test]
+    fn coverage_skips_synthesized_function_symbols() {
+        let ar = analyze("---@type fun(a: any): any\nlocal f\nlocal n = 1\n");
+        assert!(ar.local_functions().any(|(_, f)| f.def_node == DefNode::DUMMY && !f.args.is_empty()));
+        let stats = ar.stats();
+        assert_eq!((stats.symbols, stats.resolved_symbols), (2, 2));
+    }
+
+    /// `any?` is as unknown as `any` — the `unknown-*` diagnostics report it, so
+    /// the coverage count must not treat it as resolved.
+    #[test]
+    fn coverage_counts_optional_any_as_unresolved() {
+        let stats = analyze("---@type any?\nlocal maybe = nil\nlocal n = 1\n").stats();
+        assert_eq!((stats.symbols, stats.resolved_symbols), (2, 1));
     }
 }

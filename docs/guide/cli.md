@@ -16,6 +16,8 @@ By default, only warnings are shown. Include hints (unused locals, inject-field,
 wowlua_ls check path/to/addon --severity hint
 ```
 
+The summary's type coverage line is the share of your variables, parameters, and return values whose type is known. To list the ones that aren't, enable the [strict typing diagnostics](/guide/diagnostics#strict-typing-diagnostics) and run with `--severity hint`.
+
 Exit code is `1` if any diagnostics are found, making it suitable for CI:
 
 ```yaml

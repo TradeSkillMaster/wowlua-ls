@@ -497,14 +497,16 @@ Accessing a private or protected field from outside its visibility scope.
 
 ## Strict typing diagnostics <Badge type="tip" text="Hint" />
 
-These are off by default. They fire when the LS can't determine a type - enable them to find gaps in your annotation coverage:
+These are off by default. They mark every value whose type is unknown (no type at all, `any`, or `any?`), so you can find the gaps in your type coverage:
 
-| Code | Fires when |
+| Code | Fires on |
 |---|---|
-| `unknown-param-type` | Function parameter type can't be inferred |
-| `unknown-return-type` | Return value has no resolvable type |
-| `unknown-local-type` | `local x = expr` where expr type is unknown |
-| `unknown-field-type` | Field assignment with unknown RHS type |
+| `unknown-param-type` | A parameter, including `_` and `self`, or a reassignment of one |
+| `unknown-return-type` | A returned value, even in a function with an `@return` annotation, or a file's annotated return value |
+| `unknown-local-type` | A `local`, `for`, or global variable, or a reassignment of one |
+| `unknown-field-type` | A class field's assigned value, or its `---@field` type |
+
+An explicit `any` annotation (`---@param x any`, `---@return any`, `---@type any` on a declaration, `---@field name any`) is reported as "is annotated `any`".
 
 Enable in `.wowluarc.json`:
 

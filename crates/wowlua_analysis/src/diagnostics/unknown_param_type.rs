@@ -1,9 +1,11 @@
 use crate::analysis::AnalysisResult;
 use crate::ast::*;
+use crate::collections::HashSet;
 use crate::syntax::SyntaxKind;
 use crate::syntax::tree::SyntaxTree;
-use crate::syntax::{SyntaxNode, NodeOrToken};
+use crate::syntax::{NodeOrToken, SyntaxNode, TextRange};
 use crate::types::*;
+use super::unknown_local_type::{unknown_type_message, unknown_writes};
 use super::{DiagnosticPass, WowDiagnostic};
 
 pub struct UnknownParamType;
@@ -12,17 +14,24 @@ impl DiagnosticPass for UnknownParamType {
     fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         if analysis.is_meta { return; }
         let sentinel = crate::annotations::AnnotationType::Simple(String::new());
+        let mut emit = |label: &str, desc: &str, range: TextRange| {
+            super::UNKNOWN_PARAM_TYPE.emit(
+                diags,
+                format!("{} {}", label, desc),
+                u32::from(range.start()) as usize,
+                u32::from(range.end()) as usize,
+            );
+        };
         for (_func_idx, func) in analysis.local_functions() {
             let Some(nid) = func.def_node.node_id else { continue };
             let func_node = SyntaxNode { tree, id: nid };
             let Some(func_def) = FunctionDefinition::cast(func_node) else { continue };
             let Some(params_node) = func_def.params() else { continue };
 
-            let src_params: Vec<(String, u32, u32)> = params_node.syntax().children_with_tokens()
+            let src_params: Vec<(String, TextRange)> = params_node.syntax().children_with_tokens()
                 .filter_map(|c| match c {
                     NodeOrToken::Token(t) if t.kind() == SyntaxKind::Parameter => {
-                        let r = t.text_range();
-                        Some((t.text().to_string(), u32::from(r.start()), u32::from(r.end())))
+                        Some((t.text().to_string(), t.text_range()))
                     }
                     _ => None,
                 })
@@ -33,26 +42,43 @@ impl DiagnosticPass for UnknownParamType {
                     SymbolIdentifier::Name(n) if n == "self");
             let arg_offset = if self_injected { 1 } else { 0 };
 
-            for (i, (name, pstart, pend)) in src_params.iter().enumerate() {
-                let arg_i = i + arg_offset;
-                if arg_i >= func.args.len() { break; }
-                let sym_idx = func.args[arg_i];
+            // Each param: its declaration (the param token), then any reassignments
+            // in the body. A repeated name (`function(_, _)`) is one symbol, so its
+            // declaration is judged by the first binding.
+            let mut params: Vec<(SymbolIndex, String, Option<TextRange>)> = Vec::new();
+            if self_injected {
+                // Implicit `self` of `function T:m()` has no token; anchor on the name.
+                let range = func_def.identifier().map(|ident| ident.syntax().text_range());
+                params.push((func.args[0], "self".to_string(), range));
+            }
+            for (i, (name, range)) in src_params.into_iter().enumerate() {
+                let Some(&sym_idx) = func.args.get(i + arg_offset) else { break };
+                params.push((sym_idx, name, Some(range)));
+            }
+
+            let mut writes_checked: HashSet<SymbolIndex> = HashSet::default();
+            // `params` is index-aligned with `func.args` / `func.param_annotations`.
+            for (i, (sym_idx, name, decl_range)) in params.iter().enumerate() {
                 if sym_idx.is_external() { continue; }
-                if name == "self" { continue; }
-                // `_` is the conventional throwaway name; its type is intentionally ignored.
-                if name == "_" { continue; }
-                let annotated = func.param_annotations.get(arg_i)
-                    .is_some_and(|a| a != &sentinel);
-                if annotated { continue; }
-                let resolved = analysis.sym(sym_idx).versions.first()
-                    .and_then(|v| v.resolved_type.as_ref());
-                if resolved.is_some() { continue; }
-                check(diags, name, *pstart as usize, *pend as usize);
+                let sym = analysis.sym(*sym_idx);
+                let resolved = sym.versions.first().and_then(|v| v.resolved_type.as_ref());
+                let annotated = func.param_annotations.get(i).is_some_and(|a| a != &sentinel);
+                if let Some(range) = *decl_range
+                    && let Some(desc) = unknown_type_message(resolved, annotated)
+                {
+                    let label = if self_injected && i == 0 {
+                        "implicit parameter 'self'".to_string()
+                    } else {
+                        format!("parameter '{}'", name)
+                    };
+                    emit(&label, desc, range);
+                }
+                if !writes_checked.insert(*sym_idx) { continue; }
+                for (vi, range, desc) in unknown_writes(analysis, tree, sym, name, annotated) {
+                    if vi == 0 { continue; }
+                    emit(&format!("parameter '{}'", name), desc, range);
+                }
             }
         }
     }
-}
-
-pub fn check(diags: &mut Vec<WowDiagnostic>, name: &str, start: usize, end: usize) {
-    super::UNKNOWN_PARAM_TYPE.emit(diags, format!("parameter '{}' has an unknown type", name), start, end);
 }
