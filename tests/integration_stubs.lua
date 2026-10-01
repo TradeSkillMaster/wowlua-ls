@@ -1501,3 +1501,18 @@ local _uu1 = strUnion.upper   -- string-library field: suppressed
 local _uu2 = strUnion.member  -- class field: suppressed
 local _uu3 = strUnion.nowhere
 --                    ^ diag: undefined-field
+
+-- ── FrameXML functions annotated in the vendor stubs keep their annotations ──
+-- The generated InferredReturns.lua (return types inferred from FrameXML bodies)
+-- overrides a definition wholesale, so it must skip one that already declares a
+-- `@return` (table fields and methods, not just bare globals) and carry over the
+-- typed params of one that doesn't.
+local _menu = MenuUtil.CreateContextMenu(UIParent, function(owner, root) end)
+--                     ^ def: external vendor/Annotations/Core/FrameXML/Blizzard_Menu/MenuUtil.lua  doc: @*param* `ownerRegion` — if nil, defaults to UIParent
+local _menuRoot = MenuUtil.CreateRootMenuDescription({})
+--                         ^ hover: (field) function CreateRootMenuDescription(menuMixin: M)
+local _vec = CreateVector2D(1, 2)
+local _vecSum = _vec:Add(_vec)
+--                   ^ hover: (method) function Vector2DMixin:Add(other: Vector2DMixin)
+local _removed = tDeleteItem({}, 1)
+--               ^ hover: (global) function tDeleteItem(tbl: table, item: any)

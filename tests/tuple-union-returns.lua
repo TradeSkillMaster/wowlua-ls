@@ -62,7 +62,7 @@ local _ = v3
 --        ^ hover: (local) v3: number
 
 -- ══════════════════════════════════════════════════════════════════════════
--- Per-case descriptions (trailing text after `)` with optional `@` prefix)
+-- Per-case descriptions (trailing text after `)` with optional `@` or `#` prefix)
 -- ══════════════════════════════════════════════════════════════════════════
 
 ---@return (true ok, number value) success
@@ -76,6 +76,15 @@ _consume(describedCases)
 -- with each case's description after `--`
 local _ = describedCases
 --        ^ hover: (local) function describedCases()\n  -> ok: boolean, value: number | string\n  cases:\n    (true, number)   -- success\n    (false, string)  -- failure
+
+-- A `#` marker works like `@`
+---@return (true, number) @ found | (false, string) # missing
+local function hashDescribedCases()
+    return true, 1
+end
+_consume(hashDescribedCases)
+local _ = hashDescribedCases
+--        ^ hover: (local) function hashDescribedCases()\n  -> boolean, number | string\n  cases:\n    (true, number)   -- found\n    (false, string)  -- missing
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- fun() return type carries tuple-union through

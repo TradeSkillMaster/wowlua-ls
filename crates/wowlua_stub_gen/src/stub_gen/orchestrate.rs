@@ -716,9 +716,9 @@ pub fn regenerate_stubs() {
         );
         phase!("discover_runtime_fields");
 
-        // Generate override stubs with @return annotations (and forwarded @param
-        // annotations from vendor stubs) and re-scan.
-        let inferred_returns_lua = generate_inferred_return_stubs(&inferred, &[&combined_stubs, &gen_dir], &globals);
+        // Generate override stubs with @return annotations (carrying over the
+        // stub definitions' annotation blocks) and re-scan.
+        let inferred_returns_lua = generate_inferred_return_stubs(&inferred, &[&combined_stubs, &gen_dir]);
         let inferred_returns_path = gen_dir.join("InferredReturns.lua");
         std::fs::write(&inferred_returns_path, &inferred_returns_lua).unwrap();
         override_set.insert(inferred_returns_path);

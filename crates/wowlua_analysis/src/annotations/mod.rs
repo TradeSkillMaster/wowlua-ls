@@ -3,7 +3,7 @@ use crate::ast::AstNode;
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::{ResolvedOverload, ValueType};
-use annotation_types::{find_hash_comment, find_inline_description};
+use annotation_types::{find_hash_comment, find_inline_description, trailing_description};
 
 // The annotation type *data model* (`AnnotationType`, `TuplePosition`,
 // `ParamInfo`, `Visibility`, `KEYOF_SELF_TARGET`) lives in `wowlua_core` because
@@ -1706,9 +1706,8 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if let Some((vis, name, is_optional, type_str)) = parse_field_header(rest) {
                 let type_str_trimmed = type_str.trim();
                 let type_only = extract_type_prefix(type_str_trimmed);
-                let desc_text = type_str_trimmed[type_only.len()..].trim();
-                if !desc_text.is_empty() {
-                    block.field_descriptions.insert(name.to_string(), desc_text.to_string());
+                if let Some(desc) = trailing_description(&type_str_trimmed[type_only.len()..]) {
+                    block.field_descriptions.insert(name.to_string(), desc);
                 }
                 let typ = parse_type(type_only);
                 let typ = if is_optional {
@@ -1838,8 +1837,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 let type_only = extract_type_prefix(type_str_trimmed);
                 let typ = parse_type(type_only);
                 let is_optional = is_optional || annotation_type_is_nullable(&typ);
-                let description = type_str_trimmed[type_only.len()..].trim().to_string();
-                let description = if description.is_empty() { None } else { Some(description) };
+                let description = trailing_description(&type_str_trimmed[type_only.len()..]);
                 block.params.push(ParamInfo {
                     name: name.to_string(),
                     typ,
@@ -2323,6 +2321,17 @@ mod tests {
     fn field_description_optional_field() {
         let block = parse(&["---@class Foo", "---@field name? string The optional name."]);
         assert_eq!(block.field_descriptions.get("name").map(String::as_str), Some("The optional name."));
+    }
+
+    #[test]
+    fn description_markers_stripped() {
+        // LuaCATS `#` / `@` introduce the description; they aren't part of it.
+        let block = parse(&["---@class Foo", "---@field a number # The a.", "---@field b number @ The b."]);
+        assert_eq!(block.field_descriptions.get("a").map(String::as_str), Some("The a."));
+        assert_eq!(block.field_descriptions.get("b").map(String::as_str), Some("The b."));
+        let block = parse(&["---@param x number # The x.", "---@param y number @The y.", "---@param z number #"]);
+        let descs: Vec<_> = block.params.iter().map(|p| p.description.as_deref()).collect();
+        assert_eq!(descs, [Some("The x."), Some("The y."), None]);
     }
 
     // ---- Type-name walkers (incremental warm dependency tracking) ----

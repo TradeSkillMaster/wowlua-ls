@@ -3067,3 +3067,50 @@ fn generation_dir_found_in_any_serialized_field() {
     class.def_path = Some(PathBuf::from("generated/Foo.lua"));
     assert_eq!(find_generation_dir(&bincode::serialize(&class).unwrap(), &dirs), None);
 }
+
+#[test]
+fn inferred_returns_keep_stub_annotations() {
+    // An inferred-return stub overrides the stub definition wholesale, so it must
+    // not be emitted over one that already has a `@return` — table fields and
+    // methods included — and must carry over the typed params of one that doesn't.
+    let stub_dir = std::env::temp_dir().join("wowlua-ls-test-inferred-returns-stub");
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    std::fs::write(
+        stub_dir.join("Util.lua"),
+        r#"---@meta _
+PopupUtil = {}
+
+---@param owner Region?
+---@param generator fun(owner: Region)
+---@return PopupProxy? popup
+function PopupUtil.Open(owner, generator) end
+
+---Adds another vector.
+---@param other Vec2
+function Vec2:Add(other) end
+
+---@param tbl table
+function RemoveValue(tbl, value) end
+
+function Untyped(a) end
+"#,
+    ).unwrap();
+    let inferred_return = |params: &[&str], ret: &str| InferredReturn {
+        params: params.iter().map(|p| p.to_string()).collect(),
+        returns: vec![ret.to_string()],
+    };
+    let inferred: HashMap<String, InferredReturn> = HashMap::from_iter([
+        ("PopupUtil.Open".to_string(), inferred_return(&["owner", "generator"], "table")),
+        ("Vec2:Add".to_string(), inferred_return(&["self", "other"], "Vec2")),
+        ("RemoveValue".to_string(), inferred_return(&["tbl", "value"], "number")),
+        ("Untyped".to_string(), inferred_return(&["a"], "string")),
+    ]);
+    let out = generate_inferred_return_stubs(&inferred, &[&stub_dir]);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+
+    assert!(!out.contains("PopupUtil.Open"), "{out}");
+    assert!(out.contains("---Adds another vector.\n---@param other Vec2\n---@return Vec2\nfunction Vec2:Add("), "{out}");
+    assert!(out.contains("---@param tbl table\n---@return number\nfunction RemoveValue("), "{out}");
+    assert!(out.contains("\n\n---@return string\nfunction Untyped(a) end"), "{out}");
+}

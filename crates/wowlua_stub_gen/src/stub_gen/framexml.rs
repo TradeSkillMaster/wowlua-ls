@@ -1,39 +1,48 @@
 use super::*;
 
-/// Scan all `.lua` files under `dir` for global function definitions that have
-/// `---@return` annotations.  Returns the set of function names that already have
-/// return type annotations (and thus should not be overridden by inferred stubs).
-pub(in crate::stub_gen) fn get_functions_with_return(dir: &Path) -> HashSet<String> {
-    let func_re = regex_lite::Regex::new(r"(?m)^function\s+([A-Za-z_]\w*)\s*\(").unwrap();
-    let mut result = HashSet::default();
+/// What the stubs already say about one function, gathered by
+/// `scan_stub_function_docs` from the `---` block preceding each definition.
+#[derive(Default)]
+struct StubFunctionDoc {
+    /// Some definition already declares a `@return`, so no inferred override is emitted.
+    has_return: bool,
+    /// The first definition's block that carries an annotation tag. The inferred
+    /// override replaces the definition wholesale, so this is re-emitted on it to
+    /// keep the typed `@param`s, `@generic`s and description.
+    doc_lines: Vec<String>,
+}
+
+/// Function-definition key shared by the stub scan and the inferred names:
+/// `Table:Method` and `Table.Method` name the same field.
+fn stub_function_key(name: &str) -> String {
+    name.replace(':', ".")
+}
+
+/// Scan all `.lua` files under `dir` for function definitions (`Name`,
+/// `Table.Field`, `Table:Method`) and record their preceding `---` blocks in
+/// `docs`, keyed by `stub_function_key`.
+fn scan_stub_function_docs(dir: &Path, docs: &mut HashMap<String, StubFunctionDoc>) {
+    fn tag(line: &str) -> Option<&str> {
+        crate::annotations::strip_line_annotation_prefix(line)?.split_whitespace().next()
+    }
+    let func_re = regex_lite::Regex::new(r"^function\s+([A-Za-z_]\w*(?:[.:][A-Za-z_]\w*)*)\s*\(").unwrap();
     let mut lua_files = Vec::new();
     collect_lua_paths(dir, &mut lua_files);
+    lua_files.sort();
     for path in &lua_files {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let lines: Vec<&str> = content.lines().collect();
-            for (i, line) in lines.iter().enumerate() {
-                if let Some(cap) = func_re.captures(line) {
-                    let name = cap.get(1).unwrap().as_str();
-                    // Look backward from this function definition for ---@return
-                    // in the preceding annotation block (consecutive --- lines).
-                    let mut j = i;
-                    while j > 0 {
-                        j -= 1;
-                        let prev = lines[j].trim();
-                        if prev.starts_with("---") {
-                            if prev.starts_with("---@return") {
-                                result.insert(name.to_string());
-                                break;
-                            }
-                        } else {
-                            break; // End of annotation block
-                        }
-                    }
-                }
+        let Ok(content) = std::fs::read_to_string(path) else { continue };
+        let lines: Vec<&str> = content.lines().map(str::trim).collect();
+        for (i, line) in lines.iter().enumerate() {
+            let Some(cap) = func_re.captures(line) else { continue };
+            let start = lines[..i].iter().rposition(|l| !l.starts_with("---")).map_or(0, |p| p + 1);
+            let block = &lines[start..i];
+            let doc = docs.entry(stub_function_key(&cap[1])).or_default();
+            doc.has_return |= block.iter().any(|l| tag(l) == Some("return"));
+            if doc.doc_lines.is_empty() && block.iter().any(|l| tag(l).is_some()) {
+                doc.doc_lines = block.iter().map(|l| l.to_string()).collect();
             }
         }
     }
-    result
 }
 
 
@@ -572,36 +581,22 @@ pub(in crate::stub_gen) fn generate_inferred_field_stubs(
 
 /// Generate override stubs for FrameXML functions whose return types were
 /// inferred by the analysis engine.  Only emits stubs for functions whose
-/// existing vendor definition lacks a `@return` annotation.  Forwards any
-/// existing `@param` annotations from the pass 1 globals so the override
-/// doesn't drop typed parameter information.
+/// existing stub definition lacks a `@return` annotation, and carries that
+/// definition's annotation block over so the override doesn't drop its typed
+/// parameters.
 pub(in crate::stub_gen) fn generate_inferred_return_stubs(
     inferred: &HashMap<String, InferredReturn>,
     stubs_dirs: &[&Path],
-    pass1_globals: &[crate::annotations::ExternalGlobal],
 ) -> String {
     if inferred.is_empty() {
         return "---@meta _\n".to_string();
     }
-    use crate::annotations::ParamInfo;
-    use crate::annotations::annotation_types::format_annotation_type;
 
-    // Find functions that already have @return annotations in vendor stubs
-    // and generated files (e.g. GlobalColors.lua defines CreateColor with
-    // @return colorRGBA — without scanning gen_dir those would be overridden
-    // by inferred types from the FrameXML source body).
-    let mut already_annotated = HashSet::default();
+    // Scan the generated files too: e.g. GlobalColors.lua defines CreateColor
+    // with @return colorRGBA, which the FrameXML source body would override.
+    let mut docs = HashMap::default();
     for dir in stubs_dirs {
-        already_annotated.extend(get_functions_with_return(dir));
-    }
-
-    // Build a lookup from pass 1 globals: name → params, for forwarding
-    // existing @param annotations into the generated override stubs.
-    let mut vendor_params: HashMap<&str, &[ParamInfo]> = HashMap::default();
-    for g in pass1_globals {
-        if !g.params.is_empty() {
-            vendor_params.insert(&g.name, &g.params);
-        }
+        scan_stub_function_docs(dir, &mut docs);
     }
 
     let mut lines = vec![
@@ -610,19 +605,13 @@ pub(in crate::stub_gen) fn generate_inferred_return_stubs(
         String::new(),
     ];
     let mut names: Vec<&String> = inferred.keys()
-        .filter(|n| !already_annotated.contains(n.as_str()))
+        .filter(|n| !docs.get(&stub_function_key(n)).is_some_and(|d| d.has_return))
         .collect();
     names.sort();
     for name in &names {
         let info = &inferred[*name];
-        // Forward existing @param annotations from vendor stubs so the
-        // override doesn't drop typed parameter information.
-        if let Some(params) = vendor_params.get(name.as_str()) {
-            for p in *params {
-                let opt = if p.optional { "?" } else { "" };
-                let typ = format_annotation_type(&p.typ);
-                lines.push(format!("---@param {}{opt} {typ}", p.name));
-            }
+        if let Some(doc) = docs.get(&stub_function_key(name)) {
+            lines.extend(doc.doc_lines.iter().cloned());
         }
         for ret in &info.returns {
             lines.push(format!("---@return {ret}"));

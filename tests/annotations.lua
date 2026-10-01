@@ -928,6 +928,14 @@ function withDescs(cb, filter)
     return true
 end
 
+-- The LuaCATS `#` / `@` description markers aren't shown as part of the description.
+---@param a number # The first value
+function withHashDesc(a) end
+--       ^ doc: @*param* `a` — The first value
+---@param b number @ The second value
+function withAtDesc(b) end
+--       ^ doc: @*param* `b` — The second value
+
 -- ── Built-in types: userdata and thread ──────────────────────────────────
 ---@param ud userdata
 ---@param co thread

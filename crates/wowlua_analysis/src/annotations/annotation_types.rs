@@ -680,10 +680,7 @@ pub fn parse_multi_return_line(s: &str) -> Option<Vec<ReturnEntry>> {
             continue;
         }
         // Final segment: trailing text after the optional name is the description.
-        let desc = {
-            let d = after_name.strip_prefix('#').unwrap_or(after_name).trim();
-            if d.is_empty() { None } else { Some(d.to_string()) }
-        };
+        let desc = trailing_description(after_name);
         entries.push((parse_type(type_only.trim()), name, desc));
         break;
     }
@@ -743,10 +740,7 @@ pub fn parse_return_line(s: &str, force_tuple: bool) -> (AnnotationType, Option<
                 }
             };
             if cases.is_empty() { first_trailing = Some(after); }
-            let desc = {
-                let t = case_trailing.strip_prefix('@').unwrap_or(case_trailing).trim();
-                if t.is_empty() { None } else { Some(t.to_string()) }
-            };
+            let desc = trailing_description(case_trailing);
             cases.push((positions, desc));
             match next_rem {
                 Some(next) => rem = next,
@@ -834,6 +828,14 @@ fn find_description_marker(s: &str, match_at: bool) -> Option<usize> {
 
 pub(super) fn find_hash_comment(s: &str) -> Option<usize> {
     find_description_marker(s, false)
+}
+
+/// The description trailing an annotation's type (and name), without its
+/// optional LuaCATS `#` / `@` marker (`@param x number # text` → `text`).
+pub(super) fn trailing_description(s: &str) -> Option<String> {
+    let s = s.trim();
+    let s = s.strip_prefix(['#', '@']).unwrap_or(s).trim_start();
+    (!s.is_empty()).then(|| s.to_string())
 }
 
 pub(super) fn find_inline_description(s: &str) -> Option<usize> {
@@ -1065,6 +1067,22 @@ mod tests {
         let (ty, name, _) = parse_return_line("number spellID", false);
         assert!(!matches!(ty, AnnotationType::VarArgs(_)), "plain return wrongly variadic: {ty:?}");
         assert_eq!(name.as_deref(), Some("spellID"));
+    }
+
+    #[test]
+    fn return_description_markers_stripped() {
+        // A `#` / `@` marker introduces the description; it isn't part of it.
+        for line in ["number count, string label @ The label", "number count, string label # The label"] {
+            let entries = parse_multi_return_line(line).unwrap();
+            assert_eq!(entries[1].2.as_deref(), Some("The label"), "{line:?}");
+        }
+        let (ty, _, _) = parse_return_line("(true, number) @ Found | (false, nil) # Missing", false);
+        let AnnotationType::Union(cases) = ty else { panic!("{ty:?}") };
+        let descs: Vec<_> = cases.iter().map(|c| match c {
+            AnnotationType::Tuple(_, desc) => desc.as_deref(),
+            other => panic!("{other:?}"),
+        }).collect();
+        assert_eq!(descs, [Some("Found"), Some("Missing")]);
     }
 }
 
