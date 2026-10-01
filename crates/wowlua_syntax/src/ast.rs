@@ -104,16 +104,23 @@ define_ast_node!(ParameterList, ParameterList);
 
 impl<'a> ParameterList<'a> {
     pub fn parameters(&self) -> Vec<String> {
-        self.node.children_with_tokens().filter_map(|t| match t  {
-            NodeOrToken::Token(t) => if t.kind() == SyntaxKind::Parameter { Some(t.text().to_string()) } else { None },
-            _ => None,
-        }).collect()
+        self.parameter_tokens().iter().map(|t| t.text().to_string()).collect()
+    }
+    /// The named parameters' tokens, in order (the `...` is [`Self::vararg_token`]).
+    pub fn parameter_tokens(&self) -> Vec<SyntaxToken<'a>> {
+        self.node.children_with_tokens()
+            .filter_map(|t| t.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Parameter)
+            .collect()
+    }
+    /// The trailing `...` token of a variadic list.
+    pub fn vararg_token(&self) -> Option<SyntaxToken<'a>> {
+        self.node.children_with_tokens()
+            .filter_map(|t| t.into_token())
+            .find(|t| t.kind() == SyntaxKind::ParameterVarArgs)
     }
     pub fn ellipsis(&self) -> bool {
-        self.node.children_with_tokens().any(|t| match t  {
-            NodeOrToken::Token(t) => t.kind() == SyntaxKind::ParameterVarArgs,
-            _ => false,
-        })
+        self.vararg_token().is_some()
     }
 }
 

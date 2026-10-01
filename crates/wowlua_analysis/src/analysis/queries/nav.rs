@@ -115,9 +115,11 @@ impl AnalysisResult {
         if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
             symbol.versions.get(ver_idx).and_then(|v| v.resolved_type.as_ref())
         } else if is_param {
-            // Always use version 0 for params (the declaration type from @param),
-            // not a later version from reassignment in the body.
-            symbol.versions.first().and_then(|v| v.resolved_type.as_ref())
+            // Always use the declaration version for params (the type from @param),
+            // not a later version from reassignment in the body. That is version 0
+            // unless the name repeats an earlier one in the parameter list.
+            let ver_idx = self.ir.repeated_param_versions.get(&token_start).copied().unwrap_or(0);
+            symbol.versions.get(ver_idx).and_then(|v| v.resolved_type.as_ref())
         } else if !symbol_idx.is_external() {
             // Declaration site fallback: find the version whose def_node contains this
             // token. For redefined locals (`local x = 1; local x = ""`), each

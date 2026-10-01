@@ -1314,6 +1314,15 @@ impl Function {
         }
     }
 
+    /// The version of `args[pos]` that parameter `pos` declares. A name repeated
+    /// in one parameter list (`function(_, _, flag)`) is a single symbol with one
+    /// version per occurrence, in order, so only its first occurrence is version 0.
+    /// Read a parameter's declaration through `Ir::param_decl_version`.
+    pub fn param_version(&self, pos: usize) -> usize {
+        let Some(sym) = self.args.get(pos) else { return 0 };
+        self.args[..pos].iter().filter(|&s| s == sym).count()
+    }
+
     /// Push a return-only overload if it is not already present (linear dedup).
     pub fn push_unique_overload(&mut self, ovl: ResolvedOverload) {
         if !self.overloads.contains(&ovl) {

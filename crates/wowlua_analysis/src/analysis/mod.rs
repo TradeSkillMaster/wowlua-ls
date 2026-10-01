@@ -565,6 +565,10 @@ pub struct Ir {
     /// `@param` annotations (an open contract: caller can pass unlisted values),
     /// excluding `@type` annotations on locals (a closed assertion).
     pub param_symbols: HashSet<SymbolIndex>,
+    /// Name-token start → declared version, for each parameter whose name repeats
+    /// an earlier one in its list (see [`Function::param_version`]). Every other
+    /// parameter declares version 0.
+    pub repeated_param_versions: HashMap<u32, usize>,
     /// Symbols introduced by a lexical binding statement (`local` declaration,
     /// `local function`, for-loop variable, function parameter) — as opposed to
     /// implicit globals, which are created by [`Self::insert_or_version_symbol`].
@@ -813,6 +817,29 @@ impl Ir {
         } else {
             &self.functions[idx.val()]
         }
+    }
+
+    /// The symbol version that `func`'s parameter `pos` declares. A name repeated
+    /// in one parameter list is one symbol with a version per occurrence (see
+    /// [`Function::param_version`]), so read parameters by position through this,
+    /// not through `versions[0]`.
+    pub fn param_decl_version(&self, func: &Function, pos: usize) -> Option<&SymbolVersion> {
+        self.sym(*func.args.get(pos)?).versions.get(func.param_version(pos))
+    }
+
+    /// The declared type of `func`'s parameter `pos` (see [`Self::param_decl_version`]).
+    pub fn param_decl_type(&self, func: &Function, pos: usize) -> Option<&ValueType> {
+        self.param_decl_version(func, pos)?.resolved_type.as_ref()
+    }
+
+    /// Mutable [`Self::param_decl_version`] for a local function (`None` when the
+    /// parameter's symbol is external, which is immutable).
+    pub(super) fn param_decl_version_mut(&mut self, func_idx: FunctionIndex, pos: usize) -> Option<&mut SymbolVersion> {
+        let func = self.func(func_idx);
+        let sym = *func.args.get(pos)?;
+        if sym.is_external() { return None; }
+        let ver = func.param_version(pos);
+        self.symbols[sym.val()].versions.get_mut(ver)
     }
 
     /// The class constraint of a type variable `name` (e.g. `T` in
@@ -1076,9 +1103,7 @@ impl Ir {
             ValueType::Function(Some(idx)) => {
                 let idx = *idx;
                 (0..self.func(idx).args.len()).any(|i| {
-                    let sym_idx = self.func(idx).args[i];
-                    self.sym(sym_idx).versions.first()
-                        .and_then(|v| v.resolved_type.as_ref())
+                    self.param_decl_type(self.func(idx), i)
                         .is_some_and(|t| self.type_contains_type_variable_deep_inner(t, visited))
                 })
                 || (0..self.func(idx).return_annotations.len()).any(|i| {
@@ -1572,6 +1597,18 @@ impl Ir {
     pub(super) fn set_type_source(&mut self, symbol_idx: SymbolIndex, expr_id: ExprId) {
         let symbol = &mut self.symbols[symbol_idx.val()];
         let version = symbol.versions.last_mut().expect("symbol must have at least one version");
+        Self::replace_type_source(version, expr_id);
+    }
+
+    /// [`Self::set_type_source`] for the version a local function's parameter `pos`
+    /// declares (see [`Self::param_decl_version`]).
+    pub(super) fn set_param_type_source(&mut self, func_idx: FunctionIndex, pos: usize, expr_id: ExprId) {
+        if let Some(version) = self.param_decl_version_mut(func_idx, pos) {
+            Self::replace_type_source(version, expr_id);
+        }
+    }
+
+    fn replace_type_source(version: &mut SymbolVersion, expr_id: ExprId) {
         if version.type_source.is_some() && version.original_type_source.is_none() {
             version.original_type_source = version.type_source;
         }
@@ -2864,10 +2901,11 @@ pub struct Analysis<'a> {
     pub vararg_user_annotated_fns: HashSet<FunctionIndex>,
     /// Named event-handler methods (registered by string name in a register-by-name
     /// call, e.g. `self:RegisterEvent("E", "OnE")`) mapped to the payload types
-    /// projected onto their parameters and the param symbols that were set. A method
-    /// registered for two events with **differing** payloads is a conflict: its set
-    /// params are reverted and it is recorded in `event_handler_method_conflicts`.
-    pub event_handler_method_payloads: HashMap<FunctionIndex, (Vec<ValueType>, Vec<SymbolIndex>)>,
+    /// projected onto their parameters and the positions of the params that were
+    /// set. A method registered for two events with **differing** payloads is a
+    /// conflict: its set params are reverted and it is recorded in
+    /// `event_handler_method_conflicts`.
+    pub event_handler_method_payloads: HashMap<FunctionIndex, (Vec<ValueType>, Vec<usize>)>,
     /// Named handler methods with conflicting payloads (see above) — left untyped.
     pub event_handler_method_conflicts: HashSet<FunctionIndex>,
     /// Cache of an event payload's resolved param types, keyed by
@@ -2995,6 +3033,7 @@ impl<'a> Analysis<'a> {
                 class_table_by_offset: HashMap::default(),
                 class_def_symbols: HashSet::default(),
                 param_symbols: HashSet::default(),
+                repeated_param_versions: HashMap::default(),
                 local_decl_symbols: HashSet::default(),
                 alias_def_ranges: HashMap::default(),
                 next_creation_order: 0,

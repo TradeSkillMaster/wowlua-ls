@@ -214,18 +214,15 @@ impl AnalysisResult {
         // trailing params don't need to match — the callee is designed to work
         // without them, so the caller's arg type at that position is irrelevant.
         for (pos, &actual_sym) in actual_params.iter().take(actual_required).enumerate() {
-            // Duplicate `_` params share one symbol; skip to avoid false mismatches at later positions.
+            // `_` params opt out of the value, so their type is irrelevant.
             if matches!(&self.sym(actual_sym).id, SymbolIdentifier::Name(n) if n == "_") {
                 continue;
             }
-            let actual_ty = self.sym(actual_sym).versions.first()
-                .and_then(|v| v.resolved_type.clone())
+            let actual_ty = self.ir.param_decl_type(self.func(actual_idx), pos + skip_self).cloned()
                 .unwrap_or(ValueType::Any);
             let expected_ty = match &expected_info {
                 ExpectedInfo::Func(idx) => {
-                    self.func(*idx).args.get(pos + skip_self)
-                        .and_then(|&sym| self.sym(sym).versions.first()
-                            .and_then(|v| v.resolved_type.clone()))
+                    self.ir.param_decl_type(self.func(*idx), pos + skip_self).cloned()
                         .unwrap_or(ValueType::Any)
                 }
                 ExpectedInfo::Sig(shape) => {

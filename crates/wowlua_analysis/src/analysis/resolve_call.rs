@@ -649,16 +649,11 @@ impl<'a> Analysis<'a> {
             for (i, arg_expr_id) in args.iter().enumerate() {
                 if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
                     // Check if this param's type is a TypeVariable. Use the
-                    // FIRST version (the parameter declaration) rather than the
-                    // last: a param reassigned in the body (`msg = gsub(msg, ...)`)
-                    // has its declared TypeVariable on version 0, while later
+                    // parameter's declaration version rather than the last: a param
+                    // reassigned in the body (`msg = gsub(msg, ...)`) has its
+                    // declared TypeVariable on the declaration, while later
                     // versions hold the reassigned concrete type.
-                    let param_type = if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
-                        self.sym(param_sym_idx).versions.first()
-                            .and_then(|ver| ver.resolved_type.clone())
-                    } else {
-                        None
-                    };
+                    let param_type = self.ir.param_decl_type(self.ir.func(func_idx), i + self_offset).cloned();
                     if let Some(ValueType::TypeVariable(ref name)) = param_type {
                         if !generic_subs.contains_key(name) {
                             // Skip empty-union args (result of and-narrowing nil types:
@@ -878,9 +873,8 @@ impl<'a> Analysis<'a> {
             // constrained narrowed generic (`@generic T: Frame`) keeps its more
             // precise bound (`Frame & ...M`) rather than degrading to `any & ...M`.
             if let Some(narrow_idx) = self.func(func_idx).narrows_arg
-                && let Some(&narrow_sym_idx) = func_args.get((narrow_idx - 1) + self_offset)
-                && let Some(ValueType::TypeVariable(name)) = self.sym(narrow_sym_idx)
-                    .versions.first().and_then(|v| v.resolved_type.clone())
+                && let Some(ValueType::TypeVariable(name)) = self.ir
+                    .param_decl_type(self.ir.func(func_idx), (narrow_idx - 1) + self_offset).cloned()
                 && !generic_subs.contains_key(&name)
             {
                 generic_subs.insert(name, ValueType::Any);
@@ -1091,17 +1085,14 @@ impl<'a> Analysis<'a> {
             // Compute expected parameter type
             let expected_type = if let Some(overload) = matching_overload {
                 overload.params.get(i + overload_self_offset).and_then(|p| p.typ.clone())
-            } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
-                self.sym(param_sym_idx).versions.first()
-                    .and_then(|ver| ver.resolved_type.clone())
+            } else if i + self_offset < func_args.len() {
+                self.ir.param_decl_type(self.ir.func(func_idx), i + self_offset).cloned()
             } else if let Some(f_idx) = projected_f_idx
                 && matches!(self.func(func_idx).vararg_projection, Some(crate::types::ProjectionKind::Params(_)))
             {
                 let non_vararg_count = func_args.len() - self_offset;
                 i.checked_sub(non_vararg_count).and_then(|pos| {
-                    let f_arg_sym = *self.func(f_idx).args.get(pos)?;
-                    self.sym(f_arg_sym).versions.first()
-                        .and_then(|ver| ver.resolved_type.clone())
+                    self.ir.param_decl_type(self.ir.func(f_idx), pos).cloned()
                 })
             } else if let Some(va) = self.func(func_idx).vararg_annotation.clone() {
                 // A backtick vararg (`` ...: `T` ``) accepts any string (it names a
@@ -1226,7 +1217,7 @@ impl<'a> Analysis<'a> {
                         false
                     };
                     if name_matches {
-                        sym.versions.first().and_then(|ver| ver.resolved_type.clone())
+                        self.ir.param_decl_type(self.ir.func(func_idx), i + self_offset).cloned()
                     } else {
                         None
                     }
@@ -2423,12 +2414,8 @@ impl<'a> Analysis<'a> {
                 ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
             ) {
                 // Annotation is directly a fun() type or alias — propagate params
-                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
                 for (j, param_info) in sig.params.iter().enumerate() {
-                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
-                    if inline_sym_idx.is_external() { continue; }
-                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
-                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                    if !self.param_untyped(inline_func_idx, j) { continue; }
                     if let Some(vt) = self.resolve_annotation_with_class_generics(
                         &param_info.typ, class_gen_context, class_type_param_subs,
                     ) {
@@ -2437,7 +2424,9 @@ impl<'a> Analysis<'a> {
                         } else {
                             vt
                         };
-                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+                        if let Some(v) = self.ir.param_decl_version_mut(inline_func_idx, j) {
+                            v.resolved_type = Some(vt);
+                        }
                     }
                 }
                 // Propagate return types from fun() signature into inline function
@@ -2480,17 +2469,13 @@ impl<'a> Analysis<'a> {
                     }
                     _ => continue,
                 };
-                let expected_args = self.func(expected_fn_idx).args.clone();
-                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
-                for (j, &expected_sym) in expected_args.iter().enumerate() {
-                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
-                    if inline_sym_idx.is_external() { continue; }
-                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
-                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
-                    let vt = self.sym(expected_sym).versions.first()
-                        .and_then(|v| v.resolved_type.clone());
-                    if let Some(vt) = vt {
-                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+                for j in 0..self.func(expected_fn_idx).args.len() {
+                    if !self.param_untyped(inline_func_idx, j) { continue; }
+                    let vt = self.ir.param_decl_type(self.ir.func(expected_fn_idx), j).cloned();
+                    if let Some(vt) = vt
+                        && let Some(v) = self.ir.param_decl_version_mut(inline_func_idx, j)
+                    {
+                        v.resolved_type = Some(vt);
                     }
                 }
                 // Propagate return types
@@ -2541,19 +2526,17 @@ impl<'a> Analysis<'a> {
             let Some(sig) = crate::annotations::extract_fun_sig(
                 ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
             ) else { continue };
-            let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
             for (j, param_info) in sig.params.iter().enumerate() {
                 if param_info.name == "..." { continue; }
-                let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
-                if inline_sym_idx.is_external() { continue; }
-                if self.ir.symbols[inline_sym_idx.val()].versions.first()
-                    .is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                if !self.param_untyped(inline_func_idx, j) { continue; }
                 let Some(vt) = self.resolve_annotation_with_class_generics(
                     &param_info.typ, gen_context, subs,
                 ) else { continue };
                 if matches!(vt, ValueType::Any | ValueType::TypeVariable(_)) { continue; }
                 let vt = if param_info.optional { ValueType::union(vt, ValueType::Nil) } else { vt };
-                self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+                if let Some(v) = self.ir.param_decl_version_mut(inline_func_idx, j) {
+                    v.resolved_type = Some(vt);
+                }
             }
         }
     }
@@ -2655,12 +2638,10 @@ impl<'a> Analysis<'a> {
             // `propagate_inline_callback_params`; a named method does not.
             if is_named_method {
                 for (pos, p) in params.iter().enumerate().take(vararg_pos) {
-                    let Some(&sym) = target_args.get(self_off + pos) else { break };
-                    if sym.is_external() { continue; }
-                    if self.ir.symbols[sym.val()].versions.first().is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                    if !self.param_untyped(target_func_idx, self_off + pos) { continue; }
                     if let Some(vt) = self.resolve_annotation_with_class_generics(&p.typ, &[], &HashMap::default()) {
                         let vt = if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt };
-                        if let Some(v) = self.ir.symbols[sym.val()].versions.first_mut() {
+                        if let Some(v) = self.ir.param_decl_version_mut(target_func_idx, self_off + pos) {
                             v.resolved_type = Some(vt);
                         }
                     }
@@ -2670,9 +2651,7 @@ impl<'a> Analysis<'a> {
             // `function(foo)` (rather than `function(...)`) consumes the varargs through
             // named params, so map payload[j] onto the j-th param after the vararg pos.
             for (j, vt) in vararg_types.iter().enumerate() {
-                let Some(&param_sym) = target_args.get(self_off + vararg_pos + j) else { break };
-                if param_sym.is_external() { continue; }
-                if let Some(v) = self.ir.symbols[param_sym.val()].versions.first_mut()
+                if let Some(v) = self.ir.param_decl_version_mut(target_func_idx, self_off + vararg_pos + j)
                     && v.resolved_type.is_none()
                 {
                     v.resolved_type = Some(vt.clone());
@@ -2757,10 +2736,10 @@ impl<'a> Analysis<'a> {
             }
             // Conflicting payload: revert the params the first registration set and
             // refuse all further projection onto this method.
-            let set_syms = self.event_handler_method_payloads.get(&method_idx)
+            let set_params = self.event_handler_method_payloads.get(&method_idx)
                 .map(|(_, s)| s.clone()).unwrap_or_default();
-            for &sym in &set_syms {
-                if let Some(v) = self.ir.symbols[sym.val()].versions.first_mut() {
+            for &pos in &set_params {
+                if let Some(v) = self.ir.param_decl_version_mut(method_idx, pos) {
                     v.resolved_type = None;
                 }
             }
@@ -2776,19 +2755,18 @@ impl<'a> Analysis<'a> {
         // First registration: record which payload params this projection will set
         // (the currently-untyped ones, starting at `payload_start`), so they can be
         // reverted if a later conflicting registration is found.
-        let args = self.ir.functions[method_idx.val()].args.clone();
-        let mut set_syms = Vec::new();
-        for j in 0..vararg_types.len() {
-            let Some(&param_sym) = args.get(payload_start + j) else { break };
-            if param_sym.is_external() { continue; }
-            if self.ir.symbols[param_sym.val()].versions.first()
-                .is_some_and(|v| v.resolved_type.is_none())
-            {
-                set_syms.push(param_sym);
-            }
-        }
-        self.event_handler_method_payloads.insert(method_idx, (vararg_types.to_vec(), set_syms));
+        let set_params: Vec<usize> = (payload_start..payload_start + vararg_types.len())
+            .filter(|&pos| self.param_untyped(method_idx, pos))
+            .collect();
+        self.event_handler_method_payloads.insert(method_idx, (vararg_types.to_vec(), set_params));
         true
+    }
+
+    /// Whether local function `func_idx` declares a parameter `pos` that is still
+    /// untyped — a slot contextual typing may fill.
+    fn param_untyped(&self, func_idx: FunctionIndex, pos: usize) -> bool {
+        self.ir.param_decl_version(self.ir.func(func_idx), pos)
+            .is_some_and(|v| v.resolved_type.is_none())
     }
 
     /// Select the overload matching the call-site argument count and types,
@@ -3049,15 +3027,11 @@ impl<'a> Analysis<'a> {
                     }
                     _ => continue,
                 };
-                let expected_args = self.func(expected_fn_idx).args.clone();
                 let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
-                for (j, &expected_sym) in expected_args.iter().enumerate() {
+                for j in 0..self.func(expected_fn_idx).args.len() {
                     let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
-                    if inline_sym_idx.is_external() { continue; }
-                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
-                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
-                    let vt = self.sym(expected_sym).versions.first()
-                        .and_then(|v| v.resolved_type.clone());
+                    if !self.param_untyped(inline_func_idx, j) { continue; }
+                    let vt = self.ir.param_decl_type(self.ir.func(expected_fn_idx), j).cloned();
                     if let Some(mut vt) = vt {
                         // Self-substitution: first param named "self" gets the receiver's type
                         if j == 0
@@ -3066,7 +3040,9 @@ impl<'a> Analysis<'a> {
                         {
                             vt = recv_type.clone();
                         }
-                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+                        if let Some(v) = self.ir.param_decl_version_mut(inline_func_idx, j) {
+                            v.resolved_type = Some(vt);
+                        }
                     }
                 }
                 // Propagate event_params from the expected function to the inline callback
@@ -3081,7 +3057,8 @@ impl<'a> Analysis<'a> {
                     if let Some(&inline_sym_idx) = inline_args.get(event_param_idx)
                         && !inline_sym_idx.is_external()
                     {
-                        self.ir.event_type_display.insert((inline_sym_idx, 0), ep.0.clone());
+                        let ver = self.func(inline_func_idx).param_version(event_param_idx);
+                        self.ir.event_type_display.insert((inline_sym_idx, ver), ep.0.clone());
                         let inline_func = &mut self.ir.functions[inline_func_idx.val()];
                         // Skip if the user already wrote a @param annotation (Simple("") is
                         // the empty placeholder used when no annotation exists).
@@ -3931,9 +3908,9 @@ impl<'a> Analysis<'a> {
                 let implicit_nil_return = func.implicit_nil_return;
                 let vararg_proj = func.vararg_projection.clone();
                 let ret_projections = func.return_projections.clone();
-                let arg_infos: Vec<(SymbolIdentifier, Option<ValueType>)> = func.args.iter().map(|&sym_idx| {
+                let arg_infos: Vec<(SymbolIdentifier, Option<ValueType>)> = func.args.iter().enumerate().map(|(i, &sym_idx)| {
                     let sym = self.sym(sym_idx);
-                    let resolved = sym.versions.first().and_then(|v| v.resolved_type.clone());
+                    let resolved = self.ir.param_decl_type(func, i).cloned();
                     (sym.id.clone(), resolved)
                 }).collect();
 
@@ -3976,7 +3953,7 @@ impl<'a> Analysis<'a> {
                         let f_func = self.func(*f_idx);
                         let f_arg_infos: Vec<(SymbolIdentifier, Option<ValueType>, bool)> = f_func.args.iter().enumerate().map(|(i, &sym_idx)| {
                             let sym = self.sym(sym_idx);
-                            let resolved = sym.versions.first().and_then(|v| v.resolved_type.clone());
+                            let resolved = self.ir.param_decl_type(f_func, i).cloned();
                             let optional = f_func.param_optional.get(i).copied().unwrap_or(false);
                             (sym.id.clone(), resolved, optional)
                         }).collect();
@@ -4453,9 +4430,7 @@ impl<'a> Analysis<'a> {
                         if !covered_by_signature && target_unannotated
                             && let Some(&target_sym) = called_args.get(target_idx)
                                 && !target_sym.is_external() {
-                                    let inferred = self.ir.symbols.get(target_sym.val())
-                                        .and_then(|s| s.versions.first())
-                                        .and_then(|v| v.resolved_type.clone())
+                                    let inferred = self.ir.param_decl_type(self.ir.func(func_idx), target_idx).cloned()
                                         .filter(|t| !t.contains_type_variable());
                                     if let Some(vt) = inferred {
                                         record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, vt);
@@ -4889,8 +4864,8 @@ impl<'a> Analysis<'a> {
 
         if tc_pairs.is_empty() { return false; }
 
-        // Phase 2: Collect param type updates
-        let mut param_updates: Vec<(SymbolIndex, ValueType)> = Vec::new();
+        // Phase 2: Collect param type updates (inline function, param position, type)
+        let mut param_updates: Vec<(FunctionIndex, usize, ValueType)> = Vec::new();
 
         for (class_idx, ctor_idx) in tc_pairs {
             let ctor_fields: Vec<(String, ExprId)> = self.ir.tables[ctor_idx.val()]
@@ -4910,33 +4885,25 @@ impl<'a> Analysis<'a> {
                 let Some(expected_func_idx) = extract_function_idx_from_type(field_annotation.as_ref()) else { continue };
 
                 // Collect expected param types from the annotation function
-                let expected_args = self.ir.func(expected_func_idx).args.clone();
-                let inline_args = self.ir.func(inline_func_idx).args.clone();
-
-                for (i, &inline_sym_idx) in inline_args.iter().enumerate() {
-                    if inline_sym_idx.is_external() { continue; }
+                for i in 0..self.ir.func(inline_func_idx).args.len() {
                     // Skip if already resolved
-                    let already_set = self.ir.symbols[inline_sym_idx.val()].versions.first()
-                        .and_then(|v| v.resolved_type.as_ref()).is_some();
-                    if already_set { continue; }
+                    if !self.param_untyped(inline_func_idx, i) { continue; }
 
-                    let Some(&expected_sym_idx) = expected_args.get(i) else { continue };
-                    let expected_type = self.sym(expected_sym_idx).versions.first()
-                        .and_then(|v| v.resolved_type.clone());
+                    let expected_type = self.ir.param_decl_type(self.ir.func(expected_func_idx), i).cloned();
                     let Some(expected_type) = expected_type else { continue };
                     if matches!(expected_type, ValueType::Any | ValueType::Nil) { continue; }
 
-                    param_updates.push((inline_sym_idx, expected_type));
+                    param_updates.push((inline_func_idx, i, expected_type));
                 }
             }
         }
 
         // Phase 3: Apply updates
         let mut progress = false;
-        for (sym_idx, expected_type) in param_updates {
-            if let Some(ver) = self.ir.symbols[sym_idx.val()].versions.first_mut()
-                && ver.resolved_type.is_none() {
-                    ver.resolved_type = Some(expected_type);
+        for (func_idx, pos, expected_type) in param_updates {
+            if let Some(v) = self.ir.param_decl_version_mut(func_idx, pos)
+                && v.resolved_type.is_none() {
+                    v.resolved_type = Some(expected_type);
                     progress = true;
                 }
         }

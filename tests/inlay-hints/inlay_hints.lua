@@ -343,6 +343,15 @@ function Calc.add(self, n)
     return n * 2
 end
 
+-- Repeated `_` callback params: each hint shows its own position's type
+---@param cb fun(unit: string, count: number)
+local function forEachUnit(cb) end
+
+forEachUnit(function(_, _)
+--                    ^ hint: : string
+--                       ^ hint: : number
+end)
+
 -- ── Chained method return hints ─────────────────────────────────────────────
 
 ---@class Chain

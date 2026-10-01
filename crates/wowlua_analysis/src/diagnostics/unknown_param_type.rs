@@ -1,9 +1,8 @@
 use crate::analysis::AnalysisResult;
 use crate::ast::*;
 use crate::collections::HashSet;
-use crate::syntax::SyntaxKind;
 use crate::syntax::tree::SyntaxTree;
-use crate::syntax::{NodeOrToken, SyntaxNode, TextRange};
+use crate::syntax::{SyntaxNode, TextRange};
 use crate::types::*;
 use super::unknown_local_type::{unknown_type_message, unknown_writes};
 use super::{DiagnosticPass, WowDiagnostic};
@@ -28,13 +27,8 @@ impl DiagnosticPass for UnknownParamType {
             let Some(func_def) = FunctionDefinition::cast(func_node) else { continue };
             let Some(params_node) = func_def.params() else { continue };
 
-            let src_params: Vec<(String, TextRange)> = params_node.syntax().children_with_tokens()
-                .filter_map(|c| match c {
-                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Parameter => {
-                        Some((t.text().to_string(), t.text_range()))
-                    }
-                    _ => None,
-                })
+            let src_params: Vec<(String, TextRange)> = params_node.parameter_tokens().iter()
+                .map(|t| (t.text().to_string(), t.text_range()))
                 .collect();
 
             let self_injected = func.args.len() == src_params.len() + 1
@@ -44,7 +38,7 @@ impl DiagnosticPass for UnknownParamType {
 
             // Each param: its declaration (the param token), then any reassignments
             // in the body. A repeated name (`function(_, _)`) is one symbol, so its
-            // declaration is judged by the first binding.
+            // reassignments are checked once.
             let mut params: Vec<(SymbolIndex, String, Option<TextRange>)> = Vec::new();
             if self_injected {
                 // Implicit `self` of `function T:m()` has no token; anchor on the name.
@@ -61,7 +55,7 @@ impl DiagnosticPass for UnknownParamType {
             for (i, (sym_idx, name, decl_range)) in params.iter().enumerate() {
                 if sym_idx.is_external() { continue; }
                 let sym = analysis.sym(*sym_idx);
-                let resolved = sym.versions.first().and_then(|v| v.resolved_type.as_ref());
+                let resolved = analysis.ir.param_decl_type(func, i);
                 let annotated = func.param_annotations.get(i).is_some_and(|a| a != &sentinel);
                 if let Some(range) = *decl_range
                     && let Some(desc) = unknown_type_message(resolved, annotated)

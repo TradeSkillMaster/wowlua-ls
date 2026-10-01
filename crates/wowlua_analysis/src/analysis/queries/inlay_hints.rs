@@ -215,12 +215,7 @@ impl AnalysisResult {
         let sentinel = crate::annotations::AnnotationType::Simple(String::new());
 
         let Some(pl) = func_def.params() else { return };
-        let src_params: Vec<_> = pl.syntax().children_with_tokens()
-            .filter_map(|t| match t {
-                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Parameter => Some(t),
-                _ => None,
-            })
-            .collect();
+        let src_params = pl.parameter_tokens();
 
         let self_injected = func.args.len() == src_params.len() + 1
             && matches!(&self.sym(func.args[0]).id,
@@ -240,8 +235,7 @@ impl AnalysisResult {
             let sym_idx = func.args[arg_i];
             if sym_idx.is_external() { continue; }
 
-            let Some(resolved) = self.sym(sym_idx).versions.first()
-                .and_then(|v| v.resolved_type.as_ref())
+            let Some(resolved) = self.ir.param_decl_type(func, arg_i)
             else { continue };
 
             if matches!(resolved, ValueType::Any | ValueType::Nil) { continue; }
@@ -267,23 +261,17 @@ impl AnalysisResult {
         if func.is_vararg
             && !self.vararg_user_annotated_fns.contains(&func_idx)
             && let Some(ref ann) = func.vararg_annotation
+            && let Some(token) = pl.vararg_token()
         {
-            let vararg_token = pl.syntax().children_with_tokens()
-                .find_map(|t| match t {
-                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::ParameterVarArgs => Some(t),
-                    _ => None,
-                });
-            if let Some(token) = vararg_token {
-                let type_text = crate::annotations::format_annotation_type(ann);
-                let token_end = u32::from(token.text_range().end());
-                hints.push(InlayHintData {
-                    position: token_end,
-                    label: format!(": {}", type_text),
-                    kind: InlayHintKindTag::Type,
-                    padding_left: false,
-                    padding_right: false,
-                });
-            }
+            let type_text = crate::annotations::format_annotation_type(ann);
+            let token_end = u32::from(token.text_range().end());
+            hints.push(InlayHintData {
+                position: token_end,
+                label: format!(": {}", type_text),
+                kind: InlayHintKindTag::Type,
+                padding_left: false,
+                padding_right: false,
+            });
         }
     }
 

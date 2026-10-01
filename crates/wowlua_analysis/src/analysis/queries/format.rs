@@ -1425,8 +1425,7 @@ impl AnalysisResult {
             let suffix = if optional && !ann_has_nil { "?" } else { "" };
             let type_str = self.param_annotation_text(func, i)
                 .or_else(|| {
-                    self.sym(sym_idx).versions.first()
-                        .and_then(|v| v.resolved_type.as_ref())
+                    self.ir.param_decl_type(func, i)
                         .map(|rt| {
                             let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
                             self.format_type_depth(&display_type, 1)
@@ -1834,8 +1833,7 @@ impl AnalysisResult {
             } else {
                 self.param_annotation_text(func, i)
             }.or_else(|| {
-                self.sym(sym_idx).versions.first()
-                    .and_then(|v| v.resolved_type.as_ref())
+                self.ir.param_decl_type(func, i)
                     .map(|rt| {
                         let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
                         let effective_depth = if name == "self" && depth > 0 {
@@ -2453,10 +2451,9 @@ impl AnalysisResult {
                 // Prefer raw annotation text (preserves alias names) over resolved type
                 let type_str = self.param_annotation_text_subst(func, i, subs)
                     .or_else(|| {
-                        // Use version 0 only (declaration type from @param), not a
+                        // Use the declaration version only (the type from @param), not a
                         // later version from type-guard narrowing in the body.
-                        self.sym(sym_idx).versions.first()
-                            .and_then(|v| v.resolved_type.as_ref())
+                        self.ir.param_decl_type(func, i)
                             .map(|rt| {
                                 let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
                                 self.format_type_subst(&display_type, 1, subs)

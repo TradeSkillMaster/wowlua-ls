@@ -2176,8 +2176,7 @@ impl AnalysisResult {
                 _ => continue,
             };
             // Get inferred type
-            let type_text = sym.versions.first()
-                .and_then(|v| v.resolved_type.as_ref())
+            let type_text = self.ir.param_decl_type(func, i)
                 .and_then(|vt| {
                     if matches!(vt, ValueType::Any | ValueType::Nil) {
                         None

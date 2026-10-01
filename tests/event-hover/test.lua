@@ -371,6 +371,15 @@ RegisterEventShaped("DO_PROCESS", function(event, success, canRetry)
 --        ^ hover: (local) c: boolean
 end)
 
+-- Repeated `_` params are each typed from their own payload position, and `_`
+-- in the body is the last one.
+RegisterFunPayload("BATCH_START", function(_, _)
+--                                         ^ hover: (param) _: string
+--                                            ^ hover: (param) _: table
+    local ctx = _
+--        ^ hover: (local) ctx: table
+end)
+
 -- ── Event-name string hover/def resolves through a generic constraint ──
 -- (regression: `@param event E` with `@generic E: ActionEvent` should still
 --  hover the event-name argument as an event, via E's constraint)

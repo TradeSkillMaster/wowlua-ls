@@ -3070,7 +3070,6 @@ impl<'a> Analysis<'a> {
         let params = func
             .params()
             .expect("FunctionDefinition should have params");
-        let param_names = params.parameters();
         let is_vararg = params.ellipsis();
         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
         let mut function = Function {
@@ -3125,9 +3124,13 @@ impl<'a> Analysis<'a> {
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
         }
-        for name in param_names.iter() {
+        for token in params.parameter_tokens() {
             // Store args as Name so they're findable by normal scope lookup
-            function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), new_scope_idx, node));
+            function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name(token.text().to_string()), new_scope_idx, node));
+            let ver = function.param_version(function.args.len() - 1);
+            if ver > 0 {
+                self.ir.repeated_param_versions.insert(u32::from(token.text_range().start()), ver);
+            }
         }
         for &sym_idx in &function.args {
             self.ir.param_symbols.insert(sym_idx);
@@ -3221,7 +3224,8 @@ impl<'a> Analysis<'a> {
             // and parameter-name inlay hints.
             let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics)
                 .map(|vt| self.materialize_fun_alias(vt, &p.typ));
-            // Always record the raw annotation type (even for `any` which resolves to None)
+            // Always record the raw annotation type (even for `any` which resolves to None).
+            // A repeated name (`function(_, _)`) annotates its first occurrence.
             for (i, &arg_sym_idx) in func_args.iter().enumerate() {
                 if self.ir.symbols[arg_sym_idx.val()].id == SymbolIdentifier::Name(p.name.clone()) {
                     if let Some(vt) = resolved_vt.clone() {
@@ -3231,14 +3235,14 @@ impl<'a> Analysis<'a> {
                             vt
                         };
                         let expr_id = self.ir.push_expr(Expr::Literal(vt));
-                        self.ir.set_type_source(arg_sym_idx, expr_id);
+                        self.ir.set_param_type_source(func_idx, i, expr_id);
                         // Store resolved type args for parameterized param annotations
                         if let AnnotationType::Parameterized(_, ref type_arg_annotations) = p.typ {
                             let type_args: Vec<ValueType> = type_arg_annotations.iter()
                                 .filter_map(|ta| self.resolve_annotation_type_gen(ta, generics))
                                 .collect();
                             if !type_args.is_empty()
-                                && let Some(ver) = self.ir.symbols[arg_sym_idx.val()].versions.last_mut() {
+                                && let Some(ver) = self.ir.param_decl_version_mut(func_idx, i) {
                                     ver.type_args = type_args;
                                 }
                         }

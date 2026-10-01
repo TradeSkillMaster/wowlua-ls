@@ -300,25 +300,26 @@ impl<'a> Analysis<'a> {
                 // Before giving up, try re-resolving param annotations that reference
                 // @built-name classes discovered during this fixpoint loop.
                 let mut new_resolution = false;
-                for func_idx in 0..self.ir.functions.len() {
-                    let param_annotations = self.ir.functions[func_idx].param_annotations.clone();
-                    let func_args = self.ir.functions[func_idx].args.clone();
+                for func_idx in (0..self.ir.functions.len()).map(FunctionIndex) {
+                    let param_annotations = self.ir.functions[func_idx.val()].param_annotations.clone();
                     for (i, ann) in param_annotations.iter().enumerate() {
-                        let Some(&sym_idx) = func_args.get(i) else { continue };
-                        if sym_idx.is_external() { continue; }
-                        let current_type = self.ir.symbols[sym_idx.val()].versions.first()
-                            .and_then(|v| v.resolved_type.clone());
+                        let Some(decl) = self.ir.param_decl_version(self.ir.func(func_idx), i) else { continue };
+                        let current_type = decl.resolved_type.clone();
                         // Re-resolve if unresolved
                         if current_type.is_none() {
                             if let Some(vt) = self.resolve_annotation_type(ann) {
-                                self.ir.symbols[sym_idx.val()].versions[0].resolved_type = Some(vt);
+                                if let Some(decl) = self.ir.param_decl_version_mut(func_idx, i) {
+                                    decl.resolved_type = Some(vt);
+                                }
                                 // Store type args for parameterized annotations
                                 if let crate::annotations::AnnotationType::Parameterized(_, type_arg_anns) = ann {
                                     let type_args: Vec<ValueType> = type_arg_anns.iter()
                                         .filter_map(|ta| self.resolve_annotation_type(ta))
                                         .collect();
-                                    if !type_args.is_empty() {
-                                        self.ir.symbols[sym_idx.val()].versions[0].type_args = type_args;
+                                    if !type_args.is_empty()
+                                        && let Some(decl) = self.ir.param_decl_version_mut(func_idx, i)
+                                    {
+                                        decl.type_args = type_args;
                                     }
                                 }
                                 new_resolution = true;
@@ -333,8 +334,9 @@ impl<'a> Analysis<'a> {
                             && let Some(class_name) = self.table(*old_idx).class_name.clone()
                                 && let Some(&new_idx) = self.ir.classes.get(&class_name)
                                     && new_idx != *old_idx {
-                                        self.ir.symbols[sym_idx.val()].versions[0].resolved_type =
-                                            Some(ValueType::Table(Some(new_idx)));
+                                        if let Some(decl) = self.ir.param_decl_version_mut(func_idx, i) {
+                                            decl.resolved_type = Some(ValueType::Table(Some(new_idx)));
+                                        }
                                         new_resolution = true;
                                     }
                     }

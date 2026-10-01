@@ -687,6 +687,28 @@ RegisterHandler("test", function(prefix, sender, data)
 --        ^ hover: (local) d: string
 end)
 
+-- Repeated `_` params: each occurrence is typed from its own position, and `_`
+-- in the body is the last one
+---@param cb fun(unit: string, count: number, ok: boolean, extra: table)
+local function RegisterRepeated(cb) end
+
+RegisterRepeated(function(_, _, _, extra)
+--                        ^ hover: (param) _: string
+--                           ^ hover: (param) _: number
+--                              ^ hover: (param) _: boolean
+    local last = _
+--        ^ hover: (local) last: boolean
+end)
+
+-- `@param` on a repeated name annotates its first occurrence
+---@param _ string
+local function firstAnnotated(_, _) end
+--                            ^ hover: (param) _: string
+--                               ^ hover: (param) _: ?
+firstAnnotated(1,
+--             ^ diag: type-mismatch  sig: fun(_: string, _)
+    2)
+
 -- ── Bracket indexing on annotated array types ───────────────────────────────
 
 local name = config.names[1]

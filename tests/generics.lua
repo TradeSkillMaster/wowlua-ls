@@ -600,6 +600,12 @@ feForEach(feMap, function(value, index)
     --      ^ hover: (local) feMapK: string
 end)
 
+-- Repeated `_` params each take their own position's type.
+feForEach(feMap, function(_, _)
+--                        ^ hover: (param) _: FeElem
+--                           ^ hover: (param) _: string
+end)
+
 -- Same, but the generic function is a module-table field (dot call).
 local FeUtils = {}
 

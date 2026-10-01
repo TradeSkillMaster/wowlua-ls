@@ -62,20 +62,14 @@ impl DiagnosticPass for MissingAnnotations {
 
             let Some(params_node) = func_def.params() else { continue };
 
-            let mut src_params: Vec<(String, u32, u32)> = Vec::new();
-            let mut vararg_range: Option<(u32, u32)> = None;
-            for child in params_node.syntax().children_with_tokens() {
-                if let NodeOrToken::Token(t) = child {
-                    let r = t.text_range();
-                    let start = u32::from(r.start());
-                    let end = u32::from(r.end());
-                    match t.kind() {
-                        SyntaxKind::Parameter => src_params.push((t.text().to_string(), start, end)),
-                        SyntaxKind::ParameterVarArgs => vararg_range = Some((start, end)),
-                        _ => {}
-                    }
-                }
-            }
+            let src_params: Vec<(String, u32, u32)> = params_node.parameter_tokens().iter().map(|t| {
+                let r = t.text_range();
+                (t.text().to_string(), u32::from(r.start()), u32::from(r.end()))
+            }).collect();
+            let vararg_range = params_node.vararg_token().map(|t| {
+                let r = t.text_range();
+                (u32::from(r.start()), u32::from(r.end()))
+            });
 
             // A colon-method definition injects `self` at arg position 0, which
             // never needs a `@param`; shift the source params past it.

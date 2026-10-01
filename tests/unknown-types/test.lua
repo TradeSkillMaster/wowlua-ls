@@ -51,6 +51,15 @@ local function ignoresTwo(_, _, n)
 end
 _consume(ignoresTwo)
 
+-- Each `_` of a repeated one is judged by its own type: the callback signature
+-- types the first `_` here, but leaves the second `any`.
+---@param cb fun(first: string, second: any)
+local function withFirst(cb) end
+withFirst(function(_,
+    _)
+--  ^ diag: unknown-param-type ~'_'
+end)
+
 -- No fire: backward inference determines the type from body arithmetic.
 local function inferred(n)
     return n + 1

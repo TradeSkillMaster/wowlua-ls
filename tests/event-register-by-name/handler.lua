@@ -60,3 +60,25 @@ end
 
 lib.RegisterCallback(addonObject, "KeystoneAdded", "OnKeystoneEntries")
 lib.RegisterCallback(addonObject, "KeystoneRemoved", "OnKeystoneEntries")
+
+-- A named handler's repeated `_` params are each typed from their own payload
+-- position, and a direct call checks each argument against its own occurrence.
+function addonObject.OnRepeated(_, _, allInfo)
+--                              ^ hover: (param) _: string
+--                                 ^ hover: (param) _: RBKeystoneInfo
+end
+lib.RegisterCallback(addonObject, "KeystoneUpdate", "OnRepeated")
+
+---@type RBKeystoneInfo
+local repeatedInfo = { level = 1, mapID = 2 }
+addonObject.OnRepeated("unit", repeatedInfo, {})
+
+-- A conflicting second registration reverts every repeated param to untyped.
+function addonObject.OnConflicted(_, _)
+--                                ^ diag: unknown-param-type
+--                                   ^ diag: unknown-param-type
+    local last = _
+--        ^ hover: (local) last: ?
+end
+lib.RegisterCallback(addonObject, "KeystoneUpdate", "OnConflicted")
+lib.RegisterCallback(addonObject, "KeystoneAdded", "OnConflicted")

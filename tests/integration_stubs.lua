@@ -720,11 +720,15 @@ do
     end)
 end
 
--- ── SetScript handler with underscore params (no false positive) ──
+-- ── SetScript handler with underscore params (no false positive, each `_` typed) ──
 do
     local uf = CreateFrame('Frame')
     uf:SetScript("OnEvent", function(_, _, unit)
+--                                   ^ hover: (param) _: Frame {
+--                                      ^ hover: (param) _: FrameEvent
         local u = unit
+        local e = _
+--            ^ hover: (local) e: FrameEvent
     end)
 end
 

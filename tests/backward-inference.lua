@@ -853,6 +853,17 @@ local tcExplicit = {
     value = 1,
 }
 
+-- Case 5: repeated `_` params each take their own position's type
+---@type TcHost
+local tcRepeated = {
+    handler = function(_, _, count)
+    --^ hover: (field) handler: fun(_: TcHost, _: string, count: number)
+    --                 ^ hover: (param) _: TcHost
+    --                    ^ hover: (param) _: string
+    end,
+    value = 3,
+}
+
 -- ── Optional fun() callback param type propagation ──
 -- fun(...)? should propagate param types into inline callback arguments.
 ---@param callbackFunction fun(arg: string, i: number, parts: number)?

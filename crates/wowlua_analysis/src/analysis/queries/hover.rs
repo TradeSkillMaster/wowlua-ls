@@ -258,7 +258,9 @@ impl AnalysisResult {
                 "local"
             };
             if let Some(resolved) = resolved {
-                let ver_idx = self.symbol_version_at.get(&token_start).copied().unwrap_or(0);
+                let ver_idx = self.symbol_version_at.get(&token_start)
+                    .or_else(|| self.ir.repeated_param_versions.get(&token_start))
+                    .copied().unwrap_or(0);
                 // A token with no `symbol_version_at` entry is a declaration /
                 // assignment target, not a use. Guard-based narrowing (e.g.
                 // `if not x then return end`) is recorded scope-wide but textually

@@ -2173,12 +2173,7 @@ fn lift_local_func_to_shape(
                 .get(i)
                 .is_some_and(crate::annotations::annotation_type_is_nullable);
             let optional = func.param_optional.get(i).copied().unwrap_or(false) && !ann_has_nil;
-            let raw = ir
-                .sym(arg)
-                .versions
-                .first()
-                .and_then(|v| v.resolved_type.clone())
-                .unwrap_or(ValueType::Any);
+            let raw = ir.param_decl_type(func, i).cloned().unwrap_or(ValueType::Any);
             // The `?` suffix conveys optionality, so strip nil from the display type.
             let raw = if optional { raw.strip_nil() } else { raw };
             let ty = lift_local_type_to_ext_depth(&raw, ir, ext, depth + 1, res, guard);
