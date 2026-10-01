@@ -2,13 +2,13 @@ use crate::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use crate::ast::{AstNode, Block, Expression, ExpressionList, FunctionCall, Statement};
 use crate::syntax::SyntaxKind;
-use crate::syntax::{SyntaxNode, NodeOrToken};
+use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken};
 use crate::types::{TableIndex, ValueType};
 use super::{
     AnnotationType, ParamInfo, TypedSelfField, Visibility,
     default_visibility_for_name,
 };
-use super::annotation_types::{parse_type_annotation_list, OverloadSig};
+use super::annotation_types::{parse_type, parse_type_annotation_list, OverloadSig};
 use super::scan_globals::string_keyed_receiver_method;
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
@@ -1765,16 +1765,33 @@ pub fn extract_inline_type_from_node(field_node: SyntaxNode<'_>) -> Option<Annot
 
 /// Every type of the `---@type` comment `extract_inline_type_from_node` reads.
 pub fn extract_inline_types_from_node(field_node: SyntaxNode<'_>) -> Vec<AnnotationType> {
-    inline_type_body(field_node).map(parse_type_annotation_list).unwrap_or_default()
+    find_inline_type_comment(field_node)
+        .map(|(body, _)| parse_type_annotation_list(body))
+        .unwrap_or_default()
 }
 
-/// The body of a `---@type` comment at one of `extract_inline_type_from_node`'s
-/// locations.
-fn inline_type_body(field_node: SyntaxNode<'_>) -> Option<&str> {
-    fn type_body(text: &str) -> Option<&str> {
-        let rest = text.trim_start_matches('-').trim().strip_prefix("@type")?.trim();
-        (!rest.is_empty()).then_some(rest)
-    }
+/// The byte range of the comment [`extract_inline_type_from_node`] reads, for
+/// positioning `undefined-doc-name` on it.
+pub fn inline_type_comment_range(field_node: SyntaxNode<'_>) -> Option<(usize, usize)> {
+    find_inline_type_comment(field_node).map(|(_, tok)| {
+        let r = tok.text_range();
+        (u32::from(r.start()) as usize, u32::from(r.end()) as usize)
+    })
+}
+
+/// The body of a `---@type T` or `--[[@type T]]` (any bracket level) comment.
+fn inline_type_comment(text: &str) -> Option<&str> {
+    let content = crate::analysis::block_comment_inner(text)
+        .unwrap_or_else(|| text.trim_start_matches('-'))
+        .trim();
+    let rest = content.strip_prefix("@type")?.trim();
+    (!rest.is_empty()).then_some(rest)
+}
+
+/// The inline `@type` comment of `field_node` and its body, found at the
+/// locations [`extract_inline_type_from_node`] lists.
+fn find_inline_type_comment<'a>(field_node: SyntaxNode<'a>) -> Option<(&'a str, SyntaxToken<'a>)> {
+    let typed = |t: SyntaxToken<'a>| inline_type_comment(t.text()).map(|body| (body, t));
     // Check within the node itself: find the last Name token and walk forward
     // on the same line. This handles Identifier nodes that capture trailing comments.
     let mut last_name_tok = None;
@@ -1794,8 +1811,8 @@ fn inline_type_body(field_node: SyntaxNode<'_>) -> Option<&str> {
                     tok = t.next_token();
                 }
                 SyntaxKind::Comment => {
-                    if let Some(body) = type_body(t.text()) {
-                        return Some(body);
+                    if let Some(found) = typed(t) {
+                        return Some(found);
                     }
                     break;
                 }
@@ -1812,8 +1829,8 @@ fn inline_type_body(field_node: SyntaxNode<'_>) -> Option<&str> {
                 tok = t.next_token();
             }
             SyntaxKind::Comment => {
-                if let Some(body) = type_body(t.text()) {
-                    return Some(body);
+                if let Some(found) = typed(t) {
+                    return Some(found);
                 }
                 break;
             }
@@ -1854,10 +1871,60 @@ fn inline_type_body(field_node: SyntaxNode<'_>) -> Option<&str> {
                     }
                 }
                 if !standalone { return None; }
-                return type_body(t.text());
+                return typed(t);
             }
             _ => return None,
         }
+    }
+    None
+}
+
+/// Extract an inline `--[[@as Type]]` annotation from tokens following an expression node.
+/// Supports both `--[[@as Type]]` and `--[=[@as Type[]]=]` (equal-sign block comments for array types).
+/// Used by both per-file analysis (the expression cast) and cross-file scanning
+/// (a table-constructor entry's cast value).
+pub fn extract_inline_as(expr_node: SyntaxNode<'_>) -> Option<AnnotationType> {
+    let last_token = expr_node.last_token()?;
+    // First try: scan forward from the last token (comment is outside the node).
+    // A trailing statement-terminator `;` is skipped so `local x = e; --[[@as T]]`
+    // still binds the cast to `e` (a `)`/keyword still stops over-reach).
+    let mut tok = last_token.next_token();
+    while let Some(t) = tok {
+        match t.kind() {
+            SyntaxKind::Whitespace | SyntaxKind::Semicolon => {
+                tok = t.next_token();
+            }
+            SyntaxKind::Comment => {
+                return parse_as_comment(t.text());
+            }
+            _ => break,
+        }
+    }
+    // Second try: scan backward from the last token (comment is inside the node,
+    // e.g. when the parser includes trailing trivia in the expression node)
+    let mut tok = Some(last_token);
+    while let Some(t) = tok {
+        match t.kind() {
+            SyntaxKind::Whitespace | SyntaxKind::Newline => {
+                tok = t.prev_token();
+            }
+            SyntaxKind::Comment => {
+                return parse_as_comment(t.text());
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Parse a comment token as a potential `@as` annotation.
+fn parse_as_comment(text: &str) -> Option<AnnotationType> {
+    let inner = crate::analysis::block_comment_inner(text)?;
+    let inner = inner.trim();
+    let rest = inner.strip_prefix("@as")?;
+    let rest = rest.trim();
+    if !rest.is_empty() {
+        return Some(parse_type(rest));
     }
     None
 }

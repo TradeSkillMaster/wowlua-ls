@@ -1486,6 +1486,23 @@ pub struct FieldAssignment {
     pub is_method_def: bool,
 }
 
+/// A write to a field of a table field (`self.header.cells = expr`, exactly three
+/// names). The cross-file `@class` field harvest carries these as the shape injected
+/// onto the class field's value, so a reader in another file sees them. Only the
+/// names are recorded: the root's table is known only after the fixpoint.
+#[derive(Debug)]
+pub struct SubFieldWrite {
+    pub root_name: String,
+    pub scope_idx: ScopeIndex,
+    pub owner_field: String,
+    pub field_name: String,
+    pub expr_id: ExprId,
+    pub ident_start: u32,
+    pub ident_end: u32,
+    /// Written `t.f["k"] = v`: an element write, never a carried field.
+    pub bracket_key: bool,
+}
+
 /// Records a deep field assignment (names.len() > 2, e.g. `self._plot.dot = expr`)
 /// so it can be resolved after the Phase 2 fixpoint when intermediate types are known.
 #[derive(Debug)]

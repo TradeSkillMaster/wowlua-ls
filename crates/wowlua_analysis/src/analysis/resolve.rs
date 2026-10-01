@@ -17,6 +17,32 @@ fn apply_strip(base: Option<ValueType>, strip_fn: fn(&ValueType) -> ValueType) -
     }
 }
 
+/// A field as `resolve_field_access` reads it, copied out of the `FieldInfo` so
+/// the borrow ends before the branches that resolve its expressions.
+struct FetchedField {
+    /// A coarse cross-file placeholder (`field_is_coarse_placeholder`) that a
+    /// deferred harvest or a constructor twin may replace.
+    placeholder: bool,
+    annotation: Option<ValueType>,
+    primary: ExprId,
+    extras: Vec<ExprId>,
+    /// The annotation comes from author text (`@field`, `---@type`), not one the
+    /// scan materialized.
+    has_author_text: bool,
+}
+
+impl FetchedField {
+    fn of(fi: &FieldInfo, ext: &crate::pre_globals::PreResolvedGlobals) -> Self {
+        Self {
+            placeholder: crate::analysis::deferred::field_is_coarse_placeholder(fi, ext),
+            annotation: fi.annotation.clone(),
+            primary: fi.expr,
+            extras: fi.extra_exprs.clone(),
+            has_author_text: fi.annotation_text.is_some(),
+        }
+    }
+}
+
 /// Check if a function's return annotation at `ret_idx` was declared with `!`
 /// (non-nil assertion, e.g. `V!`). Used by for-in resolution to strip nil from
 /// iteration variables when the iterator stub explicitly marks returns as non-nil.
@@ -27,6 +53,30 @@ fn is_forin_non_nil_return(func: &Function, ret_idx: usize) -> bool {
 }
 
 impl<'a> Analysis<'a> {
+    /// Table field write expressions the fixpoint must resolve explicitly: they
+    /// aren't backed by any symbol's `type_source`, so nothing else pulls on them
+    /// (`@builds-field` / `@built-name` / `@return self` / `@return built` chains,
+    /// and a write no read reaches — the query-time resolver cannot break the
+    /// self-cycle of `private.q = private.q or Create()`). Covers overlay fields
+    /// (external table writes like `Element._STATE_SCHEMA = ...`) and every local
+    /// table's fields, class tables and plain module tables alike.
+    fn collect_pending_field_exprs(&self, symbol_exprs: &HashSet<ExprId>) -> Vec<ExprId> {
+        let mut pending: Vec<ExprId> = self.ir.overlay_fields.values()
+            .flat_map(|fields| fields.values())
+            .flat_map(|fi| std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied()))
+            .filter(|id| !symbol_exprs.contains(id))
+            .collect();
+        for table in self.ir.tables.iter() {
+            for fi in table.fields.values() {
+                pending.extend(
+                    std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied())
+                        .filter(|id| !symbol_exprs.contains(id)),
+                );
+            }
+        }
+        pending
+    }
+
     pub fn resolve_types(&mut self) {
         // Pre-size the expression cache and cycle-detection bitmap as dense Vecs.
         // Only local expressions (< EXT_BASE) are indexed; external ones resolve via fast paths.
@@ -93,32 +143,7 @@ impl<'a> Analysis<'a> {
             .filter(|id| !symbol_exprs.contains(id))
             .collect();
 
-        // Collect table field expressions that need resolving. These aren't backed by
-        // any symbol's type_source, so the fixpoint loop must resolve them explicitly
-        // to handle @builds-field / @built-name / @return self / @return built chains.
-        // Includes both:
-        //   - Overlay fields (external table field assignments like `Element._STATE_SCHEMA = ...`)
-        //   - Local table fields set inside constructors (like `self._state = ...`)
-        let mut pending_field_exprs: Vec<ExprId> = self.ir.overlay_fields.values()
-            .flat_map(|fields| fields.values())
-            .flat_map(|fi| std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied()))
-            .filter(|id| !symbol_exprs.contains(id))
-            .collect();
-        // Also collect field expressions from local tables (< EXT_BASE) with class names
-        for table in self.ir.tables.iter() {
-            if table.class_name.is_some() {
-                for fi in table.fields.values() {
-                    if !symbol_exprs.contains(&fi.expr) {
-                        pending_field_exprs.push(fi.expr);
-                    }
-                    for &extra in &fi.extra_exprs {
-                        if !symbol_exprs.contains(&extra) {
-                            pending_field_exprs.push(extra);
-                        }
-                    }
-                }
-            }
-        }
+        let mut pending_field_exprs = self.collect_pending_field_exprs(&symbol_exprs);
 
         // Unified fixpoint: resolve both symbol type sources and standalone call expressions.
         // Call expressions can propagate param types (e.g. fun() annotations on inline
@@ -375,6 +400,9 @@ impl<'a> Analysis<'a> {
                     .map(|(i, _)| ExprId(i))
                     .filter(|id| !symbol_exprs.contains(id))
                     .collect();
+                // Field writes drained on their first resolution lost their cached
+                // type with the clear above; nothing else re-resolves them.
+                pending_field_exprs = self.collect_pending_field_exprs(&symbol_exprs);
                 for (si, sym) in self.ir.symbols.iter().enumerate() {
                     for (vi, ver) in sym.versions.iter().enumerate() {
                         if let Some(expr_id) = ver.type_source {
@@ -3249,6 +3277,43 @@ impl<'a> Analysis<'a> {
         result
     }
 
+    /// Pair the coarse scan's *anonymous* sub-table annotation of a field this
+    /// file writes a constructor to (`ns.T = { … }`) with that local constructor
+    /// table in `ctor_twins`. The scan types call and reference entries `any`;
+    /// the local constructor is the precise view of the same entries, and the
+    /// field-access path reads a placeholder entry from it. The receiver itself
+    /// keeps the scan table, whose overlay methods, element types, and entries
+    /// other files added stay visible.
+    fn note_constructor_twin(
+        &mut self,
+        ann: &ValueType,
+        has_author_text: bool,
+        exprs: impl Iterator<Item = ExprId>,
+    ) {
+        let ValueType::Table(Some(ext_idx)) = ann else { return };
+        if has_author_text || !ext_idx.is_external() || self.table(*ext_idx).class_name.is_some()
+            || self.ctor_twins.contains_key(ext_idx)
+        {
+            return;
+        }
+        let local = exprs
+            .filter(|e| !e.is_external())
+            .find_map(|e| match self.resolve_expr(e) {
+                Some(ValueType::Table(Some(li))) if !li.is_external() && self.table(li).class_name.is_none() => Some(li),
+                _ => None,
+            });
+        if let Some(local) = local {
+            self.ctor_twins.insert(*ext_idx, local);
+        }
+    }
+
+    /// True while `expr_id` is on the resolution stack, i.e. reading it again
+    /// would close the cycle a self-referential write (`t.f = t.f or X()`)
+    /// creates.
+    fn expr_in_progress(&self, expr_id: ExprId) -> bool {
+        self.resolving_exprs.get(expr_id.val()).copied().unwrap_or(false)
+    }
+
     /// True when `vt` is a zero-arg, return-less `function() end` literal — the
     /// no-op placeholder a field/local is commonly seeded with before a real
     /// callback is assigned. A function carrying parameters or a return value is
@@ -3607,15 +3672,23 @@ impl<'a> Analysis<'a> {
             // from the class's declaring file(s); the common precise field is used
             // directly, so a non-placeholder external field access repeats no
             // `get_field` lookups.
-            let mut fetched = self.ir.get_field(idx, field).map(|fi|
-                (crate::analysis::deferred::field_is_coarse_placeholder(fi, &self.ir.ext),
-                 fi.annotation.clone(), fi.expr, fi.extra_exprs.clone()));
-            if matches!(&fetched, Some((true, ..))) {
+            let fetch = |ir: &super::Ir| ir.get_field(idx, field).map(|fi| FetchedField::of(fi, &ir.ext));
+            let mut fetched = fetch(&self.ir);
+            if fetched.as_ref().is_some_and(|f| f.placeholder) {
                 self.ir.ensure_field_overlay(idx, field);
-                fetched = self.ir.get_field(idx, field).map(|fi|
-                    (false, fi.annotation.clone(), fi.expr, fi.extra_exprs.clone()));
+                fetched = fetch(&self.ir);
             }
-            if let Some((_, ann_vt, field_primary, field_extras)) = fetched {
+            // An entry the scan typed as a placeholder in the anonymous sub-table of
+            // a constructor this file writes reads from the local constructor.
+            if fetched.as_ref().is_some_and(|f| f.placeholder)
+                && let Some(&twin) = self.ctor_twins.get(&idx)
+                && let Some(fi) = self.table(twin).fields.get(field)
+            {
+                fetched = Some(FetchedField::of(fi, &self.ir.ext));
+            }
+            if let Some(FetchedField {
+                annotation: ann_vt, primary: field_primary, extras: field_extras, has_author_text, ..
+            }) = fetched {
                 field_exists = true;
                 let is_any = matches!(ann_vt, Some(ValueType::Any));
                 if let Some(ref ann_vt) = ann_vt {
@@ -3630,6 +3703,9 @@ impl<'a> Analysis<'a> {
                         let mut found_specific = false;
                         let mut has_unresolvable = false;
                         for expr_id in all_exprs {
+                            if self.expr_in_progress(expr_id) {
+                                continue;
+                            }
                             if let Some(vt) = self.resolve_expr(expr_id) {
                                 if !matches!(vt, ValueType::Any | ValueType::Nil)
                                     && !field_types.contains(&vt) {
@@ -3663,6 +3739,7 @@ impl<'a> Analysis<'a> {
                         // restoring the in-file richness the pre-funcall-scanner `any`
                         // placeholder used to expose.
                         let exprs = std::iter::once(field_primary).chain(field_extras.iter().copied());
+                        self.note_constructor_twin(ann_vt, has_author_text, exprs.clone());
                         let enriched = super::enriched_class_field(ann_vt, exprs, |e| self.resolve_expr(e));
                         field_types.push(enriched.unwrap_or_else(|| ann_vt.clone()));
                     }
@@ -3681,6 +3758,11 @@ impl<'a> Analysis<'a> {
                     };
                     let mut has_unresolvable = false;
                     for expr_id in all_exprs {
+                        // The field's own in-progress write (`t.f = t.f or X()`)
+                        // is a cycle, not an unresolvable value — skip it.
+                        if self.expr_in_progress(expr_id) {
+                            continue;
+                        }
                         if let Some(vt) = self.resolve_expr(expr_id) {
                             if !field_types.contains(&vt) {
                                 field_types.push(vt);

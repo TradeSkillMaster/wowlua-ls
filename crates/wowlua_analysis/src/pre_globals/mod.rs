@@ -536,9 +536,23 @@ fn record_field_location(
         }
 }
 
+/// A call-valued constructor entry (`ns.T = { A = MakeThing() }`) populated as an
+/// `any` placeholder, typed from the callee's return once every global is
+/// registered (`BuildOnStubsContext::resolve_nested_ctor_calls`) — provided the
+/// field still holds that placeholder: a later typed write replaces it and wins.
+struct NestedCtorCall {
+    /// Local index of the table holding the entry.
+    table: usize,
+    field: String,
+    callee: Vec<String>,
+    /// The placeholder `expr` the entry was populated with.
+    placeholder: ExprId,
+}
+
 /// Populate a newly-created sub-table with fields extracted from a table constructor.
 /// Converts each `(name, FieldValueKind)` entry into a `FieldInfo` with a literal expression,
-/// recursively creating nested sub-tables for `FieldValueKind::Table` entries.
+/// recursively creating nested sub-tables for `FieldValueKind::Table` entries. Call-valued
+/// entries are logged in `nested_calls` for later resolution.
 fn populate_table_fields(
     table_local_idx: usize,
     fields: &[(String, crate::annotations::FieldValueKind)],
@@ -546,6 +560,7 @@ fn populate_table_fields(
     exprs: &mut Vec<Expr>,
     number_literals: &mut HashMap<ExprId, String>,
     string_literals: &mut HashMap<ExprId, String>,
+    nested_calls: &mut Vec<NestedCtorCall>,
 ) {
     use crate::annotations::FieldValueKind;
     for (name, kind) in fields {
@@ -561,7 +576,7 @@ fn populate_table_fields(
                 let sub_idx = TableIndex(EXT_BASE + tables.len());
                 tables.push(TableInfo::default());
                 let sub_local = sub_idx.ext_offset();
-                populate_table_fields(sub_local, sub_fields, tables, exprs, number_literals, string_literals);
+                populate_table_fields(sub_local, sub_fields, tables, exprs, number_literals, string_literals, nested_calls);
                 ValueType::Table(Some(sub_idx))
             }
             // Create field with Any type so it exists for field-chain resolution
@@ -574,6 +589,14 @@ fn populate_table_fields(
         }
         if let Some(val) = str_val {
             string_literals.insert(expr_idx, val);
+        }
+        if let FieldValueKind::FunctionCall(callee, _, _) = kind {
+            nested_calls.push(NestedCtorCall {
+                table: table_local_idx,
+                field: name.clone(),
+                callee: callee.clone(),
+                placeholder: expr_idx,
+            });
         }
         tables[table_local_idx].fields.insert(name.clone(), FieldInfo {
             expr: expr_idx,
@@ -596,6 +619,7 @@ fn populate_table_fields(
 /// nested constructor merges into an existing anonymous sub-table (e.g. one a deep
 /// `function X.sub.f()` definition created). Every `(table, field)` it adds, at
 /// any depth, goes into `added`.
+#[allow(clippy::too_many_arguments)] // threads the builder's arenas and logs like `populate_table_fields`; bundling adds indirection
 fn merge_table_fields(
     table_idx: TableIndex,
     fields: &[(String, crate::annotations::FieldValueKind)],
@@ -604,6 +628,7 @@ fn merge_table_fields(
     number_literals: &mut HashMap<ExprId, String>,
     string_literals: &mut HashMap<ExprId, String>,
     added: &mut HashSet<(TableIndex, String)>,
+    nested_calls: &mut Vec<NestedCtorCall>,
 ) {
     use crate::annotations::FieldValueKind;
     let mut missing = Vec::new();
@@ -617,10 +642,10 @@ fn merge_table_fields(
             && let Expr::Literal(ValueType::Table(Some(sub_idx))) = exprs[fi.expr.ext_offset()]
             && tables[sub_idx.ext_offset()].class_name.is_none()
         {
-            merge_table_fields(sub_idx, sub_fields, tables, exprs, number_literals, string_literals, added);
+            merge_table_fields(sub_idx, sub_fields, tables, exprs, number_literals, string_literals, added, nested_calls);
         }
     }
-    populate_table_fields(table_idx.ext_offset(), &missing, tables, exprs, number_literals, string_literals);
+    populate_table_fields(table_idx.ext_offset(), &missing, tables, exprs, number_literals, string_literals, nested_calls);
     record_added_fields(table_idx, &missing, tables, exprs, added);
 }
 
@@ -1814,7 +1839,8 @@ impl BuildContext {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             let sub_local = sub_idx.ext_offset();
-                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals);
+                            // Stub declarations carry no call-valued constructor entries to resolve.
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut Vec::new());
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -2263,7 +2289,8 @@ impl BuildContext {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             let sub_local = sub_idx.ext_offset();
-                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals);
+                            // Stub declarations carry no call-valued constructor entries to resolve.
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut Vec::new());
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }

@@ -1689,6 +1689,26 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Log a `root.field.sub = expr` write for the cross-file `@class` field
+    /// harvest (see `SubFieldWrite`); deeper chains attach to an intermediate,
+    /// not a class field, and are not carried.
+    fn record_sub_field_write(&mut self, ident: Identifier<'a>, names: &[String], expr_id: ExprId, scope_idx: ScopeIndex) {
+        if names.len() != 3 {
+            return;
+        }
+        let r = ident.syntax().text_range();
+        self.ir.sub_field_writes.push(SubFieldWrite {
+            root_name: names[0].clone(),
+            scope_idx,
+            owner_field: names[1].clone(),
+            field_name: names[2].clone(),
+            expr_id,
+            ident_start: u32::from(r.start()),
+            ident_end: u32::from(r.end()),
+            bracket_key: ident.is_indexed_expression(),
+        });
+    }
+
     /// Register a method/function-literal assigned to a field (`function t.x() ...`
     /// / `t.x = function() ... end`): inserts the method on the resolved table or
     /// defers it. Sets `narrow_rhs_expr_id` to the function-def expr for narrowing.
@@ -1709,6 +1729,7 @@ impl<'a> Analysis<'a> {
         self.apply_annotations(func_idx, scope_idx, assign.syntax());
         let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
         *narrow_rhs_expr_id = Some(func_def_expr);
+        self.record_sub_field_write(ident, names, func_def_expr, scope_idx);
         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
             if names.len() > 2 {
                 // Deep chain (e.g. self._plot.method = function ...):
@@ -1883,6 +1904,7 @@ impl<'a> Analysis<'a> {
         // otherwise hover would show an unresolved type while the type checker
         // falls back to the expression type, creating a misleading display.
         let inline_annotation_text = if inline_annotation.is_some() { inline_annotation_text } else { None };
+        self.record_sub_field_write(ident, names, expr_id, scope_idx);
         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
           if names.len() > 2 {
             // Deep chain (e.g. ns.sub.field = expr): try to
@@ -3909,108 +3931,16 @@ impl<'a> Analysis<'a> {
     }
 
     /// Extract an inline `--[[@as Type]]` annotation from tokens following an expression node.
-    /// Supports both `--[[@as Type]]` and `--[=[@as Type[]]=]` (equal-sign block comments for array types).
+    /// Delegates to the shared implementation in `annotation_scanning`.
     pub(super) fn extract_inline_as(expr_node: SyntaxNode<'_>) -> Option<AnnotationType> {
-        let last_token = expr_node.last_token()?;
-        // First try: scan forward from the last token (comment is outside the node).
-        // A trailing statement-terminator `;` is skipped so `local x = e; --[[@as T]]`
-        // still binds the cast to `e` (a `)`/keyword still stops over-reach).
-        let mut tok = last_token.next_token();
-        while let Some(t) = tok {
-            match t.kind() {
-                SyntaxKind::Whitespace | SyntaxKind::Semicolon => {
-                    tok = t.next_token();
-                }
-                SyntaxKind::Comment => {
-                    return Self::parse_as_comment(t.text());
-                }
-                _ => break,
-            }
-        }
-        // Second try: scan backward from the last token (comment is inside the node,
-        // e.g. when the parser includes trailing trivia in the expression node)
-        let mut tok = Some(last_token);
-        while let Some(t) = tok {
-            match t.kind() {
-                SyntaxKind::Whitespace | SyntaxKind::Newline => {
-                    tok = t.prev_token();
-                }
-                SyntaxKind::Comment => {
-                    return Self::parse_as_comment(t.text());
-                }
-                _ => return None,
-            }
-        }
-        None
+        crate::annotations::annotation_scanning::extract_inline_as(expr_node)
     }
 
-    /// Parse a comment token as a potential `@as` annotation.
-    fn parse_as_comment(text: &str) -> Option<AnnotationType> {
-        let inner = super::block_comment_inner(text)?;
-        let inner = inner.trim();
-        let rest = inner.strip_prefix("@as")?;
-        let rest = rest.trim();
-        if !rest.is_empty() {
-            return Some(crate::annotations::parse_type(rest));
-        }
-        None
-    }
-
-    /// Return the source range of an inline `---@type` comment following or within a node.
-    /// Used for positioning `undefined-doc-class` diagnostics on inline annotations.
+    /// Return the source range of the inline `@type` comment
+    /// [`Self::extract_inline_type`] reads for a node, for positioning
+    /// `undefined-doc-name` on it.
     pub fn inline_type_comment_range(field_node: SyntaxNode<'_>) -> Option<(usize, usize)> {
-        // Check within the node itself: find the last Name token and walk forward
-        // on the same line. This handles Identifier nodes that capture trailing comments.
-        let mut last_name_tok = None;
-        for item in field_node.children_with_tokens() {
-            if let NodeOrToken::Token(t) = &item
-                && t.kind() == SyntaxKind::Name {
-                    last_name_tok = Some(*t);
-                }
-        }
-        if let Some(name_tok) = last_name_tok {
-            let node_end = u32::from(field_node.text_range().end());
-            let mut tok = name_tok.next_token();
-            while let Some(t) = tok {
-                if u32::from(t.text_range().start()) >= node_end { break; }
-                match t.kind() {
-                    SyntaxKind::Whitespace | SyntaxKind::Comma | SyntaxKind::Semicolon => {
-                        tok = t.next_token();
-                    }
-                    SyntaxKind::Comment => {
-                        let text = t.text();
-                        let content = text.trim_start_matches('-').trim();
-                        if content.strip_prefix("@type").is_some_and(|r| !r.trim().is_empty()) {
-                            let r = t.text_range();
-                            return Some((u32::from(r.start()) as usize, u32::from(r.end()) as usize));
-                        }
-                        break;
-                    }
-                    _ => break,
-                }
-            }
-        }
-        // Fall back to sibling tokens after the node
-        let last_token = field_node.last_token()?;
-        let mut tok = last_token.next_token();
-        while let Some(t) = tok {
-            match t.kind() {
-                SyntaxKind::Comma | SyntaxKind::Whitespace | SyntaxKind::Semicolon => {
-                    tok = t.next_token();
-                }
-                SyntaxKind::Comment => {
-                    let text = t.text();
-                    let content = text.trim_start_matches('-').trim();
-                    if content.strip_prefix("@type").is_some_and(|r| !r.trim().is_empty()) {
-                        let r = t.text_range();
-                        return Some((u32::from(r.start()) as usize, u32::from(r.end()) as usize));
-                    }
-                    return None;
-                }
-                _ => return None,
-            }
-        }
-        None
+        crate::annotations::annotation_scanning::inline_type_comment_range(field_node)
     }
 
     /// Extract a class name from a `ValueType`, unwrapping unions and intersections.

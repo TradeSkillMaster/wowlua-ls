@@ -56,6 +56,9 @@ struct BuildOnStubsContext<'a> {
     /// write to one (a literal, a resolved call, a reference) replaces it; an
     /// untyped write keeps it.
     ctor_entries: HashSet<(TableIndex, String)>,
+    /// Call-valued constructor entries populated as placeholders; see
+    /// `resolve_nested_ctor_calls`.
+    nested_ctor_calls: Vec<super::NestedCtorCall>,
     /// `---@type` annotation of each table global that has one (`---@type Foo` on
     /// `Bar = {}`); see `annotated_table_global_type`.
     table_global_types: HashMap<String, AnnotationType>,
@@ -133,6 +136,7 @@ impl<'a> BuildOnStubsContext<'a> {
             class_globals: HashSet::default(),
             sub_tables: HashMap::default(),
             ctor_entries: HashSet::default(),
+            nested_ctor_calls: Vec::new(),
             table_global_types: HashMap::default(),
             declared_class_fields: HashMap::default(),
             deferred_returns: HashSet::default(),
@@ -675,7 +679,7 @@ impl<'a> BuildOnStubsContext<'a> {
             let fields: Vec<(String, FieldValueKind)> = g.ctor_fields.iter()
                 .map(|f| (f.name.clone(), f.kind.clone()))
                 .collect();
-            merge_table_fields(table_idx, &fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.ctor_entries);
+            merge_table_fields(table_idx, &fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.ctor_entries, &mut self.nested_ctor_calls);
         }
 
         // Build workspace table field entries (unified — see `build` for semantics).
@@ -701,11 +705,13 @@ impl<'a> BuildOnStubsContext<'a> {
                 let value_type = if !g.returns.is_empty() {
                     // Use resolve_annotation_gen to materialize structured types
                     // (table<K,V>, T[], {field: type}) into proper TableInfo entries.
-                    PreResolvedGlobals::resolve_annotation_gen(
+                    let vt = PreResolvedGlobals::resolve_annotation_gen(
                         &g.returns[0], &self.classes, &self.aliases,
                         &self.parameterized_aliases, &[],
                         &mut self.tables, &mut self.exprs,
-                    ).or_else(|| self.resolve_annotation(&g.returns[0]))
+                    ).or_else(|| self.resolve_annotation(&g.returns[0]));
+                    self.log_nested_ctor_calls(&g.returns[0], vt.as_ref(), value_kind);
+                    vt
                 } else {
                     match value_kind {
                         FieldValueKind::String(_) => Some(ValueType::String(None)),
@@ -716,7 +722,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             let sub_local = sub_idx.ext_offset();
-                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals);
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.nested_ctor_calls);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -1215,11 +1221,13 @@ impl<'a> BuildOnStubsContext<'a> {
                     continue;
                 }
                 let value_type = if !g.returns.is_empty() {
-                    PreResolvedGlobals::resolve_annotation_gen(
+                    let vt = PreResolvedGlobals::resolve_annotation_gen(
                         &g.returns[0], &self.classes, &self.aliases,
                         &self.parameterized_aliases, &[],
                         &mut self.tables, &mut self.exprs,
-                    ).or_else(|| self.resolve_annotation(&g.returns[0]))
+                    ).or_else(|| self.resolve_annotation(&g.returns[0]));
+                    self.log_nested_ctor_calls(&g.returns[0], vt.as_ref(), value_kind);
+                    vt
                 } else {
                     match value_kind {
                         FieldValueKind::String(_) => Some(ValueType::String(None)),
@@ -1230,7 +1238,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             let sub_local = sub_idx.ext_offset();
-                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals);
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.nested_ctor_calls);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -1572,6 +1580,9 @@ impl PreResolvedGlobals {
         apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, ws_globals);
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(ws_globals);
+        // Every callee is registered by now (workspace functions land in
+        // `build_global_entries`).
+        ctx.resolve_nested_ctor_calls();
         // Take the stub-override list out before `finish` consumes the context; its
         // alternate go-to-definition sites are recorded onto `pg` below.
         let method_stub_overrides = std::mem::take(&mut ctx.method_stub_overrides);
@@ -1684,4 +1695,77 @@ fn strip_unbound_type_vars(vt: ValueType) -> Option<ValueType> {
         return None;
     }
     Some(vt)
+}
+
+impl BuildOnStubsContext<'_> {
+    /// Type the call-valued constructor entries logged during the build
+    /// (`ns.T = { A = MakeThing() }`, populated as `any`) from the callee's return,
+    /// now that every global is registered. An entry a later typed write replaced
+    /// keeps that write; a callee the scan can't follow keeps the placeholder (the
+    /// per-file constructor twin still refines it in the writing file).
+    fn resolve_nested_ctor_calls(&mut self) {
+        let nested = std::mem::take(&mut self.nested_ctor_calls);
+        for call in nested {
+            let still_placeholder = self.tables[call.table].fields.get(&call.field)
+                .is_some_and(|fi| fi.expr == call.placeholder);
+            if !still_placeholder {
+                continue;
+            }
+            let Some(vt) = resolve_funcall_chain(&call.callee, &self.global_lookup_ctx())
+                .and_then(strip_unbound_type_vars)
+            else {
+                continue;
+            };
+            // As for a top-level call field: a class instance stays annotated so it
+            // survives the per-file `@class` overlay import; any other type resolves
+            // through the literal `expr`.
+            let annotation = matches!(vt, ValueType::Table(Some(_))).then(|| vt.clone());
+            let expr_idx = ExprId(EXT_BASE + self.exprs.len());
+            self.exprs.push(Expr::Literal(vt));
+            if let Some(fi) = self.tables[call.table].fields.get_mut(&call.field) {
+                fi.expr = expr_idx;
+                fi.annotation = annotation;
+                fi.annotation_type_raw = None;
+            }
+        }
+    }
+
+    /// Log the call-valued entries of a constructor the scan carried as a
+    /// `TableLiteral` annotation (`raw`; a call entry is `any` there) against the
+    /// anonymous sub-table `resolve_annotation_gen` materialized for it (`vt`),
+    /// recursing into nested constructors. Any other annotation — a `---@type
+    /// SomeClass` on the constructor — resolves to a shared table whose fields
+    /// aren't this constructor's, so nothing is logged. A declared entry never
+    /// carries a `FunctionCall` kind. Resolved by `resolve_nested_ctor_calls`.
+    fn log_nested_ctor_calls(&mut self, raw: &AnnotationType, vt: Option<&ValueType>, kind: &crate::annotations::FieldValueKind) {
+        use crate::annotations::FieldValueKind;
+        let (AnnotationType::TableLiteral(_), Some(ValueType::Table(Some(table_idx))), FieldValueKind::Table(kinds)) =
+            (raw, vt, kind)
+        else {
+            return;
+        };
+        let local_idx = table_idx.ext_offset();
+        if self.tables[local_idx].class_name.is_some() {
+            return;
+        }
+        for (name, kind) in kinds {
+            let Some(fi) = self.tables[local_idx].fields.get(name) else { continue };
+            match kind {
+                FieldValueKind::FunctionCall(callee, _, _) if matches!(fi.annotation, Some(ValueType::Any)) => {
+                    let call = super::NestedCtorCall {
+                        table: local_idx,
+                        field: name.clone(),
+                        callee: callee.clone(),
+                        placeholder: fi.expr,
+                    };
+                    self.nested_ctor_calls.push(call);
+                }
+                FieldValueKind::Table(_) => {
+                    let (Some(inner_raw), inner) = (fi.annotation_type_raw.clone(), fi.annotation.clone()) else { continue };
+                    self.log_nested_ctor_calls(&inner_raw, inner.as_ref(), kind);
+                }
+                _ => {}
+            }
+        }
+    }
 }

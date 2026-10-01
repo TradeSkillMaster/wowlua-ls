@@ -1437,3 +1437,35 @@ _G.useClassConstraints = { useDogCage, useRockCage, animalCage }
 _G.useAliasConstraints = { useAnimalWrap, makeAnimalWrap, wrapGeneric, awGood, awExact, awBadClass, awBadPrim, freeWrap }
 
 _G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, callWithStringFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2, ReverseIPairs, mixedUnion, gm1, gm2, mathRound, funParamApply, numToStr, unannotated, retBound, numId, ignoreIfEquals, pairSameGeneric, Holder, MyBucket, nb, nsOwn, LinkedClass, lc }
+
+-- Generic binding through an intersection-shaped param, directly and through a
+-- parameterized alias: `V[]` binds V from the array facet and `{[K]: V}` binds
+-- K from the map facet only — the array facet is `number`-keyed and must not
+-- widen K to `number | string`.
+---@alias OrderedList<K,V>: V[]&{[K]: V}
+
+---@generic K, V
+---@param tbl OrderedList<K,V>
+---@param index number
+---@return K
+---@return V
+---@diagnostic disable-next-line: missing-return
+local function orderedGet(tbl, index) end
+
+---@generic K, V
+---@param tbl V[]&{[K]: V}
+---@return K
+---@return V
+---@diagnostic disable-next-line: missing-return
+local function facetsGet(tbl) end
+
+---@type OrderedList<string, number>
+local ordered = {}
+local okey, oval = orderedGet(ordered, 1)
+--    ^ hover: (local) okey: string
+--          ^ hover: (local) oval: number
+local fkey, fval = facetsGet(ordered)
+--    ^ hover: (local) fkey: string
+--          ^ hover: (local) fval: number
+
+_G.useIntersectionGenerics = { orderedGet, facetsGet, ordered, okey, oval, fkey, fval }

@@ -583,6 +583,9 @@ pub struct Ir {
     /// redirects to scope0 symbol lookup. Computed once at analysis construction.
     pub g_table_idx: Option<TableIndex>,
     pub field_assignments: Vec<FieldAssignment>,
+    /// Writes to a field of a table field (`self.header.cells = ...`), read by
+    /// the cross-file `@class` field harvest. See `SubFieldWrite`.
+    pub sub_field_writes: Vec<SubFieldWrite>,
     pub call_resolutions: HashMap<ExprId, CallResolution>,
     pub and_guarded_call_exprs: HashSet<ExprId>,
     /// Every expression evaluated only under a short-circuit `and` chain's
@@ -1742,6 +1745,12 @@ impl Ir {
             return Some(fi);
         }
         for &parent_idx in &self.table(table_idx).parent_classes {
+            if parent_idx.is_external()
+                && let Some(fields) = self.overlay_fields.get(&parent_idx)
+                && let Some(fi) = fields.get(field_name)
+            {
+                return Some(fi);
+            }
             if let Some(fi) = self.table(parent_idx).fields.get(field_name) {
                 return Some(fi);
             }
@@ -2661,6 +2670,10 @@ pub struct Analysis<'a> {
     pub tree: &'a SyntaxTree,
     pub ir: Ir,
     pub deep_field_injections: Vec<DeepFieldInjection>,
+    /// The coarse scan's anonymous sub-table of a constructor this file writes
+    /// (`ns.T = { … }`) → the local constructor table. An entry the scan typed
+    /// as a placeholder reads from the twin (see `note_constructor_twin`).
+    pub ctor_twins: HashMap<TableIndex, TableIndex>,
     pub deferred_field_assignments: Vec<DeferredFieldAssignment>,
     /// `@narrows-arg` mixins applied to field targets (`Mixin(self.Child, M)`);
     /// resolved after the fixpoint by `resolve_deferred_field_mixins`.
@@ -2969,6 +2982,7 @@ impl<'a> Analysis<'a> {
                 next_creation_order: 0,
                 g_table_idx,
                 field_assignments: Vec::new(),
+                sub_field_writes: Vec::new(),
                 call_resolutions: HashMap::default(),
                 and_guarded_call_exprs: HashSet::default(),
                 and_guarded_flavor_exprs: HashMap::default(),
@@ -2994,6 +3008,7 @@ impl<'a> Analysis<'a> {
                 deferred_dep_files: crate::collections::HashSet::default(),
             },
             deep_field_injections: Vec::new(),
+            ctor_twins: HashMap::default(),
             deferred_field_assignments: Vec::new(),
             deferred_field_mixins: Vec::new(),
             referenced_symbols: HashSet::default(),

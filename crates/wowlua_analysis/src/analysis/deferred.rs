@@ -108,7 +108,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 
 use crate::analysis::{Analysis, AnalysisConfig, Ir};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::types::{Expr, FunctionIndex, ResolvedOverload, SymbolIndex, TableIndex, ValueType};
+use crate::types::{Expr, ExprId, FunctionIndex, ResolvedOverload, SymbolIndex, TableIndex, ValueType};
 
 /// Locates the call a global's type is harvested from — the creating call of a
 /// `@creates-global` side-effect global (e.g. the `_G.MyFrame` from
@@ -610,9 +610,12 @@ impl Ir {
 
     /// Ensure the per-file `overlay_fields` holds a precise `FieldInfo` for a
     /// cross-file `@class` field whose coarse scan type decayed to a *placeholder*
-    /// (`any`, or a bare `table`). Idempotent: an overlay hit, a non-external table, a
-    /// field that isn't declared directly on the class, a non-placeholder coarse type,
-    /// or a non-workspace class is a no-op.
+    /// (`any`, or a bare `table`). The overlay is keyed by the table that declares the
+    /// field — the receiver's own class or, for an inherited field, the ancestor that
+    /// owns it (which may be external even when the receiver is the file's own class
+    /// table). Idempotent: an overlay hit, a non-external owner, a field no class in
+    /// the chain declares, a non-placeholder coarse type, or a non-workspace class is
+    /// a no-op.
     ///
     /// **Placeholder-only by design, gated on both ends.** Only a field whose coarse
     /// type is an eligible placeholder ([`field_is_coarse_placeholder`] — a
@@ -633,16 +636,39 @@ impl Ir {
     /// type.
     pub fn ensure_field_overlay(&mut self, table_idx: TableIndex, field_name: &str) {
         // Empty for stub-only / non-workspace analyses — they pay nothing.
-        if !table_idx.is_external() || self.ext.deferred_class_field_paths.is_empty() {
+        if self.ext.deferred_class_field_paths.is_empty() {
             return;
         }
-        if self.overlay_fields.get(&table_idx).is_some_and(|m| m.contains_key(field_name)) {
+        let Some(owner_idx) = self.field_owner_table(table_idx, field_name) else { return };
+        if !owner_idx.is_external() {
             return;
         }
+        if !self.overlay_fields.get(&owner_idx).is_some_and(|m| m.contains_key(field_name)) {
+            self.harvest_field_overlay(owner_idx, field_name);
+        }
+        // A local class table reads its own copy of an inherited field before the
+        // ancestor's overlay (see `field_owner_table`): refresh the copy too.
+        if table_idx != owner_idx
+            && !table_idx.is_external()
+            && let Some(ty) = self
+                .overlay_fields
+                .get(&owner_idx)
+                .and_then(|m| m.get(field_name))
+                .and_then(|fi| fi.annotation.clone())
+            && let Some(fi) = self.tables[table_idx.val()].fields.get_mut(field_name)
+        {
+            fi.annotation = Some(ty);
+        }
+    }
+
+    /// Harvest the definition-site type of the coarse placeholder field
+    /// `field_name` declared on the external class table `owner_idx` into the
+    /// overlay. See `ensure_field_overlay`.
+    fn harvest_field_overlay(&mut self, owner_idx: TableIndex, field_name: &str) {
         // Extract the coarse field + class name from ext, dropping the borrow before
         // mutating `self.overlay_fields`.
         let (coarse, class_name) = {
-            let Some(t) = self.ext.try_table(table_idx) else { return };
+            let Some(t) = self.ext.try_table(owner_idx) else { return };
             let Some(fi) = t.fields.get(field_name) else { return };
             if !field_is_coarse_placeholder(fi, &self.ext) {
                 return;
@@ -662,7 +688,29 @@ impl Ir {
         self.deferred_dep_files.extend(def_paths);
         let mut precise = coarse;
         precise.annotation = Some(ty);
-        self.overlay_fields.entry(table_idx).or_default().insert(field_name.to_string(), precise);
+        self.overlay_fields.entry(owner_idx).or_default().insert(field_name.to_string(), precise);
+    }
+
+    /// The table whose own `fields` declare `field_name`: `table_idx` itself, else
+    /// the first of its (transitively flattened) `parent_classes` that does.
+    fn field_owner_table(&self, table_idx: TableIndex, field_name: &str) -> Option<TableIndex> {
+        let t = self.table(table_idx);
+        // A local class table's copy of an inherited external field (prescan imports
+        // parent fields; the copy's `expr` is external) defers to the ancestor
+        // declaring it — unless this file writes the field itself (a local
+        // `extra_exprs` entry): the per-file resolver then types it from those
+        // writes, which are more precise than the ancestor's harvest.
+        if let Some(fi) = t.fields.get(field_name)
+            && (table_idx.is_external()
+                || !fi.expr.is_external()
+                || fi.extra_exprs.iter().any(|e| !e.is_external()))
+        {
+            return Some(table_idx);
+        }
+        t.parent_classes
+            .iter()
+            .copied()
+            .find(|&p| self.table(p).fields.contains_key(field_name))
     }
 }
 
@@ -1093,7 +1141,7 @@ fn harvest_class(
     // `harvest_component`), so a re-entrant read of this class through any of them is
     // a back-edge. Each file's dependencies are collected separately, for the
     // co-located classes below.
-    let mut acc: HashMap<(String, String), (Vec<ValueType>, bool)> = HashMap::default();
+    let mut acc: HashMap<(String, String), AccField> = HashMap::default();
     let file_deps: Vec<HashSet<PathBuf>> = paths
         .iter()
         .map(|path| {
@@ -1110,8 +1158,10 @@ fn harvest_class(
     // Gate every accumulated field, per class (consuming `acc`: the owned RHS vec goes
     // straight into the union — no clones).
     let mut by_class: HashMap<String, ClassFields> = HashMap::default();
-    for ((cls, fname), (tys, lateinit)) in acc {
-        by_class.entry(cls).or_default().insert(fname, gate_harvested_field(tys, lateinit));
+    for ((cls, fname), f) in acc {
+        let ty = gate_harvested_field(f.tys, f.lateinit)
+            .map(|ty| f.sub_fields.onto(ty, ext));
+        by_class.entry(cls).or_default().insert(fname, ty);
     }
     let fields = by_class.remove(class).unwrap_or_default();
     if !warm {
@@ -1391,7 +1441,7 @@ fn accumulate_class_fields_in_file(
     path: &Path,
     tree: &crate::syntax::tree::SyntaxTree,
     result: &crate::analysis::AnalysisResult,
-    acc: &mut HashMap<(String, String), (Vec<ValueType>, bool)>,
+    acc: &mut HashMap<(String, String), AccField>,
 ) {
     let ir = &result.ir;
     let globals = global_tables(result, tree, ext);
@@ -1412,39 +1462,152 @@ fn accumulate_class_fields_in_file(
     // has no local `@class` table, yet its `self.x = ...` writes still target the
     // external class table and must be harvested — matched below.
 
+    // Resolve a write's receiver table to a workspace class name, from either:
+    //   - a local `@class` table declared in this (declaring) file; or
+    //   - the *external* class table `self` resolves to inside a method defined in
+    //     a file that does not declare the class. Guarded on the file being one of
+    //     the class's indexed paths, so whole-file warming of a co-located class
+    //     stays deterministic and matches that class's own harvest (a file only
+    //     contributes to classes it is officially indexed for).
+    let class_name_for = |table_idx: TableIndex| -> Option<String> {
+        if let Some(n) = class_name_of.get(&table_idx) {
+            return Some(n.clone());
+        }
+        if !table_idx.is_external() {
+            return None;
+        }
+        let n = ext.try_table(table_idx).and_then(|t| t.class_name.as_deref())?;
+        ext.deferred_class_field_paths
+            .get(n)
+            .is_some_and(|ps| ps.iter().any(|p| p == path))
+            .then(|| n.to_string())
+    };
+
     for fa in &ir.field_assignments {
-        // Resolve the assignment's receiver to a workspace class name, from either:
-        //   - a local `@class` table declared in this (declaring) file; or
-        //   - the *external* class table `self` resolves to inside a method defined in
-        //     a file that does not declare the class. Guarded on the file being one of
-        //     the class's indexed paths, so whole-file warming of a co-located class
-        //     stays deterministic and matches that class's own harvest (a file only
-        //     contributes to classes it is officially indexed for).
-        let name = if let Some(n) = class_name_of.get(&fa.table_idx) {
-            n.clone()
-        } else if fa.table_idx.is_external() {
-            match ext.try_table(fa.table_idx).and_then(|t| t.class_name.as_deref()) {
-                Some(n)
-                    if ext
-                        .deferred_class_field_paths
-                        .get(n)
-                        .is_some_and(|ps| ps.iter().any(|p| p == path)) =>
-                {
-                    n.to_string()
-                }
-                _ => continue,
-            }
-        } else {
-            continue;
-        };
-        let entry = acc.entry((name, fa.field_name.clone())).or_insert_with(|| (Vec::new(), false));
-        entry.1 |= fa.lateinit;
+        let Some(name) = class_name_for(fa.table_idx) else { continue };
+        let entry = acc.entry((name, fa.field_name.clone())).or_default();
+        entry.lateinit |= fa.lateinit;
         if let Some(ty) = result.resolve_expr_type(fa.actual_expr) {
             let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, &globals);
-            if !entry.0.contains(&lifted) {
-                entry.0.push(lifted);
+            if !entry.tys.contains(&lifted) {
+                entry.tys.push(lifted);
             }
         }
+    }
+
+    // Writes to a field of a class field (`self.header.cells = ...`) are carried on
+    // the harvested field as the shape injected onto its value (see
+    // `CarriedFields`), so a reader in another file resolves them the way the
+    // declaring file does. Typed per site.
+    let mut carry = |class: String, owner_field: &str, field: &str, expr: ExprId, (start, end): (u32, u32)| {
+        let Some(ty) = result.resolve_expr_type(expr) else { return };
+        let lifted = lift_local_type_to_ext_with(&ty, ir, ext, result, &globals);
+        let Some(site_ty) = CarriedFields::site_type(&ty, lifted) else { return };
+        let entry = acc.entry((class, owner_field.to_string())).or_default();
+        entry.sub_fields.add(field, site_ty, || crate::types::ExternalLocation {
+            path: path.to_path_buf(),
+            start,
+            end,
+            name_start: start,
+            name_end: end,
+        });
+    };
+    for w in &ir.sub_field_writes {
+        if w.bracket_key {
+            continue;
+        }
+        let Some(root) = ir.find_table_for_symbol(&w.root_name, w.scope_idx) else { continue };
+        let Some(name) = class_name_for(root) else { continue };
+        carry(name, &w.owner_field, &w.field_name, w.expr_id, (w.ident_start, w.ident_end));
+    }
+    // ... and through a local alias of the field's value
+    // (`local header = ...; self._header = header; header.moreButton = ...`).
+    let alias_roots: Vec<Option<SymbolIndex>> = ir
+        .field_assignments
+        .iter()
+        .map(|fa| fa.root_symbol.map(|s| resolve_alias_root(ir, s)))
+        .collect();
+    for (fa, own_root) in ir.field_assignments.iter().zip(&alias_roots) {
+        if !matches!(ir.expr(fa.actual_expr), Expr::SymbolRef(..)) {
+            continue;
+        }
+        let Some(name) = class_name_for(fa.table_idx) else { continue };
+        let Some(alias) = ir.find_root_symbol(fa.actual_expr).map(|s| resolve_alias_root(ir, s)) else { continue };
+        if *own_root == Some(alias) {
+            continue;
+        }
+        for (fb, root) in ir.field_assignments.iter().zip(&alias_roots) {
+            if *root == Some(alias) {
+                carry(name.clone(), &fa.field_name, &fb.field_name, fb.actual_expr, (fb.ident_start, fb.ident_end));
+            }
+        }
+    }
+}
+
+/// One `@class` field accumulated across a class's files: the per-site RHS types
+/// (nils included), whether any site was `lateinit`, and the sub-fields written
+/// onto the field's value (`self.field.sub = ...`).
+#[derive(Default)]
+struct AccField {
+    tys: Vec<ValueType>,
+    lateinit: bool,
+    sub_fields: CarriedFields,
+}
+
+/// Fields carried cross-file on a class instance — injected onto a returned
+/// instance (`frame.DropDown = ...`, see `wrap_overlay_shape`) or written onto a
+/// harvested class field's value (`self._header.cells = ...`): per field, each
+/// site's type and the first site's location. Applied as `Class & { field: T }`
+/// ([`Self::onto`]), so cross-file reads resolve, complete, and go-to-define
+/// instead of tripping `undefined-field`.
+#[derive(Default)]
+struct CarriedFields(std::collections::BTreeMap<String, (Vec<ValueType>, crate::types::ExternalLocation)>);
+
+impl CarriedFields {
+    /// The type a site with resolved type `ty` (ext-space lift `lifted`)
+    /// contributes. `any` carries nothing and `nil` is the remove-member idiom
+    /// (`inst.M = nil`), so neither is carried; an empty `{}`, which lifts to
+    /// `any`, is carried as a bare `table` so the member exists.
+    fn site_type(ty: &ValueType, lifted: ValueType) -> Option<ValueType> {
+        let lifted = match lifted {
+            ValueType::Any if matches!(ty, ValueType::Table(Some(_))) => ValueType::Table(None),
+            lifted => lifted,
+        };
+        (!matches!(lifted, ValueType::Any | ValueType::Nil)).then_some(lifted)
+    }
+
+    /// Record a carried site of `name`; the first site's `loc` is its definition.
+    fn add(&mut self, name: &str, site_ty: ValueType, loc: impl FnOnce() -> crate::types::ExternalLocation) {
+        let (tys, _) = self.0.entry(name.to_string()).or_insert_with(|| (Vec::new(), loc()));
+        if !tys.contains(&site_ty) {
+            tys.push(site_ty);
+        }
+    }
+
+    /// `ty & { field: T, ... }` for the carried fields the external class
+    /// instance `ty` doesn't already declare — the class member of the
+    /// intersection handles those, and overriding one could mask an inherited
+    /// type. `ty` unchanged when none remain or it isn't an external instance.
+    fn onto(self, ty: ValueType, ext: &PreResolvedGlobals) -> ValueType {
+        let ValueType::Table(Some(idx)) = ty else { return ty };
+        if !idx.is_external() {
+            return ty;
+        }
+        let mut fields: Vec<(String, ValueType)> = Vec::new();
+        let mut field_defs: Vec<(String, crate::types::ExternalLocation)> = Vec::new();
+        for (name, (mut tys, loc)) in self.0 {
+            if ext_class_declares(ext, idx, &name) {
+                continue;
+            }
+            let field_ty = if tys.len() == 1 { tys.pop().unwrap() } else { ValueType::make_union(tys) };
+            field_defs.push((name.clone(), loc));
+            fields.push((name, field_ty));
+        }
+        if fields.is_empty() {
+            return ty;
+        }
+        let shape = crate::types::TableShape::new_with_defs(fields, field_defs);
+        ValueType::Intersection(vec![ty, ValueType::TableShape(Box::new(shape))])
     }
 }
 
@@ -1578,27 +1741,6 @@ pub(crate) fn field_is_coarse_placeholder(fi: &crate::types::FieldInfo, ext: &Pr
             ))
 }
 
-/// When a deferred function returns an external class instance that had fields
-/// injected on it (`frame.DropDown = ...`, `function frame:SetValue()`), carry
-/// those fields cross-file by intersecting the lifted class with an inline
-/// `TableShape` of the injected fields. Each field's type is resolved at its own
-/// assignment site and lifted to ext space; fields that lift to bare `any` (or a
-/// `nil` "remove-method" placeholder) are dropped. The shape also carries each
-/// field's source location (`field_defs`) so go-to-definition on the injected
-/// field jumps back here. `orig` is the pre-lift return type; `lifted` is its
-/// ext-space lift (a `Table(Some(ext_class))`); `ret_syms` are the function's
-/// return slot symbols and `def_path` its defining file. Returns `lifted`
-/// unchanged when there are no carryable fields.
-///
-/// **Per-*instance* narrowing.** The fields come from the per-assignment
-/// `field_assignments` log, filtered to those written to one of *this* factory's
-/// returned variables (`return holder` → the `holder` local, recovered from each
-/// `FunctionRet` slot's type source). This is deliberately *not* read from
-/// `ir.overlay_fields`, which is keyed by the shared external class index and so
-/// aggregates every same-classed instance's fields — and merged types — across
-/// the whole file (e.g. every `CreateFrame("Frame")` factory's fields landing on
-/// one `Frame` overlay). Per-instance attribution gives the returned value only
-/// its own fields, each with its own assignment's precise type.
 /// Follow a simple `local b = a` alias chain to the ultimate bound variable, so a
 /// field injected through an alias of the returned instance (`local f2 = frame;
 /// f2.Injected = …`) is still attributed to it. Only a plain `SymbolRef` binding
@@ -1618,6 +1760,26 @@ fn resolve_alias_root(ir: &Ir, mut sym: SymbolIndex) -> SymbolIndex {
     sym
 }
 
+/// When a deferred function returns an external class instance that had fields
+/// injected on it (`frame.DropDown = ...`, `function frame:SetValue()`), carry
+/// those fields cross-file by intersecting the lifted class with an inline
+/// `TableShape` of the injected fields. Each field's type is resolved at its own
+/// assignment site and lifted to ext space, under the [`CarriedFields`] site
+/// policy. The shape also carries each field's source location (`field_defs`)
+/// so go-to-definition on the injected field jumps back here. `orig` is the pre-lift return type; `lifted` is its
+/// ext-space lift (a `Table(Some(ext_class))`); `ret_syms` are the function's
+/// return slot symbols and `def_path` its defining file. Returns `lifted`
+/// unchanged when there are no carryable fields.
+///
+/// **Per-*instance* narrowing.** The fields come from the per-assignment
+/// `field_assignments` log, filtered to those written to one of *this* factory's
+/// returned variables (`return holder` → the `holder` local, recovered from each
+/// `FunctionRet` slot's type source). This is deliberately *not* read from
+/// `ir.overlay_fields`, which is keyed by the shared external class index and so
+/// aggregates every same-classed instance's fields — and merged types — across
+/// the whole file (e.g. every `CreateFrame("Frame")` factory's fields landing on
+/// one `Frame` overlay). Per-instance attribution gives the returned value only
+/// its own fields, each with its own assignment's precise type.
 fn wrap_overlay_shape(
     orig: &ValueType,
     lifted: ValueType,
@@ -1659,8 +1821,7 @@ fn wrap_overlay_shape(
         return lifted;
     }
 
-    use std::collections::BTreeMap;
-    let mut by_field: BTreeMap<String, (Vec<ValueType>, (u32, u32))> = BTreeMap::new();
+    let mut carried = CarriedFields::default();
     for fa in &ir.field_assignments {
         if fa.table_idx != *idx {
             continue;
@@ -1671,52 +1832,18 @@ fn wrap_overlay_shape(
         if !fa.root_symbol.is_some_and(|s| ret_var_syms.contains(&resolve_alias_root(ir, s))) {
             continue;
         }
-        // Don't re-carry a field the canonical ext class already declares — the
-        // class member of the intersection handles it, and overriding it here
-        // could mask an inherited type.
-        if ext_class_declares(ext, *idx, &fa.field_name) {
-            continue;
-        }
         let Some(ty) = result.resolve_expr_type(fa.actual_expr) else { continue };
         let lifted_ty = lift_local_type_to_ext_with(&ty, ir, ext, result, globals);
-        // `Any` carries no information; `Nil` is the "remove method" placeholder
-        // idiom (`inst.M = nil`) — neither belongs in the carried shape.
-        if matches!(lifted_ty, ValueType::Any | ValueType::Nil) {
-            continue;
-        }
-        let entry = by_field
-            .entry(fa.field_name.clone())
-            .or_insert_with(|| (Vec::new(), (fa.ident_start, fa.ident_end)));
-        if !entry.0.contains(&lifted_ty) {
-            entry.0.push(lifted_ty);
-        }
+        let Some(site_ty) = CarriedFields::site_type(&ty, lifted_ty) else { continue };
+        carried.add(&fa.field_name, site_ty, || crate::types::ExternalLocation {
+            path: def_path.to_path_buf(),
+            start: fa.ident_start,
+            end: fa.ident_end,
+            name_start: fa.ident_start,
+            name_end: fa.ident_end,
+        });
     }
-    if by_field.is_empty() {
-        return lifted;
-    }
-
-    let mut fields: Vec<(String, ValueType)> = Vec::new();
-    let mut field_defs: Vec<(String, crate::types::ExternalLocation)> = Vec::new();
-    for (name, (mut tys, (start, end))) in by_field {
-        let ty = if tys.len() == 1 {
-            tys.pop().unwrap()
-        } else {
-            ValueType::make_union(tys)
-        };
-        field_defs.push((
-            name.clone(),
-            crate::types::ExternalLocation {
-                path: def_path.to_path_buf(),
-                start,
-                end,
-                name_start: start,
-                name_end: end,
-            },
-        ));
-        fields.push((name, ty));
-    }
-    let shape = crate::types::TableShape::new_with_defs(fields, field_defs);
-    ValueType::Intersection(vec![lifted, ValueType::TableShape(Box::new(shape))])
+    carried.onto(lifted, ext)
 }
 
 /// True when ext class `idx` (or any ancestor) declares `field`. `parent_classes`

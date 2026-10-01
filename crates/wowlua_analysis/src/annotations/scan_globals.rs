@@ -148,6 +148,38 @@ fn scan_funcall_callee(
     (names, first_string_arg)
 }
 
+/// What a call site in the file can see: the renames [`scan_funcall_callee`]
+/// applies to a callee root, and every name the file declares `local`. Types a
+/// call-valued table-constructor entry from its callee.
+struct CalleeScope<'a> {
+    addon_ns_var: Option<&'a str>,
+    class_vars: &'a HashMap<String, String>,
+    local_type_vars: &'a HashMap<String, String>,
+    /// Every `local` the file declares, with or without an initializer.
+    locals: &'a HashSet<String>,
+}
+
+impl CalleeScope<'_> {
+    /// `call` as a [`FieldValueKind::FunctionCall`] with its callee chain renamed
+    /// like the file's other call sites, so the workspace build can type it from
+    /// the callee's return — or `Unknown` when the callee is a file-local no rename
+    /// covers, which a same-named global must not stand in for.
+    fn call_kind(&self, call: &FunctionCall<'_>) -> FieldValueKind {
+        if !funcall_has_chained_receiver(call)
+            && let Some(root) = call.identifier().and_then(|ident| ident.names().into_iter().next())
+            && self.locals.contains(&root)
+            && self.addon_ns_var != Some(root.as_str())
+            && !self.class_vars.contains_key(&root)
+            && !self.local_type_vars.contains_key(&root)
+        {
+            return FieldValueKind::Unknown;
+        }
+        let (chain, first_string_arg) =
+            scan_funcall_callee(call, self.addon_ns_var, self.class_vars, self.local_type_vars);
+        FieldValueKind::FunctionCall(chain, first_string_arg, literal_call_args(call))
+    }
+}
+
 /// Unwrap `and`/`or` chains to the effective operand for type inference.
 /// `a and b` evaluates to `b` when `a` is truthy, so the effective type is `b`.
 /// `a or b` evaluates to `b` when `a` is falsy (the defensive-init pattern
@@ -254,12 +286,11 @@ fn collect_ctor_key_paths(root: &SyntaxNode<'_>, local_vars: &HashSet<String>) -
 }
 
 /// Extract named field kinds from a table constructor for `FieldValueKind::Table`.
-fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>) -> Vec<(String, FieldValueKind)> {
+fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>, scope: &CalleeScope<'_>) -> Vec<(String, FieldValueKind)> {
     let mut fields = Vec::new();
     for field in tc.fields() {
         if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
-            let kind = classify_expression_value_kind(&value);
-            fields.push((name, kind));
+            fields.push((name, classify_ctor_entry(field.syntax(), &value, scope)));
         }
     }
     fields
@@ -267,7 +298,7 @@ fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>) -> Vec<(Stri
 
 /// [`extract_table_field_kinds`] for a global's constructor, keeping each entry's
 /// key range for go-to-definition.
-fn extract_ctor_fields(tc: &crate::ast::TableConstructor<'_>) -> Vec<CtorField> {
+fn extract_ctor_fields(tc: &crate::ast::TableConstructor<'_>, scope: &CalleeScope<'_>) -> Vec<CtorField> {
     let mut fields = Vec::new();
     for field in tc.fields() {
         if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
@@ -279,12 +310,31 @@ fn extract_ctor_fields(tc: &crate::ast::TableConstructor<'_>) -> Vec<CtorField> 
                 .unwrap_or_else(|| field.syntax().text_range());
             fields.push(CtorField {
                 name,
-                kind: nil_entries_unknown(classify_expression_value_kind(&value)),
+                kind: nil_entries_unknown(classify_ctor_entry(field.syntax(), &value, scope)),
                 range: (u32::from(r.start()), u32::from(r.end())),
             });
         }
     }
     fields
+}
+
+/// The kind of one named table-constructor entry (`field`, whose value is
+/// `value`). A call the value classifier can't type keeps its callee
+/// ([`CalleeScope::call_kind`]) unless the entry declares its own type — a
+/// declared entry is never a placeholder.
+fn classify_ctor_entry(field: SyntaxNode<'_>, value: &Expression<'_>, scope: &CalleeScope<'_>) -> FieldValueKind {
+    match (classify_expression_value_kind(value, scope), value) {
+        (FieldValueKind::Unknown, Expression::FunctionCall(call))
+            if constructor_entry_type(field, value).is_none() => scope.call_kind(call),
+        (kind, _) => kind,
+    }
+}
+
+/// The type a table-constructor entry declares: a `---@type T` on the entry, else
+/// a `--[[@as T]]` cast on its value.
+fn constructor_entry_type(field: SyntaxNode<'_>, value: &Expression<'_>) -> Option<AnnotationType> {
+    super::annotation_scanning::extract_inline_type_from_node(field)
+        .or_else(|| super::annotation_scanning::extract_inline_as(value.syntax()))
 }
 
 /// A `key = nil` constructor entry declares a field assigned later (often inside a
@@ -309,6 +359,7 @@ fn nil_entries_unknown(kind: FieldValueKind) -> FieldValueKind {
 fn classify_value_kind_resolving_scalars(
     expr: &Expression<'_>,
     scalars: &HashMap<String, FieldValueKind>,
+    scope: &CalleeScope<'_>,
 ) -> FieldValueKind {
     if let Some(kind) = classify_literal_value_kind(expr) {
         return kind;
@@ -318,7 +369,7 @@ fn classify_value_kind_resolving_scalars(
             let mut fields = Vec::new();
             for field in tc.fields() {
                 if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
-                    fields.push((name, classify_value_kind_resolving_scalars(&value, scalars)));
+                    fields.push((name, classify_value_kind_resolving_scalars(&value, scalars, scope)));
                 }
             }
             FieldValueKind::Table(fields)
@@ -332,7 +383,7 @@ fn classify_value_kind_resolving_scalars(
             }
             FieldValueKind::Unknown
         }
-        _ => classify_expression_value_kind(expr),
+        _ => classify_expression_value_kind(expr, scope),
     }
 }
 
@@ -374,7 +425,7 @@ fn classify_literal_value_kind(expr: &Expression<'_>) -> Option<FieldValueKind> 
 /// `classify_literal_value_kind` first to preserve literal values (e.g. string
 /// text, number text), then to `infer_type_category` for expression shapes, and
 /// finally handles `Table`/`Function` structurally.
-fn classify_expression_value_kind(expr: &Expression<'_>) -> FieldValueKind {
+fn classify_expression_value_kind(expr: &Expression<'_>, scope: &CalleeScope<'_>) -> FieldValueKind {
     // Try literal classification first to preserve exact values.
     if let Some(kind) = classify_literal_value_kind(expr) {
         return kind;
@@ -392,7 +443,7 @@ fn classify_expression_value_kind(expr: &Expression<'_>) -> FieldValueKind {
             // For tables we need recursive field extraction, handled below.
             InferredTypeCategory::Table => {
                 if let Expression::TableConstructor(tc) = expr {
-                    FieldValueKind::Table(extract_table_field_kinds(tc))
+                    FieldValueKind::Table(extract_table_field_kinds(tc, scope))
                 } else {
                     FieldValueKind::Unknown
                 }
@@ -1074,6 +1125,25 @@ pub fn scan_file_globals_with_synth(
             }
     }
 
+    // Every `local` the file declares — `local_vars` plus the forward declarations
+    // without an initializer it skips — so a table-constructor entry calling one
+    // isn't typed from a same-named global.
+    let mut callee_locals = local_vars.clone();
+    for stmt in &all_stmts {
+        if let Statement::LocalAssign(assign) = stmt
+            && assign.expression_list().is_none()
+            && let Some(name_list) = assign.name_list()
+        {
+            callee_locals.extend(name_list.names());
+        }
+    }
+    let callee_scope = CalleeScope {
+        addon_ns_var: addon_ns_var.as_deref(),
+        class_vars: &class_vars,
+        local_type_vars: &local_type_vars,
+        locals: &callee_locals,
+    };
+
     // Capture the accumulated shape of plain local data tables (`local C = {}` then
     // `C.tiers = {...}; C.classes = {...}` — often inside a `do ... end`) so that
     // assigning such a table to a typed/namespace field (`data.constants = C`) carries
@@ -1106,7 +1176,7 @@ pub fn scan_file_globals_with_synth(
                 || addon_ns_var.as_deref() == Some(root.as_str())
             { continue; }
             let field = names[1].clone();
-            let kind = classify_value_kind_resolving_scalars(&exprs[0], &local_scalar_kinds);
+            let kind = classify_value_kind_resolving_scalars(&exprs[0], &local_scalar_kinds, &callee_scope);
             let entry = local_table_field_kinds.entry(root.clone()).or_default();
             // Last write wins, preserving first-seen field order.
             if let Some(slot) = entry.iter_mut().find(|(n, _)| *n == field) {
@@ -1429,7 +1499,7 @@ pub fn scan_file_globals_with_synth(
                                 _ => None,
                             };
                             let ctor_fields = match &effective {
-                                Expression::TableConstructor(tc) => extract_ctor_fields(tc),
+                                Expression::TableConstructor(tc) => extract_ctor_fields(tc, &callee_scope),
                                 _ => Vec::new(),
                             };
                             // Name-token range for precise navigation. Uses the LAST
@@ -1526,7 +1596,7 @@ pub fn scan_file_globals_with_synth(
                             let value_kind = if let Some(vk) = classify_literal_value_kind(&effective) {
                                 vk
                             } else { match &effective {
-                                Expression::TableConstructor(tc) => FieldValueKind::Table(extract_table_field_kinds(tc)),
+                                Expression::TableConstructor(tc) => FieldValueKind::Table(extract_table_field_kinds(tc, &callee_scope)),
                                 Expression::Function(_) => FieldValueKind::Function,
                                 Expression::FunctionCall(call) => {
                                     // `scan_funcall_callee` resolves the `Lib("Name"):Method(...)`
@@ -2385,7 +2455,7 @@ pub fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor<'_>) -
     for field in tc.fields() {
         if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
             // Check for per-field ---@type annotation first (preceding-line or trailing)
-            let field_type = if let Some(at) = super::annotation_scanning::extract_inline_type_from_node(field.syntax()) {
+            let field_type = if let Some(at) = constructor_entry_type(field.syntax(), &value) {
                 at
             } else {
                 match &value {

@@ -303,6 +303,22 @@ local _inlineBadLocal = {} ---@type MissingInlineLocal
 
 local _inlineGoodLocal = {} ---@type KnownClass
 
+-- ── Inline @type on table-constructor entries ───────────────────────
+-- Every form the entry's type is read from is validated: a standalone comment
+-- above the entry, a trailing `---@type`, and a trailing `--[[@type ]]`.
+
+local _inlineCtor = {
+    ---@type MissingCtorPreceding
+    preceding = nil,
+    -- ^ diag: undefined-doc-name
+    block = nil, --[[@type MissingCtorBlock]]
+    -- ^ diag: undefined-doc-name
+    trailing = nil, ---@type MissingCtorTrailing
+    -- ^ diag: undefined-doc-name
+    known = nil, --[[@type KnownClass]]
+    -- ^ hover: (field) known: KnownClass
+}
+
 -- ── Numeric keys in table shapes ─────────────────────────────────────
 
 ---@alias NumericKeyTuple {[1]: string, [2]: number, [3]: number?, [4]: number?}

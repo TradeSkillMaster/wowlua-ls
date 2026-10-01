@@ -1869,14 +1869,9 @@ impl<'a> Analysis<'a> {
         }
         if let AnnotationType::Parameterized(base, args) = at {
             // Check parameterized aliases (local then external)
-            let alias_template = self.ir.parameterized_aliases.get(base)
-                .or_else(|| self.ir.ext.parameterized_aliases.get(base))
-                .cloned();
-            if let Some((type_params, body)) = alias_template
-                && type_params.len() == args.len() {
-                    let substituted = crate::annotations::substitute_alias_type_params(&body, &type_params, args);
-                    return self.resolve_annotation_type_mut(&substituted);
-                }
+            if let Some(substituted) = self.expand_parameterized_alias(base, args) {
+                return self.resolve_annotation_type_mut(&substituted);
+            }
             if (base == "table" || self.ir.classes.contains_key(base.as_str())) && args.len() == 2 {
                 let key_vt = self.resolve_annotation_type(&args[0]);
                 let value_vt = self.resolve_annotation_type(&args[1]);
@@ -1984,14 +1979,9 @@ impl<'a> Analysis<'a> {
                 return Some(ValueType::Any);
             }
             // Check parameterized aliases (local then external)
-            let alias_template = self.ir.parameterized_aliases.get(base)
-                .or_else(|| self.ir.ext.parameterized_aliases.get(base))
-                .cloned();
-            if let Some((type_params, body)) = alias_template
-                && type_params.len() == args.len() {
-                    let substituted = crate::annotations::substitute_alias_type_params(&body, &type_params, args);
-                    return self.resolve_annotation_type_mut_gen(&substituted, generics);
-                }
+            if let Some(substituted) = self.expand_parameterized_alias(base, args) {
+                return self.resolve_annotation_type_mut_gen(&substituted, generics);
+            }
             if base == "table" && args.len() == 2 {
                 let key_vt = self.resolve_annotation_type_mut_gen(&args[0], generics);
                 // Eagerly materialize a function-typed alias value (e.g.
@@ -2373,7 +2363,13 @@ impl<'a> Analysis<'a> {
                             array_bound.insert(name.clone());
                         }
             }
-            AnnotationType::Parameterized(_base, args) => {
+            AnnotationType::Parameterized(base, args) => {
+                // `Alias<K, V>` — bind through the alias body with the callee's
+                // type-variable names substituted for the alias's own.
+                if let Some(substituted) = self.expand_parameterized_alias(base, args) {
+                    self.infer_generics_from_annotation(&substituted, generic_names, generics, defclass, arg_expr_id, subs, array_bound);
+                    return;
+                }
                 // table<K, V> — infer K and V from table field types
                 if args.len() == 2
                     && let (AnnotationType::Simple(k_name), AnnotationType::Simple(v_name)) = (&args[0], &args[1]) {
@@ -2408,8 +2404,10 @@ impl<'a> Analysis<'a> {
                                 }
                             } else if let Some(arg_type) = self.resolve_expr(arg_expr_id) {
                                 // Fallback for union-typed args (e.g. BranchMerge across if/else).
-                                // Collect K/V types from all table members of the union.
-                                let table_indices = super::table_indices_from_type(&arg_type);
+                                // Collect K/V types from all table members of the union. An
+                                // intersection arg (`V[] & {[K]: V}`) binds from its map facets
+                                // only — the array facet belongs to a sibling `V[]` part.
+                                let table_indices = self.map_facet_table_indices(&arg_type);
                                 if !table_indices.is_empty() {
                                     if k_is_generic {
                                         // For each table: use its explicit key_type if present;
@@ -2568,6 +2566,13 @@ impl<'a> Analysis<'a> {
                 // from a non-function arg), so we don't short-circuit.
                 for member in members {
                     self.infer_generics_from_annotation(member, generic_names, generics, defclass, arg_expr_id, subs, array_bound);
+                }
+            }
+            AnnotationType::Intersection(parts) => {
+                // Each facet describes the same arg (`V[]&{[K]: V}`), so bind
+                // from all of them.
+                for part in parts {
+                    self.infer_generics_from_annotation(part, generic_names, generics, defclass, arg_expr_id, subs, array_bound);
                 }
             }
             AnnotationType::Simple(name) => {
@@ -2734,8 +2739,9 @@ impl<'a> Analysis<'a> {
                 }
                 None
             }
-            // Union of array types: e.g. string[] | ItemKey[] → string | ItemKey
-            ValueType::Union(members) => {
+            // Union of array types: e.g. string[] | ItemKey[] → string | ItemKey.
+            // An intersection contributes its array facet (`V[] & {[K]: V}`).
+            ValueType::Union(members) | ValueType::Intersection(members) => {
                 let mut elem_types: Vec<ValueType> = Vec::new();
                 for member in &members {
                     if let ValueType::Table(Some(idx)) = member
@@ -2753,6 +2759,30 @@ impl<'a> Analysis<'a> {
             }
             _ => None,
         }
+    }
+
+    /// The body of the parameterized `@alias` `base` (local first, then external)
+    /// with `args` substituted for its type params, when the arity matches.
+    fn expand_parameterized_alias(&self, base: &str, args: &[AnnotationType]) -> Option<AnnotationType> {
+        let (type_params, body) = self.ir.parameterized_aliases.get(base)
+            .or_else(|| self.ir.ext.parameterized_aliases.get(base))?;
+        (type_params.len() == args.len())
+            .then(|| crate::annotations::substitute_alias_type_params(body, type_params, args))
+    }
+
+    /// Table indices a `table<K, V>`-shaped param binds from: every table member
+    /// of a union, but only the explicit-map facets of an intersection when it
+    /// has any — its array facet (also keyed, by `number`) is a sibling `V[]`
+    /// part's.
+    fn map_facet_table_indices(&self, arg_type: &ValueType) -> Vec<TableIndex> {
+        let ValueType::Intersection(members) = arg_type else {
+            return super::table_indices_from_type(arg_type);
+        };
+        let all: Vec<TableIndex> = members.iter().flat_map(super::table_indices_from_type).collect();
+        let maps: Vec<TableIndex> = all.iter().copied()
+            .filter(|&ti| self.table(ti).is_explicit_map)
+            .collect();
+        if maps.is_empty() { all } else { maps }
     }
 
     pub(super) fn union_of(types: Vec<ValueType>) -> Option<ValueType> {

@@ -200,11 +200,14 @@ impl AnalysisResult {
             }
             return None;
         }
-        // Injected field carried cross-file by an inline `TableShape` member
-        // (e.g. `dropdown.DropDown` where `dropdown: Frame & { DropDown: ... }`).
-        // These have no arena `TableIndex`, so the class-field chain above misses
-        // them; resolve the field's type directly off the shape.
-        if let Some((field_name, field_ty)) = self.shape_field_hover_at(offset) {
+        // Fields the class-field chain above has no `FieldInfo` for: one carried
+        // cross-file by an inline `TableShape` member (e.g. `dropdown.DropDown`
+        // where `dropdown: Frame & { DropDown: ... }`, no arena `TableIndex`), or a
+        // dot access on a typed map (`keys.realm` where `keys: table<K, V>`, which
+        // reads the map's value type).
+        if let Some((field_name, field_ty)) =
+            self.shape_field_hover_at(offset).or_else(|| self.map_value_hover_at(offset))
+        {
             let formatted = self.format_type(&field_ty);
             return Some(HoverResult {
                 type_str: format!("(field) {}: {}", field_name, formatted),
@@ -577,6 +580,26 @@ impl AnalysisResult {
             recv.collect_shape_field_types(field, &mut tys);
             if !tys.is_empty() {
                 return Some((field.clone(), ValueType::make_union(tys)));
+            }
+        }
+        None
+    }
+
+    /// The `(field, V)` of a dot access at `offset` whose receiver is a typed map
+    /// (`table<K, V>`, explicit or inferred) declaring no field by that name.
+    fn map_value_hover_at(&self, offset: u32) -> Option<(String, ValueType)> {
+        for (_, expr) in self.ir.field_access_exprs_at(offset) {
+            let Expr::FieldAccess { table, field, .. } = expr else { continue };
+            let Some(recv) = self.resolve_expr_type(*table).map(|t| t.into_strip_opaque()) else { continue };
+            let ValueType::Table(Some(idx)) = recv else { continue };
+            let info = self.table(idx);
+            if self.ir.get_field(idx, field).is_some() {
+                continue;
+            }
+            if let Some(vt) = &info.value_type
+                && super::table_is_map(info.key_type.as_ref(), info.is_explicit_map)
+            {
+                return Some((field.clone(), vt.clone()));
             }
         }
         None

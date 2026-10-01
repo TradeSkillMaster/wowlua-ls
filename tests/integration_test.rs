@@ -5288,6 +5288,51 @@ fn self_field_mixin() {
     });
 }
 
+#[test]
+fn field_self_or_assign() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/field-self-or-assign.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn inherited_field_harvest() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/inherited-field-harvest/sub.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/inherited-field-harvest"),
+    });
+}
+
+#[test]
+fn constructor_twin() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/constructor-twin/consts.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/constructor-twin"),
+    });
+}
+
+#[test]
+fn constructor_call_entries_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/constructor-twin/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/constructor-twin"),
+    });
+}
+
+#[test]
+fn map_dot_access() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/map-dot-access.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
 // `Mixin(self.field, M)` augments a field's type with the mixin (`Frame & M`) so
 // the mixin's methods resolve on every read of the field (same-method and from
 // sibling methods), the same outcome the plain-local `Mixin(f, M)` form gives.
