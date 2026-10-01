@@ -3905,6 +3905,16 @@ fn crossfile_callable_field() {
 }
 
 #[test]
+fn crossfile_self_type_field() {
+    // `self` in a @field type resolves to the declaring class across files
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/self_type_field_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_field_fun_completion() {
     // @field fun() types from workspace-scanned classes should be fully materialized,
     // enabling string literal completions and call resolution

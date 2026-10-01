@@ -30,7 +30,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@enum (key) Name` | Key-based enum: creates a string enum from table keys instead of values. | [Classes](/guide/classes#key-based-enums-enum-key) |
 | `@event TypeName "EVENT_NAME"` | Declare an event with typed payload (hover + handler param narrowing). | [Events](/guide/events) |
 | `@event TypeName` + `---\|` | Batch event declarations with inline params. | [Events](/guide/events#batch-declarations-with) |
-| `@field name type` | Class field declaration. | [Classes](/guide/classes) |
+| `@field name type` | Class field declaration. `self` in the type names the class. | [Classes](/guide/classes#referring-to-the-class-with-self) |
 | `@field [K] V` | Bracket-index field. | [Generics](/guide/generics) |
 | `@field private name type` | Private field. | [Classes](/guide/classes) |
 | `@field protected name type` | Protected field. | [Classes](/guide/classes) |

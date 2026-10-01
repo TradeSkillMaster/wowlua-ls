@@ -193,6 +193,44 @@ pub fn substitute_alias_type_params(
     }
 }
 
+/// Replace every `self` type name in `at` with `class_type` — the class a
+/// `@field` belongs to (LuaLS parity). `keyof self` is left alone: it resolves
+/// against the call receiver.
+pub fn substitute_self_type(at: &AnnotationType, class_type: &AnnotationType) -> AnnotationType {
+    let sub = |t: &AnnotationType| substitute_self_type(t, class_type);
+    match at {
+        AnnotationType::Simple(name) if name == "self" => class_type.clone(),
+        AnnotationType::Simple(_) | AnnotationType::KeyOf(_) => at.clone(),
+        AnnotationType::Union(parts) => AnnotationType::Union(parts.iter().map(sub).collect()),
+        AnnotationType::Intersection(parts) => AnnotationType::Intersection(parts.iter().map(sub).collect()),
+        AnnotationType::Array(inner) => AnnotationType::Array(Box::new(sub(inner))),
+        AnnotationType::NonNil(inner) => AnnotationType::NonNil(Box::new(sub(inner))),
+        AnnotationType::Backtick(inner) => AnnotationType::Backtick(Box::new(sub(inner))),
+        AnnotationType::VarArgs(inner) => AnnotationType::VarArgs(Box::new(sub(inner))),
+        AnnotationType::Parameterized(base, args) => AnnotationType::Parameterized(base.clone(), args.iter().map(sub).collect()),
+        AnnotationType::IndexedAccess(base, key) => {
+            // The base is a bare name, so a generic class drops its type args here.
+            let base = match class_type {
+                AnnotationType::Simple(name) | AnnotationType::Parameterized(name, _) if base == "self" => name.clone(),
+                _ => base.clone(),
+            };
+            AnnotationType::IndexedAccess(base, Box::new(sub(key)))
+        }
+        AnnotationType::Fun(params, returns, is_vararg) => AnnotationType::Fun(
+            params.iter().map(|p| ParamInfo { typ: sub(&p.typ), ..p.clone() }).collect(),
+            returns.iter().map(sub).collect(),
+            *is_vararg,
+        ),
+        AnnotationType::TableLiteral(fields) => {
+            AnnotationType::TableLiteral(fields.iter().map(|(n, t)| (n.clone(), sub(t))).collect())
+        }
+        AnnotationType::Tuple(positions, description) => AnnotationType::Tuple(
+            positions.iter().map(|p| TuplePosition { typ: sub(&p.typ), name: p.name.clone() }).collect(),
+            description.clone(),
+        ),
+    }
+}
+
 pub fn match_projection(
     at: &AnnotationType,
     generic_names: &[String],

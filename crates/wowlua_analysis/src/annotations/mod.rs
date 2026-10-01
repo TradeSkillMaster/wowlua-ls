@@ -1569,6 +1569,13 @@ fn parse_event_batch_line(s: &str) -> Option<(String, Vec<crate::pre_globals::Ev
     Some((event_name.to_string(), params))
 }
 
+/// Whether the first word of an `@field` is a type rather than a name — the name
+/// was left out (`@field fun(x: number)`, `@field table<K, V>`). These characters
+/// never appear in a field name; bracketed/quoted keys (`[K]`) are exempt.
+pub fn field_name_is_type(name: &str) -> bool {
+    !name.starts_with(['[', '"', '\'']) && name.contains(['(', '<', '{', '|'])
+}
+
 /// Parse the header of an `@field` annotation: visibility, field name, and remaining type text.
 /// Input is the text after `@field` (e.g. `" private foo? number"`).
 /// Returns `(visibility, name_without_?, is_optional, type_text)`.
@@ -1587,6 +1594,7 @@ fn parse_field_header(after_field: &str) -> Option<(Visibility, &str, bool, &str
         (Visibility::Public, rest)
     };
     let (name, type_str) = rest.split_once(char::is_whitespace)?;
+    if field_name_is_type(name) { return None; }
     let is_optional = name.ends_with('?');
     let name = name.trim_end_matches('?');
     Some((vis, name, is_optional, type_str))
@@ -2149,6 +2157,21 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             } else if !rest.is_empty() {
                 block.accessors.push((rest.to_string(), Visibility::Public));
             }
+        }
+    }
+
+    // `self` in a `@field` type is the class the field belongs to.
+    if let Some(class_name) = &block.class {
+        let class_type = if block.class_type_params.is_empty() {
+            AnnotationType::Simple(class_name.clone())
+        } else {
+            AnnotationType::Parameterized(
+                class_name.clone(),
+                block.class_type_params.iter().map(|p| AnnotationType::Simple(p.clone())).collect(),
+            )
+        };
+        for (_, typ, _) in &mut block.fields {
+            *typ = annotation_types::substitute_self_type(typ, &class_type);
         }
     }
 

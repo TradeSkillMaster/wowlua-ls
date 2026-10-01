@@ -84,7 +84,7 @@ impl DiagnosticPass for AnnotationMetadata {
                 let rest = rest.strip_prefix("private ").or_else(|| rest.strip_prefix("protected "))
                     .or_else(|| rest.strip_prefix("public ")).unwrap_or(rest);
                 let raw_name = rest.split_whitespace().next().unwrap_or("");
-                if raw_name.starts_with('[') { continue; }
+                if raw_name.starts_with('[') || crate::annotations::field_name_is_type(raw_name) { continue; }
                 let field_name = raw_name.trim_end_matches('?');
                 if !field_name.is_empty() {
                     let fields = class_field_names.entry(class_name.clone()).or_default();

@@ -1577,6 +1577,27 @@ local malformed6 = nil
 ---@field name
 -- ^ diag: malformed-annotation
 
+-- @field with a type but no name: reported as the missing name only, not also
+-- as a field or an undefined type built from the split type text (each second
+-- copy suppresses malformed-annotation, so any other diagnostic fails)
+---@class MalformedFieldTest3
+---@field fun(data: self): nil
+-- ^ diag: malformed-annotation ~missing a field name
+---@diagnostic disable-next-line: malformed-annotation
+---@field fun(data: self): nil
+---@field table<string, number>
+-- ^ diag: malformed-annotation ~missing a field name
+---@diagnostic disable-next-line: malformed-annotation
+---@field table<string, number>
+---@field {x: number, y: number}
+-- ^ diag: malformed-annotation ~missing a field name
+---@diagnostic disable-next-line: malformed-annotation
+---@field {x: number, y: number}
+---@field string|nil
+-- ^ diag: malformed-annotation ~missing a field name
+---@diagnostic disable-next-line: malformed-annotation
+---@field string|nil
+
 -- @correlated with only one field
 ---@class MalformedCorrSingle
 ---@correlated onlyOne

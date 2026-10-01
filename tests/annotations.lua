@@ -1600,3 +1600,28 @@ local hatchPayload = escapeHatch.payload
 --    ^ hover: (local) hatchPayload: any
 -- `any` is callable — this must not emit cannot-call.
 local function callHatch() return escapeHatch.payload() end
+
+-- ── `self` in a @field type is the field's class ──────────────────────────
+-- LuaLS parity: `self` in a `@field` type names the class the field belongs
+-- to, as a param type, a return type, or nested in another type. `keyof self`
+-- still resolves against the call receiver.
+---@class SelfFieldData
+---@field onUpdate fun(data: self): nil
+---@field clone fun(): self
+---@field peers self[]
+---@field alpha number
+---@field Get fun(self, key: keyof self): any
+local SelfFieldData = {}
+SelfFieldData.onUpdate(SelfFieldData)
+SelfFieldData.onUpdate(1)
+--                     ^ diag: type-mismatch
+local selfFieldClone = SelfFieldData.clone()
+--    ^ hover: (local) selfFieldClone: SelfFieldData
+local selfFieldPeer = SelfFieldData.peers[1]
+--    ^ hover: (local) selfFieldPeer: SelfFieldData
+local selfFieldGet = SelfFieldData:Get("alpha")
+
+---@class SelfFieldDerived : SelfFieldData
+---@field beta string
+local SelfFieldDerived = {}
+local selfFieldGetDerived = SelfFieldDerived:Get("beta")

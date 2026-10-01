@@ -24,6 +24,16 @@ function displayEntry(entry)
 end
 ```
 
+### Referring to the class with `self`
+
+Inside a `@field` type, `self` names the class being declared, so a field can take or return its own class without repeating the name:
+
+```lua
+---@class TestDataType
+---@field onUpdate fun(data: self): nil -- data is a TestDataType
+---@field clone fun(): self             -- returns a TestDataType
+```
+
 ### Attaching to a variable
 
 Usually you'll attach the class to a local that serves as the class table:

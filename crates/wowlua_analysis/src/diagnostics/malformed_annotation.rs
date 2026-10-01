@@ -145,6 +145,8 @@ impl DiagnosticPass for MalformedAnnotation {
                         .unwrap_or(rest);
                     if rest.is_empty() {
                         Some("@field requires a name and type".to_string())
+                    } else if rest.split_whitespace().next().is_some_and(crate::annotations::field_name_is_type) {
+                        Some("@field is missing a field name before its type".to_string())
                     } else if !rest.contains(char::is_whitespace) {
                         Some("@field requires a type after the field name".to_string())
                     } else {
