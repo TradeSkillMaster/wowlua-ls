@@ -598,6 +598,40 @@ impl<'a> Analysis<'a> {
     }
 
 
+    /// Same-name `@class` declarations in one file each get their own table (see
+    /// `class_table_by_offset`), but they describe one class, so a field written
+    /// through any of them belongs to all — otherwise the name resolves to a table
+    /// missing the fields written through the other declarations. Runs after
+    /// `build_ir` has recorded the writes; annotated `@field`s are shared in
+    /// `prescan_classes_and_aliases`.
+    pub(super) fn share_duplicate_class_fields(&mut self) {
+        let mut by_name: HashMap<String, Vec<TableIndex>> = HashMap::default();
+        for &idx in self.ir.class_table_by_offset.values() {
+            if let Some(name) = self.ir.table(idx).class_name.clone()
+                && !idx.is_external()
+            {
+                by_name.entry(name).or_default().push(idx);
+            }
+        }
+        for mut tables in by_name.into_values() {
+            if tables.len() < 2 { continue; }
+            tables.sort_unstable_by_key(|t| t.val());
+            let mut written: Vec<(String, FieldInfo)> = Vec::new();
+            for &t in &tables {
+                for (name, fi) in &self.ir.tables[t.val()].fields {
+                    if fi.annotation.is_none() && !written.iter().any(|(n, _)| n == name) {
+                        written.push((name.clone(), fi.clone()));
+                    }
+                }
+            }
+            for &t in &tables {
+                for (name, fi) in &written {
+                    self.ir.tables[t.val()].fields.entry(name.clone()).or_insert_with(|| fi.clone());
+                }
+            }
+        }
+    }
+
     /// Pre-scan for `local X = defclassFunc("ClassName")` patterns.
     /// When a call to a `@defclass` function is found with a string literal argument,
     /// auto-create the class table before Phase 1 so methods can be defined on it.

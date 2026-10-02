@@ -895,10 +895,9 @@ impl<'a> Analysis<'a> {
     /// Early-exit narrowing: if the then-branch always exits and the condition
     /// implies the variable is nil/falsy, narrow it as non-nil in the parent scope.
     /// Patterns: `if not x then error() end`, `if x == nil then return end`
-    /// `from_offset` is the byte offset the narrowing takes effect at (the end of the
-    /// `if` chain). Guard facts are recorded on the *enclosing* scope, which also spans
-    /// the code before the guard, so field narrowings carry it in `narrow_from_offset`.
-    pub(super) fn analyze_early_exit_guard(&mut self, cond: &Expression<'_>, scope_idx: ScopeIndex, from_offset: u32) {
+    /// The facts are recorded on the *enclosing* scope, which also spans the code
+    /// before the guard; the caller scopes them with `gate_new_facts`.
+    pub(super) fn analyze_early_exit_guard(&mut self, cond: &Expression<'_>, scope_idx: ScopeIndex) {
         // If the exit condition is a flavor check (e.g. `if WOW_PROJECT_ID ==
         // WOW_PROJECT_MAINLINE then return end`), exclude that flavor from the
         // active set after the guard — i.e. treat it as the else-branch narrowing.
@@ -987,7 +986,7 @@ impl<'a> Analysis<'a> {
                     let terms = bin.get_terms();
                     if terms.len() >= 2 {
                         for term in &terms {
-                            self.analyze_early_exit_guard(term, scope_idx, from_offset);
+                            self.analyze_early_exit_guard(term, scope_idx);
                         }
                         return;
                     }
@@ -1113,16 +1112,11 @@ impl<'a> Analysis<'a> {
                                 self.add_type_stripped_field(scope_idx, sym_idx, chain, lit_vt);
                             } else {
                                 // `if h.f ~= "LIT" then return end` → h.f IS "LIT" after.
-                                // These maps are keyed by the enclosing scope, which also
-                                // covers the code before the guard, so record where the
-                                // narrowing starts for readers that run after analysis.
                                 let target = NarrowTarget::Field(sym_idx, chain);
                                 self.narrowing.narrowed.entry(scope_idx).or_default()
                                     .insert(target.clone());
                                 self.narrowing.type_narrowed.entry(scope_idx).or_default()
-                                    .insert(target.clone(), lit_vt);
-                                self.narrowing.narrow_from_offset.entry(scope_idx).or_default()
-                                    .insert(target, from_offset);
+                                    .insert(target, lit_vt);
                             }
                         }
                     }
@@ -1139,7 +1133,7 @@ impl<'a> Analysis<'a> {
             }
             Expression::GroupedExpression(g) => {
                 if let Some(inner) = g.get_expression() {
-                    self.analyze_early_exit_guard(&inner, scope_idx, from_offset);
+                    self.analyze_early_exit_guard(&inner, scope_idx);
                 }
             }
             // `if issecretvalue(x) then return end` → x is not secret after
@@ -1395,6 +1389,16 @@ impl<'a> Analysis<'a> {
         false
     }
 
+    /// Whether `sym_idx` has a narrowing fact visible from `scope_idx` — what a
+    /// reassignment there overrides.
+    pub(super) fn has_active_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        self.get_type_narrowing(sym_idx, scope_idx).is_some()
+            || self.get_type_filtering(sym_idx, scope_idx).is_some()
+            || self.is_symbol_narrowed(sym_idx, scope_idx)
+            || self.is_symbol_falsy_narrowed(sym_idx, scope_idx)
+            || self.is_symbol_truthy_narrowed(sym_idx, scope_idx)
+    }
+
     /// Mark a symbol as narrowed (non-nil) in the given scope, and create a new
     /// symbol version with nil stripped so type-mismatch checks see the narrowed type.
     fn narrow_symbol_strip_nil(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
@@ -1409,7 +1413,7 @@ impl<'a> Analysis<'a> {
     fn narrow_symbol_strip_falsy(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx));
         self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(sym_idx));
-        if !sym_idx.is_external() && self.ir.symbols[sym_idx.val()].versions.len() <= 1 {
+        if !sym_idx.is_external() && self.ir.visible_version_count(sym_idx) <= 1 {
             self.narrowing.falsy_narrowed_pre_reassign.insert(sym_idx);
         }
         self.push_strip_falsy_version(sym_idx, scope_idx);
@@ -2377,13 +2381,21 @@ impl<'a> Analysis<'a> {
             self.narrowing.narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(derived));
             if falsy {
                 self.narrowing.falsy_narrowed.entry(scope_idx).or_default().insert(NarrowTarget::Symbol(derived));
-                if !derived.is_external() && self.ir.symbols[derived.val()].versions.len() <= 1 {
+                if !derived.is_external() && self.ir.visible_version_count(derived) <= 1 {
                     self.narrowing.falsy_narrowed_pre_reassign.insert(derived);
                 }
                 self.push_strip_falsy_version(derived, scope_idx);
                 self.apply_guard_implications(derived, scope_idx);
             } else {
                 self.push_strip_nil_version(derived, scope_idx);
+            }
+        }
+        for (root, names) in self.and_field_derivations.get(&source).cloned().unwrap_or_default() {
+            if self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) != Some(root) { continue; }
+            if falsy {
+                self.try_narrow_field_falsy(&names, scope_idx);
+            } else {
+                self.try_narrow_field(&names, scope_idx);
             }
         }
     }
@@ -2481,6 +2493,19 @@ impl<'a> Analysis<'a> {
             Some(derived)
         })();
 
+        // Pattern 3 on a field chain: `y = t.f and expr` narrows `t.f` with y.
+        let pattern3_field: Option<(SymbolIndex, Vec<String>)> = (|| {
+            let Some(Expression::BinaryExpression(and_bin)) = expression else { return None };
+            if !matches!(and_bin.kind(), Operator::And) { return None; }
+            let and_terms = and_bin.get_terms();
+            let [Expression::Identifier(lhs_ident), _] = and_terms.as_slice() else { return None };
+            if lhs_ident.has_any_dynamic_bracket() { return None; }
+            let names = lhs_ident.names();
+            if names.len() < 2 { return None; }
+            let root = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+            (root != x_sym).then_some((root, names))
+        })();
+
         // Pattern 4: `y = (x and expr) or NUMBER_LITERAL` — hoisted and-or sentinel.
         // When a NumCompare guard on y excludes the literal, x is narrowed non-nil.
         // Unlike Pattern 2 (which requires `or nil`), this handles non-nil fallbacks
@@ -2499,6 +2524,11 @@ impl<'a> Analysis<'a> {
         }
         self.or_coalesce_derivations.remove(&x_sym);
         self.or_coalesce_derivations.retain(|_, v| !v.is_empty());
+        self.and_field_derivations.remove(&x_sym);
+        for derived in self.and_field_derivations.values_mut() {
+            derived.retain(|(root, _)| *root != x_sym);
+        }
+        self.and_field_derivations.retain(|_, v| !v.is_empty());
         // Invalidate sentinel entries where x_sym is the key or the derived.
         self.and_or_num_sentinel.remove(&x_sym);
         self.and_or_num_sentinel.retain(|_, (derived, _)| *derived != x_sym);
@@ -2515,6 +2545,23 @@ impl<'a> Analysis<'a> {
         if let Some((derived, lit_val)) = pattern4_result {
             self.and_or_num_sentinel.insert(x_sym, (derived, lit_val));
         }
+        if let Some(derived) = pattern3_field {
+            self.and_field_derivations.entry(x_sym).or_default().push(derived);
+        }
+    }
+
+    /// A write to `names` (a field chain) breaks every `y = t.f and expr`
+    /// derivation whose chain it overlaps. See `and_field_derivations`.
+    pub(super) fn invalidate_and_field_derivations(&mut self, names: &[String], scope_idx: ScopeIndex) {
+        if self.and_field_derivations.is_empty() || names.len() < 2 { return; }
+        let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) else { return };
+        let written = &names[1..];
+        for derived in self.and_field_derivations.values_mut() {
+            derived.retain(|(root, chain)| {
+                *root != sym_idx || !(chain[1..].starts_with(written) || written.starts_with(&chain[1..]))
+            });
+        }
+        self.and_field_derivations.retain(|_, v| !v.is_empty());
     }
 
     /// Quick check whether a function has returns that could plausibly gain
@@ -3549,8 +3596,9 @@ impl<'a> Analysis<'a> {
             // `f = f or function … end` polyfill.
             return self.find_function_for_symbol(sym_idx, scope);
         }
-        let sym = self.sym(sym_idx);
-        let version = sym.versions.last()?;
+        // The version visible here, not `versions.last()`: a deferred exit guard
+        // runs after its branch bodies, which can hold later versions.
+        let version = self.sym(sym_idx).versions.get(self.ir.version_for_scope(sym_idx, scope))?;
 
         // Dotted/colon call: `Table.Method(x)` or `obj:Method()` — walk through table fields
         let resolved = if sym_idx.is_external() {
@@ -3777,9 +3825,8 @@ impl<'a> Analysis<'a> {
         if names.len() < 2 { return None; }
 
         let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?;
-        let sym = self.sym(sym_idx);
-        let version = sym.versions.last()?;
-        let expr_id = version.type_source?;
+        // As in `extract_field_presence_discriminator`: the version the guard tests.
+        let expr_id = self.sym(sym_idx).versions.get(self.ir.version_for_scope(sym_idx, scope))?.type_source?;
 
         // Get all table indices from the receiver's union type
         let table_indices = self.resolve_expr_to_tables(expr_id);

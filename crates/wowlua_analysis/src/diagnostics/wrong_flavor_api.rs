@@ -29,15 +29,15 @@ impl DiagnosticPass for WrongFlavorApi {
                 if !sym_idx.is_external() {
                     continue;
                 }
-                if analysis.is_symbol_narrowed(*sym_idx, scope_idx)
-                    || analysis.is_symbol_falsy_narrowed(*sym_idx, scope_idx) {
+                if analysis.is_symbol_narrowed_at(*sym_idx, scope_idx, call_range.0)
+                    || analysis.is_symbol_falsy_narrowed_at(*sym_idx, scope_idx, call_range.0) {
                     continue;
                 }
             } else if let Some((root_sym, chain)) = analysis.ir.extract_field_chain(callee_inner)
                 && root_sym.is_external()
-                && (analysis.is_symbol_narrowed(root_sym, scope_idx)
-                    || analysis.is_symbol_falsy_narrowed(root_sym, scope_idx)
-                    || analysis.is_field_chain_narrowed(root_sym, &chain, scope_idx))
+                && (analysis.is_symbol_narrowed_at(root_sym, scope_idx, call_range.0)
+                    || analysis.is_symbol_falsy_narrowed_at(root_sym, scope_idx, call_range.0)
+                    || analysis.is_field_chain_narrowed_at(root_sym, &chain, scope_idx, call_range.0))
             {
                 continue;
             }

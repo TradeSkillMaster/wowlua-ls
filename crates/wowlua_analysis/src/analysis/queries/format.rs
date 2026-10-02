@@ -543,7 +543,7 @@ fn resolve_expr_type_uncleared(
             let inner = *inner;
             let cast_type = cast_type.clone();
             resolve_expr_type_impl(ir, resolved_expr_cache, inner, visited, depth + 1)
-                .map(|vt| vt.strip_type_with(&cast_type, &|idx| ir.table(idx).enum_kind))
+                .and_then(|vt| vt.strip_type_narrowed(&cast_type, &|idx| ir.table(idx).enum_kind))
         }
         Expr::TypeFilter(inner, guard_type) => {
             resolve_expr_type_impl(ir, resolved_expr_cache, *inner, visited, depth + 1)
@@ -705,22 +705,31 @@ impl AnalysisResult {
         let narrowing_active = !self.is_narrowing_overridden_at(symbol_idx, scope_idx, offset);
         // Start from a type-narrowed base if one exists (e.g. type(x) == "string")
         let base = if narrowing_active {
-            if let Some(narrowed_vt) = self.get_type_narrowing(symbol_idx, scope_idx) {
+            if let Some(narrowed_vt) = self.get_type_narrowing_at(symbol_idx, scope_idx, offset) {
                 Some(narrowed_vt.clone())
-            } else if let Some(guard_vt) = self.get_type_filtering(symbol_idx, scope_idx) {
+            } else if let Some(guard_vt) = self.get_type_filtering_at(symbol_idx, scope_idx, offset) {
                 Some(resolved.filter_type_with(guard_vt, &|idx| self.table(idx).enum_kind))
             } else {
-                self.get_type_stripping(symbol_idx, scope_idx).map(|stripped_vt| {
-                    resolved.strip_type_with(stripped_vt, &|idx| self.table(idx).enum_kind)
+                self.get_type_stripping_at(symbol_idx, scope_idx, offset).and_then(|stripped_vt| {
+                    resolved.strip_type_narrowed(stripped_vt, &|idx| self.table(idx).enum_kind)
                 })
             }
         } else {
             None
         };
         // Apply falsy/nil narrowing on top (inner scope `if x then` further narrows)
-        let strip_falsy = narrowing_active && self.is_symbol_falsy_narrowed(symbol_idx, scope_idx);
-        let strip_nil = strip_falsy || (narrowing_active && self.is_symbol_narrowed(symbol_idx, scope_idx));
+        let strip_falsy = narrowing_active && self.is_symbol_falsy_narrowed_at(symbol_idx, scope_idx, offset);
+        let strip_nil = strip_falsy || (narrowing_active && self.is_symbol_narrowed_at(symbol_idx, scope_idx, offset));
         if !strip_nil {
+            // A falsy region (`if not x then`, the `else` of `if x then`) keeps only
+            // `nil`/`false`, as the lowered read does.
+            if narrowing_active && self.is_symbol_truthy_narrowed_at(symbol_idx, scope_idx, offset) {
+                let target = base.as_ref().unwrap_or(resolved);
+                let falsy = target.strip_truthy();
+                if &falsy != target {
+                    return Some(falsy);
+                }
+            }
             return base;
         }
         let target = base.as_ref().unwrap_or(resolved);

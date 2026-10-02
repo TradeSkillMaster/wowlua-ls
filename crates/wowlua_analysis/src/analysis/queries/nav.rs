@@ -1018,7 +1018,7 @@ impl AnalysisResult {
             let resolved = ver.resolved_type.as_ref()?;
             // Apply type narrowing (e.g. from @type-narrows guards) so field lookups
             // use the narrowed type instead of the base type.
-            let mut idx = self.get_type_narrowing(symbol_idx, scope_idx)
+            let mut idx = self.get_type_narrowing_at(symbol_idx, scope_idx, u32::from(scope_offset))
                 .and_then(Self::extract_table_idx)
                 .or_else(|| Self::extract_table_idx(resolved))?;
             for name_token in &child_names[1..] {
@@ -1094,7 +1094,7 @@ impl AnalysisResult {
         // receiver root tokens (NameRef in a DotAccess/MethodCall) always
         // have an entry.
         let root_token_start: u32 = root_names[0].text_range().start().into();
-        let mut current_type = self.get_type_narrowing(symbol_idx, scope_idx)
+        let mut current_type = self.get_type_narrowing_at(symbol_idx, scope_idx, root_token_start)
             .cloned()
             .or_else(|| self.symbol_resolved_type_at(symbol_idx, root_token_start).cloned())?;
 

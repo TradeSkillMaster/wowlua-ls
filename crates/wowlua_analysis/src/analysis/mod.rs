@@ -224,6 +224,17 @@ pub enum NarrowTarget {
     Field(SymbolIndex, Vec<String>),
 }
 
+/// Which `NarrowingState` map a fact lives in, for `narrow_from_offset`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum NarrowMap {
+    Narrowed,
+    FalsyNarrowed,
+    TruthyNarrowed,
+    TypeNarrowed,
+    TypeStripped,
+    TypeFiltered,
+}
+
 /// Type-narrowing facts produced by control-flow guards, grouped out of the
 /// `Analysis`/`AnalysisResult` god-structs.
 ///
@@ -267,13 +278,15 @@ pub struct NarrowingState {
     /// Cache for lazily-materialized type-narrowing versions.
     /// Maps (reference_scope, symbol) → version index pushed for that narrowing.
     pub type_narrows_version_cache: HashMap<(ScopeIndex, SymbolIndex), usize>,
-    /// Byte offset from which a `narrowed` / `type_narrowed` entry takes effect.
-    /// An early-exit guard (`if h.f ~= "X" then return end`) records its narrowing on
-    /// the *enclosing* scope, but it only applies to code that follows the guard.
-    /// Lowering consumes those maps in source order and needs no gate; readers that
-    /// run after analysis (diagnostics) must go through the `*_at` accessors.
-    /// Entries without an offset here cover their whole scope.
-    pub narrow_from_offset: HashMap<ScopeIndex, HashMap<NarrowTarget, u32>>,
+    /// Byte offset from which a narrowing fact (one map's entry for one target)
+    /// takes effect. An early-exit guard (`if not x then return end`) records its
+    /// narrowing on the *enclosing* scope, but it only applies to code that follows
+    /// the guard. Lowering needs no gate — the guard is recorded once its branch
+    /// bodies are lowered (`build_ir::PendingExitNarrowing`) — but readers that run
+    /// after analysis (hover, diagnostics) must go through the `*_at` accessors,
+    /// which is all `AnalysisResult` exposes. Facts without an offset cover their
+    /// whole scope.
+    pub narrow_from_offset: HashMap<ScopeIndex, HashMap<(NarrowMap, NarrowTarget), u32>>,
     /// Symbols whose type-narrowing was overridden by a reassignment in a given scope.
     /// Checked (with scope-chain walk) to skip stale narrowing after assignment.
     /// Maps to the byte offset of the reassignment node.
@@ -342,11 +355,11 @@ impl NarrowingState {
         scope_map_get(&self.type_stripped, scopes, &NarrowTarget::Field(sym_idx, chain.to_vec()), scope_idx)
     }
 
-    /// True when `scope`'s entry for `key` has not taken effect at `at_offset`.
+    /// True when `scope`'s `map` fact for `key` has not taken effect at `at_offset`.
     /// See `narrow_from_offset`.
-    fn narrow_pending_at(&self, scope: ScopeIndex, key: &NarrowTarget, at_offset: u32) -> bool {
+    fn narrow_pending_at(&self, scope: ScopeIndex, map: NarrowMap, key: &NarrowTarget, at_offset: u32) -> bool {
         self.narrow_from_offset.get(&scope)
-            .and_then(|m| m.get(key))
+            .and_then(|m| m.get(&(map, key.clone())))
             .is_some_and(|&from| at_offset < from)
     }
 
@@ -356,7 +369,7 @@ impl NarrowingState {
         let key = NarrowTarget::Field(sym_idx, chain.to_vec());
         ancestor_scopes(scopes, scope_idx).find_map(|si| {
             let vt = self.type_narrowed.get(&si)?.get(&key)?;
-            (!self.narrow_pending_at(si, &key, at_offset)).then_some(vt)
+            (!self.narrow_pending_at(si, NarrowMap::TypeNarrowed, &key, at_offset)).then_some(vt)
         })
     }
 
@@ -365,8 +378,85 @@ impl NarrowingState {
         let key = NarrowTarget::Field(sym_idx, chain.to_vec());
         ancestor_scopes(scopes, scope_idx).any(|si| {
             self.narrowed.get(&si).is_some_and(|s| s.contains(&key))
-                && !self.narrow_pending_at(si, &key, at_offset)
+                && !self.narrow_pending_at(si, NarrowMap::Narrowed, &key, at_offset)
         })
+    }
+
+    /// The symbol accessors above, for a reader that knows the byte offset it is
+    /// asking about: a fact recorded by an early exit only counts past the guard.
+    /// Finds the nearest scope, from `scope_idx` outward, whose `kind` fact for
+    /// `sym_idx` (`has` tests the map) is in effect at `at_offset`.
+    fn symbol_fact_scope_at(&self, kind: NarrowMap, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32, has: impl Fn(ScopeIndex) -> bool) -> Option<ScopeIndex> {
+        let target = NarrowTarget::Symbol(sym_idx);
+        ancestor_scopes(scopes, scope_idx).find(|&si| has(si) && !self.narrow_pending_at(si, kind, &target, at_offset))
+    }
+
+    pub fn is_symbol_narrowed_at(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
+        let key = NarrowTarget::Symbol(sym_idx);
+        self.symbol_fact_scope_at(NarrowMap::Narrowed, scopes, sym_idx, scope_idx, at_offset,
+            |si| self.narrowed.get(&si).is_some_and(|s| s.contains(&key))).is_some()
+    }
+
+    pub fn is_symbol_falsy_narrowed_at(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
+        let key = NarrowTarget::Symbol(sym_idx);
+        self.symbol_fact_scope_at(NarrowMap::FalsyNarrowed, scopes, sym_idx, scope_idx, at_offset,
+            |si| self.falsy_narrowed.get(&si).is_some_and(|s| s.contains(&key))).is_some()
+    }
+
+    pub fn is_symbol_truthy_narrowed_at(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
+        self.symbol_fact_scope_at(NarrowMap::TruthyNarrowed, scopes, sym_idx, scope_idx, at_offset,
+            |si| self.truthy_narrowed_symbols.get(&si).is_some_and(|s| s.contains(&sym_idx))).is_some()
+    }
+
+    pub fn get_type_narrowing_at(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> Option<&ValueType> {
+        let key = NarrowTarget::Symbol(sym_idx);
+        let si = self.symbol_fact_scope_at(NarrowMap::TypeNarrowed, scopes, sym_idx, scope_idx, at_offset,
+            |si| self.type_narrowed.get(&si).is_some_and(|m| m.contains_key(&key)))?;
+        self.type_narrowed.get(&si)?.get(&key)
+    }
+
+    pub fn get_type_filtering_at(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> Option<&ValueType> {
+        let si = self.symbol_fact_scope_at(NarrowMap::TypeFiltered, scopes, sym_idx, scope_idx, at_offset,
+            |si| self.type_filtered_symbols.get(&si).is_some_and(|m| m.contains_key(&sym_idx)))?;
+        self.type_filtered_symbols.get(&si)?.get(&sym_idx)
+    }
+
+    pub fn get_type_stripping_at(&self, scopes: &[Scope], sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> Option<&ValueType> {
+        let key = NarrowTarget::Symbol(sym_idx);
+        let si = self.symbol_fact_scope_at(NarrowMap::TypeStripped, scopes, sym_idx, scope_idx, at_offset,
+            |si| self.type_stripped.get(&si).is_some_and(|m| m.contains_key(&key)))?;
+        self.type_stripped.get(&si)?.get(&key)
+    }
+
+    /// Every narrowing fact recorded directly on `scope`, with its type for the
+    /// maps that carry one.
+    pub fn facts_in(&self, scope: ScopeIndex) -> HashMap<(NarrowMap, NarrowTarget), Option<ValueType>> {
+        let mut out: HashMap<(NarrowMap, NarrowTarget), Option<ValueType>> = HashMap::default();
+        for (kind, map) in [(NarrowMap::Narrowed, &self.narrowed), (NarrowMap::FalsyNarrowed, &self.falsy_narrowed)] {
+            out.extend(map.get(&scope).into_iter().flatten().map(|t| ((kind, t.clone()), None)));
+        }
+        for (kind, map) in [(NarrowMap::TypeNarrowed, &self.type_narrowed), (NarrowMap::TypeStripped, &self.type_stripped)] {
+            out.extend(map.get(&scope).into_iter().flatten().map(|(t, vt)| ((kind, t.clone()), Some(vt.clone()))));
+        }
+        out.extend(self.truthy_narrowed_symbols.get(&scope).into_iter().flatten()
+            .map(|&s| ((NarrowMap::TruthyNarrowed, NarrowTarget::Symbol(s)), None)));
+        out.extend(self.type_filtered_symbols.get(&scope).into_iter().flatten()
+            .map(|(&s, vt)| ((NarrowMap::TypeFiltered, NarrowTarget::Symbol(s)), Some(vt.clone()))));
+        out
+    }
+
+    /// Make the facts `scope` gained or changed since `before` take effect at
+    /// `from_offset` for the `*_at` readers; unchanged facts keep their extent.
+    pub fn gate_new_facts(&mut self, scope: ScopeIndex, before: &HashMap<(NarrowMap, NarrowTarget), Option<ValueType>>, from_offset: u32) {
+        let new: Vec<(NarrowMap, NarrowTarget)> = self.facts_in(scope).into_iter()
+            .filter(|(fact, vt)| before.get(fact) != Some(vt))
+            .map(|(fact, _)| fact)
+            .collect();
+        if new.is_empty() { return; }
+        let offsets = self.narrow_from_offset.entry(scope).or_default();
+        for fact in new {
+            offsets.insert(fact, from_offset);
+        }
     }
 
     // NOTE: Field-chain lookups allocate a Vec<String> for the NarrowTarget key on
@@ -473,6 +563,12 @@ pub struct Ir {
     /// [`Self::is_narrowing_only_version`] can't classify them; without this a guard
     /// narrowing made inside a branch looks like a reassignment and escapes it.
     narrowing_only_versions: HashSet<(SymbolIndex, usize)>,
+    /// Creation-order window `[from, to)` of versions that `version_for_scope`
+    /// hides unless they were created in the queried scope. Set while an if-chain's
+    /// early-exit narrowing is applied after its branch bodies were lowered, so the
+    /// versions those bodies created don't become narrowing bases for the code
+    /// after the chain.
+    hidden_versions: Option<(u32, u32)>,
     /// Class name → table: the file's own `@class`es layered over `ext.classes`.
     pub classes: layered_map::LayeredMap<TableIndex>,
     /// Alias name → type: the file's own `@alias`es layered over `ext.aliases`.
@@ -1933,6 +2029,9 @@ impl Ir {
                 // Same scope: always visible
                 return i;
             }
+            if self.is_hidden_version(ver) {
+                continue;
+            }
             if self.is_scope_visible_from(ver.created_in_scope, scope_idx) {
                 // Ancestor or descendant scope: check temporal ordering.
                 // Only skip if the version was created in a strict ancestor and
@@ -1962,6 +2061,21 @@ impl Ir {
         }
         // Fallback: always return version 0 (original definition)
         0
+    }
+
+    fn is_hidden_version(&self, ver: &SymbolVersion) -> bool {
+        self.hidden_versions.is_some_and(|(from, to)| (from..to).contains(&ver.creation_order))
+    }
+
+    /// Hide the versions created in `[from, to)` from `version_for_scope`, or stop
+    /// hiding with `None`. See `Ir::hidden_versions`.
+    pub(super) fn set_hidden_versions(&mut self, window: Option<(u32, u32)>) {
+        self.hidden_versions = window;
+    }
+
+    /// Number of versions of a local symbol, not counting hidden ones.
+    pub(super) fn visible_version_count(&self, sym_idx: SymbolIndex) -> usize {
+        self.symbols[sym_idx.val()].versions.iter().filter(|v| !self.is_hidden_version(v)).count()
     }
 
     /// Record that version `ver_idx` of `sym_idx` only refines the type for a
@@ -2621,32 +2735,32 @@ impl AnalysisResult {
         self.ir.resolve_annotation_type_for_check(at, &[])
     }
 
-    pub fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        self.narrowing.is_symbol_narrowed(&self.ir.scopes, sym_idx, scope_idx)
+    pub fn is_symbol_narrowed_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
+        self.narrowing.is_symbol_narrowed_at(&self.ir.scopes, sym_idx, scope_idx, at_offset)
     }
 
-    pub fn is_symbol_falsy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        self.narrowing.is_symbol_falsy_narrowed(&self.ir.scopes, sym_idx, scope_idx)
+    pub fn is_symbol_falsy_narrowed_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
+        self.narrowing.is_symbol_falsy_narrowed_at(&self.ir.scopes, sym_idx, scope_idx, at_offset)
     }
 
-    pub fn get_type_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        self.narrowing.get_type_narrowing(&self.ir.scopes, sym_idx, scope_idx)
+    pub fn is_symbol_truthy_narrowed_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
+        self.narrowing.is_symbol_truthy_narrowed_at(&self.ir.scopes, sym_idx, scope_idx, at_offset)
     }
 
-    pub fn get_type_filtering(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        self.narrowing.get_type_filtering(&self.ir.scopes, sym_idx, scope_idx)
+    pub fn get_type_narrowing_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> Option<&ValueType> {
+        self.narrowing.get_type_narrowing_at(&self.ir.scopes, sym_idx, scope_idx, at_offset)
     }
 
-    pub fn get_type_stripping(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        self.narrowing.get_type_stripping(&self.ir.scopes, sym_idx, scope_idx)
+    pub fn get_type_filtering_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> Option<&ValueType> {
+        self.narrowing.get_type_filtering_at(&self.ir.scopes, sym_idx, scope_idx, at_offset)
+    }
+
+    pub fn get_type_stripping_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> Option<&ValueType> {
+        self.narrowing.get_type_stripping_at(&self.ir.scopes, sym_idx, scope_idx, at_offset)
     }
 
     pub fn get_field_type_narrowing_at(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex, at_offset: u32) -> Option<&ValueType> {
         self.narrowing.get_field_type_narrowing_at(&self.ir.scopes, sym_idx, chain, scope_idx, at_offset)
-    }
-
-    pub fn is_field_chain_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
-        self.narrowing.is_field_chain_narrowed(&self.ir.scopes, sym_idx, fields, scope_idx)
     }
 
     pub fn is_field_chain_narrowed_at(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex, at_offset: u32) -> bool {
@@ -2826,6 +2940,11 @@ pub struct Analysis<'a> {
     /// assignments — if `y` is known non-nil, `x` (just assigned `x or y`) is too.
     /// One-directional: narrowing `x` does NOT imply anything about `y`.
     pub or_coalesce_derivations: HashMap<SymbolIndex, Vec<SymbolIndex>>,
+    /// The field-chain form of `or_coalesce_derivations`' `y = x and expr`:
+    /// `y = t.f and expr`, so narrowing `y` narrows `t.f`. Each entry holds the
+    /// chain's root symbol and its source names (`["t", "f"]`). Invalidated when
+    /// `y` or the root is reassigned, or the chain (or a prefix) is written.
+    pub and_field_derivations: HashMap<SymbolIndex, Vec<(SymbolIndex, Vec<String>)>>,
     /// Hoisted and-or sentinel: `assigned = (source and expr) or NUMBER_LITERAL`.
     /// When a NumCompare guard on the assigned variable excludes the literal value,
     /// the source variable is narrowed non-nil.
@@ -2892,6 +3011,9 @@ pub struct Analysis<'a> {
     pub is_meta: bool,
     /// Set when a safety limit is hit during resolution (iteration cap, table cap, depth cap).
     pub safety_limit_hit: Option<String>,
+    /// Set while `finalize_any_branch_merges` runs: a branch merge then counts an
+    /// `any` branch instead of skipping it.
+    pub any_branches_settled: bool,
     /// Event-param narrowing: when an event param is narrowed to a string literal,
     /// per-position vararg types from the event payload are stored here.
     pub event_vararg_types: HashMap<ScopeIndex, Vec<ValueType>>,
@@ -3007,6 +3129,7 @@ impl<'a> Analysis<'a> {
                 exprs: Vec::new(),
                 block_scopes: Vec::new(),
                 narrowing_only_versions: HashSet::default(),
+                hidden_versions: None,
                 classes,
                 aliases,
                 alias_string_literals,
@@ -3088,6 +3211,7 @@ impl<'a> Analysis<'a> {
             correlated_locals: Vec::new(),
             guard_implications: Vec::new(),
             or_coalesce_derivations: HashMap::default(),
+            and_field_derivations: HashMap::default(),
             and_or_num_sentinel: HashMap::default(),
             conditionally_reached_exprs: HashSet::default(),
             synth_return_overload_refinements: Vec::new(),
@@ -3117,6 +3241,7 @@ impl<'a> Analysis<'a> {
             function_owner_class: HashMap::default(),
             is_meta: false,
             safety_limit_hit: None,
+            any_branches_settled: false,
             event_vararg_types: HashMap::default(),
             vararg_user_annotated_fns: HashSet::default(),
             event_handler_method_payloads: HashMap::default(),
@@ -3126,6 +3251,7 @@ impl<'a> Analysis<'a> {
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();
         analysis.build_ir();
+        analysis.share_duplicate_class_fields();
         analysis.ir.index_function_body_scopes();
         analysis.mark_external_mixins_open();
         analysis.materialize_fun_annotations();

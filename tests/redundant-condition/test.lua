@@ -145,6 +145,36 @@ local function conditionalAssign(cond)
 end
 _use(conditionalAssign)
 
+-- Same when the conditional assignment is a value typed `any`.
+---@return any
+local function readAnyPrice() return nil end
+
+local function conditionalAssignAny(cond)
+    local price = nil
+    if cond then
+        price = readAnyPrice()
+    end
+    if price then
+    -- ^ hover: (local) price: any
+        return price
+    end
+end
+_use(conditionalAssignAny)
+
+-- And through a local holding the merged value.
+local function conditionalAssignAnyAlias(cond)
+    local price = nil
+    if cond then
+        price = readAnyPrice()
+    end
+    local alias = price
+    if alias then
+    -- ^ hover: (local) alias: any
+        return alias
+    end
+end
+_use(conditionalAssignAnyAlias)
+
 -- ── No diagnostic: lateinit fields ──────────────────────────────────────────
 -- Lateinit (`T!`) fields are typed non-nil for the LS but can be nil at
 -- runtime until initialized, so `if obj.field then` is not redundant.

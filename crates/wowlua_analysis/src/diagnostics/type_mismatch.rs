@@ -149,21 +149,22 @@ impl DiagnosticPass for TypeMismatch {
                         let has_field_chain = analysis.ir.extract_field_chain(check.arg_expr).is_some();
                         if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, check.start) {
                             if !has_field_chain
-                                && let Some(narrowed_vt) = analysis.get_type_narrowing(sym_idx, scope_idx)
+                                && let Some(narrowed_vt) = analysis.get_type_narrowing_at(sym_idx, scope_idx, check.start)
                                 && !arg_type.is_assignable_to(narrowed_vt) {
                                     arg_type = narrowed_vt.clone();
                             }
-                            if let Some(guard_vt) = analysis.get_type_filtering(sym_idx, scope_idx) {
+                            if let Some(guard_vt) = analysis.get_type_filtering_at(sym_idx, scope_idx, check.start) {
                                 arg_type = arg_type.filter_type_with(guard_vt, &|idx| analysis.table(idx).enum_kind);
                             }
-                            if let Some(stripped_vt) = analysis.get_type_stripping(sym_idx, scope_idx) {
-                                arg_type = arg_type.strip_type_with(stripped_vt, &|idx| analysis.table(idx).enum_kind);
+                            if let Some(stripped_vt) = analysis.get_type_stripping_at(sym_idx, scope_idx, check.start) {
+                                let Some(stripped) = arg_type.strip_type_narrowed(stripped_vt, &|idx| analysis.table(idx).enum_kind) else { continue };
+                                arg_type = stripped;
                             }
                         }
                         if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, check.start) {
-                            if analysis.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
+                            if analysis.is_symbol_falsy_narrowed_at(sym_idx, scope_idx, check.start) {
                                 arg_type = arg_type.strip_falsy();
-                            } else if analysis.is_symbol_narrowed(sym_idx, scope_idx) {
+                            } else if analysis.is_symbol_narrowed_at(sym_idx, scope_idx, check.start) {
                                 arg_type = arg_type.strip_nil();
                             }
                         }

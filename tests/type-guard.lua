@@ -495,3 +495,15 @@ local function testAliasOriginAlsoMerged(sectionName)
     --    ^ hover: (local) out: fun(): string
 end
 _consume(testAliasOriginAlsoMerged)
+
+-- A type guard that matches the whole declared type leaves no implicit-else
+-- path: after `if type(x) == "number" then x = nil end`, x is only the branch's
+-- nil, not an unknown.
+---@param x number
+local function implicitElseStripsWholeType(x)
+    if type(x) == "number" then
+        x = nil
+    end
+    local y = x
+    --    ^ hover: (local) y: nil
+end

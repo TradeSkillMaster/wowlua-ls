@@ -57,6 +57,24 @@ struct PendingBranchMerge {
     /// E.g., `if not x then ... end` → x is non-nil after the if.
     /// The bool indicates whether to strip falsy (true) or just nil (false).
     implicit_else_strip_nil: Vec<(SymbolIndex, bool)>,
+    /// End offset of the if-chain: where the merged values take effect.
+    chain_end: u32,
+}
+
+/// An if-chain whose conditions narrow the code after it: the leading branches
+/// that always exit (`if not x then return end`), or an ensure-initialized guard
+/// (`if not t.f then t.f = v end`). The narrowing is recorded on the enclosing
+/// scope, so it waits until the chain's branch bodies have been lowered — they
+/// would otherwise see it through their ancestor-scope lookups, typing `x` as
+/// truthy inside `if not x then … end`.
+struct PendingExitNarrowing<'a> {
+    if_chain: IfChain<'a>,
+    parent_scope: ScopeIndex,
+    exiting_prefix_len: usize,
+    ensure_initialized: bool,
+    /// `next_creation_order` when the chain was reached. Versions created from
+    /// here until the narrowing runs belong to the branch bodies.
+    creation_order: u32,
 }
 
 /// Tracks a while loop whose exit condition should narrow symbols after the loop.
@@ -151,6 +169,7 @@ impl<'a> Analysis<'a> {
         });
 
         let mut pending_branch_merges: Vec<PendingBranchMerge> = Vec::new();
+        let mut pending_exit_narrowings: Vec<PendingExitNarrowing<'a>> = Vec::new();
         let mut pending_while_narrowings: Vec<PendingWhileNarrowing> = Vec::new();
 
         let root_block = Block::cast(self.root()).expect("everything starts with a block");
@@ -186,6 +205,10 @@ impl<'a> Analysis<'a> {
             // if/else chain is the last statement in its block. Without this, nested
             // if/else chains (e.g. inside an else branch) would never create merged
             // versions in their parent scope, causing the outer merge to miss coverage.
+            //
+            // Exit narrowings go first: the merge's implicit-else contribution reads
+            // the narrowed version, as it did when both ran while lowering the chain.
+            self.process_pending_exit_narrowings(scope_idx, &mut pending_exit_narrowings);
             self.process_pending_branch_merges(scope_idx, &mut pending_branch_merges);
 
             if frame.next_stmt >= statements.len() {
@@ -218,7 +241,10 @@ impl<'a> Analysis<'a> {
                 Statement::Do(group) => self.build_stmt_do(group, scope_idx, func_id, constructor_of, frame_is_conditional, &mut stack),
                 Statement::While(while_loop) => self.build_stmt_while(while_loop, scope_idx, func_id, constructor_of, &mut stack, &mut pending_while_narrowings),
                 Statement::Repeat(repeat_loop) => self.build_stmt_repeat(repeat_loop, scope_idx, func_id, constructor_of, frame_is_conditional, &mut stack),
-                Statement::If(if_chain) => self.build_stmt_if(if_chain, scope_idx, func_id, constructor_of, &mut stack, &mut pending_branch_merges),
+                Statement::If(if_chain) => {
+                    let exit = self.build_stmt_if(if_chain, scope_idx, func_id, constructor_of, &mut stack, &mut pending_branch_merges);
+                    pending_exit_narrowings.extend(exit);
+                }
                 Statement::ForCountLoop(for_loop) => self.build_stmt_for_count(for_loop, scope_idx, func_id, constructor_of, &mut stack),
                 Statement::ForInLoop(for_in) => self.build_stmt_for_in(for_in, scope_idx, func_id, constructor_of, &mut stack),
                 Statement::FunctionDefinition(func) => self.build_stmt_function_definition(func, scope_idx, func_id, stmt_index, &mut stack),
@@ -634,8 +660,11 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    fn build_stmt_if(&mut self, if_chain: &IfChain<'a>, scope_idx: ScopeIndex, func_id: Option<FunctionIndex>, constructor_of: Option<TableIndex>, stack: &mut Vec<Frame<'a>>, pending_branch_merges: &mut Vec<PendingBranchMerge>) {
+    /// Returns the chain's exit narrowing for the caller to apply once the branch
+    /// bodies pushed onto `stack` have been lowered.
+    fn build_stmt_if(&mut self, if_chain: &IfChain<'a>, scope_idx: ScopeIndex, func_id: Option<FunctionIndex>, constructor_of: Option<TableIndex>, stack: &mut Vec<Frame<'a>>, pending_branch_merges: &mut Vec<PendingBranchMerge>) -> Option<PendingExitNarrowing<'a>> {
         let branches = if_chain.if_branches();
+        let chain_end = node_range(if_chain.syntax()).1;
         // Pre-compute whether the else block always exits (calls error() or
         // returns). Conditions in a chain with a defensive exit-else are
         // suppressed from `redundant-condition` when they evaluate as
@@ -709,43 +738,21 @@ impl<'a> Analysis<'a> {
                     is_conditional: true,
                 });
             }
-        // Early-exit narrowing: for each prefix of branches that all
-        // always exit, apply inverse narrowing from their conditions.
-        // E.g. `if not x and c then return elseif not x then return end`
-        // narrows x as non-nil after the chain since both conditions were false.
-        let mut first_branch_exits = false;
-        let mut exiting_prefix_len = 0;
-        for (bi, branch) in branches.iter().enumerate() {
-            let Some(inner_block) = branch.block() else { break };
-            if !Self::block_always_exits(&inner_block) { break; }
-            if bi == 0 { first_branch_exits = true; }
-            exiting_prefix_len = bi + 1;
-            if let Some(cond) = branch.expression() {
-                let (if_start, if_end) = node_range(if_chain.syntax());
-                self.analyze_early_exit_guard(&cond, scope_idx, if_end);
-                if let Some((_, block_end)) = self.block_range_containing(scope_idx, if_start) {
-                    self.record_secret_guard(&cond, scope_idx, scope_idx, false, (if_end, block_end));
-                }
-            }
-        }
-        // Detect complementary early-exit guard pairs:
-        // `if a and not b then return` + `if not a and b then return`
-        // → a and b have correlated truthiness (both nil or both non-nil).
-        if exiting_prefix_len >= 2 {
-            self.detect_complementary_exit_guards(&branches[..exiting_prefix_len], scope_idx);
-        }
-        // Guard implications: `if A and not B then return` establishes
-        // `A ⟹ B is non-nil` for code reached past the guard.
-        if exiting_prefix_len >= 1 {
-            self.detect_guard_implications(&branches[..exiting_prefix_len], scope_idx);
-        }
-        // Ensure-initialized: `if not x.f then x.f = val end`
-        // Only for single-branch if without else.
-        if branches.len() == 1 && !has_else
-            && let Some(inner_block) = branches[0].block()
-                && let Some(cond) = branches[0].expression() {
-                    self.analyze_ensure_initialized(&cond, &inner_block, scope_idx);
-                }
+        // The prefix of branches that always exit: their conditions were all
+        // false for the code after the chain (applied by
+        // `process_pending_exit_narrowings`).
+        let exiting_prefix_len = branches.iter()
+            .take_while(|b| b.block().is_some_and(|blk| Self::block_always_exits(&blk)))
+            .count();
+        let first_branch_exits = exiting_prefix_len > 0;
+        let ensure_initialized = branches.len() == 1 && !has_else;
+        let exit_narrowing = (exiting_prefix_len > 0 || ensure_initialized).then_some(PendingExitNarrowing {
+            if_chain: *if_chain,
+            parent_scope: scope_idx,
+            exiting_prefix_len,
+            ensure_initialized,
+            creation_order: self.ir.next_creation_order,
+        });
         // Record for post-branch merge: when all branches assign/narrow
         // a variable, create a merged version in the parent scope.
         // For if-without-else (when the block doesn't always exit),
@@ -783,6 +790,7 @@ impl<'a> Analysis<'a> {
                         branch_scopes: non_exiting,
                         has_implicit_else: false,
                         implicit_else_strip_nil: Vec::new(),
+                        chain_end,
                     });
                 }
             } else {
@@ -792,6 +800,7 @@ impl<'a> Analysis<'a> {
                     branch_scopes,
                     has_implicit_else: false,
                     implicit_else_strip_nil: Vec::new(),
+                    chain_end,
                 });
             }
         } else if !first_branch_exits && !branch_scopes.is_empty() {
@@ -817,6 +826,7 @@ impl<'a> Analysis<'a> {
                 branch_scopes,
                 has_implicit_else: true,
                 implicit_else_strip_nil,
+                chain_end,
             });
         } else if first_branch_exits && exiting_prefix_len < branch_scopes.len() {
             // Some branches exit (early-exit guards already applied) but
@@ -831,7 +841,63 @@ impl<'a> Analysis<'a> {
                 branch_scopes: non_exiting,
                 has_implicit_else: true,
                 implicit_else_strip_nil: Vec::new(),
+                chain_end,
             });
+        }
+        exit_narrowing
+    }
+
+    /// Apply the exit narrowings of the if-chains in `scope_idx` whose branch
+    /// bodies have now been lowered. See `PendingExitNarrowing`.
+    fn process_pending_exit_narrowings(&mut self, scope_idx: ScopeIndex, pending: &mut Vec<PendingExitNarrowing<'a>>) {
+        let mut i = 0;
+        while i < pending.len() {
+            if pending[i].parent_scope != scope_idx {
+                i += 1;
+                continue;
+            }
+            let exit = pending.remove(i);
+            let branches = exit.if_chain.if_branches();
+            let exiting = &branches[..exit.exiting_prefix_len];
+            // Base the narrowing on the versions from before the branch bodies.
+            self.ir.set_hidden_versions(Some((exit.creation_order, self.ir.next_creation_order)));
+            let facts_before = self.narrowing.facts_in(scope_idx);
+            // Early-exit narrowing: for each prefix of branches that all
+            // always exit, apply inverse narrowing from their conditions.
+            // E.g. `if not x and c then return elseif not x then return end`
+            // narrows x as non-nil after the chain since both conditions were false.
+            let (if_start, if_end) = node_range(exit.if_chain.syntax());
+            for branch in exiting {
+                if let Some(cond) = branch.expression() {
+                    self.analyze_early_exit_guard(&cond, scope_idx);
+                    if let Some((_, block_end)) = self.block_range_containing(scope_idx, if_start) {
+                        self.record_secret_guard(&cond, scope_idx, scope_idx, false, (if_end, block_end));
+                    }
+                }
+            }
+            // Detect complementary early-exit guard pairs:
+            // `if a and not b then return` + `if not a and b then return`
+            // → a and b have correlated truthiness (both nil or both non-nil).
+            if exiting.len() >= 2 {
+                self.detect_complementary_exit_guards(exiting, scope_idx);
+            }
+            // Guard implications: `if A and not B then return` establishes
+            // `A ⟹ B is non-nil` for code reached past the guard.
+            if !exiting.is_empty() {
+                self.detect_guard_implications(exiting, scope_idx);
+            }
+            // Ensure-initialized: `if not x.f then x.f = val end`
+            // Only for single-branch if without else.
+            if exit.ensure_initialized
+                && let Some(inner_block) = branches[0].block()
+                && let Some(cond) = branches[0].expression()
+            {
+                self.analyze_ensure_initialized(&cond, &inner_block, scope_idx);
+            }
+            // Readers that run after analysis see every fact at once; scope them to
+            // the code after the chain.
+            self.narrowing.gate_new_facts(scope_idx, &facts_before, if_end);
+            self.ir.set_hidden_versions(None);
         }
     }
 
@@ -1594,6 +1660,7 @@ impl<'a> Analysis<'a> {
         // — `Expr::AssignNarrow` strips nil only when the recorded
         // RHS resolves to a non-nil type. Without the RHS expr id
         // (rare branches with no produced IR), no narrowing.
+        self.invalidate_and_field_derivations(names, scope_idx);
         let is_nil_literal = matches!(expression, Some(Expression::Literal(lit)) if lit.is_nil());
         if !is_nil_literal && let Some(rhs_id) = narrow_rhs_expr_id {
             self.record_field_assignment_narrow_rhs(names, scope_idx, rhs_id);
@@ -2327,10 +2394,7 @@ impl<'a> Analysis<'a> {
         if let Some(Expression::Function(func)) = expression {
             let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
             // Mark narrowing as overridden if this symbol has active narrowing
-            if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
-                || self.get_type_filtering(symbol_idx, scope_idx).is_some()
-                || self.is_symbol_narrowed(symbol_idx, scope_idx)
-                || self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
+            if self.has_active_narrowing(symbol_idx, scope_idx) {
                 self.narrowing.narrowing_overridden.entry(scope_idx).or_default()
                     .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
             }
@@ -2418,10 +2482,7 @@ impl<'a> Analysis<'a> {
             let stored_guard = expression.filter(|_| !is_conditional);
             self.record_stored_secret_guard(symbol_idx, scope_idx, stored_guard);
             // Mark narrowing as overridden if this symbol has active narrowing
-            if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
-                || self.get_type_filtering(symbol_idx, scope_idx).is_some()
-                || self.is_symbol_narrowed(symbol_idx, scope_idx)
-                || self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
+            if self.has_active_narrowing(symbol_idx, scope_idx) {
                 self.narrowing.narrowing_overridden.entry(scope_idx).or_default()
                     .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
             }
@@ -2804,6 +2865,14 @@ impl<'a> Analysis<'a> {
                         creation_order: order,
                         original_type_source: None,
                     });
+                    // A falsy-region fact here (`if x then return end` → x is nil or
+                    // false) doesn't survive a branch giving x a value. Other facts
+                    // are kept: the assigned values usually satisfy them
+                    // (`assert(type(x) == "string")` before `x = "y"`).
+                    if self.is_symbol_truthy_narrowed(*sym_idx, scope_idx) {
+                        self.narrowing.narrowing_overridden.entry(scope_idx).or_default()
+                            .entry(*sym_idx).and_modify(|v| *v = (*v).min(merge.chain_end)).or_insert(merge.chain_end);
+                    }
 
                     // In loop scopes, retroactively update SymbolRef expressions
                     // that still point to a pre-loop version. This makes the

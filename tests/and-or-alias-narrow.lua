@@ -51,3 +51,42 @@ end
 ---@param key string
 ---@return number
 function _aoUtil.GetPrice(key) return 1 end
+
+-- Regression: a local typed from a call whose inferred return only settles
+-- after a fixpoint stall (the callee is defined later and returns a narrowed
+-- local). The truthiness narrowings of the local — `not x`, the alias version
+-- restoring it after the `or` chain — must follow the initializer's final
+-- `number?` instead of keeping the `any` it had before that.
+local _arPriv = {}
+
+---@return number?
+local function _arRead() return nil end
+
+---@param have number
+local function restockNeeded(have)
+	local minRestock = _arPriv.GetMin()
+	local maxRestock = _arPriv.GetMax()
+	if not minRestock or not maxRestock or minRestock > maxRestock then
+--                                      ^ hover: (local) minRestock: number
+		return 0
+	end
+	return maxRestock - have
+--      ^ hover: (local) maxRestock: number
+end
+_consume(restockNeeded)
+
+function _arPriv.GetMin()
+	local value = _arRead()
+	if not value then
+		return nil, "invalid"
+	end
+	return value
+end
+
+function _arPriv.GetMax()
+	local value = _arRead()
+	if not value then
+		return nil, "invalid"
+	end
+	return value
+end

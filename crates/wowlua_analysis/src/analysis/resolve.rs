@@ -199,8 +199,10 @@ impl<'a> Analysis<'a> {
                     // partially resolved when the ref first resolves, so keep
                     // SymbolRefs volatile to track the target's improving type.
                     // This is critical for alias versions from push_alias_version
-                    // but applies to any cross-symbol `local y = x` too.
-                    let is_alias_ref = matches!(expr, Expr::SymbolRef(..));
+                    // but applies to any cross-symbol `local y = x` too — and to
+                    // the narrowing versions wrapping one (`if x then`), which
+                    // would otherwise keep a type derived from an early `any`.
+                    let is_alias_ref = self.reads_version(expr_id);
                     let is_volatile = is_branch_merge || is_volatile_binop || is_alias_ref;
                     if is_volatile
                         && let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
@@ -411,7 +413,10 @@ impl<'a> Analysis<'a> {
                             // Re-resolve call expressions (for call-site diagnostics) and
                             // OverloadNarrow expressions — plus StripNil/StripFalsy, which
                             // commonly wrap OverloadNarrow-backed SymbolRefs and would
-                            // otherwise hold onto stale pre-refinement types.
+                            // otherwise hold onto stale pre-refinement types. The other
+                            // narrowings of a version, and the aliases restoring it after
+                            // a narrowed `and` operand, go stale the same way once that
+                            // version is re-resolved.
                             if matches!(self.ir.exprs[expr_id.val()],
                                 Expr::FunctionCall { .. }
                                 | Expr::OverloadNarrow { .. }
@@ -419,7 +424,9 @@ impl<'a> Analysis<'a> {
                                 | Expr::StripFalsy(_)
                                 | Expr::AssignNarrow { .. }
                                 | Expr::BinaryOp { .. }
-                                | Expr::BranchMerge(_)) {
+                                | Expr::BranchMerge(_))
+                                || self.narrows_own_version(SymbolIndex(si), expr_id)
+                            {
                                 pending.push((SymbolIndex(si), vi));
                             }
                         }
@@ -428,6 +435,7 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        self.finalize_any_branch_merges();
         self.dedup_synthesized_return_overloads();
         // Order matters: deferred field assignments must run first so that
         // runtime fields (e.g. `self.display = CreateFrame(...)`) are visible
@@ -452,6 +460,83 @@ impl<'a> Analysis<'a> {
         }
         self.finalize_enum_kinds();
         self.populate_deferred_overlay();
+    }
+
+    /// Re-resolve branch merges once the fixpoint has settled, now counting an
+    /// `any` branch. During the fixpoint the BranchMerge arm skips `any` branches:
+    /// they are usually transient (a loop-carried self-reference, a forward call
+    /// still resolving), and keeping one would pin the merge at `any` for good. An
+    /// `any` still there now is the assigned value's real type, and skipping it
+    /// would leave `local x = nil; if c then x = anyValue end` typed `nil`. Versions
+    /// reading those merges are brought along, including aliases of another symbol
+    /// when this pass re-typed the version they read; merge branches and version
+    /// reads are only symbol reads, so this resolves no calls.
+    fn finalize_any_branch_merges(&mut self) {
+        self.any_branches_settled = true;
+        let mut retyped: HashSet<(SymbolIndex, usize)> = HashSet::default();
+        for _ in 0..4 {
+            let mut changed = false;
+            for si in 0..self.ir.symbols.len() {
+                for vi in 0..self.ir.symbols[si].versions.len() {
+                    let Some(ts) = self.ir.symbols[si].versions[vi].type_source else { continue };
+                    let refresh = match *self.expr(ts) {
+                        Expr::BranchMerge(_) => true,
+                        Expr::SymbolRef(s, v) if s.val() != si => retyped.contains(&(s, v)),
+                        _ => self.narrows_own_version(SymbolIndex(si), ts),
+                    };
+                    if !refresh { continue; }
+                    if let Some(slot) = self.resolved_expr_cache.get_mut(ts.val()) {
+                        *slot = None;
+                    }
+                    let fresh = self.resolve_expr(ts);
+                    if self.resolve_work_count >= Self::MAX_RESOLVE_WORK {
+                        self.any_branches_settled = false;
+                        return;
+                    }
+                    let ver = &mut self.ir.symbols[si].versions[vi];
+                    if fresh.is_some() && ver.resolved_type != fresh {
+                        ver.resolved_type = fresh;
+                        changed = true;
+                        retyped.insert((SymbolIndex(si), vi));
+                    }
+                }
+            }
+            if !changed { break; }
+        }
+        self.any_branches_settled = false;
+    }
+
+    /// True when `expr_id` is a narrowing whose operand resolved but which left
+    /// nothing (`strip_nil` of `nil`, a type guard stripping the whole type).
+    fn narrowing_emptied(&mut self, expr_id: ExprId) -> bool {
+        match *self.expr(expr_id) {
+            Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::CastRemove(inner, _) => {
+                self.resolve_expr(inner).is_some()
+            }
+            _ => false,
+        }
+    }
+
+    /// `reads_version` minus aliases of another symbol: the versions that only
+    /// re-type `sym`'s own value (a narrowing, or the alias restoring it after a
+    /// narrowed `and` operand). A cross-symbol alias (`self` in `function f:m()`)
+    /// is left to the volatile retain pass; `tests/overlay-param-reassign.lua`
+    /// relies on it keeping its early class type.
+    fn narrows_own_version(&self, sym: SymbolIndex, expr_id: ExprId) -> bool {
+        self.reads_version(expr_id)
+            && !matches!(self.expr(expr_id), Expr::SymbolRef(s, _) if *s != sym)
+    }
+
+    /// True when `expr_id` types a version purely from another version: an alias
+    /// (`SymbolRef`) or a narrowing wrapper around one.
+    fn reads_version(&self, expr_id: ExprId) -> bool {
+        let inner = match self.expr(expr_id) {
+            Expr::SymbolRef(..) => return true,
+            Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::StripTruthy(inner)
+            | Expr::CastAdd(inner, _) | Expr::CastRemove(inner, _) | Expr::TypeFilter(inner, _) => *inner,
+            _ => return false,
+        };
+        matches!(self.expr(inner), Expr::SymbolRef(..))
     }
 
     /// Re-resolve symbols whose type stayed unknown through the fixpoint because
@@ -3411,7 +3496,7 @@ impl<'a> Analysis<'a> {
             Expr::CastRemove(inner, cast_type) => {
                 let inner = *inner;
                 let cast_type = cast_type.clone();
-                return self.resolve_expr(inner).map(|vt| vt.strip_type_with(&cast_type, &|idx| self.table(idx).enum_kind));
+                return self.resolve_expr(inner).and_then(|vt| vt.strip_type_narrowed(&cast_type, &|idx| self.table(idx).enum_kind));
             }
             Expr::TypeFilter(inner, guard_type) => {
                 let inner = *inner;
@@ -3444,6 +3529,10 @@ impl<'a> Analysis<'a> {
                         // Tracked separately from has_any so that permanently
                         // unresolvable branches don't get the same treatment
                         // as forward-ref Any.
+                        // A narrowing that stripped every member (the implicit
+                        // else of `if type(x) == "number"` on a `number`) is a
+                        // path that can't happen, not an unknown value: skip it.
+                        None if self.narrowing_emptied(eid) => {}
                         None => { has_none = true; }
                     }
                 }
@@ -3452,13 +3541,15 @@ impl<'a> Analysis<'a> {
                     // least one branch produced Any (so the merge doesn't
                     // block the fixpoint), otherwise None.
                     if has_any || has_none { Some(ValueType::Any) } else { None }
-                } else if has_none && types.iter().all(|t| matches!(t, ValueType::Nil)) {
+                } else if (has_none || (has_any && self.any_branches_settled)) && types.iter().all(|t| matches!(t, ValueType::Nil)) {
                     // All resolved branches contribute only Nil (typically
                     // the implicit-else path from `local x = nil; if cond
                     // then x = f() end`). The None branch represents a real
                     // assignment whose type couldn't be determined — returning
                     // just Nil would be a false narrowing (triggering
                     // false-positive redundant-condition on `if x then`).
+                    // An Any branch only counts once the fixpoint has settled
+                    // (`finalize_any_branch_merges`).
                     // Note: this is narrow — a `local x = false` init would
                     // contribute Boolean (not Nil) and wouldn't hit this
                     // guard. That case doesn't cause a false positive though,

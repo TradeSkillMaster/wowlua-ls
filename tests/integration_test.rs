@@ -3145,6 +3145,15 @@ fn and_or_alias_narrow() {
 }
 
 #[test]
+fn early_exit_narrow_scope() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/early-exit-narrow-scope.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn structural_subtype() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/structural-subtype.lua",

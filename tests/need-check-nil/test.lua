@@ -2788,3 +2788,24 @@ local function neqNonNilEarlyExit(a, b)
     --          ^ diag: need-check-nil
 end
 _consume(neqNonNilEarlyExit)
+
+-- ── Guard, reassignment, then a falsy region ─────────────────────────────
+-- The guard before the reassignment no longer applies: inside `if not t then`
+-- the reassigned `t` is nil.
+
+---@class NilCheckNode
+---@field a number
+
+---@return NilCheckNode?
+local function maybeNilCheckNode() end
+
+local function reassignThenFalsyRegion()
+    local t = maybeNilCheckNode()
+    if t == nil then return end
+    t = maybeNilCheckNode()
+    if not t then
+        return t.a
+        --     ^ hover: (local) t: NilCheckNode?  diag: need-check-nil
+    end
+end
+_consume(reassignThenFalsyRegion)

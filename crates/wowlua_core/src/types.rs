@@ -773,6 +773,26 @@ impl ValueType {
         }
     }
 
+    /// `strip_type_with` for a narrowed value: `None` when a type guard strips
+    /// every member of a type that couldn't be nil (`if type(x) ~= "number"` on a
+    /// `number`). That region is unreachable by the declared type, so the value
+    /// there is unknown — like an emptied `strip_nil`/`strip_falsy` narrowing —
+    /// rather than the `nil` sentinel, which would flag the defensive code inside.
+    /// Excluding every listed literal (`x == "A"` guards exhausting `"A"|"B"`)
+    /// keeps the sentinel.
+    pub fn strip_type_narrowed(&self, target: &ValueType, enum_kind_of: &impl Fn(TableIndex) -> EnumKind) -> Option<ValueType> {
+        fn is_literal(t: &ValueType) -> bool {
+            match t {
+                ValueType::String(Some(_)) | ValueType::Boolean(Some(_)) | ValueType::NumberLiteral(_) => true,
+                ValueType::Union(members) => members.iter().all(is_literal),
+                _ => false,
+            }
+        }
+        let stripped = self.strip_type_with(target, enum_kind_of);
+        let emptied = stripped == ValueType::Nil && !self.contains_nil();
+        (!emptied || is_literal(target)).then_some(stripped)
+    }
+
     /// Keep only types from a union that match a type guard (e.g. `type(x) == "table"`).
     /// Uses `matches_type_guard` so `Table(None)` keeps all `Table(...)` variants.
     /// Enum-aware: number enums match `Number`, string enums match `String(None)`.
