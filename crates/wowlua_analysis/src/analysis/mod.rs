@@ -742,6 +742,15 @@ pub struct Ir {
     /// the strict counterpart of the lenient `@type`/assignment contexts, which
     /// keep the construct-then-Mixin idiom working.
     pub tc_arg_constructors: crate::collections::HashSet<TableIndex>,
+    /// Table constructor → the `@class` table its fields were merged into
+    /// (`---@class Foo` / `local Foo = { … }`), recorded by
+    /// `merge_runtime_fields_into_class`. Find-references/rename use it to tie a
+    /// constructor key to the class field it defines.
+    pub ctor_merged_class: HashMap<TableIndex, TableIndex>,
+    /// Start offset of a `---@field` comment → the local class table it declares
+    /// a field on. Find-references/rename use it to treat the annotation's name
+    /// as a reference to that field.
+    pub field_annotation_owner: HashMap<u32, TableIndex>,
     /// `(class table, field name)` pairs for placeholder-`Any` class fields that
     /// were *synthesized from a table-constructor value* the annotation scan
     /// couldn't type (e.g. `---@class C` / `local c = { x = OTHER.field }`), as
@@ -3181,6 +3190,8 @@ impl<'a> Analysis<'a> {
                 synthesized_overload_funcs: HashSet::default(),
                 tc_expected_class: HashMap::default(),
                 tc_arg_constructors: crate::collections::HashSet::default(),
+                ctor_merged_class: HashMap::default(),
+                field_annotation_owner: HashMap::default(),
                 ctor_inferred_any_fields: crate::collections::HashSet::default(),
                 pending_bracket_assigns: Vec::new(),
                 overlay: HashMap::default(),

@@ -1183,35 +1183,43 @@ impl AnalysisResult {
             }
             TokenAtOffset::None => return None,
         };
-        if token.kind() != SyntaxKind::Name {
-            return None;
-        }
-        // Field names in constructors are wrapped: Field > Identifier > Name
-        let parent = token.parent()?;
-        let field_node = if parent.kind() .is_identifier() {
-            let grandparent = parent.parent()?;
-            if grandparent.kind() != SyntaxKind::Field { return None; }
-            grandparent
-        } else if parent.kind() == SyntaxKind::Field {
-            parent
-        } else {
-            return None;
-        };
-        // Check this is a named field (has an = sign)
-        let has_assign = field_node.children_with_tokens().any(|n| {
-            matches!(n, NodeOrToken::Token(ref t) if t.kind() == SyntaxKind::Assign)
-        });
-        if !has_assign {
-            return None;
-        }
+        let table_idx = self.constructor_key_table(token)?;
         let field_name = token.text().to_string();
-        // Walk ancestors to find the TableConstructor
-        let tc_node = field_node.ancestors().find(|n| n.kind() == SyntaxKind::TableConstructor)?;
-        let r = tc_node.text_range();
-        let key = (u32::from(r.start()), u32::from(r.end()));
-        let table_idx = self.ir.table_ranges.get(&key)?;
-        let field_info = self.get_field(*table_idx, &field_name)?.clone();
+        let field_info = self.get_field(table_idx, &field_name)?.clone();
         Some((field_name, field_info))
+    }
+
+    /// True when `token` is the key of a named table-constructor field (`Foo`
+    /// in `{ Foo = true }`). The parser emits only that key as a bare `Name`
+    /// directly under `Field`; values and `[expr]` keys are wrapped in
+    /// expression nodes (`{ Foo = Bar }`'s `Bar` is `Field > NameRef > Name`).
+    pub(super) fn is_constructor_key(token: &SyntaxToken<'_>) -> bool {
+        token.kind() == SyntaxKind::Name
+            && token.parent().is_some_and(|p| p.kind() == SyntaxKind::Field)
+    }
+
+    /// The table built by the constructor whose named-field key is `token`.
+    pub(super) fn constructor_key_table(&self, token: SyntaxToken<'_>) -> Option<TableIndex> {
+        if !Self::is_constructor_key(&token) {
+            return None;
+        }
+        let tc_node = token.parent()?.parent().filter(|n| n.kind() == SyntaxKind::TableConstructor)?;
+        let r = tc_node.text_range();
+        self.ir.table_ranges.get(&(u32::from(r.start()), u32::from(r.end()))).copied()
+    }
+
+    /// Every table whose field the constructor key `token` defines, most specific
+    /// first: the `@class` the constructor was merged into, expected classes
+    /// (`@type`, typed parameters) declaring the field, then the constructor's
+    /// own table. Empty when `token` isn't a constructor key.
+    pub(super) fn constructor_key_owners(&self, token: SyntaxToken<'_>) -> Vec<TableIndex> {
+        let Some(ctor_idx) = self.constructor_key_table(token) else { return Vec::new() };
+        let mut owners: Vec<TableIndex> = self.ir.ctor_merged_class.get(&ctor_idx).copied().into_iter().collect();
+        if let Some(expected) = self.ir.tc_expected_class.get(&ctor_idx) {
+            owners.extend(expected.iter().copied().filter(|&c| self.get_field(c, token.text()).is_some()));
+        }
+        owners.push(ctor_idx);
+        owners
     }
 
     /// Find the version whose `def_node` range contains `token_start`.

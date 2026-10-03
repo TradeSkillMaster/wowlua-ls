@@ -279,6 +279,11 @@ impl<'a> Analysis<'a> {
                         Self::resolve_fun_text_from_alias(annotation_type, &fun_alias_types, &self.ir.ext.alias_fun_types)
                     });
                     let def_range = class.field_ranges.get(field_name.as_str()).copied();
+                    if let Some((start, _)) = def_range
+                        && class.declared_field_names.contains(field_name)
+                    {
+                        self.ir.field_annotation_owner.insert(start, table_idx);
+                    }
                     let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                     // Store literal from enriched constructor fields for enum hover display
                     if let Some(val) = class.field_literals.get(field_name) {
@@ -313,6 +318,11 @@ impl<'a> Analysis<'a> {
                     let class_tps = &self.ir.tables[table_idx.val()].class_type_params;
                     if !class_tps.is_empty() && crate::pre_globals::annotation_type_references_type_params(annotation_type, class_tps) {
                         let def_range = class.field_ranges.get(field_name.as_str()).copied();
+                        if let Some((start, _)) = def_range
+                            && class.declared_field_names.contains(field_name)
+                        {
+                            self.ir.field_annotation_owner.insert(start, table_idx);
+                        }
                         let expr_id = self.ir.push_expr(Expr::Literal(ValueType::Nil));
                         self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_id,

@@ -1410,6 +1410,21 @@ fn crossfile_references() {
     // promotes a local @class table to its EXT_BASE+ counterpart.
     assert!(refs.contains(&("defs".into(), 8, 26)),
         "cross-file name search should hit defs self.name access: {:?}", refs);
+    // The `---@field name string` declaration in defs (line 4 col 11) is renamed
+    // with the field, and a rename can start there.
+    assert!(refs.contains(&("defs".into(), 4, 11)),
+        "cross-file name search should hit the defs @field name: {:?}", refs);
+    let field_ann_offset = types::position_to_offset(&defs_text, 3, 10);
+    let (_, ann_name) = defs_result.prepare_rename_at(&defs_tree, field_ann_offset)
+        .expect("@field name should be renameable");
+    assert_eq!(ann_name, "name");
+    let target = defs_result.reference_target_at(&defs_tree, field_ann_offset)
+        .expect("expected a reference target at the @field name");
+    let search_target = defs_result.promote_to_cross_file(&target)
+        .expect("@field of a @class should promote to cross-file");
+    assert_eq!(find_refs(&search_target), refs);
+    // It's the declaration: dropped when the declaration isn't requested.
+    assert!(!collect(&search_target, false, false).contains(&("defs".into(), 4, 11)));
 
     // Union-receiver regression: find-references on `RefUnionB:Shared` (the SECOND
     // member of the `RefUnionA|RefUnionB` union at the `u:Shared()` call site). The
@@ -1431,6 +1446,23 @@ fn crossfile_references() {
     // The def site itself is still reported.
     assert!(refs.contains(&("defs".into(), 30, 20)),
         "find-references on RefUnionB:Shared must include its definition: {:?}", refs);
+
+    // A `@class` field defined by its constructor key (`{ label = "x" }`, line 37
+    // col 24) is renameable there, and both ends reach each other cross-file.
+    let key_offset = types::position_to_offset(&defs_text, 36, 23);
+    let (_, key_name) = defs_result.prepare_rename_at(&defs_tree, key_offset)
+        .expect("constructor key should be renameable");
+    assert_eq!(key_name, "label");
+    let target = defs_result.reference_target_at(&defs_tree, key_offset)
+        .expect("expected a reference target at the constructor key");
+    let search_target = defs_result.promote_to_cross_file(&target)
+        .expect("constructor key of a @class should promote to cross-file");
+    let expected = vec![("defs".to_string(), 37, 24), ("user".to_string(), 24, 19)];
+    assert_eq!(find_refs(&search_target), expected);
+    let use_offset = types::position_to_offset(&user_text, 23, 18);
+    let target = user_result.reference_target_at(&user_tree, use_offset)
+        .expect("expected a reference target at ctorObj.label");
+    assert_eq!(find_refs(&target), expected);
 }
 
 #[test]
@@ -6678,10 +6710,11 @@ fn quick_fix_fill_missing_fields_multiline_table() {
     assert!(brace_line > 0, "closing brace should not be on the first line");
 }
 
-/// Regression test for a fuzz-discovered timeout: garbled Lua with deeply
-/// nested braces and repeated function patterns caused resolve_types() to
-/// perform exponential work. The resolve_expr work limit must terminate
-/// analysis and emit a safety-limit diagnostic.
+/// Regression test for a fuzz-discovered timeout: garbled Lua nesting unclosed
+/// `local a, b = f(function() ...` calls. Each extra assignment target used to
+/// lower the call's arguments again, closure bodies included, so every nesting
+/// level doubled the IR until resolve_types() hit its work limit. The arguments
+/// are now lowered once, so the input analyzes without hitting a safety limit.
 #[test]
 fn fuzz_resolve_work_limit() {
     // The fuzz input triggers deep recursion in lower_expression (nested table
@@ -6703,7 +6736,7 @@ fn fuzz_resolve_work_limit() {
         .unwrap()
         .join()
         .unwrap();
-    assert!(result, "expected safety-limit diagnostic for pathological input");
+    assert!(!result, "nested multi-target calls should not exhaust a safety limit");
 }
 
 fn analyze_source(src: &str) -> (SyntaxTree, AnalysisResult) {

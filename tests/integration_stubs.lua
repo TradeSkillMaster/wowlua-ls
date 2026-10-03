@@ -1404,10 +1404,12 @@ local _entranceLen = _entrancePos:GetLength()
 -- When `vector2` was unresolvable, that return was dropped and the function looked
 -- like it returned a single value, so `local a, b = C_Map.GetWorldPosFromMapPos(...)`
 -- false-positived as unbalanced-assignments. Exhaustive diag checking asserts that
--- diagnostic's absence; the hovers pin the recovered second return type.
+-- diagnostic's absence; the hovers pin the recovered second return type. The plain
+-- table argument draws missing-fields exactly as it does with a single target.
 local _continentID, _worldPos = C_Map.GetWorldPosFromMapPos(84, { x = 0.5, y = 0.5 })
 --    ^ hover: (local) _continentID: number
 --                  ^ hover: (local) _worldPos: Vector2DMixin
+--                                                              ^ diag: missing-fields
 
 -- ── UiMapPoint static factories return the nominal UiMapPoint (not an anon shape) ──
 -- Regression: UiMapPoint.CreateFrom* are un-annotated FrameXML factories, so return

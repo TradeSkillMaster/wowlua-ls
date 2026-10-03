@@ -72,3 +72,11 @@ for k, v in pairs(tbl) do
     --          ^ linked: 70:5, 71:17
     --              ^ linked: 70:8, 71:21
 end
+
+-- A constructor key or dotted field named like a local is a field, not the local
+local key = 1
+local keyTable = { key = key }
+--                 ^ linked: none
+--                       ^ linked: 77:7, 78:26
+keyTable.key = 2
+--       ^ linked: none

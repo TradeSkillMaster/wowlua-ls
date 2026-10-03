@@ -1462,12 +1462,9 @@ fn flush_group(
     if let Some(class_name) = block.class {
         let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::default();
         for (text, start, end) in lines {
-            let content = text.strip_prefix("---@").or_else(|| text.strip_prefix("--- @"));
-            if let Some(content) = content
-                && let Some(rest) = content.strip_prefix("field")
-                    && let Some((_, name, _, _)) = parse_field_header(rest) {
-                        field_ranges.insert(name.to_string(), (*start, *end));
-                    }
+            if let Some((name, _)) = field_comment_name(text) {
+                field_ranges.insert(name.to_string(), (*start, *end));
+            }
         }
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
@@ -1590,6 +1587,15 @@ fn parse_event_batch_line(s: &str) -> Option<(String, Vec<crate::pre_globals::Ev
 /// never appear in a field name; bracketed/quoted keys (`[K]`) are exempt.
 pub fn field_name_is_type(name: &str) -> bool {
     !name.starts_with(['[', '"', '\'']) && name.contains(['(', '<', '{', '|'])
+}
+
+/// The field a `---@field` comment line declares: its name (without the `?`) and
+/// the name's byte offset in `comment`. The class scan keys `field_ranges` by this
+/// name, and rename rewrites exactly this slice of the comment.
+pub fn field_comment_name(comment: &str) -> Option<(&str, usize)> {
+    let content = comment.strip_prefix("---@").or_else(|| comment.strip_prefix("--- @"))?;
+    let (_, name, _, _) = parse_field_header(content.strip_prefix("field")?)?;
+    Some((name, name.as_ptr() as usize - comment.as_ptr() as usize))
 }
 
 /// Parse the header of an `@field` annotation: visibility, field name, and remaining type text.

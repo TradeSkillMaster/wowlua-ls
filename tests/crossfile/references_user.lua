@@ -17,3 +17,9 @@ end
 local function useUnion(u)
     u:Shared()
 end
+
+---@type RefCtorClass
+local ctorObj = nil
+if ctorObj then
+    print(ctorObj.label)
+end

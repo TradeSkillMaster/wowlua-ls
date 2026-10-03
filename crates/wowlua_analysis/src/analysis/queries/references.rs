@@ -54,6 +54,12 @@ impl AnalysisResult {
         if let Some((table_idx, field_name, _, _, _)) = self.resolve_field_chain_at(tree, offset) {
             return Some(ReferenceTarget::Field { table_idx, field_name });
         }
+        // A table-constructor key (`Foo` in `{ Foo = true }`) is a field definition.
+        if let Some(token) = SyntaxNode::new_root(tree).token_at_offset(TextSize::from(offset)).right_biased()
+            && let Some(&table_idx) = self.constructor_key_owners(token).first()
+        {
+            return Some(ReferenceTarget::Field { table_idx, field_name: token.text().to_string() });
+        }
         // For a field-position token that didn't resolve (e.g. unknown receiver), still
         // refuse to fall back to symbol lookup — that would re-introduce the bug where
         // `f:Add()` matches an unrelated `_G.Add`.
@@ -64,6 +70,8 @@ impl AnalysisResult {
             Some(ReferenceTarget::Symbol { idx: symbol_idx, name })
         } else if let Some((sym_idx, name, _)) = self.find_param_in_annotation_at(tree, offset) {
             Some(ReferenceTarget::Symbol { idx: sym_idx, name })
+        } else if let Some((table_idx, field_name, _)) = self.find_field_in_annotation_at(tree, offset) {
+            Some(ReferenceTarget::Field { table_idx, field_name })
         } else {
             None
         }
@@ -274,12 +282,15 @@ impl AnalysisResult {
                         continue;
                     }
                     // Skip tokens that are field/method names (preceded by `.` or `:`
-                    // in the parent identifier-like node). Covers both DotAccess
+                    // in the parent identifier-like node, or a table-constructor key
+                    // like `Foo` in `{ Foo = 1 }`). Covers both DotAccess
                     // (`Foo:Add` in `function Foo:Add()`) and MethodCall (`f:Add()`),
                     // where the position-based check on direct Name siblings would
                     // miss the latter. Shared with `is_field_position` so any future
                     // extension (new syntax kinds, etc.) stays in lockstep.
-                    if Self::is_field_position(tree, u32::from(token.text_range().start())) {
+                    if Self::is_field_position(tree, u32::from(token.text_range().start()))
+                        || Self::is_constructor_key(&token)
+                    {
                         continue;
                     }
                     let text_size = token.text_range().start();
@@ -400,10 +411,27 @@ impl AnalysisResult {
                 // resolved table may be a parent class of the target, or vice versa).
                 let mut results = Vec::new();
                 for token in SyntaxNode::new_root(tree).descendants_with_tokens().filter_map(|it| it.into_token()) {
+                    // A `---@field` line naming the field is its declaration.
+                    if token.kind() == SyntaxKind::Comment {
+                        if include_declaration
+                            && let Some((owner, name, range)) = self.field_annotation_decl(&token)
+                            && name == field_name.as_str()
+                            && self.resolved_table_matches_target(table_idx, owner)
+                        {
+                            results.push(range);
+                        }
+                        continue;
+                    }
                     if token.kind() != SyntaxKind::Name || token.text() != field_name.as_str() {
                         continue;
                     }
-                    if let Some((resolved_table, _, _, _, receiver_tables)) = self.resolve_field_chain_for_token(token) {
+                    if Self::is_constructor_key(&token) {
+                        if self.constructor_key_owners(token).into_iter()
+                            .any(|owner| self.resolved_table_matches_target(table_idx, owner))
+                        {
+                            results.push(token.text_range());
+                        }
+                    } else if let Some((resolved_table, _, _, _, receiver_tables)) = self.resolve_field_chain_for_token(token) {
                         // For a union receiver (`A | B`, both defining the method), the
                         // chain resolver returns only the first member as `resolved_table`;
                         // the 5th element holds every receiver member. Check the field owner
@@ -634,6 +662,30 @@ impl AnalysisResult {
             return None;
         }
         None
+    }
+
+    /// The `(class table, field name, name range)` a `---@field` comment token
+    /// declares, or `None` for any other token.
+    pub(super) fn field_annotation_decl<'t>(&self, token: &SyntaxToken<'t>) -> Option<(TableIndex, &'t str, TextRange)> {
+        if token.kind() != SyntaxKind::Comment {
+            return None;
+        }
+        let token_start = u32::from(token.text_range().start());
+        let owner = *self.ir.field_annotation_owner.get(&token_start)?;
+        let (name, offset) = crate::annotations::field_comment_name(token.text())?;
+        let start = token_start + offset as u32;
+        Some((owner, name, TextRange::new(TextSize::from(start), TextSize::from(start + name.len() as u32))))
+    }
+
+    /// If the cursor is on the name in a `---@field` annotation, return the class
+    /// table declaring it, the field name, and the name's range — rename-from-annotation.
+    pub fn find_field_in_annotation_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(TableIndex, String, TextRange)> {
+        let token = SyntaxNode::new_root(tree).token_at_offset(TextSize::from(offset)).right_biased()?;
+        let (owner, name, range) = self.field_annotation_decl(&token)?;
+        if offset < u32::from(range.start()) || offset > u32::from(range.end()) {
+            return None;
+        }
+        Some((owner, name.to_string(), range))
     }
 
     pub(super) fn def_name_token_offset(&self, tree: &SyntaxTree, def_start: u32, def_end: u32, name: &str) -> Option<u32> {

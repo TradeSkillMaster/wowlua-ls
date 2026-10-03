@@ -313,6 +313,8 @@ impl<'a> Analysis<'a> {
 
         // Collect multi-return siblings for return-only overload narrowing
         let mut multi_return_group: Vec<(usize, SymbolIndex)> = Vec::new();
+        // The last expression as lowered, whose later return values fill any extra names
+        let mut last_call: Option<ExprId> = None;
 
         for (index, name) in names.iter().enumerate() {
             let expression = expressions.get(index);
@@ -340,12 +342,12 @@ impl<'a> Analysis<'a> {
                 // Non-function: lower RHS BEFORE insert_symbol so that
                 // `local x = x + 1` resolves the old `x`, not the new one
                 let type_source = if let Some(expr) = expression {
-                    if let Some(n) = crate::annotations::is_select_varargs(expr) {
+                    match crate::annotations::is_select_varargs(expr) {
                         // select(2, ...) → treat as addon namespace table, but
                         // only at file scope where `...` is WoW's
                         // (addonName, addonTable) vararg. Inside a function,
                         // `...` is the function's own varargs, so lower normally.
-                        if n == 2 && func_id.is_none() {
+                        Some(2) if func_id.is_none() => {
                             let table_idx = self.ir.tables.len();
                             let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                                 self.ir.ext.table(addon_idx).fields.clone()
@@ -354,21 +356,26 @@ impl<'a> Analysis<'a> {
                             };
                             self.ir.tables.push(TableInfo { fields, ..Default::default() });
                             Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
-                        } else if n == 1 {
+                        }
+                        Some(1) => {
                             let eid = self.ir.push_expr(Expr::VarArgs(0, func_id.is_none()));
                             self.ir.varargs_scope.insert(eid, scope_idx);
                             Some(eid)
-                        } else {
-                            Some(self.lower_expression(expr, scope_idx))
                         }
-                    } else {
-                        Some(self.lower_expression(expr, scope_idx))
+                        _ => {
+                            let (expr_id, original) = self.lower_expression_with_original(expr, scope_idx);
+                            if index + 1 == expressions.len() {
+                                last_call = Some(original.unwrap_or(expr_id));
+                            }
+                            Some(expr_id)
+                        }
                     }
                 } else if let Some(Expression::FunctionCall(call)) = expressions.last() {
                     if index >= expressions.len() {
                         // Multi-return: this name gets a later return value
                         let ret_index = index - (expressions.len() - 1);
-                        Some(self.lower_function_call(call, scope_idx, ret_index, false))
+                        Some(last_call.and_then(|id| self.call_return_slot(id, ret_index))
+                            .unwrap_or_else(|| self.lower_function_call(call, scope_idx, ret_index, false)))
                     } else {
                         None
                     }
@@ -1294,8 +1301,10 @@ impl<'a> Analysis<'a> {
             if let Some(expr_list) = ret.expression_list() {
                 let node = DefNode::from_node(ret.syntax());
                 let expressions = expr_list.expressions();
+                let mut last_call = None;
                 for (index, expr) in expressions.iter().enumerate() {
                     let (expr_id, original_expr_id) = self.lower_expression_with_original(expr, scope_idx);
+                    last_call = Some(original_expr_id.unwrap_or(expr_id));
                     let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                     // When @as overrides the return expression, preserve the
                     // pre-cast SymbolRef in original_type_source so the
@@ -1316,7 +1325,8 @@ impl<'a> Analysis<'a> {
                     if let Some(Expression::FunctionCall(call)) = expressions.last() {
                         for index in expressions.len()..expected_count {
                             let ret_index = index - (expressions.len() - 1);
-                            let expr_id = self.lower_function_call(call, scope_idx, ret_index, false);
+                            let expr_id = last_call.and_then(|id| self.call_return_slot(id, ret_index))
+                                .unwrap_or_else(|| self.lower_function_call(call, scope_idx, ret_index, false));
                             let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                             self.ir.set_type_source(symbol_idx, expr_id);
                             let func = self.ir.functions.get_mut(func_id.val()).unwrap();
@@ -2211,6 +2221,18 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Return value `ret_index` of the already-lowered call `call_id`, sharing its
+    /// callee and argument exprs. Filling extra assignment targets or return slots
+    /// this way lowers the arguments (table constructors, closures) only once, so
+    /// each has a single table/function that position-based queries agree on.
+    /// `None` if `call_id` isn't a call.
+    fn call_return_slot(&mut self, call_id: ExprId, ret_index: usize) -> Option<ExprId> {
+        let Expr::FunctionCall { func, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(call_id).clone() else {
+            return None;
+        };
+        Some(self.ir.push_expr(Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded, is_method_call }))
+    }
+
     /// Lower a multi-return field assignment (`t.a, t.b = f()`): reuses the cached
     /// call's args at the appropriate return index and registers the field, typed
     /// by the target's position in a `---@type T1, T2` list.
@@ -2229,11 +2251,9 @@ impl<'a> Analysis<'a> {
         // update the field type so it reflects the function's @return types.
         if let Some(Expression::FunctionCall(_)) = expressions.last() {
             let ret_index = index - (expressions.len() - 1);
-            if let Some(cached_id) = *cached_multi_ret_call
-                && let Expr::FunctionCall { func: f, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
-                    let expr_id = self.ir.push_expr(Expr::FunctionCall { func: f, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
-                    if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
-                        && names.len() <= 2 {
+            if let Some(expr_id) = cached_multi_ret_call.and_then(|id| self.call_return_slot(id, ret_index))
+                && let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
+                    && names.len() <= 2 {
                             let raw = trailing_types.get(index).or_else(|| annotations.var_type_at(index)).cloned();
                             let annotation = raw.as_ref().and_then(|at| self.resolve_annotation_type_mut_gen(at, &[]));
                             // Like `build_field_value`, keep the text only for a resolved annotation.
@@ -2270,7 +2290,6 @@ impl<'a> Analysis<'a> {
                                 Self::annotate_written_field(overlay_fi, annotation, text, raw, lateinit);
                             }
                         }
-                }
         }
     }
 
@@ -2433,16 +2452,7 @@ impl<'a> Analysis<'a> {
                 if index >= expressions.len() {
                     let ret_index = index - (expressions.len() - 1);
                     // Reuse the cached call's args instead of re-lowering
-                    if let Some(cached_id) = *cached_multi_ret_call {
-                        if let Expr::FunctionCall { func, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
-                            let expr_id = self.ir.push_expr(Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
-                            Some(expr_id)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
+                    cached_multi_ret_call.and_then(|id| self.call_return_slot(id, ret_index))
                 } else {
                     None
                 }
@@ -2577,6 +2587,7 @@ impl<'a> Analysis<'a> {
         {
             return;
         }
+        self.ir.ctor_merged_class.insert(rhs_table_idx, class_table_idx);
         let is_enum = self.ir.tables[class_table_idx.val()].enum_kind.is_enum();
         let runtime_fields: Vec<(String, FieldInfo)> =
             self.ir.tables[rhs_table_idx.val()].fields.iter()

@@ -62,9 +62,10 @@ impl AnalysisResult {
                 Expr::FunctionCall { call_range, .. } => *call_range,
                 _ => continue,
             };
-            // Multi-return expansion re-lowers the same source call multiple times,
-            // creating duplicate call_resolutions entries with identical call_range.
-            // Skip duplicates to avoid emitting repeated parameter hints.
+            // Multi-return expansion gives each return slot its own FunctionCall
+            // expr for the same source call, which can leave several call_resolutions
+            // entries with identical call_range. Skip duplicates to avoid emitting
+            // repeated parameter hints.
             if !seen_call_ranges.insert(call_range) {
                 continue;
             }

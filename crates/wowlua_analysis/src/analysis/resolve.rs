@@ -2333,9 +2333,9 @@ impl<'a> Analysis<'a> {
     /// Find generic substitution bindings by tracing from an OverloadNarrow's
     /// inner SymbolRef back to its FunctionCall type_source, then looking up
     /// the CallResolution's generic_subs. This handles the case where each
-    /// multi-return slot has its own FunctionCall ExprId (with different func
-    /// ExprIds due to re-lowering), so the `call_site_generic_subs` cache keyed
-    /// by func_expr may not contain the right entry.
+    /// multi-return slot has its own FunctionCall ExprId, so the
+    /// `call_site_generic_subs` cache keyed by func_expr may not contain the
+    /// right entry.
     ///
     /// `func_expr` is the OverloadNarrow's own callee expression. It is used to
     /// disambiguate *which* call's binding to read: a position-0 sibling symbol
@@ -2393,7 +2393,7 @@ impl<'a> Analysis<'a> {
         // Fallback (no sibling FunctionCall matched func_expr): the original
         // first-non-empty reverse scan. func_expr is derived from sibling 0's
         // most-recent call at narrowing time, so this is effectively unreachable
-        // — kept defensively for re-lowering edge cases.
+        // — kept defensively.
         for candidate in candidates {
             if candidate.is_external() { continue; }
             for v in self.ir.symbols[candidate.val()].versions.iter().rev() {
@@ -4680,3 +4680,21 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The resolve-work cap is the backstop that bounds analysis of pathological
+    /// input: crossing it stops resolution and reports `safety-limit`.
+    #[test]
+    fn resolve_work_limit_reports_safety_limit() {
+        let tree = crate::syntax::parser::Parser::new("local a = 1\nlocal b = a + 1\n").parse();
+        let pre_globals = std::sync::Arc::new(crate::pre_globals::PreResolvedGlobals::empty());
+        let mut analysis = Analysis::new_with_tree(&tree, pre_globals, crate::analysis::AnalysisConfig::default());
+        analysis.resolve_work_count = Analysis::MAX_RESOLVE_WORK - 1;
+        analysis.resolve_types();
+        let diags = analysis.into_result().run_diagnostics(&tree);
+        assert!(diags.iter().any(|d| d.code == "safety-limit"));
+    }
+}

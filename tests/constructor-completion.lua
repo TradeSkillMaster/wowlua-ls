@@ -73,3 +73,17 @@ local widget = {
     w
 --  ^ comp: width, onClick
 }
+
+-- ── Case 7: argument of a call whose returns fill several locals ────────────
+
+---@param data CCItem
+---@return boolean, string
+local function splitItem(data)
+    return true, ""
+end
+
+---@diagnostic disable-next-line: type-mismatch
+local splitOk, splitMsg = splitItem({
+    n
+--  ^ comp: name, count, active
+})

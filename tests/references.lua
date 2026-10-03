@@ -189,3 +189,83 @@ function RefAccessor.__protected:Reload()
     return self:Activate()
 --         ^ hover: (param) self: RefAccessor
 end
+
+-- Table-constructor keys are field definitions, linked to their dotted uses.
+-- A same-named local is a different binding in both directions.
+local RefKey = 1
+local refKeyTable = {
+    RefKey = RefKey,
+    -- ^ refs: 197:5, 201:33
+    --       ^ refs: 195:7, 197:14, 203:20  hover: (local) RefKey: number = 1  def: local 195:1
+}
+local refKeyValue = refKeyTable.RefKey
+--                              ^ refs: 197:5, 201:33
+local refKeyRead = RefKey
+
+-- The constructor of a `@class` local defines the class's fields.
+---@class RefCtorKeyClass
+local RefCtorKeyClass = { count = 0 }
+--                        ^ refs: 207:27, 210:17
+function RefCtorKeyClass:Bump()
+    return self.count + 1
+    --          ^ refs: 207:27, 210:17
+end
+
+-- A `@type`d constructor sets the declared class's field; the `@field` name is
+-- its declaration.
+---@class RefCtorKeyShape
+---@field size number
+--        ^ refs: 217:11, 220:20, 222:26
+---@type RefCtorKeyShape
+local refShape = { size = 2 }
+--                 ^ refs: 217:11, 220:20, 222:26
+local refSize = refShape.size
+--                       ^ refs: 217:11, 220:20, 222:26
+
+-- `@field` names with a visibility prefix or `?` suffix, reached through a subclass.
+---@class RefFieldBase
+---@field private secret number
+--                ^ refs: 227:19, 233:17
+---@field label? string
+--        ^ refs: 229:11, 233:30, 241:27
+local RefFieldBase = {}
+function RefFieldBase:Get()
+    return self.secret, self.label
+end
+
+---@class RefFieldChild : RefFieldBase
+local RefFieldChild = {}
+
+---@type RefFieldChild
+local refChild = nil
+local refLabel = refChild.label
+--                        ^ refs: 229:11, 233:30, 241:27
+
+-- A call's arguments are lowered once however many targets take its returns, so a
+-- constructor or closure argument is a single table/function for every query.
+---@class RefMultiOpts
+---@field size number
+--        ^ refs: 247:11, 252:41, 252:49, 253:43, 258:27
+
+---@param o RefMultiOpts
+---@return number, number
+local function refMultiSize(o) return o.size, o.size end
+local refPair1, refPair2 = refMultiSize({ size = 2 })
+--                                        ^ refs: 247:11, 252:41, 252:49, 253:43, 258:27
+
+---@return number, number
+local function refMultiReturn()
+    return refMultiSize({ size = 3 })
+    --                    ^ refs: 247:11, 252:41, 252:49, 253:43, 258:27
+end
+
+---@param cb fun(n: number): number
+---@return number, number
+local function refMultiRun(cb) return cb(1), 1 end
+local refRun1, refRun2 = refMultiRun(function(n)
+--                                            ^ refs: 265:47, 267:25
+    local inner = { k = n }
+    --              ^ refs: 267:21, 269:18
+    return inner.k
+    --           ^ refs: 267:21, 269:18
+end)

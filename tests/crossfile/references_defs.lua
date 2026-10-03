@@ -31,3 +31,8 @@ function RefUnionB:Shared()
     return 2
 end
 _G.RefUnionB = RefUnionB
+
+-- A @class whose field is defined by its constructor key.
+---@class RefCtorClass
+local RefCtorClass = { label = "x" }
+_G.RefCtorClass = RefCtorClass
