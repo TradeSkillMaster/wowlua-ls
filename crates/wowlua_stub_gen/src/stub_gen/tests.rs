@@ -1718,9 +1718,10 @@ fn test_generate_scriptobject_method_stubs() {
 }
 
 #[test]
-fn test_scriptobject_frame_class_gets_schema_parent() {
+fn test_scriptobject_class_gets_parent() {
     // A frame type no vendor stub declares gets its UI.xsd base as parent, so
-    // inherited methods (`Browser:SetPoint`, `ModelFFX:SetModel`) resolve.
+    // inherited methods (`Browser:SetPoint`, `ModelFFX:SetModel`) resolve; a
+    // concrete formatter gets `NumericFormatter`, the type formatter params take.
     let object = |api: &str, method: &str| BlizzardScriptObjectApi {
         name: api.to_string(),
         functions: vec![BlizzardFunction {
@@ -1741,14 +1742,16 @@ fn test_scriptobject_frame_class_gets_schema_parent() {
             object("SimpleBrowserAPI", "NavigateHome"),
             object("SimpleModelFFXAPI", "ClearLights"),
             object("SecondsFormatterAPI", "Format"),
+            object("NumericFormatterAPI", "FormatNumber"),
         ],
     };
     let out = generate_scriptobject_method_stubs(
         &docs, &HashSet::default(), &HashSet::default(), &HashSet::default());
     assert!(out.contains("---@class Browser : Frame\n"), "{out}");
     assert!(out.contains("---@class ModelFFX : Model\n"), "{out}");
-    // Non-widget objects keep a plain class.
-    assert!(out.contains("---@class SecondsFormatter\n"), "{out}");
+    assert!(out.contains("---@class SecondsFormatter : NumericFormatter\n"), "{out}");
+    // Objects with no known base keep a plain class.
+    assert!(out.contains("---@class NumericFormatter\n"), "{out}");
 }
 
 #[test]

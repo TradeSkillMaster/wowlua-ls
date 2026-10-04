@@ -1522,3 +1522,14 @@ local _vecSum = _vec:Add(_vec)
 --                   ^ hover: (method) function Vector2DMixin:Add(other: Vector2DMixin)
 local _removed = tDeleteItem({}, 1)
 --               ^ hover: (global) function tDeleteItem(tbl: table, item: any)
+
+-- ── Concrete formatters are `NumericFormatter`s ──
+-- Each `C_StringUtil.Create*Formatter` result is accepted where an API takes a
+-- `NumericFormatter`, and inherits its `FormatNumber`.
+local formatterCooldown = CreateFrame("Cooldown")
+local ruleFormatter = C_StringUtil.CreateNumericRuleFormatter()
+formatterCooldown:SetCountdownFormatter(ruleFormatter)
+formatterCooldown:SetCountdownFormatter(C_StringUtil.CreateAbbreviatedNumberFormatter())
+formatterCooldown:SetCountdownFormatter(C_StringUtil.CreateSecondsFormatter())
+local formattedRule = ruleFormatter:FormatNumber(5)
+--    ^ hover: (local) formattedRule: string

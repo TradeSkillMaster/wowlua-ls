@@ -374,15 +374,20 @@ const SCRIPTOBJECT_CLASS_MAP: &[(&str, &str)] = &[
     ("PingPinFrameAPI", "PingPinFrame"),
 ];
 
-/// `UI.xsd` base widget of the `SCRIPTOBJECT_CLASS_MAP` frame types no vendor stub
-/// declares. Blizzard's ScriptObject docs don't state inheritance, so without this the
-/// generated class is parentless and loses every inherited method (`Browser:SetPoint`).
+/// Base type of the `SCRIPTOBJECT_CLASS_MAP` objects no vendor stub declares: the
+/// `UI.xsd` base widget for frame types, `NumericFormatter` for the concrete formatters.
+/// Blizzard's ScriptObject docs don't state inheritance, so without this the generated
+/// class is parentless and loses every inherited method (`Browser:SetPoint`) and
+/// assignability to its base (a `NumericRuleFormatter` passed as `NumericFormatter`).
 const SCRIPTOBJECT_CLASS_PARENTS: &[(&str, &str)] = &[
     ("Browser", "Frame"),
     ("Checkout", "Frame"),
     ("OffScreenFrame", "Frame"),
     ("MapScene", "Model"),
     ("ModelFFX", "Model"),
+    ("AbbreviatedNumberFormatter", "NumericFormatter"),
+    ("NumericRuleFormatter", "NumericFormatter"),
+    ("SecondsFormatter", "NumericFormatter"),
 ];
 
 /// Raw CSV payloads fetched from wago.tools, plus the resolved retail build string.
