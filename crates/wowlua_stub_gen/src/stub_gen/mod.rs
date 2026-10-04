@@ -443,6 +443,9 @@ pub(in crate::stub_gen) struct WidgetMethodInfo {
     line_idx: usize, // line index of the doc link
     api_name: String, // e.g. "GameTooltip_GetItem"
     param_names: Vec<String>,
+    /// `(line index, name)` of each vendor `---@param` marked required; empty for an
+    /// unannotated method, which gets the wiki's annotations injected instead.
+    required_params: Vec<(usize, String)>,
 }
 
 const WIKI_API_URL: &str = "https://warcraft.wiki.gg/api.php";

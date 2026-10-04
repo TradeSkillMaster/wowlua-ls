@@ -40,3 +40,13 @@ local s, e, cap1, cap2 = string.find("ab cd", "(%w+) (%w+)")
 local function multiReturn() return 1, 2, 3 end
 local v1, v2, v3, v4 = multiReturn()
 --                ^ hover: (local) v4: number
+
+-- Widget methods whose Blizzard-documented (`Nilable = false`) arguments the wiki
+-- marks optional (`{{apitype|T?}}`) — the cooldown texture setters' colors and
+-- `Line`'s `relativeTo` — must not be flagged missing-parameter when omitted.
+local cooldown = CreateFrame("Cooldown")
+cooldown:SetBlingTexture("Interface\\Cooldown\\star4")
+cooldown:SetSwipeTexture("Interface\\Cooldown\\swipe")
+local line = frame:CreateLine()
+line:SetStartPoint("TOPLEFT")
+line:SetEndPoint("BOTTOMRIGHT", nil, 1, 1)

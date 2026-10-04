@@ -667,17 +667,7 @@ pub(in crate::stub_gen) fn parse_widget_wiki_annotations(wikitext: &str, param_n
         }
     }
 
-    // Parse parameter/return types from wikitext sections
-    let section_re = regex_lite::Regex::new(r"(?i)==+\s*(.+?)\s*==+").unwrap();
-    let apitype_re = regex_lite::Regex::new(r":;(\w+)\s*[:,]\s*\{\{apitype\|([^}]+)\}\}").unwrap();
-    // Also handle <span class="apitype">TYPE</span> format (older wiki pages)
-    let span_apitype_re = regex_lite::Regex::new(r#":;(\w+)\s*[:,]\s*<span class="apitype">([^<]+)</span>"#).unwrap();
-    let bare_type_re = regex_lite::Regex::new(r":;(\w+)\s*[:,]\s*(\w[\w|.]*)").unwrap();
-    let numbering_re = regex_lite::Regex::new(r"^:;\d+\.\s*").unwrap();
     let link_re = regex_lite::Regex::new(r"\[\[(?:[^|\]]*\|)?([^\]]*)\]\]").unwrap();
-    let known_types: HashSet<&str> = [
-        "boolean", "number", "string", "table", "function", "nil", "any", "frame", "integer", "float",
-    ].into_iter().collect();
 
     // Also try to parse return names from {{apisig|...}} or inline signature
     let sig_re = regex_lite::Regex::new(r"(?s)\{\{apisig\|(.+?)\}\}").unwrap();
@@ -711,6 +701,64 @@ pub(in crate::stub_gen) fn parse_widget_wiki_annotations(wikitext: &str, param_n
                 .collect();
         }
     }
+
+    let (param_types, return_types) = parse_wiki_param_return_types(wikitext);
+
+    // Build annotation lines
+    let mut annotations = Vec::new();
+
+    for arg in param_names {
+        if let Some((typ, optional)) = param_types.get(*arg) {
+            let opt = if *optional { "?" } else { "" };
+            annotations.push(format!("---@param {arg}{opt} {typ}"));
+        }
+    }
+
+    if !ret_names.is_empty() {
+        for ret in &ret_names {
+            if let Some((typ, optional)) = return_types.get(ret.as_str()) {
+                let opt = if *optional { "?" } else { "" };
+                annotations.push(format!("---@return {typ}{opt} {ret}"));
+            } else if let Some(inferred) = infer_type_from_name(ret) {
+                // Fallback: infer type from WoW API naming conventions
+                annotations.push(format!("---@return {inferred} {ret}"));
+            }
+        }
+    } else if !return_types.is_empty() {
+        // No explicit ret_names from sig — emit returns in insertion order isn't possible
+        // with HashMap, so sort by name for determinism
+        let mut rets: Vec<_> = return_types.iter().collect();
+        rets.sort_by_key(|(name, _)| (*name).clone());
+        for (name, (typ, optional)) in rets {
+            let opt = if *optional { "?" } else { "" };
+            annotations.push(format!("---@return {typ}{opt} {name}"));
+        }
+    }
+
+    if annotations.is_empty() {
+        None
+    } else {
+        Some(annotations)
+    }
+}
+
+
+/// Name → `(type, optional)` for one section of a widget page.
+type WikiSectionTypes = HashMap<String, (String, bool)>;
+
+/// Types from a widget page's Arguments and Returns sections
+/// (`{{apitype|T}}`, `<span class="apitype">`, and bare-type entries).
+fn parse_wiki_param_return_types(wikitext: &str) -> (WikiSectionTypes, WikiSectionTypes) {
+    let section_re = regex_lite::Regex::new(r"(?i)==+\s*(.+?)\s*==+").unwrap();
+    let apitype_re = regex_lite::Regex::new(r":;(\w+)\s*[:,]\s*\{\{apitype\|([^}]+)\}\}").unwrap();
+    // Also handle <span class="apitype">TYPE</span> format (older wiki pages)
+    let span_apitype_re = regex_lite::Regex::new(r#":;(\w+)\s*[:,]\s*<span class="apitype">([^<]+)</span>"#).unwrap();
+    let bare_type_re = regex_lite::Regex::new(r":;(\w+)\s*[:,]\s*(\w[\w|.]*)").unwrap();
+    let numbering_re = regex_lite::Regex::new(r"^:;\d+\.\s*").unwrap();
+    let link_re = regex_lite::Regex::new(r"\[\[(?:[^|\]]*\|)?([^\]]*)\]\]").unwrap();
+    let known_types: HashSet<&str> = [
+        "boolean", "number", "string", "table", "function", "nil", "any", "frame", "integer", "float",
+    ].into_iter().collect();
 
     let mut section: Option<&str> = None;
     let mut param_types: HashMap<String, (String, bool)> = HashMap::default();
@@ -790,44 +838,21 @@ pub(in crate::stub_gen) fn parse_widget_wiki_annotations(wikitext: &str, param_n
         }
     }
 
-    // Build annotation lines
-    let mut annotations = Vec::new();
-
-    for arg in param_names {
-        if let Some((typ, optional)) = param_types.get(*arg) {
-            let opt = if *optional { "?" } else { "" };
-            annotations.push(format!("---@param {arg}{opt} {typ}"));
-        }
-    }
-
-    if !ret_names.is_empty() {
-        for ret in &ret_names {
-            if let Some((typ, optional)) = return_types.get(ret.as_str()) {
-                let opt = if *optional { "?" } else { "" };
-                annotations.push(format!("---@return {typ}{opt} {ret}"));
-            } else if let Some(inferred) = infer_type_from_name(ret) {
-                // Fallback: infer type from WoW API naming conventions
-                annotations.push(format!("---@return {inferred} {ret}"));
-            }
-        }
-    } else if !return_types.is_empty() {
-        // No explicit ret_names from sig — emit returns in insertion order isn't possible
-        // with HashMap, so sort by name for determinism
-        let mut rets: Vec<_> = return_types.iter().collect();
-        rets.sort_by_key(|(name, _)| (*name).clone());
-        for (name, (typ, optional)) in rets {
-            let opt = if *optional { "?" } else { "" };
-            annotations.push(format!("---@return {typ}{opt} {name}"));
-        }
-    }
-
-    if annotations.is_empty() {
-        None
-    } else {
-        Some(annotations)
-    }
+    (param_types, return_types)
 }
 
+/// Names in `param_names` (a widget method's signature) that the wiki page marks optional
+/// (`{{apitype|T?}}`). Blizzard's API documentation, which the vendor widget annotations come
+/// from, declares some omittable arguments `Nilable = false` (`Cooldown:SetBlingTexture`'s
+/// colors). Empty unless the page documents exactly these parameters, so a page shared with a
+/// different method (a redirect to another widget's same-named method) can't loosen the stub.
+pub(in crate::stub_gen) fn wiki_optional_params(wikitext: &str, param_names: &[&str]) -> Vec<String> {
+    let (param_types, _) = parse_wiki_param_return_types(&strip_nowiki_tags(wikitext));
+    if param_types.len() != param_names.len() || !param_names.iter().all(|n| param_types.contains_key(*n)) {
+        return Vec::new();
+    }
+    param_names.iter().filter(|n| param_types[**n].1).map(|n| n.to_string()).collect()
+}
 
 /// Collect widget methods removed from retail (wiki `{{widgetmethod|removed=X.Y.Z}}`)
 /// in patch 10.0.0 or later — they still exist on the Classic clients but are absent
@@ -871,9 +896,10 @@ pub(in crate::stub_gen) fn collect_removed_widget_methods(
 }
 
 
-/// Scan vendor widget stubs for methods that have a `---[Documentation]` link
-/// but no `@param`/`@return` annotations. Returns the list of methods whose
-/// wiki pages should be fetched.
+/// Scan vendor widget stubs for methods that have a `---[Documentation]` link and either
+/// no `@param`/`@return` annotations (enriched with the wiki's types) or a `@param` marked
+/// required (checked against the wiki's optional markers). Returns the list of methods
+/// whose wiki pages should be fetched.
 pub(in crate::stub_gen) fn collect_widget_enrichment_methods(vendor_dirs: &[PathBuf]) -> Vec<WidgetMethodInfo> {
     let doc_link_re = regex_lite::Regex::new(
         r"---\[Documentation\]\(https://warcraft\.wiki\.gg/wiki/API_([^)]+)\)"
@@ -906,20 +932,27 @@ pub(in crate::stub_gen) fn collect_widget_enrichment_methods(vendor_dirs: &[Path
             if let Some(cap) = doc_link_re.captures(line) {
                 let api_name = cap.get(1).unwrap().as_str().to_string();
 
-                // Find the function line (should be within next 2 lines)
-                let func_line_idx = (i + 1..std::cmp::min(i + 3, lines.len()))
-                    .find(|&j| lines[j].starts_with("function "));
+                // Find the function line (right after the doc link's `---` block)
+                let func_line_idx = (i + 1..lines.len())
+                    .find(|&j| !lines[j].starts_with("---"))
+                    .filter(|&j| lines[j].starts_with("function "));
                 let Some(func_idx) = func_line_idx else { continue };
 
                 // Check if there are already annotations in the same comment block
                 // (annotations can appear above OR below the doc link)
-                let has_annotations_below = (i + 1..func_idx)
-                    .any(|j| lines[j].starts_with("---@param") || lines[j].starts_with("---@return") || lines[j].starts_with("---@overload"));
-                // Also check above the doc link (Ketho puts annotations before the doc link)
-                let has_annotations_above = (0..i).rev()
+                let block: Vec<usize> = (0..i).rev()
                     .take_while(|&j| lines[j].starts_with("---"))
-                    .any(|j| lines[j].starts_with("---@param") || lines[j].starts_with("---@return") || lines[j].starts_with("---@overload"));
-                if has_annotations_below || has_annotations_above {
+                    .chain(i + 1..func_idx)
+                    .collect();
+                let has_annotations = block.iter()
+                    .any(|&j| lines[j].starts_with("---@param") || lines[j].starts_with("---@return") || lines[j].starts_with("---@overload"));
+                // `---@param name type` with neither `name?` nor `type?`
+                let required_params: Vec<(usize, String)> = block.iter().filter_map(|&j| {
+                    let mut parts = lines[j].strip_prefix("---@param ")?.split_whitespace();
+                    let (name, ty) = (parts.next()?, parts.next()?);
+                    (!name.ends_with('?') && !ty.ends_with('?') && name != "...").then(|| (j, name.to_string()))
+                }).collect();
+                if has_annotations && required_params.is_empty() {
                     continue;
                 }
 
@@ -939,6 +972,7 @@ pub(in crate::stub_gen) fn collect_widget_enrichment_methods(vendor_dirs: &[Path
                     line_idx: i,
                     api_name,
                     param_names,
+                    required_params,
                 });
             }
         }
@@ -949,7 +983,8 @@ pub(in crate::stub_gen) fn collect_widget_enrichment_methods(vendor_dirs: &[Path
 
 
 /// Enrich vendor widget stub files using pre-fetched wiki pages.
-/// Rewrites files in-place with injected annotation lines.
+/// Rewrites files in-place: injects annotation lines into unannotated methods, and marks
+/// annotated methods' required params optional where the wiki does ([`wiki_optional_params`]).
 pub(in crate::stub_gen) fn enrich_widget_stubs(
     methods: &[WidgetMethodInfo],
     wiki_pages: &HashMap<String, String>,
@@ -960,17 +995,26 @@ pub(in crate::stub_gen) fn enrich_widget_stubs(
         return;
     }
 
-    log::info!("  Found {} widget methods needing wiki enrichment", methods.len());
+    let (unannotated, annotated): (Vec<&WidgetMethodInfo>, Vec<&WidgetMethodInfo>) =
+        methods.iter().partition(|m| m.required_params.is_empty());
+    log::info!("  Found {} widget methods needing wiki enrichment", unannotated.len());
 
-    // Parse annotations and group by file
-    let mut file_patches: HashMap<PathBuf, Vec<(usize, Vec<String>)>> = HashMap::default();
+    #[derive(Default)]
+    struct FilePatches {
+        insertions: Vec<(usize, Vec<String>)>,
+        optional_params: Vec<(usize, String)>,
+    }
+    let mut file_patches: HashMap<PathBuf, FilePatches> = HashMap::default();
+    let wiki_page = |method: &WidgetMethodInfo| {
+        let doc_name = wiki_redirects.get(&method.api_name).unwrap_or(&method.api_name);
+        wiki_pages.get(&method.api_name).or_else(|| wiki_pages.get(doc_name))
+    };
+
     let mut enriched = 0;
-
     let mut no_page = 0;
     let mut no_parse = 0;
-    for method in methods {
-        let doc_name = wiki_redirects.get(&method.api_name).unwrap_or(&method.api_name);
-        let Some(wikitext) = wiki_pages.get(&method.api_name).or_else(|| wiki_pages.get(doc_name)) else {
+    for method in unannotated {
+        let Some(wikitext) = wiki_page(method) else {
             no_page += 1;
             continue;
         };
@@ -980,6 +1024,7 @@ pub(in crate::stub_gen) fn enrich_widget_stubs(
             file_patches
                 .entry(method.file_path.clone())
                 .or_default()
+                .insertions
                 .push((method.line_idx, annotations));
             enriched += 1;
         } else {
@@ -990,18 +1035,46 @@ pub(in crate::stub_gen) fn enrich_widget_stubs(
 
     log::info!("  Enriched {enriched} widget methods with wiki annotations");
 
-    // Rewrite files with injected annotations (process patches in reverse line order)
-    for (path, mut patches) in file_patches {
+    let mut relaxed = 0;
+    let mut no_page = 0;
+    for method in &annotated {
+        let Some(wikitext) = wiki_page(method) else {
+            no_page += 1;
+            continue;
+        };
+
+        let param_refs: Vec<&str> = method.param_names.iter().map(|s| s.as_str()).collect();
+        let optional = wiki_optional_params(wikitext, &param_refs);
+        let to_mark: Vec<(usize, String)> = method.required_params.iter()
+            .filter(|(_, name)| optional.contains(name))
+            .cloned()
+            .collect();
+        if !to_mark.is_empty() {
+            file_patches.entry(method.file_path.clone()).or_default().optional_params.extend(to_mark);
+            relaxed += 1;
+        }
+    }
+    log::info!(
+        "  Marked params optional per wiki on {relaxed} of {} annotated widget methods with required params ({no_page} without a wiki page)",
+        annotated.len()
+    );
+
+    for (path, FilePatches { mut insertions, optional_params }) in file_patches {
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => continue,
         };
         let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
 
-        // Sort patches by line index descending so insertions don't shift later indices
-        patches.sort_by(|a, b| b.0.cmp(&a.0));
+        // Rewrite params before the insertions below shift the line indices recorded for them
+        for (idx, name) in optional_params {
+            lines[idx] = lines[idx].replacen(&format!("---@param {name} "), &format!("---@param {name}? "), 1);
+        }
 
-        for (doc_line_idx, annotations) in patches {
+        // Sort insertions by line index descending so they don't shift later indices
+        insertions.sort_by(|a, b| b.0.cmp(&a.0));
+
+        for (doc_line_idx, annotations) in insertions {
             // Insert annotations after the doc link line (before the function line)
             let insert_at = doc_line_idx + 1;
             for (i, ann) in annotations.into_iter().enumerate() {

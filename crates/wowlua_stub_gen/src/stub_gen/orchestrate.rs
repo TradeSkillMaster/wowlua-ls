@@ -346,7 +346,9 @@ pub fn regenerate_stubs() {
     }
     phase!("join wiki_function_names (overlapped w/ clones)");
     let widget_methods = collect_widget_enrichment_methods(&vendor_dir_paths);
-    log::info!("  Widget methods needing enrichment: {}", widget_methods.len());
+    let unannotated = widget_methods.iter().filter(|m| m.required_params.is_empty()).count();
+    log::info!("  Widget methods needing enrichment: {unannotated}");
+    log::info!("  Annotated widget methods with required params: {}", widget_methods.len() - unannotated);
 
     let mut all_wiki_names: HashSet<String> = HashSet::default();
     all_wiki_names.extend(classic_diff.missing.iter().cloned());

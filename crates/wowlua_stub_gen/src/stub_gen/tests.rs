@@ -1356,6 +1356,57 @@ Gets the item."#;
     assert_eq!(result, vec!["---@return string name", "---@return number id"]);
 }
 
+#[test]
+fn test_wiki_optional_params() {
+    let wikitext = r#"{{widgetmethod|system=FrameAPICooldown}}
+{{apisig|Cooldown:SetBlingTexture(texture [, colorR, colorG, colorB, colorA])}}
+
+== Arguments ==
+:;texture:{{apitype|FileAsset}} - Path or [[FileID]] to a texture image.
+:;colorR:{{apitype|number?}} - Triggered by passing an empty string
+:;colorG:{{apitype|number?}}
+:;colorB:{{apitype|number?}}
+:;colorA:{{apitype|number?}}"#;
+    let params = ["texture", "colorR", "colorG", "colorB", "colorA"];
+    assert_eq!(wiki_optional_params(wikitext, &params), vec!["colorR", "colorG", "colorB", "colorA"]);
+    // A page documenting different parameters (a redirect to another widget's
+    // same-named method) leaves the signature alone.
+    assert!(wiki_optional_params(wikitext, &["texture", "colorR", "colorG", "colorB", "alpha"]).is_empty());
+}
+
+#[test]
+fn test_enrich_widget_stubs_marks_wiki_optional_params() {
+    let dir = std::env::temp_dir().join("wowlua-ls-test-widget-optional/Widget");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = dir.join("Cooldown.lua");
+    // The injection into the first method shifts the second's recorded `---@param` lines.
+    std::fs::write(&stub, "\
+---[Documentation](https://warcraft.wiki.gg/wiki/API_Cooldown_SetHideCountdownNumbers)
+function Cooldown:SetHideCountdownNumbers(hideNumbers) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_Cooldown_SetBlingTexture)
+---@param texture FileAsset
+---@param colorR number
+---@param colorA? number
+function Cooldown:SetBlingTexture(texture, colorR, colorA) end
+").unwrap();
+    let methods = collect_widget_enrichment_methods(std::slice::from_ref(&dir));
+    let pages: HashMap<String, String> = HashMap::from_iter([
+        ("Cooldown_SetBlingTexture".to_string(), "==Arguments==
+:;texture:{{apitype|FileAsset}}
+:;colorR:{{apitype|number?}}
+:;colorA:{{apitype|number?}}".to_string()),
+        ("Cooldown_SetHideCountdownNumbers".to_string(), "==Arguments==
+:;hideNumbers:{{apitype|boolean}}".to_string()),
+    ]);
+    enrich_widget_stubs(&methods, &pages, &HashMap::default());
+    let text = std::fs::read_to_string(&stub).unwrap();
+    assert!(text.contains("---@param texture FileAsset\n---@param colorR? number\n---@param colorA? number\n"), "{text}");
+    assert!(text.contains("SetHideCountdownNumbers)\n---@param hideNumbers boolean\nfunction"), "{text}");
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
 /// A `C_TooltipInfo` getter fixture: `(name, Blizzard type, nilable)` arguments.
 fn tooltip_getter(name: &str, args: &[(&str, &str, bool)]) -> BlizzardFunction {
     BlizzardFunction {
