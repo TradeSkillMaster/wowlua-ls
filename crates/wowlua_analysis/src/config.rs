@@ -295,6 +295,10 @@ pub struct ProjectConfigs {
     /// (flavor-aware `deprecated`), and by `flavors_for` only to tell whether
     /// the addon declares Forever.
     toc_interface_flavors: HashMap<PathBuf, u8>,
+    /// `.toc` `SavedVariables` / `SavedVariablesPerCharacter` names, keyed by the
+    /// directory containing the `.toc`. Kept out of `entries` so an addon folder
+    /// without its own `.wowluarc.json` still inherits the nearest config.
+    toc_saved_variables: HashMap<PathBuf, AllowedGlobals>,
     /// Workspace-wide dynamic global prefix patterns detected from
     /// `_G["PREFIX"..k] = v` assignments in scanned files. Merged into
     /// both `allowed_read_globals_for` and `allowed_write_globals_for` so
@@ -321,10 +325,9 @@ impl ProjectConfigs {
     }
 
     /// Scan `.toc` files in `dir` for `SavedVariables` / `SavedVariablesPerCharacter`
-    /// and merge them as allowed read+write globals. Also parses TOC file listings
-    /// to derive per-file flavor masks from filename suffixes, `AllowLoadGameType`
-    /// headers, and per-line `[AllowLoadGameType]` directives. Merges into an
-    /// existing entry for `dir` if one exists, otherwise creates a new entry.
+    /// (allowed read+write globals for files under `dir`). Also parses TOC file
+    /// listings to derive per-file flavor masks from filename suffixes,
+    /// `AllowLoadGameType` headers, and per-line `[AllowLoadGameType]` directives.
     pub fn try_load_toc(&mut self, dir: &Path) {
         let toc_data = parse_toc_files(dir);
 
@@ -337,21 +340,9 @@ impl ProjectConfigs {
         }
 
         if !toc_data.saved_variables.is_empty() {
-            let saved_vars = toc_data.saved_variables;
-            if let Some((_, config)) = self.entries.iter_mut().find(|(d, _)| d == dir) {
-                config.allowed_read_globals.extend_from_strings(saved_vars.iter().cloned());
-                config.allowed_write_globals.extend_from_strings(saved_vars);
-            } else {
-                let mut allowed_read_globals = AllowedGlobals::default();
-                allowed_read_globals.extend_from_strings(saved_vars.iter().cloned());
-                let mut allowed_write_globals = AllowedGlobals::default();
-                allowed_write_globals.extend_from_strings(saved_vars);
-                self.entries.push((dir.to_path_buf(), ProjectConfig {
-                    allowed_read_globals,
-                    allowed_write_globals,
-                    ..ProjectConfig::default()
-                }));
-            }
+            let mut saved_vars = AllowedGlobals::default();
+            saved_vars.extend_from_strings(toc_data.saved_variables);
+            self.toc_saved_variables.insert(dir.to_path_buf(), saved_vars);
         }
 
         self.toc_file_flavors.extend(toc_data.file_flavors);
@@ -493,28 +484,37 @@ impl ProjectConfigs {
     }
 
     /// Get effective allowed read globals for a file.
-    /// Isolated: only the nearest config's read globals apply. TOC
-    /// `SavedVariables` are merged into the config entry for the directory
-    /// containing the `.toc` file — a child config in a subdirectory will NOT
-    /// see the parent's TOC-derived globals unless it is in the same directory.
+    /// Isolated: only the nearest config's read globals apply, plus the TOC
+    /// `SavedVariables` of every ancestor `.toc` directory.
     pub fn allowed_read_globals_for(&self, file_path: &Path) -> AllowedGlobals {
         let mut result = self.nearest_config(file_path)
             .map(|c| c.allowed_read_globals.clone())
             .unwrap_or_default();
-        result.extend(&self.dynamic_global_prefixes);
-        result.extend(&self.xml_bound_globals);
+        self.extend_implicit_globals(&mut result, file_path);
         result
     }
 
     /// Get effective allowed write globals for a file.
-    /// Isolated: only the nearest config's write globals.
+    /// Isolated: only the nearest config's write globals, plus the TOC
+    /// `SavedVariables` of every ancestor `.toc` directory.
     pub fn allowed_write_globals_for(&self, file_path: &Path) -> AllowedGlobals {
         let mut result = self.nearest_config(file_path)
             .map(|c| c.allowed_write_globals.clone())
             .unwrap_or_default();
+        self.extend_implicit_globals(&mut result, file_path);
+        result
+    }
+
+    /// Globals allowed for both reads and writes without any config entry:
+    /// ancestor TOC `SavedVariables`, `_G` prefixes, and XML-bound names.
+    fn extend_implicit_globals(&self, result: &mut AllowedGlobals, file_path: &Path) {
+        for dir in file_path.ancestors().skip(1) {
+            if let Some(saved_vars) = self.toc_saved_variables.get(dir) {
+                result.extend(saved_vars);
+            }
+        }
         result.extend(&self.dynamic_global_prefixes);
         result.extend(&self.xml_bound_globals);
-        result
     }
 
     /// Get effective flavor mask for a file. Isolated: the nearest config's
@@ -2310,6 +2310,35 @@ mod tests {
         assert!(write.contains("AddonDB"), "toc SavedVariables merged as write");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_globals_reach_nested_wowluarc() {
+        let root = std::env::temp_dir().join("wowlua_ls_test_toc_nested_config");
+        let sub = root.join("Sub");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("Addon.toc"), "## SavedVariables: AddonDB\n").unwrap();
+        std::fs::write(sub.join(".wowluarc.json"), r#"{
+            "globals": { "read": ["SubRead"] }
+        }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&root);
+        configs.try_load_toc(&root);
+        configs.try_load(&sub);
+        configs.try_load_toc(&sub);
+
+        // Documented in docs/reference/configuration.md "Hierarchy behavior":
+        // a nested config still sees its addon folder's SavedVariables.
+        let read = configs.allowed_read_globals_for(&sub.join("x.lua"));
+        assert!(read.contains("SubRead"), "nested config read global applies");
+        assert!(read.contains("AddonDB"), "ancestor toc SavedVariables reach a nested config as read");
+
+        let write = configs.allowed_write_globals_for(&sub.join("x.lua"));
+        assert!(write.contains("AddonDB"), "ancestor toc SavedVariables reach a nested config as write");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

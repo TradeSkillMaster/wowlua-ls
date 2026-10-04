@@ -358,8 +358,8 @@ When `.wowluarc.json` files are nested, settings combine according to one of the
 | `diagnostics.disable` | **Isolated**: nearest config's `disable` only |
 | `diagnostics.enable` | **Isolated**: applied after the nearest config's `disable` |
 | `diagnostics.severity` | **Isolated**: nearest config's severity map only |
-| `globals.read` | **Isolated**: nearest config only (includes that directory's `.toc` `SavedVariables`) |
-| `globals.write` | **Isolated**: nearest config only |
+| `globals.read` | **Isolated**: nearest config only, plus the `.toc` `SavedVariables` of every enclosing addon folder |
+| `globals.write` | **Isolated**: nearest config only, plus the `.toc` `SavedVariables` of every enclosing addon folder |
 | `globals.allowSlashCommands` | **Isolated** |
 | `globals.allowBindingGlobals` | **Isolated** |
 | `framexml` | **Isolated** |
@@ -375,7 +375,7 @@ When `.wowluarc.json` files are nested, settings combine according to one of the
 | `addonRoot` | Nearest (deepest) `addonRoot: true` wins (structural) |
 
 ::: warning Isolated settings do not inherit
-If a nested directory has its own `.wowluarc.json`, it only inherits the **inherited** settings above. Any **isolated** setting it does not restate reverts to its default. It does *not* pick up the parent's value. For example, a subdirectory config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` settings unless it repeats them. This also applies to auto-discovered TOC `SavedVariables` globals. They are merged into the config entry for the directory containing the `.toc` file, so a child config in a subdirectory will not see them.
+If a nested directory has its own `.wowluarc.json`, it only inherits the **inherited** settings above. Any **isolated** setting it does not restate reverts to its default. It does *not* pick up the parent's value. For example, a subdirectory config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` settings unless it repeats them. Auto-discovered `.toc` `SavedVariables` are not part of any config: they apply to every file under the `.toc` file's directory, and a `.toc` never replaces the `.wowluarc.json` above it.
 
 The one exception is [`library`](#library), which is inherited downward.
 :::

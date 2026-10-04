@@ -2444,6 +2444,15 @@ fn saved_variables_subdirectory() {
 }
 
 #[test]
+fn saved_variables_keep_root_config() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/saved-variables/root-config/Addon/test.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/saved-variables/root-config"),
+    });
+}
+
+#[test]
 fn unused_vararg() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/unused-vararg/test.lua",
