@@ -1533,3 +1533,10 @@ formatterCooldown:SetCountdownFormatter(C_StringUtil.CreateAbbreviatedNumberForm
 formatterCooldown:SetCountdownFormatter(C_StringUtil.CreateSecondsFormatter())
 local formattedRule = ruleFormatter:FormatNumber(5)
 --    ^ hover: (local) formattedRule: string
+
+-- ── date("*t") fields are integers ───────────────────────────────────────────
+-- The vendor `osdate` class types them `integer|string`; the override corrects it.
+local _dateParts = date("*t")
+local _year, _isdst = _dateParts.year, _dateParts.isdst
+--    ^ hover: (local) _year: number
+--           ^ hover: (local) _isdst: boolean

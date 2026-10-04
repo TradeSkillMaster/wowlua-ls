@@ -1,0 +1,16 @@
+---@meta _
+-- `date("*t")` fills every numeric field with an integer (Lua 5.1 `os_date`).
+-- Ketho's vendor class, inherited from LuaLS, types them `integer|string`, a
+-- shape only the `time()` input (`osdateparam`, which coerces numeric strings)
+-- has.
+
+---@class osdate
+---@field year  integer Four digits.
+---@field month integer 1-12
+---@field day   integer 1-31
+---@field hour  integer 0-23
+---@field min   integer 0-59
+---@field sec   integer 0-61
+---@field wday  integer Weekday, 1-7, Sunday is 1.
+---@field yday  integer Day of the year, 1-366.
+---@field isdst boolean Daylight saving flag.
