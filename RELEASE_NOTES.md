@@ -1,3 +1,5 @@
 **Bug Fixes**
 
-- Addon folders whose `.toc` declares `SavedVariables` no longer ignore the root `.wowluarc.json`, and nested configs now see their addon's `SavedVariables` as allowed globals.
+- `SecondsFormatter`, `AbbreviatedNumberFormatter` and `NumericRuleFormatter` are now accepted where a `NumericFormatter` is expected.
+- Leaving out widget-method arguments that the wiki marks optional no longer reports `missing-parameter` (for example, the color on `Cooldown:SetSwipeTexture` or `relativeTo` on `Line:SetStartPoint`).
+- `date("*t")` fields are now typed as integers instead of `integer|string`.
