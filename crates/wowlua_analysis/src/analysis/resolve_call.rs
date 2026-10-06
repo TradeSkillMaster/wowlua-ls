@@ -1323,11 +1323,7 @@ impl<'a> Analysis<'a> {
                 match self.resolve_keyof_target_table(&target, receiver, generic_subs) {
                     Some(t) => {
                         *target_out = Some(t);
-                        let mut names: Vec<String> = crate::analysis::collect_class_fields_impl(
-                            &self.ir, &self.resolved_expr_cache, t,
-                        ).into_iter().map(|(n, _, _)| n).collect();
-                        names.sort_unstable();
-                        names.dedup();
+                        let names = self.ir.keyof_key_names(t);
                         ValueType::Union(names.into_iter().map(|n| ValueType::String(Some(n))).collect())
                     }
                     None => ValueType::String(None),

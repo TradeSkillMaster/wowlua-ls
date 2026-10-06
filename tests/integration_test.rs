@@ -1690,6 +1690,15 @@ fn ace3_register_event_handler_typing() {
 }
 
 #[test]
+fn ace3_string_handler_names() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ace3/callbacks.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ace3"),
+    });
+}
+
+#[test]
 fn ace3_module_inherits_addon_methods() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/ace3/module.lua",
@@ -7751,6 +7760,24 @@ fn test_unused_function_cross_file() {
         unused_names.contains("HandlerHost.UnusedHostMethod"),
         "HandlerHost.UnusedHostMethod should be flagged as unused, got: {:?}", unused_names,
     );
+
+    // Ace3 handlers named by string (issue #64): AceTimer's Schedule*Timer and
+    // AceDB's RegisterCallback (incl. the omitted-method form) against the real stubs.
+    for name in [
+        "TimerAddon:OnTick", "TimerAddon:OnRepeat", "TimerAddon:RefreshConfig",
+        "TimerAddon:OnProfileReset", "listener.OnNewProfile",
+    ] {
+        assert!(
+            !unused_names.contains(name),
+            "{name} should not be flagged — named by a string handler argument in ace3_callbacks.lua, got: {:?}", unused_names,
+        );
+    }
+    for name in ["TimerAddon:UnusedTimerAddonMethod", "listener.UnusedListenerFunc"] {
+        assert!(
+            unused_names.contains(name),
+            "{name} should be flagged as unused, got: {:?}", unused_names,
+        );
+    }
 
     // Interface detection only covers methods taking `self`: a static function
     // sharing its name with another module's is still flagged.

@@ -2620,6 +2620,9 @@ impl<'a> Analysis<'a> {
         // superseded once this file's own def lands (on the overlay or an instance
         // table), so their calls are re-resolved at the end.
         let mut method_def_receivers: HashSet<(SymbolIndex, usize)> = HashSet::default();
+        // Every table this pass adds a field to: `keyof` arguments the fixpoint
+        // flattened against one of them (or a subclass) predate the new key.
+        let mut extended_tables: HashSet<TableIndex> = HashSet::default();
         for assign in assignments {
             // Try to find the class table via the symbol's resolved type
             let sym_idx = match self.ir.get_symbol(
@@ -2676,6 +2679,8 @@ impl<'a> Analysis<'a> {
             if assign.is_method_def && (instance_target.is_some() || table_idx.is_external()) {
                 method_def_receivers.insert((sym_idx, ver_idx));
             }
+            extended_tables.insert(table_idx);
+            extended_tables.extend(instance_target);
 
             let field_existed = self.class_has_field(table_idx, &assign.field_name);
             self.ir.field_assignments.push(FieldAssignment {
@@ -2797,12 +2802,14 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        if !method_def_receivers.is_empty() {
-            self.reresolve_method_def_receiver_calls(&method_def_receivers);
-        }
+        let mut calls = self.method_def_receiver_calls(&method_def_receivers);
+        calls.extend(self.keyof_calls_on(&extended_tables));
+        calls.sort_unstable();
+        calls.dedup();
+        self.reresolve_calls(&calls);
     }
 
-    /// Re-resolve method calls on every receiver whose method was (re)attached by
+    /// Method calls on every receiver whose method was (re)attached by
     /// `resolve_deferred_field_assignments`. `call_resolutions` — which drives
     /// arg-name inlay hints and arg type-mismatch — was populated by the fixpoint
     /// before this file's def landed, so it may point at a sibling's same-named
@@ -2810,8 +2817,11 @@ impl<'a> Analysis<'a> {
     /// (cross-file). Re-running each call now reads the receiver's own instance
     /// table (colliding case) or this file's overlay def (which wins over the
     /// external class field).
-    fn reresolve_method_def_receiver_calls(&mut self, receivers: &HashSet<(SymbolIndex, usize)>) {
-        let calls: Vec<ExprId> = (0..self.ir.exprs.len())
+    fn method_def_receiver_calls(&self, receivers: &HashSet<(SymbolIndex, usize)>) -> Vec<ExprId> {
+        if receivers.is_empty() {
+            return Vec::new();
+        }
+        (0..self.ir.exprs.len())
             .map(ExprId)
             .filter(|&id| {
                 let Expr::FunctionCall { func, is_method_call: true, .. } = self.ir.expr(id) else {
@@ -2825,8 +2835,29 @@ impl<'a> Analysis<'a> {
                 };
                 receivers.contains(&(*s, *v))
             })
-            .collect();
-        for id in calls {
+            .collect()
+    }
+
+    /// Calls with a `keyof X` argument whose `X` reads keys from a table in
+    /// `extended`. The fixpoint flattened `keyof X` before the deferred defs
+    /// landed, so a handler named by string — `self:ScheduleTimer("Tick")` inside
+    /// a method of a `NewAddon` object that defines `Tick` — would read as missing.
+    fn keyof_calls_on(&self, extended: &HashSet<TableIndex>) -> Vec<ExprId> {
+        if extended.is_empty() {
+            return Vec::new();
+        }
+        self.ir.call_resolutions.iter()
+            .filter(|(_, cr)| cr.keyof_arg_targets.values().any(|&t| {
+                self.ir.keyof_source_tables(t).iter().any(|src| extended.contains(src))
+            }))
+            .map(|(&id, _)| id)
+            .collect()
+    }
+
+    /// Re-run each call's resolution from scratch, replacing its fixpoint-era
+    /// cached type and `call_resolutions` entry.
+    fn reresolve_calls(&mut self, calls: &[ExprId]) {
+        for &id in calls {
             if let Expr::FunctionCall { func, .. } = self.ir.expr(id) {
                 let func = *func;
                 if let Some(slot) = self.resolved_expr_cache.get_mut(func.val()) {

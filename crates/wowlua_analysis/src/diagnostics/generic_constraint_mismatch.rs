@@ -21,11 +21,8 @@ impl DiagnosticPass for GenericConstraintMismatch {
                 if let Some(raw_c) = raw_constraint
                     && let Some(ref_name) = crate::annotations::parse_keyof_constraint(raw_c) {
                         if let Some(table_idx) = cr.resolve_keyof_target(ref_name) {
-                            let fields = crate::analysis::collect_class_fields_impl(
-                                &analysis.ir, &analysis.resolved_expr_cache, table_idx,
-                            );
                             let valid = match bound_type {
-                                ValueType::String(Some(key)) => fields.iter().any(|(n, _, _)| n == key),
+                                ValueType::String(Some(key)) => analysis.ir.keyof_key_names(table_idx).contains(key),
                                 _ => true, // Non-literal: can't validate statically
                             };
                             if !valid {

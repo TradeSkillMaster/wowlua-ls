@@ -67,15 +67,16 @@ Wiki parsing handles <code v-pre>{{apisig|...}}</code> templates, `== Arguments 
 
 ### 6. Local overrides
 
-Hand-written override files in `stubs/overrides/` take precedence over vendor stubs: an override's function and method definitions replace the vendor's, whatever the file is named. An override whose filename stem matches a vendor file (such as `LibStub.lua`) also replaces that whole vendor file, along with the pipeline's in-place rewrites of it (wiki enrichment, secret-value annotations, tooltip data accessors), so an override that changes individual methods gets a stem of its own (such as `SetOwner.lua`). Overrides handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (45 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
+Hand-written override files in `stubs/overrides/` take precedence over vendor stubs: an override's function and method definitions replace the vendor's, whatever the file is named. An override whose filename stem matches a vendor file (such as `LibStub.lua`) also replaces that whole vendor file, along with the pipeline's in-place rewrites of it (wiki enrichment, secret-value annotations, tooltip data accessors), so an override that changes individual methods gets a stem of its own (such as `SetOwner.lua`). Overrides handle cases that require wowlua-ls-specific annotations not expressible in standard LuaLS (generics, intersections, variadic types, etc.). The full set (47 files, alphabetical - keep in sync with `ls stubs/overrides/*.lua`):
 
 | File | Purpose |
 |------|---------|
 | `AceAddon-3.0.lua` | AceAddon library stubs; the library class inherits the embeddable `AceAddon` prototype so `---@class Foo : AceAddon-3.0` resolves `NewModule`/`GetModule`/… |
-| `AceDB-3.0.lua` | AceDB library stubs; `AceDB:New`/`db:RegisterNamespace` are generic over the `defaults` table, returning `Defaults & AceDBObject-3.0` so the declared default sections/fields are typed on the DB object while its methods stay available. Sections are non-nil `table` so indexing them doesn't trip `need-check-nil` |
+| `AceDB-3.0.lua` | AceDB library stubs; `AceDB:New`/`db:RegisterNamespace` are generic over the `defaults` table, returning `Defaults & AceDBObject-3.0` so the declared default sections/fields are typed on the DB object while its methods stay available. Sections are non-nil `table` so indexing them doesn't trip `need-check-nil`. `db.RegisterCallback` types a string `method` (or, when it is omitted, the event name) as a key of the target |
 | `AceEvent-3.0.lua` | AceEvent library stubs; `RegisterEvent`/`RegisterMessage` type the handler as `keyof self` so the handler string navigates to (and is checked against) the method on `self` |
 | `AceGUI-3.0.lua` | AceGUI library stubs |
 | `AceLocale-3.0.lua` | AceLocale library stubs; default-locale `NewLocale(app, locale, true)` returns a non-nil table so the `L[key] = true` idiom doesn't trip `need-check-nil` |
+| `AceTimer.lua` | AceTimer-3.0 `ScheduleTimer`/`ScheduleRepeatingTimer` with a method-name callback typed `keyof self` (the rest of AceTimer stays vendored) |
 | `BattlePetTooltip.lua` | Runtime-injected `AddLine` method that Ketho's vendor annotation omits |
 | `CallbackRegistryMixin.lua` | `@generates-events` on `GenerateCallbackEvents` so the synthesized `.Event` enum table resolves |
 | `ClassicLegacyEnums.lua` | `LE_*` constants used by addons but not referenced by FrameXML (so not auto-discovered) |
@@ -100,6 +101,7 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `NamePlateBaseMixin.lua` | Base mixin for name plates |
 | `newproxy.lua` | Userdata proxy creation |
 | `next.lua` | Generic next iterator with `K!, V!` |
+| `osdate.lua` | `date("*t")` fields typed `integer` rather than the vendor's integer-or-string |
 | `pairs.lua` | Generic iterator with `K!, V!` (non-nil keys/values) |
 | `pcall.lua` | Generic success/error tuple returns |
 | `pcallwithenv.lua` | Generic pcall variant with environment |

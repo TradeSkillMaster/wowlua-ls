@@ -1961,6 +1961,36 @@ impl Ir {
         names
     }
 
+    /// The tables a `keyof` key set reads fields from: the table itself, its
+    /// ancestors (`parent_classes`, transitively) and `built_table`s, each once.
+    pub fn keyof_source_tables(&self, table_idx: TableIndex) -> Vec<TableIndex> {
+        let mut out = Vec::new();
+        let mut visited = HashSet::default();
+        let mut stack = vec![table_idx];
+        while let Some(t) = stack.pop() {
+            if !visited.insert(t) { continue; }
+            out.push(t);
+            let table = self.table(t);
+            stack.extend(table.parent_classes.iter().copied());
+            stack.extend(table.built_table);
+        }
+        out
+    }
+
+    /// The key names `keyof` a table yields, sorted: every field name of its
+    /// `keyof_source_tables`, including the fields this file adds to external ones
+    /// (`function addon:Tick()` on a `NewAddon` object lands in `overlay_fields`).
+    /// `__`-prefixed names are skipped, as in `collect_class_fields_impl`.
+    pub fn keyof_key_names(&self, table_idx: TableIndex) -> Vec<String> {
+        let mut names: Vec<String> = self.keyof_source_tables(table_idx).into_iter()
+            .flat_map(|t| self.table_field_name_set(t))
+            .filter(|n| !n.starts_with("__"))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
     /// Checks whether any table in a (possibly union/intersection) type has a
     /// field with the given name where the predicate returns true.
     pub fn any_table_field_matches(

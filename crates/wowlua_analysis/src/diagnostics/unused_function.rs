@@ -82,14 +82,14 @@ fn resolve_field_func(ir: &Ir, base_expr: ExprId, field_name: &str) -> Option<Fu
     }
 }
 
-/// Record the workspace (external) function index of a method named by a `keyof X`
-/// string argument. `target` is the table `keyof X` resolved to; when the method
-/// is defined in the *same* file, that table is the file-local `@class` table whose
-/// field points to a *local* `FunctionDef`. So also look up the external class table
+/// Record the method named by a `keyof X` string argument. `target` is the table
+/// `keyof X` resolved to; when the method is defined in the *same* file, that table
+/// is file-local and its field points to a *local* `FunctionDef`, recorded by
+/// definition offset. For a `@class` target, also look up the external class table
 /// by name (`ext.classes` — unlike a global-symbol lookup, this finds `@class`es
-/// declared on a `local`), whose field yields the workspace index the cross-file
-/// unused check compares against.
-fn record_keyof_handler_ref(ir: &Ir, target: TableIndex, name: &str, out: &mut HashSet<FunctionIndex>) {
+/// declared on a `local`), whose field yields the workspace index directly.
+fn record_keyof_handler_ref(analysis: &AnalysisResult, target: TableIndex, name: &str, refs: &mut FileReferenceData) {
+    let ir = &analysis.ir;
     let ext_by_name = ir
         .table(target)
         .class_name
@@ -98,10 +98,11 @@ fn record_keyof_handler_ref(ir: &Ir, target: TableIndex, name: &str, out: &mut H
     for t in [Some(target), ext_by_name].into_iter().flatten() {
         if let Some(field) = ir.get_field(t, name)
             && let Expr::FunctionDef(func_idx) = ir.expr(field.expr)
-            && func_idx.is_external()
         {
-            out.insert(*func_idx);
-            return;
+            refs.record_function(analysis, *func_idx);
+            if func_idx.is_external() {
+                return;
+            }
         }
     }
 }
@@ -202,11 +203,7 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
             let Some(table_idx) = cr.resolve_keyof_target(ref_name) else {
                 continue;
             };
-            if let Some(field) = analysis.ir.get_field(table_idx, key)
-                && let Expr::FunctionDef(func_idx) = analysis.ir.expr(field.expr)
-            {
-                refs.record_function(analysis, *func_idx);
-            }
+            record_keyof_handler_ref(analysis, table_idx, key, &mut refs);
         }
     }
 
@@ -224,7 +221,7 @@ pub fn collect_file_reference_data(analysis: &AnalysisResult) -> FileReferenceDa
         for (&arg_idx, &target) in &cr.keyof_arg_targets {
             let Some(&arg_expr) = args.get(arg_idx) else { continue };
             let Some(key) = analysis.ir.string_literals.get(&arg_expr) else { continue };
-            record_keyof_handler_ref(&analysis.ir, target, key, &mut refs.referenced_external_functions);
+            record_keyof_handler_ref(analysis, target, key, &mut refs);
         }
     }
 

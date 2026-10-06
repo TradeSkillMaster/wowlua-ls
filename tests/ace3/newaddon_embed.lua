@@ -27,3 +27,22 @@ end
 local Mod = Addon:NewModule("EmbedModule", "AceEvent-3.0")
 local _modReg = Mod.RegisterEvent     -- AceEvent-3.0 (embedded on the module)
 local _modName = Mod.GetName          -- AceModule (own)
+
+-- A string callback names a method this file defines on the addon object, both
+-- from inside the addon's own methods (`self:`) and on the addon local itself. The
+-- methods attach to the addon only after the fixpoint, so the handler-name check
+-- must see them then. A name with no such method is still a type-mismatch.
+local Timed = AceAddon:NewAddon("EmbedTimerAddon", "AceTimer-3.0", "AceEvent-3.0")
+
+function Timed:Tick() end
+function Timed:OnLoaded() end
+
+function Timed:OnEnable()
+    self:ScheduleTimer("Tick", 1)
+    self:ScheduleRepeatingTimer("Tick", 1)
+    self:RegisterEvent("ADDON_LOADED", "OnLoaded")
+end
+
+Timed:ScheduleTimer("Tick", 1)
+Timed:ScheduleTimer("NoSuchMethod", 1)
+--                   ^ diag: type-mismatch

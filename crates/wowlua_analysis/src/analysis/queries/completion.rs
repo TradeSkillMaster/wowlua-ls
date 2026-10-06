@@ -1408,13 +1408,8 @@ impl AnalysisResult {
                 if let Some(ref_name) = keyof_target
                     && let Some(table_idx) = call_res.resolve_keyof_target(&ref_name)
                 {
-                    let fields = crate::analysis::collect_class_fields_impl(
-                        &self.ir, &self.resolved_expr_cache, table_idx,
-                    );
-                    let mut names: Vec<&str> = fields.iter().map(|(n, _, _)| n.as_str()).collect();
-                    names.sort_unstable();
-                    let types = names.into_iter()
-                        .map(|s| ValueType::String(Some(s.to_owned()))).collect();
+                    let types = self.ir.keyof_key_names(table_idx).into_iter()
+                        .map(|s| ValueType::String(Some(s))).collect();
                     return Some(ValueType::Union(types));
                 }
             }

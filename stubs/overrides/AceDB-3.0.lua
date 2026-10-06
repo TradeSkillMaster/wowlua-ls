@@ -102,9 +102,14 @@ function DBObjectLib:ResetProfile(noChildren, noCallbacks) end
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/api/ace-db-3-0#title-12)
 function DBObjectLib:SetProfile(name) end
 
----@param target table The object registering to listen for the callback
+--- Register for a database event. With a string `method` the handler is
+--- `target[method]`; with a function it is called directly; when `method` is omitted
+--- the handler is the method named after the event (`target[eventName]`).
+---@generic T: table
+---@overload fun(target: T, eventName: AceDB.EventName & keyof T)
+---@param target T The object registering to listen for the callback
 ---@param eventName AceDB.EventName The name of the event triggering the callback
----@param method? string|function The method to call when the event is fired
+---@param method keyof T | function The method to call when the event is fired
 ---[Documentation](https://www.wowace.com/projects/ace3/pages/ace-db-3-0-tutorial#title-5)
 function DBObjectLib.RegisterCallback(target, eventName, method) end
 
