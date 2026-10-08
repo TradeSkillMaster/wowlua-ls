@@ -10,8 +10,6 @@
 --     now emitted as a real function (src/annotations/scan_globals.rs).
 --   * EncounterJournal.instanceID/.encounterID — field writes onto a class-typed
 --     global, registered by discover_runtime_fields (src/stub_gen/framexml.rs).
---   * Frame:SetMinResize/SetMaxResize — wiki {{widgetmethod removed=10.0.0}} pages
---     (src/stub_gen/wiki.rs), emitted Classic-flavored.
 --   * frame.Child parentKey fields (e.g. HelpFrame.CloseButton) — harvested from
 --     XML structure via xml_scan (src/stub_gen/xml_frames.rs); the child's base
 --     widget type is kept so it resolves even when an inherits= template is
@@ -22,6 +20,8 @@
 -- defined only in FrameXML (absent from the wow-ui-source clone) so they stay
 -- undefined-global; GenericTraitFrame:SetSystemID does not exist in any source (the
 -- real method is SetConfigIDBySystemID) so the undefined-field is a true positive.
+-- Frame:SetMinResize/SetMaxResize are likewise gone from every client, Classic
+-- included (see tests/flavor-filter/classic-only).
 
 -- ── Named region globals (classic crafting/enchant FontStrings) ──────────────
 local a = TradeSkillDescription

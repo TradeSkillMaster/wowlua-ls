@@ -10,6 +10,11 @@ PlayerGetTimerunningSeasonID()
 -- AbandonQuest is available in classic + classic_era, so no warning.
 AbandonQuest()
 
+-- Frame:SetMinResize left the Classic clients too (Classic Era 1.14.4, Wrath Classic
+-- 3.4.1; replaced by SetResizeBounds), so it is undefined on every flavor.
+_f:SetMinResize(10, 10)
+-- ^ diag: undefined-field
+
 -- Local shadow with `or` fallback — no warning.
 local MyAbbrev = PlayerGetTimerunningSeasonID or function() end
 MyAbbrev()
