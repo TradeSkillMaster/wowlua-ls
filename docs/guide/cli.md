@@ -68,3 +68,11 @@ The included content starts at `## Fields` / `## Methods` level, so it integrate
 - name: Generate API docs
   run: wowlua_ls doc . --out-dir docs/api
 ```
+
+## `--version`: Print the version
+
+```bash
+wowlua_ls --version
+```
+
+Prints the release the binary was built from, or `0.0.0` for a build from source. The language server reports the same version to your editor: it logs `Starting wowlua_ls <version>` at startup and returns it as `serverInfo` in its `initialize` response.

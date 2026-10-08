@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     // version checks). Handled before clap so the output stays exactly the
     // version number, and so it works regardless of position in the args.
     if env::args().any(|a| a == "--version") {
-        println!("{}", env!("CARGO_PKG_VERSION"));
+        println!("{}", wowlua_ls::lsp::VERSION);
         return Ok(());
     }
 

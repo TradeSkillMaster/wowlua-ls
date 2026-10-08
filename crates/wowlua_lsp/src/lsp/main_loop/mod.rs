@@ -531,7 +531,7 @@ fn prune_nested_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
-    log::info!("Starting wowlua_ls");
+    log::info!("Starting wowlua_ls {}", crate::lsp::VERSION);
     // Create the transport. Includes the stdio (stdin and stdout) versions but this could
     // also be implemented to use sockets or HTTP.
     let (connection, _io_threads) = Connection::stdio();
@@ -682,7 +682,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         "capabilities": capabilities_value,
         "serverInfo": {
             "name": "wowlua_ls",
-            "version": "0.1"
+            "version": crate::lsp::VERSION
         }
     });
 

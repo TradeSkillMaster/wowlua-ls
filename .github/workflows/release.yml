@@ -40,6 +40,15 @@ jobs:
           rustup toolchain install
           rustup target add ${{ matrix.target }}
 
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          TABLE='/^\[workspace\.package]/,/^\[/'
+          sed -i.bak "${TABLE}s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          rm Cargo.toml.bak
+          sed -n "${TABLE}p" Cargo.toml | grep "^version = \"$VERSION\""
+
       - name: Build standalone binary (embedded stubs)
         run: cargo build --release --target ${{ matrix.target }}
 

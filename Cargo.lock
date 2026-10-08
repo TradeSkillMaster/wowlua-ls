@@ -1400,6 +1400,7 @@ dependencies = [
  "mimalloc",
  "mlua",
  "rayon",
+ "serde_json",
  "wowlua_analysis",
  "wowlua_core",
  "wowlua_doc",

@@ -19,6 +19,9 @@ pub use main_loop::compute_code_actions;
 pub use main_loop::make_generate_annotation_stubs_source_action;
 pub use main_loop::ConfigEditContext;
 
+/// The version reported by `--version`, the startup log, and `serverInfo`.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Wraps `LinePositions` to clamp out-of-bounds offsets instead of panicking.
 /// This prevents crashes when analysis offsets are stale (from a previous,
 /// longer document version) but `LinePositions` was built from the current text.
