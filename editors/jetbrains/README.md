@@ -6,13 +6,14 @@ IntelliJ-based plugin that connects any JetBrains IDE (IntelliJ IDEA, PyCharm, W
 
 All features are provided by the `wowlua_ls` language server:
 
-- 9,000+ WoW API stubs built in (retail, classic, classic era)
+- 9,000+ WoW API stubs built in (retail, classic, classic era, WoW Forever)
 - Event handler typing with per-event payload params
 - XML frame scanning for frame definitions, virtual templates, and mixins
 - TOC file support - hover, completions, go-to-definition, and diagnostics
 - Metatable inference, correlated narrowing, mixin and template support
 - Flavor filtering - warns on APIs unavailable in your target game version
-- 70 diagnostics for type safety, nil checking, annotation correctness, and WoW-specific checks
+- Secret values (retail 12.x) - flags comparisons, arithmetic, and other operations that error on secret API results
+- 80+ diagnostics for type safety, nil checking, annotation correctness, and WoW-specific checks
 - Diagnostic plugins for project-specific conventions
 - Powerful generics, builder patterns, signature help with overload resolution
 - Code completion, go-to-definition, find references, rename, semantic tokens
@@ -49,11 +50,6 @@ Then add the binary to your PATH.
 
 ```bash
 cd editors/jetbrains
-
-# Generate Gradle wrapper (requires Gradle 8.x installed)
-gradle wrapper
-
-# Build the plugin
 ./gradlew buildPlugin
 ```
 
@@ -86,10 +82,12 @@ This launches a fresh IntelliJ instance with the plugin loaded. Open any directo
 src/main/
 ├── kotlin/com/tradeskillmaster/wowluals/
 │   ├── lsp4ij/
-│   │   └── WowLuaLanguageServerFactory.kt # LSP4IJ client wiring (server + enablement)
-│   ├── WowLuaServerPath.kt                # wowlua_ls binary resolution
-│   ├── WowLuaTextMateBundleProvider.kt    # Registers the bundled TextMate grammars
-│   └── WowLuaSettings.kt                  # Persistent settings (LSP4IJ server enable/disable)
+│   │   ├── WowLuaLanguageServerFactory.kt  # LSP4IJ client wiring (server + enablement)
+│   │   └── WowLuaGotoDeclarationHandler.kt # Keeps the caret in place when a symbol has no definition
+│   ├── WowLuaServerPath.kt                 # wowlua_ls binary resolution
+│   ├── WowLuaStubDir.kt                    # On-disk stub directory for go-to-definition into WoW API stubs
+│   ├── WowLuaTextMateBundleProvider.kt     # Registers the bundled TextMate grammars
+│   └── WowLuaSettings.kt                   # Persistent settings (LSP4IJ server enable/disable)
 └── resources/META-INF/
     ├── plugin.xml                         # Plugin descriptor (LSP4IJ server registration)
     └── textmate.xml                       # TextMate bundle registration

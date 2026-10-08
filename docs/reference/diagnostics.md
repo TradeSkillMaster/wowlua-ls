@@ -2,11 +2,18 @@
 
 Complete reference of every diagnostic code. For an introduction to how diagnostics work and how to configure them, see the [Diagnostics guide](/guide/diagnostics).
 
+## Error severity
+
+| Code | Description |
+|---|---|
+| `syntax` | Lua syntax error: code that doesn't parse |
+| `safety-limit` | Analysis of the file hit an internal limit and stopped early, so some types and diagnostics may be missing. Reported at the top of the file |
+
 ## Warning severity
 
 | Code | Description |
 |---|---|
-| `deprecated` | Usage of `@deprecated` symbols (flavor-aware: suppressed when the API is still live in a flavor the addon targets; see [Flavor Filtering](/guide/flavor-filtering#flavor-aware-deprecation)) |
+| `deprecated` | Call to a function marked `@deprecated` (flavor-aware: suppressed when the API is still live in a flavor the addon targets; see [Flavor Filtering](/guide/flavor-filtering#flavor-aware-deprecation)) |
 | `discard-returns` | Ignoring `@nodiscard` return values |
 | `type-mismatch` | Argument type vs `@param` mismatch (including generic type arguments, e.g. `Container<number>` vs `Container<boolean>`, and string-literal unions, e.g. `"x"` against `"A"\|"B"\|"C"`) |
 | `return-mismatch` | Return type vs `@return` mismatch |
@@ -56,25 +63,25 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `secret-access` | Indexing (including a method call), calling, or taking the length of a value that may be [secret](/guide/secrets) (retail) |
 | `redundant-class-generic` | Method redeclares class-level `@generic` |
 | `cannot-call` | Calling a value whose type is not callable |
-| `invalid-op` | Operator applied to incompatible types (e.g. `+` on strings instead of `..`) **(off by default)** |
+| `invalid-op` | Arithmetic, concatenation, or `<`/`>`/`<=`/`>=` applied to incompatible types (e.g. `+` on strings instead of `..`), or `#` on a value that has no length **(off by default)** |
 | `create-global` | Implicit global creation |
 | `invalid-class-parent` | Inheriting from a non-table type (`number`, `string`, literals, etc.) |
 | `mixed-enum-values` | `@enum` with mixed number/string values or unsupported value types |
 | `unknown-callback-event` | Event name passed to a callback registry that was never declared via `GenerateCallbackEvents` **(off by default)** |
 | `class-shadows-builtin` | A workspace `@class` with its own `@field`s reuses a built-in WoW API class name |
+| `redefined-local` | Same-scope local variable redefinition |
+| `duplicate-set-field` | Setting an already-set field on `@class` tables |
 
 ## Hint severity
 
 | Code | Description |
 |---|---|
 | `return-self-class-name` | Method uses `@return ClassName` instead of `@return self` |
-| `unused-local` | Unreferenced local variables |
-| `unused-function` | Unused function definitions **(off by default)** |
+| `unused-local` | Unreferenced local variables (an unused local function reports `unused-function` instead, which is off by default) |
+| `unused-function` | Unused function definitions, including `local function f()` and `local f = function() end` **(off by default)** |
 | `unused-vararg` | Function declares `...` but never uses it **(off by default)** |
-| `redefined-local` | Same-scope local variable redefinition |
 | `shadowed-local` | Local variable shadows an outer-scope variable |
 | `inject-field` | Setting undeclared fields on `@class` tables |
-| `duplicate-set-field` | Setting an already-set field on `@class` tables |
 | `unreachable-code` | Code after return |
 | `code-after-break` | Code after break |
 | `incomplete-signature-doc` | Partial `@param`/`@return` annotations **(off by default)** |
@@ -142,19 +149,19 @@ Loop idioms (`while true`, `repeat...until false`) are not flagged. Conditions r
 
 ### `unused-function`
 
-Flags function definitions that are never referenced anywhere in the workspace. Covers both top-level global functions and methods defined on tables (e.g. `function NS.Method()`).
+Flags function definitions that are never referenced anywhere in the workspace. Covers top-level global functions, methods defined on tables (e.g. `function NS.Method()`), and `local` functions. An unused `local function f()` reports `unused-function`, not `unused-local`.
 
 **What counts as "used":**
 
-- Called directly via `call_resolutions` (handles deep type inference, self-calls, etc.)
-- Referenced as a value (e.g. passed as a callback, stored in a variable) - detected via field-access token resolution with inheritance
+- Called anywhere in the workspace, including `self:Method()` calls
+- Referenced as a value (e.g. passed as a callback, stored in a variable or table)
+- Named by a string where the API takes a method name, such as `self:ScheduleTimer("OnTick", 1)` (parameters typed `keyof T`)
 
 **What is skipped (not flagged):**
 
 - Functions whose name starts with `_` (convention for intentionally unused)
 - Functions defined in library files (directories marked with `library` in `.wowluarc.json`)
-- Interface methods: if 2+ distinct tables define a method taking `self` (`function T:Method()` or `function T.Method(self)`) with the same name, those methods are assumed to be a framework callback pattern (duck-typing dispatch). Static functions such as `function Module.Reset()` are always checked and don't count toward the 2.
-- Inherited methods: if a parent class's field is referenced, child overrides are also considered used
+- Interface methods: if 2+ distinct tables define a method taking `self` (`function T:Method()` or `function T.Method(self)`) with the same name, those methods are treated as a framework callback pattern (duck-typing dispatch). This also covers a method and its override in a subclass. Static functions such as `function Module.Reset()` are always checked and don't count toward the 2.
 
 **Cross-file behavior:**
 
@@ -168,10 +175,10 @@ These diagnostics apply to `.toc` files only. See the [TOC Files guide](/guide/t
 |---|---|---|
 | `toc-missing-interface` | Warning | Required `## Interface:` field is missing |
 | `toc-duplicate-header` | Warning | Same header key appears more than once |
-| `toc-unknown-header` | Hint | Header not in the known catalog and not `X-*` |
+| `toc-unknown-header` | Hint | Header not in the known catalog and not an `X-*` custom field |
 | `toc-invalid-interface` | Error | Interface value is not a valid numeric version |
 | `toc-nonexistent-file` | Warning | Referenced file does not exist on disk |
-| `toc-invalid-value` | Warning | Value doesn't match expected format |
+| `toc-invalid-value` | Warning | Unknown game type in `AllowLoadGameType` / `ExcludeLoadGameType` (header or per-line), or a header missing its colon |
 
 ## LuaLS compatibility aliases
 

@@ -15,7 +15,7 @@ hero:
 
 features:
   - title: WoW API out of the box
-    details: "9,000+ API stubs for retail, classic, and classic era - loaded instantly, no setup needed. XML frame scanning types your templates and named frames automatically. Full .toc file editing with hover, completions, and diagnostics."
+    details: "9,000+ API stubs for retail, classic, classic era, and WoW Forever - loaded instantly, no setup needed. XML frame scanning types your templates and named frames automatically. Full .toc file editing with hover, completions, and diagnostics."
   - title: Event handlers, fully typed
     details: "SetScript handlers get typed automatically: self, event, and per-event payload params. Narrow event == \"ENCOUNTER_END\" and ... resolves to the exact payload types. Works with custom event systems too."
   - title: Metatable inference
@@ -28,8 +28,8 @@ features:
     details: "Addon namespace resolution, class inheritance across files, defclass factories, XML templates, and metatable chains - all resolved workspace-wide with parallel scanning. Multi-addon workspaces supported."
   - title: Flavor filtering
     details: "Declare target flavors (retail, classic, classic_era, forever) and get warnings on APIs that don't exist in all your targets. WOW_PROJECT_ID guards and @flavor-narrows are understood."
-  - title: CI-ready CLI
-    details: "wowlua_ls check path/to/addon lints your addon from the command line. Exit code 1 on diagnostics. Drop it straight into your CI pipeline."
+  - title: Your editor, plus CI
+    details: "Install from the VS Code Marketplace, Open VSX, the JetBrains Marketplace, or Zed's extensions; Neovim and any other LSP client work too. wowlua_ls check lints your addon from the command line and exits 1 on diagnostics, ready for CI."
   - title: LuaLS-compatible annotations
     details: "Uses the same ---@ annotation syntax you already know. Migrate incrementally. Your existing annotations work, and wowlua-ls adds powerful WoW-specific extensions on top."
 ---

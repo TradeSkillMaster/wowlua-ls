@@ -31,7 +31,7 @@
       "type": "array",
       "items": { "type": "string" },
       "default": [],
-      "description": "Paths to scan for types but suppress diagnostics. Useful for third-party libraries where you want type information but can't fix diagnostic issues. Relative entries use the same pattern syntax as ignore. Absolute paths are also supported for libraries outside the workspace."
+      "description": "Paths to scan for types but suppress diagnostics. Useful for third-party libraries where you want type information but can't fix diagnostic issues. Relative entries use the same pattern syntax as ignore. Absolute paths and relative paths that leave the workspace (e.g. ../shared) are also supported for libraries outside the workspace."
     },
     "framexml": {
       "type": "boolean",
@@ -247,7 +247,7 @@
           "type": "array",
           "items": { "$ref": "#/$defs/diagnosticCode" },
           "default": [],
-          "description": "Diagnostic codes to enable. Used for default-off diagnostics (need-check-nil, nil-index, implicit-nil-return, invalid-op, unused-vararg, incomplete-signature-doc, redundant-or, redundant-and, unknown-*-type) or to override a parent config's disable list."
+          "description": "Diagnostic codes to enable. Used for default-off diagnostics (need-check-nil, nil-index, implicit-nil-return, invalid-op, unused-vararg, unused-function, incomplete-signature-doc, missing-param-annotation, missing-return-annotation, redundant-or, redundant-and, redundant-condition, unknown-callback-event, unknown-param-type, unknown-return-type, unknown-local-type, unknown-field-type) or to counteract a disable entry in this same config. Nested configs do not inherit it."
         },
         "severity": {
           "type": "object",
@@ -272,6 +272,7 @@
         "builds-field-not-self",
         "cannot-call",
         "circle-doc-class",
+        "class-shadows-builtin",
         "code-after-break",
         "constructor-return",
         "count-down-loop",
@@ -297,8 +298,10 @@
         "invalid-op",
         "malformed-annotation",
         "missing-fields",
+        "missing-param-annotation",
         "missing-parameter",
         "missing-return",
+        "missing-return-annotation",
         "missing-return-value",
         "mixed-enum-values",
         "multi-return-projection",
@@ -334,6 +337,7 @@
         "undefined-doc-param",
         "undefined-field",
         "undefined-global",
+        "unknown-callback-event",
         "unknown-diag-code",
         "unknown-field-type",
         "unknown-local-type",

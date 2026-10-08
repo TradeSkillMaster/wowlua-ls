@@ -16,50 +16,52 @@ By default, WoW API stubs are embedded in the binary so it works as a standalone
 cargo build --release --no-default-features
 ```
 
+## Checks before committing
+
+```bash
+cargo test --workspace                  # a bare `cargo test` skips the library crates' tests
+cargo clippy --workspace --all-targets
+```
+
+Warnings are denied workspace-wide (`[workspace.lints]` in `Cargo.toml`), so a plain `cargo build` or `cargo test` fails on any rustc warning, and clippy must be clean. The toolchain is pinned in `rust-toolchain.toml` so a compiler update can't surface new warnings; bump it deliberately and re-run clippy when you do.
+
+Some changes need a follow-up step:
+
+| When | Also do |
+|---|---|
+| You change `crates/wowlua_stub_gen/`, `crates/wowlua_analysis/src/xml_scan.rs`, or `stubs/overrides/` | Run `cargo run -- regenerate-stubs` and commit both `stubs/precomputed.bin.zst` and `stubs/precomputed-files.bin.zst` (see [Stub Generation](./stub-generation)) |
+| You run the VS Code extension from source | `cargo build`, then `cd editors/vscode && npm run build` (the extension loads the bundled `dist/extension.js`) |
+| You edit a grammar in `editors/vscode/syntaxes/` | Run `python3 editors/jetbrains/textmate/sync_grammars.py` and commit the regenerated JetBrains copies |
+
 ## Project structure
 
+The project is a cargo workspace. Code lives in layered library crates under `crates/`, and each crate can only use the crates listed above it:
+
 ```
-src/
-├── main.rs              # CLI entry point (check, evaluate, test-query, dump-stubs, LSP)
-├── types.rs             # Core IR: ValueType, Expr, Symbol, Scope, Function, TableInfo
-├── ast.rs               # AST node definitions and casts over SyntaxNode
-├── config.rs            # .wowluarc.json loading
-├── flavor.rs            # Retail/classic/classic_era flavor bitmask
-├── stub_gen/            # Stub generation from WoW API primary sources (split by pipeline stage)
-├── annotations/
-│   ├── mod.rs           # Core types (AnnotationType, ClassDecl, AliasDecl, etc.)
-│   ├── annotation_types.rs    # Type expression parsing and formatting
-│   ├── annotation_scanning.rs # Shared helpers, type conversion
-│   ├── scan_globals.rs  # Workspace-wide global scanning
-│   ├── scan_defclass.rs # @defclass annotation processing
-│   └── scan_built_name.rs     # @built-name annotation processing
-├── analysis/
-│   ├── mod.rs           # Ir struct, two-tier lookups, scope-chain walking
-│   ├── prescan.rs       # Phase 0: class/alias pre-scan, annotation type resolution
-│   ├── build_ir.rs      # Phase 1: AST walk → scopes, symbols, expressions
-│   ├── lower_expression.rs    # Expression lowering (identifiers, calls, operators)
-│   ├── narrowing.rs     # Type narrowing from control flow guards
-│   ├── resolve.rs       # Phase 2: fixpoint type resolution loop
-│   ├── resolve_call.rs  # Function call resolution, generic binding, backward inference
-│   ├── checks.rs        # Diagnostic check orchestration
-│   ├── queries.rs       # LSP queries: hover, definition, completion, signature help
-│   └── semantic_tokens.rs
-├── diagnostics/
-│   ├── mod.rs           # DiagnosticDef catalog, DiagnosticPass trait, run_all()
-│   └── *.rs             # 39 diagnostic pass modules (60 diagnostic codes)
-├── pre_globals/
-│   ├── mod.rs           # PreResolvedGlobals: WoW API stubs, shared across files
-│   └── build_on_stubs.rs      # Workspace incremental builds on precomputed stubs
-├── syntax/
-│   ├── parser.rs        # Recursive descent + Pratt parser
-│   ├── tree.rs          # Arena-based syntax tree
-│   ├── lexer.rs         # Tokenization
-│   └── syntax_kind.rs   # SyntaxKind enum
-└── lsp/
-    ├── main_loop.rs     # LSP server loop, request handlers
-    ├── diagnostics.rs   # Diagnostic publishing with suppression
-    └── uri.rs           # URI/path conversion utilities
+crates/
+├── wowlua_syntax/       # Lexer, parser, arena syntax tree (syntax/), typed AST (ast.rs)
+├── wowlua_core/         # Shared vocabulary: IR types (types.rs), flavor bitmask (flavor.rs:
+│                        #   retail, classic, classic_era, forever), annotation type definitions
+├── wowlua_analysis/     # Per-file analysis engine
+│   ├── analysis/        # Ir, analysis phases (prescan, build_ir, resolve), narrowing
+│   │   └── queries/     # LSP queries: hover, definition, completion, references, inlay hints, ...
+│   ├── annotations/     # Annotation parsing and cross-file scanners (globals, @defclass, @built-name)
+│   ├── diagnostics/     # DiagnosticDef catalog, DiagnosticPass trait, run_all(), one module per pass
+│   ├── pre_globals/     # PreResolvedGlobals: WoW API + workspace type database shared across files
+│   ├── config.rs        # .wowluarc.json loading
+│   └── xml_scan.rs      # XML frame/template scanning
+├── wowlua_lsp/          # lsp/main_loop/ (server loop, handlers, workspace scan, rebuild,
+│                        #   stub loading), plugins/ (Lua plugin engine), toc/ (.toc support)
+├── wowlua_doc/          # Markdown API doc generation
+└── wowlua_stub_gen/     # Stub generation pipeline (see Stub Generation)
+src/                     # wowlua_ls binary
+├── main.rs              # Entry point; runs the LSP server over stdio when no subcommand is given
+├── cli/                 # Subcommands: check, evaluate, test-query, dump-types, dump-stubs, doc,
+│                        #   profile, regenerate-stubs
+└── lib.rs               # Re-exports every crate's modules as wowlua_ls::<module>
 ```
+
+For a file-by-file map, see [`CLAUDE.md`](https://github.com/TradeSkillMaster/wowlua-ls/blob/main/CLAUDE.md) in the repository.
 
 ## How analysis works
 
@@ -93,13 +95,13 @@ A fixpoint loop that iterates until no more types change. Each iteration resolve
 
 ### Diagnostic passes
 
-After type resolution, `run_all()` in `src/diagnostics/mod.rs` orchestrates all diagnostic passes. Passes are organized into three groups that run sequentially:
+After type resolution, `run_all()` in `crates/wowlua_analysis/src/diagnostics/mod.rs` orchestrates all diagnostic passes. Passes are organized into three groups that run sequentially:
 
 1. **`run` passes**: walk the IR to check resolved types (type mismatches, undefined globals, missing fields, etc.)
 2. **`visit_node` passes**: walk the AST for syntax-level checks (empty blocks, `not` precedence, unused varargs)
 3. **`run_inject` passes**: the type-mismatch → inject-field pipeline, where type mismatch passes produce excess field info and `inject_field` consumes it last
 
-All 60 diagnostic codes are defined as `DiagnosticDef` constants in `mod.rs`. Each pass module implements the `DiagnosticPass` trait, emitting diagnostics via `CONSTANT_NAME.emit(diags, message, start, end)`. See [Adding a Diagnostic](./adding-diagnostics) for the full walkthrough.
+Every diagnostic code is a `DiagnosticDef` constant in `mod.rs`, listed in its `CATALOG` array. Each pass module implements the `DiagnosticPass` trait, emitting diagnostics via `CONSTANT_NAME.emit(diags, message, start, end)`. See [Adding a Diagnostic](./adding-diagnostics) for the full walkthrough.
 
 ## Hover regression testing
 
@@ -180,15 +182,14 @@ Hand-written seed files live in `fuzz/corpus/<target>/` (small `.lua` files cove
 
 External globals (WoW API stubs) use indices ≥ `EXT_BASE` (1,000,000). Per-file locals use indices below that. This means lookups like `sym()`, `func()`, and `table()` route through an `idx >= EXT_BASE` check: external data lives in the shared `PreResolvedGlobals` while local data is on the per-file `Analysis`.
 
-This avoids cloning ~9,000 external symbols per file, and external indices are stable across files, which is what makes workspace-wide find-references and rename work.
+This avoids cloning ~170,000 external symbols per file, and external indices are stable across files, which is what makes workspace-wide find-references and rename work.
 
 ## Workspace startup
 
-Before any files are analyzed, the LS runs four scanning passes to collect cross-file information:
+Before any files are analyzed, the LS scans the workspace (`crates/wowlua_lsp/src/lsp/main_loop/scan.rs`) to collect cross-file information:
 
-1. **Pass 1**: Scan annotations and file-level globals (`@class`, `@alias`, top-level functions)
-2. **Pass 2**: Discover `@defclass` factory calls and extract constructor fields
-3. **Pass 3**: Discover `@built-name` classes from builder-pattern call sites
-4. **Pass 4**: Scan colon-method bodies for typed `self.field` assignments
+1. **Pass 1** (runs while the stubs load): scan `.xml` files for frames and templates, then parse every `.lua` file and collect its annotations (`@class`, `@alias`, `@event`) and file-level globals. The parse trees are kept for the later passes.
+2. **Pass 2** (needs the stubs): discover `@defclass` factory calls, `@built-name` builder classes, named globals created by `@creates-global` calls (`CreateFrame(type, "Name")`), and `@generates-events` callback registries.
+3. **Pass 3**: scan methods of known classes for `self.field = …` assignments.
 
-This feeds into `PreResolvedGlobals::build()`, which runs five phases of its own to register classes, populate fields, build methods, resolve inheritance (fixpoint loop for deep hierarchies), and set up global functions.
+The results are layered onto the precomputed stub database by `PreResolvedGlobals::build_on_stubs()`, which registers classes and aliases, populates fields, builds methods, resolves inheritance, and sets up global entries.

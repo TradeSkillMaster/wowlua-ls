@@ -11,7 +11,7 @@
 
     <h3>Features</h3>
     <ul>
-        <li>9,000+ WoW API stubs built in - every function, frame type, enum, and global for retail, classic, and classic era</li>
+        <li>9,000+ WoW API stubs built in - every function, frame type, enum, and global for retail, classic, classic era, and WoW Forever</li>
         <li>Event handler typing - <code>SetScript("OnEvent", handler)</code> types <code>self</code>, <code>event</code>, and per-event payload params</li>
         <li>XML frame scanning - automatically scans <code>.xml</code> files for frame definitions, virtual templates, and mixin attributes</li>
         <li>TOC file support - hover, completions, go-to-definition, and diagnostics for <code>.toc</code> files</li>
@@ -19,7 +19,8 @@
         <li>Correlated narrowing - check one return value, and the LS narrows the rest</li>
         <li>Mixin and template support - <code>CreateFrame</code> returns intersection types automatically</li>
         <li>Flavor filtering - warns on APIs unavailable in your target game version</li>
-        <li>70 diagnostics for type safety, nil checking, annotation correctness, and WoW-specific checks</li>
+        <li>Secret values (retail 12.x) - flags comparisons, arithmetic, and other operations that error on secret API results</li>
+        <li>80+ diagnostics for type safety, nil checking, annotation correctness, and WoW-specific checks</li>
         <li>Diagnostic plugins - write custom Lua scripts to enforce project-specific conventions</li>
         <li>Powerful generics, builder patterns, signature help with overload resolution</li>
         <li>Code completion, go-to-definition, find references, rename, semantic tokens</li>

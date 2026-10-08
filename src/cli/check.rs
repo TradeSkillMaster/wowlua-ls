@@ -11,6 +11,7 @@ use log::error;
 use rayon::prelude::*;
 
 use wowlua_ls::analysis::{Analysis, AnalysisConfig};
+use wowlua_ls::diagnostics::SYNTAX_CODE;
 use wowlua_ls::diagnostics::unused_function::FileReferenceData;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::plugins::PluginEngine;
@@ -98,8 +99,8 @@ fn analyze_one_file(
     for e in &tree.errors {
         let start = numbers.from_offset(e.start as usize);
         let start_line = start.0.0;
-        if !lsp::diagnostics::is_suppressed("syntax", start_line, &suppressions) {
-            fr.lines.push(format!("{}:{}:{}: error[syntax] {}", name.display(), start_line + 1, start.1 + 1, e.message));
+        if !lsp::diagnostics::is_suppressed(SYNTAX_CODE, start_line, &suppressions) {
+            fr.lines.push(format!("{}:{}:{}: error[{SYNTAX_CODE}] {}", name.display(), start_line + 1, start.1 + 1, e.message));
             fr.stats.errors += 1;
         }
     }

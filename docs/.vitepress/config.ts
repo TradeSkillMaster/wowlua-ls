@@ -2,9 +2,11 @@ import { defineConfig } from 'vitepress'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
-const luaGrammar = JSON.parse(
-  readFileSync(resolve(__dirname, '../../editors/vscode/syntaxes/lua.tmLanguage.json'), 'utf-8')
-)
+const loadGrammar = (file: string) =>
+  JSON.parse(readFileSync(resolve(__dirname, '../../editors/vscode/syntaxes', file), 'utf-8'))
+
+const luaGrammar = loadGrammar('lua.tmLanguage.json')
+const tocGrammar = { ...loadGrammar('toc.tmLanguage.json'), name: 'toc' }
 
 export default defineConfig({
   base: '/wowlua-ls/',
@@ -16,14 +18,25 @@ export default defineConfig({
   ],
 
   markdown: {
-    languages: [luaGrammar],
+    languages: [luaGrammar, tocGrammar],
   },
 
   themeConfig: {
     logo: '/logo.png',
 
     nav: [
-      { text: 'VS Code Extension', link: 'https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls' },
+      { text: 'Guide', link: '/guide/getting-started' },
+      { text: 'Reference', link: '/reference/annotations' },
+      {
+        text: 'Install',
+        items: [
+          { text: 'VS Code', link: 'https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls' },
+          { text: 'Open VSX', link: 'https://open-vsx.org/extension/TradeSkillMaster/wowlua-ls' },
+          { text: 'JetBrains IDEs', link: 'https://plugins.jetbrains.com/plugin/31581-wow-lua-language-server' },
+          { text: 'Zed, Neovim & others', link: '/guide/getting-started#installation' },
+          { text: 'Releases', link: 'https://github.com/TradeSkillMaster/wowlua-ls/releases' },
+        ],
+      },
     ],
 
     sidebar: [

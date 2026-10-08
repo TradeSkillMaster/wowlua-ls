@@ -206,9 +206,11 @@ end)
 
 Event.Register("CHAT_MSG_CHANNEL", function(...)
     local text = ...
-    -- text: string
+    -- text: secret<string>
 end)
 ```
+
+Chat text can be a [secret value](/guide/secrets) on retail, so `text` is `secret<string>`.
 
 `E` is constrained to `FrameEvent` (any event type works), so it binds to the literal event
 name passed in (`"BAG_UPDATE"`), and `...params<E>` resolves to that event's declared payload.
@@ -220,7 +222,7 @@ positionally from the payload:
 
 ```lua
 Event.Register("CHAT_MSG_CHANNEL", function(text)
-    -- text: string
+    -- text: secret<string>
 end)
 ```
 

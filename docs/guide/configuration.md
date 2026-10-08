@@ -31,7 +31,9 @@ How settings combine depends on whether they affect diagnostics:
 If a subdirectory has its own `.wowluarc.json`, any isolated setting it does **not** restate reverts to the default. It does *not* pick up the parent's value. A child config that only sets `diagnostics.enable` will lose a parent's `flavors` and `framexml` unless it repeats them.
 :::
 
-## Full reference
+## Settings
+
+An example using the most common settings. For every key with its type and default, including `codeLens`, `editor`, and `completion`, see the [Configuration reference](/reference/configuration).
 
 ```json
 {
@@ -125,7 +127,7 @@ Array of WoW flavor names the project targets. Enables the `wrong-flavor-api` di
 { "flavors": ["retail", "classic"] }
 ```
 
-When omitted or empty, flavor filtering is disabled.
+When omitted or empty, there is no project-wide flavor list, but a file listed in a flavor-specific `.toc` (e.g. `MyAddon_Vanilla.toc`) is still checked against that `.toc`'s flavors.
 
 ### `globals`
 
@@ -141,7 +143,7 @@ Declare external globals that shouldn't trigger diagnostics:
 ```
 
 - **`read`**: global names that may be accessed without `undefined-global`
-- **`write`**: global names that may be created/assigned without `create-global`
+- **`write`**: global names that may be created/assigned without `create-global` (and read without `undefined-global`)
 
 Use `read` for globals provided by other addons or libraries not in stubs. Use `write` for globals your addon intentionally exports.
 
@@ -150,6 +152,8 @@ Globals matching `SLASH_*` (slash command definitions like `SLASH_MYADDON1 = "/m
 Globals matching `BINDING_HEADER_*` and `BINDING_NAME_*` (keybinding label definitions like `BINDING_HEADER_MYADDON = "MyAddon"`) are also automatically allowed. Set `"allowBindingGlobals": false` inside `globals` to disable this.
 
 Dynamic global prefixes are also detected automatically. When a file writes globals through a pattern like `_G["PREFIX" .. key] = value` (or `_G[name .. "SUFFIX"]`), the language server registers a wildcard entry (`PREFIX*` or `*SUFFIX`) so that reads of those globals in other files don't trigger `undefined-global`. This is common in localization code that exports translation strings (e.g. `_G["MYADDON_L_" .. key] = value`).
+
+Names bound in your `.xml` files are allowed too: `mixin=` / `secureMixin=` table names and `<On… function="…">` script-handler function names.
 
 `SavedVariables` and `SavedVariablesPerCharacter` from `.toc` files are automatically added to both lists - you don't need to configure them manually.
 
@@ -234,13 +238,13 @@ Fine-grained control over which diagnostics fire and at what severity:
 
 - **`disable`**: suppress these diagnostic codes
 - **`enable`**: opt into diagnostics that are off by default, or counteract a `disable` entry in the same config
-- **`severity`**: override severity: `"warning"`, `"info"`, `"hint"`
+- **`severity`**: override severity: `"error"`, `"warning"`, `"information"` (or `"info"`), `"hint"`
 
 #### Diagnostics disabled by default
 
 These diagnostics are off unless you explicitly enable them:
 
-`need-check-nil`, `nil-index`, `implicit-nil-return`, `invalid-op`, `unused-vararg`, `unused-function`, `incomplete-signature-doc`, `missing-param-annotation`, `missing-return-annotation`, `redundant-or`, `redundant-and`, `redundant-condition`, `unknown-param-type`, `unknown-return-type`, `unknown-local-type`, `unknown-field-type`
+`need-check-nil`, `nil-index`, `implicit-nil-return`, `invalid-op`, `unused-vararg`, `unused-function`, `incomplete-signature-doc`, `missing-param-annotation`, `missing-return-annotation`, `redundant-or`, `redundant-and`, `redundant-condition`, `unknown-callback-event`, `unknown-param-type`, `unknown-return-type`, `unknown-local-type`, `unknown-field-type`
 
 ### `addonRoot`
 
@@ -321,12 +325,12 @@ local unused = computeSomething()
 Or for a block:
 
 ```lua
----@diagnostic disable: undefined-global
+---@diagnostic disable: create-global
 MY_GLOBAL = true
 OTHER_GLOBAL = false
----@diagnostic enable: undefined-global
+---@diagnostic enable: create-global
 ```
 
 ## Auto-reload
 
-Config files are automatically reloaded when saved. No need to restart the language server.
+Config files are automatically reloaded when saved. No need to restart the language server, except after adding a new `plugins` entry: plugins load when the server starts.

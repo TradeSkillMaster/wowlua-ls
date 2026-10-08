@@ -1,12 +1,16 @@
 # Stub Generation
 
-wowlua-ls ships with precomputed type stubs for the entire WoW API: around 150,000 symbols covering functions, classes, enums, events, and global variables across retail, classic, and classic era. This page documents the data sources, pipeline, and output artifacts that make this work.
+wowlua-ls ships with precomputed type stubs for the entire WoW API: functions, classes, enums, events, and global variables across retail, classic, classic era, and WoW Forever. This page documents the data sources, pipeline, and output artifacts that make this work.
 
 Stubs are regenerated with:
 
 ```bash
 cargo run -- regenerate-stubs
 ```
+
+Regenerate after any change to `crates/wowlua_stub_gen/`, `crates/wowlua_analysis/src/xml_scan.rs` (the pipeline reuses it for FrameXML frames), or `stubs/overrides/`, and commit both regenerated blobs (`stubs/precomputed.bin.zst` and `stubs/precomputed-files.bin.zst`) along with the updated `stubs/precomputed-provenance.txt`.
+
+The pipeline lives in `crates/wowlua_stub_gen/src/stub_gen/`, split by stage: `orchestrate.rs` (the `regenerate_stubs()` entry point, which runs every stage and writes the blobs), `sources.rs` (fetching, cloning, and caches), one module per data source below (`blizzard.rs`, `wiki.rs`, `globals_csv.rs`, `framexml.rs`, `xml_frames.rs`, `classic.rs`), the stub rewrites (`secret_stubs.rs` and `tooltip_accessors.rs` edit stub text in place; `data_params.rs` retypes mixin-object parameters such as `colorRGB` and `ItemLocation` to a `Data | Object` union after scanning), and `util.rs` (path collection and count validation).
 
 The git repositories below (Ketho/vscode-wow-api and Gethe/wow-ui-source) are shallow-cloned into a persistent cache under the platform cache directory (`$XDG_CACHE_HOME`/`~/.cache/wowlua-ls/clones/` on Linux/macOS, `%LOCALAPPDATA%\wowlua-ls\clones\` on Windows). On subsequent runs the cached clones are updated in place with `git fetch --depth 1` + `git reset --hard` rather than re-cloned from scratch, saving most of the clone time. Set the `WOWLUA_LS_REFRESH_CLONES` environment variable to force fresh clones.
 
@@ -16,7 +20,7 @@ The pipeline integrates six major sources into a single type database.
 
 ### 1. Ketho/vscode-wow-api
 
-[Ketho/vscode-wow-api](https://github.com/Ketho/vscode-wow-api) is shallow-cloned with its submodules (which pulls in [NumyAddon/FramexmlAnnotations](https://github.com/nicemods/FramexmlAnnotations) into `Annotations/FrameXML/`).
+[Ketho/vscode-wow-api](https://github.com/Ketho/vscode-wow-api) is shallow-cloned with its submodules (which pulls in [NumyAddon/FramexmlAnnotations](https://github.com/NumyAddon/FramexmlAnnotations) into `Annotations/FrameXML/`).
 
 - **`Annotations/Core/` and `Annotations/FrameXML/`**: Pre-written LuaLS-style annotation `.lua` files containing type stubs for classes, functions, and fields related to frames and widgets. These are scanned directly as Lua. Widget stubs with a `---[Documentation](...)` link but no `@param`/`@return` annotations are enriched by fetching the linked wiki page and injecting parsed type annotations into the vendor files before scanning.
 
@@ -32,7 +36,7 @@ The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Ann
 
 ### 3. Ketho/BlizzardInterfaceResources
 
-[Ketho/BlizzardInterfaceResources](https://github.com/AreWeReadyYet/BlizzardInterfaceResources) is fetched via raw GitHub URLs across four branches: `live`, `classic_era`, `classic`, `forever`.
+[Ketho/BlizzardInterfaceResources](https://github.com/Ketho/BlizzardInterfaceResources) is fetched via raw GitHub URLs across four branches: `live`, `classic_era`, `classic`, `forever`.
 
 - **`Resources/GlobalAPI.lua` and `Resources/FrameXML.lua`**: Simple name lists used to compute the classic-only API diff by identifying names present in the other branches but absent from retail/`live`. Also used as the source of global variable names for `GlobalVariables.lua` and per-API flavor bitmasks (derived from which branches' `GlobalAPI.lua` contains each name; a function retail defines in FrameXML gets no bitmask, even where Forever implements it in C).
 - **`Resources/LuaEnum.lua`**: Parsed for `LE_*` legacy enum constant values (nested `Enum = { Category = { ValueName = N } }` structures converted from CamelCase to `LE_UPPER_SNAKE` format, cross-referenced against wow-ui-source FrameXML `LE_*` references); `Enum.*` enum category stubs (merged with APIDocumentation enumerations); and the `Constants` global table (sub-tables with typed number/boolean/string fields).
@@ -40,10 +44,10 @@ The submodule initialization fetches **NumyAddon/FramexmlAnnotations** into `Ann
 
 ### 4. Gethe/wow-ui-source
 
-[Gethe/wow-ui-source](https://github.com/AreWeReadyYet/wow-ui-source) is shallow-cloned across four branches: `live`, `classic_era`, `classic`, `forever`.
+[Gethe/wow-ui-source](https://github.com/Gethe/wow-ui-source) is shallow-cloned across four branches: `live`, `classic_era`, `classic`, `forever`.
 
 - **`Interface/AddOns/**/*.xml`**: XML files parsed via regex to extract `<Frame>`, `<Button>` elements with `name=`, `mixin=`, and `inherits=` attributes, producing frame global names with type and mixin associations. Inheritance is resolved transitively with cycle detection.
-- **`Interface/AddOns/Blizzard_APIDocumentationGenerated/*.lua`**: Parsed directly for structured function/event/structure data. Each file is a Lua table with `Type = "System"` (game APIs) or `Type = "ScriptObject"` (widget methods, skipped). Functions include namespace, arguments, returns, and `MayReturnNothing`. Events include `LiteralName` and `Payload`. Structures include typed `Fields`. Params with a `Mixin` field use the mixin name (Lua class) instead of the C++ `Type`. Types are normalized minimally: `bool`→`boolean`, `cstring`→`string`, `luaIndex`→`number`; all other type names (e.g. `WOWGUID`, `fileID`, `time_t`) are kept as-is since they have `@alias` definitions in Ketho's `BlizzardType.lua`. Array params (`Type = "table", InnerType = "Foo"`) produce `Foo[]`. Generated stubs only fill gaps: functions/structures already covered by Ketho's richer annotations are skipped via name deduplication. Also parsed for classic-only constants (structured `{Name, Type, Value}` entries) and enumerations (`{Name, EnumValue}` entries). On the retail branch, secret-value keys (`SecretReturns`, `SecretWhen…` predicates, `SecretArguments`, `ConstSecretAccessor`, the secret predicate table's preconditions, per-field `NeverSecret`/`ConditionalSecret`/`SecretValue`, widget aspects) become `secret<T>` types and `@secret-*` annotations on the matching functions, widget methods, events, and structure fields (a structure's class also records the predicates of the APIs that return it), both in the generated files and in Ketho's vendor stubs (rewritten in place before scanning). The docs link no `C_Secrets` guard or restriction query to the secrecy it tests, so `@secret-clears`, `@secret-restriction-guard` and `@secret-satisfies` on those come from a curated table in `secret_stubs.rs` that quotes each guard's documentation, naming the parameters the covered APIs bind each guard argument to. The Lua library isn't documented there at all: its number-typed parameters get `@secret-args untainted` from their own annotated types in a separate pass over Ketho's `Annotations/Core/Lua`. See [Secret Values](/guide/secrets).
+- **`Interface/AddOns/Blizzard_APIDocumentationGenerated/*.lua`**: Parsed directly for structured function/event/structure data. Each file is a Lua table with `Type = "System"` (game APIs) or `Type = "ScriptObject"` (widget methods). Functions include namespace, arguments, returns, and `MayReturnNothing`. Events include `LiteralName` and `Payload`. Structures include typed `Fields`. Params with a `Mixin` field use the mixin name (Lua class) instead of the C++ `Type`. Types are normalized minimally: `bool`→`boolean`, `cstring`→`string`, `luaIndex`→`number`; all other type names (e.g. `WOWGUID`, `fileID`, `time_t`) are kept as-is since they have `@alias` definitions in Ketho's `BlizzardType.lua`. Array params (`Type = "table", InnerType = "Foo"`) produce `Foo[]`. Generated stubs only fill gaps: functions/structures already covered by Ketho's richer annotations are skipped via name deduplication. Also parsed for classic-only constants (structured `{Name, Type, Value}` entries) and enumerations (`{Name, EnumValue}` entries). On the retail branch, secret-value keys (`SecretReturns`, `SecretWhen…` predicates, `SecretArguments`, `ConstSecretAccessor`, the secret predicate table's preconditions, per-field `NeverSecret`/`ConditionalSecret`/`SecretValue`, widget aspects) become `secret<T>` types and `@secret-*` annotations on the matching functions, widget methods, events, and structure fields (a structure's class also records the predicates of the APIs that return it), both in the generated files and in Ketho's vendor stubs (rewritten in place before scanning). The docs link no `C_Secrets` guard or restriction query to the secrecy it tests, so `@secret-clears`, `@secret-restriction-guard` and `@secret-satisfies` on those come from a curated table in `secret_stubs.rs` that quotes each guard's documentation, naming the parameters the covered APIs bind each guard argument to. The Lua library isn't documented there at all: its number-typed parameters get `@secret-args untainted` from their own annotated types in a separate pass over Ketho's `Annotations/Core/Lua`. See [Secret Values](/guide/secrets).
 - **`Interface/AddOns/**/*.lua`**: All FrameXML Lua files scanned for: top-level `UPPER_SNAKE` constant assignments (classic vs retail diff), `LE_*` name references (cross-referenced with BlizzardInterfaceResources `LuaEnum.lua` for values), and field/method assignments on frame globals (`FrameName.field = rhs`, `function FrameName:method(...)`) to infer field types. Also detects `PanelTemplates_SetNumTabs` calls to inject `numTabs`/`selectedTab` fields.
 - **`Interface/AddOns/Blizzard_SharedXMLGame/Tooltip/TooltipDataHandler.lua`** (retail): its accessor table defines `GameTooltip:SetInboxItem`, `SetHyperlink` and the other tooltip data accessors in Lua, each forwarding its arguments to the `C_TooltipInfo` getter of the same name (`SetInboxItem` → `GetInboxItem`). Ketho's `GameTooltip` stub is widened in place to accept each getter's documented arguments, and accessors it lacks are added.
 
@@ -121,7 +125,7 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 
 ## Generated stub files
 
-The pipeline produces these intermediate Lua files (written to a temp directory for scanning, not persisted):
+The pipeline writes these Lua files to a temp directory for scanning. Their text ships in the files blob under `generated/`, so go-to-definition can open them:
 
 | File | Source |
 |------|--------|
@@ -133,9 +137,13 @@ The pipeline produces these intermediate Lua files (written to a temp directory 
 | `BlizzardAPI.lua` | Blizzard `APIDocumentationGenerated` functions (deduped against Ketho) |
 | `BlizzardStructures.lua` | Blizzard `APIDocumentationGenerated` structure types (deduped against Ketho) |
 | `BlizzardEvents.lua` | Blizzard `APIDocumentationGenerated` events |
-| `Enum.lua` | APIDocumentation enumerations merged with LuaEnum.lua categories |
-| `CVar.lua` | BlizzardInterfaceResources `CVars.lua` string literal union |
+| `BlizzardEnums.lua` | APIDocumentation enumerations merged with LuaEnum.lua categories |
+| `ScriptObjectMethods.lua` | Blizzard `APIDocumentationGenerated` widget methods missing from Ketho's stubs |
+| `CVars.lua` | BlizzardInterfaceResources `CVars.lua` string literal union |
 | `Constants.lua` | LuaEnum.lua `Constants` table (57 sub-tables with typed fields) |
+| `FrameXMLUtilities.lua` | wow-ui-source utility tables and mixins not covered by other stubs |
+| `InferredReturns.lua` | Return types inferred by analyzing wow-ui-source for FrameXML functions that have no `@return` |
+| `InferredFields.lua` | Undeclared runtime fields read on stub classes in wow-ui-source, typed `any?` |
 
 ## Output artifacts
 
@@ -145,9 +153,9 @@ The pipeline produces these intermediate Lua files (written to a temp directory 
 | `stubs/precomputed-files.bin.zst` | Version (4B) + zstd-9 payload | Bincode-serialized `HashMap<String, String>` of stub file contents for go-to-definition |
 | `stubs/precomputed-provenance.txt` | Text | Generation timestamp, source repo, commit hash, symbol/function/table/file counts |
 
-The main blob contains the fully resolved type database (~150k symbols, ~45k functions, ~24k tables, ~21k classes, ~103k globals). The files blob contains the source text of all referenced stub files (~2,800 files) so the LSP can support go-to-definition into stub code. Every source path in the main blob is a key of the files blob (`vendor/…` for the vscode-wow-api clone, `overrides/…`, `generated/…`), so neither blob contains paths from the machine that generated it.
+The main blob contains the fully resolved type database, and the files blob contains the source text of every referenced stub file so the LSP can support go-to-definition into stub code. Every source path in the main blob is a key of the files blob (`vendor/…` for the vscode-wow-api clone, `overrides/…`, `generated/…`), so neither blob contains paths from the machine that generated it.
 
-The blob version is incremented whenever `PreResolvedGlobals`, `ClassDecl`, `ExternalGlobal`, or any serialized type changes shape.
+The blob version (`BLOB_VERSION` in `crates/wowlua_analysis/src/pre_globals/mod.rs`) is incremented whenever `PreResolvedGlobals`, `ClassDecl`, `ExternalGlobal`, or any serialized type changes shape.
 
 ## Loading
 

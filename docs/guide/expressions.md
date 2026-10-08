@@ -53,6 +53,7 @@ local STATE_SCHEMA = Reactive.CreateStateSchema("AuctioningState")
     :AddBooleanField("isScanning", false)
     :AddBooleanField("doneScanning", false)
     :AddBooleanField("canProcess", false)
+    :AddBooleanField("scanIsPaused", false)
     :Commit()
 
 local state = STATE_SCHEMA:CreateState()
@@ -103,7 +104,7 @@ function ReactiveState:Publisher(expr) end
 The LS infers `R` from the expression and substitutes it into the return:
 
 ```lua
--- numProgress is a number field → R = number
+-- progress is a number field → R = number
 local p1 = state:Publisher([[progress + 1]])
 -- p1: ReactivePublisherSchema<number>
 

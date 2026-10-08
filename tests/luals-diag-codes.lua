@@ -26,6 +26,10 @@ local _e = 1
 ---@diagnostic disable-next-line: undefined-global, param-type-mismatch
 local _h = 1
 
+-- `syntax`, the code parse errors are suppressed under, is known too.
+---@diagnostic disable-next-line: syntax
+local _h2 = 1
+
 -- A genuinely unknown code is still flagged.
 ---@diagnostic disable-next-line: totally-not-a-real-code
 local _f = 1

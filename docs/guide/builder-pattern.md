@@ -89,7 +89,7 @@ local CHILD = BASE:Extend("ChildState")
 local inst = CHILD:Build()
 inst.childField -- string (own field)
 inst.name       -- string (inherited from BaseState)
-inst.level      -- number (inherited from BaseState)
+inst.level      -- number? (inherited from BaseState)
 ```
 
 Multi-level extension works. Grandchild inherits from child and base.
@@ -116,7 +116,7 @@ A `@class` declaration with the same name as a `@built-name` type merges its `@f
 ```lua
 ---@class PlayerState
 ---@field name string
----@field readonly computed string
+---@field computed string
 ```
 
 If `PlayerState` is also created via `@built-name`, the `@field` declarations overlay the built fields. This lets you declare computed or virtual fields that aren't part of the builder chain.
@@ -133,6 +133,6 @@ If `PlayerState` is also created via `@built-name`, the `@field` declarations ov
 function Schema:CreateState() return {} end
 
 local state = Schema:AddString("name"):CreateState()
-state.name       -- string (from builder)
-state:GetValue() -- inherited from State
+state.name             -- string (from builder)
+state:GetValue("name") -- inherited from State
 ```

@@ -122,7 +122,7 @@ pub fn run(location: &str, with_stubs: bool, scan_dir: Option<PathBuf>) -> CliRe
     for e in &tree.errors {
         let start = numbers.from_offset(e.start as usize);
         let start_line = start.0.0;
-        if !lsp::diagnostics::is_suppressed("syntax", start_line, &suppressions) {
+        if !lsp::diagnostics::is_suppressed(wowlua_ls::diagnostics::SYNTAX_CODE, start_line, &suppressions) {
             println!("diagnostic:{}:{}", start_line + 1, e.message);
         }
     }

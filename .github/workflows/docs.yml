@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'editors/vscode/syntaxes/**'
   workflow_dispatch:
 
 permissions:

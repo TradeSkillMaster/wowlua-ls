@@ -142,8 +142,12 @@ With this enabled, data fields starting with `_` are **implicitly protected** wi
 
 ```lua
 ---@class PlayerCache
----@field _entries table   -- implicitly protected (starts with _)
----@field public _id number -- explicit public overrides the convention
+---@field _id number        -- declared with @field: stays public
+local PlayerCache = {}
+
+function PlayerCache:Reset()
+    self._entries = {}      -- implicitly protected (starts with _)
+end
 ```
 
 This only applies to data fields discovered at runtime (assignments, constructor fields), not to explicit `@field` declarations without a visibility keyword; those default to public since the author had the chance to write `protected`.
@@ -316,12 +320,14 @@ WoW uses mixins extensively. `Mixin()` copies fields from one or more tables ont
 When you call `CreateFrame` with a template, the return type is automatically an intersection of the frame type and the template mixin:
 
 ```lua
-local frame = CreateFrame("Frame", nil, nil, "BackdropTemplate")
--- frame: Frame & BackdropTemplate
+local button = CreateFrame("Button", nil, nil, "BackdropTemplate")
+-- button: Button & BackdropTemplate
 
-frame:SetPoint("CENTER")  -- Frame method
-frame:SetBackdrop({})     -- BackdropTemplate method
+button:SetText("OK")                   -- Button method
+button:SetBackdropColor(0, 0, 0, 0.8)  -- BackdropTemplate method
 ```
+
+With `"Frame"` the hover shows just `BackdropTemplate`: the template already includes every `Frame` method.
 
 No annotation needed; the `CreateFrame` stub handles this.
 

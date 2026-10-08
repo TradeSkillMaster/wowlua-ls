@@ -128,11 +128,15 @@ distinct values for case discrimination, not numeric ranges.
 When a function has tuple-union returns, the LS enforces that every `return` statement matches one of the declared cases:
 
 ```lua
+---@param mode number
 ---@return (string, number) | (nil, nil)
-function example()
-    return "hello", 42    -- OK: matches case 1
-    return nil, nil        -- OK: matches case 2
-    return "hello", nil    -- warning: grouped-return-mismatch
+function example(mode)
+    if mode == 1 then
+        return "hello", 42    -- OK: matches case 1
+    elseif mode == 2 then
+        return nil, nil       -- OK: matches case 2
+    end
+    return "hello", nil       -- warning: grouped-return-mismatch
 end
 ```
 

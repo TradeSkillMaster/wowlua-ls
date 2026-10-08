@@ -19,7 +19,8 @@
 ---@field file_name string File basename (e.g. "Module.lua")
 local FileContext = {}
 
---- Find local variables declared at file scope.
+--- Find variables declared at file scope: file-level locals, plus every global
+--- the file assigns (including assignments inside functions).
 ---
 --- The optional filter table narrows results:
 --- - `name`: only return variables with this exact name.
@@ -59,10 +60,10 @@ function FileContext:error(range, message) end
 function FileContext:info(range, message) end
 
 ---------------------------------------------------------------------------
--- LocalVar — a file-scope local variable
+-- LocalVar — a file-scope variable
 ---------------------------------------------------------------------------
 
---- A local variable declared at file scope.
+--- A file-scope variable: a file-level local or a global the file assigns.
 ---@class wowlua.plugin.LocalVar
 ---@field name string The variable name
 ---@field range wowlua.plugin.Range Byte range of the variable's definition site
@@ -96,7 +97,8 @@ function LocalVar:method_defs() end
 ---@field kind "table"|"call"|"function"|"literal"|"other" The kind of initializer expression
 local Initializer = {}
 
---- Get the fields of a table constructor initializer.
+--- Get the fields of a table constructor initializer, including fields assigned
+--- to the table later in the file.
 --- Returns an empty table if the initializer is not a table constructor.
 ---@return wowlua.plugin.FieldInfo[]
 function Initializer:fields() end
@@ -160,7 +162,8 @@ function MethodCall:args() end
 ---@field range wowlua.plugin.Range Byte range of the definition
 local MethodDef = {}
 
---- Get the parameters of this method definition (excluding implicit `self`).
+--- Get the parameters of this method definition in declaration order. For a colon
+--- method (`function Obj:Do(action)`), the implicit `self` is index 1.
 ---@return wowlua.plugin.Param[]
 function MethodDef:params() end
 
@@ -172,6 +175,8 @@ function MethodDef:params() end
 ---@class wowlua.plugin.Param
 ---@field name string The parameter name
 ---@field index integer The 1-based parameter index
+---@field type_name? string Annotation type name from `@param` (e.g. "ActionType"); nil if untyped, always nil for `self`
+---@field nilable boolean True if declared as `@param name?` or the type contains nil. Untyped parameters report false
 local Param = {}
 
 --- Find equality comparisons (`==` or `~=`) involving this parameter.

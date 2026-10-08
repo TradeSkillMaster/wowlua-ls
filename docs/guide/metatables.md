@@ -15,7 +15,7 @@ function MyClass:GetName()
 end
 
 local obj = setmetatable({ name = "test" }, MyClass)
-obj:GetName() -- resolves to string via __index
+obj:GetName() -- found on MyClass via __index
 obj.name      -- string (direct field, takes priority)
 ```
 
@@ -64,6 +64,7 @@ inst:baseMethod()  -- found on Base (via chain)
 A factory that returns `setmetatable({}, self)` propagates the class type:
 
 ```lua
+---@class Widget
 local Widget = {}
 Widget.__index = Widget
 
@@ -136,7 +137,7 @@ Vec2.__add = function(a, b)
     return setmetatable({ x = a.x + b.x, y = a.y + b.y }, Vec2)
 end
 
----@type Vec2
+---@type Vec2, Vec2
 local a, b
 local c = a + b -- c: Vec2
 c.x             -- number
@@ -188,7 +189,7 @@ The LS resolves a lot from metatables alone, but there are cases where annotatio
 | Situation | Recommendation |
 |---|---|
 | Simple `mt.__index = mt` | Inference handles it |
-| Factory returning `setmetatable({}, self)` | Add `@return ClassName` for clarity |
+| Factory returning `setmetatable({}, self)` | Add `@class ClassName` on the class table and `@return ClassName` on the factory |
 | Complex multi-file class | Use `@class` + `@field` |
 | Dynamic `__index` function | Inference may not follow - use `@class` |
 | `__index` from another file | Needs `@class` on the target for cross-file |

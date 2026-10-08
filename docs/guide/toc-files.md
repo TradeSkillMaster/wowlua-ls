@@ -35,7 +35,7 @@ UI/MainFrame.xml
 UI/MainFrame.lua
 ```
 
-Hovering `Interface` shows its documentation. Hovering `110100` shows "The War Within 11.1.x". Hovering `mainline` shows "Retail and Forever".
+Hovering `Interface` shows its documentation. Hovering `110100` shows "The War Within 11.1.0". Hovering `mainline` shows "Retail and Forever".
 
 Completions after `## ` suggest `Title`, `Notes`, `Author`, `SavedVariables`, etc., filtered to exclude fields you've already declared.
 
@@ -58,18 +58,21 @@ wowlua-ls recognizes all standard TOC fields:
 | `DefaultState` | Whether enabled by default (`enabled`/`disabled`) |
 | `LoadWith` | Load this addon when any listed addon loads |
 | `LoadManagers` | Addons that manage loading this addon |
-| `IconTexture` | Addon compartment icon |
+| `IconTexture`, `IconAtlas` | Addon compartment icon (texture path or atlas name) |
 | `AddonCompartmentFunc` | Compartment click handler |
 | `AddonCompartmentFuncOnEnter` | Compartment hover-enter handler |
 | `AddonCompartmentFuncOnLeave` | Compartment hover-leave handler |
-| `AllowLoadGameType` | Restrict to specific game flavors: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot` |
+| `AllowLoadGameType` | Restrict to specific game flavors: `mainline`, `standard`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot`, `plunderstorm`, `wowhack` |
 | `ExcludeLoadGameType` | Load on every game flavor *except* the ones listed (the inverse of `AllowLoadGameType`) |
 | `OnlyBetaAndPTR` | Restrict to test realms only |
 | `Secure` | Blizzard-signed secure code marker |
+| `Category` | Category the addon is listed under in the addon list |
+| `Group` | Groups related addons under a shared collapsible header in the addon list |
+| `LoadSavedVariablesFirst` | Load saved variables before the addon's files run (`1`/`0`) |
 
 Additionally:
 - **`X-*` fields**: Custom addon metadata (e.g. `X-Website`, `X-Curse-Project-ID`) are recognized and won't trigger unknown-field warnings
-- **Locale suffixes**: Fields like `Title-deDE`, `Notes-enUS`, `Category-enUS` are recognized as localized variants
+- **Locale suffixes**: `Title`, `Notes`, `Category`, and `Group` accept locale suffixes (e.g. `Title-deDE`, `Group-enUS`) and are recognized as localized variants
 - **Flavor-specific interface versions**: `Interface-Classic`, `Interface-Cata`, and other `Interface-<Type>` lines that addon packagers use to build per-flavor TOC files are recognized and validated like `Interface`; their versions count toward the addon's [flavors](./flavor-filtering.md#flavor-aware-deprecation)
 
 ## Per-line directives
@@ -121,13 +124,13 @@ TOC files have their own set of diagnostics:
 | `toc-unknown-header` | Hint | Header not in the known catalog and not an `X-*` custom field |
 | `toc-invalid-interface` | Error | Interface value is not a valid numeric version |
 | `toc-nonexistent-file` | Warning | Referenced file does not exist on disk |
-| `toc-invalid-value` | Warning | Value doesn't match the expected format for its field |
+| `toc-invalid-value` | Warning | Unknown game type in `AllowLoadGameType` / `ExcludeLoadGameType` (header or per-line), or a header missing its colon |
 
 ## Go-to-definition
 
 Click any file path in a TOC file to navigate directly to that file. This works for both `.lua` and `.xml` references. Paths are resolved relative to the TOC file's directory.
 
-Files referenced through `[Family]` or `[Game]` path variables cannot be resolved (they depend on the client's install configuration).
+Paths that use the `[Family]`, `[Game]`, or `[TextLocale]` path variables can't be followed, since what they expand to depends on the client loading the addon. They're also skipped by `toc-nonexistent-file`.
 
 ## No configuration needed
 

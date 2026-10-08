@@ -10,7 +10,7 @@ Scan an addon directory and report all diagnostics:
 wowlua_ls check path/to/addon
 ```
 
-By default, only warnings are shown. Include hints (unused locals, inject-field, style issues):
+By default (`--severity warning`), errors and warnings are shown. Include hints (unused locals, inject-field, style issues) with `--severity hint`:
 
 ```bash
 wowlua_ls check path/to/addon --severity hint
@@ -18,7 +18,7 @@ wowlua_ls check path/to/addon --severity hint
 
 The summary's type coverage line is the share of your variables, parameters, and return values whose type is known. To list the ones that aren't, enable the [strict typing diagnostics](/guide/diagnostics#strict-typing-diagnostics) and run with `--severity hint`.
 
-Exit code is `1` if any diagnostics are found, making it suitable for CI:
+Exit code is `1` if any reported diagnostic is found (hidden hints don't count), making it suitable for CI:
 
 ```yaml
 # GitHub Actions example
@@ -37,6 +37,14 @@ wowlua_ls dump-stubs > after.txt
 diff before.txt after.txt
 ```
 
+## `profile`: Measure analysis time
+
+Time each startup phase (stub loading, workspace scan, per-file analysis) on an addon directory and list the ten slowest files. Useful for tracking down a file that makes the language server slow:
+
+```bash
+wowlua_ls profile path/to/addon
+```
+
 ## `doc`: Generate API documentation
 
 Generate markdown API documentation snippets from annotated Lua source:
@@ -46,6 +54,12 @@ wowlua_ls doc path/to/addon --out-dir docs/api
 ```
 
 This scans the project for `@class` definitions and produces one `.md` snippet per class plus an `index.md` in the output directory. Classes from WoW API stubs are excluded. Only classes defined within the scanned directory are included.
+
+To document only specific classes, pass `--class` (repeatable). Named classes are included even when they come from the WoW API stubs:
+
+```bash
+wowlua_ls doc path/to/addon --out-dir docs/api --class InventoryCache --class ItemFilter
+```
 
 ### Using with VitePress
 
@@ -76,3 +90,7 @@ wowlua_ls --version
 ```
 
 Prints the release the binary was built from, or `0.0.0` for a build from source. The language server reports the same version to your editor: it logs `Starting wowlua_ls <version>` at startup and returns it as `serverInfo` in its `initialize` response.
+
+## Contributor tools
+
+The remaining subcommands are for working on wowlua-ls itself: `evaluate` and `test-query` (see [Debugging tools](/guide/testing#debugging-tools)), `dump-types` (see [Hover regression testing](/guide/development#hover-regression-testing)), and `regenerate-stubs` (see [Stub Generation](/guide/stub-generation)).

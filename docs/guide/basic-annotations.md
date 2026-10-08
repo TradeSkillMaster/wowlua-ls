@@ -1,6 +1,6 @@
 # Basic Annotations
 
-Annotations are special comments that tell the language server about your code's types. They use the `---@` prefix (three dashes, then `@`), which is the same syntax as LuaLS. If you've used LuaLS before, everything you know still works.
+Annotations are special comments that tell the language server about your code's types. They use the `---@` prefix (three dashes, then `@`), which is the same syntax as LuaLS. If you've used LuaLS before, your annotations carry over; a few LuaLS-only tags such as `@operator` and `@async` are accepted but have [no effect](/reference/annotations#metadata-annotations).
 
 ## Documentation comments
 
@@ -67,7 +67,7 @@ Declare what a function returns:
 
 ```lua
 ---@return string
-function getName() return self.name end
+function Player:GetName() return self.name end
 ```
 
 ### Multiple return values
@@ -104,7 +104,7 @@ This is equivalent to separate `@return` lines but keeps the signature compact. 
 
 ```lua
 ---@return string?
-function maybeGetName()
+function Player:MaybeGetName()
     if not self.loaded then return nil end
     return self.name
 end
@@ -207,7 +207,7 @@ function setupWidget(widget)
 end
 ```
 
-`CreateFrame("Frame", nil, nil, "BackdropTemplate")` automatically returns `Frame & BackdropTemplate` - no annotation needed at the call site. See [Mixins and Templates](/guide/classes#mixins-and-templates) for more.
+`CreateFrame` builds these types for you - no annotation needed at the call site: `CreateFrame("Button", nil, nil, "BackdropTemplate")` returns `Button & BackdropTemplate`. See [Mixins and Templates](/guide/classes#mixins-and-templates) for more.
 
 ### Anonymous table shapes
 
@@ -247,12 +247,12 @@ local function double(x)
     return x * 2
 end
 
--- Infers callback is fun(item: string) from the typed call
----@param items string[]
-local function forEach(items, callback)
-    for _, item in ipairs(items) do
-        callback(item)
-    end
+---@param name string
+local function greet(name) print("Hello " .. name) end
+
+-- Infers player is string from the typed call
+local function welcome(player)
+    greet(player)
 end
 ```
 
@@ -261,7 +261,7 @@ Backward inference works from:
 - **Typed function arguments**: if `x` is passed to a function expecting `number`, that's a hint
 - **Unary operators**: `-x` implies `number`, `#x` implies `table | string`
 
-::: info Inference is conservative
+::: info Conflicting usages
 Backward inference treats each usage as an upper bound and intersects them. If a parameter is used in conflicting ways (passed to a function expecting `string` and another expecting `number`), the LS leaves it untyped rather than guessing wrong. When that happens, add an explicit `@param`.
 :::
 

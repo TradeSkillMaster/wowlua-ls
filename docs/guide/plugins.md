@@ -24,7 +24,7 @@ return { ---@type wowlua.plugin.Plugin
 }
 ```
 
-3. The plugin runs on every file in the project. Diagnostics appear inline and in the problems panel, just like built-in diagnostics.
+3. Restart the language server. The plugin then runs on every file whose nearest `.wowluarc.json` lists it (see [File placement](/guide/configuration#file-placement)). Diagnostics appear inline and in the problems panel, just like built-in diagnostics.
 
 ## Plugin structure
 
@@ -50,7 +50,7 @@ The `ctx` parameter provides methods to query the current file and emit diagnost
 
 ### `ctx:find_locals(opts?)`
 
-Find local variables declared at file scope.
+Find variables declared at file scope: file-level locals, plus every global the file assigns (including ones assigned inside functions).
 
 ```lua
 ---@param opts? {name?: string, init?: "table"|"call"|"function"}
@@ -86,7 +86,7 @@ Each takes a `{start: integer, end: integer}` byte range and a message string.
 
 ## LocalVar API
 
-A local variable returned by `find_locals`.
+A variable returned by `find_locals`.
 
 ### Properties
 
@@ -107,7 +107,7 @@ A local variable returned by `find_locals`.
 
 ## Initializer API
 
-The right-hand side of a `local` declaration.
+The right-hand side of the variable's declaration or assignment.
 
 ### Properties
 
@@ -119,12 +119,20 @@ The right-hand side of a `local` declaration.
 
 | Method | Returns | Description |
 |---|---|---|
-| `init:fields()` | `FieldInfo[]` | Fields of a table constructor (empty if not a table) |
+| `init:fields()` | `FieldInfo[]` | Fields of a table constructor, including fields assigned to the table later in the file (empty if not a table) |
 | `init:receiver()` | `string?` | Receiver name in `Foo:Bar()` calls |
 | `init:method()` | `string?` | Method/function name in `Foo:Bar()` or `Foo.Bar()` calls |
 | `init:args()` | `ArgInfo[]` | Arguments of a call expression |
 
 ## Supporting types
+
+### FieldInfo
+
+| Property | Type | Description |
+|---|---|---|
+| `name` | `string` | The field name |
+| `range` | `Range` | Byte range of the field definition |
+| `value_kind` | `string` | One of `"nil"`, `"function"`, `"table"`, `"number"`, `"string"`, `"boolean"`, `"expr"` (any other expression) |
 
 ### FieldAccess
 
@@ -153,7 +161,7 @@ The right-hand side of a `local` declaration.
 
 | Method | Returns | Description |
 |---|---|---|
-| `def:params()` | `Param[]` | Parameters (excluding `self`) |
+| `def:params()` | `Param[]` | Parameters in declaration order. For a colon method (`function Obj:Do(action)`), the implicit `self` is index 1 and `action` is index 2 |
 
 ### Param
 
@@ -161,7 +169,7 @@ The right-hand side of a `local` declaration.
 |---|---|---|
 | `name` | `string` | Parameter name |
 | `index` | `integer` | 1-based parameter index |
-| `type_name` | `string?` | Annotation type name from `@param` (e.g. `"ActionType"`), or nil if untyped. Always nil for the implicit `self` parameter |
+| `type_name` | `string?` | Annotation type name from `@param` (e.g. `"ActionType"`), or nil if untyped. Always nil for `self` |
 | `nilable` | `boolean` | `true` if declared as `@param name?` or the type contains nil (e.g. `string|nil`). Untyped parameters (no `@param`) report `false` - check `type_name` to distinguish untyped from typed-non-nilable |
 
 | Method | Returns | Description |
@@ -211,36 +219,39 @@ The right-hand side of a `local` declaration.
 
 ## Example: enforce method parameter conventions
 
-This plugin warns when a method's first parameter is compared against string literals but doesn't have a comparison for every known action:
+This plugin flags a method whose first parameter is compared against string literals but doesn't have a comparison for every known action:
 
 ```lua
 return { ---@type wowlua.plugin.Plugin
     code = "unchecked-action",
     run = function(ctx)
+        local expected = {"buy", "sell", "cancel"}
         for _, var in ipairs(ctx:find_locals({init = "table"})) do
             for _, def in ipairs(var:method_defs()) do
+                -- For `function Obj:Method(action)`, params[1] is `self`
                 local params = def:params()
-                if #params == 0 then goto next_def end
                 local action_param = params[1]
-                local comps = action_param:comparisons()
-                if #comps < 2 then goto next_def end
-                -- Collect all compared literals
-                local checked = {}
-                for _, c in ipairs(comps) do
-                    if c.literal then
-                        checked[c.literal] = true
+                if action_param and action_param.name == "self" then
+                    action_param = params[2]
+                end
+                local comps = action_param and action_param:comparisons() or {}
+                if #comps >= 2 then
+                    -- Collect all compared literals
+                    local checked = {}
+                    for _, c in ipairs(comps) do
+                        if c.literal then
+                            checked[c.literal] = true
+                        end
+                    end
+                    -- Check for completeness against the known set
+                    for _, name in ipairs(expected) do
+                        if not checked[name] then
+                            ctx:hint(def.range,
+                                "method '" .. def.method_name ..
+                                "' doesn't handle action '" .. name .. "'")
+                        end
                     end
                 end
-                -- Check for completeness against a known set
-                local expected = {"buy", "sell", "cancel"}
-                for _, name in ipairs(expected) do
-                    if not checked[name] then
-                        ctx:hint(def.range,
-                            "method '" .. def.method_name ..
-                            "' doesn't handle action '" .. name .. "'")
-                    end
-                end
-                ::next_def::
             end
         end
     end,
@@ -257,18 +268,18 @@ return { ---@type wowlua.plugin.Plugin
     run = function(ctx)
         for _, var in ipairs(ctx:find_locals({name = "config", init = "table"})) do
             local init = var.init
-            if not init then goto next end
-            local has_on_click = false
-            for _, field in ipairs(init:fields()) do
-                if field.name == "onClick" then
-                    has_on_click = true
-                    break
+            if init then
+                local has_on_click = false
+                for _, field in ipairs(init:fields()) do
+                    if field.name == "onClick" then
+                        has_on_click = true
+                        break
+                    end
+                end
+                if not has_on_click then
+                    ctx:warn(var.range, "'config' table is missing an 'onClick' handler")
                 end
             end
-            if not has_on_click then
-                ctx:warn(var.range, "'config' table is missing an 'onClick' handler")
-            end
-            ::next::
         end
     end,
 }
@@ -278,8 +289,7 @@ return { ---@type wowlua.plugin.Plugin
 
 Plugins run in a restricted Lua 5.1 environment:
 
-- **Available:** `string`, `table`, `math`, `pairs`, `ipairs`, `next`, `type`, `tostring`, `tonumber`, `select`, `unpack`, `pcall`, `xpcall`, `error`, `assert`, `rawequal`, `rawget`, `rawset`
-- **Removed:** `os`, `io`, `debug`, `loadfile`, `dofile`, `require`, `load`, `collectgarbage`
+- **Standard library:** the Lua 5.1 standard library minus `os`, `io`, `debug`, `loadfile`, `dofile`, `require`, `load`, and `collectgarbage`. Lua 5.1 has no `goto`, so skip loop iterations with nested `if` blocks.
 - **Instruction limit:** 1,000,000 instructions per file per plugin. Exceeding this logs an error and skips the plugin for that file.
 - **Failure tolerance:** A plugin that fails 5 times in a row is automatically disabled until the LS is restarted.
 
@@ -298,7 +308,7 @@ The LS recognizes plugin diagnostic codes automatically - no `unknown-diag-code`
 
 ## Limitations
 
-- Plugins only see **file-scope local variables**. Inner locals, upvalues, and globals are not queryable. (`find_event_declarations` is the exception - it returns workspace-wide event metadata.)
+- Plugins only see **file-scope variables**: file-level locals and the globals the file assigns. Locals declared inside functions or blocks are not queryable. (`find_event_declarations` is the exception - it returns workspace-wide event metadata.)
 - Plugins cannot access **resolved types**. They work with structural patterns (field names, method calls, literal values), not the type system.
 - The Lua VM is **shared across files** within a session. Global assignments inside `run()` persist across calls. Avoid polluting the global scope - use `local` for all variables.
-- Plugin files are loaded at startup. **Editing a plugin requires restarting the language server** to pick up changes.
+- Plugin files are loaded when the language server starts. **Adding a plugin to `plugins` or editing a plugin file requires restarting the language server** to pick up the change.

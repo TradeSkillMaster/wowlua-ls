@@ -33,7 +33,7 @@ If your addon uses [flavor-specific TOC files](https://warcraft.wiki.gg/wiki/TOC
 
 | TOC suffix | Flavors |
 |---|---|
-| `_Mainline` | Retail + Forever |
+| `_Mainline` | Retail, plus Forever when the addon [targets it](#world-of-warcraft-forever) |
 | `_Standard` | Retail |
 | `_Camelot` | Forever |
 | `_Classic` | Classic + Classic Era |
@@ -44,9 +44,9 @@ The unsuffixed (base) TOC covers whichever flavors aren't claimed by any suffixe
 
 ```
 MyAddon/
-├── MyAddon.toc           # Loaded on Classic + Classic Era (Mainline has its own)
-├── MyAddon_Mainline.toc  # Loaded on Retail only
-└── MyAddon_Vanilla.toc   # Loaded on Classic Era only
+├── MyAddon.toc           # Loaded on Classic (the other flavors have their own)
+├── MyAddon_Mainline.toc  # Loaded on Retail
+└── MyAddon_Vanilla.toc   # Loaded on Classic Era
 ```
 
 A file listed in `MyAddon_Mainline.toc` is treated as retail-only. A file listed in both `_Mainline.toc` and `_Vanilla.toc` is available on retail and classic era. A file in the base `MyAddon.toc` covers whichever flavors don't have a suffixed TOC.
@@ -97,15 +97,15 @@ When both sources provide flavor information, the effective flavor for a file is
 
 ## The `wrong-flavor-api` diagnostic
 
-With flavors configured, the LS warns when you call an API that isn't available in all your targets:
+When a file's flavors are known (from `flavors` or a flavor-specific `.toc`), the LS warns when you call an API that isn't available in all of them. With `"flavors": ["retail", "classic"]`:
 
 ```lua
--- This function only exists in retail
-AbbreviateLargeNumbers(100)
--- warning: wrong-flavor-api: not available in classic
+-- The Great Vault doesn't exist on Classic
+C_WeeklyRewards.HasAvailableRewards()
+-- warning: wrong-flavor-api: API 'C_WeeklyRewards.HasAvailableRewards' not available in flavor 'Classic' (available in: Retail, Forever)
 ```
 
-Hovering over a WoW API function shows its availability: `Flavors: Retail, Classic`.
+Hovering over a WoW API function shows its availability, e.g. `Flavors: Retail, Forever`.
 
 ## Flavor-aware deprecation
 
@@ -128,9 +128,11 @@ The addon's targeted flavors are taken from your `.wowluarc.json` `flavors`, els
 a flavor-specific `.toc` (suffix / `AllowLoadGameType`), else the `.toc`
 `## Interface:` version line, so a config-less multi-version addon
 (`## Interface: 120005, 50503, 11508`) is still recognized as targeting Classic.
-If there is no flavor signal at all, the warning fires as before. Unlike
-`wrong-flavor-api`, this never requires a `flavors` config and the `## Interface:`
-fallback applies only to `deprecated`.
+If there is no flavor signal at all, the warning fires as before. The same
+targeted flavors also scope [secret values](/guide/secrets) and flavor guards.
+Without a `flavors` config, `wrong-flavor-api` reads the `## Interface:` lines
+only when one of them declares [Forever](#world-of-warcraft-forever), and then
+holds each file to the flavors those lines declare.
 
 ## Conditional narrowing
 
@@ -141,13 +143,13 @@ The LS understands flavor-conditional code:
 ```lua
 if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
     -- Narrowed to retail (and Forever, which reports WOW_PROJECT_MAINLINE too)
-    AbbreviateLargeNumbers(100) -- no warning
+    C_WeeklyRewards.HasAvailableRewards() -- no warning
 else
     -- Narrowed to non-retail flavors
 end
 
 -- The right-hand side of `and` is narrowed too
-local text = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and AbbreviateLargeNumbers(100)
+local hasRewards = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and C_WeeklyRewards.HasAvailableRewards()
 ```
 
 ### Custom flavor guards with `@flavor-narrows`
@@ -162,12 +164,12 @@ local function IsRetail()
 end
 
 if IsRetail() then
-    AbbreviateLargeNumbers(100) -- no warning (narrowed to retail)
+    C_WeeklyRewards.HasAvailableRewards() -- no warning (narrowed to retail)
 end
 
 if not IsRetail() then return end
 -- Rest of file is retail-only
-AbbreviateLargeNumbers(100) -- no warning
+C_WeeklyRewards.HasAvailableRewards() -- no warning
 ```
 
 #### Boolean flavor guards
@@ -178,7 +180,7 @@ A boolean variable or field assigned a `WOW_PROJECT_ID` comparison is a flavor g
 local isRetail = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
 
 if isRetail then
-    AbbreviateLargeNumbers(100) -- no warning
+    C_WeeklyRewards.HasAvailableRewards() -- no warning
 end
 ```
 
@@ -192,7 +194,7 @@ ns.isRetail = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
 -- In another file:
 local _, ns = ...
 if ns.isRetail then
-    AbbreviateLargeNumbers(100) -- no warning
+    C_WeeklyRewards.HasAvailableRewards() -- no warning
 end
 ```
 
@@ -212,7 +214,7 @@ Flavor guards also scope the retail-only [secret-value](/guide/secrets) diagnost
 
 Forever (game type `camelot`) is a vanilla-era game running on the retail client. It has retail's API, minus some systems and plus its own, and shares retail's secret values and deprecations. Its interface versions start at `1.60` (`## Interface: 16001`), well above Classic Era's `1.15`.
 
-An addon targets Forever when its `.wowluarc.json` `flavors` includes `forever` or one of its `.toc` files lists a Forever `## Interface:` version. Until then, Forever is left out even though the game would load the addon's `_Mainline.toc`, so a retail addon doesn't get warnings about APIs that Forever lacks.
+An addon targets Forever when its `.wowluarc.json` `flavors` includes `forever`, or, if it sets no `flavors`, when one of its `.toc` files lists a Forever `## Interface:` version. Otherwise Forever is left out even though the game would load the addon's `_Mainline.toc`, so a retail addon doesn't get warnings about APIs that Forever lacks.
 
 ```
 MyAddon/
@@ -236,4 +238,4 @@ Also mark a retail guard built on `WOW_PROJECT_MAINLINE` as `@flavor-narrows ret
 
 Flavor filtering is most valuable for addons that ship a single codebase across retail and classic. Without it, you won't know about missing APIs until a classic player reports a Lua error.
 
-If your addon only targets one flavor, you don't need to configure `flavors` - the diagnostic is disabled when no flavors are declared.
+If your addon only targets one flavor, you don't need any of this: with no `flavors` list and no flavor-specific `.toc`, the diagnostic stays off.

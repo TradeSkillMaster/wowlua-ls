@@ -426,6 +426,11 @@ pub fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDiagnosti
 
 // ── Aliases and known codes ─────────────────────────────────────────────────────
 
+/// Code that parse errors are reported and suppressed under (`---@diagnostic
+/// disable: syntax`). Not a `DiagnosticDef`: the parser produces these, and the
+/// publishers always report them at ERROR.
+pub const SYNTAX_CODE: &str = "syntax";
+
 /// Aliases from other language servers (e.g. LuaLS) mapped to our codes.
 /// Each entry is (alias, &[our_codes]).
 pub const CODE_ALIASES: &[(&str, &[&str])] = &[
@@ -900,6 +905,7 @@ fn any_table_has_value_type(analysis: &AnalysisResult, ty: &ValueType) -> bool {
 
 pub fn known_codes() -> Vec<&'static str> {
     let mut codes: Vec<&'static str> = CATALOG.iter().map(|d| d.code).collect();
+    codes.push(SYNTAX_CODE);
     for &(alias, _) in CODE_ALIASES { codes.push(alias); }
     codes.extend_from_slice(LUALS_ONLY_CODES);
     codes

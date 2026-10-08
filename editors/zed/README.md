@@ -6,12 +6,13 @@ Connects [Zed](https://zed.dev) to the [wowlua_ls](https://github.com/TradeSkill
 
 All features come from the `wowlua_ls` language server:
 
-- 9,000+ WoW API stubs built in (retail, classic, classic era)
+- 9,000+ WoW API stubs built in (retail, classic, classic era, WoW Forever)
 - Event handler typing with per-event payload params
 - XML frame scanning for frame definitions, virtual templates, and mixins
 - TOC file support - hover, completions, go-to-definition, and diagnostics
 - Metatable inference, correlated narrowing, mixin and template support
 - Flavor filtering - warns on APIs unavailable in your target game version
+- Secret values (retail 12.x) - flags comparisons, arithmetic, and other operations that error on secret API results
 - 80+ diagnostics for type safety, nil checking, annotation correctness, and WoW-specific checks
 - Diagnostic plugins for project-specific conventions
 - Powerful generics, builder patterns, signature help with overload resolution

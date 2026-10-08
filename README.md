@@ -14,7 +14,7 @@ LuaLS is an excellent general-purpose Lua language server. But WoW addons aren't
 
 |  | LuaLS | wowlua-ls |
 |---|---|---|
-| WoW API (retail · classic · classic era) | Install a third-party stub addon | **9,000+ stubs built in**, zero setup |
+| WoW API (retail · classic · classic era · Forever) | Install a third-party stub addon | **9,000+ stubs built in**, zero setup |
 | Event handler payloads | Untyped `...` | **1,000+ events** with fully typed `...` |
 | XML frames & templates | Invisible to the language server | Scanned into typed classes and globals |
 | `.toc` files | Unsupported | Hover, completion, go-to-def, diagnostics |
@@ -57,10 +57,16 @@ Zed gets its languages from extensions, so install the **Lua** extension too (Ze
 Neovim has built-in LSP support - no plugin required. Get the binary (download from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) or `cargo build --release`), then add to your config:
 
 ```lua
+vim.filetype.add({ extension = { toc = 'toc' } })
+
 vim.lsp.config('wowlua_ls', {
   cmd = { '/path/to/wowlua_ls' },
-  filetypes = { 'lua' },
-  root_markers = { '.wowluarc.json', '.toc', '.git' },
+  filetypes = { 'lua', 'toc' },
+  root_dir = function(bufnr, on_dir)
+    on_dir(vim.fs.root(bufnr, '.wowluarc.json')
+      or vim.fs.root(bufnr, function(name) return name:match('%.toc$') ~= nil end)
+      or vim.fs.root(bufnr, '.git'))
+  end,
   workspace_required = false,
 })
 vim.lsp.enable('wowlua_ls')
@@ -121,10 +127,10 @@ wowlua_ls check path/to/addon --severity hint
 
 Exit code is `1` if any diagnostics are found - suitable for CI.
 
-Generate API documentation (compatible with [sphinx-lua-ls](https://github.com/taminomara/sphinx-lua-ls)):
+Generate Markdown API documentation for your addon's classes (one page per `@class`, ready to embed in a VitePress site):
 
 ```bash
-wowlua_ls --doc path/to/addon --doc_out_path path/to/output
+wowlua_ls doc path/to/addon --out-dir docs/api
 ```
 
 See the [CLI guide](https://tradeskillmaster.github.io/wowlua-ls/guide/cli) for details.

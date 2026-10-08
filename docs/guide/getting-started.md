@@ -4,7 +4,9 @@
 
 ### VS Code
 
-Install the **wowlua-ls** extension from the VS Code marketplace. It bundles the language server binary - no separate install needed.
+Install the **wowlua-ls** extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls). It bundles the language server binary - no separate install needed.
+
+On editors that use the [Open VSX Registry](https://open-vsx.org/extension/TradeSkillMaster/wowlua-ls) instead of the Marketplace (VSCodium, Cursor, Gitpod, Eclipse Theia), install it from there - it's the same extension.
 
 ### JetBrains IDEs
 
@@ -12,7 +14,7 @@ Install **WoW Lua Language Server** from the [JetBrains Marketplace](https://plu
 
 ### Zed
 
-Install **WoW Lua Language Server** from Zed's extensions view (`zed: extensions`). It downloads the language server binary for your platform on first use - no separate install needed.
+Install **WoW Lua Language Server** from Zed's extensions view (`zed: extensions`). It runs the server set in `lsp.wowlua-ls.binary.path`, else a `wowlua_ls` on your `$PATH`, else downloads the release binary for your platform on first use - no separate install needed.
 
 Zed gets its languages from extensions, so install two more:
 
@@ -31,7 +33,7 @@ The Lua extension also brings LuaLS, which reports its own (WoW-unaware) diagnos
 }
 ```
 
-To run a server you built yourself instead of the downloaded release, point the extension at it:
+To run a server you built yourself that isn't on your `$PATH`, point the extension at it:
 
 ```json
 {
@@ -61,16 +63,22 @@ cargo build --release
 **2. Configure the LSP client.** Add this to your Neovim config (requires Neovim 0.11+):
 
 ```lua
+vim.filetype.add({ extension = { toc = 'toc' } })
+
 vim.lsp.config('wowlua_ls', {
   cmd = { '/path/to/wowlua_ls' },
-  filetypes = { 'lua' },
-  root_markers = { '.wowluarc.json', '.toc', '.git' },
+  filetypes = { 'lua', 'toc' },
+  root_dir = function(bufnr, on_dir)
+    on_dir(vim.fs.root(bufnr, '.wowluarc.json')
+      or vim.fs.root(bufnr, function(name) return name:match('%.toc$') ~= nil end)
+      or vim.fs.root(bufnr, '.git'))
+  end,
   workspace_required = false,
 })
 vim.lsp.enable('wowlua_ls')
 ```
 
-Replace `/path/to/wowlua_ls` with the actual path to the binary. `workspace_required = false` lets the server attach to standalone Lua files outside a project.
+Replace `/path/to/wowlua_ls` with the actual path to the binary. `root_dir` picks the addon folder: the nearest `.wowluarc.json`, else the folder holding the addon's `.toc`, else the git root. `workspace_required = false` lets the server attach to standalone Lua files outside a project. Neovim detects `.toc` files as a different filetype by default, so the `vim.filetype.add` line maps them to `toc`: the server only treats a file as a TOC file when its filetype is `toc`.
 
 #### LazyVim
 
@@ -78,6 +86,8 @@ If you use [LazyVim](https://www.lazyvim.org/), add a plugin spec:
 
 ```lua
 -- ~/.config/nvim/lua/plugins/wowlua-ls.lua
+vim.filetype.add({ extension = { toc = "toc" } })
+
 return {
   {
     "neovim/nvim-lspconfig",
@@ -85,8 +95,12 @@ return {
       servers = {
         wowlua_ls = {
           cmd = { "/path/to/wowlua_ls" },
-          filetypes = { "lua" },
-          root_markers = { ".wowluarc.json", ".toc", ".git" },
+          filetypes = { "lua", "toc" },
+          root_dir = function(bufnr, on_dir)
+            on_dir(vim.fs.root(bufnr, ".wowluarc.json")
+              or vim.fs.root(bufnr, function(name) return name:match("%.toc$") ~= nil end)
+              or vim.fs.root(bufnr, ".git"))
+          end,
           workspace_required = false,
         },
       },
@@ -100,14 +114,16 @@ return {
 If you use [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig) without a distro, you can register the server manually:
 
 ```lua
+vim.filetype.add({ extension = { toc = 'toc' } })
+
 local configs = require('lspconfig.configs')
 
 if not configs.wowlua_ls then
   configs.wowlua_ls = {
     default_config = {
       cmd = { '/path/to/wowlua_ls' },
-      filetypes = { 'lua' },
-      root_dir = require('lspconfig.util').root_pattern('.wowluarc.json', '.toc', '.git'),
+      filetypes = { 'lua', 'toc' },
+      root_dir = require('lspconfig.util').root_pattern('.wowluarc.json', '*.toc', '.git'),
       single_file_support = true,
     },
   }
@@ -130,14 +146,14 @@ cd wowlua-ls
 cargo build --release
 ```
 
-The binary is at `target/release/wowlua_ls`. Configure your editor to run it as an LSP server over stdio for Lua and TOC files.
+The binary is at `target/release/wowlua_ls`. Configure your editor to run it as an LSP server over stdio for Lua and TOC files. The server picks the file kind from the language ID the editor sends: `lua` for Lua files and `toc` for TOC files.
 
 ## Your first project
 
 Open a WoW addon folder in your editor. wowlua-ls will automatically:
 
 1. Scan all `.lua`, `.xml`, and `.toc` files in the workspace
-2. Load the built-in WoW API stubs (retail + classic)
+2. Load the built-in WoW API stubs (retail, classic, classic era, and WoW Forever)
 3. Resolve cross-file classes, globals, and addon namespaces
 4. Extract frame and template types from XML files
 5. Provide [interactive editing support](/guide/toc-files) for TOC files
@@ -165,7 +181,7 @@ This tells wowlua-ls:
 - **Target retail and classic**: warn about flavor-specific APIs
 - **Enable nil checking**: report `need-check-nil` warnings (off by default)
 
-See [Configuration](/guide/configuration) for the full reference.
+See the [Configuration guide](/guide/configuration) for more, and the [Configuration reference](/reference/configuration) for every setting.
 
 ## Adding annotations
 

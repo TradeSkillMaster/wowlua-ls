@@ -33,7 +33,7 @@ pub fn build_lsp_diagnostics(
 
     for e in errors {
         let start_line = numbers.line_col(e.start as usize).0 .0;
-        if is_suppressed("syntax", start_line, suppressions) {
+        if is_suppressed(crate::diagnostics::SYNTAX_CODE, start_line, suppressions) {
             continue;
         }
         diagnostics.push(Diagnostic {

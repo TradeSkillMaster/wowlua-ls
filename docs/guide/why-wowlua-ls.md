@@ -12,7 +12,7 @@ Most of what follows works **out of the box, no annotations required**: WoW API 
 
 ### 9,000+ WoW API stubs, zero setup
 
-wowlua-ls ships with complete WoW API stubs: retail, classic, and classic era. Every function, frame type, enum, and global variable is typed. Hover over `CreateFrame` and you get the full signature. Access a field on a `Frame` and get completion for every method.
+wowlua-ls ships with complete WoW API stubs: retail, classic, classic era, and WoW Forever. Every function, frame type, enum, and global variable is typed. Hover over `CreateFrame` and you get the full signature. Access a field on a `Frame` and get completion for every method.
 
 The stubs are precomputed and compressed into the binary. They load instantly at startup and are shared across all files - never re-parsed per file.
 
@@ -73,11 +73,11 @@ If your addon targets multiple WoW versions, declare your targets and get warnin
 ```
 
 ```lua
--- warning: AbbreviateLargeNumbers is not available in classic
-AbbreviateLargeNumbers(100)
+-- warning: C_WeeklyRewards.HasAvailableRewards is not available in classic
+C_WeeklyRewards.HasAvailableRewards()
 
 if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
-    AbbreviateLargeNumbers(100) -- OK, narrowed to retail
+    C_WeeklyRewards.HasAvailableRewards() -- OK, narrowed to retail
 end
 ```
 
@@ -104,8 +104,8 @@ See the [Secret Values guide](/guide/secrets).
 
 ```lua
 local f = CreateFrame("Button", nil, nil, "BackdropTemplate")
--- f: Button & BackdropTemplateMixin
--- All methods from both Button and BackdropTemplateMixin are available
+-- f: Button & BackdropTemplate
+-- All methods from both Button and BackdropTemplate are available
 ```
 
 ## Smart type inference
@@ -170,7 +170,7 @@ Nil tracking works with every narrowing pattern:
 wowlua-ls can infer parameter types from how they're used in the function body:
 
 ```lua
-function double(x)
+local function double(x)
     return x * 2  -- x inferred as number (used in arithmetic)
 end
 ```
@@ -187,20 +187,25 @@ LuaLS supports basic `@generic` but struggles with more advanced patterns. wowlu
 local Pool = {}
 
 ---@return T
-function Pool:Get() end
+function Pool:Get()
+    return table.remove(self._items)
+end
 
 ---@type Pool<Frame>
-local framePool = Pool.New()
+local framePool = setmetatable({ _items = {} }, { __index = Pool })
 local frame = framePool:Get() -- frame: Frame (T resolved from the class)
 ```
 
 Class-level generics propagate through method calls automatically - no need to redeclare `@generic T` on every method. Constrained generics (`@generic T: Frame`) ensure the type parameter satisfies a base type. And backtick annotations (`` `T` ``) let factory functions resolve a class from a string literal argument:
 
 ```lua
+---@class Dog
+---@field name string
+
 ---@generic T
 ---@param name `T`
 ---@return T
-function CreateClass(name) return {} end
+local function CreateClass(name) return {} end
 
 local Dog = CreateClass("Dog") -- T resolves to the Dog class
 ```
@@ -237,7 +242,7 @@ wowlua-ls ships with 80+ diagnostics organized across several categories:
 - **Code quality**: unused-local, unused-function, shadowed-local, unreachable-code, deprecated, empty-block, trailing-space
 - **WoW-specific**: wrong-flavor-api, secret-comparison, secret-arithmetic, secret-table-key, secret-access, access-private, access-protected
 
-Each diagnostic is individually configurable: enable, disable, or change severity per-line (`@diagnostic`) or per-project (`.wowluarc.json`). Several stricter checks are off by default and opt-in.
+Each diagnostic is individually configurable: silence it per-line or per-file with `@diagnostic`, or enable, disable, or change its severity project-wide in `.wowluarc.json`. Several stricter checks are off by default and opt-in.
 
 See the [full diagnostic reference](/reference/diagnostics).
 
@@ -285,16 +290,15 @@ What you gain:
 
 | Feature | LuaLS | wowlua-ls |
 |---|---|---|
-| WoW API stubs (retail + classic + classic era) | Via addon | 9,000+ built in |
+| WoW API stubs (retail + classic + classic era + Forever) | Via addon | 9,000+ built in |
 | Event handler payload typing | No | 1,000+ events with typed `...` payloads |
 | XML frame/template scanning | No | Automatic: templates, named frames, parentKey fields |
 | TOC file editing | No | Hover, completions, go-to-def, diagnostics |
 | Flavor-specific API warnings | No | `wrong-flavor-api` with `WOW_PROJECT_ID` guards |
 | Secret-value checks (retail 12.x) | No | `secret-*` diagnostics with `issecretvalue` / `canaccessvalue` narrowing |
 | Mixin/template intersection types | No | `CreateFrame` + `Mixin` return `A & B` |
-| Parameterized classes | No | `@class Foo<T>` with method propagation |
-| Generic constraints | No | `@generic T: Base` |
-| Backtick factory generics | No | `` `T` `` resolves class from string literal |
+| Parameterized classes | Partial | `@class Foo<T>` with method propagation |
+| Generic constraints | Partial | `@generic T: Base`, enforced at call sites |
 | Function-type projections | No | `params<F>` / `returns<F>` |
 | Metatable `__index` inference | Partial | Full chain, `__call`, operator metamethods |
 | Multi-return correlated narrowing | No | Automatic + inferred from function bodies |
@@ -302,9 +306,9 @@ What you gain:
 | Class factory patterns | No | `@defclass` with parameterized parents |
 | Custom type guards | No | `@type-narrows` annotation |
 | Diagnostic plugins | No | Custom Lua scripts for project conventions |
-| CLI linting for CI | No | `wowlua_ls check` with exit codes |
-| Callable table inference | No | `setmetatable` + `__call` |
-| Operator metamethods | No | `__add`, `__sub`, etc. return types |
+| CLI linting for CI | `--check` writes a report file | `wowlua_ls check` prints diagnostics, exits `1` on findings |
+| Callable tables | Annotate with `@overload` / `@operator call` | Inferred from `setmetatable` + `__call` |
+| Operator metamethods | Annotate with `@operator` | Inferred from `__add`, `__sub`, etc. |
 | Correlated nil fields | No | `@correlated` annotation |
 | Correlated local inference | No | Automatic from branch patterns |
 | Lateinit fields (`T!`) | No | Non-nil assertion with nil assignment |

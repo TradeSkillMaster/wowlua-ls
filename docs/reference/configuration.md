@@ -60,7 +60,7 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
     "disable": ["string"],
     "enable": ["string"],
     "severity": {
-      "diagnostic-code": "warning | info | hint"
+      "diagnostic-code": "error | warning | information | hint"
     }
   }
 }
@@ -90,7 +90,7 @@ Not needed for single-addon projects.
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Paths to Lua diagnostic plugin scripts. Relative to the config file's directory. Isolated per file: only the plugins declared by a file's nearest config run against it. Plugin lists are not inherited from parent configs. See the [Diagnostic Plugins guide](/guide/plugins) for the full API.
+Paths to Lua diagnostic plugin scripts. Relative to the config file's directory. Isolated per file: only the plugins declared by a file's nearest config run against it. Plugin lists are not inherited from parent configs. Plugins load when the language server starts, so a newly added entry takes effect after a restart. See the [Diagnostic Plugins guide](/guide/plugins) for the full API.
 
 ```json
 { "plugins": [".wowlua-ls/my-check.lua"] }
@@ -142,10 +142,10 @@ Whether FrameXML API globals are available. Set to `false` to treat FrameXML-spe
 ### `flavors`
 
 - **Type:** `string[]`
-- **Default:** `[]` (flavor filtering disabled)
+- **Default:** `[]`
 - **Values:** `"retail"` (alias `"mainline"`), `"classic"`, `"classic_era"`, `"forever"`
 
-WoW flavor names the project targets. Enables `wrong-flavor-api` diagnostic when non-empty.
+WoW flavor names the project targets. Enables the `wrong-flavor-api` diagnostic when non-empty. Without it, files listed in a flavor-specific `.toc` (e.g. `MyAddon_Vanilla.toc`) are still checked against that `.toc`'s flavors.
 
 > **Note:** Flavor filtering can also be derived automatically from `.toc` file listings - see the [Flavor Filtering guide](/guide/flavor-filtering). When both sources are present, the effective flavor for each file is the intersection of the project-level `flavors` and the TOC-derived per-file flavor.
 
@@ -164,20 +164,20 @@ Global names that may be accessed without triggering `undefined-global`. Entries
 
 > **Tip:** `SavedVariables` and `SavedVariablesPerCharacter` declared in `.toc` files are automatically added to both `globals.read` and `globals.write` - no manual configuration needed.
 
-> **Quick fix:** Hovering an `undefined-global` warning offers **"Add `<name>` to allowed globals in `.wowluarc.json`"**, which appends the name to this list in the nearest config file (alongside the alternative "Add `local` declaration" fix).
+> **Quick fix:** An `undefined-global` warning offers **"Add `<name>` to allowed read globals in `.wowluarc.json`"** (alongside "Add `local` declaration"), which appends the name to this list in the nearest config file. It is offered only when a `.wowluarc.json` already governs the file.
 
 ### `globals.write`
 
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Global names that may be created/assigned without triggering `create-global`. Entries may use glob wildcards: `*` (any characters) and `?` (single character).
+Global names that may be created/assigned without triggering `create-global`. Names listed here may also be read without triggering `undefined-global`, so a global your addon defines doesn't need a `read` entry too. Entries may use glob wildcards: `*` (any characters) and `?` (single character).
 
 ```json
 { "globals": { "write": ["MyAddon*", "SavedVar*"] } }
 ```
 
-> **Quick fix:** A `create-global` warning offers **"Add `<name>` to allowed write globals in `.wowluarc.json`"** (alongside "Add `local` declaration"), appending the name to this list.
+> **Quick fix:** A `create-global` warning offers **"Add `<name>` to allowed write globals in `.wowluarc.json`"** (alongside "Add `local` declaration"), appending the name to this list. Like the read fix, it is offered only when a `.wowluarc.json` already governs the file.
 
 ### `globals.allowSlashCommands`
 
@@ -193,8 +193,10 @@ Automatically treat globals matching `SLASH_*` as allowed write/read globals. Wo
 
 Automatically treat globals matching `BINDING_HEADER_*` and `BINDING_NAME_*` as allowed write/read globals. WoW keybinding labels are defined by assigning `BINDING_HEADER_ADDON` and `BINDING_NAME_ACTION` to global variables, and the binding system reads them at runtime. Set to `false` to require explicit listing in `globals.write`.
 
-::: info Automatic dynamic prefix detection
+::: info Automatically allowed globals
 In addition to the settings above, the language server automatically detects dynamic global creation via `_G["PREFIX" .. key] = value` (or `_G[name .. "SUFFIX"]`) patterns in your workspace. When detected, a wildcard glob (e.g. `PREFIX*`) is registered so reads of those globals don't trigger `undefined-global`. This requires no configuration. The prefix/suffix must be at least 3 characters to avoid overly broad matching.
+
+Names your `.xml` files bind are also allowed, for both reads and writes: `mixin=` / `secureMixin=` table names and `<On… function="…">` script-handler function names.
 :::
 
 ### `inference.backwardParamTypes`
@@ -340,10 +342,10 @@ Diagnostic codes to enable. Used for default-off diagnostics or to counteract a 
 
 ### `diagnostics.severity`
 
-- **Type:** `Record<string, "warning" | "info" | "hint">`
+- **Type:** `Record<string, "error" | "warning" | "information" | "hint">`
 - **Default:** `{}`
 
-Override severity for specific diagnostic codes.
+Override severity for specific diagnostic codes. `"info"` is accepted as a shorthand for `"information"`.
 
 ## Hierarchy behavior
 

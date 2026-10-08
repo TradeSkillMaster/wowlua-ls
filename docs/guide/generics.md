@@ -32,7 +32,7 @@ function configure(frame)
 end
 
 local f = configure(CreateFrame("Frame")) -- T is Frame
-configure("not a frame") -- type-mismatch: string doesn't satisfy Frame
+configure("not a frame") -- generic-constraint-mismatch: string doesn't satisfy Frame
 ```
 
 ### Multiple type parameters
@@ -266,8 +266,6 @@ When a generic class wraps a function type, `params<F>` and `returns<F>` let met
 ---@class EventRegistry<F>
 local EventRegistry = {}
 
----@generic F
----@param self EventRegistry<F>
 ---@param key string
 ---@param ... params<F>
 ---@return returns<F>
@@ -351,12 +349,14 @@ A variadic generic can also be the only generic parameter:
 ```lua
 ---@generic ...M
 ---@param ... any
----@return ...M
+---@return & ...M
 function CreateFromMixins(...) end
 
 local obj = CreateFromMixins(Draggable, Resizable)
 -- obj: Draggable & Resizable
 ```
+
+The leading `&` makes the return a single value, the intersection of the arguments; a bare `@return ...M` would be a [variadic return](/guide/multi-return#variadic-returns-return-t) instead.
 
 When no excess arguments are provided, the variadic generic stays unbound and is filtered out, leaving just the non-variadic parts of the return type.
 

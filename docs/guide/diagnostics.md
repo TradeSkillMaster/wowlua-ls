@@ -1,15 +1,16 @@
 # Diagnostics
 
-wowlua-ls ships 55+ diagnostics covering type safety, annotation correctness, code quality, and WoW-specific checks. Each one is individually suppressible and configurable.
+wowlua-ls ships 80+ diagnostics covering type safety, annotation correctness, code quality, and WoW-specific checks. Each one is individually suppressible and configurable.
 
 ## How diagnostics work
 
 Diagnostics run automatically as you type. They're grouped by severity:
 
+- **Error**: syntax errors, and `safety-limit` when analysis of a file stopped early
 - **Warning**: likely a bug or an annotation problem
 - **Hint**: code quality suggestions, unused variables, style issues
 
-Each diagnostic has a **code** (like `type-mismatch` or `unused-local`) that you use to suppress or configure it.
+Each diagnostic has a **code** (like `type-mismatch` or `unused-local`) that you use to suppress or configure it. This page covers the most common ones; see [All Diagnostics](/reference/diagnostics) for the complete list.
 
 ## Quick fixes
 
@@ -29,12 +30,13 @@ Many diagnostics offer **quick fixes** (code actions — the lightbulb / <kbd>Ct
 | `count-down-loop` | Add an explicit `-1` step |
 | `wrong-flavor-api` | Wrap in a `WOW_PROJECT_ID` flavor guard |
 | `invalid-op` | Provide an `or 0` / `or ""` fallback for a possibly-nil operand |
+| `secret-*` | Wrap the statement in a `canaccessvalue` guard (`canaccessallvalues` for several values) |
 | type-mismatch family | Insert an `--[[@as T]]` cast |
 | `unused-local` | Prefix the name with `_` |
 | `incomplete-signature-doc` | Generate the missing `@param` / `@return` annotations |
 | `trailing-space` | Remove the trailing whitespace |
 
-The config-editing fixes (`undefined-global`, `create-global`) only appear when a `.wowluarc.json` governs the file. The `wrong-flavor-api` guard is offered only when one `WOW_PROJECT_*` constant covers exactly the flavors the API is available on: `WOW_PROJECT_MAINLINE` (Retail and Forever, or Retail alone when your project doesn't target Forever) or `WOW_PROJECT_CLASSIC` (Classic Era).
+The config-editing fixes (`undefined-global`, `create-global`) only appear when a `.wowluarc.json` governs the file. The `wrong-flavor-api` guard is offered only when one `WOW_PROJECT_*` constant covers exactly the flavors the API is available on: `WOW_PROJECT_MAINLINE` (Retail and Forever, or Retail alone when your project doesn't target Forever) or `WOW_PROJECT_CLASSIC` (Classic Era). The `secret-*` guard is offered only when each flagged value is a name or field chain and the statement is a call, assignment, `if`, `while`, or `repeat` (not a `local` declaration or `return`).
 
 ## Suppressing diagnostics
 
@@ -63,10 +65,10 @@ local unused = computeSomething()
 ### Per-block
 
 ```lua
----@diagnostic disable: undefined-global
+---@diagnostic disable: create-global
 MY_GLOBAL = true
 OTHER_GLOBAL = false
----@diagnostic enable: undefined-global
+---@diagnostic enable: create-global
 ```
 
 ### Per-project
@@ -224,17 +226,23 @@ local n = 5
 n() -- cannot-call
 ```
 
-### `invalid-op` <Badge type="warning" text="Warning" />
+### `invalid-op` <Badge type="warning" text="Warning" /> <Badge type="info" text="Off by default" />
 
-Arithmetic or concatenation operator applied to incompatible types. Common when `+` is used instead of `..` for string concatenation:
+Arithmetic, concatenation, or a `<`/`>`/`<=`/`>=` comparison applied to incompatible types, or `#` applied to a value that has no length. Common when `+` is used instead of `..` for string concatenation:
 
 ```lua
 error("Missing context: " + tostring(field))
 -- invalid-op: cannot apply '+' to 'string' and 'string' (use '..' to concatenate)
 
 local x = true + 1
--- invalid-op: cannot apply '+' to 'boolean' and 'number'
+-- invalid-op: cannot apply '+' to 'true' and 'number'
+
+local count = 3
+print(count > "5")
+-- invalid-op: cannot apply '>' to 'number' and 'string'
 ```
+
+Enable in `.wowluarc.json`: `"diagnostics": { "enable": ["invalid-op"] }`
 
 ## Return diagnostics
 
@@ -254,10 +262,11 @@ end
 Function with `@return` but no return statement on some paths:
 
 ```lua
+---@param name string?
 ---@return string
-function getName()
-    if self.name then
-        return self.name
+function getName(name)
+    if name then
+        return name
     end
     -- missing-return (falls off without returning)
 end
@@ -279,10 +288,11 @@ end
 Bare `return` in a function with all-optional `@return` types:
 
 ```lua
+---@param loaded boolean
 ---@return string?
-function maybeName()
-    if not self.loaded then return end -- implicit-nil-return
-    return self.name
+function maybeName(loaded)
+    if not loaded then return end -- implicit-nil-return
+    return "name"
 end
 ```
 
@@ -427,13 +437,13 @@ Unknown code in `@diagnostic` directives.
 
 ### `unused-local` <Badge type="tip" text="Hint" />
 
-Unreferenced local variable.
+Unreferenced local variable. An unused local function (`local function f()` or `local f = function() end`) reports `unused-function` instead.
 
-### `unused-function` <Badge type="tip" text="Hint" /> <Badge type="warning" text="off by default" />
+### `unused-function` <Badge type="tip" text="Hint" /> <Badge type="info" text="Off by default" />
 
-Unused function definition. Enable with `"diagnostics": { "enable": ["unused-function"] }` in `.wowluarc.json`.
+A function (global, method, or local) that nothing in the workspace references. Enable with `"diagnostics": { "enable": ["unused-function"] }` in `.wowluarc.json`. See the [reference](/reference/diagnostics#unused-function) for what counts as a reference.
 
-### `redefined-local` <Badge type="tip" text="Hint" />
+### `redefined-local` <Badge type="warning" text="Warning" />
 
 Same-scope local variable redefinition.
 
@@ -447,7 +457,7 @@ Code after `return` or `break`.
 
 ### `deprecated` <Badge type="warning" text="Warning" />
 
-Usage of a symbol marked `@deprecated`.
+Call to a function marked `@deprecated`.
 
 ### `discard-returns` <Badge type="warning" text="Warning" />
 

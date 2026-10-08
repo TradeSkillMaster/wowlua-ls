@@ -23,7 +23,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@class Name : A, B` | Multiple parent classes (comma-separated). | [Classes](/guide/classes#multiple-parents) |
 | `@class Name : A & B` | Multiple parent classes (intersection syntax). | [Classes](/guide/classes#multiple-parents) |
 | `@class Name : table<K, V>` | Class with dictionary key/value types. | [Classes](/guide/classes) |
-| `@class (partial) Name` | Accepted for compatibility (currently ignored). | [Classes](/guide/classes#partial-classes) |
+| `@class (partial) Name` / `@class (exact) Name` | Accepted for compatibility; no effect. | [Classes](/guide/classes#partial-classes) |
 | `@class Name<T>` | Parameterized class. | [Generics](/guide/generics) |
 | `@class Name<T: Constraint>` | Parameterized class with type constraint. | [Generics](/guide/generics) |
 | `@enum Name` | Enum type: bidirectionally compatible with `number` or `string` (inferred from values). | [Classes](/guide/classes#enum-types-enum) |
@@ -34,7 +34,8 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@field [K] V` | Bracket-index field. | [Generics](/guide/generics) |
 | `@field private name type` | Private field. | [Classes](/guide/classes) |
 | `@field protected name type` | Protected field. | [Classes](/guide/classes) |
-| `@private` / `@protected` (on a field assignment) | Field visibility declared inline on the assignment, instead of in the `@class` block. | [Classes](/guide/classes#field-visibility) |
+| `@field public name type` | Public field (the default). | [Classes](/guide/classes) |
+| `@private` / `@protected` (on a field assignment or method) | Visibility declared inline on a field assignment or a method definition, instead of in the `@class` block. | [Classes](/guide/classes#field-visibility) |
 | `@correlated f1, f2, ...` | Fields or locals that are always nil/non-nil together. | [Nil Safety](/guide/nil-safety) |
 
 ## Generic annotations
@@ -46,9 +47,10 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@generic T, K: keyof T` | Key-constrained generic: K must be a field name of T. | [Generics](/guide/generics#keyof-constraints) |
 | `@generic K: keyof self` | Method receiver key constraint: K must be a field name of the call's receiver. | [Generics](/guide/generics#keyof-constraints) |
 | `@generic T, ...M` | Variadic generic: collects excess arguments into an intersection. | [Generics](/guide/generics#variadic-generics) |
-| `@requires T: Constraint` | Method is only callable when the receiver's class type parameter `T` satisfies the constraint. | [Generics](/guide/generics) |
+| `@return T & ...M` / `@return & ...M` | Return the variadic arguments as one intersection value, with or without a leading type. | [Generics](/guide/generics#variadic-generics) |
+| `@requires T: Constraint` | Method is only callable when the receiver's class type parameter `T` satisfies the constraint. | |
 | `` @param name `T` `` | Resolve string argument as a class name. | [Generics](/guide/generics) |
-| `@overload fun(...)` | Function overload signature. | [Generics](/guide/generics) |
+| `@overload fun(...)` | Function overload signature. On a `@class`, makes instances callable with that signature. | |
 
 ## Factory and builder annotations
 
@@ -63,7 +65,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@built-name idx` | Name the built type from a string argument. | [Builder Pattern](/guide/builder-pattern) |
 | `@built-extends` | Built type inherits from receiver's built type. | [Builder Pattern](/guide/builder-pattern) |
 | `@return self` | Method returns the receiver (for chaining). | [Builder Pattern](/guide/builder-pattern) |
-| `@return self<X>` | Method returns the receiver re-parameterized with type argument `X`. | [Builder Pattern](/guide/builder-pattern) |
+| `@return self<X>` | Method returns the receiver re-parameterized with type argument `X`. | |
 
 ## Narrowing and guard annotations
 
@@ -73,7 +75,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@type-narrows ClassName` | Type guard method (narrows self). | [Type Guards](/guide/type-guards) |
 | `@returns-class-name` | Method whose string return value names the receiver's class; `recv:m() == "Class"` narrows `recv` to `Class`. | [Type Guards](/guide/type-guards#returns-class-name) |
 | `@narrows-arg N` | Bare call narrows the Nth argument's type to the return type. | [Type Guards](/guide/type-guards#narrows-arg) |
-| `@flavor-narrows flavor` | Flavor guard function or boolean. | [Flavor Filtering](/guide/flavor-filtering) |
+| `@flavor-narrows flavor[, flavor...]` | Flavor guard function or boolean. | [Flavor Filtering](/guide/flavor-filtering#custom-flavor-guards-with-flavor-narrows) |
 
 ## Secret-value annotations
 
@@ -96,17 +98,21 @@ Retail only. A value that may be secret is typed `secret<T>` (see [Type syntax](
 | Annotation | Description |
 |---|---|
 | `@alias Name type` | Type alias. Supports parameters: `@alias Name<K,V> V[]`, including constrained parameters: `@alias Box<T: Frame> { value: T }`. Use `@alias (opaque) Name type` for a nominally distinct type (see below). |
+| `@alias Name` + `---\|` lines | Multi-line alias: each `---\| "value"` line adds a member, optionally followed by a `# description`. A `---\|>` line (LuaLS's default-value marker) is a member like the others. |
 | `@deprecated [message]` | Mark a function/method as deprecated. Call sites are struck through and get a [`deprecated`](/reference/diagnostics) warning; the name shows a deprecation notice in hover and completion. Optional trailing text (e.g. the replacement API) is shown in the hover notice and appended to the warning. |
 | `@nodiscard` | Warn if return value is ignored. |
 | `@meta` | Declaration-only file. Suppresses runtime/behavior diagnostics, but annotation-integrity checks still fire: a malformed, misplaced, or dangling annotation is a real error even in a stub. This covers undefined type/class references ([`undefined-doc-name`](/reference/diagnostics), [`undefined-doc-class`](/reference/diagnostics)), malformed annotations, `@field`/`@param` not attached to a `@class`/function ([`doc-field-no-class`](/reference/diagnostics), [`doc-func-no-function`](/reference/diagnostics)), invalid `@diagnostic` codes, and `nil` table-key types. An annotated declaration here can also [override a built-in stub](#meta-and-overriding-built-in-stubs) of the same name. |
-| `@diagnostic disable:code` | Suppress a diagnostic inline. |
+| `@diagnostic disable: code[, code...]` | Suppress diagnostics from this line on; `enable` turns them back on. `disable-line` covers the same line and `disable-next-line` the line below. Without codes, applies to every diagnostic. [Guide](/guide/diagnostics#suppressing-diagnostics) |
 | `@see symbol` | Cross-reference shown in hover. |
-| `@constructor` | Mark a method as the class constructor. |
+| `@constructor` | Above a method: marks it as the class constructor. Fields it assigns to `self` don't trigger [`inject-field`](/reference/diagnostics), and calling the class table (`MyClass(...)`) checks the arguments against its parameters. |
+| `@constructor name` | In a `@class` block: names the constructor method, like marking that method with `@constructor`. Subclasses inherit it. |
 | `@accessor name [visibility]` | Set visibility for methods defined through a sub-table accessor. [Guide](/guide/classes#accessor-visibility-accessor) |
 | `@creates-global N` | Calling this function with a string literal at param `N` creates a named global. The global's type is taken from the call's return type. |
 | `@generates-events N [Field]` | Calling this method with an array table at param `N` synthesizes an enum-like `Field` table (default `Event`) on the receiver class, one member per array entry. |
 | `@returns-enum` | A call passing only string literals returns an enum-like table: each argument becomes a member numbered by its position (`EnumUtil.MakeEnum`). |
 | `@callback-event-arg N` | Marks a callback-registry consumer method (`RegisterCallback`/`TriggerEvent`/…) whose argument `N` is an event name, enabling event-name completion and the `unknown-callback-event` diagnostic. |
+
+The LuaLS tags `@operator`, `@vararg`, `@package`, `@public`, `@async`, `@module`, `@source`, `@version`, and `@nodoc` are accepted without a diagnostic but have no effect.
 
 ### `@creates-global N`
 
@@ -338,6 +344,7 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `?T` | Optional, prefix form (same as `T?`) |
 | `T!` | Non-nil / lateinit |
 | `table<K, V>` | Map type |
+| `{[K]: V}` | Map type (same as `table<K, V>`); can be combined with named fields: `{[string]: number, count: number}` |
 | `fun(a: T): R` | Function type |
 | `{f: T, g?: U}` | Anonymous table shape |
 | `"literal"` | String literal type |
@@ -345,7 +352,8 @@ process(getToggle())    -- ERROR: Toggle is not Answer
 | `0`, `-1`, `0xFF` | Number literal types (e.g. a `\| (0, nil, nil)` tuple-union case) |
 | `params<F>` | Function parameter projection (vararg only) |
 | `params<EventType>` | Event payload projection: types varargs per-event |
-| `returns<F>` | Function return type projection |
+| `returns<F>` | Function return type projection. As a vararg type (`@param ... returns<F>`), binds `F` to the types of the arguments passed there |
+| `returns<F, param>` | `F`'s returns starting at the position given by argument `param` (how `select(n, ...)` is typed) |
 | `expression<C>` | Expression string type: fields of class C become variables |
 | `expression<C, R>` | Expression string with return type constraint R |
 | `expression<C, R>` (R is `@generic`) | Result type R inferred from the expression and propagated to the return |
