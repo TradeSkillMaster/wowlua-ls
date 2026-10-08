@@ -2377,8 +2377,17 @@ impl Ir {
             }
             AnnotationType::Array(inner)
             | AnnotationType::Backtick(inner)
-            | AnnotationType::NonNil(inner)
-            | AnnotationType::VarArgs(inner) => {
+            | AnnotationType::NonNil(inner) => {
+                self.check_annotation_type_names(inner, generics, start, end, diags);
+            }
+            AnnotationType::VarArgs(inner) => {
+                // `...M` names a variadic generic, declared under its dotted name
+                // (`@generic ...M`).
+                if let AnnotationType::Simple(name) = inner.as_ref()
+                    && generics.iter().any(|(g, _)| g.strip_prefix("...") == Some(name.as_str()))
+                {
+                    return;
+                }
                 self.check_annotation_type_names(inner, generics, start, end, diags);
             }
             AnnotationType::Parameterized(base, args) => {

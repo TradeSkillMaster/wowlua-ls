@@ -235,6 +235,30 @@ local function _goodGenericConstraint(x) _consume(x) end
 ---@param x T
 local function _missingGenericConstraint(x) _consume(x) end
 
+-- A variadic generic (`@generic ...M`) is referenced as `...M`.
+---@generic T, ...M
+---@param base T
+---@param ... any
+---@return T & ...M
+---@overload fun(base: T, ...: any): T & ...M
+local function _compose(base, ...)
+    _consume(...)
+    ---@type T & ...M
+    local composed = base
+    return composed
+end
+
+---@generic ...M
+---@param ... any
+---@return ...M
+local function _composeOnly(...) return ... end
+
+---@generic ...M
+---@param ... any
+---@return ...N
+local function _undeclaredVariadic(...) return ... end
+-- ^ diag: undefined-doc-name ~undefined type 'N'
+
 -- ── Class type params inside @class body ─────────────────────────────────
 
 ---@class IndexedLookup<K, V>
