@@ -75,7 +75,7 @@ fn check_unknown_headers(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
             if schema::is_custom_field(key) || schema::is_locale_field(key) {
                 continue;
             }
-            if schema::lookup_field(key).is_none() {
+            if !schema::is_known_header(key) {
                 diags.push(TocDiagnostic {
                     code: "toc-unknown-header",
                     message: format!("Unknown TOC field `{}`. Use `X-{}` prefix for custom fields.", key, key),
@@ -91,7 +91,7 @@ fn check_unknown_headers(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
 fn check_invalid_interface(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
     for line in &doc.lines {
         if let TocLine::Header { key, value, value_range, .. } = line {
-            if !key.eq_ignore_ascii_case("Interface") || value.is_empty() {
+            if !crate::flavor::is_interface_header(key) || value.is_empty() {
                 continue;
             }
             // Interface can be comma-separated for multi-flavor TOCs
@@ -192,7 +192,7 @@ fn check_missing_colon(doc: &TocDocument, diags: &mut Vec<TocDiagnostic>) {
             // A header with no colon was parsed: key is the whole line after `## `, value_range is (end, end)
             if value.is_empty() && value_range.0 == value_range.1 {
                 // Check if it looks like a malformed header (key contains spaces suggesting missing colon)
-                if key.contains(' ') || schema::lookup_field(key).is_some() {
+                if key.contains(' ') || schema::is_known_header(key) {
                     diags.push(TocDiagnostic {
                         code: "toc-invalid-value",
                         message: format!("Header `## {}` is missing a colon separator.", key),
@@ -252,6 +252,24 @@ mod tests {
     fn locale_field_not_flagged() {
         let diags = run("## Interface: 110002\n## Title-deDE: Mein Addon\n");
         assert!(!diags.iter().any(|d| d.code == "toc-unknown-header"));
+    }
+
+    #[test]
+    fn flavor_specific_interface_not_flagged() {
+        // Packager `## Interface-<Type>:` lines are interface headers, with their
+        // values validated like `## Interface:`.
+        let diags = run("## Interface: 110002\n## Interface-Classic: 11507\n## Interface-Cata: 40402\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-unknown-header"));
+        assert!(!diags.iter().any(|d| d.code == "toc-invalid-interface"));
+
+        let diags = run("## Interface: 110002\n## Interface-Classic: abc\n");
+        assert!(diags.iter().any(|d| d.code == "toc-invalid-interface"));
+    }
+
+    #[test]
+    fn flavor_specific_interface_missing_colon() {
+        let diags = run("## Interface: 110002\n## Interface-Classic\n");
+        assert!(diags.iter().any(|d| d.code == "toc-invalid-value" && d.message.contains("missing a colon")));
     }
 
     #[test]

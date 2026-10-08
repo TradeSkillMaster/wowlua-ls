@@ -70,6 +70,7 @@ wowlua-ls recognizes all standard TOC fields:
 Additionally:
 - **`X-*` fields**: Custom addon metadata (e.g. `X-Website`, `X-Curse-Project-ID`) are recognized and won't trigger unknown-field warnings
 - **Locale suffixes**: Fields like `Title-deDE`, `Notes-enUS`, `Category-enUS` are recognized as localized variants
+- **Flavor-specific interface versions**: `Interface-Classic`, `Interface-Cata`, and other `Interface-<Type>` lines that addon packagers use to build per-flavor TOC files are recognized and validated like `Interface`; their versions count toward the addon's [flavors](./flavor-filtering.md#flavor-aware-deprecation)
 
 ## Per-line directives
 

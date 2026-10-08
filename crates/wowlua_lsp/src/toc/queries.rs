@@ -73,14 +73,23 @@ fn hover_field_key(key: &str) -> Option<TocHover> {
             type_str: format!("## {} (localized)", key),
             doc: Some("Locale-specific override. Displayed when the client's locale matches the suffix.".to_string()),
         })
+    } else if crate::flavor::is_interface_header(key) {
+        Some(TocHover {
+            type_str: format!("## {} (flavor-specific)", key),
+            doc: Some("Interface version(s) for one game flavor, read by addon packagers that build per-flavor TOC files from a single TOC. The game client reads only `## Interface:`.".to_string()),
+        })
     } else {
         None
     }
 }
 
 fn hover_field_value(key: &str, value: &str) -> Option<TocHover> {
-    let field = schema::lookup_field(key)?;
-    match field.value_kind {
+    let value_kind = if crate::flavor::is_interface_header(key) {
+        TocValueKind::InterfaceVersion
+    } else {
+        schema::lookup_field(key)?.value_kind
+    };
+    match value_kind {
         TocValueKind::InterfaceVersion => {
             // Show expansion names for each version
             let labels: Vec<String> = value
@@ -331,6 +340,15 @@ mod tests {
         let doc = parse_toc("## Interface: 110100\n");
         let hover = hover_at(&doc, 15).unwrap(); // in "110100"
         assert!(hover.type_str.contains("War Within"));
+    }
+
+    #[test]
+    fn hover_on_flavor_specific_interface() {
+        let doc = parse_toc("## Interface-Classic: 11507\n");
+        let hover = hover_at(&doc, 5).unwrap(); // in "Interface-Classic"
+        assert!(hover.type_str.contains("Interface-Classic"));
+        let hover = hover_at(&doc, 23).unwrap(); // in "11507"
+        assert!(hover.type_str.contains("Classic Era"));
     }
 
     #[test]

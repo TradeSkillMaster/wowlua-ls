@@ -240,6 +240,13 @@ pub fn lookup_field(name: &str) -> Option<&'static TocFieldDef> {
     })
 }
 
+/// Check if a header is a known field: one in the catalog (or an alias), or a
+/// flavor-specific `Interface-<Type>`. Custom (`X-`) and locale-suffixed fields
+/// are separate categories.
+pub fn is_known_header(name: &str) -> bool {
+    lookup_field(name).is_some() || crate::flavor::is_interface_header(name)
+}
+
 /// Check if a field name is a custom extension field (starts with `X-`).
 pub fn is_custom_field(name: &str) -> bool {
     name.starts_with("X-") || name.starts_with("x-")

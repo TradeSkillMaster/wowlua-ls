@@ -952,7 +952,9 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
                 // `## Interface:` (or flavor-specific `## Interface-Classic:` etc.) —
                 // union the version numbers' flavors. Parsing the numbers makes
                 // this header-variant-agnostic.
-                if let Some((_, value)) = rest.strip_prefix("Interface").and_then(|s| s.split_once(':')) {
+                if let Some((key, value)) = rest.split_once(':')
+                    && crate::flavor::is_interface_header(key.trim_end())
+                {
                     interface_flavor |= crate::flavor::parse_interface_flavors(value);
                 }
             }
@@ -2198,6 +2200,30 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&bare);
+    }
+
+    #[test]
+    fn test_addon_flavors_from_flavor_specific_interface() {
+        use crate::flavor::{FLAVOR_RETAIL, FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA};
+        let root = std::env::temp_dir().join("wowlua_ls_test_addon_flavors_typed");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Packager-style `## Interface-<Type>:` lines count like `## Interface:`.
+        std::fs::write(root.join("MyAddon.toc"), "\
+## Interface: 120005
+## Interface-Classic: 11508
+## interface-cata: 40402
+").unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load_toc(&root);
+        assert_eq!(
+            configs.addon_flavors_for(&root.join("File.lua")),
+            FLAVOR_RETAIL | FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA,
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

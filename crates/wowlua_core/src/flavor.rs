@@ -170,6 +170,18 @@ pub fn parse_interface_flavors(value: &str) -> u8 {
     mask
 }
 
+/// Is `key` a TOC header that lists interface versions: `## Interface:`, or a
+/// flavor-specific `## Interface-<Type>:` (`Interface-Classic`, `Interface-Cata`,
+/// …) that addon packagers use to build per-flavor TOCs? Case-insensitive, like
+/// the client's metadata lookup. Flavor detection (`config.rs`) and the `.toc`
+/// editor both use this, so they agree on which headers are valid.
+pub fn is_interface_header(key: &str) -> bool {
+    match key.split_once('-') {
+        Some((base, game_type)) => base.eq_ignore_ascii_case("Interface") && !game_type.is_empty(),
+        None => key.eq_ignore_ascii_case("Interface"),
+    }
+}
+
 /// Map a TOC filename suffix (without the leading `_`) to a flavor mask.
 /// Returns `None` for unrecognized suffixes (e.g. `_Options`). `_Mainline` also
 /// loads on Forever, which falls back to it when there is no `_Camelot` TOC.
@@ -552,6 +564,16 @@ mod tests {
         assert_eq!(parse_interface_flavors("  120005  "), FLAVOR_RETAIL);
         assert_eq!(parse_interface_flavors(""), 0);
         assert_eq!(parse_interface_flavors("abc"), 0);
+    }
+
+    #[test]
+    fn interface_header_names() {
+        assert!(is_interface_header("Interface"));
+        assert!(is_interface_header("Interface-Classic"));
+        assert!(is_interface_header("interface-cata"));
+        assert!(!is_interface_header("Interface-"));
+        assert!(!is_interface_header("InterfaceClassic"));
+        assert!(!is_interface_header("X-Interface"));
     }
 
     #[test]
