@@ -751,6 +751,65 @@ do
     end)
 end
 
+-- ── Handler typing on widgets whose stubs redeclare SetScript/HookScript ──
+do
+    local btn = CreateFrame("Button")
+    btn:SetScript("OnClick", function(self, button, down)
+--                 ^ sig: fun(scriptType: ScriptButton, handler: function?)
+        local s = self
+--            ^ hover: (local) s: Button
+        local b = button
+--            ^ hover: (local) b: string
+        local d = down
+--            ^ hover: (local) d: boolean
+    end)
+    btn:SetScript("OnUpdate", function(self, elapsed)
+        local dt = elapsed
+--            ^ hover: (local) dt: number
+    end)
+    btn:HookScript("OnClick", function(self, button, down)
+        local d = down
+--            ^ hover: (local) d: boolean
+    end)
+    -- CheckButton inherits Button's redeclaration
+    local cb = CreateFrame("CheckButton")
+    cb:SetScript("OnClick", function(self, button)
+        local b = button
+--            ^ hover: (local) b: string
+    end)
+    -- the receiver's type, whatever the handler names its first param
+    cb:SetScript("OnClick", function(checkbox)
+        local c = checkbox
+--            ^ hover: (local) c: CheckButton
+    end)
+    -- DressUpModel redeclares it again below Model's redeclaration
+    local dm = CreateFrame("DressUpModel")
+    dm:SetScript("OnUpdate", function(self, elapsed)
+        local dt = elapsed
+--            ^ hover: (local) dt: number
+    end)
+    -- no overload for this script: the redeclaration's own return type
+    local hooked = GameTooltip:HookScript("OnTooltipSetItem", function(self) end)
+--        ^ hover: (local) hooked: boolean
+end
+
+-- ── Script handler arguments: OnEnter/OnLeave motion, OnMouseUp upInside ──
+do
+    local f = CreateFrame("Frame")
+    f:SetScript("OnEnter", function(self, motion)
+        local m = motion
+--            ^ hover: (local) m: boolean
+    end)
+    f:SetScript("OnMouseUp", function(self, button, upInside)
+        local u = upInside
+--            ^ hover: (local) u: boolean
+    end)
+    local function onLeave(frame, motion) end
+    f:SetScript("OnLeave", onLeave)
+    local hooked = f:HookScript("OnLeave", onLeave)
+--        ^ hover: (local) hooked: boolean
+end
+
 -- ── WorldFrame inherits from Frame (no type-mismatch on Frame params) ─────
 do
     local tt = CreateFrame("GameTooltip", nil, UIParent, "GameTooltipTemplate")

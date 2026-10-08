@@ -3024,15 +3024,22 @@ impl<'a> Analysis<'a> {
                     _ => continue,
                 };
                 let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
+                let is_self = |id: &SymbolIdentifier| matches!(id, SymbolIdentifier::Name(n) if n == "self");
+                let declares_self = self.func(expected_fn_idx).args.first()
+                    .is_some_and(|&s| is_self(&self.sym(s).id));
                 for j in 0..self.func(expected_fn_idx).args.len() {
                     let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
                     if !self.param_untyped(inline_func_idx, j) { continue; }
                     let vt = self.ir.param_decl_type(self.ir.func(expected_fn_idx), j).cloned();
                     if let Some(mut vt) = vt {
-                        // Self-substitution: first param named "self" gets the receiver's type
+                        // Self-substitution: the first param gets the receiver's type when
+                        // it's named `self`, or when the callback declares it `self` and the
+                        // receiver refines that type (`fun(self: Frame)` on a Button
+                        // handler written `function(button)`).
                         if j == 0
-                            && matches!(&self.ir.symbols[inline_sym_idx.val()].id, SymbolIdentifier::Name(n) if n == "self")
                             && let Some(ref recv_type) = receiver_type
+                            && (is_self(&self.ir.symbols[inline_sym_idx.val()].id)
+                                || (declares_self && self.receiver_refines(recv_type, &vt)))
                         {
                             vt = recv_type.clone();
                         }
@@ -3077,6 +3084,21 @@ impl<'a> Analysis<'a> {
                     self.ir.functions[inline_func_idx.val()].vararg_annotation = Some(ann);
                 }
             }
+        }
+    }
+
+    /// Whether `recv` is nominally the declared callback `self` type or a subclass
+    /// of it: every union member must be, and one intersection member suffices.
+    /// Not `is_table_subtype`, whose leniencies (an open mixin matches any table)
+    /// would replace an unrelated declared type with the receiver's.
+    fn receiver_refines(&self, recv: &ValueType, declared: &ValueType) -> bool {
+        match recv {
+            ValueType::Union(members) => members.iter().all(|m| self.receiver_refines(m, declared)),
+            ValueType::Intersection(members) => members.iter().any(|m| self.receiver_refines(m, declared)),
+            ValueType::Table(Some(a)) => {
+                matches!(declared, ValueType::Table(Some(b)) if self.ir.is_subclass_of(*a, *b))
+            }
+            _ => recv == declared,
         }
     }
 

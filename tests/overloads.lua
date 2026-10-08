@@ -176,6 +176,29 @@ sh:SetScript("OnDone", function(self)
 --        ^ hover: (local) s: ScriptHost
 end)
 
+-- A callback param declared `self` takes the receiver's type whatever the inline
+-- param is named, when the receiver refines the declared type...
+---@class ScriptHostChild : ScriptHost
+local shc = {} ---@type ScriptHostChild
+shc:SetScript("OnDone", function(host)
+    local h = host
+--        ^ hover: (local) h: ScriptHostChild
+end)
+
+-- ...but keeps the declared type when the receiver isn't one.
+---@class CallbackOwner
+---@class CallbackHub
+local _CH = {}
+---@overload fun(self: CallbackHub, kind: "Changed", cb: fun(self: CallbackOwner))
+---@param kind string
+---@param cb function
+function _CH:Register(kind, cb) end
+local hub = {} ---@type CallbackHub
+hub:Register("Changed", function(owner)
+    local o = owner
+--        ^ hover: (local) o: CallbackOwner
+end)
+
 -- CreateFrame without template: overload returns just T (no Tp in return type).
 local eb = CreateFrame("EditBox")
 --    ^ hover: (local) eb: EditBox
@@ -335,7 +358,7 @@ local _caimOne = CreateAndInitFromMixin(MixinAlpha)
 -- Field access on Mixin result: hover/def on intersection method
 local _mxAccess = Mixin(_mxFrame, MixinAlpha)
 _mxAccess:alphaMethod()
---        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 289:1
+--        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 312:1
 
 -- Field access on CreateFromMixins intersection
 local _cfmAccess = CreateFromMixins(MixinAlpha, MixinBeta)

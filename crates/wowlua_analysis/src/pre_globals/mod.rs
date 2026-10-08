@@ -1332,6 +1332,8 @@ struct BuildContext {
     table_source_locations: HashMap<String, ExternalLocation>,
     class_globals: HashSet<String>,
     sub_tables: HashMap<(String, String), TableIndex>,
+    // Methods defined by a `stubs/overrides/` file (see `propagate_override_overloads`).
+    override_methods: HashSet<FunctionIndex>,
 
     // Result state
     addon_table_idx: Option<TableIndex>,
@@ -1386,6 +1388,7 @@ impl BuildContext {
             table_source_locations: HashMap::default(),
             class_globals: HashSet::default(),
             sub_tables: HashMap::default(),
+            override_methods: HashSet::default(),
             addon_table_idx: None,
             setmetatable_func_idx: None,
             getmetatable_func_idx: None,
@@ -1784,6 +1787,7 @@ impl BuildContext {
                 };
                 if g.is_override {
                     self.tables[local_idx].fields.insert(method_name.clone(), field_info);
+                    self.override_methods.insert(func_idx);
                 } else {
                     self.tables[local_idx].fields.entry(method_name.clone()).or_insert(field_info);
                 }
@@ -1913,6 +1917,57 @@ impl BuildContext {
         shared::resolve_inheritance(
             external_classes, &self.classes, &self.aliases, &mut self.tables, &mut self.exprs,
         );
+    }
+
+    /// Extend each override method's `@overload`s to the vendor's redeclarations
+    /// of it on descendant classes. Ketho redeclares `SetScript`/`HookScript` on
+    /// every widget type just to narrow the script-name alias, which would hide
+    /// the typed handler overloads `overrides/SetScript.lua` puts on `Frame` from
+    /// `Button`, `EditBox`, …. A redeclaration has the same parameter list and
+    /// keeps its own base signature (and with it the narrowed alias).
+    fn propagate_override_overloads(&mut self) {
+        if self.override_methods.is_empty() { return; }
+        let method_func = |table: TableIndex, name: &str| -> Option<FunctionIndex> {
+            let field = self.tables.get(table.ext_offset())?.fields.get(name)?;
+            match self.exprs.get(field.expr.ext_offset())? {
+                Expr::FunctionDef(f) => Some(*f),
+                _ => None,
+            }
+        };
+        let same_params = |a: FunctionIndex, b: FunctionIndex| {
+            let (a, b) = (&self.functions[a.ext_offset()], &self.functions[b.ext_offset()]);
+            a.is_vararg == b.is_vararg
+                && a.args.len() == b.args.len()
+                && a.args.iter().zip(&b.args)
+                    .all(|(x, y)| self.symbols[x.ext_offset()].id == self.symbols[y.ext_offset()].id)
+        };
+        let mut additions: Vec<(FunctionIndex, FunctionIndex)> = Vec::new();
+        for (&func_idx, (owner, method_name)) in &self.function_to_field {
+            if self.override_methods.contains(&func_idx) || method_func(*owner, method_name) != Some(func_idx) {
+                continue;
+            }
+            // Nearest override up the chain, walking past other vendor copies
+            // (`DressUpModel` → `Model` → `Frame`); a different method stops it.
+            for &ancestor in &self.tables[owner.ext_offset()].parent_classes {
+                let Some(ancestor_func) = method_func(ancestor, method_name) else { continue };
+                if ancestor_func == func_idx { continue; }
+                if !same_params(ancestor_func, func_idx) { break; }
+                if self.override_methods.contains(&ancestor_func) {
+                    additions.push((func_idx, ancestor_func));
+                    break;
+                }
+            }
+        }
+        for (func_idx, override_idx) in additions {
+            let inherited: Vec<ResolvedOverload> = self.functions[override_idx.ext_offset()].overloads.iter()
+                .filter(|o| !o.is_return_only)
+                .cloned()
+                .collect();
+            let overloads = &mut self.functions[func_idx.ext_offset()].overloads;
+            for o in inherited {
+                if !overloads.contains(&o) { overloads.push(o); }
+            }
+        }
     }
 
     fn build_global_entries(&mut self, globals: &[crate::annotations::ExternalGlobal]) {
@@ -2801,6 +2856,7 @@ impl PreResolvedGlobals {
         ctx.build_methods_and_table_fields(globals, external_classes);
         ctx.resolve_inheritance(external_classes);
         apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, globals);
+        ctx.propagate_override_overloads();
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(globals);
         let mut pg = ctx.finish();
@@ -4315,6 +4371,80 @@ mod tests {
                 && matches!(args.as_slice(), [ValueType::TypeVariable(t)] if t == "T")),
             "Child should record a parent_type_binding for Parent<T>, got {:?}", bindings,
         );
+    }
+
+    #[test]
+    fn override_overloads_reach_vendor_redeclarations_on_subclasses() {
+        // The vendor redeclares `SetScript` on subclasses to narrow its script-name
+        // param; the overloads an override adds to the base declaration must reach
+        // those redeclarations (also past an intermediate copy), but not a
+        // same-named method with a different parameter list.
+        let vendor = r#"
+---@class Frame
+local Frame = {}
+---@param scriptType string
+---@param handler function|nil
+function Frame:SetScript(scriptType, handler) end
+
+---@class Button : Frame
+local Button = {}
+---@param scriptType "OnClick"|string
+---@param handler function|nil
+function Button:SetScript(scriptType, handler) end
+
+---@class Model : Frame
+local Model = {}
+---@param scriptType string
+---@param handler function|nil
+function Model:SetScript(scriptType, handler) end
+
+---@class PlayerModel : Model
+local PlayerModel = {}
+
+---@class DressUpModel : PlayerModel
+local DressUpModel = {}
+---@param scriptType string
+---@param handler function|nil
+function DressUpModel:SetScript(scriptType, handler) end
+
+---@class Unrelated : Frame
+local Unrelated = {}
+---@param handler function
+function Unrelated:SetScript(handler) end
+"#;
+        let overrides = r#"
+---@class Frame
+local Frame = {}
+---@overload fun(self: Frame, script: "OnUpdate", handler: fun(self: Frame, elapsed: number))
+---@param scriptType string
+---@param handler function|nil
+function Frame:SetScript(scriptType, handler) end
+"#;
+        let mut classes = Vec::new();
+        let mut globals = Vec::new();
+        for (src, path, is_override) in [(vendor, "vendor.lua", false), (overrides, "override.lua", true)] {
+            let tree = crate::syntax::parser::parse(src);
+            let root = crate::syntax::SyntaxNode::new_root(&tree);
+            classes.extend(crate::annotations::scan_all_annotations(root).classes);
+            let mut file_globals = crate::annotations::scan_file_globals(root, Some(Path::new(path)));
+            for g in &mut file_globals { g.is_override = is_override; }
+            globals.extend(file_globals);
+        }
+        let pg = PreResolvedGlobals::build(&globals, &classes, &[], false, &HashMap::default(), &HashSet::default());
+
+        let set_script = |class: &str| {
+            let field = &pg.table(pg.classes[class]).fields["SetScript"];
+            let Expr::FunctionDef(f) = pg.expr(field.expr) else { panic!("{class}:SetScript is not a function") };
+            pg.func(*f)
+        };
+        let has_on_update = |class: &str| set_script(class).overloads.iter().any(|o| {
+            o.params.get(1).and_then(|p| p.typ.as_ref()) == Some(&ValueType::String(Some("OnUpdate".to_string())))
+        });
+        for class in ["Frame", "Button", "Model", "DressUpModel"] {
+            assert!(has_on_update(class), "{class}:SetScript should carry the override's overload");
+        }
+        assert_eq!(set_script("Button").overloads.len(), 1, "the overload must not be duplicated");
+        assert!(set_script("Unrelated").overloads.is_empty(), "a different parameter list is not a redeclaration");
     }
 
     #[test]

@@ -1054,6 +1054,15 @@ fn overloads() {
 }
 
 #[test]
+fn callback_self_open_mixin_receiver() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/callback-self-mixin/main.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/callback-self-mixin"),
+    });
+}
+
+#[test]
 fn array_element_supertype() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/array-element-supertype.lua",

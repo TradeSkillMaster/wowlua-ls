@@ -9,6 +9,7 @@ Full test-file catalog and the embedded-assertion (`hover:`/`def:`/`diag:`/…) 
 - `tests/annotations.lua` — Annotation features: @param, @return, @type, @class, @field, @alias
 - `tests/luals-annotations.lua` — LuaLS annotation forms: comma-separated `@return T1, T2`, `[T, T]` tuples, `?T` prefix-optional, and multi-target `@type T1, T2` applied positionally (preceding and same-line trailing; locals, forward declarations, the addon vararg, field targets incl. multi-return)
 - `tests/overloads.lua` — Overload resolution (--with-stubs)
+- `tests/callback-self-mixin/` — A matched overload's callback whose first param is declared `self` takes the receiver's type only when the receiver nominally is that class or derives from it: a workspace `CreateFromMixins` class (an open mixin, assignable to any table) keeps an unrelated declared `self` type and still takes a base mixin's. Uses `scan_dir` + `--with-stubs`
 - `tests/or-polyfill.lua` — Version-polyfill idiom `local f = _G.SomeAPI or function(...) end`: a `function or function` `or` decays to bare `function` (callable but arity/param unchecked) so calls written for the broader/different-arity fallback don't false-flag `type-mismatch`/`redundant-parameter`/`missing-parameter`; negative controls verify a direct stub call and a `function or <non-function>` stay checked (--with-stubs)
 - `tests/deep-inheritance.lua` — 5-level class hierarchy (--with-stubs)
 - `tests/signature-help.lua` — Signature help with `sig:` assertions (--with-stubs)
