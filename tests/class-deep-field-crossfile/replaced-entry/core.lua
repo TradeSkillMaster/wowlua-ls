@@ -1,0 +1,2 @@
+---@class DeepFieldNs
+DeepFieldNs = { Integration = {} }

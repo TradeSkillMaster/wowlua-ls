@@ -871,6 +871,143 @@ fn walk_deep_path(
     Some((current_idx, current_name))
 }
 
+/// What a deep write rooted at a `@class` global (`C.sub.x = v`) walks into,
+/// gathered once per build. Such a write applies only when it carries a type and
+/// its first segment holds an anonymous table the workspace builds on the class
+/// (`walkable`): a nested constructor entry (`C = { sub = {} }`) or a table
+/// constructor assigned to the field (`C.sub = {}`). A field that a `@field`, the
+/// write's own annotation or the class declaration types otherwise is never
+/// walked, nor is one only a call or reference assigns — walking into it would
+/// shadow that type with a sub-table — and a segment that is none of these would
+/// be invented on the class. An existence-only write (`Unknown` /
+/// `MaybeCallable`, e.g. one inside a function) is skipped too: it would put a
+/// guessed type on the class's sub-table.
+///
+/// `walked_ctor_tables` holds the constructor entries such a write walks into,
+/// with every class-declaring constructor's entries for each. The class
+/// declaration types such an entry as a bare `table`; it is opened into a table
+/// holding them (`open_walked_ctor_tables`) before any write lands, and typed as
+/// that table once every write is in (`type_opened_ctor_tables`).
+struct ClassFieldPaths<'a> {
+    walkable: HashSet<(&'a str, &'a str)>,
+    walked_ctor_tables: Vec<CtorTable<'a>>,
+}
+
+/// A class constructor entry a deep write walks into: `(class, entry)` and every
+/// class-declaring constructor's entries for it.
+type CtorTable<'a> = ((&'a str, &'a str), Vec<CtorEntries<'a>>);
+
+/// The entries of a nested table constructor.
+type CtorEntries<'a> = &'a [(String, crate::annotations::FieldValueKind)];
+
+impl<'a> ClassFieldPaths<'a> {
+    fn new(globals: &'a [crate::annotations::ExternalGlobal], class_decls: &'a [ClassDecl]) -> Self {
+        use crate::annotations::{ExternalGlobalKind, FieldValueKind};
+        // Fields a class declaration gives a type other than the bare `table` it
+        // infers for a nested constructor entry. A partial class's field counts if
+        // any of its declarations types it.
+        let typed: HashSet<(&str, &str)> = class_decls.iter()
+            .flat_map(|c| {
+                let inferred = c.fields.iter()
+                    .filter(|(_, typ, _)| !matches!(typ, AnnotationType::Simple(s) if s == "table"))
+                    .map(|(name, _, _)| name);
+                inferred.chain(&c.declared_field_names).map(|f| (c.name.as_str(), f.as_str()))
+            })
+            .collect();
+        let mut walkable = HashSet::default();
+        let mut ctor_tables: HashMap<(&str, &str), Vec<CtorEntries>> = HashMap::default();
+        for g in globals {
+            match &g.kind {
+                // A shape annotation leaves the table anonymous; a class one types it.
+                ExternalGlobalKind::TableField(path, field, FieldValueKind::Table(_))
+                    if path.is_empty()
+                        && g.returns.first().is_none_or(|t| matches!(t, AnnotationType::TableLiteral(_)))
+                        && !typed.contains(&(g.name.as_str(), field.as_str())) =>
+                {
+                    walkable.insert((g.name.as_str(), field.as_str()));
+                }
+                ExternalGlobalKind::Table if g.declares_class => {
+                    let Some(AnnotationType::Simple(class)) = g.returns.first() else { continue };
+                    for f in &g.ctor_fields {
+                        let key = (class.as_str(), f.name.as_str());
+                        if let FieldValueKind::Table(entries) = &f.kind && !typed.contains(&key) {
+                            walkable.insert(key);
+                            ctor_tables.entry(key).or_default().push(entries);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut walked_ctor_tables = Vec::new();
+        for g in globals {
+            if let ExternalGlobalKind::TableField(path, _, _) = &g.kind
+                && let Some(first) = path.first()
+                && is_typed_field_write(g)
+                && let Some(entries) = ctor_tables.remove(&(g.name.as_str(), first.as_str()))
+            {
+                walked_ctor_tables.push(((g.name.as_str(), first.as_str()), entries));
+            }
+        }
+        Self { walkable, walked_ctor_tables }
+    }
+
+    /// Whether `g`, a field write through `path`, is a deep write rooted at one of
+    /// `class_globals` that may not walk the class table.
+    fn skips(&self, class_globals: &HashSet<String>, g: &crate::annotations::ExternalGlobal, path: &[String]) -> bool {
+        path.first().is_some_and(|first| {
+            class_globals.contains(&g.name)
+                && !(is_typed_field_write(g) && self.walkable.contains(&(g.name.as_str(), first.as_str())))
+        })
+    }
+
+    /// Open each walked constructor entry on its class table while it is still
+    /// the bare-`table` placeholder the declaration gives it: the field takes an
+    /// empty anonymous table as its value, returned with the constructor entries
+    /// to fill it from. The placeholder annotation stays until
+    /// `type_opened_ctor_tables`, so a write of the field replaces the entry
+    /// exactly as it would the placeholder.
+    fn open_walked_ctor_tables(&self, classes: &HashMap<String, TableIndex>, tables: &mut Vec<TableInfo>, exprs: &mut Vec<Expr>) -> Vec<(TableIndex, &[CtorEntries<'a>])> {
+        let mut opened = Vec::new();
+        for ((class, entry), ctors) in &self.walked_ctor_tables {
+            let Some(&class_idx) = classes.get(*class) else { continue };
+            let sub_idx = TableIndex(EXT_BASE + tables.len());
+            let Some(fi) = tables[class_idx.ext_offset()].fields.get_mut(*entry)
+                .filter(|fi| matches!(fi.annotation, Some(ValueType::Table(None))))
+            else { continue };
+            fi.expr = ExprId(EXT_BASE + exprs.len());
+            exprs.push(Expr::Literal(ValueType::Table(Some(sub_idx))));
+            tables.push(TableInfo::default());
+            opened.push((sub_idx, ctors.as_slice()));
+        }
+        opened
+    }
+
+    /// Type each opened constructor entry that no write of the field replaced as
+    /// its table, which keeps it when a file re-declaring the class imports the
+    /// class's fields.
+    fn type_opened_ctor_tables(&self, classes: &HashMap<String, TableIndex>, tables: &mut [TableInfo], exprs: &[Expr]) {
+        for ((class, entry), _) in &self.walked_ctor_tables {
+            let Some(&class_idx) = classes.get(*class) else { continue };
+            let Some(fi) = tables[class_idx.ext_offset()].fields.get_mut(*entry) else { continue };
+            if matches!(fi.annotation, Some(ValueType::Table(None)))
+                && let Expr::Literal(ValueType::Table(Some(sub_idx))) = exprs[fi.expr.ext_offset()]
+            {
+                fi.annotation = Some(ValueType::Table(Some(sub_idx)));
+                fi.annotation_type_raw = None;
+            }
+        }
+    }
+}
+
+/// Whether the field write `g` carries a type, rather than only registering that
+/// the field exists (`Unknown` / `MaybeCallable`).
+fn is_typed_field_write(g: &crate::annotations::ExternalGlobal) -> bool {
+    use crate::annotations::{ExternalGlobalKind, FieldValueKind};
+    !g.returns.is_empty()
+        || !matches!(g.kind, ExternalGlobalKind::TableField(_, _, FieldValueKind::Unknown | FieldValueKind::MaybeCallable))
+}
+
 fn is_framexml_path(path: &Option<std::path::PathBuf>) -> bool {
     path.as_ref().is_some_and(|p| p.to_string_lossy().contains("/Annotations/FrameXML/"))
 }
@@ -1406,12 +1543,6 @@ impl BuildContext {
         }
     }
 
-    /// Returns true if this global entry has a deep path rooted at a class global,
-    /// meaning it should be skipped to avoid fabricating sub-tables on class tables.
-    fn is_deep_class_global(&self, name: &str, path: &[String]) -> bool {
-        !path.is_empty() && self.class_globals.contains(name)
-    }
-
     fn register_global(&mut self, name: &str, resolved_type: Option<ValueType>) -> SymbolIndex {
         shared::register_global(&mut self.symbols, &mut self.scope0_symbols, name, resolved_type)
     }
@@ -1519,7 +1650,7 @@ impl BuildContext {
         shared::mark_callable_classes(callable_classes, &mut self.fn_build_ctx());
     }
 
-    fn build_methods_and_table_fields(&mut self, globals: &[crate::annotations::ExternalGlobal], external_classes: &[ClassDecl]) {
+    fn build_methods_and_table_fields(&mut self, globals: &[crate::annotations::ExternalGlobal], external_classes: &[ClassDecl], class_field_paths: &ClassFieldPaths) {
         use crate::annotations::{ExternalGlobalKind, FieldValueKind};
 
         // Create non-class tables in shared data (e.g. math, string, table)
@@ -1622,6 +1753,14 @@ impl BuildContext {
                         path: path.clone(), start: g.def_start, end: g.def_end, ..Default::default()
                     });
                 }
+            }
+        }
+
+        // Open the class constructor entries deep writes walk into (see `ClassFieldPaths`).
+        for (sub_idx, ctors) in class_field_paths.open_walked_ctor_tables(&self.classes, &mut self.tables, &mut self.exprs) {
+            for entries in ctors {
+                // Stub declarations carry no call-valued constructor entries to resolve.
+                merge_table_fields(sub_idx, entries, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut HashSet::default(), &mut Vec::new());
             }
         }
 
@@ -1806,7 +1945,7 @@ impl BuildContext {
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if matches!(value_kind, FieldValueKind::Unknown | FieldValueKind::MaybeCallable) && g.returns.is_empty() { continue; }
-                if self.is_deep_class_global(&g.name, path) { continue; }
+                if class_field_paths.skips(&self.class_globals, g, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -1872,7 +2011,7 @@ impl BuildContext {
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if !matches!(value_kind, FieldValueKind::Unknown | FieldValueKind::MaybeCallable) || !g.returns.is_empty() { continue; }
-                if self.is_deep_class_global(&g.name, path) { continue; }
+                if class_field_paths.skips(&self.class_globals, g, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((leaf_idx, _leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -1970,7 +2109,7 @@ impl BuildContext {
         }
     }
 
-    fn build_global_entries(&mut self, globals: &[crate::annotations::ExternalGlobal]) {
+    fn build_global_entries(&mut self, globals: &[crate::annotations::ExternalGlobal], class_field_paths: &ClassFieldPaths) {
         use crate::annotations::{ExternalGlobalKind, FieldValueKind};
 
         // Build global function entries
@@ -2188,7 +2327,7 @@ impl BuildContext {
         // Deferred: resolve FunctionCall table fields now that all functions/tables are built
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg, _)) = &g.kind {
-                if self.is_deep_class_global(&g.name, path) { continue; }
+                if class_field_paths.skips(&self.class_globals, g, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -2253,7 +2392,7 @@ impl BuildContext {
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FieldRef(ref_chain)) = &g.kind {
                 if !g.returns.is_empty() { continue; }
-                if self.is_deep_class_global(&g.name, path) { continue; }
+                if class_field_paths.skips(&self.class_globals, g, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -2322,7 +2461,7 @@ impl BuildContext {
         // Re-process table field globals whose parent table was just created as a sub-table
         for g in globals {
             if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
-                if self.is_deep_class_global(&g.name, path) { continue; }
+                if class_field_paths.skips(&self.class_globals, g, path) { continue; }
                 let Some(&root_idx) = self.non_class_tables.get(&g.name).or_else(|| self.classes.get(&g.name)) else { continue };
                 let Some((table_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
@@ -2851,14 +2990,16 @@ impl PreResolvedGlobals {
         let globals = &*crate::annotations::apply_enum_call_globals(globals, &returns_enum_paths);
         let mut ctx = BuildContext::new();
         ctx.implicit_protected_prefix = implicit_protected_prefix;
+        let class_field_paths = ClassFieldPaths::new(globals, external_classes);
         ctx.register_classes_and_aliases(external_classes, external_aliases);
         ctx.populate_class_fields(external_classes);
-        ctx.build_methods_and_table_fields(globals, external_classes);
+        ctx.build_methods_and_table_fields(globals, external_classes, &class_field_paths);
         ctx.resolve_inheritance(external_classes);
         apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, globals);
         ctx.propagate_override_overloads();
         ctx.mark_callable_classes(callable_classes);
-        ctx.build_global_entries(globals);
+        ctx.build_global_entries(globals, &class_field_paths);
+        class_field_paths.type_opened_ctor_tables(&ctx.classes, &mut ctx.tables, &ctx.exprs);
         let mut pg = ctx.finish();
         pg.creates_global_specs = crate::annotations::build_creates_global_map(globals);
         pg.returns_enum_paths = returns_enum_paths;

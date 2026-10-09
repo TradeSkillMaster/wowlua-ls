@@ -2189,6 +2189,48 @@ fn crossfile_deep_chain() {
     });
 }
 
+// Fields written through a nested path under a `@class` global
+// (`Root.Config.scale = 2`) reach other files, on both the cold and the
+// stub-based workspace build.
+#[test]
+fn class_deep_field_crossfile() {
+    for with_stubs in [false, true] {
+        for lua_file in ["user.lua", "replace_user.lua"] {
+            run_annotation_tests(&TestConfig {
+                lua_file: &format!("tests/class-deep-field-crossfile/{lua_file}"),
+                with_stubs,
+                scan_dir: Some("tests/class-deep-field-crossfile"),
+            });
+        }
+    }
+    // The cold build leaves `Root.Util = {}` unannotated, so a file re-declaring
+    // the class doesn't import it there.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-deep-field-crossfile/overlay.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/class-deep-field-crossfile"),
+    });
+}
+
+// A field written through a `@class` constructor entry that a later file replaces
+// (`Root.Integration = {}`) is re-applied to the replacement; go-to-definition
+// still lands on its own write, not on the replacing one.
+#[test]
+fn class_deep_field_replaced_entry_gotodef() {
+    let dir = "tests/class-deep-field-crossfile/replaced-entry";
+    let user_text = std::fs::read_to_string(format!("{dir}/module_user.lua")).unwrap();
+    let pre_globals = crossfile_pre_globals_with_stubs(dir);
+    let tree = wowlua_ls::syntax::parser::parse(&user_text);
+    let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+    let offset = user_text.find("Module").unwrap() as u32;
+    let Some(DefinitionResult::External(loc)) = result.definition_at(&tree, offset) else {
+        panic!("expected an external definition for `Module`");
+    };
+    assert!(loc.path.ends_with("integration_a_module.lua"), "wrong file: {:?}", loc.path);
+}
+
 #[test]
 fn crossfile_include() {
     // Test :Include("ClassName") resolves to the class type
