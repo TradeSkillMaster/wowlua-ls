@@ -507,3 +507,22 @@ local function implicitElseStripsWholeType(x)
     local y = x
     --    ^ hover: (local) y: nil
 end
+
+-- An equality guard against the root (`owner.frame.owner == owner`) narrows
+-- `owner` to its class; the field `owner.frame` read off it keeps its own type.
+---@class EqGuardOwner
+---@field frame EqGuardFrame?
+
+---@class EqGuardFrame
+---@field owner EqGuardOwner
+
+---@param frame EqGuardFrame
+local function takeEqGuardFrame(frame) end
+
+---@param owner EqGuardOwner
+local function rootEqualityKeepsFieldType(owner)
+    if owner.frame and owner.frame.owner == owner then
+        takeEqGuardFrame(owner.frame)
+    end
+end
+_consume(rootEqualityKeepsFieldType)

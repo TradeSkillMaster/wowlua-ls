@@ -1,5 +1,5 @@
 use crate::collections::HashSet;
-use crate::analysis::AnalysisResult;
+use crate::analysis::{AnalysisResult, NilGuard};
 use crate::types::{Expr, ExprId, ValueType};
 use super::{DiagnosticPass, WowDiagnostic};
 
@@ -13,16 +13,7 @@ fn is_nullable(vt: &ValueType) -> bool {
 
 fn check_nil_suppressed(analysis: &AnalysisResult, table_expr: ExprId, start: u32) -> bool {
     let Some(scope_idx) = analysis.scope_at_offset(start) else { return true };
-    if let Some(sym_idx) = analysis.ir.find_root_symbol(table_expr) {
-        if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, start) && analysis.is_symbol_narrowed_at(sym_idx, scope_idx, start) {
-            return true;
-        }
-        if let Some((_, chain)) = analysis.ir.extract_field_chain(table_expr)
-            && analysis.is_field_chain_narrowed_at(sym_idx, &chain, scope_idx, start) {
-            return true;
-        }
-    }
-    false
+    analysis.nil_guard_at(table_expr, scope_idx, start) != NilGuard::Unguarded
 }
 
 pub fn run_access(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
@@ -77,19 +68,9 @@ pub fn run_callee(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
             _ => false,
         };
         if !has_nil || !has_func { continue; }
-        let mut suppressed = analysis.ir.and_guarded_call_exprs.contains(&callee);
-        if !suppressed
-            && let Some(scope_idx) = analysis.scope_at_offset(call_range.0)
-            && let Some(sym_idx) = analysis.ir.find_root_symbol(callee)
-        {
-            if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, call_range.0) && analysis.is_symbol_narrowed_at(sym_idx, scope_idx, call_range.0) {
-                suppressed = true;
-            } else if let Some((_, chain)) = analysis.ir.extract_field_chain(callee)
-                && analysis.is_field_chain_narrowed_at(sym_idx, &chain, scope_idx, call_range.0)
-            {
-                suppressed = true;
-            }
-        }
+        let suppressed = analysis.ir.and_guarded_call_exprs.contains(&callee)
+            || analysis.scope_at_offset(call_range.0)
+                .is_some_and(|scope_idx| analysis.nil_guard_at(callee, scope_idx, call_range.0) != NilGuard::Unguarded);
         if suppressed { continue; }
         let type_str = analysis.format_value_type_depth(&func_type, 0);
         check_call(diags, &type_str, call_range.0 as usize, call_range.1 as usize);

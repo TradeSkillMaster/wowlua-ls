@@ -1,5 +1,5 @@
 use crate::collections::HashSet;
-use crate::analysis::AnalysisResult;
+use crate::analysis::{AnalysisResult, NilGuard};
 use crate::types::{ExprId, ValueType};
 use super::{DiagnosticPass, WowDiagnostic};
 
@@ -17,17 +17,7 @@ fn is_nullable(vt: &ValueType) -> bool {
 /// Check if the key expression is narrowed (nil guard present).
 fn key_nil_suppressed(analysis: &AnalysisResult, key_expr: ExprId, start: u32) -> bool {
     let Some(scope_idx) = analysis.scope_at_offset(start) else { return true };
-    if let Some(sym_idx) = analysis.ir.find_root_symbol(key_expr) {
-        if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, start) && analysis.is_symbol_narrowed_at(sym_idx, scope_idx, start) {
-            return true;
-        }
-        if let Some((_, chain)) = analysis.ir.extract_field_chain(key_expr)
-            && analysis.is_field_chain_narrowed_at(sym_idx, &chain, scope_idx, start)
-        {
-            return true;
-        }
-    }
-    false
+    analysis.nil_guard_at(key_expr, scope_idx, start) != NilGuard::Unguarded
 }
 
 pub struct NilIndex;

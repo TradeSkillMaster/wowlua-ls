@@ -57,17 +57,7 @@ impl DiagnosticPass for ReturnMismatch {
                     let Some(expected) = func.return_annotations.get(ret_index).cloned() else { continue };
                     let Some(actual) = analysis.resolve_expr_type(rhs_expr) else { continue };
                     let actual = if actual.contains_nil() || matches!(&actual, ValueType::Union(ts) if ts.contains(&ValueType::Boolean(Some(false)))) {
-                        if let Some(sym_idx) = analysis.ir.find_root_symbol(rhs_expr) {
-                            if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, start) && analysis.is_symbol_falsy_narrowed_at(sym_idx, scope_idx, start) {
-                                actual.strip_falsy()
-                            } else if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, start) && analysis.is_symbol_narrowed_at(sym_idx, scope_idx, start) {
-                                actual.strip_nil()
-                            } else if let Some((_, chain)) = analysis.ir.extract_field_chain(rhs_expr) {
-                                if analysis.is_field_chain_narrowed_at(sym_idx, &chain, scope_idx, start) {
-                                    actual.strip_nil()
-                                } else { actual }
-                            } else { actual }
-                        } else { actual }
+                        analysis.nil_guard_at(rhs_expr, scope_idx, start).apply(actual)
                     } else { actual };
                     let actual = if actual.contains_nil() && func.return_overload_may_nil(ret_index) {
                         actual.strip_nil()

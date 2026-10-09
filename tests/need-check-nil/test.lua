@@ -2809,3 +2809,38 @@ local function reassignThenFalsyRegion()
     end
 end
 _consume(reassignThenFalsyRegion)
+
+-- ── A root guard says nothing about the root's fields ───────────────────
+-- `if not row then return end` proves `row` non-nil, not `row.items`.
+
+---@class NilCheckSub
+---@field x number
+
+---@class NilCheckRow
+---@field items table|nil
+---@field sub NilCheckSub|nil
+---@field cb fun()|nil
+
+---@param t table
+local function _takeTable(t) end
+
+---@param row NilCheckRow
+local function _takeRow(row) end
+
+---@param row NilCheckRow?
+---@return table
+local function rootGuardKeepsFieldNil(row)
+    if not row then return {} end
+    _takeRow(row)
+    _takeTable(row.items)
+    --         ^ diag: need-check-nil
+    local _ = row.sub.x
+    --                ^ diag: need-check-nil
+    row.cb()
+    -- ^ diag: need-check-nil
+    local _ = #row.items
+    --        ^ diag: need-check-nil
+    return row.items
+    --     ^ diag: return-mismatch
+end
+_consume(rootGuardKeepsFieldNil)

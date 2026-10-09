@@ -224,6 +224,28 @@ pub enum NarrowTarget {
     Field(SymbolIndex, Vec<String>),
 }
 
+/// What nil guards prove about the value read at one site
+/// (`AnalysisResult::nil_guard_at`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NilGuard {
+    Unguarded,
+    /// `x ~= nil`, `if x.f then`: not nil.
+    NonNil,
+    /// `if x then` / `assert(x)` on a symbol: neither nil nor `false`.
+    Truthy,
+}
+
+impl NilGuard {
+    /// `vt` without the values the guard rules out.
+    pub fn apply(self, vt: ValueType) -> ValueType {
+        match self {
+            NilGuard::Unguarded => vt,
+            NilGuard::NonNil => vt.strip_nil(),
+            NilGuard::Truthy => vt.strip_falsy(),
+        }
+    }
+}
+
 /// Which `NarrowingState` map a fact lives in, for `narrow_from_offset`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum NarrowMap {
@@ -1793,6 +1815,17 @@ impl Ir {
         }
     }
 
+    /// The target a narrowing fact needs to apply to the value `expr_id` reads:
+    /// the root symbol for a bare read (`x`), the exact chain for a field read
+    /// (`x.a.b`). A fact about `x` says nothing about `x.a`.
+    pub fn narrow_target(&self, expr_id: ExprId) -> Option<NarrowTarget> {
+        let sym_idx = self.find_root_symbol(expr_id)?;
+        // A merged version (`BranchMerge`), which `find_root_symbol` sees through
+        // but the chain walk doesn't, reads the symbol itself.
+        let chain = self.extract_field_chain(expr_id).map(|(_, chain)| chain).unwrap_or_default();
+        Some(if chain.is_empty() { NarrowTarget::Symbol(sym_idx) } else { NarrowTarget::Field(sym_idx, chain) })
+    }
+
     pub fn find_root_symbol(&self, expr_id: ExprId) -> Option<SymbolIndex> {
         match self.expr(expr_id) {
             Expr::SymbolRef(sym_idx, _) => Some(*sym_idx),
@@ -2817,6 +2850,25 @@ impl AnalysisResult {
 
     pub fn is_narrowing_overridden_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
         self.narrowing.is_narrowing_overridden_at(&self.ir.scopes, sym_idx, scope_idx, at_offset)
+    }
+
+    /// What nil guards prove about the value `expr` reads at `at_offset`. A guard
+    /// on a symbol covers the symbol only (`if x then` proves nothing about
+    /// `x.f`); a field read needs a guard on its exact chain.
+    pub fn nil_guard_at(&self, expr: ExprId, scope_idx: ScopeIndex, at_offset: u32) -> NilGuard {
+        match self.ir.narrow_target(expr) {
+            Some(NarrowTarget::Symbol(sym_idx)) if !self.is_narrowing_overridden_at(sym_idx, scope_idx, at_offset) => {
+                if self.is_symbol_falsy_narrowed_at(sym_idx, scope_idx, at_offset) {
+                    NilGuard::Truthy
+                } else if self.is_symbol_narrowed_at(sym_idx, scope_idx, at_offset) {
+                    NilGuard::NonNil
+                } else {
+                    NilGuard::Unguarded
+                }
+            }
+            Some(NarrowTarget::Field(sym_idx, chain)) if self.is_field_chain_narrowed_at(sym_idx, &chain, scope_idx, at_offset) => NilGuard::NonNil,
+            _ => NilGuard::Unguarded,
+        }
     }
 
     pub fn active_flavors_at(&self, scope_idx: ScopeIndex) -> u8 {

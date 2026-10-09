@@ -1,4 +1,4 @@
-use crate::analysis::AnalysisResult;
+use crate::analysis::{AnalysisResult, NarrowTarget};
 use crate::types::*;
 use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
@@ -144,12 +144,17 @@ impl DiagnosticPass for TypeMismatch {
             for check in &cr.expected_args {
                 let Some(expected_type) = &check.expected_type else { continue };
                 let Some(mut arg_type) = analysis.resolve_expr_type(check.arg_expr) else { continue };
-                if let Some(sym_idx) = analysis.ir.find_root_symbol(check.arg_expr)
-                    && let Some(scope_idx) = analysis.scope_at_offset(check.start) {
-                        let has_field_chain = analysis.ir.extract_field_chain(check.arg_expr).is_some();
-                        if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, check.start) {
-                            if !has_field_chain
-                                && let Some(narrowed_vt) = analysis.get_type_narrowing_at(sym_idx, scope_idx, check.start)
+                if let Some(scope_idx) = analysis.scope_at_offset(check.start) {
+                    match analysis.ir.narrow_target(check.arg_expr) {
+                        Some(NarrowTarget::Field(sym_idx, chain)) => {
+                            if let Some(narrowed_vt) = analysis.get_field_type_narrowing_at(sym_idx, &chain, scope_idx, check.start) {
+                                arg_type = narrowed_vt.clone();
+                            }
+                        }
+                        // Facts about the root symbol describe its own value, never a
+                        // field read off it (`x.f == x` filters `x`, not `x.f`).
+                        Some(NarrowTarget::Symbol(sym_idx)) if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, check.start) => {
+                            if let Some(narrowed_vt) = analysis.get_type_narrowing_at(sym_idx, scope_idx, check.start)
                                 && !arg_type.is_assignable_to(narrowed_vt) {
                                     arg_type = narrowed_vt.clone();
                             }
@@ -161,24 +166,10 @@ impl DiagnosticPass for TypeMismatch {
                                 arg_type = stripped;
                             }
                         }
-                        if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, check.start) {
-                            if analysis.is_symbol_falsy_narrowed_at(sym_idx, scope_idx, check.start) {
-                                arg_type = arg_type.strip_falsy();
-                            } else if analysis.is_symbol_narrowed_at(sym_idx, scope_idx, check.start) {
-                                arg_type = arg_type.strip_nil();
-                            }
-                        }
-                        if let Some((_, chain)) = analysis.ir.extract_field_chain(check.arg_expr) {
-                            if let Some(narrowed_vt) = analysis.get_field_type_narrowing_at(sym_idx, &chain, scope_idx, check.start) {
-                                arg_type = narrowed_vt.clone();
-                            } else if analysis.is_field_chain_narrowed_at(sym_idx, &chain, scope_idx, check.start) {
-                                arg_type = arg_type.strip_nil();
-                                if matches!(arg_type, ValueType::Nil) {
-                                    continue;
-                                }
-                            }
-                        }
+                        _ => {}
                     }
+                    arg_type = analysis.nil_guard_at(check.arg_expr, scope_idx, check.start).apply(arg_type);
+                }
                 // Source-code string literals resolve to the generic `String(None)`
                 // type, with the literal value kept in `ir.string_literals`. When the
                 // expected type discriminates on specific string literals, upgrade the

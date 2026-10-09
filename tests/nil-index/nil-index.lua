@@ -196,3 +196,18 @@ local function validateFilter()
     end
 end
 _consume(validateFilter)
+
+-- ═════════════════════════════════════════════════════════
+-- Root guard does not cover a field key
+-- ═════════════════════════════════════════════════════════
+
+---@class NilIndexRow
+---@field key string|nil
+
+---@param row NilIndexRow?
+local function rootGuardFieldKey(row)
+    if not row then return end
+    lookup[row.key] = 42
+    --     ^ diag: nil-index
+end
+_consume(rootGuardFieldKey)
