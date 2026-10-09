@@ -1755,7 +1755,8 @@ fn parse_diagnostic_directive(rest: &str, line: u32) -> Option<DiagnosticSuppres
 /// Checks three locations in order:
 /// 1. Trailing comment within the node (after the last `Name` token)
 /// 2. Sibling comment after the node (same line)
-/// 3. Preceding standalone comment on the line above the node
+/// 3. Preceding standalone comment on a line above the node (other standalone
+///    comment lines in between are skipped; a blank line stops the search)
 ///
 /// A node is a single target, so a `---@type T1, T2` list yields its first type.
 /// Used by both per-file analysis (build_ir) and cross-file scanning (scan_globals).
@@ -1845,19 +1846,25 @@ fn find_inline_type_comment<'a>(field_node: SyntaxNode<'a>) -> Option<(&'a str, 
     // its own line — i.e. only whitespace or a newline precedes it. A
     // comment like `prev = v, ---@type X` on the previous line is a
     // TRAILING comment on `prev` and must not be captured for this field.
+    // Other standalone comment lines between the `@type` and the field
+    // (`---@diagnostic disable-next-line: …`, a plain `-- note`) are
+    // skipped, and a blank line ends the search, as in a statement's
+    // annotation block.
     let first_token = field_node.first_token()?;
     let mut tok = first_token.prev_token();
-    let mut crossed_newline = false;
+    // Line breaks since the field or the last comment; a second is a blank line.
+    let mut newlines = 0;
     while let Some(t) = tok {
         match t.kind() {
             SyntaxKind::Whitespace => {
                 tok = t.prev_token();
             }
             SyntaxKind::Newline => {
-                crossed_newline = true;
+                newlines += 1;
+                if newlines == 2 { return None; }
                 tok = t.prev_token();
             }
-            SyntaxKind::Comment if crossed_newline => {
+            SyntaxKind::Comment if newlines > 0 => {
                 // Verify the comment is standalone: only whitespace/newline
                 // between it and the preceding newline (i.e. it's on a
                 // line by itself, not trailing another statement).
@@ -1871,7 +1878,11 @@ fn find_inline_type_comment<'a>(field_node: SyntaxNode<'a>) -> Option<(&'a str, 
                     }
                 }
                 if !standalone { return None; }
-                return typed(t);
+                if let Some(found) = typed(t) {
+                    return Some(found);
+                }
+                newlines = 0;
+                tok = t.prev_token();
             }
             _ => return None,
         }

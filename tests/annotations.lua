@@ -1032,6 +1032,43 @@ local compHolder = {
 compHolder.inner:d
 --               ^ comp: doStuff
 
+-- Regression: comment lines between an entry's `---@type` and the entry (the
+-- `---@diagnostic` a typed entry often needs) don't hide the type. A blank line
+-- still detaches it, and a trailing `---@type` on an earlier entry's line stays
+-- with that entry.
+---@class InterposedSettings
+---@field scale number
+
+local interposedHolder = {
+    ---@type InterposedSettings
+    ---@diagnostic disable-next-line: missing-fields
+    settings = {},
+    ---@type InterposedSettings
+    -- a plain comment
+    other = {},
+    plain = {}, ---@type InterposedSettings
+    -- a plain comment
+    untyped = {},
+    ---@type InterposedSettings
+    --commentedOut = {},
+
+    retries = 5,
+    ---@type InterposedSettings
+
+    detached = {},
+}
+local _interposedScale = interposedHolder.settings.scale
+--                                        ^ hover: (field) settings: InterposedSettings
+--                                                 ^ hover: (field) scale: number
+local _interposedOther = interposedHolder.other
+--                                        ^ hover: (field) other: InterposedSettings
+local _interposedUntyped = interposedHolder.untyped
+--                                          ^ hover: (field) untyped: table
+local _interposedRetries = interposedHolder.retries + 1
+--    ^ hover: (local) _interposedRetries: number
+local _interposedDetached = interposedHolder.detached
+--                                           ^ hover: (field) detached: table
+
 -- Regression: hover on class name in annotation shows class with fields
 ---@type TypedFieldTestClass
 --       ^ hover: (class) TypedFieldTestClass {

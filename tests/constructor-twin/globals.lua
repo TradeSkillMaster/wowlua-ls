@@ -6,6 +6,9 @@ NS.config = { handler = MakeThing() }
 
 NS.DECLARED = {
     h = MakeThing(), ---@type any
+    ---@type Widget
+    ---@diagnostic disable-next-line: missing-fields
+    w = {},
 }
 
 -- Entries `write.lua` replaces with a typed write.

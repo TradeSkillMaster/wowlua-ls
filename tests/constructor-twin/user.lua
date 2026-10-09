@@ -18,6 +18,8 @@ local function readConfig(cfg)
 end
 local declared = NS.DECLARED.h
 --    ^ hover: (local) declared: any
+local declaredAbove = NS.DECLARED.w
+--    ^ hover: (local) declaredAbove: Widget
 local replaced = NS.REPLACED.A
 --    ^ hover: (local) replaced: Other
 local gReplaced = G_REPLACED.A
@@ -29,4 +31,4 @@ local gA = G_ENTRIES.A
 local gB = G_ENTRIES.sub.B
 --    ^ hover: (local) gB: Widget
 
-_G.useConstructorEntries = { a, c, e, readConfig, declared, replaced, gReplaced, shadowed, gA, gB }
+_G.useConstructorEntries = { a, c, e, readConfig, declared, declaredAbove, replaced, gReplaced, shadowed, gA, gB }

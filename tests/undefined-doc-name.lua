@@ -329,11 +329,16 @@ local _inlineGoodLocal = {} ---@type KnownClass
 
 -- ── Inline @type on table-constructor entries ───────────────────────
 -- Every form the entry's type is read from is validated: a standalone comment
--- above the entry, a trailing `---@type`, and a trailing `--[[@type ]]`.
+-- above the entry (also across other comment lines), a trailing `---@type`,
+-- and a trailing `--[[@type ]]`.
 
 local _inlineCtor = {
     ---@type MissingCtorPreceding
     preceding = nil,
+    -- ^ diag: undefined-doc-name
+    ---@type MissingCtorInterposed
+    ---@diagnostic disable-next-line: missing-fields
+    interposed = nil,
     -- ^ diag: undefined-doc-name
     block = nil, --[[@type MissingCtorBlock]]
     -- ^ diag: undefined-doc-name
