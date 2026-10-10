@@ -118,7 +118,7 @@ Hand-written override files in `stubs/overrides/` take precedence over vendor st
 | `SetOwner.lua` | `GameTooltip:SetOwner` with an untyped `owner`, so any region (including an addon mixin passing `self`) can own the tooltip |
 | `SetScript.lua` | Contextual callback typing with event-param narrowing |
 | `string_match.lua` | Pattern matching return types |
-| `table.lua` | Generic overloads for `insert`, `remove`, etc. |
+| `table.lua` | Generic overloads for `insert`, `remove`, etc., and `@stores-into` on `insert` so inserting into `{}` types the list's elements |
 | `tonumber.lua` | `tonumber` base-argument overload + `@nodiscard` |
 | `unpack.lua` | Variadic unpacking with `...T` syntax |
 | `WorldFrame.lua` | Global frame instance |

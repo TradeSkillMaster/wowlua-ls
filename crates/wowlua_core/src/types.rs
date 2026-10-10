@@ -1271,6 +1271,12 @@ pub struct Function {
     /// to the function's return type. 1-based param index (not counting self).
     #[serde(default)]
     pub narrows_arg: Option<usize>,
+    /// `@stores-into N` — calling this function stores each argument passed for
+    /// a bare `T` parameter as an element of its Nth parameter, a `T[]` (1-based,
+    /// not counting self): `table.insert`. A list built from `{}` takes its
+    /// element type from those values.
+    #[serde(default)]
+    pub stores_into: Option<usize>,
     /// `@requires T: Constraint` — the method may only be called when the
     /// receiver's class type parameter `T` is bound to a type assignable to
     /// `Constraint`. Stored as (param_name, constraint_type_string); the

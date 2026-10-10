@@ -238,6 +238,17 @@ The field path augments the per-file IR only; it does **not** register the field
 
 **Validation** (malformed_annotation.rs): `@narrows-arg` requires a numeric argument >= 1.
 
+## `@stores-into N` (list element writes from calls)
+`@stores-into N` on a `@generic` function: a call stores each argument the selected signature (matching `@overload`, else primary) types as a bare `T` as an integer-keyed element of argument N, a `T[]` parameter (1-based, not counting `self`). The `table.insert` stub (`stubs/overrides/table.lua`) carries it, which is what makes `tinsert(list, v)` an insert. The `(T[], T)` shape alone isn't enough: lookups (`contains(list, v)`, `indexOf`) share it and must keep binding `T` from the list and checking the value.
+
+**Data**: `stores_into: Option<usize>` on `AnnotationBlock`, `ExternalGlobal`, and `Function` (blob-serialized).
+
+**Resolution** (`resolve_call.rs` `call_element_writes`): calls receiving a local `{}` table (no annotation, `@class`, or constructor elements) are indexed in `table_call_args` when the fixpoint starts. `infer_bracket_field_types` folds the stored values into the table's `value_type` alongside its bracket writes; `infer_array_element_type` reads them inline for reads (`tremove`, `ipairs`) that resolve first and, like that pass, gives no element type while any write is untyped (a union of the resolved writes alone mistypes the elements of a list that also holds unknown values). The storing call itself never binds `T` from that list, and its list argument isn't checked against `T[]` (`call_stores_into`): the list's element type is the union of its own stored values, so either would check a value against itself, and binding from the list made every insert re-read every other one (quadratic; a 5,000-insert file exhausted `MAX_RESOLVE_WORK`).
+
+**Nil**: appending nil stores nothing, so an insert's or a `t[#t + 1] = v` write's `T?` contributes `T` (`appended_element`); any other bracket write keeps its nil, which reads back through the same key (`bracket_written_element`).
+
+**Validation** (malformed_annotation.rs): `@stores-into` requires a numeric argument >= 1.
+
 ## Tuple-union `@return` syntax
 `@return (A name, B) | (C, D) desc` lowers to a `Function` with:
 - `return_annotations` = per-position column union (each position's type = union of that position across all cases)

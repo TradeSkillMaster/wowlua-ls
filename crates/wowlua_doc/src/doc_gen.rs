@@ -642,6 +642,7 @@ mod tests {
             vararg_projection: None,
             event_params: None,
             narrows_arg: None,
+            stores_into: None,
             requires_constraints: Vec::new(),
             returns_self_type_args: None,
         };

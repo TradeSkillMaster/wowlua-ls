@@ -1072,6 +1072,15 @@ fn array_element_supertype() {
 }
 
 #[test]
+fn list_element_inference() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/list-element-inference.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn deep_inheritance() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/deep-inheritance.lua",

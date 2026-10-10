@@ -1655,6 +1655,7 @@ impl AnalysisResult {
             ("returns-enum",   "String arguments become members of the returned table", F, None),
             ("flavor-narrows", "Flavor guard that narrows WoW API availability", F,  None),
             ("narrows-arg",    "In-place argument type narrowing",        F,         Some("narrows-arg ${1:N}")),
+            ("stores-into",    "Call stores its T arguments as elements of argument N", F, Some("stores-into ${1:N}")),
             ("creates-global", "Call creates a named global (e.g. CreateFrame)", F,   Some("creates-global ${1:N}")),
             ("requires",       "Restrict method by receiver type-param constraint", F,  Some("requires ${1:T}: ${2:Constraint}")),
             ("secret-when",    "Results may be secret under a restriction predicate", F, Some("secret-when ${1:Predicate}")),
@@ -1736,7 +1737,7 @@ impl AnalysisResult {
                         match tag {
                             "param" | "return" | "generic" | "builds-field" | "built-name"
                             | "built-extends" | "type-narrows" | "returns-class-name" | "returns-enum" | "defclass" | "flavor-narrows"
-                            | "narrows-arg" | "creates-global" | "requires"
+                            | "narrows-arg" | "stores-into" | "creates-global" | "requires"
                             | "secret-args" | "secret-aspect" | "secret-guard" | "secret-unless" => {
                                 has_function_tag = true;
                             }

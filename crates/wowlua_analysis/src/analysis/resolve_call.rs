@@ -1193,6 +1193,10 @@ impl<'a> Analysis<'a> {
             // When multiple overloads tied at 0 mismatches, we know the call is
             // valid against at least one overload — suppress type-mismatch checks.
             let expected_type = if ambiguous_overload_ret_type.is_some() { None } else { expected_type };
+            // A table this call stores elements into (`table.insert(list, v)`) takes
+            // its element type from the stored values, so checking it against `T[]`
+            // would check the list against one of its own values.
+            let expected_type = expected_type.filter(|_| !self.call_stores_into(*arg_expr_id));
             // Skip backtick params (type-name string literals)
             let skip_backtick = matching_overload.is_none()
                 && param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick);
@@ -2979,6 +2983,136 @@ impl<'a> Analysis<'a> {
         (matching_overload, overload_self_offset, ambiguous_overload_ret_type)
     }
 
+    /// Index the calls receiving each local table constructor as an argument
+    /// (`table_call_args`). A table that is annotated, a `@class`, or built with
+    /// positional elements is skipped: its element type doesn't come from what
+    /// calls store into it.
+    pub(super) fn collect_table_call_args(&mut self) {
+        let mut table_call_args: HashMap<TableIndex, Vec<(ExprId, usize)>> = HashMap::default();
+        let mut table_arg_calls: HashMap<ExprId, (ExprId, usize)> = HashMap::default();
+        for (call, expr) in self.ir.local_exprs() {
+            let Expr::FunctionCall { args, .. } = expr else { continue };
+            for (pos, &arg) in args.iter().enumerate() {
+                // Per-slot copies of a multi-return call share its argument exprs.
+                if table_arg_calls.contains_key(&arg) { continue; }
+                let Some(table_idx) = self.ir.find_table_index(arg) else { continue };
+                if table_idx.is_external() { continue; }
+                let t = self.ir.table(table_idx);
+                if t.value_type_annotated || !t.array_fields.is_empty() || t.class_name.is_some() {
+                    continue;
+                }
+                table_call_args.entry(table_idx).or_default().push((call, pos));
+                table_arg_calls.insert(arg, (call, pos));
+            }
+        }
+        self.table_call_args = table_call_args;
+        self.table_arg_calls = table_arg_calls;
+    }
+
+    /// Values calls store as elements of local table `table_idx`: a call passing
+    /// the table as the `@stores-into N` argument of its callee, a `T[]` parameter
+    /// (`T` one of the callee's `@generic`s), stores each argument the same
+    /// signature types as a bare `T` (`table.insert(list, value)`), like
+    /// `list[#list + 1] = value` does.
+    pub(super) fn call_element_writes(&mut self, table_idx: TableIndex) -> Vec<ExprId> {
+        let Some(calls) = self.table_call_args.get(&table_idx).cloned() else { return Vec::new() };
+        let mut seen: HashSet<ExprId> = HashSet::default();
+        let mut values: Vec<ExprId> = Vec::new();
+        let mut undecided_or_storing = Vec::with_capacity(calls.len());
+        for (call, pos) in calls {
+            let writes = self.call_element_writes_at(call, pos);
+            // Drop a call settled as storing nothing, so reads don't revisit it.
+            if !writes.is_empty() || !self.call_element_write_memo.contains_key(&(call, pos)) {
+                undecided_or_storing.push((call, pos));
+            }
+            for value in writes {
+                if seen.insert(value) {
+                    values.push(value);
+                }
+            }
+        }
+        if undecided_or_storing.is_empty() {
+            self.table_call_args.remove(&table_idx);
+        } else {
+            self.table_call_args.insert(table_idx, undecided_or_storing);
+        }
+        values
+    }
+
+    /// Whether `arg` is the table argument of a call that stores elements into it.
+    pub(super) fn call_stores_into(&mut self, arg: ExprId) -> bool {
+        let Some(&(call, pos)) = self.table_arg_calls.get(&arg) else { return false };
+        !self.call_element_writes_at(call, pos).is_empty()
+    }
+
+    /// `call_element_writes` for the table argument at `pos` of `call`, read off
+    /// the signature the call resolves to: a matching `@overload`, else the primary.
+    fn call_element_writes_at(&mut self, call: ExprId, pos: usize) -> Vec<ExprId> {
+        if let Some(values) = self.call_element_write_memo.get(&(call, pos)) {
+            return values.clone();
+        }
+        let Expr::FunctionCall { func, args, is_method_call, .. } = self.expr(call).clone() else {
+            return Vec::new();
+        };
+        let Some(ValueType::Function(Some(func_idx))) = self.resolve_expr(func).map(ValueType::into_strip_opaque) else {
+            return Vec::new();
+        };
+        let f = self.func(func_idx);
+        let Some(stores_into) = f.stores_into.filter(|_| !f.generics.is_empty()) else {
+            self.call_element_write_memo.insert((call, pos), Vec::new());
+            return Vec::new();
+        };
+        let overloads = self.func(func_idx).overloads.clone();
+        let (overload, overload_self_offset, _) = self.select_matching_overload(&overloads, &args, 0);
+        let (param_types, self_offset, has_self): (Vec<Option<ValueType>>, usize, bool) = match overload {
+            Some(o) => (
+                o.params.iter().map(|p| p.typ.clone()).collect(),
+                overload_self_offset,
+                o.params.first().is_some_and(|p| p.name == "self"),
+            ),
+            None => {
+                let f = self.func(func_idx);
+                let has_self = f.args.first().is_some_and(|&sym| {
+                    matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
+                });
+                let self_offset = super::call_self_offset(false, false, false, is_method_call, has_self, !f.args.is_empty());
+                ((0..f.args.len()).map(|i| self.ir.param_decl_type(f, i).cloned()).collect(), self_offset, has_self)
+            }
+        };
+        // `@stores-into N` counts the parameters after `self`.
+        let param = pos + self_offset;
+        let element_var = (param + 1 == stores_into + usize::from(has_self))
+            .then(|| param_types.get(param).cloned().flatten())
+            .flatten()
+            .and_then(|t| self.array_type_var(&t, func_idx));
+        let values: Vec<ExprId> = match element_var {
+            Some(var) => args.iter().enumerate()
+                .filter(|&(i, _)| i != pos && matches!(
+                    param_types.get(i + self_offset),
+                    Some(Some(ValueType::TypeVariable(n))) if *n == var
+                ))
+                .map(|(_, &arg)| arg)
+                .collect(),
+            None => Vec::new(),
+        };
+        // The overload match depends on the argument types; keep it once they're known.
+        if overloads.is_empty() || args.iter().all(|&arg| self.resolve_expr(arg).is_some()) {
+            self.call_element_write_memo.insert((call, pos), values.clone());
+        }
+        values
+    }
+
+    /// The `@generic` of `func_idx` an array parameter type (`T[]`) holds.
+    fn array_type_var(&self, param_type: &ValueType, func_idx: FunctionIndex) -> Option<String> {
+        let ValueType::Table(Some(idx)) = param_type else { return None };
+        let t = self.table(*idx);
+        if crate::analysis::queries::table_is_map(t.key_type.as_ref(), t.is_explicit_map) {
+            return None;
+        }
+        let Some(ValueType::TypeVariable(name)) = &t.value_type else { return None };
+        self.func(func_idx).generics.iter().any(|(n, _)| n == name).then(|| name.clone())
+    }
+
     /// Propagate a matched overload's `fun()` callback parameter types (and event
     /// params / vararg annotations) into inline function-literal arguments.
     fn propagate_overload_callback_params(
@@ -4113,6 +4247,7 @@ impl<'a> Analysis<'a> {
                     vararg_projection: None,
                     event_params: None,
                     narrows_arg: None,
+                    stores_into: None,
                     requires_constraints: Vec::new(),
                     returns_self_type_args: None,
                 });

@@ -170,7 +170,7 @@ fn substitute_annotation_type_inner(
 /// or any serialized type changes shape — or when serialized data changes
 /// meaning, like a new flavor bit in the `flavors` masks.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 41;
+pub const BLOB_VERSION: u32 = 42;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -1316,6 +1316,7 @@ pub struct FnMeta<'a> {
     pub returns_enum_raw: bool,
     pub secret_raw: Option<Box<crate::secrets::SecretMeta>>,
     pub narrows_arg_raw: Option<usize>,
+    pub stores_into_raw: Option<usize>,
     pub requires_raw: Vec<(String, String)>,
     pub is_colon: bool,
     pub owner_class_name: Option<&'a str>,
@@ -1358,6 +1359,7 @@ impl<'a> FnMeta<'a> {
             returns_enum_raw: false,
             secret_raw: None,
             narrows_arg_raw: None,
+            stores_into_raw: None,
             requires_raw: Vec::new(),
             is_colon: false,
             owner_class_name: None,
@@ -1400,6 +1402,7 @@ impl<'a> FnMeta<'a> {
             returns_enum_raw: g.returns_enum,
             secret_raw: g.secret.clone(),
             narrows_arg_raw: g.narrows_arg,
+            stores_into_raw: g.stores_into,
             requires_raw: g.requires.clone(),
             is_colon,
             owner_class_name,
@@ -4145,6 +4148,7 @@ impl PreResolvedGlobals {
             return_projections: ret_projections,
             vararg_projection: vararg_proj, event_params: event_params_info,
             narrows_arg: None,
+            stores_into: None,
             requires_constraints: Vec::new(),
             returns_self_type_args: None,
         });
@@ -4180,6 +4184,7 @@ impl PreResolvedGlobals {
             returns_enum_raw,
             secret_raw,
             narrows_arg_raw,
+            stores_into_raw,
             requires_raw,
             is_colon,
             owner_class_name,
@@ -4622,6 +4627,7 @@ impl PreResolvedGlobals {
             vararg_projection: vararg_proj,
             event_params: None,
             narrows_arg: narrows_arg_raw,
+            stores_into: stores_into_raw,
             requires_constraints: requires_raw,
             returns_self_type_args,
         });

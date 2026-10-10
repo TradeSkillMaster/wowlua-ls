@@ -1803,6 +1803,7 @@ impl<'a> Analysis<'a> {
                 vararg_projection: None,
                 event_params: None,
                 narrows_arg: None,
+                stores_into: None,
                 requires_constraints: Vec::new(),
                 returns_self_type_args: None,
             });
@@ -2336,6 +2337,7 @@ impl<'a> Analysis<'a> {
             flavors: 0,
             flavor_guard: 0, return_projections: ret_projections, vararg_projection: vararg_proj, event_params: event_params_info,
             narrows_arg: None,
+            stores_into: None,
             requires_constraints: Vec::new(),
             returns_self_type_args: None,
         });
@@ -2743,6 +2745,13 @@ impl<'a> Analysis<'a> {
     }
 
     pub(super) fn infer_array_element_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
+        // A call storing into a list whose element type comes from such calls
+        // (`table.insert(list, v)`) binds `T` from the value it stores: binding it
+        // from the list would check the value against itself, and reading every
+        // other stored value here would make each insert cost as much as all of them.
+        if self.call_stores_into(expr_id) {
+            return None;
+        }
         // Try direct table index first (needed for table constructors with literal elements)
         if let Some(table_idx) = self.ir.find_table_index(expr_id) {
             let array_fields: Vec<ExprId> = self.ir.table(table_idx).array_fields.clone();
@@ -2766,27 +2775,35 @@ impl<'a> Analysis<'a> {
                 if let Some(vt) = self.ir.table(idx).value_type.clone() {
                     return Some(vt);
                 }
-                // Bracket-keyed table whose value_type hasn't been set yet
-                // (infer_bracket_field_types runs later in the fixpoint loop).
-                // Resolve value expressions inline so generic binding (e.g.
-                // table<T,R> overload params) can extract the value type now.
-                // Uses resolve_expr (not resolve_expr_to_broad_type) to preserve
-                // precision — generic binding benefits from exact types rather
-                // than broadened categories.
-                if let Some(bracket_fields) = self.ir.bracket_key_fields.get(&idx).cloned() {
-                    let mut val_types: Vec<ValueType> = Vec::new();
-                    for (_key_expr, val_expr) in &bracket_fields {
-                        if let Some(vt) = self.resolve_expr(*val_expr)
-                            && vt != ValueType::Nil && !self.is_structurally_duplicate_type(&val_types, &vt)
-                        {
-                            val_types.push(vt);
-                        }
-                    }
-                    if !val_types.is_empty() {
-                        return Self::union_of(val_types);
+                // Table written by bracket assignments or element-storing calls
+                // whose value_type hasn't been set yet (infer_bracket_field_types
+                // runs later in the fixpoint loop). Resolve value expressions
+                // inline so generic binding (e.g. table<T,R> overload params) can
+                // extract the value type now. Bracket values use resolve_expr (not
+                // resolve_expr_to_broad_type) to preserve precision — generic
+                // binding benefits from exact types rather than broadened categories.
+                // Stored values are broadened like the element type they become.
+                // As in infer_bracket_field_types, one write of unknown type leaves
+                // the element type unknown rather than the other writes' union.
+                let bracket_fields = self.ir.bracket_key_fields.get(&idx).cloned().unwrap_or_default();
+                let mut val_types: Vec<ValueType> = Vec::new();
+                for (key_expr, val_expr) in bracket_fields {
+                    let vt = self.resolve_expr(val_expr)?;
+                    if let Some(vt) = self.bracket_written_element(idx, key_expr, vt)
+                        && !self.is_structurally_duplicate_type(&val_types, &vt)
+                    {
+                        val_types.push(vt);
                     }
                 }
-                None
+                for val_expr in self.call_element_writes(idx) {
+                    let vt = self.resolve_expr_to_broad_type(val_expr)?;
+                    if let Some(vt) = Self::appended_element(vt)
+                        && !self.is_structurally_duplicate_type(&val_types, &vt)
+                    {
+                        val_types.push(vt);
+                    }
+                }
+                Self::union_of(val_types)
             }
             // Union of array types: e.g. string[] | ItemKey[] → string | ItemKey.
             // An intersection contributes its array facet (`V[] & {[K]: V}`).

@@ -84,6 +84,7 @@ impl<'a> Analysis<'a> {
         // are ever stored, so None always means "no cached result" — never "resolved to nothing".
         self.resolved_expr_cache.resize(self.ir.exprs.len(), None);
         self.resolving_exprs.resize(self.ir.exprs.len(), false);
+        self.collect_table_call_args();
 
         // Warm the per-file symbol overlay for any call-typed globals
         // (`@creates-global`, `X = f(...)`) this file references, so their
@@ -674,9 +675,12 @@ impl<'a> Analysis<'a> {
 
     /// After the fixpoint loop, infer `key_type`/`value_type` for table constructors
     /// that have bracket-keyed fields (or array fields) but couldn't be fully resolved
-    /// at Phase 1 (literals only).
+    /// at Phase 1 (literals only), or that calls store elements into
+    /// (`call_element_writes`, integer-keyed).
     fn infer_bracket_field_types(&mut self) -> bool {
-        let table_indices: Vec<TableIndex> = self.ir.bracket_key_fields.keys().copied().collect();
+        let mut table_indices: Vec<TableIndex> = self.ir.bracket_key_fields.keys().copied().collect();
+        table_indices.extend(self.table_call_args.keys().copied()
+            .filter(|idx| !self.ir.bracket_key_fields.contains_key(idx)));
         let mut made_progress = false;
         for table_idx in table_indices {
             let already_resolved = self.ir.tables[table_idx.val()].key_type.is_some();
@@ -693,14 +697,22 @@ impl<'a> Analysis<'a> {
             // replaces the original element type (e.g. `parts[i] = parseInt(parts[i])`
             // changes a string[] to number[]).
             // Nil assignments are excluded — writing nil clears a slot, it does not
-            // change the element type of the list.
+            // change the element type of the list (`bracket_written_element`).
             if already_resolved {
-                let bracket_fields = self.ir.bracket_key_fields[&table_idx].clone();
+                let bracket_fields = self.ir.bracket_key_fields.get(&table_idx).cloned().unwrap_or_default();
+                let call_writes = self.call_element_writes(table_idx);
                 let mut new_types: Vec<ValueType> = Vec::new();
                 let mut all_resolved = true;
-                for (_key_expr, val_expr) in &bracket_fields {
+                for (key_expr, val_expr) in &bracket_fields {
                     if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
-                        if vt != ValueType::Nil && !self.is_structurally_duplicate_type(&new_types, &vt) { new_types.push(vt); }
+                        if let Some(vt) = self.bracket_written_element(table_idx, *key_expr, vt) && !self.is_structurally_duplicate_type(&new_types, &vt) { new_types.push(vt); }
+                    } else {
+                        all_resolved = false;
+                    }
+                }
+                for val_expr in call_writes {
+                    if let Some(vt) = self.resolve_expr_to_broad_type(val_expr) {
+                        if let Some(vt) = Self::appended_element(vt) && !self.is_structurally_duplicate_type(&new_types, &vt) { new_types.push(vt); }
                     } else {
                         all_resolved = false;
                     }
@@ -716,7 +728,7 @@ impl<'a> Analysis<'a> {
                 continue;
             }
 
-            let bracket_fields = self.ir.bracket_key_fields[&table_idx].clone();
+            let bracket_fields = self.ir.bracket_key_fields.get(&table_idx).cloned().unwrap_or_default();
             let array_fields = self.ir.tables[table_idx.val()].array_fields.clone();
             let constructor_bracket_count = self.ir.tables[table_idx.val()].constructor_bracket_count;
             // When the table has array fields (e.g. `{strsplit(",", s)}`), only process
@@ -754,7 +766,20 @@ impl<'a> Analysis<'a> {
                 }
                 if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
                     // Nil assignments clear a slot — don't include nil in the inferred element type
-                    if vt != ValueType::Nil && !self.is_structurally_duplicate_type(&val_types, &vt) { val_types.push(vt); }
+                    if let Some(vt) = self.bracket_written_element(table_idx, *key_expr, vt) && !self.is_structurally_duplicate_type(&val_types, &vt) { val_types.push(vt); }
+                } else {
+                    all_resolved = false;
+                }
+            }
+
+            // Values calls store (`table.insert(t, v)`) are integer-keyed elements.
+            let call_writes = self.call_element_writes(table_idx);
+            if !call_writes.is_empty() && !key_types.contains(&ValueType::Number) {
+                key_types.push(ValueType::Number);
+            }
+            for val_expr in call_writes {
+                if let Some(vt) = self.resolve_expr_to_broad_type(val_expr) {
+                    if let Some(vt) = Self::appended_element(vt) && !self.is_structurally_duplicate_type(&val_types, &vt) { val_types.push(vt); }
                 } else {
                     all_resolved = false;
                 }
@@ -817,9 +842,35 @@ impl<'a> Analysis<'a> {
     }
 
     /// Resolve an expression to its broad type (stripping specific literal values).
-    fn resolve_expr_to_broad_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
+    pub(super) fn resolve_expr_to_broad_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
         let resolved = self.resolve_expr(expr_id)?;
         Some(Self::broaden_type(resolved))
+    }
+
+    /// The element a write appending a `vt` value stores (`table.insert(t, v)`,
+    /// `t[#t + 1] = v`): appending nil stores nothing, so a `T?` appends a `T`.
+    pub(super) fn appended_element(vt: ValueType) -> Option<ValueType> {
+        let vt = vt.strip_nil();
+        (!matches!(&vt, ValueType::Union(members) if members.is_empty())).then_some(vt)
+    }
+
+    /// The element type a bracket write `t[key] = vt` adds to table `table_idx`:
+    /// an append's is `appended_element`, any other key's keeps the nil a `T?`
+    /// may leave in its slot, and a plain `nil` only clears the slot.
+    pub(super) fn bracket_written_element(&self, table_idx: TableIndex, key: ExprId, vt: ValueType) -> Option<ValueType> {
+        if self.is_append_key(table_idx, key) {
+            Self::appended_element(vt)
+        } else {
+            (vt != ValueType::Nil).then_some(vt)
+        }
+    }
+
+    /// Whether `key` is `#t + 1` for table `table_idx`.
+    fn is_append_key(&self, table_idx: TableIndex, key: ExprId) -> bool {
+        let Expr::BinaryOp { op: Operator::Add, lhs, rhs } = self.expr(key) else { return false };
+        matches!(self.expr(*lhs), Expr::UnaryOp { op: Operator::ArrayLength, operand }
+            if self.ir.find_table_index(*operand) == Some(table_idx))
+            && self.ir.number_literals.get(rhs).and_then(|n| n.parse::<f64>().ok()) == Some(1.0)
     }
 
     /// Strip specific literal values from a type, keeping only the broad category.

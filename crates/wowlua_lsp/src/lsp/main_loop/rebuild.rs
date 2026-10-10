@@ -40,6 +40,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         && x.mixin_parents == y.mixin_parents
         && x.returns_class_name == y.returns_class_name
         && x.returns_enum == y.returns_enum
+        && x.stores_into == y.stores_into
         && x.secret == y.secret
         && x.declares_class == y.declares_class
         // Constructor entries, ignoring their positional key ranges.

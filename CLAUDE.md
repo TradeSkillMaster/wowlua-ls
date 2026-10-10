@@ -187,6 +187,7 @@ These annotation-syntax and `ValueType` features are conventions — load-bearin
 - `...T` — variadic return (`AnnotationType::VarArgs`; sets `Function.has_vararg_return`). [→](.claude/ARCHITECTURE.md#t-variadic-return)
 - `@generic T, ...M` — variadic generic; excess args collected into an `Intersection`. [→](.claude/ARCHITECTURE.md#variadic-generics-generic-t-m)
 - `@narrows-arg N` — in-place argument narrowing (incl. `Mixin(self.Child, M)` field targets). [→](.claude/ARCHITECTURE.md#narrows-arg-n-in-place-argument-type-mutation)
+- `@stores-into N` — a call stores its `T` arguments as elements of argument N (`table.insert`), typing a list built from `{}`; the `(T[], T)` shape alone isn't a store (lookups share it). [→](.claude/ARCHITECTURE.md#stores-into-n-list-element-writes-from-calls)
 - `@returns-class-name` — return-value class guard (`GetObjectType() == "Class"`; never hard-code the method name). [→](.claude/ARCHITECTURE.md#returns-class-name-return-value-class-guard)
 - `@creates-global N` — implicit named-global side effect (`CreateFrame`; never hard-code creating-fn names). [→](.claude/ARCHITECTURE.md#creates-global-n-implicit-named-global-side-effect)
 - `@generates-events N [Field]` — synthesized event enum table on a class (never hard-code the method/field). [→](.claude/ARCHITECTURE.md#generates-events-n-field-synthesized-event-enum-table-on-a-class)

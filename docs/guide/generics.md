@@ -371,3 +371,15 @@ The LS infers generic bindings from multiple sources:
 5. **Receiver type_args**: for `@class Foo<T>`, calling a method on `---@type Foo<string>` binds T from the receiver
 
 Inference runs per-call and doesn't persist. Each call site resolves its own bindings independently.
+
+A function marked `@stores-into N` does type the list it stores into: a local table created as `{}` and passed as argument `N`, a `T[]` parameter, gets, as elements, the types of the arguments passed for that signature's `T` parameters. The built-in stubs mark `table.insert`, so `table.insert(list, item)` makes `list` an `Item[]`. Mark your own insert helpers the same way:
+
+```lua
+---@generic T
+---@param list T[]
+---@param value T
+---@stores-into 1
+local function Push(list, value) table.insert(list, value) end
+```
+
+Without the marker, a `(list: T[], value: T)` function such as a `contains` lookup binds `T` from the list and checks `value` against it.

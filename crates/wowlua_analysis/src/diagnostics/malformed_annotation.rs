@@ -39,7 +39,7 @@ const KNOWN_TAGS: &[&str] = &[
     "class", "field", "alias", "param", "return", "type", "enum",
     "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
     "generic", "private", "protected", "accessor", "diagnostic",
-    "builds-field", "built-name", "built-extends", "type-narrows", "returns-class-name", "returns-enum", "narrows-arg",
+    "builds-field", "built-name", "built-extends", "type-narrows", "returns-class-name", "returns-enum", "narrows-arg", "stores-into",
     "creates-global", "generates-events", "callback-event-arg", "correlated", "flavor-narrows", "event", "requires",
     "secret-when", "secret-args", "secret-aspect", "secret-guard", "secret-unless",
     "secret-clears", "secret-restriction-guard", "secret-precondition", "secret-satisfies",
@@ -217,6 +217,16 @@ impl DiagnosticPass for MalformedAnnotation {
                         }
                     } else {
                         Some("@narrows-arg requires a numeric parameter index (e.g. @narrows-arg 1)".to_string())
+                    }
+                }
+                "stores-into" => {
+                    match rest.split_whitespace().next() {
+                        None => Some("@stores-into requires a parameter index (e.g. @stores-into 1)".to_string()),
+                        Some(tok) => match tok.parse::<usize>() {
+                            Ok(0) => Some("@stores-into parameter index must be >= 1 (1-based)".to_string()),
+                            Ok(_) => None,
+                            Err(_) => Some("@stores-into requires a numeric parameter index (e.g. @stores-into 1)".to_string()),
+                        },
                     }
                 }
                 "creates-global" => {

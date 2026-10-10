@@ -177,6 +177,24 @@ end
 
 This also works through typed function calls. If a parameter is passed to a function that expects `number`, the parameter is inferred as `number`. Explicit `@param` annotations always take precedence.
 
+### List element inference
+
+A list built by inserting into an empty table takes its element type from the inserted values, so its elements keep hover, completion, and diagnostics:
+
+```lua
+---@param item Item
+local function collect(item)
+    local list = {}
+    table.insert(list, item) -- or tinsert(list, item), or list[#list + 1] = item
+    for _, v in ipairs(list) do
+        print(v.name) -- v: Item
+    end
+    return table.remove(list) -- Item
+end
+```
+
+Inserting values of different types gives a union element type. A list annotated with `---@type Item[]`, or created with initial elements (`{ a, b }`), keeps that element type, and inserts are checked against it.
+
 ## Generics that actually work
 
 LuaLS supports basic `@generic` but struggles with more advanced patterns. wowlua-ls's generic system handles parameterized classes, constrained type parameters, backtick factory annotations, and function-type projections:

@@ -3214,6 +3214,7 @@ impl<'a> Analysis<'a> {
             vararg_projection: None,
             event_params: None,
             narrows_arg: None,
+            stores_into: None,
             requires_constraints: Vec::new(),
             returns_self_type_args: None,
         };
@@ -3637,6 +3638,11 @@ impl<'a> Analysis<'a> {
         // Apply @narrows-arg annotation
         if let Some(idx) = annotations.narrows_arg {
             self.ir.functions[func_idx.val()].narrows_arg = Some(idx);
+        }
+
+        // Apply @stores-into annotation
+        if let Some(idx) = annotations.stores_into {
+            self.ir.functions[func_idx.val()].stores_into = Some(idx);
         }
 
         // Apply @requires receiver type-param constraints

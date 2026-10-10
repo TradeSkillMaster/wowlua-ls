@@ -888,6 +888,9 @@ pub struct AnnotationBlock {
     /// position within the annotation block for def_range lookup.
     pub event_batch_entries: Vec<(String, Vec<crate::pre_globals::EventPayloadParam>, usize)>,
     pub narrows_arg: Option<usize>,
+    /// `@stores-into N` — the call stores its `T` arguments as elements of its
+    /// Nth argument (1-based).
+    pub stores_into: Option<usize>,
     /// `@requires T: Constraint` — receiver class type-param constraints for a
     /// method. Each entry is (param_name, constraint_type_string).
     pub requires: Vec<(String, String)>,
@@ -1950,6 +1953,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 && idx >= 1
             {
                 block.narrows_arg = Some(idx);
+            }
+        } else if let Some(rest) = content.strip_prefix("@stores-into") {
+            let rest = rest.trim();
+            if let Ok(idx) = rest.parse::<usize>()
+                && idx >= 1
+            {
+                block.stores_into = Some(idx);
             }
         } else if let Some(rest) = content.strip_prefix("@creates-global") {
             // `@creates-global N` — N (1-based) is the param whose string literal

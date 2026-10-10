@@ -369,6 +369,10 @@ pub struct ExternalGlobal {
     /// `@narrows-arg N` — calling this function narrows the Nth argument's type.
     #[serde(default)]
     pub narrows_arg: Option<usize>,
+    /// `@stores-into N` — calling this function stores its `T` arguments as
+    /// elements of its Nth argument, a `T[]` (`Function::stores_into`).
+    #[serde(default)]
+    pub stores_into: Option<usize>,
     /// `@creates-global` — calling this function with a string-literal at the
     /// `name_param` argument implicitly creates a named global (e.g. WoW's
     /// `CreateFrame(type, "Name")` creates `_G.Name`). See [`CreatesGlobalSpec`].
@@ -490,6 +494,7 @@ impl ExternalGlobal {
             flavor_guard: 0,
             implicit_nil_return: false,
             narrows_arg: None,
+            stores_into: None,
             creates_global: None,
             generates_events: None,
             callback_event_arg: None,
@@ -1095,6 +1100,7 @@ pub fn scan_method_funcall_self_fields(
                 is_override: false, is_meta: false, see: Vec::new(), flavors: 0, flavor_guard: 0,
                 implicit_nil_return: false,
                 narrows_arg: None,
+                stores_into: None,
                 creates_global: None,
                 generates_events: None,
                 callback_event_arg: None,

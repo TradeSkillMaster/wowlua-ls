@@ -51,6 +51,7 @@ function table.create(arraySizeHint, nodeSizeHint) end
 ---@param list T[]
 ---@param pos integer
 ---@param value T
+---@stores-into 1
 ---@secret-args untainted pos
 function table.insert(list, pos, value) end
 

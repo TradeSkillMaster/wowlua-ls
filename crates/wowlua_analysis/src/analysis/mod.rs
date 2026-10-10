@@ -3109,6 +3109,15 @@ pub struct Analysis<'a> {
     /// the start of Phase 2 stall recovery; entries are removed as they gain
     /// overloads or are disqualified, avoiding a full function-list rescan.
     passthrough_candidates: Option<Vec<FunctionIndex>>,
+    /// Calls receiving a local element-less table constructor as an argument:
+    /// table → (call, argument position). Collected when the fixpoint starts,
+    /// read by `call_element_writes`.
+    table_call_args: HashMap<TableIndex, Vec<(ExprId, usize)>>,
+    /// The (call, argument position) of each argument indexed in `table_call_args`.
+    table_arg_calls: HashMap<ExprId, (ExprId, usize)>,
+    /// `call_element_writes` per (call, argument position), kept once the call's
+    /// callee and arguments have resolved.
+    call_element_write_memo: HashMap<(ExprId, usize), Vec<ExprId>>,
     /// Deferred class-equality narrowings from `x == EXPR` / `x ~= EXPR` where EXPR
     /// can't be classified at build time. Each entry: (sym_idx, expr_id, scope_idx).
     /// Processed in resolve: if EXPR's type is a class table, narrow sym_idx to that class
@@ -3401,6 +3410,9 @@ impl<'a> Analysis<'a> {
             multi_return_siblings: HashMap::default(),
             deferred_sibling_narrowings: Vec::new(),
             passthrough_candidates: None,
+            table_call_args: HashMap::default(),
+            table_arg_calls: HashMap::default(),
+            call_element_write_memo: HashMap::default(),
             deferred_class_eq_narrowings: Vec::new(),
             deferred_event_narrowings: Vec::new(),
             correlated_locals: Vec::new(),

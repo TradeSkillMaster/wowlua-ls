@@ -49,6 +49,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@generic T, ...M` | Variadic generic: collects excess arguments into an intersection. | [Generics](/guide/generics#variadic-generics) |
 | `@return T & ...M` / `@return & ...M` | Return the variadic arguments as one intersection value, with or without a leading type. | [Generics](/guide/generics#variadic-generics) |
 | `@requires T: Constraint` | Method is only callable when the receiver's class type parameter `T` satisfies the constraint. | |
+| `@stores-into N` | Calling the function stores the arguments passed for `T` parameters as elements of argument `N`, a `T[]` parameter, so a list created as `{}` takes their types as its element type. The built-in stubs mark `table.insert`. | [Generics](/guide/generics#how-inference-works) |
 | `` @param name `T` `` | Resolve string argument as a class name. | [Generics](/guide/generics) |
 | `@overload fun(...)` | Function overload signature. On a `@class`, makes instances callable with that signature. | |
 
