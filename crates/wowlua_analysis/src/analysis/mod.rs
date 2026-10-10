@@ -773,14 +773,16 @@ pub struct Ir {
     /// a field on. Find-references/rename use it to treat the annotation's name
     /// as a reference to that field.
     pub field_annotation_owner: HashMap<u32, TableIndex>,
-    /// `(class table, field name)` pairs for placeholder-`Any` class fields that
-    /// were *synthesized from a table-constructor value* the annotation scan
-    /// couldn't type (e.g. `---@class C` / `local c = { x = OTHER.field }`), as
-    /// opposed to a user-written `---@field x any` escape hatch. Only these may
-    /// have their placeholder expr upgraded to the runtime constructor's real
-    /// expr in `merge_runtime_fields_into_class` — an explicit `@field x any`
-    /// stays `any`. Populated in `prescan_classes_and_aliases`.
-    pub ctor_inferred_any_fields: crate::collections::HashSet<(TableIndex, String)>,
+    /// `(class table, field name)` pairs for placeholder class fields that were
+    /// *synthesized from a table-constructor value* the annotation scan could only
+    /// type coarsely — `any` for one it couldn't type (e.g. `---@class C` /
+    /// `local c = { x = OTHER.field }`), bare `table` for a nested constructor
+    /// (`{ sub = { ... } }`) — as opposed to a user-written `---@field x any` /
+    /// `---@field x table` or a type on the entry itself (`---@type table`).
+    /// Only these may be upgraded to the runtime constructor's real value in
+    /// `merge_runtime_fields_into_class`; a declared type is kept. Populated in
+    /// `prescan_classes_and_aliases`.
+    pub ctor_placeholder_fields: crate::collections::HashSet<(TableIndex, String)>,
     /// Bracket assignments where the target table couldn't be resolved in Phase 1
     /// (e.g. `local NPCs = private.Data.NPCs; NPCs[1] = { ... }`). Deferred to
     /// Phase 2 where resolved_type is available. (root_name, scope_idx, val_expr)
@@ -3283,7 +3285,7 @@ impl<'a> Analysis<'a> {
                 tc_arg_constructors: crate::collections::HashSet::default(),
                 ctor_merged_class: HashMap::default(),
                 field_annotation_owner: HashMap::default(),
-                ctor_inferred_any_fields: crate::collections::HashSet::default(),
+                ctor_placeholder_fields: crate::collections::HashSet::default(),
                 pending_bracket_assigns: Vec::new(),
                 overlay: HashMap::default(),
                 symbol_overlay: HashMap::default(),

@@ -1599,3 +1599,32 @@ local _dateParts = date("*t")
 local _year, _isdst = _dateParts.year, _dateParts.isdst
 --    ^ hover: (local) _year: number
 --           ^ hover: (local) _isdst: boolean
+
+-- A constructor entry's own `---@type` is its value type for `pairs`, on a plain
+-- table and on a `@class` constructor (whose scan sees only a bare `table`).
+---@class TypedEntryItem
+---@field name string
+
+---@class TypedEntryGroup : TypedEntryItem
+---@field list? TypedEntryItem[]
+
+local typedEntries = {
+    ---@type TypedEntryItem[]
+    items = {},
+    ---@type TypedEntryGroup[]
+    groups = { { name = "g", list = {} } },
+}
+for _, tev in pairs(typedEntries) do
+--     ^ hover: (local) tev: TypedEntryGroup[] | TypedEntryItem[]
+end
+
+---@class TypedEntryClass
+local typedEntryClass = {
+    ---@type TypedEntryItem[]
+    items = {},
+}
+local typedEntryItems = typedEntryClass.items
+--    ^ hover: (local) typedEntryItems: TypedEntryItem[]
+for _, tecv in pairs(typedEntryClass) do
+--     ^ hover: (local) tecv: TypedEntryItem[]
+end

@@ -332,7 +332,7 @@ fn classify_ctor_entry(field: SyntaxNode<'_>, value: &Expression<'_>, scope: &Ca
 
 /// The type a table-constructor entry declares: a `---@type T` on the entry, else
 /// a `--[[@as T]]` cast on its value.
-fn constructor_entry_type(field: SyntaxNode<'_>, value: &Expression<'_>) -> Option<AnnotationType> {
+pub(super) fn constructor_entry_type(field: SyntaxNode<'_>, value: &Expression<'_>) -> Option<AnnotationType> {
     super::annotation_scanning::extract_inline_type_from_node(field)
         .or_else(|| super::annotation_scanning::extract_inline_as(value.syntax()))
 }

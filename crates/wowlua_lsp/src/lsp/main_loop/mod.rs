@@ -3219,6 +3219,32 @@ mod tests {
     }
 
     #[test]
+    fn declared_ctor_entry_edits_trigger_rebuild() {
+        // Declaring a constructor entry's type (`---@field`, or `---@type` on the
+        // entry) keeps `fields` identical but stops it being a scan-inferred
+        // placeholder, which changes where other files' deep method definitions
+        // (`function C.cache.f()`) land.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let mut rebuild = |src: &str| {
+            let tree = crate::syntax::parser::parse(src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws)
+        };
+        let inferred = "---@class Cache\nCache = {\n    entries = {},\n}\n";
+        for declared in [
+            "---@class Cache\nCache = {\n    ---@type table\n    entries = {},\n}\n",
+            "---@class Cache\n---@field entries table\nCache = {\n    entries = {},\n}\n",
+        ] {
+            let _ = rebuild(inferred);
+            match rebuild(declared) {
+                RebuildScope::Incremental(names) => assert!(names.contains("Cache"), "changed class must be named: {names:?}"),
+                RebuildScope::Full => panic!("expected Incremental scope, got Full"),
+                RebuildScope::None => panic!("declaring a constructor entry's type must trigger a rebuild"),
+            }
+        }
+    }
+
+    #[test]
     fn returns_enum_edits_trigger_rebuild() {
         // A `@returns-enum` call's argument values are the members other files see.
         let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));

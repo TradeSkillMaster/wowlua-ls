@@ -1945,6 +1945,37 @@ fn self_field_libstub_idiom_defining_file_keeps_typed_defaults() {
     });
 }
 
+// A method defined through a nested path under a `@class` root
+// (`function Root.API.v1.Get()`) lands on that nested table — in the defining file
+// and across files, on both the cold and the stub-based workspace build — instead
+// of being flattened onto the class.
+#[test]
+fn class_deep_method_same_file() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-deep-method-crossfile/defs.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/class-deep-method-crossfile"),
+    });
+}
+
+#[test]
+fn class_deep_method_crossfile() {
+    for lua_file in ["tests/class-deep-method-crossfile/user.lua", "tests/class-deep-method-crossfile/redeclare.lua"] {
+        for with_stubs in [false, true] {
+            run_annotation_tests(&TestConfig {
+                lua_file,
+                with_stubs,
+                scan_dir: Some("tests/class-deep-method-crossfile"),
+            });
+        }
+    }
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/class-deep-method-crossfile/ctor_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/class-deep-method-crossfile"),
+    });
+}
+
 // Methods defined via `function <@class-typed-local>:Method()` inside a function body
 // join the class's cross-file method set (harvested by the coarse scan, which does not
 // otherwise descend into function bodies). Without this, a call site reaching an

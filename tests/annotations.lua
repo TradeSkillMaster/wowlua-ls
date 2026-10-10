@@ -1659,7 +1659,7 @@ local ctorOrder = classCtorDefaults.sortOrder
 -- structurally identical to a scan-inferred placeholder (annotation `Some(Any)`),
 -- but the user deliberately chose `any` — so it stays `any` and remains callable
 -- (no false-positive `cannot-call`). Only scan-synthesized placeholders (tracked
--- in `ctor_inferred_any_fields`) get the constructor-expr upgrade.
+-- in `ctor_placeholder_fields`) get the constructor-expr upgrade.
 ---@class EscapeHatchClass
 ---@field payload any
 local escapeHatch = { payload = "initial" }
@@ -1667,6 +1667,15 @@ local hatchPayload = escapeHatch.payload
 --    ^ hover: (local) hatchPayload: any
 -- `any` is callable — this must not emit cannot-call.
 local function callHatch() return escapeHatch.payload() end
+
+-- The same escape hatch written on the constructor entry itself.
+---@class EntryEscapeHatch
+local entryHatch = {
+    ---@type any
+    payload = { x = 1 },
+}
+local entryPayload = entryHatch.payload
+--    ^ hover: (local) entryPayload: any
 
 -- ── `self` in a @field type is the field's class ──────────────────────────
 -- LuaLS parity: `self` in a `@field` type names the class the field belongs

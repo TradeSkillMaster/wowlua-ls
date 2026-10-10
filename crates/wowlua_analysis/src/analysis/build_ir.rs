@@ -2595,15 +2595,25 @@ impl<'a> Analysis<'a> {
                 .collect();
         for (name, field_info) in runtime_fields {
             // Only a scan-injected placeholder — an enum member or a constructor
-            // field the scan couldn't type — may have its expr upgraded. A
+            // field the scan could only type coarsely — may be upgraded. A
             // user-written `@field x any` is structurally identical here
             // (`annotation = Some(Any)`) but must keep resolving to `any`, so it
-            // is deliberately absent from `ctor_inferred_any_fields`.
+            // is deliberately absent from `ctor_placeholder_fields`.
             let ctor_inferred = is_enum
-                || self.ir.ctor_inferred_any_fields.contains(&(class_table_idx, name.clone()));
+                || self.ir.ctor_placeholder_fields.contains(&(class_table_idx, name.clone()));
+            let runtime_is_table = matches!(self.ir.expr(field_info.expr), Expr::TableConstructor(_));
             match self.ir.tables[class_table_idx.val()].fields.entry(name) {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
-                    if ctor_inferred && matches!(e.get().annotation, Some(ValueType::Any)) {
+                    if ctor_inferred
+                        && runtime_is_table
+                        && matches!(e.get().annotation, Some(ValueType::Table(None)))
+                    {
+                        // A nested constructor the scan typed as a bare `table`:
+                        // its own table is the field's value, so a later
+                        // `function C.sub.f()` attaches to it as on a plain table.
+                        let visibility = e.get().visibility;
+                        e.insert(FieldInfo { visibility, ..field_info });
+                    } else if ctor_inferred && matches!(e.get().annotation, Some(ValueType::Any)) {
                         // Upgrade a placeholder `Any` field to point at the
                         // constructor's real value expr. This covers both enum
                         // members and `@class`-on-constructor fields whose value

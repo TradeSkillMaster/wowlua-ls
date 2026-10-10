@@ -388,6 +388,7 @@ pub fn scan_built_name_calls_with_context(root: SyntaxNode<'_>, ctx: &BuiltNameC
                     field_literals: HashMap::default(),
                     field_descriptions: HashMap::default(),
                     bare_inferred_field_names: HashSet::default(),
+                    typed_ctor_entries: HashSet::default(),
                     deferred_field_call_ranges: HashMap::default(),
                     enum_call: None,
                     secret_when: Vec::new(),

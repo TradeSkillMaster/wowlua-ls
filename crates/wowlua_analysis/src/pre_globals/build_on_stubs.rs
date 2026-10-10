@@ -304,7 +304,7 @@ impl<'a> BuildOnStubsContext<'a> {
     }
 
 
-    fn build_methods_and_table_fields(&mut self, ws_globals: &[crate::annotations::ExternalGlobal], ws_classes: &[ClassDecl], class_field_paths: &ClassFieldPaths) {
+    fn build_methods_and_table_fields(&mut self, ws_globals: &[crate::annotations::ExternalGlobal], ws_classes: &[ClassDecl], class_field_paths: &mut ClassFieldPaths) {
         use crate::annotations::{ExternalGlobalKind, FieldValueKind};
         let dummy_node = DefNode::DUMMY;
 
@@ -410,7 +410,8 @@ impl<'a> BuildOnStubsContext<'a> {
             }
         }
 
-        // Open the class constructor entries deep writes walk into (see `ClassFieldPaths`).
+        // Open the class constructor entries deep writes and method definitions walk
+        // into (see `ClassFieldPaths`).
         for (sub_idx, ctors) in class_field_paths.open_walked_ctor_tables(&self.classes, &mut self.tables, &mut self.exprs) {
             for entries in ctors {
                 merge_table_fields(sub_idx, entries, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.ctor_entries, &mut self.nested_ctor_calls);
@@ -467,9 +468,12 @@ impl<'a> BuildOnStubsContext<'a> {
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
                 let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
                 let is_non_class_table = self.non_class_tables.contains_key(&g.name);
-                let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table);
+                let class_field_root = self.classes.get(&g.name).copied().and_then(|class_idx| {
+                    class_field_paths.enter_field_path(class_idx, &g.name, path, &mut self.deep_path_ctx())
+                });
+                let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table || class_field_root.is_some());
                 let target_idx = if use_deep_path {
-                    let Some(&root_idx) = self.non_class_tables.get(&g.name) else { continue };
+                    let Some(&root_idx) = self.non_class_tables.get(&g.name).or(class_field_root.as_ref()) else { continue };
                     let Some((leaf_idx, _)) = walk_deep_path(
                         root_idx, &g.name, path,
                         &mut self.deep_path_ctx(), g,
@@ -738,10 +742,18 @@ impl<'a> BuildOnStubsContext<'a> {
                     // When overriding a field auto-created by walk_deep_path (annotation=None),
                     // copy self-scanned fields from the existing sub-table to the class table
                     // so they remain accessible through the class type. Uses or_insert so
-                    // class-declared fields (@field annotations) take precedence.
+                    // class-declared fields (@field annotations) take precedence. A
+                    // constructor entry `ClassFieldPaths` opened (still its placeholder
+                    // annotation) moves only into an anonymous table: copied into a class's
+                    // own table, its contents would reach every instance.
                     if let ValueType::Table(Some(class_idx)) = &vt
                         && let Some(existing_fi) = self.tables[local_idx].fields.get(field_name)
-                        && existing_fi.annotation.is_none() && existing_fi.expr.is_external()
+                        && match &existing_fi.annotation {
+                            None => true,
+                            Some(ValueType::Table(None)) => self.tables[class_idx.ext_offset()].class_name.is_none(),
+                            _ => false,
+                        }
+                        && existing_fi.expr.is_external()
                         && let Expr::Literal(ValueType::Table(Some(sub_idx))) = &self.exprs[existing_fi.expr.ext_offset()]
                     {
                         let sub_idx = *sub_idx;
@@ -1297,6 +1309,8 @@ impl<'a> BuildOnStubsContext<'a> {
             }
         }
 
+        class_field_paths.type_opened_ctor_tables(&self.classes, &mut self.tables, &self.exprs);
+
         // The field passes above may have given a `---@type` table global members
         // its class lacks; retype it with the final set.
         for (name, own, sym_idx) in &annotated_table_syms {
@@ -1575,15 +1589,14 @@ impl PreResolvedGlobals {
         let ws_classes = &*crate::annotations::apply_enum_calls(ws_classes, &returns_enum_paths);
         let ws_globals = &*crate::annotations::apply_enum_call_globals(ws_globals, &returns_enum_paths);
         let mut ctx = BuildOnStubsContext::new(stubs_base, implicit_protected_prefix);
-        let class_field_paths = ClassFieldPaths::new(ws_globals, ws_classes);
+        let mut class_field_paths = ClassFieldPaths::new(ws_globals, ws_classes);
         ctx.register_classes_and_aliases(ws_classes, ws_aliases);
         ctx.populate_class_fields(ws_classes);
-        ctx.build_methods_and_table_fields(ws_globals, ws_classes, &class_field_paths);
+        ctx.build_methods_and_table_fields(ws_globals, ws_classes, &mut class_field_paths);
         ctx.resolve_inheritance(ws_classes);
         apply_mixin_parent_inheritance(&mut ctx.tables, &ctx.classes, &ctx.non_class_tables, ws_globals);
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(ws_globals, &class_field_paths);
-        class_field_paths.type_opened_ctor_tables(&ctx.classes, &mut ctx.tables, &ctx.exprs);
         // Every callee is registered by now (workspace functions land in
         // `build_global_entries`).
         ctx.resolve_nested_ctor_calls();

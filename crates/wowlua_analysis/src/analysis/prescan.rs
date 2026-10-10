@@ -293,13 +293,17 @@ impl<'a> Analysis<'a> {
                             self.ir.number_literals.insert(expr_id, val.clone());
                         }
                     }
-                    // A placeholder `Any` field that the user did NOT declare via
-                    // `@field` was synthesized from a table-constructor value the
-                    // scan couldn't type; mark it so the merge may upgrade its expr
-                    // to the runtime constructor's real value. An explicit
-                    // `@field x any` is left out, preserving the escape hatch.
-                    if matches!(vt, ValueType::Any) && !class.declared_field_names.contains(field_name) {
-                        self.ir.ctor_inferred_any_fields.insert((table_idx, field_name.clone()));
+                    // A placeholder `Any` / bare `table` field that the user did
+                    // NOT declare (via `@field`, or a type on the constructor entry
+                    // itself) was synthesized from a table-constructor value the
+                    // scan could only type coarsely; mark it so the merge may
+                    // upgrade it to the runtime constructor's real value. An
+                    // explicit `@field x any` is left out, preserving the escape hatch.
+                    if matches!(vt, ValueType::Any | ValueType::Table(None))
+                        && !class.declared_field_names.contains(field_name)
+                        && !class.typed_ctor_entries.contains(field_name)
+                    {
+                        self.ir.ctor_placeholder_fields.insert((table_idx, field_name.clone()));
                     }
                     self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_id,
@@ -2435,10 +2439,11 @@ impl<'a> Analysis<'a> {
                                     if let Some(vt) = explicit_val {
                                         subs.insert(v_name.clone(), vt);
                                     } else {
-                                        let field_exprs: Vec<ExprId> = self.ir.table(table_idx).fields.values().map(|f| f.expr).collect();
-                                        if !field_exprs.is_empty() {
-                                            let field_types: Vec<ValueType> = field_exprs.iter()
-                                                .filter_map(|&expr_id| self.resolve_expr(expr_id))
+                                        let fields: Vec<(ExprId, Option<ValueType>)> = self.ir.table(table_idx).fields.values()
+                                            .map(|f| (f.expr, f.annotation.clone())).collect();
+                                        if !fields.is_empty() {
+                                            let field_types: Vec<ValueType> = fields.into_iter()
+                                                .filter_map(|(expr_id, ann)| self.field_value_type(expr_id, ann))
                                                 .collect();
                                             if let Some(union_type) = Self::union_of(field_types) {
                                                 subs.insert(v_name.clone(), union_type);
@@ -2486,12 +2491,12 @@ impl<'a> Analysis<'a> {
                                         if !val_types.is_empty() {
                                             subs.insert(v_name.clone(), self.ir.dedupe_union_tables(ValueType::make_union(val_types)));
                                         } else {
-                                            // Collect exprs first to avoid borrow conflict with resolve_expr
-                                            let field_exprs: Vec<ExprId> = table_indices.iter()
-                                                .flat_map(|&ti| self.ir.table(ti).fields.values().map(|f| f.expr).collect::<Vec<_>>())
+                                            // Collect fields first to avoid borrow conflict with resolve_expr
+                                            let fields: Vec<(ExprId, Option<ValueType>)> = table_indices.iter()
+                                                .flat_map(|&ti| self.ir.table(ti).fields.values().map(|f| (f.expr, f.annotation.clone())).collect::<Vec<_>>())
                                                 .collect();
-                                            let field_types: Vec<ValueType> = field_exprs.iter()
-                                                .filter_map(|&expr_id| self.resolve_expr(expr_id))
+                                            let field_types: Vec<ValueType> = fields.into_iter()
+                                                .filter_map(|(expr_id, ann)| self.field_value_type(expr_id, ann))
                                                 .collect();
                                             if let Some(union_type) = Self::union_of(field_types) {
                                                 subs.insert(v_name.clone(), self.ir.dedupe_union_tables(union_type));
@@ -2827,6 +2832,14 @@ impl<'a> Analysis<'a> {
             .filter(|&ti| self.table(ti).is_explicit_map)
             .collect();
         if maps.is_empty() { all } else { maps }
+    }
+
+    /// A named field's contribution to a struct-like table's value type: its
+    /// annotation (`---@type T` on a constructor entry, a class `@field`), else its
+    /// value's type. A placeholder `any` annotation defers to the value, which
+    /// refines it (`ctor_placeholder_fields`).
+    fn field_value_type(&mut self, expr: ExprId, annotation: Option<ValueType>) -> Option<ValueType> {
+        annotation.filter(|a| !matches!(a, ValueType::Any)).or_else(|| self.resolve_expr(expr))
     }
 
     pub(super) fn union_of(types: Vec<ValueType>) -> Option<ValueType> {

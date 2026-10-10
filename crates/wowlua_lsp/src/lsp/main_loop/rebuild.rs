@@ -58,8 +58,10 @@ pub(super) fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool 
 
 /// Compare two class declarations on the fields that affect analysis results,
 /// ignoring positional fields (def_range, def_path, field_ranges, field_paths,
-/// deferred_field_call_ranges) and display-only fields (see, declared_field_names,
-/// field_literals).
+/// deferred_field_call_ranges) and display-only fields (see, field_literals).
+/// `declared_field_names` and `typed_ctor_entries` decide which fields are
+/// scan-inferred placeholders — editing `{}` into `---@type table` + `{}` leaves
+/// `fields` unchanged — so they are compared too.
 // IMPORTANT: Update this function when adding semantic fields to ClassDecl.
 // bare_inferred_field_names: always empty in per-file classes; tracked via self_fields_match.
 // deferred_field_call_ranges: positional (RHS call byte offsets) — a stale offset
@@ -81,6 +83,8 @@ pub(super) fn class_semantic_eq(x: &ClassDecl, y: &ClassDecl) -> bool {
         && x.is_key_enum == y.is_key_enum
         && x.correlated_groups == y.correlated_groups
         && x.secret_when == y.secret_when
+        && x.declared_field_names == y.declared_field_names
+        && x.typed_ctor_entries == y.typed_ctor_entries
         // The call's argument *values* are the members; their ranges are positional.
         && x.enum_call.as_ref().map(|c| (&c.callee, c.args.iter().map(|(v, _)| v).collect::<Vec<_>>()))
             == y.enum_call.as_ref().map(|c| (&c.callee, c.args.iter().map(|(v, _)| v).collect::<Vec<_>>()))
