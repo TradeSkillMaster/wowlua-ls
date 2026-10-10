@@ -40,6 +40,8 @@ use crate::collections::{HashMap, HashSet};
 use crate::types::*;
 use crate::annotations::{AnnotationType, AliasDecl, ClassDecl, parse_overload};
 
+use super::layered_vec::LayeredVec;
+use super::SharedMap;
 use super::{
     annotation_type_references_type_params, substitute_annotation_type,
     finalize_enum_kind_for_class, FnBuildCtx, FnMeta, PreResolvedGlobals,
@@ -52,7 +54,7 @@ use super::{
 /// wrapper, not here.
 pub struct ClassAliasRegistry<'x> {
     pub classes: &'x mut HashMap<String, TableIndex>,
-    pub tables: &'x mut Vec<TableInfo>,
+    pub tables: &'x mut LayeredVec<TableInfo>,
     pub aliases: &'x mut HashMap<String, ValueType>,
     pub alias_string_literals: &'x mut HashMap<String, Vec<String>>,
     pub alias_fun_types: &'x mut HashMap<String, AnnotationType>,
@@ -217,7 +219,7 @@ pub fn table_global_class_alias(
 /// across both `finish()` implementations.
 pub fn deferred_returns_by_path(
     deferred_returns: &HashSet<FunctionIndex>,
-    function_locations: &HashMap<FunctionIndex, ExternalLocation>,
+    function_locations: &SharedMap<FunctionIndex, ExternalLocation>,
 ) -> HashMap<std::path::PathBuf, Vec<FunctionIndex>> {
     let mut by_path: HashMap<std::path::PathBuf, Vec<FunctionIndex>> = HashMap::default();
     for &fidx in deferred_returns {
@@ -244,7 +246,7 @@ pub fn deferred_call_globals_by_path(
 /// carrying `resolved_type`, returning its `EXT_BASE`-offset index. Identical
 /// across both build paths.
 pub fn register_global(
-    symbols: &mut Vec<Symbol>,
+    symbols: &mut LayeredVec<Symbol>,
     scope0_symbols: &mut HashMap<SymbolIdentifier, SymbolIndex>,
     name: &str,
     resolved_type: Option<ValueType>,
@@ -377,7 +379,7 @@ pub fn populate_class_fields(
     class_decls: &[ClassDecl],
     ctx: &mut FnBuildCtx,
     declared_class_fields: &mut HashMap<String, HashSet<String>>,
-    field_locations: &mut HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    field_locations: &mut SharedMap<TableIndex, HashMap<String, ExternalLocation>>,
     string_literals: &mut HashMap<ExprId, String>,
     number_literals: &mut HashMap<ExprId, String>,
 ) {
@@ -389,7 +391,7 @@ pub fn populate_class_fields(
         for (field_name, &(start, end)) in &class.field_ranges {
             let path = class.field_paths.get(field_name).or(class.def_path.as_ref());
             if let Some(path) = path {
-                field_locations.entry(table_idx).or_default()
+                field_locations.entry_or_default(table_idx)
                     .insert(field_name.clone(), ExternalLocation {
                         path: path.clone(),
                         start,
@@ -548,8 +550,8 @@ pub fn resolve_inheritance(
     class_decls: &[ClassDecl],
     classes: &HashMap<String, TableIndex>,
     aliases: &HashMap<String, ValueType>,
-    tables: &mut [TableInfo],
-    exprs: &mut Vec<Expr>,
+    tables: &mut LayeredVec<TableInfo>,
+    exprs: &mut LayeredVec<Expr>,
 ) {
     // Resolve direct `table<K,V>` parents before the topo sort so
     // transitive inheritance can propagate key_type/value_type to children.
@@ -646,7 +648,10 @@ pub fn resolve_inheritance(
                     }
                 }
             }
-            tables[child_local].parent_classes = transitive_parents;
+            // Only write a change: a write copies a shared stub table (`LayeredVec`).
+            if tables[child_local].parent_classes != transitive_parents {
+                tables[child_local].parent_classes = transitive_parents;
+            }
             // Inherit key_type/value_type from parent class chain
             if tables[child_local].key_type.is_none() {
                 for parent_name in &lookup_parents[idx] {

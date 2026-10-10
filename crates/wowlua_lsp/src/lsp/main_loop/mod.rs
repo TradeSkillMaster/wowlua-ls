@@ -41,7 +41,7 @@ pub(super) use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlob
 pub(super) use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, SymbolIndex, ValueType};
 pub(super) use crate::pre_globals::PreResolvedGlobals;
 pub(super) use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
-pub(super) use crate::analysis::queries::HighlightKind;
+pub(super) use crate::analysis::queries::{HighlightKind, ReferenceTarget};
 pub(super) use crate::analysis::queries::{CallSnippets, Snippets};
 pub(super) use crate::analysis::semantic_tokens::{
     RawSemanticToken, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
@@ -264,17 +264,17 @@ struct WorkspaceState {
     /// This keeps rapid edits (each forcing a rebuild) from stacking up
     /// CPU-saturating warms that starve the single-threaded main loop.
     live_generation: Arc<AtomicU64>,
-    /// Per-generation cache of parsed + type-resolved *unopened* workspace files,
-    /// shared by every cross-file reference query (`find_references_across_workspace`).
-    /// Code-lens "N usages" resolves the same lenses repeatedly (scroll/repaint)
-    /// and a single batch resolves dozens of distinct lenses — without this each
-    /// resolve re-read, re-parsed, and re-`resolve_types`'d every matching file
-    /// from disk, blocking the single-threaded loop for seconds (the reported
-    /// IntelliJ stalls). Keyed by `ws_generation`; self-invalidates on rebuild.
-    /// Lives behind `Mutex` (not `RefCell`) so `WorkspaceState` stays `Sync` for
-    /// the rayon closures elsewhere that capture `&WorkspaceState`. The query
-    /// only locks it on the main loop thread, outside its parallel section.
-    xfile_analysis_cache: std::sync::Mutex<XfileAnalysisCache>,
+    /// Per-generation cache of cross-file reference results in *unopened* workspace
+    /// files, shared by every cross-file reference query
+    /// (`find_references_across_workspace`). Code-lens "N usages" resolves the same
+    /// lenses repeatedly (scroll/repaint) and a single batch resolves dozens of
+    /// distinct lenses — without this each resolve re-read, re-parsed, and
+    /// re-`resolve_types`'d every matching file from disk, blocking the
+    /// single-threaded loop for seconds (the reported IntelliJ stalls). Keyed by
+    /// `ws_generation`; self-invalidates on rebuild. Lives behind `Mutex` (not
+    /// `RefCell`) so `WorkspaceState` stays `Sync` for the rayon closures elsewhere
+    /// that capture `&WorkspaceState`. Only locked on the main loop thread.
+    xfile_ref_cache: std::sync::Mutex<XfileRefCache>,
     /// Paths of open documents edited since their declarations were last
     /// reconciled into the `ws_file_*` scan maps. Set on `didChange`; cleared
     /// wherever the sequential path *finalizes* the doc — the top of the Phase-4
@@ -297,33 +297,32 @@ struct WorkspaceState {
     edited_uris: HashSet<PathBuf>,
 }
 
-/// One unopened workspace file, parsed and type-resolved, cached for reuse across
-/// repeated cross-file reference queries. The retained `text` powers line-number
-/// conversion for the matched ranges without re-reading from disk.
-pub(super) struct CachedAnalyzedFile {
-    pub(super) text: String,
-    pub(super) tree: SyntaxTree,
-    pub(super) result: AnalysisResult,
-}
-
-/// Generation-scoped store backing [`WorkspaceState::xfile_analysis_cache`].
-/// Cleared whenever `ws_generation` advances, so an entry can never be served
-/// stale relative to the cross-file index it was built against.
+/// Generation-scoped store backing [`WorkspaceState::xfile_ref_cache`]. Holds
+/// results, not analyses: a cached analysis costs ~100x its source, so caching
+/// them grew the server by up to ~0.9 GB on a large workspace. Cleared within a
+/// generation by `invalidate_xfile_refs` when an unopened file's text may change.
 #[derive(Default)]
-pub(super) struct XfileAnalysisCache {
+pub(super) struct XfileRefCache {
     pub(super) generation: u64,
-    pub(super) files: HashMap<PathBuf, Arc<CachedAnalyzedFile>>,
-    /// Summed `text.len()` of the cached files — the budget `XFILE_CACHE_MAX_SOURCE_BYTES`
-    /// is spent against.
-    pub(super) source_bytes: usize,
+    pub(super) entries: HashMap<XfileRefKey, Arc<XfileRefs>>,
 }
 
-/// Budget for the cross-file analysis cache, counted in cached *source* bytes because
-/// an entry's real cost is its analysis: measured at roughly 100x its source size
-/// (2.75 MB per file on wow-ui-source), so this bounds the cache near 800 MB. One
-/// file's code-lens batch caches a few MB of source, so bursts still hit the cache;
-/// past the budget, files are analyzed without being cached (correct, just not reused).
-pub(super) const XFILE_CACHE_MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+/// A cross-file reference query as the unopened files see it.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(super) struct XfileRefKey {
+    pub(super) target: ReferenceTarget,
+    pub(super) include_declaration: bool,
+    pub(super) strict_shadow: bool,
+}
+
+/// One query's matches in the workspace files that were unopened when it ran.
+pub(super) struct XfileRefs {
+    /// `(file, its matches)` for each matching file, in search order.
+    pub(super) files: Vec<(PathBuf, Vec<Location>)>,
+}
+
+/// Entry cap for [`XfileRefCache`] within one generation; past it the cache restarts.
+pub(super) const XFILE_REF_CACHE_MAX_ENTRIES: usize = 4096;
 
 /// All inputs a workspace-diagnostic warm needs, snapshotted as owned / `Arc`
 /// data so the warm can run on a background thread (see `spawn_warm`). The
@@ -863,7 +862,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         warm_in_flight: false,
         pending_lazy_warm: false,
         live_generation: Arc::new(AtomicU64::new(0)),
-        xfile_analysis_cache: std::sync::Mutex::new(XfileAnalysisCache::default()),
+        xfile_ref_cache: std::sync::Mutex::new(XfileRefCache::default()),
         edited_uris: HashSet::default(),
     };
     ws.set_stubs(stub_globals, stub_classes);
@@ -4409,13 +4408,11 @@ mod tests {
         assert!(folding_ranges_for_doc(&toc_doc).is_none());
     }
 
-    #[test]
-    fn xfile_reference_cache_reuses_analysis_within_generation() {
-        // Copy the cross-file fixture to a unique temp dir so we can delete a file
-        // on disk mid-test and prove the second query is served from the cache
-        // (not re-read from disk). `UsedGlobal` is defined in defs.lua and
-        // referenced in user.lua.
-        let tmp = std::env::temp_dir().join(format!("wowlua_xref_cache_{}", std::process::id()));
+    /// Copy the `tests/unused-function` cross-file fixture (`defs.lua` defines globals
+    /// that `user.lua` references) into a unique temp dir, so a test can delete a file
+    /// on disk to prove a later query is served from the cache.
+    fn xfile_fixture_dir(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let tmp = std::env::temp_dir().join(format!("wowlua_xref_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/unused-function");
@@ -4423,36 +4420,46 @@ mod tests {
         let user = tmp.join("user.lua");
         std::fs::copy(src.join("defs.lua"), &defs).unwrap();
         std::fs::copy(src.join("user.lua"), &user).unwrap();
+        (tmp, defs, user)
+    }
 
+    // `function UsedGlobal()` (defs.lua line index 3, name at column 9) and
+    // `UsedAssignFunc = function()` (line index 19) are both referenced in user.lua.
+    const USED_GLOBAL_POS: Position = Position { line: 3, character: 9 };
+    const USED_ASSIGN_FUNC_POS: Position = Position { line: 19, character: 0 };
+
+    #[test]
+    fn xfile_reference_cache_reuses_results_within_generation() {
+        let (tmp, defs, user) = xfile_fixture_dir("cache");
         let ws = build_ws_for_dir(&tmp);
         // Open defs.lua (the definition site); user.lua stays unopened on disk so
         // it flows through the cached disk-scan path.
         let (defs_uri, defs_doc) = open_doc(&ws, &defs);
         let mut documents: HashMap<String, Document> = HashMap::default();
         documents.insert(defs_uri.to_string(), defs_doc);
-
-        // `function UsedGlobal()` is on line index 3; the name starts at column 9.
-        let pos = Position { line: 3, character: 9 };
         let user_uri_str = abs_path_to_uri(&user).unwrap().to_string();
 
-        let locs1 = find_references_across_workspace(&defs_uri, pos, true, false, &documents, &ws)
+        let locs1 = find_references_across_workspace(&defs_uri, USED_GLOBAL_POS, true, false, &documents, &ws)
             .expect("target resolves");
         assert!(
             locs1.iter().any(|l| l.uri.to_string() == user_uri_str),
             "first query must find the cross-file reference in user.lua: {locs1:?}"
         );
 
-        // The unopened file's analysis is now cached for this generation.
+        // The unopened file's matches are now cached for this generation.
         {
-            let cache = ws.xfile_analysis_cache.lock().unwrap();
+            let cache = ws.xfile_ref_cache.lock().unwrap();
             assert_eq!(cache.generation, ws.ws_generation);
-            assert!(cache.files.contains_key(&user), "user.lua analysis cached");
+            assert!(
+                cache.entries.values().any(|refs| refs.files.iter().any(|(p, _)| p == &user)),
+                "user.lua matches cached"
+            );
         }
 
         // Delete user.lua from disk. A re-read would now fail, so if the second
         // query still finds the reference it can only have come from the cache.
         std::fs::remove_file(&user).unwrap();
-        let locs2 = find_references_across_workspace(&defs_uri, pos, true, false, &documents, &ws)
+        let locs2 = find_references_across_workspace(&defs_uri, USED_GLOBAL_POS, true, false, &documents, &ws)
             .expect("target resolves");
         assert_eq!(
             locs1.len(), locs2.len(),
@@ -4467,12 +4474,158 @@ mod tests {
         // disk the reference can no longer be recovered.
         let mut ws2 = ws;
         ws2.ws_generation += 1;
-        let locs3 = find_references_across_workspace(&defs_uri, pos, true, false, &documents, &ws2)
+        let locs3 = find_references_across_workspace(&defs_uri, USED_GLOBAL_POS, true, false, &documents, &ws2)
             .expect("target resolves");
         assert!(
             !locs3.iter().any(|l| l.uri.to_string() == user_uri_str),
             "stale-generation cache is dropped; deleted file yields no reference"
         );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Resolving one "N usages" lens caches the unopened-file references of every
+    /// usages lens in the document, so its siblings never touch the disk.
+    #[test]
+    fn lens_prefetch_caches_every_usages_lens_of_the_document() {
+        let (tmp, defs, user) = xfile_fixture_dir("lens");
+        let ws = build_ws_for_dir(&tmp);
+        let (defs_uri, defs_doc) = open_doc(&ws, &defs);
+        let used_global_offset = crate::lsp::lsp_position_to_offset(
+            &defs_doc.text, USED_GLOBAL_POS.line, USED_GLOBAL_POS.character, use_utf8(),
+        );
+        let mut documents: HashMap<String, Document> = HashMap::default();
+        documents.insert(defs_uri.to_string(), defs_doc);
+        let user_uri_str = abs_path_to_uri(&user).unwrap().to_string();
+
+        prefetch_lens_references(&defs_uri, used_global_offset, &documents, &ws);
+        assert!(
+            ws.xfile_ref_cache.lock().unwrap().entries.len() > 1,
+            "one pass caches the sibling lenses too"
+        );
+
+        // A sibling lens resolves from the cache: user.lua is gone from disk.
+        std::fs::remove_file(&user).unwrap();
+        let locs = find_references_across_workspace(&defs_uri, USED_ASSIGN_FUNC_POS, false, false, &documents, &ws)
+            .expect("target resolves");
+        assert!(
+            locs.iter().any(|l| l.uri.to_string() == user_uri_str),
+            "sibling lens served from the prefetched batch: {locs:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Send `method` through the real notification handler.
+    fn notify(documents: &mut HashMap<String, Document>, ws: &mut WorkspaceState, method: &str, params: impl serde::Serialize) {
+        let (connection, _client_conn) = Connection::memory();
+        let bg = BackgroundChannels {
+            stub_tx: crossbeam_channel::unbounded().0,
+            wake_tx: crossbeam_channel::unbounded().0,
+            stub_open_counter: AtomicU64::new(0),
+        };
+        let not = lsp_server::Notification::new(method.to_string(), params);
+        handle_notification(&connection, documents, ws, not, &None, &ClientSupport::default(), &mut 0, &bg);
+    }
+
+    fn close_doc(documents: &mut HashMap<String, Document>, ws: &mut WorkspaceState, uri: &lsp_types::Uri) {
+        notify(documents, ws, "textDocument/didClose", lsp_types::DidCloseTextDocumentParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+        });
+    }
+
+    /// A cache entry computed while a document was open searched that document live,
+    /// not its disk copy. Once it closes, the entry must not be served: the closed
+    /// file's references would silently drop out.
+    #[test]
+    fn xfile_reference_cache_drops_entries_when_a_document_closes() {
+        let (tmp, defs, user) = xfile_fixture_dir("closed");
+        let mut ws = build_ws_for_dir(&tmp);
+        let (defs_uri, defs_doc) = open_doc(&ws, &defs);
+        let (user_uri, user_doc) = open_doc(&ws, &user);
+        let mut documents: HashMap<String, Document> = HashMap::default();
+        documents.insert(defs_uri.to_string(), defs_doc);
+        documents.insert(user_uri.to_string(), user_doc);
+
+        let open_locs = find_references_across_workspace(&defs_uri, USED_GLOBAL_POS, false, false, &documents, &ws)
+            .expect("target resolves");
+        assert!(open_locs.iter().any(|l| l.uri == user_uri), "open user.lua searched live: {open_locs:?}");
+
+        close_doc(&mut documents, &mut ws, &user_uri);
+        let closed_locs = find_references_across_workspace(&defs_uri, USED_GLOBAL_POS, false, false, &documents, &ws)
+            .expect("target resolves");
+        assert!(
+            closed_locs.iter().any(|l| l.uri == user_uri),
+            "closed user.lua searched on disk, not dropped by a stale entry: {closed_locs:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// An unopened file that gains a reference to the target within one generation
+    /// (opened, edited, saved, closed — no declaration changes, so no rebuild) must
+    /// show up in the next query, not be hidden by the entry computed before it.
+    #[test]
+    fn xfile_reference_cache_sees_a_reference_added_by_open_edit_save_close() {
+        let (tmp, defs, user) = xfile_fixture_dir("edited");
+        let mut ws = build_ws_for_dir(&tmp);
+        let (defs_uri, defs_doc) = open_doc(&ws, &defs);
+        let mut documents: HashMap<String, Document> = HashMap::default();
+        documents.insert(defs_uri.to_string(), defs_doc);
+        // `function UnusedGlobal()`: defs.lua line index 7, name at column 9.
+        let unused_global_pos = Position { line: 7, character: 9 };
+        let refs_in_user = |documents: &HashMap<String, Document>, ws: &WorkspaceState, user_uri: &lsp_types::Uri| {
+            find_references_across_workspace(&defs_uri, unused_global_pos, false, false, documents, ws)
+                .expect("target resolves")
+                .into_iter()
+                .filter(|l| l.uri == *user_uri)
+                .count()
+        };
+
+        let (user_uri, user_doc) = open_doc(&ws, &user);
+        assert_eq!(refs_in_user(&documents, &ws, &user_uri), 0, "user.lua starts without a reference");
+
+        documents.insert(user_uri.to_string(), user_doc);
+        let edited = format!("{}\nlocal zz = UnusedGlobal()\n", std::fs::read_to_string(&user).unwrap());
+        notify(&mut documents, &mut ws, "textDocument/didChange", lsp_types::DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier { uri: user_uri.clone(), version: 2 },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent { range: None, range_length: None, text: edited.clone() }],
+        });
+        std::fs::write(&user, &edited).unwrap();
+        notify(&mut documents, &mut ws, "textDocument/didSave", lsp_types::DidSaveTextDocumentParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: user_uri.clone() },
+            text: None,
+        });
+        close_doc(&mut documents, &mut ws, &user_uri);
+        let generation = ws.ws_generation;
+
+        assert_eq!(refs_in_user(&documents, &ws, &user_uri), 1, "the saved reference is found on disk");
+        assert_eq!(ws.ws_generation, generation, "found without a rebuild");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// An on-disk change to a `.lua` file that isn't open, reported as a watched-file
+    /// event, invalidates cached results; one to an open document (searched live)
+    /// doesn't.
+    #[test]
+    fn xfile_reference_cache_drops_entries_on_unopened_lua_file_events() {
+        let (tmp, defs, user) = xfile_fixture_dir("watched");
+        let mut ws = build_ws_for_dir(&tmp);
+        let (defs_uri, defs_doc) = open_doc(&ws, &defs);
+        let mut documents: HashMap<String, Document> = HashMap::default();
+        documents.insert(defs_uri.to_string(), defs_doc);
+        let change = |uri: lsp_types::Uri| lsp_types::DidChangeWatchedFilesParams {
+            changes: vec![lsp_types::FileEvent { uri, typ: lsp_types::FileChangeType::CHANGED }],
+        };
+
+        find_references_across_workspace(&defs_uri, USED_GLOBAL_POS, false, false, &documents, &ws)
+            .expect("target resolves");
+        notify(&mut documents, &mut ws, "workspace/didChangeWatchedFiles", change(defs_uri.clone()));
+        assert!(!ws.xfile_ref_cache.lock().unwrap().entries.is_empty(), "an open document's change keeps the cache");
+
+        notify(&mut documents, &mut ws, "workspace/didChangeWatchedFiles", change(abs_path_to_uri(&user).unwrap()));
+        assert!(ws.xfile_ref_cache.lock().unwrap().entries.is_empty(), "an unopened file's change clears it");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

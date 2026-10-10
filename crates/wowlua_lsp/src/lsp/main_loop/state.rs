@@ -306,6 +306,7 @@ impl WorkspaceState {
         // documents' text it reads in preference to disk.
         pg.set_project_configs(Arc::clone(&self.configs));
         pg.set_document_overrides(Arc::clone(&self.document_overrides));
+        log::debug!("Workspace globals built; {}", pg.arena_edit_summary());
         self.pre_globals = Arc::new(pg);
         self.ws_generation += 1;
         // Publish the new generation so any in-flight background warm (computed
@@ -425,7 +426,7 @@ impl WorkspaceState {
             warm_in_flight: false,
             pending_lazy_warm: false,
             live_generation: Arc::new(AtomicU64::new(0)),
-            xfile_analysis_cache: std::sync::Mutex::new(super::XfileAnalysisCache::default()),
+            xfile_ref_cache: std::sync::Mutex::new(super::XfileRefCache::default()),
             edited_uris: HashSet::default(),
         }
     }

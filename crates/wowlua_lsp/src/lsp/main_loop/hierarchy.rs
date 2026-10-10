@@ -14,10 +14,11 @@ use super::*;
 /// this so a truly-local `local X = 5` in a file that also has a workspace-wide
 /// `X` global isn't silently rewritten.
 ///
-/// For files not currently open, this reads from disk and builds a fresh Analysis
-/// on demand. An early text-filter (`text.contains(target.name())`) skips files
-/// that can't possibly contain a match. Results from each file are emitted in
-/// source order; per-file ordering reflects the token walk in `references_for_target`.
+/// Files not currently open are served from `xfile_ref_cache` (one entry per
+/// [`XfileRefKey`] per `ws_generation`). On a miss they are read from disk, and a
+/// file is parsed and analyzed only when a whole-word scan (`keys_named_in`) finds
+/// the target's name in it. Results from each file are emitted in source order;
+/// per-file ordering reflects the token walk in `references_for_target`.
 pub(super) fn find_references_across_workspace(
     current_uri: &lsp_types::Uri,
     position: Position,
@@ -26,8 +27,6 @@ pub(super) fn find_references_across_workspace(
     documents: &HashMap<String, Document>,
     ws: &WorkspaceState,
 ) -> Option<Vec<Location>> {
-    use rayon::prelude::*;
-
     let current_doc = documents.get(&current_uri.to_string())?;
     let tree = current_doc.tree.as_ref()?;
     let analysis = current_doc.analysis.as_ref()?;
@@ -85,108 +84,187 @@ pub(super) fn find_references_across_workspace(
         push_file(&mut locations, &other_uri, &doc.text, &refs);
     }
 
-    // Workspace files not currently open — parse + analyze on demand in parallel.
-    // Collect borrowed refs so only paths that actually produce a hit pay the clone.
-    let unopened: Vec<&PathBuf> = ws.ws_file_globals.keys()
-        .filter(|p| p.extension().is_some_and(|e| e == "lua") && !searched_paths.contains(*p))
-        .collect();
-
-    // Reuse analyses cached for this generation. Code-lens "N usages" resolves the
-    // same lenses repeatedly and a single batch resolves dozens of distinct lenses
-    // — without the cache each one re-read + re-parsed + re-`resolve_types`'d every
-    // matching file from disk, blocking the loop for seconds. Snapshot the relevant
-    // entries as cheap `Arc` clones so the parallel section can read them without
-    // holding the `Mutex` lock across threads.
-    let generation = ws.ws_generation;
-    let cached: HashMap<PathBuf, Arc<CachedAnalyzedFile>> = {
-        let cache = ws.xfile_analysis_cache.lock().unwrap();
-        if cache.generation == generation {
-            unopened.iter()
-                .filter_map(|p| cache.files.get(*p).map(|a| ((*p).clone(), Arc::clone(a))))
-                .collect()
-        } else {
-            HashMap::default()
+    // Workspace files not currently open — from the result cache, else parsed +
+    // analyzed on demand. An entry can include files opened since it was computed
+    // (closing one clears the cache); skip them, they were searched live above.
+    let key = XfileRefKey { target: xfile_target, include_declaration, strict_shadow };
+    let refs = unopened_file_refs(key, &searched_paths, ws);
+    for (path, file_locations) in &refs.files {
+        if !searched_paths.contains(path) {
+            locations.extend(file_locations.iter().cloned());
         }
-    };
-
-    struct DiskHit {
-        path: PathBuf,
-        analyzed: Arc<CachedAnalyzedFile>,
-        refs: Vec<crate::syntax::TextRange>,
-        /// Newly built this call (absent from the snapshot) → insert into the cache.
-        fresh: bool,
-    }
-
-    let disk_hits: Vec<DiskHit> = unopened
-        .par_iter()
-        .filter_map(|&path| {
-            let (analyzed, fresh) = if let Some(a) = cached.get(path) {
-                (Arc::clone(a), false)
-            } else {
-                let text = crate::syntax::read_source_file(path).ok()?;
-                if crate::has_shebang(&text) { return None; }
-                // Files lacking the name can't match. Skip without parsing; they
-                // stay uncached (a fresh read off the OS page cache is cheap).
-                if !text.contains(xfile_target.name()) { return None; }
-                let tree = crate::syntax::parser::parse(&text);
-                let addon_table_override = ws.pre_globals.addon_table_for_root(ws.configs.addon_root_for(path));
-                let mut analysis = Analysis::new_with_tree(
-                    &tree, Arc::clone(&ws.pre_globals), AnalysisConfig {
-                        framexml_enabled: ws.configs.framexml_enabled_for(path),
-                        allowed_read_globals: ws.configs.allowed_read_globals_for(path),
-                        allowed_write_globals: ws.configs.allowed_write_globals_for(path),
-                        allow_slash_commands: ws.configs.allow_slash_commands_for(path),
-                        allow_binding_globals: ws.configs.allow_binding_globals_for(path),
-                        project_flavors: ws.configs.flavors_for(path),
-                        addon_flavors: ws.configs.addon_flavors_for(path),
-                        backward_param_types: ws.configs.backward_param_types_for(path),
-                        correlated_return_overloads: ws.configs.correlated_return_overloads_for(path),
-                        implicit_protected_prefix: ws.configs.implicit_protected_prefix_for(path),
-                        addon_table_override,
-                        addon_folder_name: ws.configs.addon_name_for(path),
-                    },
-                );
-                analysis.resolve_types();
-                let result = analysis.into_result();
-                (Arc::new(CachedAnalyzedFile { text, tree, result }), true)
-            };
-            if !fresh && !analyzed.text.contains(xfile_target.name()) {
-                return None;
-            }
-            let refs = analyzed.result.references_for_target(
-                &analyzed.tree, &xfile_target, include_declaration, strict_shadow,
-            );
-            if refs.is_empty() && !fresh { return None; }
-            Some(DiskHit { path: path.clone(), analyzed, refs, fresh })
-        })
-        .collect();
-
-    // Insert newly-built analyses for reuse by later queries in this generation.
-    {
-        let mut cache = ws.xfile_analysis_cache.lock().unwrap();
-        if cache.generation != generation {
-            cache.files.clear();
-            cache.source_bytes = 0;
-            cache.generation = generation;
-        }
-        for hit in &disk_hits {
-            if hit.fresh
-                && cache.source_bytes < XFILE_CACHE_MAX_SOURCE_BYTES
-                && !cache.files.contains_key(&hit.path)
-            {
-                cache.source_bytes += hit.analyzed.text.len();
-                cache.files.insert(hit.path.clone(), Arc::clone(&hit.analyzed));
-            }
-        }
-    }
-
-    for hit in &disk_hits {
-        if hit.refs.is_empty() { continue; }
-        let Some(uri) = abs_path_to_uri(&hit.path) else { continue; };
-        push_file(&mut locations, &uri, &hit.analyzed.text, &hit.refs);
     }
 
     Some(locations)
+}
+
+/// The cross-file reference query `find_references_across_workspace` runs for the
+/// lens at `offset` of `doc`; `None` for a file-local symbol.
+fn lens_ref_key(doc: &Document, offset: u32) -> Option<XfileRefKey> {
+    let (tree, analysis) = (doc.tree.as_ref()?, doc.analysis.as_ref()?);
+    let target = analysis.reference_target_at(tree, offset)?;
+    let target = if target.is_cross_file() { target } else { analysis.promote_to_cross_file(&target)? };
+    Some(XfileRefKey { target, include_declaration: false, strict_shadow: false })
+}
+
+/// Before resolving the "N usages" lens at `offset` of `uri`: when its references
+/// aren't cached, resolve the unopened-file references of *every* usages lens in the
+/// document in one pass, so the `codeLens/resolve` requests for its siblings are
+/// cache hits. Searching per lens would analyze a file once for every lens whose
+/// name it contains.
+pub(super) fn prefetch_lens_references(uri: &lsp_types::Uri, offset: u32, documents: &HashMap<String, Document>, ws: &WorkspaceState) {
+    let Some(doc) = documents.get(&uri.to_string()) else { return };
+    let Some(key) = lens_ref_key(doc, offset) else { return };
+    if cached_refs(&mut ws.xfile_ref_cache.lock().unwrap(), &key, ws).is_some() {
+        return;
+    }
+    let (Some(tree), Some(analysis)) = (doc.tree.as_ref(), doc.analysis.as_ref()) else { return };
+    let mut keys: Vec<XfileRefKey> = analysis.code_lens_targets(tree).iter()
+        .filter_map(|t| lens_ref_key(doc, t.name_offset))
+        .collect();
+    {
+        let mut cache = ws.xfile_ref_cache.lock().unwrap();
+        let mut seen: HashSet<XfileRefKey> = HashSet::default();
+        keys.retain(|key| seen.insert(key.clone()) && cached_refs(&mut cache, key, ws).is_none());
+    }
+    if keys.is_empty() { return; }
+    let computed = search_unopened_files(&keys, &open_document_paths(documents), ws);
+    let mut cache = ws.xfile_ref_cache.lock().unwrap();
+    for (key, refs) in keys.into_iter().zip(computed) {
+        insert_refs(&mut cache, key, refs, ws);
+    }
+}
+
+fn open_document_paths(documents: &HashMap<String, Document>) -> HashSet<PathBuf> {
+    documents.keys()
+        .filter_map(|uri_str| uri_to_path_lax(&lsp_types::Uri::from_str(uri_str).ok()?))
+        .collect()
+}
+
+/// `key`'s matches in the workspace files not in `open_paths`, from the cache when
+/// a fresh entry exists.
+fn unopened_file_refs(key: XfileRefKey, open_paths: &HashSet<PathBuf>, ws: &WorkspaceState) -> Arc<XfileRefs> {
+    if let Some(hit) = cached_refs(&mut ws.xfile_ref_cache.lock().unwrap(), &key, ws) {
+        return hit;
+    }
+    let refs = search_unopened_files(std::slice::from_ref(&key), open_paths, ws)
+        .pop()
+        .expect("one result per key");
+    insert_refs(&mut ws.xfile_ref_cache.lock().unwrap(), key, refs, ws)
+}
+
+/// The cached entry for `key`, unless the generation moved on.
+fn cached_refs(cache: &mut XfileRefCache, key: &XfileRefKey, ws: &WorkspaceState) -> Option<Arc<XfileRefs>> {
+    if cache.generation != ws.ws_generation {
+        cache.entries.clear();
+        cache.generation = ws.ws_generation;
+        return None;
+    }
+    cache.entries.get(key).cloned()
+}
+
+/// Drop every cached cross-file reference result. Call when an unopened workspace
+/// file's text may differ from what the entries read: on closing a `.lua` document
+/// (an entry read either the old disk text or nothing, if the file was open) and on
+/// an on-disk change to a `.lua` file that isn't open. Edits and saves of an open
+/// document need nothing — open documents are searched live.
+pub(super) fn invalidate_xfile_refs(ws: &WorkspaceState) {
+    ws.xfile_ref_cache.lock().unwrap().entries.clear();
+}
+
+fn insert_refs(cache: &mut XfileRefCache, key: XfileRefKey, refs: XfileRefs, ws: &WorkspaceState) -> Arc<XfileRefs> {
+    if cache.generation != ws.ws_generation || cache.entries.len() >= XFILE_REF_CACHE_MAX_ENTRIES {
+        cache.entries.clear();
+        cache.generation = ws.ws_generation;
+    }
+    let refs = Arc::new(refs);
+    cache.entries.insert(key, Arc::clone(&refs));
+    refs
+}
+
+/// Search every workspace `.lua` file outside `open_paths` for each of `keys`,
+/// parsing and analyzing a file at most once and only when its text names one of
+/// the keys' targets. Analyses are dropped as soon as their file is searched.
+/// Returns one result per key, in `keys` order.
+fn search_unopened_files(keys: &[XfileRefKey], open_paths: &HashSet<PathBuf>, ws: &WorkspaceState) -> Vec<XfileRefs> {
+    use rayon::prelude::*;
+
+    let unopened: Vec<&PathBuf> = ws.ws_file_globals.keys()
+        .filter(|p| p.extension().is_some_and(|e| e == "lua") && !open_paths.contains(*p))
+        .collect();
+    let mut keys_by_name: HashMap<&str, Vec<usize>> = HashMap::default();
+    for (i, key) in keys.iter().enumerate() {
+        keys_by_name.entry(key.target.name()).or_default().push(i);
+    }
+    let utf8 = use_utf8();
+    let analyzed_any = std::sync::atomic::AtomicBool::new(false);
+    let per_file: Vec<Vec<(usize, Vec<Location>)>> = unopened
+        .par_iter()
+        .map(|&path| {
+            let Ok(text) = crate::syntax::read_source_file(path) else { return Vec::new() };
+            if crate::has_shebang(&text) { return Vec::new(); }
+            // Files lacking every name can't match; skip them without parsing.
+            let wanted = keys_named_in(&text, &keys_by_name);
+            if wanted.is_empty() { return Vec::new(); }
+            let Some(uri) = abs_path_to_uri(path) else { return Vec::new() };
+            analyzed_any.store(true, Ordering::Relaxed);
+            let tree = crate::syntax::parser::parse(&text);
+            let analysis = analyze_path_parsed(path, &ws.pre_globals, &ws.configs, &tree);
+            let numbers = crate::lsp::SafeLinePositions::new(&text);
+            wanted.into_iter()
+                .filter_map(|i| {
+                    let key = &keys[i];
+                    let refs = analysis.references_for_target(&tree, &key.target, key.include_declaration, key.strict_shadow);
+                    (!refs.is_empty()).then(|| (i, refs.iter().map(|r| Location {
+                        uri: uri.clone(),
+                        range: numbers.lsp_range(u32::from(r.start()) as usize, u32::from(r.end()) as usize, utf8),
+                    }).collect()))
+                })
+                .collect()
+        })
+        .collect();
+    if analyzed_any.into_inner() {
+        // The analyses were freed on the pool's threads; return their pages.
+        memory::release_memory(None);
+    }
+
+    let mut results: Vec<XfileRefs> = keys.iter().map(|_| XfileRefs { files: Vec::new() }).collect();
+    for (path, hits) in unopened.into_iter().zip(per_file) {
+        for (i, file_locations) in hits {
+            results[i].files.push((path.clone(), file_locations));
+        }
+    }
+    results
+}
+
+/// Indices of the keys whose target name occurs in `text` as a whole word — every
+/// reference (a name token, a `---@field` name, a `keyof` string) is one. A name
+/// that isn't a plain identifier falls back to a substring test.
+fn keys_named_in(text: &str, keys_by_name: &HashMap<&str, Vec<usize>>) -> Vec<usize> {
+    let is_word_byte = |b: u8| b == b'_' || b.is_ascii_alphanumeric() || !b.is_ascii();
+    let mut found: Vec<usize> = Vec::new();
+    for (name, idxs) in keys_by_name {
+        if !name.bytes().all(is_word_byte) && text.contains(name) {
+            found.extend(idxs);
+        }
+    }
+    let bytes = text.as_bytes();
+    let mut start = None;
+    for i in 0..=bytes.len() {
+        match (start, bytes.get(i).is_some_and(|&b| is_word_byte(b))) {
+            (None, true) => start = Some(i),
+            (Some(s), false) => {
+                start = None;
+                if let Some(idxs) = keys_by_name.get(&text[s..i]) {
+                    found.extend(idxs);
+                }
+            }
+            _ => {}
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    found
 }
 
 /// Find definition locations of classes that directly inherit from `parent_class_name`.
@@ -940,4 +1018,20 @@ fn load_source_file<'a>(
     let tmp_path = materialize_stub_file(&tmp_dir, &rel_key, content)
         .unwrap_or_else(|_| tmp_dir.join(&*rel_key));
     Some((abs_path_to_uri(&tmp_path)?, crate::lsp::SafeLinePositions::new(content)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_named_in_matches_whole_words_only() {
+        let mut keys_by_name: HashMap<&str, Vec<usize>> = HashMap::default();
+        keys_by_name.insert("Init", vec![0]);
+        keys_by_name.insert("Run", vec![1, 2]);
+        keys_by_name.insert("Absent", vec![3]);
+        let text = "local x = InitFrame()\nobj:Run() ---@field Init fun()\nCall(o, \"Run\")";
+        assert_eq!(keys_named_in(text, &keys_by_name), vec![0, 1, 2]);
+        assert!(keys_named_in("InitFrame() Runner", &keys_by_name).is_empty());
+    }
 }

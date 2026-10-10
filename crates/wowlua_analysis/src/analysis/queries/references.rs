@@ -8,7 +8,7 @@ use super::*;
 /// `PreResolvedGlobals` and is meaningful to any `AnalysisResult` built from the
 /// same `PreResolvedGlobals`. When the index is `< EXT_BASE`, the target is
 /// file-local (only meaningful to the `AnalysisResult` that produced it).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ReferenceTarget {
     /// A symbol (local or global). `idx >= EXT_BASE` means the symbol is a
     /// workspace-wide global and references can be found in any file.

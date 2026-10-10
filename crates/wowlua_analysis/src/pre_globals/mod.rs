@@ -1,5 +1,7 @@
 mod build_on_stubs;
+mod layered_vec;
 mod shared;
+mod shared_map;
 
 use crate::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -7,6 +9,8 @@ use std::path::{Path, PathBuf};
 use crate::types::*;
 use crate::annotations::{AnnotationType, ClassDecl, AliasDecl};
 use crate::types::DefNode;
+use layered_vec::LayeredVec;
+pub use shared_map::SharedMap;
 
 #[derive(Debug)]
 struct TupleFormReturnData {
@@ -51,7 +55,7 @@ pub fn annotation_type_references_type_params(at: &AnnotationType, type_params: 
 /// this function inspects their resolved types and sets `EnumKind::String` when all
 /// values are strings, keeping `Number` otherwise.  Both `BuildContext` and
 /// `BuildOnStubsContext` call this after populating each class's fields.
-pub fn finalize_enum_kind_for_class(tables: &mut [TableInfo], local_idx: usize) {
+pub fn finalize_enum_kind_for_class(tables: &mut LayeredVec<TableInfo>, local_idx: usize) {
     let field_anns: Vec<Option<&ValueType>> = tables[local_idx].fields.values()
         .map(|f| f.annotation.as_ref())
         .collect();
@@ -247,11 +251,11 @@ pub struct PreResolvedGlobals {
     // every *post-build* read must go through the routing accessors below
     // (`sym`/`func`/`expr`/`table`/`try_*`/`iter_symbols`/`*_len`) so the `EXT_BASE`
     // offset math stays encapsulated. Keep these fields private; do not widen them.
-    scopes: Vec<Scope>,
-    symbols: Vec<Symbol>,
-    functions: Vec<Function>,
-    exprs: Vec<Expr>,
-    tables: Vec<TableInfo>,
+    scopes: LayeredVec<Scope>,
+    symbols: LayeredVec<Symbol>,
+    functions: LayeredVec<Function>,
+    exprs: LayeredVec<Expr>,
+    tables: LayeredVec<TableInfo>,
     pub classes: HashMap<String, TableIndex>,
     pub aliases: HashMap<String, ValueType>,
     /// String-literal completion suggestions for "open" string-enum aliases —
@@ -294,8 +298,8 @@ pub struct PreResolvedGlobals {
     pub returns_enum_paths: HashSet<Vec<String>>,
     pub scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
-    pub symbol_locations: HashMap<SymbolIndex, ExternalLocation>,
-    pub function_locations: HashMap<FunctionIndex, ExternalLocation>,
+    pub symbol_locations: SharedMap<SymbolIndex, ExternalLocation>,
+    pub function_locations: SharedMap<FunctionIndex, ExternalLocation>,
     /// Display names for workspace method functions (e.g. "Auctioning.DoFoo").
     /// Used by the unused-function diagnostic to produce readable messages.
     #[serde(skip)]
@@ -339,7 +343,7 @@ pub struct PreResolvedGlobals {
     pub alias_locations: HashMap<String, ExternalLocation>,
     /// Source locations for external class field definitions (table_idx → field_name → location)
     #[serde(default)]
-    pub field_locations: HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    pub field_locations: SharedMap<TableIndex, HashMap<String, ExternalLocation>>,
     /// All workspace source locations for each global name, including definitions
     /// dropped by name-dedup during registration. Powers multi-result
     /// go-to-definition when a global is defined in more than one file. Keyed by
@@ -521,14 +525,14 @@ fn addon_ns_top_field(kind: &crate::annotations::ExternalGlobalKind) -> Option<&
 
 /// Record a global's source location in the field_locations map for go-to-definition.
 fn record_field_location(
-    field_locations: &mut HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    field_locations: &mut SharedMap<TableIndex, HashMap<String, ExternalLocation>>,
     table_idx: TableIndex,
     field_name: &str,
     g: &crate::annotations::ExternalGlobal,
 ) {
     if let Some(ref path) = g.source_path
         && (g.def_start != 0 || g.def_end != 0) {
-            field_locations.entry(table_idx).or_default()
+            field_locations.entry_or_default(table_idx)
                 .insert(field_name.to_string(), ExternalLocation {
                     path: path.clone(),
                     start: g.def_start,
@@ -552,14 +556,14 @@ struct NestedCtorCall {
 
 impl NestedCtorCall {
     /// Whether the entry still holds its placeholder.
-    fn is_pending(&self, tables: &[TableInfo]) -> bool {
+    fn is_pending(&self, tables: &LayeredVec<TableInfo>) -> bool {
         tables[self.table].fields.get(&self.field).is_some_and(|fi| fi.expr == self.placeholder)
     }
 
     /// Type the entry as `vt`, the callee's return. As for a top-level call field,
     /// a class instance stays annotated so it survives the per-file `@class`
     /// overlay import; any other type resolves through the literal `expr`.
-    fn resolve_to(&self, vt: ValueType, tables: &mut [TableInfo], exprs: &mut Vec<Expr>) {
+    fn resolve_to(&self, vt: ValueType, tables: &mut LayeredVec<TableInfo>, exprs: &mut LayeredVec<Expr>) {
         let annotation = matches!(vt, ValueType::Table(Some(_))).then(|| vt.clone());
         let expr_idx = ExprId(EXT_BASE + exprs.len());
         exprs.push(Expr::Literal(vt));
@@ -592,8 +596,8 @@ fn call_field_writes(globals: &[crate::annotations::ExternalGlobal]) -> HashSet<
 /// [`call_field_writes`]).
 fn call_field_method_table(
     call_field_methods: &HashSet<(TableIndex, String)>,
-    tables: &[TableInfo],
-    exprs: &[Expr],
+    tables: &LayeredVec<TableInfo>,
+    exprs: &LayeredVec<Expr>,
     owner: TableIndex,
     field: &str,
 ) -> Option<TableIndex> {
@@ -623,7 +627,7 @@ fn keep_call_field_methods(
     field: &str,
     method_table: TableIndex,
     call_type: Option<&ValueType>,
-    tables: &mut [TableInfo],
+    tables: &mut LayeredVec<TableInfo>,
 ) {
     let call_tables: Vec<TableIndex> = match call_type.map(ValueType::strip_nil) {
         Some(ValueType::Table(Some(idx))) => vec![idx],
@@ -681,8 +685,8 @@ fn keep_call_field_methods(
 fn populate_table_fields(
     table_local_idx: usize,
     fields: &[(String, crate::annotations::FieldValueKind)],
-    tables: &mut Vec<TableInfo>,
-    exprs: &mut Vec<Expr>,
+    tables: &mut LayeredVec<TableInfo>,
+    exprs: &mut LayeredVec<Expr>,
     number_literals: &mut HashMap<ExprId, String>,
     string_literals: &mut HashMap<ExprId, String>,
     nested_calls: &mut Vec<NestedCtorCall>,
@@ -748,8 +752,8 @@ fn populate_table_fields(
 fn merge_table_fields(
     table_idx: TableIndex,
     fields: &[(String, crate::annotations::FieldValueKind)],
-    tables: &mut Vec<TableInfo>,
-    exprs: &mut Vec<Expr>,
+    tables: &mut LayeredVec<TableInfo>,
+    exprs: &mut LayeredVec<Expr>,
     number_literals: &mut HashMap<ExprId, String>,
     string_literals: &mut HashMap<ExprId, String>,
     added: &mut HashSet<(TableIndex, String)>,
@@ -779,8 +783,8 @@ fn merge_table_fields(
 fn record_added_fields(
     table_idx: TableIndex,
     fields: &[(String, crate::annotations::FieldValueKind)],
-    tables: &[TableInfo],
-    exprs: &[Expr],
+    tables: &LayeredVec<TableInfo>,
+    exprs: &LayeredVec<Expr>,
     added: &mut HashSet<(TableIndex, String)>,
 ) {
     use crate::annotations::FieldValueKind;
@@ -798,11 +802,11 @@ fn record_added_fields(
 /// The arenas, logs and location map a global's constructor entries are merged
 /// into, borrowed off a build context (see [`merge_ctor_fields`]).
 struct CtorFieldsCtx<'a> {
-    tables: &'a mut Vec<TableInfo>,
-    exprs: &'a mut Vec<Expr>,
+    tables: &'a mut LayeredVec<TableInfo>,
+    exprs: &'a mut LayeredVec<Expr>,
     number_literals: &'a mut HashMap<ExprId, String>,
     string_literals: &'a mut HashMap<ExprId, String>,
-    field_locations: &'a mut HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    field_locations: &'a mut SharedMap<TableIndex, HashMap<String, ExternalLocation>>,
     ctor_entries: &'a mut HashSet<(TableIndex, String)>,
     nested_calls: &'a mut Vec<NestedCtorCall>,
 }
@@ -819,7 +823,7 @@ fn merge_ctor_fields(g: &crate::annotations::ExternalGlobal, table_idx: TableInd
     if let Some(path) = &g.source_path {
         for f in &g.ctor_fields {
             if !ctx.tables[local_idx].fields.contains_key(&f.name) {
-                ctx.field_locations.entry(table_idx).or_default()
+                ctx.field_locations.entry_or_default(table_idx)
                     .entry(f.name.clone())
                     .or_insert_with(|| ExternalLocation {
                         path: path.clone(), start: f.range.0, end: f.range.1, ..Default::default()
@@ -850,7 +854,7 @@ fn merge_ctor_fields(g: &crate::annotations::ExternalGlobal, table_idx: TableInd
 /// derived class is flagged `open_mixin`. The fixpoint loop propagates ancestors
 /// across mixin chains (`Derived → Mid → Base`).
 fn apply_mixin_parent_inheritance(
-    tables: &mut [TableInfo],
+    tables: &mut LayeredVec<TableInfo>,
     classes: &HashMap<String, TableIndex>,
     non_class_tables: &HashMap<String, TableIndex>,
     globals: &[crate::annotations::ExternalGlobal],
@@ -1037,7 +1041,7 @@ fn walk_deep_path(
 /// The `parent_classes` of a table of its own for one instance of the class
 /// `class_idx` (methods defined on that instance alone): the class, then its
 /// ancestors.
-fn instance_parents(tables: &[TableInfo], class_idx: TableIndex) -> Vec<TableIndex> {
+fn instance_parents(tables: &LayeredVec<TableInfo>, class_idx: TableIndex) -> Vec<TableIndex> {
     let mut parents = vec![class_idx];
     for &ancestor in &tables[class_idx.ext_offset()].parent_classes {
         if !parents.contains(&ancestor) {
@@ -1168,7 +1172,7 @@ impl<'a> ClassFieldPaths<'a> {
     /// to fill it from. The placeholder annotation stays until
     /// `type_opened_ctor_tables`, so a write of the field replaces the entry
     /// exactly as it would the placeholder.
-    fn open_walked_ctor_tables(&self, classes: &HashMap<String, TableIndex>, tables: &mut Vec<TableInfo>, exprs: &mut Vec<Expr>) -> Vec<(TableIndex, &[CtorEntries<'a>])> {
+    fn open_walked_ctor_tables(&self, classes: &HashMap<String, TableIndex>, tables: &mut LayeredVec<TableInfo>, exprs: &mut LayeredVec<Expr>) -> Vec<(TableIndex, &[CtorEntries<'a>])> {
         let mut opened = Vec::new();
         for ((class, entry), ctors) in &self.walked_ctor_tables {
             let Some(&class_idx) = classes.get(*class) else { continue };
@@ -1219,14 +1223,17 @@ impl<'a> ClassFieldPaths<'a> {
     /// its table, which keeps it when a file re-declaring the class imports the
     /// class's fields (`prescan`'s overlay import drops annotation-less table
     /// fields as speculative placeholders).
-    fn type_opened_ctor_tables(&self, classes: &HashMap<String, TableIndex>, tables: &mut [TableInfo], exprs: &[Expr]) {
+    fn type_opened_ctor_tables(&self, classes: &HashMap<String, TableIndex>, tables: &mut LayeredVec<TableInfo>, exprs: &LayeredVec<Expr>) {
         let walked = self.walked_ctor_tables.iter()
             .filter_map(|((class, entry), _)| classes.get(*class).map(|&idx| (idx, *entry)));
         let lazily = self.opened.iter().map(|(idx, entry)| (*idx, entry.as_str()));
         for (class_idx, entry) in walked.chain(lazily) {
-            let Some(fi) = tables[class_idx.ext_offset()].fields.get_mut(entry) else { continue };
+            let local = class_idx.ext_offset();
+            let Some(fi) = tables[local].fields.get(entry) else { continue };
+            // Only write a change: a write copies a shared stub table (`LayeredVec`).
             if matches!(fi.annotation, Some(ValueType::Table(None)))
                 && let Expr::Literal(ValueType::Table(Some(sub_idx))) = exprs[fi.expr.ext_offset()]
+                && let Some(fi) = tables[local].fields.get_mut(entry)
             {
                 fi.annotation = Some(ValueType::Table(Some(sub_idx)));
                 fi.annotation_type_raw = None;
@@ -1248,22 +1255,22 @@ fn is_framexml_path(path: &Option<std::path::PathBuf>) -> bool {
 }
 
 struct GlobalLookupCtx<'a> {
-    tables: &'a [TableInfo],
-    exprs: &'a [Expr],
-    functions: &'a [Function],
+    tables: &'a LayeredVec<TableInfo>,
+    exprs: &'a LayeredVec<Expr>,
+    functions: &'a LayeredVec<Function>,
     non_class_tables: &'a HashMap<String, TableIndex>,
     classes: &'a HashMap<String, TableIndex>,
     scope0_symbols: &'a HashMap<SymbolIdentifier, SymbolIndex>,
-    symbols: &'a [Symbol],
+    symbols: &'a LayeredVec<Symbol>,
 }
 
 /// The mutable arenas and build-state maps `walk_deep_path` writes into while
 /// materializing intermediate sub-tables for a deep namespace path.
 pub struct DeepPathCtx<'a> {
-    pub tables: &'a mut Vec<TableInfo>,
-    pub exprs: &'a mut Vec<Expr>,
+    pub tables: &'a mut LayeredVec<TableInfo>,
+    pub exprs: &'a mut LayeredVec<Expr>,
     pub sub_tables: &'a mut HashMap<(String, String), TableIndex>,
-    pub field_locations: &'a mut HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    pub field_locations: &'a mut SharedMap<TableIndex, HashMap<String, ExternalLocation>>,
     pub implicit_protected_prefix: bool,
 }
 
@@ -1272,11 +1279,11 @@ pub struct DeepPathCtx<'a> {
 /// call sites self-documenting and lets the arenas be borrowed mutably while the
 /// registries are read immutably (a split borrow off the owning context).
 pub struct FnBuildCtx<'a> {
-    pub scopes: &'a mut Vec<Scope>,
-    pub symbols: &'a mut Vec<Symbol>,
-    pub functions: &'a mut Vec<Function>,
-    pub tables: &'a mut Vec<TableInfo>,
-    pub exprs: &'a mut Vec<Expr>,
+    pub scopes: &'a mut LayeredVec<Scope>,
+    pub symbols: &'a mut LayeredVec<Symbol>,
+    pub functions: &'a mut LayeredVec<Function>,
+    pub tables: &'a mut LayeredVec<TableInfo>,
+    pub exprs: &'a mut LayeredVec<Expr>,
     pub classes: &'a HashMap<String, TableIndex>,
     pub aliases: &'a HashMap<String, ValueType>,
     pub parameterized_aliases: &'a HashMap<String, (Vec<String>, AnnotationType)>,
@@ -1407,7 +1414,7 @@ impl<'a> FnMeta<'a> {
 
 /// Look up a field on a table, falling back to parent classes if not found directly.
 /// `parent_classes` is a transitive closure (all ancestors), so a single-level walk suffices.
-fn lookup_field_with_parents<'a>(tables: &'a [TableInfo], table_local_idx: usize, name: &str) -> Option<&'a FieldInfo> {
+fn lookup_field_with_parents<'a>(tables: &'a LayeredVec<TableInfo>, table_local_idx: usize, name: &str) -> Option<&'a FieldInfo> {
     if let Some(fi) = tables[table_local_idx].fields.get(name) {
         return Some(fi);
     }
@@ -1420,7 +1427,7 @@ fn lookup_field_with_parents<'a>(tables: &'a [TableInfo], table_local_idx: usize
 }
 
 /// Extract the `TableIndex` from a field's expression or annotation.
-fn table_idx_from_field(exprs: &[Expr], field: &FieldInfo) -> Option<TableIndex> {
+fn table_idx_from_field(exprs: &LayeredVec<Expr>, field: &FieldInfo) -> Option<TableIndex> {
     match &exprs[field.expr.ext_offset()] {
         Expr::Literal(ValueType::Table(Some(idx))) => Some(*idx),
         _ => {
@@ -1644,7 +1651,7 @@ fn overload_from_duplicate_def(
 /// dot-with-self definitions would look like an arity conflict.
 fn duplicate_def_arity_conflicts(
     existing: &Function,
-    symbols: &[Symbol],
+    symbols: &LayeredVec<Symbol>,
     dup_params: &[crate::annotations::ParamInfo],
 ) -> bool {
     let existing_self = existing.args.first().copied().is_some_and(|s| {
@@ -1676,11 +1683,11 @@ fn global_has_type_annotations(g: &crate::annotations::ExternalGlobal) -> bool {
 
 struct BuildContext {
     // Core IR (becomes PreResolvedGlobals fields)
-    scopes: Vec<Scope>,
-    symbols: Vec<Symbol>,
-    functions: Vec<Function>,
-    exprs: Vec<Expr>,
-    tables: Vec<TableInfo>,
+    scopes: LayeredVec<Scope>,
+    symbols: LayeredVec<Symbol>,
+    functions: LayeredVec<Function>,
+    exprs: LayeredVec<Expr>,
+    tables: LayeredVec<TableInfo>,
     classes: HashMap<String, TableIndex>,
     aliases: HashMap<String, ValueType>,
     alias_string_literals: HashMap<String, Vec<String>>,
@@ -1691,13 +1698,13 @@ struct BuildContext {
     scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
 
     // Location maps
-    symbol_locations: HashMap<SymbolIndex, ExternalLocation>,
-    function_locations: HashMap<FunctionIndex, ExternalLocation>,
+    symbol_locations: SharedMap<SymbolIndex, ExternalLocation>,
+    function_locations: SharedMap<FunctionIndex, ExternalLocation>,
     function_names: HashMap<FunctionIndex, String>,
     function_to_field: HashMap<FunctionIndex, (TableIndex, String)>,
     class_locations: HashMap<String, ExternalLocation>,
     alias_locations: HashMap<String, ExternalLocation>,
-    field_locations: HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    field_locations: SharedMap<TableIndex, HashMap<String, ExternalLocation>>,
 
     // Intermediate build state (not in final PreResolvedGlobals)
     non_class_tables: HashMap<String, TableIndex>,
@@ -1745,11 +1752,11 @@ struct BuildContext {
 impl BuildContext {
     fn new() -> Self {
         BuildContext {
-            scopes: Vec::new(),
-            symbols: Vec::new(),
-            functions: Vec::new(),
-            exprs: Vec::new(),
-            tables: Vec::new(),
+            scopes: LayeredVec::new(),
+            symbols: LayeredVec::new(),
+            functions: LayeredVec::new(),
+            exprs: LayeredVec::new(),
+            tables: LayeredVec::new(),
             classes: HashMap::default(),
             aliases: HashMap::default(),
             alias_string_literals: HashMap::default(),
@@ -1758,13 +1765,13 @@ impl BuildContext {
             parameterized_alias_constraints: HashMap::default(),
             tuple_form_aliases: HashMap::default(),
             scope0_symbols: HashMap::default(),
-            symbol_locations: HashMap::default(),
-            function_locations: HashMap::default(),
+            symbol_locations: SharedMap::default(),
+            function_locations: SharedMap::default(),
             function_names: HashMap::default(),
             function_to_field: HashMap::default(),
             class_locations: HashMap::default(),
             alias_locations: HashMap::default(),
-            field_locations: HashMap::default(),
+            field_locations: SharedMap::default(),
             non_class_tables: HashMap::default(),
             table_source_locations: HashMap::default(),
             class_globals: HashSet::default(),
@@ -3196,12 +3203,12 @@ impl PreResolvedGlobals {
     }
 
     pub fn fixup_enum_tables(&mut self) {
-        for table in &mut self.tables {
+        for i in 0..self.tables.len() {
+            let table = &self.tables[i];
             if !table.enum_kind.is_enum()
-                && let Some(ref name) = table.class_name
-                && name.starts_with("Enum.")
+                && table.class_name.as_ref().is_some_and(|name| name.starts_with("Enum."))
             {
-                table.enum_kind = EnumKind::Number;
+                self.tables[i].enum_kind = EnumKind::Number;
             }
         }
     }
@@ -3230,11 +3237,11 @@ impl PreResolvedGlobals {
         scope0_symbols.insert(SymbolIdentifier::Name("_G".to_string()), SymbolIndex(g_sym_idx));
 
         PreResolvedGlobals {
-            scopes: Vec::new(),
-            symbols: vec![g_sym],
-            functions: Vec::new(),
-            exprs: Vec::new(),
-            tables: vec![g_table],
+            scopes: LayeredVec::new(),
+            symbols: vec![g_sym].into(),
+            functions: LayeredVec::new(),
+            exprs: LayeredVec::new(),
+            tables: vec![g_table].into(),
             classes: HashMap::default(),
             aliases: HashMap::default(),
             alias_string_literals: HashMap::default(),
@@ -3246,8 +3253,8 @@ impl PreResolvedGlobals {
             returns_enum_paths: HashSet::default(),
             scope0_symbols,
             framexml_scope0_symbols: HashMap::default(),
-            symbol_locations: HashMap::default(),
-            function_locations: HashMap::default(),
+            symbol_locations: SharedMap::default(),
+            function_locations: SharedMap::default(),
             function_names: HashMap::default(),
             function_to_field: HashMap::default(),
             string_values: HashMap::default(),
@@ -3259,7 +3266,7 @@ impl PreResolvedGlobals {
             constructor_method_names: HashSet::default(),
             class_locations: HashMap::default(),
             alias_locations: HashMap::default(),
-            field_locations: HashMap::default(),
+            field_locations: SharedMap::default(),
             symbol_locations_by_name: HashMap::default(),
             class_locations_all: HashMap::default(),
             alias_locations_all: HashMap::default(),
@@ -3336,10 +3343,34 @@ impl PreResolvedGlobals {
         // declared on the ns variable itself (---@class MyAddon on `local _, ns = ...`).
         pg.merge_addon_ns_subtable_methods();
         pg.merge_addon_ns_into_classes(addon_ns_class_files);
+        pg.share_layers();
         pg
     }
 
     // build_on_stubs() is implemented in the build_on_stubs submodule.
+
+    /// Freeze the arenas and location maps into their shared base, so every
+    /// `build_on_stubs` layered on this database shares them instead of copying.
+    fn share_layers(&mut self) {
+        self.scopes.share();
+        self.symbols.share();
+        self.functions.share();
+        self.exprs.share();
+        self.tables.share();
+        self.symbol_locations.share();
+        self.function_locations.share();
+        self.field_locations.share();
+    }
+
+    /// How many built-in entries this database copied to edit them, per arena — the
+    /// part of the stub IR a workspace build does not share with its base.
+    pub fn arena_edit_summary(&self) -> String {
+        format!(
+            "edited stub entries: {} scopes, {} symbols, {} functions, {} exprs, {} tables",
+            self.scopes.edited_len(), self.symbols.edited_len(), self.functions.edited_len(),
+            self.exprs.edited_len(), self.tables.edited_len(),
+        )
+    }
 
     /// Merge methods from addon namespace sub-tables into corresponding class tables.
     ///
@@ -3729,8 +3760,7 @@ impl PreResolvedGlobals {
                     .or_else(|| combined_field_locs.get(field_name));
                 if let Some(loc) = loc {
                     self.field_locations
-                        .entry(table_idx)
-                        .or_default()
+                        .entry_or_default(table_idx)
                         .insert(field_name.clone(), loc.clone());
                 }
             }
@@ -3892,8 +3922,8 @@ impl PreResolvedGlobals {
         aliases: &HashMap<String, ValueType>,
         param_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
         generics: &[(String, Option<String>)],
-        tables: &mut Vec<TableInfo>,
-        exprs: &mut Vec<Expr>,
+        tables: &mut LayeredVec<TableInfo>,
+        exprs: &mut LayeredVec<Expr>,
     ) -> Option<ValueType> {
         // Handle parameterized alias instantiation (e.g. MyAlias<string, number>)
         if let AnnotationType::Parameterized(base, args) = at {

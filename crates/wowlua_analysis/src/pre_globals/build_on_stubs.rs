@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use crate::types::*;
 use crate::annotations::{AnnotationType, ClassDecl, AliasDecl};
 
+use super::layered_vec::LayeredVec;
+use super::SharedMap;
 use super::{
     PreResolvedGlobals,
     record_field_location, walk_deep_path, ClassFieldPaths,
@@ -17,12 +19,12 @@ use super::{
 struct BuildOnStubsContext<'a> {
     stubs_base: &'a PreResolvedGlobals,
 
-    // Core IR (cloned from stubs_base, extended with workspace data)
-    scopes: Vec<Scope>,
-    symbols: Vec<Symbol>,
-    functions: Vec<Function>,
-    exprs: Vec<Expr>,
-    tables: Vec<TableInfo>,
+    // Core IR (layered on stubs_base, extended with workspace data)
+    scopes: LayeredVec<Scope>,
+    symbols: LayeredVec<Symbol>,
+    functions: LayeredVec<Function>,
+    exprs: LayeredVec<Expr>,
+    tables: LayeredVec<TableInfo>,
     classes: HashMap<String, TableIndex>,
     aliases: HashMap<String, ValueType>,
     alias_string_literals: HashMap<String, Vec<String>>,
@@ -34,11 +36,11 @@ struct BuildOnStubsContext<'a> {
     framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
 
     // Location maps
-    symbol_locations: HashMap<SymbolIndex, ExternalLocation>,
-    function_locations: HashMap<FunctionIndex, ExternalLocation>,
+    symbol_locations: SharedMap<SymbolIndex, ExternalLocation>,
+    function_locations: SharedMap<FunctionIndex, ExternalLocation>,
     function_names: HashMap<FunctionIndex, String>,
     function_to_field: HashMap<FunctionIndex, (TableIndex, String)>,
-    field_locations: HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    field_locations: SharedMap<TableIndex, HashMap<String, ExternalLocation>>,
     alias_locations: HashMap<String, ExternalLocation>,
 
     // Values
@@ -90,31 +92,19 @@ struct BuildOnStubsContext<'a> {
 
 impl<'a> BuildOnStubsContext<'a> {
     fn new(stubs_base: &'a PreResolvedGlobals, implicit_protected_prefix: bool) -> Self {
-        // Clone the 5 large Vecs in parallel — these dominate the clone cost
-        // (~132K symbols, ~100K exprs, ~45K functions, ~29K tables, scopes).
-        let (((symbols, exprs), (functions, tables)), scopes) = rayon::join(
-            || rayon::join(
-                || rayon::join(|| stubs_base.symbols.clone(), || stubs_base.exprs.clone()),
-                || rayon::join(|| stubs_base.functions.clone(), || stubs_base.tables.clone()),
-            ),
-            || stubs_base.scopes.clone(),
-        );
-        // Clone the HashMaps in parallel too — classes and scope0_symbols are large.
+        // The arenas and location maps share the stub entries (cheap clones); the
+        // remaining maps are copied, the larger ones in parallel.
         let ((classes, aliases), (scope0_symbols, framexml_scope0_symbols)) = rayon::join(
             || rayon::join(|| stubs_base.classes.clone(), || stubs_base.aliases.clone()),
             || rayon::join(|| stubs_base.scope0_symbols.clone(), || stubs_base.framexml_scope0_symbols.clone()),
         );
-        let ((symbol_locations, function_locations), (field_locations, alias_locations)) = rayon::join(
-            || rayon::join(|| stubs_base.symbol_locations.clone(), || stubs_base.function_locations.clone()),
-            || rayon::join(|| stubs_base.field_locations.clone(), || stubs_base.alias_locations.clone()),
-        );
         BuildOnStubsContext {
             stubs_base,
-            scopes,
-            symbols,
-            functions,
-            exprs,
-            tables,
+            scopes: stubs_base.scopes.clone(),
+            symbols: stubs_base.symbols.clone(),
+            functions: stubs_base.functions.clone(),
+            exprs: stubs_base.exprs.clone(),
+            tables: stubs_base.tables.clone(),
             classes,
             aliases,
             alias_string_literals: stubs_base.alias_string_literals.clone(),
@@ -124,12 +114,12 @@ impl<'a> BuildOnStubsContext<'a> {
             tuple_form_aliases: stubs_base.tuple_form_aliases.clone(),
             scope0_symbols,
             framexml_scope0_symbols,
-            symbol_locations,
-            function_locations,
+            symbol_locations: stubs_base.symbol_locations.clone(),
+            function_locations: stubs_base.function_locations.clone(),
             function_names: HashMap::default(),
             function_to_field: HashMap::default(),
-            field_locations,
-            alias_locations,
+            field_locations: stubs_base.field_locations.clone(),
+            alias_locations: stubs_base.alias_locations.clone(),
             string_values: stubs_base.string_values.clone(),
             number_values: stubs_base.number_values.clone(),
             number_literals: stubs_base.number_literals.clone(),

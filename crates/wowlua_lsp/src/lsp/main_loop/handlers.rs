@@ -268,22 +268,32 @@ pub(super) fn analyze_lua_parsed(
     tree: &SyntaxTree,
 ) -> AnalysisResult {
     let file_path = uri_to_abs_path(uri).unwrap_or_default();
-    let framexml_enabled = configs.framexml_enabled_for(&file_path);
-    let addon_table_override = pre_globals.addon_table_for_root(configs.addon_root_for(&file_path));
+    analyze_path_parsed(&file_path, pre_globals, configs, tree)
+}
+
+/// [`analyze_lua_parsed`] for a file known by its path.
+pub(super) fn analyze_path_parsed(
+    file_path: &Path,
+    pre_globals: &Arc<PreResolvedGlobals>,
+    configs: &crate::config::ProjectConfigs,
+    tree: &SyntaxTree,
+) -> AnalysisResult {
+    let framexml_enabled = configs.framexml_enabled_for(file_path);
+    let addon_table_override = pre_globals.addon_table_for_root(configs.addon_root_for(file_path));
     let mut analysis = Analysis::new_with_tree(
         tree, Arc::clone(pre_globals), AnalysisConfig {
             framexml_enabled,
-            allowed_read_globals: configs.allowed_read_globals_for(&file_path),
-            allowed_write_globals: configs.allowed_write_globals_for(&file_path),
-            allow_slash_commands: configs.allow_slash_commands_for(&file_path),
-            allow_binding_globals: configs.allow_binding_globals_for(&file_path),
-            project_flavors: configs.flavors_for(&file_path),
-            addon_flavors: configs.addon_flavors_for(&file_path),
-            backward_param_types: configs.backward_param_types_for(&file_path),
-            correlated_return_overloads: configs.correlated_return_overloads_for(&file_path),
-            implicit_protected_prefix: configs.implicit_protected_prefix_for(&file_path),
+            allowed_read_globals: configs.allowed_read_globals_for(file_path),
+            allowed_write_globals: configs.allowed_write_globals_for(file_path),
+            allow_slash_commands: configs.allow_slash_commands_for(file_path),
+            allow_binding_globals: configs.allow_binding_globals_for(file_path),
+            project_flavors: configs.flavors_for(file_path),
+            addon_flavors: configs.addon_flavors_for(file_path),
+            backward_param_types: configs.backward_param_types_for(file_path),
+            correlated_return_overloads: configs.correlated_return_overloads_for(file_path),
+            implicit_protected_prefix: configs.implicit_protected_prefix_for(file_path),
             addon_table_override,
-            addon_folder_name: configs.addon_name_for(&file_path),
+            addon_folder_name: configs.addon_name_for(file_path),
         },
     );
     analysis.resolve_types();
@@ -1088,6 +1098,7 @@ pub(super) fn handle_request(
 
                         let numbers = crate::lsp::SafeLinePositions::new(doc.text.as_str());
                         let position = numbers.lsp_position(current_offset as usize, use_utf8());
+                        prefetch_lens_references(&uri, current_offset, documents, ws);
                         let locations = find_references_across_workspace(
                             &uri, position, false, false, documents, ws,
                         ).unwrap_or_default();
@@ -1476,18 +1487,27 @@ pub(super) fn handle_notification(
                 if needs_rescan {
                     rescan_workspace_with_progress(connection, documents, ws, analysis_token);
                 }
+                if params.changes.iter().any(|e| e.uri.as_str().ends_with(".lua") && !documents.contains_key(e.uri.as_str())) {
+                    invalidate_xfile_refs(ws);
+                }
             }
         }
         "textDocument/didClose" => {
             if let Ok(params) = cast_not::<notification::DidCloseTextDocument>(not) {
                 let uri_str = params.text_document.uri.to_string();
+                let is_stub = is_stub_path(&params.text_document.uri);
+                // Cross-file reference searches now read this file from disk, whose
+                // text cached results may predate (or never saw, if it was open).
+                if !is_stub && uri_str.ends_with(".lua") {
+                    invalidate_xfile_refs(ws);
+                }
                 // Stub files never participate in workspace diagnostics.
                 // Defense-in-depth: also check is_meta (analysis may be None
                 // for stubs whose background analysis hasn't completed yet).
                 let is_meta_doc = documents.get(&uri_str).is_some_and(|d|
                     d.analysis.as_ref().is_some_and(|a| a.is_meta())
                 );
-                if is_stub_path(&params.text_document.uri) || is_meta_doc {
+                if is_stub || is_meta_doc {
                     documents.remove(&uri_str);
                     // Remove the in-memory document override + edited flag on close.
                     if let Some(path) = uri_to_abs_path(&params.text_document.uri) {
