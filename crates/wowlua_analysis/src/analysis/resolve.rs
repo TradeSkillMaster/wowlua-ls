@@ -2757,9 +2757,11 @@ impl<'a> Analysis<'a> {
                           &assign.inline_type_raw, assign.inline_is_lateinit))
                 } else {
                     self.ir.table(table_idx).fields.get(&assign.field_name)
-                        // Skip inherited Any — let the expression-based path
-                        // resolve the concrete type from the assignment RHS.
-                        .filter(|f| !matches!(f.annotation, Some(ValueType::Any)))
+                        // Skip inherited Any, and a scanned type this write's value
+                        // supersedes — let the expression-based path resolve the
+                        // concrete type from the assignment RHS.
+                        .filter(|f| !matches!(f.annotation, Some(ValueType::Any))
+                            && !self.ir.write_supersedes_scanned_type(f, assign.expr_id, assign.in_function))
                         .map(|f| (&f.annotation, &f.annotation_text, &f.annotation_type_raw, f.lateinit))
                 };
                 let (ann, ann_text, ann_raw, lateinit) = match source_fi {

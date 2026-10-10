@@ -1596,6 +1596,8 @@ pub struct DeferredFieldAssignment {
     /// Written `t["a"] = v`: an element write, not a field, if `t` resolves to a
     /// map or array with no field `a`.
     pub bracket_key: bool,
+    /// Written inside a function body rather than at file level.
+    pub in_function: bool,
 }
 
 #[derive(Debug, Clone)]

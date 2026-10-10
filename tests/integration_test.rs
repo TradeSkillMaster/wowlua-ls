@@ -2383,12 +2383,25 @@ fn crossfile_ns_alias_funcall() {
 }
 
 #[test]
+fn ns_class_alias() {
+    for lua_file in ["tests/ns-class-alias/defs.lua", "tests/ns-class-alias/user.lua"] {
+        run_annotation_tests(&TestConfig {
+            lua_file,
+            with_stubs: true,
+            scan_dir: Some("tests/ns-class-alias"),
+        });
+    }
+}
+
+#[test]
 fn crossfile_ns_alias_field_readback() {
-    run_annotation_tests(&TestConfig {
-        lua_file: "tests/crossfile/ns_alias_field_user.lua",
-        with_stubs: false,
-        scan_dir: Some("tests/crossfile"),
-    });
+    for with_stubs in [false, true] {
+        run_annotation_tests(&TestConfig {
+            lua_file: "tests/crossfile/ns_alias_field_user.lua",
+            with_stubs,
+            scan_dir: Some("tests/crossfile"),
+        });
+    }
 }
 
 #[test]

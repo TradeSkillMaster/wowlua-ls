@@ -654,6 +654,25 @@ do
     --               ^ diag: type-mismatch
 end
 
+-- The same through locals bound to `@field` instance members: each `self.bN` is
+-- its own Button, so the method defined through it stays its own.
+do
+    ---@class SiblingFieldPanel
+    ---@field b1 Button
+    ---@field b2 Button
+    local SiblingFieldPanel = {}
+    function SiblingFieldPanel:Init()
+        local b1 = self.b1
+        function b1:OnThing() return 1 end
+        local b2 = self.b2
+        function b2:OnThing() return "x" end
+        local r1 = b1:OnThing()
+        --    ^ hover: (local) r1: number
+        b1:OnThing()
+        -- ^ def: local 666:9
+    end
+end
+
 -- Event string hover on WoW API methods
 ---@type Frame
 local _evFrame = nil

@@ -1,9 +1,7 @@
 ---@diagnostic disable: unused-local
 -- Regression: assigning a field through a namespace-aliased local, then reading
--- that field back into a local, must preserve the field's type. The write
--- (`AliasFieldEnum.Thing = {...}`) is deferred past the resolution fixpoint
--- because the alias root only resolves to a writable table afterward; the
--- read-back local used to keep a stale unknown type.
+-- that field back into a local, must preserve the field's type; the read-back
+-- local used to keep a stale unknown type.
 local _, ns = ...
 
 local AliasFieldEnum = ns.AliasFieldEnum
@@ -21,3 +19,9 @@ local other = AliasFieldEnum.Thing
 -- Field access on the read-back local still reaches the inner fields.
 local widthVal = Thing.a
 --    ^ hover: (local) widthVal: number  def: local
+
+-- A local table assigned through the alias keeps its shape on read-back.
+local record = { c = 1, d = "q" }
+AliasFieldEnum.Record = record
+local readRecord = AliasFieldEnum.Record
+--    ^ hover: (local) readRecord: {\n  c: number,\n  d: string\n}

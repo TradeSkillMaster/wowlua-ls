@@ -1056,11 +1056,11 @@ impl<'a> Analysis<'a> {
                     // falls back to matching variable/field names against known classes
                     // — the name is meaningless; only the declared type matters.
                     //
-                    // Note: find_table_for_symbol relies on type_source being set,
+                    // Note: find_method_receiver_table relies on type_source being set,
                     // which requires the root symbol's assignment to appear before
                     // this function definition in source order.
                     let mut owner_class: Option<String> = None;
-                    let mut current_ti = self.ir.find_table_for_symbol(&names[0], scope_idx);
+                    let mut current_ti = self.ir.find_method_receiver_table(&names[0], scope_idx);
                     // When advancing through fields, if the field at position i+1
                     // has an @type annotation pointing to a class table, record
                     // that class name here. It is consumed via `.take()` at the
@@ -1114,7 +1114,7 @@ impl<'a> Analysis<'a> {
                         // self should be A.B, not A.
                         // Skip @accessor intermediates so that
                         // `function Widget.__private:Init()` gives self = Widget.
-                        let mut current_table = self.ir.find_table_for_symbol(root_name, scope_idx);
+                        let mut current_table = self.ir.find_method_receiver_table(root_name, scope_idx);
                         for intermediate in &names[1..names.len()-1] {
                             if let Some(ti) = current_table {
                                 // Transparent `@accessor` (e.g. `Widget.__private`):
@@ -1149,7 +1149,7 @@ impl<'a> Analysis<'a> {
                 }
 
                 // Record as field on the table, walking intermediate names for 3+ level paths
-                if let Some(mut table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                if let Some(mut table_idx) = self.ir.find_method_receiver_table(root_name, scope_idx) {
                     let mut resolved = true;
                     let mut accessor_visibility: Option<Visibility> = None;
                     for intermediate in &names[1..names.len()-1] {
@@ -1236,6 +1236,7 @@ impl<'a> Analysis<'a> {
                         is_method_def: is_method,
                         receiver_version,
                         bracket_key: false,
+                        in_function: func_id.is_some(),
                     });
                 }
 
@@ -1245,13 +1246,13 @@ impl<'a> Analysis<'a> {
                     let is_constructor = if is_method {
                         if self.ir.functions[func_idx.val()].constructor {
                             // Explicitly annotated — also register on the table
-                            if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                            if let Some(table_idx) = self.ir.find_method_receiver_table(root_name, scope_idx) {
                                 if !table_idx.is_external() {
                                     self.ir.tables[table_idx.val()].constructors.insert(field_name.clone());
                                 }
                                 Some(table_idx)
                             } else { None }
-                        } else if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                        } else if let Some(table_idx) = self.ir.find_method_receiver_table(root_name, scope_idx) {
                             // Check if this method name is a constructor on this table,
                             // inherited from a parent class, or globally declared via
                             // @constructor on any class (e.g. Class<S> declares __init)
@@ -1807,7 +1808,7 @@ impl<'a> Analysis<'a> {
         let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
         *narrow_rhs_expr_id = Some(func_def_expr);
         self.record_sub_field_write(ident, names, func_def_expr, scope_idx);
-        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+        if let Some(table_idx) = self.ir.find_method_receiver_table(root_name, scope_idx) {
             if names.len() > 2 {
                 // Deep chain (e.g. self._plot.method = function ...):
                 // defer to post-fixpoint resolution
@@ -1896,6 +1897,7 @@ impl<'a> Analysis<'a> {
                 is_method_def: true,
                 receiver_version,
                 bracket_key: ident.is_indexed_expression(),
+                in_function: func_id.is_some(),
             });
         }
         if let Some(inner_block) = func.block() {
@@ -1982,7 +1984,7 @@ impl<'a> Analysis<'a> {
         // falls back to the expression type, creating a misleading display.
         let inline_annotation_text = if inline_annotation.is_some() { inline_annotation_text } else { None };
         self.record_sub_field_write(ident, names, expr_id, scope_idx);
-        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+        if let Some(table_idx) = self.ir.find_write_receiver_table(root_name, scope_idx) {
           if names.len() > 2 {
             // Deep chain (e.g. ns.sub.field = expr): try to
             // walk intermediates eagerly so the field is
@@ -2093,10 +2095,13 @@ impl<'a> Analysis<'a> {
                 // created before deferred constructors aren't bare.
                 let ext_ann = if inline_annotation.is_none() {
                     self.ir.table(table_idx).fields.get(field_name).and_then(|f| {
-                        // Skip inherited Any annotations — let the
-                        // expression-based path resolve the concrete
-                        // type from the child's assignment RHS.
-                        if matches!(f.annotation, Some(ValueType::Any)) {
+                        // Skip inherited Any annotations, and a scanned type this
+                        // write's value supersedes — let the expression-based
+                        // path resolve the concrete type from the child's
+                        // assignment RHS.
+                        if matches!(f.annotation, Some(ValueType::Any))
+                            || self.ir.write_supersedes_scanned_type(f, expr_id, func_id.is_some())
+                        {
                             None
                         } else {
                             Some((f.annotation.clone(), f.annotation_text.clone(), f.annotation_type_raw.clone(), f.lateinit))
@@ -2217,6 +2222,7 @@ impl<'a> Analysis<'a> {
                 is_method_def: false,
                 receiver_version,
                 bracket_key: ident.is_indexed_expression(),
+                in_function: func_id.is_some(),
             });
         }
     }

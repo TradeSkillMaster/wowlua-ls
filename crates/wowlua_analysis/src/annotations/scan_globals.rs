@@ -213,41 +213,105 @@ fn unwrap_logical_chain<'a>(mut expr: Expression<'a>) -> Expression<'a> {
 fn collect_all_local_names(root: &SyntaxNode<'_>) -> HashSet<String> {
     let mut locals: HashSet<String> = HashSet::default();
     for node in root.descendants() {
-        match node.kind() {
-            SyntaxKind::LocalAssignStatement => {
-                if let Some(assign) = LocalAssign::cast(node)
-                    && let Some(name_list) = assign.name_list() {
-                    locals.extend(name_list.names());
-                }
-            }
-            SyntaxKind::FunctionDefinition => {
-                if let Some(func) = FunctionDefinition::cast(node)
-                    && func.is_local()
-                    && let Some(name) = func.name() {
-                    locals.insert(name);
-                }
-            }
-            SyntaxKind::ParameterList => {
-                if let Some(params) = ParameterList::cast(node) {
-                    locals.extend(params.parameters());
-                }
-            }
-            SyntaxKind::ForCountLoop => {
-                if let Some(for_loop) = ForCountLoop::cast(node)
-                    && let Some(name) = for_loop.name() {
-                    locals.insert(name);
-                }
-            }
-            SyntaxKind::ForInLoop => {
-                if let Some(for_loop) = ForInLoop::cast(node)
-                    && let Some(name_list) = for_loop.name_list() {
-                    locals.extend(name_list.names());
-                }
-            }
-            _ => {}
-        }
+        locals.extend(local_bindings(node));
     }
     locals
+}
+
+/// The names `node` binds as locals (`local`/`local function`/params/for-vars).
+fn local_bindings(node: SyntaxNode<'_>) -> Vec<String> {
+    match node.kind() {
+        SyntaxKind::LocalAssignStatement => LocalAssign::cast(node)
+            .and_then(|assign| assign.name_list())
+            .map(|name_list| name_list.names())
+            .unwrap_or_default(),
+        SyntaxKind::FunctionDefinition => FunctionDefinition::cast(node)
+            .filter(|func| func.is_local())
+            .and_then(|func| func.name())
+            .into_iter().collect(),
+        SyntaxKind::ParameterList => ParameterList::cast(node)
+            .map(|params| params.parameters())
+            .unwrap_or_default(),
+        SyntaxKind::ForCountLoop => ForCountLoop::cast(node)
+            .and_then(|for_loop| for_loop.name())
+            .into_iter().collect(),
+        SyntaxKind::ForInLoop => ForInLoop::cast(node)
+            .and_then(|for_loop| for_loop.name_list())
+            .map(|name_list| name_list.names())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// A local aliasing a field path (`local Foo = ns.Foo`): the path, root first,
+/// and the offset of the declaration.
+type FieldAliases = HashMap<String, (Vec<String>, u32)>;
+
+/// Locals bound to a field path under the addon namespace or a `@class` table
+/// (`local Foo = ns.Foo`, `local Sub = Foo.Sub`), once in the whole file and
+/// never reassigned, so a method defined or a field written through one belongs
+/// to that path (see [`expand_field_alias`]).
+fn collect_field_aliases(
+    stmts: &[Statement<'_>],
+    root: &SyntaxNode<'_>,
+    addon_ns_var: Option<&str>,
+    class_vars: &HashMap<String, String>,
+    local_type_vars: &HashMap<String, String>,
+) -> FieldAliases {
+    let candidates: Vec<(String, Vec<String>, u32)> = stmts.iter().filter_map(|stmt| {
+        let Statement::LocalAssign(assign) = stmt else { return None };
+        let names = assign.name_list()?.names();
+        let exprs = assign.expression_list()?.expressions();
+        let ([name], [Expression::Identifier(ident)]) = (names.as_slice(), exprs.as_slice()) else { return None };
+        if class_vars.contains_key(name) || local_type_vars.contains_key(name)
+            || ident.has_non_string_bracket_in_chain() || ident.has_prefix_expr_base()
+        {
+            return None;
+        }
+        let path = ident.names();
+        (path.len() >= 2).then(|| (name.clone(), path, u32::from(assign.syntax().text_range().start())))
+    }).collect();
+    let mut aliases = FieldAliases::default();
+    if candidates.is_empty() {
+        return aliases;
+    }
+    let mut bindings: HashMap<String, usize> = HashMap::default();
+    for node in root.descendants() {
+        // `names()` drops a non-string bracket key and a prefix-expression base, so
+        // `Foo[1] = v` and `(e).Foo = v` read as `Foo` without rebinding it.
+        let reassigned: Vec<String> = Assign::cast(node).and_then(|assign| assign.variable_list())
+            .map(|vl| vl.identifiers().iter()
+                .filter(|ident| !ident.has_non_string_bracket_tail() && !ident.has_prefix_expr_base())
+                .map(|ident| ident.names())
+                .filter(|names| names.len() == 1).flatten().collect())
+            .unwrap_or_default();
+        for name in local_bindings(node).into_iter().chain(reassigned) {
+            *bindings.entry(name).or_default() += 1;
+        }
+    }
+    for (name, mut path, offset) in candidates {
+        if bindings.get(&name) != Some(&1) {
+            continue;
+        }
+        if let Some((root_path, _)) = aliases.get(&path[0]) {
+            path.splice(0..1, root_path.iter().cloned());
+        } else if addon_ns_var != Some(path[0].as_str()) && !class_vars.contains_key(&path[0]) {
+            continue;
+        }
+        aliases.insert(name, (path, offset));
+    }
+    aliases
+}
+
+/// Rewrite a name chain rooted at a field alias (`Foo.x`, given `local Foo =
+/// ns.Foo`) to the aliased path (`ns.Foo.x`) when `offset` follows the alias.
+fn expand_field_alias(names: &mut Vec<String>, aliases: &FieldAliases, offset: u32) {
+    if names.len() >= 2
+        && let Some((path, decl)) = aliases.get(&names[0])
+        && offset >= *decl
+    {
+        names.splice(0..1, path.iter().cloned());
+    }
 }
 
 /// Collect the full dotted paths of every *named table-constructor key* assigned
@@ -1125,6 +1189,10 @@ pub fn scan_file_globals_with_synth(
             }
     }
 
+    let field_aliases = collect_field_aliases(
+        &all_stmts, &root, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
+    );
+
     // Every `local` the file declares — `local_vars` plus the forward declarations
     // without an initializer it skips — so a table-constructor entry calling one
     // isn't typed from a same-named global.
@@ -1315,6 +1383,7 @@ pub fn scan_file_globals_with_synth(
                 if names.len() >= 2 && names[0] == "_G" && !local_vars.contains(&names[0]) {
                     names.remove(0);
                 }
+                expand_field_alias(&mut names, &field_aliases, func.syntax().text_range().start().into());
                 let is_colon = is_colon_opt.unwrap_or(false);
                 {
                     let base = build_func_external(
@@ -1558,6 +1627,7 @@ pub fn scan_file_globals_with_synth(
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
                             // these write to an element OF the table, not to the field itself.
                             if idents[0].has_non_string_bracket_tail() { continue; }
+                            expand_field_alias(&mut names, &field_aliases, assign.syntax().text_range().start().into());
                             let root_name = &names[0];
                             let is_addon_root = addon_ns_var.as_deref() == Some(root_name.as_str());
                             // Skip field assignments on locals that aren't class-typed, table constructors, or @type-annotated.
@@ -1885,6 +1955,7 @@ pub fn scan_file_globals_with_synth(
                 names.remove(0);
                 was_g_redirect = true;
             }
+            expand_field_alias(&mut names, &field_aliases, node.text_range().start().into());
             // Single-name write: a bare `X = ...` (or `_G.X = ...`). The main loop
             // only catches these at top level / control flow, so a global created
             // inside a function body (e.g. a saved-variable global initialized in an

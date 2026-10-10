@@ -1782,6 +1782,97 @@ impl Ir {
         }
     }
 
+    /// [`Self::find_table_for_symbol`] for the receiver of a field write, also
+    /// seeing through a local bound to a field holding a known table (`local Foo =
+    /// ns.Foo`). Without this, writes through such a local are deferred past the
+    /// fixpoint, which has already resolved the file's reads of them.
+    pub(super) fn find_write_receiver_table(&self, root_name: &str, scope_idx: ScopeIndex) -> Option<TableIndex> {
+        self.find_receiver_table(root_name, scope_idx, true)
+    }
+
+    /// [`Self::find_write_receiver_table`] for a method definition, seeing through
+    /// a field only to a table this file constructs. A method defined through a
+    /// field typed as an instance (`---@field b1 Button`) or holding a cross-file
+    /// table stays deferred to `resolve_deferred_field_assignments`, which keeps
+    /// same-named methods on sibling instances apart.
+    pub(super) fn find_method_receiver_table(&self, root_name: &str, scope_idx: ScopeIndex) -> Option<TableIndex> {
+        self.find_receiver_table(root_name, scope_idx, false)
+    }
+
+    fn find_receiver_table(&self, root_name: &str, scope_idx: ScopeIndex, follow_declared: bool) -> Option<TableIndex> {
+        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx)?;
+        let ver = &self.sym(symbol_idx).versions[self.version_for_scope(symbol_idx, scope_idx)];
+        ver.type_source
+            .and_then(|type_source| self.find_receiver_table_index(type_source, follow_declared, 0))
+            .or_else(|| self.find_table_for_symbol(root_name, scope_idx))
+    }
+
+    /// [`Self::find_table_index`] following field reads for
+    /// [`Self::find_receiver_table`]. A field resolves as the fixpoint reads it —
+    /// its declared table, else the one table every write assigns — and a class to
+    /// this file's table for it, the one the fixpoint types the methods' `self` as.
+    /// Without `follow_declared`, the receiver's own field resolves only through
+    /// its writes, and only to a table of this file.
+    fn find_receiver_table_index(&self, expr_id: ExprId, follow_declared: bool, depth: usize) -> Option<TableIndex> {
+        // `ns.A = ns.A` makes a field read its own write.
+        if depth > 8 {
+            return None;
+        }
+        match self.expr(expr_id) {
+            Expr::FieldAccess { table, field, .. } => {
+                let base = self.find_receiver_table_index(*table, true, depth + 1)?;
+                let fi = self.get_field(base, field)?;
+                let idx = match &fi.annotation {
+                    Some(ValueType::Table(Some(idx))) if follow_declared => *idx,
+                    Some(_) => return None,
+                    None => {
+                        let mut writes = std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied())
+                            .map(|e| self.find_receiver_table_index(e, follow_declared, depth + 1));
+                        let first = writes.next()??;
+                        if !writes.all(|w| w == Some(first)) {
+                            return None;
+                        }
+                        first
+                    }
+                };
+                let idx = self.table(idx).class_name.as_ref()
+                    .and_then(|name| self.classes.get(name).copied())
+                    .unwrap_or(idx);
+                (follow_declared || !idx.is_external()).then_some(idx)
+            }
+            Expr::SymbolRef(sym_idx, ver_idx) => {
+                let ver = &self.sym(*sym_idx).versions[*ver_idx];
+                match ver.type_source {
+                    Some(type_source) => self.find_receiver_table_index(type_source, follow_declared, depth + 1),
+                    None => match &ver.resolved_type {
+                        Some(ValueType::Table(Some(idx))) => Some(*idx),
+                        _ => None,
+                    },
+                }
+            }
+            Expr::Grouped(inner)
+            | Expr::StripNil(inner)
+            | Expr::StripFalsy(inner)
+            | Expr::AssignNarrow { inner, .. } => self.find_receiver_table_index(*inner, follow_declared, depth + 1),
+            _ => self.find_table_index(expr_id),
+        }
+    }
+
+    /// Whether a write to the external field `fi` is typed by its own value `rhs`
+    /// rather than the field's annotation: a file-level write of a table over a
+    /// type the workspace scan inferred (a bare `table` or an unnamed constructor
+    /// shape) instead of one an author declared.
+    pub(super) fn write_supersedes_scanned_type(&self, fi: &FieldInfo, rhs: ExprId, in_function: bool) -> bool {
+        !in_function
+            && fi.from_scan
+            && match fi.annotation {
+                Some(ValueType::Table(None)) => true,
+                Some(ValueType::Table(Some(idx))) => self.table(idx).class_name.is_none(),
+                _ => false,
+            }
+            && self.find_table_index(rhs).is_some()
+    }
+
     /// Whether `t["key"] = v` writes an element of `t` (table `idx`) rather than
     /// a field: `t` is a map or array, whose entries its key/value types
     /// describe, and `key` doesn't name one of its fields (a read of `t["key"]`
