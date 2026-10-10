@@ -17,11 +17,23 @@ local painted = DeepMethodNS.Helpers.Color:Paint("x")
 local ready = DeepMethodStatic.IsReady()
 --    ^ hover: (local) ready: boolean
 
+-- Through a field assigned a call: on the call's object, typed or not.
+local callExtra = DeepMethodCalls.Fmt:Extra()
+--    ^ hover: (local) callExtra: number
+local slotExtra = DeepMethodSlot.Fmt:Extra()
+--    ^ hover: (local) slotExtra: number
+local described = DeepMethodOpaque.Fmt:Describe()
+--    ^ hover: (local) described: string
+
 -- Not flattened onto the class.
 local flat = DeepMethodRoot.GetPrice
 --                          ^ diag: undefined-field
 local flatCount = DeepMethodAddon.Count
 --                                ^ diag: undefined-field
+local flatExtra = DeepMethodCalls.Extra
+--                                ^ diag: undefined-field
+local flatDescribe = DeepMethodOpaque.Describe
+--                                    ^ diag: undefined-field
 
 -- Fields assigned a call, and an entry that declares its type, keep their type.
 ---@param fmt DeepMethodFmt

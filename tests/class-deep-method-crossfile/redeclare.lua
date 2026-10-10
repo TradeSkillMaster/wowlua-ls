@@ -7,3 +7,9 @@ local Root = DeepMethodRoot
 
 local price = Root.API.v1.GetPrice(1)
 --    ^ hover: (local) price: number?
+
+---@class DeepMethodCalls
+local Calls = DeepMethodCalls
+
+local callExtra = Calls.Fmt:Extra()
+--    ^ hover: (local) callExtra: number

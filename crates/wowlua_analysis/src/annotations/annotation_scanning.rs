@@ -289,8 +289,8 @@ pub struct GeneratesEventsSpec {
     pub field_name: String,
 }
 
-/// A named entry of the table constructor a `Table` global is assigned
-/// (`X = { a = 1 }`). See [`ExternalGlobal::ctor_fields`].
+/// A named entry (`a = 1`, or `["a"] = 1`) of the table constructor a `Table`
+/// global is assigned. See [`ExternalGlobal::ctor_fields`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct CtorField {
     pub name: String,
@@ -412,10 +412,15 @@ pub struct ExternalGlobal {
     #[serde(skip)]
     pub assigned_call_offset: Option<u32>,
     /// For a `Table` global assigned a constructor (`X = { a = 1 }`), the
-    /// constructor's named entries, which `build_on_stubs` materializes onto the
-    /// global's table. Runtime only — `#[serde(skip)]`, no BLOB_VERSION bump.
+    /// constructor's named entries (`a = 1`, or `["a"] = 1`), which both builds
+    /// materialize onto the global's table. Runtime only — `#[serde(skip)]`, no
+    /// BLOB_VERSION bump.
     #[serde(skip)]
     pub ctor_fields: Vec<CtorField>,
+    /// That constructor also has entries `ctor_fields` doesn't carry: positional
+    /// ones or `[key]`s other than a string literal. Runtime only — `#[serde(skip)]`.
+    #[serde(skip)]
+    pub ctor_elements: bool,
     /// `returns` is the class this global *is* — a `---@class Foo` on its own
     /// assignment (`Bar = {}`) — rather than a `---@type` for its value. Runtime
     /// only — `#[serde(skip)]`, no BLOB_VERSION bump.
@@ -493,6 +498,7 @@ impl ExternalGlobal {
             deferred_call_type: false,
             assigned_call_offset: None,
             ctor_fields: Vec::new(),
+            ctor_elements: false,
             declares_class: false,
             name_start: 0,
             name_end: 0,
@@ -1097,6 +1103,7 @@ pub fn scan_method_funcall_self_fields(
                 deferred_call_type: false,
                 assigned_call_offset: None,
                 ctor_fields: Vec::new(),
+                ctor_elements: false,
                 declares_class: false,
                 name_start: range.0,
                 name_end: range.1,

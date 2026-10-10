@@ -539,8 +539,8 @@ fn record_field_location(
 
 /// A call-valued constructor entry (`ns.T = { A = MakeThing() }`) populated as an
 /// `any` placeholder, typed from the callee's return once every global is
-/// registered (`BuildOnStubsContext::resolve_nested_ctor_calls`) — provided the
-/// field still holds that placeholder: a later typed write replaces it and wins.
+/// registered (each build's `resolve_nested_ctor_calls`) — provided the field
+/// still holds that placeholder: a later typed write replaces it and wins.
 struct NestedCtorCall {
     /// Local index of the table holding the entry.
     table: usize,
@@ -548,6 +548,130 @@ struct NestedCtorCall {
     callee: Vec<String>,
     /// The placeholder `expr` the entry was populated with.
     placeholder: ExprId,
+}
+
+impl NestedCtorCall {
+    /// Whether the entry still holds its placeholder.
+    fn is_pending(&self, tables: &[TableInfo]) -> bool {
+        tables[self.table].fields.get(&self.field).is_some_and(|fi| fi.expr == self.placeholder)
+    }
+
+    /// Type the entry as `vt`, the callee's return. As for a top-level call field,
+    /// a class instance stays annotated so it survives the per-file `@class`
+    /// overlay import; any other type resolves through the literal `expr`.
+    fn resolve_to(&self, vt: ValueType, tables: &mut [TableInfo], exprs: &mut Vec<Expr>) {
+        let annotation = matches!(vt, ValueType::Table(Some(_))).then(|| vt.clone());
+        let expr_idx = ExprId(EXT_BASE + exprs.len());
+        exprs.push(Expr::Literal(vt));
+        if let Some(fi) = tables[self.table].fields.get_mut(&self.field) {
+            fi.expr = expr_idx;
+            fi.annotation = annotation;
+            fi.annotation_type_raw = None;
+        }
+    }
+}
+
+/// The fields a top-level write assigns a call (`R.f = Call()`), as `(R, f)`. A
+/// method defined through one (`function R.f:m()`) belongs to the object the call
+/// returns, not to `R`: the method pass places it in an anonymous table under the
+/// field, which the call's write then keeps (`keep_call_field_methods`).
+fn call_field_writes(globals: &[crate::annotations::ExternalGlobal]) -> HashSet<(&str, &str)> {
+    use crate::annotations::{ExternalGlobalKind, FieldValueKind};
+    globals.iter()
+        .filter_map(|g| match &g.kind {
+            ExternalGlobalKind::TableField(path, field, FieldValueKind::FunctionCall(..)) if path.is_empty() => {
+                Some((g.name.as_str(), field.as_str()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The anonymous table the field `field` of `owner` holds when methods were
+/// defined through it as a call-assigned field (`call_field_methods`, see
+/// [`call_field_writes`]).
+fn call_field_method_table(
+    call_field_methods: &HashSet<(TableIndex, String)>,
+    tables: &[TableInfo],
+    exprs: &[Expr],
+    owner: TableIndex,
+    field: &str,
+) -> Option<TableIndex> {
+    if !call_field_methods.contains(&(owner, field.to_string())) {
+        return None;
+    }
+    let fi = tables[owner.ext_offset()].fields.get(field)?;
+    match exprs[fi.expr.ext_offset()] {
+        Expr::Literal(ValueType::Table(Some(t))) if tables[t.ext_offset()].class_name.is_none() => Some(t),
+        _ => None,
+    }
+}
+
+/// Keep `method_table`, the anonymous table the methods defined through the
+/// call-assigned field `field` of `owner` were placed in, as the field's value,
+/// typed as the call's object (`call_type`): an instance of the call's class, or
+/// of each class of an intersection, the way a method defined through a
+/// class-typed field gets one (`walk_deep_path`); an anonymous table's entries
+/// are copied in.
+///
+/// Only an instance is annotated, as the instance or nil when the call may return
+/// nil, so the call's own writes, typed per file, match it and a file re-declaring
+/// the class still imports the field. An anonymous table stays unannotated, as the
+/// call's placeholder would be: those writes would mismatch it.
+fn keep_call_field_methods(
+    owner: TableIndex,
+    field: &str,
+    method_table: TableIndex,
+    call_type: Option<&ValueType>,
+    tables: &mut [TableInfo],
+) {
+    let call_tables: Vec<TableIndex> = match call_type.map(ValueType::strip_nil) {
+        Some(ValueType::Table(Some(idx))) => vec![idx],
+        Some(ValueType::Intersection(members)) => members.iter()
+            .filter_map(|m| match m {
+                ValueType::Table(Some(idx)) => Some(*idx),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut class_name = None;
+    let mut parents: Vec<TableIndex> = Vec::new();
+    for src in call_tables.into_iter().filter(|&src| src != method_table) {
+        if let Some(name) = tables[src.ext_offset()].class_name.clone() {
+            class_name.get_or_insert(name);
+            for parent in instance_parents(tables, src) {
+                if !parents.contains(&parent) {
+                    parents.push(parent);
+                }
+            }
+        } else {
+            let entries: Vec<(String, FieldInfo)> = tables[src.ext_offset()].fields.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let t = &mut tables[method_table.ext_offset()];
+            for (name, fi) in entries {
+                t.fields.entry(name).or_insert(fi);
+            }
+        }
+    }
+    let instance = class_name.is_some();
+    if instance {
+        let t = &mut tables[method_table.ext_offset()];
+        t.class_name = class_name;
+        t.parent_classes = parents;
+    }
+    if let Some(fi) = tables[owner.ext_offset()].fields.get_mut(field) {
+        fi.annotation = instance.then(|| {
+            let ty = ValueType::Table(Some(method_table));
+            if call_type.is_some_and(ValueType::contains_nil) {
+                ValueType::make_union(vec![ty, ValueType::Nil])
+            } else {
+                ty
+            }
+        });
+        fi.annotation_type_raw = None;
+    }
 }
 
 /// Populate a newly-created sub-table with fields extracted from a table constructor.
@@ -668,6 +792,48 @@ fn record_added_fields(
         {
             record_added_fields(sub_idx, sub_fields, tables, exprs, added);
         }
+    }
+}
+
+/// The arenas, logs and location map a global's constructor entries are merged
+/// into, borrowed off a build context (see [`merge_ctor_fields`]).
+struct CtorFieldsCtx<'a> {
+    tables: &'a mut Vec<TableInfo>,
+    exprs: &'a mut Vec<Expr>,
+    number_literals: &'a mut HashMap<ExprId, String>,
+    string_literals: &'a mut HashMap<ExprId, String>,
+    field_locations: &'a mut HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    ctor_entries: &'a mut HashSet<(TableIndex, String)>,
+    nested_calls: &'a mut Vec<NestedCtorCall>,
+}
+
+/// Materialize the table global `g`'s constructor entries (`X = { a = 1 }`,
+/// `ExternalGlobal::ctor_fields`) onto its table `table_idx`. Both builds run this
+/// after their method pass, so a same-named `function X.a()` keeps its signature,
+/// and before the field-write passes, so other fields can refer to the entries
+/// and a deep `X.sub.b = v` extends the constructor's `sub`; those passes let a
+/// typed write replace an entry (`ctor_entries`).
+fn merge_ctor_fields(g: &crate::annotations::ExternalGlobal, table_idx: TableIndex, ctx: CtorFieldsCtx) {
+    use crate::annotations::FieldValueKind;
+    let local_idx = table_idx.ext_offset();
+    if let Some(path) = &g.source_path {
+        for f in &g.ctor_fields {
+            if !ctx.tables[local_idx].fields.contains_key(&f.name) {
+                ctx.field_locations.entry(table_idx).or_default()
+                    .entry(f.name.clone())
+                    .or_insert_with(|| ExternalLocation {
+                        path: path.clone(), start: f.range.0, end: f.range.1, ..Default::default()
+                    });
+            }
+        }
+    }
+    let fields: Vec<(String, FieldValueKind)> = g.ctor_fields.iter()
+        .map(|f| (f.name.clone(), f.kind.clone()))
+        .collect();
+    merge_table_fields(table_idx, &fields, ctx.tables, ctx.exprs, ctx.number_literals, ctx.string_literals, ctx.ctor_entries, ctx.nested_calls);
+    // Its other entries aren't scanned: a dynamic index may reach them.
+    if g.ctor_elements {
+        ctx.tables[local_idx].value_type.get_or_insert(ValueType::Any);
     }
 }
 
@@ -814,12 +980,7 @@ fn walk_deep_path(
                     let shared_class_name = ctx.tables[idx.ext_offset()].class_name.clone();
                     if shared_class_name.is_some() {
                         let new_idx = TableIndex(EXT_BASE + ctx.tables.len());
-                        let mut parents = vec![idx];
-                        for &ancestor in &ctx.tables[idx.ext_offset()].parent_classes {
-                            if !parents.contains(&ancestor) {
-                                parents.push(ancestor);
-                            }
-                        }
+                        let parents = instance_parents(ctx.tables, idx);
                         ctx.tables.push(TableInfo {
                             class_name: shared_class_name,
                             parent_classes: parents,
@@ -871,6 +1032,19 @@ fn walk_deep_path(
         current_name = format!("{current_name}.{seg}");
     }
     Some((current_idx, current_name))
+}
+
+/// The `parent_classes` of a table of its own for one instance of the class
+/// `class_idx` (methods defined on that instance alone): the class, then its
+/// ancestors.
+fn instance_parents(tables: &[TableInfo], class_idx: TableIndex) -> Vec<TableIndex> {
+    let mut parents = vec![class_idx];
+    for &ancestor in &tables[class_idx.ext_offset()].parent_classes {
+        if !parents.contains(&ancestor) {
+            parents.push(ancestor);
+        }
+    }
+    parents
 }
 
 /// How deep paths rooted at a `@class` table walk into the class's fields,
@@ -1530,6 +1704,15 @@ struct BuildContext {
     table_source_locations: HashMap<String, ExternalLocation>,
     class_globals: HashSet<String>,
     sub_tables: HashMap<(String, String), TableIndex>,
+    // `(table, field)` entries created from a global table constructor; a typed
+    // write replaces one (see `BuildOnStubsContext::ctor_entries`).
+    ctor_entries: HashSet<(TableIndex, String)>,
+    // Call-valued constructor entries populated as placeholders; see
+    // `resolve_nested_ctor_calls`.
+    nested_ctor_calls: Vec<NestedCtorCall>,
+    // `(table, field)` call-assigned fields methods were defined through; see
+    // `call_field_writes`.
+    call_field_methods: HashSet<(TableIndex, String)>,
     // Methods defined by a `stubs/overrides/` file (see `propagate_override_overloads`).
     override_methods: HashSet<FunctionIndex>,
 
@@ -1586,6 +1769,9 @@ impl BuildContext {
             table_source_locations: HashMap::default(),
             class_globals: HashSet::default(),
             sub_tables: HashMap::default(),
+            ctor_entries: HashSet::default(),
+            nested_ctor_calls: Vec::new(),
+            call_field_methods: HashSet::default(),
             override_methods: HashSet::default(),
             addon_table_idx: None,
             setmetatable_func_idx: None,
@@ -1640,6 +1826,19 @@ impl BuildContext {
         }
     }
 
+    /// Bundle the arenas and logs `merge_ctor_fields` writes into.
+    fn ctor_fields_ctx(&mut self) -> CtorFieldsCtx<'_> {
+        CtorFieldsCtx {
+            tables: &mut self.tables,
+            exprs: &mut self.exprs,
+            number_literals: &mut self.number_literals,
+            string_literals: &mut self.string_literals,
+            field_locations: &mut self.field_locations,
+            ctor_entries: &mut self.ctor_entries,
+            nested_calls: &mut self.nested_ctor_calls,
+        }
+    }
+
     fn global_lookup_ctx(&self) -> GlobalLookupCtx<'_> {
         GlobalLookupCtx {
             tables: &self.tables,
@@ -1649,6 +1848,35 @@ impl BuildContext {
             classes: &self.classes,
             scope0_symbols: &self.scope0_symbols,
             symbols: &self.symbols,
+        }
+    }
+
+    /// The type of the call a field is assigned (`X.f = Call()`): the callee's
+    /// return, else the class its first string argument or the field names.
+    fn call_return_type(&self, callee_chain: &[String], first_string_arg: Option<&str>, field_name: &str) -> Option<ValueType> {
+        // Filter out TypeVariable — unresolved generics are not useful as field types
+        resolve_funcall_chain(callee_chain, &self.global_lookup_ctx())
+            .filter(|vt| !vt.contains_type_variable())
+            // A string literal argument naming a known class (e.g.
+            // `EnumType.New("BANKING_FRAME", ...)` creates class BANKING_FRAME).
+            .or_else(|| first_string_arg.and_then(|name| self.classes.get(name)).map(|&idx| ValueType::Table(Some(idx))))
+            .or_else(|| self.classes.get(field_name).map(|&idx| ValueType::Table(Some(idx))))
+    }
+
+    /// Type the call-valued constructor entries logged during the build from the
+    /// callee's return, now that every global is registered (see
+    /// `BuildOnStubsContext::resolve_nested_ctor_calls`).
+    fn resolve_nested_ctor_calls(&mut self) {
+        for call in std::mem::take(&mut self.nested_ctor_calls) {
+            if !call.is_pending(&self.tables) {
+                continue;
+            }
+            let Some(vt) = resolve_funcall_chain(&call.callee, &self.global_lookup_ctx())
+                .filter(|vt| !vt.contains_type_variable())
+            else {
+                continue;
+            };
+            call.resolve_to(vt, &mut self.tables, &mut self.exprs);
         }
     }
 
@@ -1821,8 +2049,7 @@ impl BuildContext {
         // into (see `ClassFieldPaths`).
         for (sub_idx, ctors) in class_field_paths.open_walked_ctor_tables(&self.classes, &mut self.tables, &mut self.exprs) {
             for entries in ctors {
-                // Stub declarations carry no call-valued constructor entries to resolve.
-                merge_table_fields(sub_idx, entries, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut HashSet::default(), &mut Vec::new());
+                merge_table_fields(sub_idx, entries, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.ctor_entries, &mut self.nested_ctor_calls);
             }
         }
 
@@ -1831,17 +2058,21 @@ impl BuildContext {
         //   - Non-empty path, name=ADDON_NS_NAME: walk sub-table chain (auto-creating
         //     intermediates) and place method on the leaf sub-table.
         //   - Non-empty path, class root: a path through a field of the class
-        //     (`ClassFieldPaths::enter_field_path`) is walked the same way; otherwise
-        //     the segments are accessor names on the root class, used only for
-        //     visibility lookup, and the method lands on the root.
+        //     (`ClassFieldPaths::enter_field_path`) or a call-assigned one
+        //     (`call_field_writes`) is walked the same way; otherwise the segments
+        //     are accessor names on the root class, used only for visibility lookup,
+        //     and the method lands on the root.
         // Done BEFORE inheritance so methods are inherited by child classes.
+        let call_fields = call_field_writes(globals);
         let mut seen_methods: HashSet<(String, String)> = HashSet::default();
         for g in globals {
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
                 let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
                 let is_non_class_table = self.non_class_tables.contains_key(&g.name);
+                let through_call = path.first().is_some_and(|first| call_fields.contains(&(g.name.as_str(), first.as_str())));
                 let class_field_root = self.classes.get(&g.name).copied().and_then(|class_idx| {
                     class_field_paths.enter_field_path(class_idx, &g.name, path, &mut self.deep_path_ctx())
+                        .or(through_call.then_some(class_idx))
                 });
                 let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table || class_field_root.is_some());
                 let target_idx = if use_deep_path {
@@ -1850,6 +2081,9 @@ impl BuildContext {
                         root_idx, &g.name, path,
                         &mut self.deep_path_ctx(), g,
                     ) else { continue };
+                    if through_call {
+                        self.call_field_methods.insert((root_idx, path[0].clone()));
+                    }
                     leaf_idx
                 } else {
                     let target_table = self.classes.get(&g.name).or_else(|| self.non_class_tables.get(&g.name));
@@ -2006,6 +2240,13 @@ impl BuildContext {
             }
         }
 
+        // Materialize each global table's constructor entries (`X = { a = 1 }`).
+        for g in globals {
+            if !matches!(g.kind, ExternalGlobalKind::Table) || g.ctor_fields.is_empty() { continue; }
+            let Some(&table_idx) = self.non_class_tables.get(&g.name) else { continue };
+            merge_ctor_fields(g, table_idx, self.ctor_fields_ctx());
+        }
+
         // Build table field entries (non-function fields like ns.version = 1, ns.A.B.x = "deep", etc).
         // Handles all depths uniformly via walk_deep_path (empty path is a no-op).
         // Two passes: typed first (sub-table creation), then Unknown (reuse of sub-tables).
@@ -2019,10 +2260,12 @@ impl BuildContext {
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
+                let ctor_entry = (leaf_idx, field_name.clone());
+                let is_ctor_entry = self.ctor_entries.contains(&ctor_entry);
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
                 // so that globals with better type info can upgrade them.
                 if let Some(existing_fi) = self.tables[local_idx].fields.get(field_name)
-                    .filter(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
+                    .filter(|fi| !is_ctor_entry && !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) {
                         // Field already has a typed annotation (from @field), but the
                         // constructor may carry a literal value — copy it so hover can
                         // show enum values like `= 0` or `= "value"`.
@@ -2049,8 +2292,7 @@ impl BuildContext {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             let sub_local = sub_idx.ext_offset();
-                            // Stub declarations carry no call-valued constructor entries to resolve.
-                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut Vec::new());
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.nested_ctor_calls);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -2070,6 +2312,7 @@ impl BuildContext {
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(),
                         shared::scan_literal_field(expr_idx, field_name, annotation, g.flavor_guard, self.implicit_protected_prefix, g.visibility));
+                    self.ctor_entries.remove(&ctor_entry);
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                 }
             }
@@ -2401,8 +2644,21 @@ impl BuildContext {
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
+                // The call's object holds the methods defined through the field.
+                if let Some(method_table) = call_field_method_table(&self.call_field_methods, &self.tables, &self.exprs, table_idx, field_name) {
+                    let call_type = if g.returns.is_empty() {
+                        self.call_return_type(callee_chain, first_string_arg.as_deref(), field_name)
+                    } else {
+                        self.resolve_annotation(&g.returns[0])
+                    };
+                    keep_call_field_methods(table_idx, field_name, method_table, call_type.as_ref(), &mut self.tables);
+                    record_field_location(&mut self.field_locations, table_idx, field_name, g);
+                    continue;
+                }
+                let ctor_entry = (table_idx, field_name.clone());
+                let is_ctor_entry = self.ctor_entries.contains(&ctor_entry);
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
-                if self.tables[local_idx].fields.get(field_name)
+                if !is_ctor_entry && self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 if !g.returns.is_empty() {
                     // Has explicit @type annotation — use it directly
@@ -2411,25 +2667,19 @@ impl BuildContext {
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
                             shared::scan_literal_field(expr_idx, field_name, Some(vt), 0, self.implicit_protected_prefix, g.visibility));
+                        self.ctor_entries.remove(&ctor_entry);
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                     continue;
                 }
 
-                // Walk the callee chain to find the function's return type
-                let return_type = resolve_funcall_chain(callee_chain, &self.global_lookup_ctx());
-                // Filter out TypeVariable — unresolved generics are not useful as field types
-                let return_type = return_type.filter(|vt| !vt.contains_type_variable());
-                let vt = return_type.or_else(|| {
-                    // Fallback: if the call had a string literal arg matching a known class
-                    // (e.g. EnumType.New("BANKING_FRAME", ...) creates class BANKING_FRAME)
-                    first_string_arg.as_ref()
-                        .and_then(|name| self.classes.get(name.as_str()))
-                        .map(|&idx| ValueType::Table(Some(idx)))
-                }).or_else(|| {
-                    // Fallback: check if field name matches a known class
-                    self.classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
-                }).or_else(|| {
+                let resolved = self.call_return_type(callee_chain, first_string_arg.as_deref(), field_name);
+                // A call the scan can't type leaves a constructor entry in place.
+                if resolved.is_none() && is_ctor_entry {
+                    record_field_location(&mut self.field_locations, table_idx, field_name, g);
+                    continue;
+                }
+                let vt = resolved.or_else(|| {
                     if g.name == crate::annotations::ADDON_NS_NAME {
                         let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                         self.tables.push(TableInfo { placeholder: true, ..TableInfo::default() });
@@ -2450,6 +2700,7 @@ impl BuildContext {
                     self.exprs.push(Expr::Literal(vt.clone()));
                     self.tables[local_idx].fields.insert(field_name.clone(),
                         shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix, g.visibility));
+                    self.ctor_entries.remove(&ctor_entry);
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
             }
@@ -2466,8 +2717,9 @@ impl BuildContext {
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
+                let ctor_entry = (table_idx, field_name.clone());
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
-                if self.tables[local_idx].fields.get(field_name)
+                if !self.ctor_entries.contains(&ctor_entry) && self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 // Walk the ref chain: ref_chain[0] is the source table, ref_chain[1..] are field names
                 let source_table_idx = self.non_class_tables.get(&ref_chain[0])
@@ -2512,6 +2764,7 @@ impl BuildContext {
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
                             shared::scan_literal_field(expr_idx, field_name, None, 0, self.implicit_protected_prefix, g.visibility));
+                        self.ctor_entries.remove(&ctor_entry);
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
                 }
@@ -2550,8 +2803,7 @@ impl BuildContext {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             let sub_local = sub_idx.ext_offset();
-                            // Stub declarations carry no call-valued constructor entries to resolve.
-                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut Vec::new());
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.nested_ctor_calls);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -3073,6 +3325,9 @@ impl PreResolvedGlobals {
         ctx.propagate_override_overloads();
         ctx.mark_callable_classes(callable_classes);
         ctx.build_global_entries(globals, &class_field_paths);
+        // Every callee is registered by now (global functions land in
+        // `build_global_entries`).
+        ctx.resolve_nested_ctor_calls();
         let mut pg = ctx.finish();
         pg.creates_global_specs = crate::annotations::build_creates_global_map(globals);
         pg.returns_enum_paths = returns_enum_paths;

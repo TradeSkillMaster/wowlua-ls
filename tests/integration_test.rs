@@ -1976,6 +1976,20 @@ fn class_deep_method_crossfile() {
     });
 }
 
+// Global table constructors' entries, and methods defined through a field assigned
+// a call (`R.f = Call()` + `function R.f:m()`), read the same from the cold `build`
+// the stub blob comes from as from `build_on_stubs`.
+#[test]
+fn global_tables_both_builds() {
+    for with_stubs in [false, true] {
+        run_annotation_tests(&TestConfig {
+            lua_file: "tests/global-tables-both-builds/user.lua",
+            with_stubs,
+            scan_dir: Some("tests/global-tables-both-builds"),
+        });
+    }
+}
+
 // Methods defined via `function <@class-typed-local>:Method()` inside a function body
 // join the class's cross-file method set (harvested by the coarse scan, which does not
 // otherwise descend into function bodies). Without this, a call site reaching an

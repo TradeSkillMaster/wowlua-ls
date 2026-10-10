@@ -1647,3 +1647,18 @@ local typedEntryItems = typedEntryClass.items
 for _, tecv in pairs(typedEntryClass) do
 --     ^ hover: (local) tecv: TypedEntryItem[]
 end
+
+-- FrameXML table constructors keep their named entries in the stubs.
+local stubWrapText = TooltipConstants.WrapText
+--    ^ hover: (local) stubWrapText: boolean
+local stubSoundKit = SOUNDKIT.IG_MAINMENU_OPTION
+--    ^ hover: (local) stubSoundKit: number
+-- A constructor with `[key]` entries the scan skips stays untyped when indexed.
+local stubFactionName = PLAYER_FACTION_GROUP[0]
+--    ^ hover: (local) stubFactionName: any
+
+-- FrameXML methods defined through a field assigned a call land on that field.
+local stubUnitCount = MonthlyActivitiesFrameMixin.TimeLeftFormatter:GetDesiredUnitCount(5)
+--    ^ hover: (local) stubUnitCount: number
+local stubFlatUnitCount = MonthlyActivitiesFrameMixin.GetDesiredUnitCount
+--                                                    ^ diag: undefined-field

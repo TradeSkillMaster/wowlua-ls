@@ -45,6 +45,7 @@ pub(super) fn global_semantic_eq(x: &ExternalGlobal, y: &ExternalGlobal) -> bool
         // Constructor entries, ignoring their positional key ranges.
         && x.ctor_fields.len() == y.ctor_fields.len()
         && x.ctor_fields.iter().zip(&y.ctor_fields).all(|(a, b)| a.name == b.name && a.kind == b.kind)
+        && x.ctor_elements == y.ctor_elements
         // `@meta` status gates stub overriding (build_on_stubs), so toggling
         // `---@meta` on a file must re-run the cross-file build. Unlike
         // path-derived `is_override`, `is_meta` is content-derived and can change

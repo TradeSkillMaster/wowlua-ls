@@ -8,9 +8,10 @@ use super::{
     PreResolvedGlobals,
     record_field_location, walk_deep_path, ClassFieldPaths,
     resolve_funcall_chain, resolve_field_ref_chain_from, GlobalLookupCtx,
-    populate_table_fields, merge_table_fields,
+    populate_table_fields, merge_table_fields, merge_ctor_fields, CtorFieldsCtx,
     FnBuildCtx, FnMeta, DeepPathCtx,
     apply_mixin_parent_inheritance,
+    call_field_writes, call_field_method_table, keep_call_field_methods,
 };
 
 struct BuildOnStubsContext<'a> {
@@ -59,6 +60,9 @@ struct BuildOnStubsContext<'a> {
     /// Call-valued constructor entries populated as placeholders; see
     /// `resolve_nested_ctor_calls`.
     nested_ctor_calls: Vec<super::NestedCtorCall>,
+    /// `(table, field)` call-assigned fields methods were defined through; see
+    /// `call_field_writes`.
+    call_field_methods: HashSet<(TableIndex, String)>,
     /// `---@type` annotation of each table global that has one (`---@type Foo` on
     /// `Bar = {}`); see `annotated_table_global_type`.
     table_global_types: HashMap<String, AnnotationType>,
@@ -137,6 +141,7 @@ impl<'a> BuildOnStubsContext<'a> {
             sub_tables: HashMap::default(),
             ctor_entries: HashSet::default(),
             nested_ctor_calls: Vec::new(),
+            call_field_methods: HashSet::default(),
             table_global_types: HashMap::default(),
             declared_class_fields: HashMap::default(),
             deferred_returns: HashSet::default(),
@@ -204,6 +209,25 @@ impl<'a> BuildOnStubsContext<'a> {
         PreResolvedGlobals::resolve_annotation(at, &self.classes, &self.aliases, &self.parameterized_aliases)
     }
 
+    /// A field write's `---@type`, with a structured type (`table<K,V>`, `T[]`,
+    /// `{field: type}`) materialized into its own `TableInfo`.
+    fn resolve_write_annotation(&mut self, at: &AnnotationType) -> Option<ValueType> {
+        PreResolvedGlobals::resolve_annotation_gen(
+            at, &self.classes, &self.aliases,
+            &self.parameterized_aliases, &[],
+            &mut self.tables, &mut self.exprs,
+        ).or_else(|| self.resolve_annotation(at))
+    }
+
+    /// The type of the call a field is assigned (`X.f = Call()`): the callee's
+    /// return, else the class its first string argument or the field names.
+    fn call_return_type(&self, callee_chain: &[String], first_string_arg: Option<&str>, field_name: &str) -> Option<ValueType> {
+        resolve_funcall_chain(callee_chain, &self.global_lookup_ctx())
+            .and_then(strip_unbound_type_vars)
+            .or_else(|| first_string_arg.and_then(|name| self.classes.get(name)).map(|&idx| ValueType::Table(Some(idx))))
+            .or_else(|| self.classes.get(field_name).map(|&idx| ValueType::Table(Some(idx))))
+    }
+
     /// Bundle the IR arenas and class/alias registries into a [`FnBuildCtx`] for
     /// `build_function`/`materialize_fun_type` (mirrors `BuildContext::fn_build_ctx`).
     fn fn_build_ctx(&mut self) -> FnBuildCtx<'_> {
@@ -228,6 +252,20 @@ impl<'a> BuildOnStubsContext<'a> {
             sub_tables: &mut self.sub_tables,
             field_locations: &mut self.field_locations,
             implicit_protected_prefix: self.implicit_protected_prefix,
+        }
+    }
+
+    /// Bundle the arenas and logs `merge_ctor_fields` writes into (mirrors
+    /// `BuildContext::ctor_fields_ctx`).
+    fn ctor_fields_ctx(&mut self) -> CtorFieldsCtx<'_> {
+        CtorFieldsCtx {
+            tables: &mut self.tables,
+            exprs: &mut self.exprs,
+            number_literals: &mut self.number_literals,
+            string_literals: &mut self.string_literals,
+            field_locations: &mut self.field_locations,
+            ctor_entries: &mut self.ctor_entries,
+            nested_calls: &mut self.nested_ctor_calls,
         }
     }
 
@@ -456,6 +494,7 @@ impl<'a> BuildOnStubsContext<'a> {
             method_order.sort_by_key(|&i| !is_meta_method_override(&ws_globals[i]));
         }
 
+        let call_fields = call_field_writes(ws_globals);
         let mut seen_methods: HashSet<(String, String)> = HashSet::default();
         // (table, method) pairs claimed by a `@meta` override (processed first via
         // `method_order`). A `@meta` override is authoritative, so a later duplicate
@@ -468,8 +507,10 @@ impl<'a> BuildOnStubsContext<'a> {
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
                 let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
                 let is_non_class_table = self.non_class_tables.contains_key(&g.name);
+                let through_call = path.first().is_some_and(|first| call_fields.contains(&(g.name.as_str(), first.as_str())));
                 let class_field_root = self.classes.get(&g.name).copied().and_then(|class_idx| {
                     class_field_paths.enter_field_path(class_idx, &g.name, path, &mut self.deep_path_ctx())
+                        .or(through_call.then_some(class_idx))
                 });
                 let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table || class_field_root.is_some());
                 let target_idx = if use_deep_path {
@@ -478,6 +519,9 @@ impl<'a> BuildOnStubsContext<'a> {
                         root_idx, &g.name, path,
                         &mut self.deep_path_ctx(), g,
                     ) else { continue };
+                    if through_call {
+                        self.call_field_methods.insert((root_idx, path[0].clone()));
+                    }
                     leaf_idx
                 } else {
                     let target_table = self.classes.get(&g.name).or_else(|| self.non_class_tables.get(&g.name));
@@ -659,32 +703,13 @@ impl<'a> BuildOnStubsContext<'a> {
             }
         }
 
-        // Materialize each global table's constructor entries (`X = { a = 1 }`).
-        // After the method pass so a same-named `function X.a()` keeps its
-        // signature, and before the field-write passes so other fields can refer to
-        // the entries and a deep `X.sub.b = v` extends the constructor's `sub`; those
-        // passes let a typed write replace an entry (`ctor_entries`). Not onto a
-        // built-in namespace table: `X = X or { ... }` keeps the stub's.
+        // Materialize each global table's constructor entries (`X = { a = 1 }`), but
+        // not onto a built-in namespace table: `X = X or { ... }` keeps the stub's.
         for g in ws_globals {
             if !matches!(g.kind, ExternalGlobalKind::Table) || g.ctor_fields.is_empty() { continue; }
             if self.is_stub_global(&g.name) { continue; }
             let Some(&table_idx) = self.non_class_tables.get(&g.name) else { continue };
-            let local_idx = table_idx.ext_offset();
-            if let Some(path) = &g.source_path {
-                for f in &g.ctor_fields {
-                    if !self.tables[local_idx].fields.contains_key(&f.name) {
-                        self.field_locations.entry(table_idx).or_default()
-                            .entry(f.name.clone())
-                            .or_insert_with(|| ExternalLocation {
-                                path: path.clone(), start: f.range.0, end: f.range.1, ..Default::default()
-                            });
-                    }
-                }
-            }
-            let fields: Vec<(String, FieldValueKind)> = g.ctor_fields.iter()
-                .map(|f| (f.name.clone(), f.kind.clone()))
-                .collect();
-            merge_table_fields(table_idx, &fields, &mut self.tables, &mut self.exprs, &mut self.number_literals, &mut self.string_literals, &mut self.ctor_entries, &mut self.nested_ctor_calls);
+            merge_ctor_fields(g, table_idx, self.ctor_fields_ctx());
         }
 
         // Build workspace table field entries (unified — see `build` for semantics).
@@ -708,13 +733,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     continue;
                 }
                 let value_type = if !g.returns.is_empty() {
-                    // Use resolve_annotation_gen to materialize structured types
-                    // (table<K,V>, T[], {field: type}) into proper TableInfo entries.
-                    let vt = PreResolvedGlobals::resolve_annotation_gen(
-                        &g.returns[0], &self.classes, &self.aliases,
-                        &self.parameterized_aliases, &[],
-                        &mut self.tables, &mut self.exprs,
-                    ).or_else(|| self.resolve_annotation(&g.returns[0]));
+                    let vt = self.resolve_write_annotation(&g.returns[0]);
                     self.log_nested_ctor_calls(&g.returns[0], vt.as_ref(), value_kind);
                     vt
                 } else {
@@ -1038,6 +1057,17 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.deep_path_ctx(), g,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
+                // The call's object holds the methods defined through the field.
+                if let Some(method_table) = call_field_method_table(&self.call_field_methods, &self.tables, &self.exprs, table_idx, field_name) {
+                    let call_type = if g.returns.is_empty() {
+                        self.call_return_type(callee_chain, first_string_arg.as_deref(), field_name)
+                    } else {
+                        self.resolve_write_annotation(&g.returns[0])
+                    };
+                    keep_call_field_methods(table_idx, field_name, method_table, call_type.as_ref(), &mut self.tables);
+                    record_field_location(&mut self.field_locations, table_idx, field_name, g);
+                    continue;
+                }
                 let ctor_entry = (table_idx, field_name.clone());
                 let is_ctor_entry = self.ctor_entries.contains(&ctor_entry);
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS).
@@ -1048,12 +1078,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     continue;
                 }
                 if !g.returns.is_empty() {
-                    let resolved = PreResolvedGlobals::resolve_annotation_gen(
-                        &g.returns[0], &self.classes, &self.aliases,
-                        &self.parameterized_aliases, &[],
-                        &mut self.tables, &mut self.exprs,
-                    ).or_else(|| self.resolve_annotation(&g.returns[0]));
-                    if let Some(vt) = resolved {
+                    if let Some(vt) = self.resolve_write_annotation(&g.returns[0]) {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(),
@@ -1063,15 +1088,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                     continue;
                 }
-                let return_type = resolve_funcall_chain(callee_chain, &self.global_lookup_ctx())
-                    .and_then(strip_unbound_type_vars);
-                let resolved = return_type.or_else(|| {
-                    first_string_arg.as_ref()
-                        .and_then(|name| self.classes.get(name.as_str()))
-                        .map(|&idx| ValueType::Table(Some(idx)))
-                }).or_else(|| {
-                    self.classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
-                });
+                let resolved = self.call_return_type(callee_chain, first_string_arg.as_deref(), field_name);
                 // A call the scan can't type leaves a constructor entry in place.
                 if resolved.is_none() && is_ctor_entry {
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
@@ -1234,11 +1251,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     continue;
                 }
                 let value_type = if !g.returns.is_empty() {
-                    let vt = PreResolvedGlobals::resolve_annotation_gen(
-                        &g.returns[0], &self.classes, &self.aliases,
-                        &self.parameterized_aliases, &[],
-                        &mut self.tables, &mut self.exprs,
-                    ).or_else(|| self.resolve_annotation(&g.returns[0]));
+                    let vt = self.resolve_write_annotation(&g.returns[0]);
                     self.log_nested_ctor_calls(&g.returns[0], vt.as_ref(), value_kind);
                     vt
                 } else {
@@ -1721,11 +1734,8 @@ impl BuildOnStubsContext<'_> {
     /// keeps that write; a callee the scan can't follow keeps the placeholder (the
     /// per-file constructor twin still refines it in the writing file).
     fn resolve_nested_ctor_calls(&mut self) {
-        let nested = std::mem::take(&mut self.nested_ctor_calls);
-        for call in nested {
-            let still_placeholder = self.tables[call.table].fields.get(&call.field)
-                .is_some_and(|fi| fi.expr == call.placeholder);
-            if !still_placeholder {
+        for call in std::mem::take(&mut self.nested_ctor_calls) {
+            if !call.is_pending(&self.tables) {
                 continue;
             }
             let Some(vt) = resolve_funcall_chain(&call.callee, &self.global_lookup_ctx())
@@ -1733,17 +1743,7 @@ impl BuildOnStubsContext<'_> {
             else {
                 continue;
             };
-            // As for a top-level call field: a class instance stays annotated so it
-            // survives the per-file `@class` overlay import; any other type resolves
-            // through the literal `expr`.
-            let annotation = matches!(vt, ValueType::Table(Some(_))).then(|| vt.clone());
-            let expr_idx = ExprId(EXT_BASE + self.exprs.len());
-            self.exprs.push(Expr::Literal(vt));
-            if let Some(fi) = self.tables[call.table].fields.get_mut(&call.field) {
-                fi.expr = expr_idx;
-                fi.annotation = annotation;
-                fi.annotation_type_raw = None;
-            }
+            call.resolve_to(vt, &mut self.tables, &mut self.exprs);
         }
     }
 

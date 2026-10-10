@@ -2479,6 +2479,7 @@ mod tests {
                 deferred_call_type: false,
                 assigned_call_offset: None,
                 ctor_fields: Vec::new(),
+                ctor_elements: false,
                 declares_class: false,
                 name_start: 0,
                 name_end: 0,
@@ -2979,6 +2980,7 @@ mod tests {
             deferred_call_type: false,
             assigned_call_offset: None,
             ctor_fields: Vec::new(),
+            ctor_elements: false,
             declares_class: false,
             name_start: 0,
             name_end: 0,
@@ -3247,6 +3249,23 @@ mod tests {
                 RebuildScope::None => panic!("declaring a constructor entry's type must trigger a rebuild"),
             }
         }
+    }
+
+    #[test]
+    fn ctor_element_edits_trigger_rebuild() {
+        // A global constructor's positional and `[key]` entries decide what other
+        // files read through a dynamic index, though the scan keeps only named ones.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let mut rebuild = |src: &str| {
+            let tree = crate::syntax::parser::parse(src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws)
+        };
+        let _ = rebuild("Factions = { Horde = 0 }\n");
+        assert!(
+            !matches!(rebuild("Factions = { [0] = \"Horde\", Horde = 0 }\n"), RebuildScope::None),
+            "adding a `[key]` entry must trigger a rebuild",
+        );
     }
 
     #[test]

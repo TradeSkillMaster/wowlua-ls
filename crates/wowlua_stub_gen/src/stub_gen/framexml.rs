@@ -299,17 +299,18 @@ pub(in crate::stub_gen) fn infer_fxml_return_types(
                 let names = ident.names();
                 if names.len() < 2 { continue; }
                 if !util_table_names.contains(&names[0]) { continue; }
+                let Some((method_name, table_path)) = names.split_last() else { continue };
+                // A method defined through a nested table (`function Ns.Sub:M()`)
+                // belongs to that table, not to `Ns`.
+                let table_name = table_path.join(".");
 
                 // Only dot-methods (`Ns.Create*`) are static-factory candidates
                 // whose anonymous return shape may collapse to `@class Ns`.
                 let is_colon = ident.is_call_to_self();
-                let namespace = (!is_colon).then(|| names[0].as_str());
+                let namespace = (!is_colon).then_some(table_name.as_str());
                 if let Some(inferred) = extract_inferred_return(&ar, func, namespace) {
                     let sep = if is_colon { ":" } else { "." };
-                    let table_name = &names[0];
-                    let method_name = &names[names.len() - 1];
-                    let key = format!("{table_name}{sep}{method_name}");
-                    file_results.push((key, inferred));
+                    file_results.push((format!("{table_name}{sep}{method_name}"), inferred));
                 }
             }
         }

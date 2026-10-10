@@ -54,8 +54,8 @@ function DeepMethodReset.API.v1.Get()
     return 1
 end
 
--- A field assigned a call keeps the call's type: the method has no table to
--- land on cross-file, and the write is not shadowed by one made for it.
+-- A method defined through a field assigned a call belongs to the call's
+-- object, an instance of the call's class: the field keeps the call's type.
 ---@class DeepMethodFmt
 ---@field label string
 
@@ -81,6 +81,23 @@ DeepMethodSlot.Fmt = NewDeepMethodFmt()
 ---@return number
 function DeepMethodSlot.Fmt:Extra()
     return 1
+end
+
+-- A call the scan can't type leaves the methods on a table of their own.
+---@generic T
+---@param value T
+---@return T
+function DeepMethodPass(value)
+    return value
+end
+
+---@class DeepMethodOpaque
+DeepMethodOpaque = {}
+DeepMethodOpaque.Fmt = DeepMethodPass({ label = "" })
+
+---@return string
+function DeepMethodOpaque.Fmt:Describe()
+    return ""
 end
 
 -- An entry whose `---@type table` declares it keeps that type.

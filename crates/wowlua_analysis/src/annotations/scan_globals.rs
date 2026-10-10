@@ -360,26 +360,48 @@ fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>, scope: &Call
     fields
 }
 
-/// [`extract_table_field_kinds`] for a global's constructor, keeping each entry's
-/// key range for go-to-definition.
+/// [`extract_table_field_kinds`] for a global's constructor, reading its
+/// [`named_ctor_entry`]s, each with its key range for go-to-definition.
 fn extract_ctor_fields(tc: &crate::ast::TableConstructor<'_>, scope: &CalleeScope<'_>) -> Vec<CtorField> {
-    let mut fields = Vec::new();
-    for field in tc.fields() {
-        if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
-            let r = field.syntax().children_with_tokens()
+    tc.fields().iter()
+        .filter_map(|field| {
+            let (name, value, range) = named_ctor_entry(field)?;
+            let kind = nil_entries_unknown(classify_ctor_entry(field.syntax(), &value, scope));
+            Some(CtorField { name, kind, range })
+        })
+        .collect()
+}
+
+/// A constructor entry's name, value and key range when it sets a named field:
+/// `name = v`, or `["name"] = v`, which sets the same field. Positional entries
+/// and any other `[key]` have none.
+fn named_ctor_entry<'a>(field: &crate::ast::Field<'a>) -> Option<(String, Expression<'a>, (u32, u32))> {
+    let (name, value, key) = match field.kind() {
+        Some(crate::ast::FieldKind::Named { name, value }) => {
+            let key = field.syntax().children_with_tokens()
                 .find_map(|c| match c {
                     NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text_range()),
                     _ => None,
                 })
                 .unwrap_or_else(|| field.syntax().text_range());
-            fields.push(CtorField {
-                name,
-                kind: nil_entries_unknown(classify_ctor_entry(field.syntax(), &value, scope)),
-                range: (u32::from(r.start()), u32::from(r.end())),
-            });
+            (name, value, key)
         }
-    }
-    fields
+        Some(crate::ast::FieldKind::Positional(_)) => return None,
+        None => {
+            let node = field.syntax();
+            let name = crate::ast::extract_bracket_string_key(node)?;
+            let mut exprs = node.children().filter_map(Expression::cast);
+            let key = exprs.next()?.syntax().text_range();
+            (name, exprs.next()?, key)
+        }
+    };
+    Some((name, value, (u32::from(key.start()), u32::from(key.end()))))
+}
+
+/// Whether a constructor has entries [`extract_ctor_fields`] doesn't carry:
+/// positional ones, or a `[key]` other than a string literal.
+fn has_ctor_elements(tc: &crate::ast::TableConstructor<'_>) -> bool {
+    tc.fields().iter().any(|field| named_ctor_entry(field).is_none())
 }
 
 /// The kind of one named table-constructor entry (`field`, whose value is
@@ -748,6 +770,7 @@ fn build_func_external(
         deferred_call_type: false,
         assigned_call_offset: None,
         ctor_fields: Vec::new(),
+        ctor_elements: false,
         declares_class: false,
         name_start,
         name_end,
@@ -1567,9 +1590,11 @@ pub fn scan_file_globals_with_synth(
                                 }
                                 _ => None,
                             };
-                            let ctor_fields = match &effective {
-                                Expression::TableConstructor(tc) => extract_ctor_fields(tc, &callee_scope),
-                                _ => Vec::new(),
+                            let (ctor_fields, ctor_elements) = match &effective {
+                                Expression::TableConstructor(tc) => {
+                                    (extract_ctor_fields(tc, &callee_scope), has_ctor_elements(tc))
+                                }
+                                _ => (Vec::new(), false),
                             };
                             // Name-token range for precise navigation. Uses the LAST
                             // Name token so a redirected `_G.X = ...` points at the
@@ -1616,6 +1641,7 @@ pub fn scan_file_globals_with_synth(
                                 deferred_call_type: false,
                                 assigned_call_offset,
                                 ctor_fields,
+                                ctor_elements,
                                 declares_class,
                                 name_start: ns, name_end: ne,
                                 mixin_parents,
@@ -1842,6 +1868,7 @@ pub fn scan_file_globals_with_synth(
                                 deferred_call_type: false,
                                 assigned_call_offset: None,
                                 ctor_fields: Vec::new(),
+                                ctor_elements: false,
                                 declares_class: false,
                                 name_start: u32::from(range.start()),
                                 name_end: u32::from(range.end()),
@@ -2017,6 +2044,7 @@ pub fn scan_file_globals_with_synth(
                     deferred_call_type: false,
                     assigned_call_offset: None,
                     ctor_fields: Vec::new(),
+                    ctor_elements: false,
                     declares_class: false,
                     name_start: ns,
                     name_end: ne,
@@ -2181,6 +2209,7 @@ pub fn scan_file_globals_with_synth(
                 deferred_call_type: false,
                 assigned_call_offset: None,
                 ctor_fields: Vec::new(),
+                ctor_elements: false,
                 declares_class: false,
                 name_start: ns,
                 name_end: ne,
@@ -2457,6 +2486,7 @@ pub fn scan_created_globals(
                 deferred_call_type: true,
                 assigned_call_offset: None,
                 ctor_fields: Vec::new(),
+                ctor_elements: false,
                 declares_class: false,
                 name_start: u32::from(range.start()),
                 name_end: u32::from(range.end()),

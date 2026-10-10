@@ -3123,6 +3123,38 @@ fn generation_dir_found_in_any_serialized_field() {
 }
 
 #[test]
+fn inferred_returns_keep_nested_method_paths() {
+    // A method defined through a nested table (`function Ns.Sub:M()`) is keyed by
+    // its full path, so its inferred-return stub lands on `Ns.Sub`, not on `Ns`.
+    let ui = std::env::temp_dir().join("wowlua-ls-test-inferred-returns-nested-ui");
+    let _ = std::fs::remove_dir_all(&ui);
+    let iface = ui.join("Interface/AddOns/Blizzard_Test");
+    std::fs::create_dir_all(&iface).unwrap();
+    std::fs::write(
+        iface.join("Panel.lua"),
+        r#"TimerPanelMixin = {}
+TimerPanelMixin.Formatter = {}
+
+function TimerPanelMixin.Formatter:GetUnitCount(seconds)
+    return 1
+end
+"#,
+    )
+    .unwrap();
+
+    let inferred = infer_fxml_return_types(
+        &ui,
+        std::sync::Arc::new(crate::pre_globals::PreResolvedGlobals::empty()),
+        &HashSet::default(),
+        &HashSet::from_iter(["TimerPanelMixin".to_string()]),
+    );
+    let _ = std::fs::remove_dir_all(&ui);
+
+    let keys: Vec<&String> = inferred.keys().collect();
+    assert_eq!(keys, ["TimerPanelMixin.Formatter:GetUnitCount"], "{keys:?}");
+}
+
+#[test]
 fn inferred_returns_keep_stub_annotations() {
     // An inferred-return stub overrides the stub definition wholesale, so it must
     // not be emitted over one that already has a `@return` — table fields and
