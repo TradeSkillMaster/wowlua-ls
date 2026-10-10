@@ -205,6 +205,10 @@ struct WorkspaceState {
     /// Per-file funcall self-field globals (self.field = SomeCall() in methods).
     ws_file_self_field_globals: HashMap<PathBuf, Vec<ExternalGlobal>>,
     pre_globals: Arc<PreResolvedGlobals>,
+    /// Open documents' current text (unsaved edits included), keyed by path.
+    /// Outlives each rebuilt `pre_globals`, which shares it so cross-file
+    /// harvests read open files from here instead of disk.
+    document_overrides: Arc<std::sync::RwLock<HashMap<PathBuf, String>>>,
     /// Cached merged stubs + workspace globals (avoids ~100K clones per keystroke):
     /// the stub globals, then every workspace file's. Only the workspace suffix is
     /// rebuilt, and only when a file's exported globals actually change.
@@ -789,7 +793,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     let scan_pass1 = if workspace_roots.is_empty() {
         None
     } else {
-        Some(scan_directory_pass1(&workspace_roots, &mut configs))
+        Some(scan_directory_pass1(&workspace_roots, &mut configs, &HashMap::default()))
     };
 
     // Join stubs (should be done or nearly done — Pass 1 overlapped with stubs load)
@@ -841,6 +845,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ws_file_self_field_globals: scan_result.file_self_field_globals,
         ws_file_dynamic_prefixes: scan_result.file_dynamic_prefixes,
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
+        document_overrides: Arc::default(),
         cached_all_globals: Vec::new(),
         cached_all_classes: Vec::new(),
         cached_needs_defclass: false,
@@ -3858,6 +3863,77 @@ mod tests {
             matches!(cached(&pre_globals), Some(Some(ValueType::String(_)))),
             "after invalidation the re-harvest should observe the edited `string` type",
         );
+    }
+
+    /// Other files must keep seeing an open file's unsaved edits across a workspace
+    /// rebuild and a full rescan. The open-document text that cross-file harvests read
+    /// instead of disk used to live only on the `PreResolvedGlobals` each rebuild
+    /// replaces (so it restarted empty), and a rescan re-read every file from disk, so
+    /// both reverted readers to the edited file's saved contents until its next edit.
+    #[test]
+    fn unsaved_edits_survive_workspace_rebuild_and_rescan() {
+        let dir = std::env::temp_dir().join(format!("wowlua_unsaved_rebuild_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (writer, reader) = (dir.join("writer.lua"), dir.join("reader.lua"));
+        // `self.label`'s computed value is typed by re-analyzing writer.lua, not by the
+        // coarse scan. The unsaved edit retypes it and adds a global (→ rebuild).
+        let saved = "---@class Widget\nlocal Widget = {}\n\nfunction Widget:Init()\n    self.label = 1 + 2\nend\n";
+        let unsaved = format!("{}WIDGET_COUNT = 0\n", saved.replace("1 + 2", "\"x\" .. \"y\""));
+        let reader_text = "---@type Widget\nlocal w\nlocal label = w.label\nlocal count = WIDGET_COUNT\n";
+        std::fs::write(&writer, saved).unwrap();
+        std::fs::write(&reader, reader_text).unwrap();
+
+        let mut ws = WorkspaceState::for_test(Some(dir.clone()));
+        let mut documents: HashMap<String, Document> = HashMap::default();
+        rescan_workspace_from_disk(&mut documents, &mut ws);
+
+        let (connection, _client_conn) = Connection::memory();
+        let bg = BackgroundChannels {
+            stub_tx: crossbeam_channel::unbounded().0,
+            wake_tx: crossbeam_channel::unbounded().0,
+            stub_open_counter: AtomicU64::new(0),
+        };
+        let writer_uri = abs_path_to_uri(&writer).unwrap();
+        let open = lsp_server::Notification::new(
+            "textDocument/didOpen".to_string(),
+            lsp_types::DidOpenTextDocumentParams {
+                text_document: lsp_types::TextDocumentItem {
+                    uri: writer_uri.clone(), language_id: "lua".to_string(), version: 1, text: saved.to_string(),
+                },
+            },
+        );
+        let change = lsp_server::Notification::new(
+            "textDocument/didChange".to_string(),
+            lsp_types::DidChangeTextDocumentParams {
+                text_document: lsp_types::VersionedTextDocumentIdentifier { uri: writer_uri.clone(), version: 2 },
+                content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                    range: None, range_length: None, text: unsaved.clone(),
+                }],
+            },
+        );
+        for not in [open, change] {
+            handle_notification(&connection, &mut documents, &mut ws, not, &None, &ClientSupport::default(), &mut 0, &bg);
+        }
+        // Phase 4's reconciliation of the edit: the added global rebuilds the workspace.
+        let tree = parse_lua(&unsaved);
+        assert!(maybe_rebuild_workspace(&writer_uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws).is_rebuild());
+
+        let reader_uri = abs_path_to_uri(&reader).unwrap();
+        let hover = |ws: &WorkspaceState, name: &str| {
+            let tree = parse_lua(reader_text);
+            let result = analyze_lua_parsed(&reader_uri, &ws.pre_globals, &ws.configs, &tree);
+            let offset = reader_text.find(&format!("local {name}")).unwrap() + "local ".len();
+            result.hover_at(&tree, offset as u32).map(|h| h.type_str)
+        };
+        assert_eq!(hover(&ws, "label").as_deref(), Some("(local) label: string"), "after the rebuild");
+
+        // A config/XML/TOC save rescans the workspace; the open file is scanned from its buffer.
+        rescan_workspace_from_disk(&mut documents, &mut ws);
+        assert_eq!(hover(&ws, "label").as_deref(), Some("(local) label: string"), "after the rescan");
+        assert_eq!(hover(&ws, "count").as_deref(), Some("(local) count: number"), "after the rescan");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

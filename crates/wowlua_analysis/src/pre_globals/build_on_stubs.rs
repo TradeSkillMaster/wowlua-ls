@@ -1568,7 +1568,7 @@ impl<'a> BuildOnStubsContext<'a> {
             deferred_field_type_args,
             deferred_field_type_args_by_path,
             deferred_class_field_paths,
-            document_overrides: std::sync::RwLock::new(HashMap::default()),
+            document_overrides: Default::default(),
             project_configs: None,
         }
     }

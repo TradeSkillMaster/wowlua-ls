@@ -302,8 +302,10 @@ impl WorkspaceState {
         }
 
         // Inject project configs so the deferred harvester can build the
-        // correct AnalysisConfig for each file it re-analyzes.
+        // correct AnalysisConfig for each file it re-analyzes, and the open
+        // documents' text it reads in preference to disk.
         pg.set_project_configs(Arc::clone(&self.configs));
+        pg.set_document_overrides(Arc::clone(&self.document_overrides));
         self.pre_globals = Arc::new(pg);
         self.ws_generation += 1;
         // Publish the new generation so any in-flight background warm (computed
@@ -404,6 +406,7 @@ impl WorkspaceState {
             ws_file_self_fields: HashMap::default(),
             ws_file_self_field_globals: HashMap::default(),
             pre_globals: Arc::new(PreResolvedGlobals::empty()),
+            document_overrides: Arc::default(),
             cached_all_globals: Vec::new(),
             cached_all_classes: Vec::new(),
             cached_needs_defclass: false,

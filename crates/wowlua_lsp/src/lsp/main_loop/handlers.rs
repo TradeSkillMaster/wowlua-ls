@@ -1260,7 +1260,7 @@ pub(super) fn handle_notification(
                             // Keep the deferred harvest's in-memory document override
                             // in sync so unsaved edits are picked up.
                             if let Some(ref t) = doc.pending_text
-                                && let Ok(mut overrides) = ws.pre_globals.document_overrides.write()
+                                && let Ok(mut overrides) = ws.document_overrides.write()
                             {
                                 overrides.insert(path.clone(), t.clone());
                             }
@@ -1401,7 +1401,7 @@ pub(super) fn handle_notification(
                     // Keep the deferred harvest's in-memory document override
                     // in sync so the harvester sees the editor's text, not disk.
                     if let Some(path) = uri_to_abs_path(&uri)
-                        && let Ok(mut overrides) = ws.pre_globals.document_overrides.write()
+                        && let Ok(mut overrides) = ws.document_overrides.write()
                     {
                         overrides.insert(path, text.clone());
                     }
@@ -1492,7 +1492,7 @@ pub(super) fn handle_notification(
                     // Remove the in-memory document override + edited flag on close.
                     if let Some(path) = uri_to_abs_path(&params.text_document.uri) {
                         ws.edited_uris.remove(&path);
-                        if let Ok(mut overrides) = ws.pre_globals.document_overrides.write() {
+                        if let Ok(mut overrides) = ws.document_overrides.write() {
                             overrides.remove(&path);
                         }
                     }
@@ -1546,7 +1546,7 @@ pub(super) fn handle_notification(
                 // Remove the in-memory document override + edited flag on close.
                 if let Some(path) = uri_to_abs_path(&params.text_document.uri) {
                     ws.edited_uris.remove(&path);
-                    if let Ok(mut overrides) = ws.pre_globals.document_overrides.write() {
+                    if let Ok(mut overrides) = ws.document_overrides.write() {
                         overrides.remove(&path);
                     }
                 }
@@ -1629,7 +1629,8 @@ pub(super) fn rescan_workspace_with_progress(
 }
 
 /// Full workspace rescan from disk: re-reads every `.wowluarc.json`, re-scans all
-/// Lua **and XML** files, rebuilds derived caches, and re-analyzes open documents.
+/// Lua **and XML** files (open Lua files from their editor buffers, which may hold
+/// unsaved edits), rebuilds derived caches, and re-analyzes open documents.
 ///
 /// This is the shared engine behind both `.wowluarc.json` config changes and
 /// `.xml` frame/template changes. XML-derived classes/globals (and config-driven
@@ -1658,7 +1659,14 @@ pub(super) fn rescan_workspace_from_disk(
         file_callback_registries,
         file_string_consts,
         xml_bound_names: _,
-    } = scan_directory_tracked(&ws.roots, &mut new_configs, ws.stub_classes(), ws.stub_globals(), ws.stub_pre_globals.creates_global_specs());
+    } = scan_directory_tracked(
+        &ws.roots,
+        &mut new_configs,
+        &ws.document_overrides.read().unwrap_or_else(std::sync::PoisonError::into_inner),
+        ws.stub_classes(),
+        ws.stub_globals(),
+        ws.stub_pre_globals.creates_global_specs(),
+    );
     ws.configs = Arc::new(new_configs);
     ws.ws_file_globals = file_globals;
     ws.ws_file_classes = file_classes;

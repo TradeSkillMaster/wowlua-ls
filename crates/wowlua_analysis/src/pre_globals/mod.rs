@@ -489,10 +489,11 @@ pub struct PreResolvedGlobals {
     pub deferred_class_field_paths: HashMap<String, Vec<PathBuf>>,
     /// In-memory document content for files the editor has open. When set,
     /// the deferred harvester reads from here instead of disk, so unsaved
-    /// edits are picked up immediately. Updated by the LSP layer on
-    /// didOpen/didChange/didClose. `#[serde(skip)]` (runtime only).
+    /// edits are picked up immediately. The LSP layer owns the map (updated on
+    /// didOpen/didChange/didClose) and shares it with every rebuilt instance.
+    /// `#[serde(skip)]` (runtime only).
     #[serde(skip)]
-    pub document_overrides: std::sync::RwLock<HashMap<PathBuf, String>>,
+    pub document_overrides: std::sync::Arc<std::sync::RwLock<HashMap<PathBuf, String>>>,
     /// Per-file project configuration, used by the deferred harvester to
     /// construct the correct `AnalysisConfig` for the defining file (respecting
     /// `correlated_return_overloads`, `backward_param_types`, etc.).
@@ -2646,7 +2647,7 @@ impl BuildContext {
             deferred_field_type_args: HashMap::default(),
             deferred_field_type_args_by_path: HashMap::default(),
             deferred_class_field_paths: HashMap::default(),
-            document_overrides: std::sync::RwLock::new(HashMap::default()),
+            document_overrides: Default::default(),
             project_configs: None,
         }
     }
@@ -2658,6 +2659,12 @@ impl PreResolvedGlobals {
     /// the LSP server and CLI entry points; `None` falls back to defaults.
     pub fn set_project_configs(&mut self, configs: std::sync::Arc<crate::config::ProjectConfigs>) {
         self.project_configs = Some(configs);
+    }
+
+    /// Share the LSP's open-document map (see `document_overrides`) so the
+    /// deferred harvester reads unsaved edits instead of disk.
+    pub fn set_document_overrides(&mut self, overrides: std::sync::Arc<std::sync::RwLock<HashMap<PathBuf, String>>>) {
+        self.document_overrides = overrides;
     }
 
     pub fn symbols_len(&self) -> usize { self.symbols.len() }
@@ -3024,7 +3031,7 @@ impl PreResolvedGlobals {
             deferred_field_type_args: HashMap::default(),
             deferred_field_type_args_by_path: HashMap::default(),
             deferred_class_field_paths: HashMap::default(),
-            document_overrides: std::sync::RwLock::new(HashMap::default()),
+            document_overrides: Default::default(),
             project_configs: None,
         }
     }

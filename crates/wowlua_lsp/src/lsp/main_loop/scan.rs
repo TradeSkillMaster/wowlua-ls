@@ -957,12 +957,11 @@ pub fn scan_workspace_with_stubs(
     result
 }
 
-/// Scan a Lua file, returning its source text and parsed tree alongside scan results.
+/// Scan a Lua file's text, returning its parsed tree alongside scan results.
 /// Used by scan_directory_tracked to cache parse results for the defclass/built-name pass.
-pub(super) fn scan_lua_file_cached(path: &Path, correlated_returns: CorrelatedReturns, protected_prefix: ProtectedPrefix) -> Option<CachedFileScan> {
-    let text = crate::syntax::read_source_file(path).ok()?;
-    if crate::has_shebang(&text) { return None; }
-    let tree = crate::syntax::parser::parse(&text);
+pub(super) fn scan_lua_file_cached(path: &Path, text: &str, correlated_returns: CorrelatedReturns, protected_prefix: ProtectedPrefix) -> Option<CachedFileScan> {
+    if crate::has_shebang(text) { return None; }
+    let tree = crate::syntax::parser::parse(text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
     let mut scan = scan_all_annotations(root);
     for class in &mut scan.classes {
@@ -991,10 +990,12 @@ pub(super) fn scan_lua_file_cached(path: &Path, correlated_returns: CorrelatedRe
 
 /// Pass 1: file discovery, XML scan, and Lua parse+scan. No stubs dependency.
 /// Accepts multiple workspace roots (a multi-folder workspace) — every root is
-/// walked so cross-file types resolve in each folder.
+/// walked so cross-file types resolve in each folder. A Lua file in `open_buffers`
+/// is scanned from that (possibly unsaved) editor text instead of disk.
 pub(super) fn scan_directory_pass1(
     dirs: &[PathBuf],
     configs: &mut crate::config::ProjectConfigs,
+    open_buffers: &HashMap<PathBuf, String>,
 ) -> ScanPass1Result {
     use rayon::prelude::*;
 
@@ -1029,9 +1030,13 @@ pub(super) fn scan_directory_pass1(
     let configs_ref: &crate::config::ProjectConfigs = configs;
     let results: Vec<_> = paths.par_iter()
         .filter_map(|p| {
+            let text: std::borrow::Cow<str> = match open_buffers.get(p) {
+                Some(text) => text.into(),
+                None => crate::syntax::read_source_file(p).ok()?.into(),
+            };
             let synth = CorrelatedReturns::from_enabled(configs_ref.correlated_return_overloads_for(p));
             let ipp = ProtectedPrefix::from_enabled(configs_ref.implicit_protected_prefix_for(p));
-            scan_lua_file_cached(p, synth, ipp).map(|r| (p.clone(), r))
+            scan_lua_file_cached(p, &text, synth, ipp).map(|r| (p.clone(), r))
         })
         .collect();
 
@@ -1232,11 +1237,12 @@ pub(super) fn collect_all_dynamic_prefixes(file_prefixes: &HashMap<PathBuf, Vec<
 pub(super) fn scan_directory_tracked(
     dirs: &[PathBuf],
     configs: &mut crate::config::ProjectConfigs,
+    open_buffers: &HashMap<PathBuf, String>,
     stub_classes: &[ClassDecl],
     stub_globals: &[ExternalGlobal],
     creates_global_specs: &crate::annotations::CreatesGlobalMap,
 ) -> DirectoryScanResult {
-    let pass1 = scan_directory_pass1(dirs, configs);
+    let pass1 = scan_directory_pass1(dirs, configs, open_buffers);
     let result = complete_directory_scan(pass1, stub_classes, stub_globals, creates_global_specs, configs);
     let all_prefixes: Vec<String> = collect_all_dynamic_prefixes(&result.file_dynamic_prefixes);
     if !all_prefixes.is_empty() {
