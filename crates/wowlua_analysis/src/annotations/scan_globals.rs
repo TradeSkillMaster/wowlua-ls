@@ -157,26 +157,52 @@ struct CalleeScope<'a> {
     local_type_vars: &'a HashMap<String, String>,
     /// Every `local` the file declares, with or without an initializer.
     locals: &'a HashSet<String>,
+    /// The call each local was assigned whose return the file doesn't declare.
+    local_call_origins: &'a HashMap<String, FieldValueKind>,
+    /// That call's callee root as written, before the renames (none for a chained
+    /// receiver).
+    local_call_roots: &'a HashMap<String, String>,
 }
 
 impl CalleeScope<'_> {
+    /// Whether `root`, as written, is a file local no rename covers — not the
+    /// addon namespace, nor a `@class` or `@type` local the scan spells by its
+    /// class or type: a same-named global must not stand in for it.
+    fn is_unrenamed_local(&self, root: &str) -> bool {
+        self.locals.contains(root)
+            && self.addon_ns_var != Some(root)
+            && !self.class_vars.contains_key(root)
+            && !self.local_type_vars.contains_key(root)
+    }
+
     /// `call` as a [`FieldValueKind::FunctionCall`] with its callee chain renamed
     /// like the file's other call sites, so the workspace build can type it from
     /// the callee's return — or `Unknown` when the callee is a file-local no rename
-    /// covers, which a same-named global must not stand in for.
+    /// covers.
     fn call_kind(&self, call: &FunctionCall<'_>) -> FieldValueKind {
         if !funcall_has_chained_receiver(call)
             && let Some(root) = call.identifier().and_then(|ident| ident.names().into_iter().next())
-            && self.locals.contains(&root)
-            && self.addon_ns_var != Some(root.as_str())
-            && !self.class_vars.contains_key(&root)
-            && !self.local_type_vars.contains_key(&root)
+            && self.is_unrenamed_local(&root)
         {
             return FieldValueKind::Unknown;
         }
         let (chain, first_string_arg) =
             scan_funcall_callee(call, self.addon_ns_var, self.class_vars, self.local_type_vars);
         FieldValueKind::FunctionCall(chain, first_string_arg, literal_call_args(call))
+    }
+
+    /// The call the local `ident` names was assigned, as [`Self::call_kind`]
+    /// gives it: a reference to the local is typed from the callee's return the
+    /// way the call itself is.
+    fn local_call(&self, ident: &crate::ast::Identifier<'_>) -> Option<FieldValueKind> {
+        if ident.has_non_string_bracket_in_chain() || ident.has_prefix_expr_base() {
+            return None;
+        }
+        let [name] = ident.names().try_into().ok()?;
+        if self.local_call_roots.get(&name).is_some_and(|root| self.is_unrenamed_local(root)) {
+            return None;
+        }
+        self.local_call_origins.get(&name).cloned()
     }
 }
 
@@ -406,12 +432,15 @@ fn has_ctor_elements(tc: &crate::ast::TableConstructor<'_>) -> bool {
 
 /// The kind of one named table-constructor entry (`field`, whose value is
 /// `value`). A call the value classifier can't type keeps its callee
-/// ([`CalleeScope::call_kind`]) unless the entry declares its own type — a
+/// ([`CalleeScope::call_kind`]), as does a reference to a local assigned one
+/// ([`CalleeScope::local_call`]), unless the entry declares its own type — a
 /// declared entry is never a placeholder.
 fn classify_ctor_entry(field: SyntaxNode<'_>, value: &Expression<'_>, scope: &CalleeScope<'_>) -> FieldValueKind {
     match (classify_expression_value_kind(value, scope), value) {
         (FieldValueKind::Unknown, Expression::FunctionCall(call))
             if constructor_entry_type(field, value).is_none() => scope.call_kind(call),
+        (FieldValueKind::Unknown, Expression::Identifier(ident))
+            if constructor_entry_type(field, value).is_none() => scope.local_call(ident).unwrap_or(FieldValueKind::Unknown),
         (kind, _) => kind,
     }
 }
@@ -590,6 +619,208 @@ fn push_method_global(
     globals.push(base);
     if let Some(fields) = addon_assigned_fields {
         fields.insert(field_name.to_string());
+    }
+}
+
+/// What a file's locals tell the scan about the value a name holds, for typing
+/// a field assigned it (`ns.f = name`) in other files.
+struct LocalValues<'a> {
+    /// The renames and call origins of the file's locals.
+    scope: &'a CalleeScope<'a>,
+    local_type_annotations: &'a HashMap<String, AnnotationType>,
+    local_return_types: &'a HashMap<String, AnnotationType>,
+    local_literal_types: &'a HashMap<String, AnnotationType>,
+    local_functions: &'a HashSet<String>,
+    local_function_sigs: &'a HashMap<String, ExternalGlobal>,
+    local_tables: &'a HashSet<String>,
+    local_table_field_kinds: &'a HashMap<String, Vec<(String, FieldValueKind)>>,
+    /// The `class_vars` only guessed from a call's string argument.
+    class_var_guesses: &'a HashSet<String>,
+}
+
+impl LocalValues<'_> {
+    /// The value kind of a field assigned the identifier `names`.
+    fn kind(&self, mut names: Vec<String>) -> FieldValueKind {
+        match names.len() {
+            0 => FieldValueKind::Unknown,
+            1 if self.local_functions.contains(&names[0]) => FieldValueKind::Function,
+            // Carry the local table's accumulated shape (captured above) so
+            // `data.constants = constants` exposes `constants`'s fields cross-file,
+            // not a bare `table`.
+            1 if self.local_tables.contains(&names[0]) => FieldValueKind::Table(
+                self.local_table_field_kinds.get(&names[0]).cloned().unwrap_or_default(),
+            ),
+            // Local was assigned from a function call whose return type isn't known
+            // locally — forward the call origin so build_on_stubs can resolve the
+            // return type cross-file. Any other single name (e.g. a local or global)
+            // is preserved so cross-file resolution can look it up in scope0
+            // symbols / stubs.
+            1 => self.scope.local_call_origins.get(&names[0]).cloned().unwrap_or(FieldValueKind::FieldRef(names)),
+            _ => {
+                // Canonicalize root for field references (e.g. Util.FRAME → Banking.Util.FRAME)
+                if self.scope.addon_ns_var == Some(names[0].as_str()) {
+                    names[0] = ADDON_NS_NAME.to_string();
+                } else if let Some(cn) = self.scope.class_vars.get(&names[0]) {
+                    names[0] = cn.clone();
+                } else if let Some(type_name) = self.scope.local_type_vars.get(&names[0]) {
+                    names[0] = type_name.clone();
+                }
+                FieldValueKind::FieldRef(names)
+            }
+        }
+    }
+
+    /// The type a field assigned the local `name` takes from it.
+    fn declared_type(&self, name: &str) -> Option<AnnotationType> {
+        if let Some(class_name) = self.scope.class_vars.get(name) {
+            Some(AnnotationType::Simple(class_name.clone()))
+        } else if let Some(type_name) = self.scope.local_type_vars.get(name) {
+            Some(AnnotationType::Simple(type_name.clone()))
+        } else if let Some(vt) = self.local_type_annotations.get(name) {
+            // Explicit `@type` in a compound form (union / `table<K,V>` /
+            // shape) the Simple-only `local_type_vars` above can't hold.
+            // An annotation, so it must outrank the inferred return type
+            // below — matching how the Simple `@type` case already wins.
+            Some(vt.clone())
+        } else if let Some(ret_type) = self.local_return_types.get(name) {
+            Some(ret_type.clone())
+        } else {
+            // Scalar-literal inference: lowest priority. A literal local is
+            // never a call, so this never collides with `local_return_types`.
+            self.local_literal_types.get(name).cloned()
+        }
+    }
+
+    /// Whether a constructor entry referencing `names` is typed as a field write:
+    /// not one rooted at a file local no rename covers
+    /// ([`CalleeScope::is_unrenamed_local`]: an untyped local, a local table whose
+    /// captured shape holds only its later field writes, or one assigned a call,
+    /// which the entry's own kind carries), nor at a class only guessed from a
+    /// call's string argument.
+    fn reference_types(&self, names: &[String]) -> bool {
+        names.first().is_some_and(|root| !self.class_var_guesses.contains(root) && !self.scope.is_unrenamed_local(root))
+    }
+}
+
+/// Which of a table constructor's entries [`CtorEntryScan::push`] emits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CtorEntries {
+    /// Its functions: a class's own constructor, whose other entries the class
+    /// declaration types (`enrich_classes_with_constructor_fields`).
+    Methods,
+    /// Functions and references: a field's constructor, whose shape annotation
+    /// carries the entries declaring their own type.
+    References,
+    /// Those and the entries declaring their own type: a global's constructor.
+    All,
+}
+
+/// Emits a file's table-constructor entries as the field writes they amount to
+/// (see [`Self::push`]).
+struct CtorEntryScan<'a> {
+    locals: &'a LocalValues<'a>,
+    owned_path: Option<&'a Path>,
+    implicit_protected_prefix: bool,
+}
+
+impl CtorEntryScan<'_> {
+    /// Emit the entries of the table constructor `tc`, assigned to `owner`'s
+    /// `path`, as the field writes they amount to (`X.k = v`) — nested
+    /// constructors' entries under their own key — where the constructor's own
+    /// scan could only type them coarsely: a function as a method (its signature
+    /// crosses files, and an unannotated body's returns are harvested lazily,
+    /// instead of a bare `function`); a reference typed as `X.k = name` is; and an
+    /// entry declaring its own type. Which of them, `entries` decides; a global's
+    /// constructor also covers `["k"] = v` entries, the others only `k = v`, as
+    /// their shapes do.
+    fn push(&self, globals: &mut Vec<ExternalGlobal>, entries: CtorEntries, owner: &str, path: &[String], tc: &crate::ast::TableConstructor<'_>) {
+        for field in tc.fields() {
+            if entries != CtorEntries::All && !matches!(field.kind(), Some(crate::ast::FieldKind::Named { .. })) {
+                continue;
+            }
+            let Some((name, value, key)) = named_ctor_entry(&field) else { continue };
+            if let Some(declared) = constructor_entry_type(field.syntax(), &value) {
+                if entries == CtorEntries::All {
+                    globals.push(self.write(owner, path, name, FieldValueKind::Unknown, vec![declared], key));
+                }
+                continue;
+            }
+            match &value {
+                Expression::Function(func) => {
+                    let base = build_func_external(func, field.syntax(), false, self.owned_path);
+                    self.push_method(globals, owner, path, &name, ExternalGlobal { name_start: key.0, name_end: key.1, ..base });
+                }
+                Expression::Identifier(ident) if entries != CtorEntries::Methods
+                    && !ident.has_non_string_bracket_in_chain()
+                    && !ident.has_prefix_expr_base() =>
+                {
+                    let names = ident.names();
+                    if let [local] = names.as_slice()
+                        && let Some(sig) = self.locals.local_function_sigs.get(local)
+                    {
+                        self.push_method(globals, owner, path, &name, sig.clone());
+                    } else if let [local] = names.as_slice()
+                        && !self.locals.class_var_guesses.contains(local)
+                        && let Some(declared) = self.locals.declared_type(local)
+                    {
+                        globals.push(self.write(owner, path, name, self.locals.kind(names), vec![declared], key));
+                    } else if self.locals.reference_types(&names) {
+                        globals.push(self.write(owner, path, name, self.locals.kind(names), Vec::new(), key));
+                    }
+                }
+                Expression::TableConstructor(nested) if super::extract_class_from_field_comments(field.syntax()).is_none() => {
+                    let mut nested_path = path.to_vec();
+                    nested_path.push(name);
+                    self.push(globals, entries, owner, &nested_path, nested);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn push_method(&self, globals: &mut Vec<ExternalGlobal>, owner: &str, path: &[String], name: &str, method: ExternalGlobal) {
+        let method = ExternalGlobal { ctor_method: true, ..method };
+        push_method_global(globals, owner.to_string(), method, name, path.to_vec(), self.implicit_protected_prefix, None);
+    }
+
+    /// The field write `owner.path.field = <value>` a constructor entry (its key at
+    /// `key`) amounts to, of kind `kind` and type `returns`.
+    fn write(&self, owner: &str, path: &[String], field: String, kind: FieldValueKind, returns: Vec<AnnotationType>, key: (u32, u32)) -> ExternalGlobal {
+        let visibility = default_visibility_for_name(&field, self.implicit_protected_prefix);
+        ExternalGlobal {
+            name: owner.to_string(),
+            kind: ExternalGlobalKind::TableField(path.to_vec(), field, kind),
+            params: Vec::new(), returns, return_names: Vec::new(), return_descriptions: Vec::new(), overloads: Vec::new(),
+            doc: None, deprecated: false, deprecated_message: None, nodiscard: false, constructor: false,
+            visibility, generics: Vec::new(),
+            defclass: None, defclass_parent: None, source_path: self.owned_path.map(Path::to_path_buf),
+            def_start: key.0, def_end: key.1,
+            builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
+            string_value: None, number_value: None,
+            is_override: false,
+            is_meta: false,
+            see: Vec::new(),
+            flavors: 0, flavor_guard: 0,
+            implicit_nil_return: false,
+            narrows_arg: None,
+            stores_into: None,
+            creates_global: None,
+            generates_events: None,
+            callback_event_arg: None,
+            requires: Vec::new(),
+            body_derived_returns: false,
+            deferred_call_type: false,
+            assigned_call_offset: None,
+            ctor_fields: Vec::new(),
+            ctor_elements: false,
+            declares_class: false,
+            ctor_method: false,
+            name_start: key.0, name_end: key.1,
+            mixin_parents: Vec::new(),
+            returns_class_name: false,
+            returns_enum: false,
+            secret: None,
+        }
     }
 }
 
@@ -773,6 +1004,7 @@ fn build_func_external(
         ctor_fields: Vec::new(),
         ctor_elements: false,
         declares_class: false,
+        ctor_method: false,
         name_start,
         name_end,
         mixin_parents: Vec::new(),
@@ -1072,6 +1304,9 @@ pub fn scan_file_globals_with_synth(
     let mut first_local_offset: HashMap<String, u32> = HashMap::default();
     // Track local variables annotated with @class (e.g. local LibTSMCore = {} ---@class LibTSMCore)
     let mut class_vars: HashMap<String, String> = HashMap::default();
+    // The `class_vars` locals only guessed from a call's string argument
+    // (`local X = DefineClass("Name")`, below).
+    let mut class_var_guesses: HashSet<String> = HashSet::default();
     // Track locals with @type annotations so field assignments on them are emitted
     // under the annotated class name (cross-file overlay tracking).
     let mut local_type_vars: HashMap<String, String> = HashMap::default();
@@ -1162,13 +1397,13 @@ pub fn scan_file_globals_with_synth(
                     // parameter, not the class the local becomes — it is skipped.
                     if exprs.len() == 1
                         && let Expression::FunctionCall(call) = &exprs[0]
-                        && (!funcall_has_chained_receiver(call) || chain_is_string_keyed_navigation(call)) {
-                            if let Some(cn) = extract_string_arg_from_call_chain(call) {
-                                class_vars.insert(names[0].clone(), cn);
-                            } else if let Some(cn) = extract_first_string_arg(call) {
-                                class_vars.insert(names[0].clone(), cn);
-                            }
-                        }
+                        && (!funcall_has_chained_receiver(call) || chain_is_string_keyed_navigation(call))
+                        && let Some(cn) = extract_string_arg_from_call_chain(call)
+                            .or_else(|| extract_first_string_arg(call))
+                    {
+                        class_vars.insert(names[0].clone(), cn);
+                        class_var_guesses.insert(names[0].clone());
+                    }
                 }
                 // Record the local's value type for cross-file `ns.Field = local`
                 // resolution. An explicit `@type` (any form — carries unions /
@@ -1217,6 +1452,73 @@ pub fn scan_file_globals_with_synth(
         &all_stmts, &root, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
     );
 
+    // Track return types of same-file function definitions (e.g. `---@return Foo \n function X.bar()`)
+    // so that `local x = X.bar(); Class.field = x` propagates `Foo` as the field type cross-file.
+    let mut func_return_types: HashMap<String, AnnotationType> = HashMap::default();
+    for stmt in &all_stmts {
+        if let Statement::FunctionDefinition(func) = stmt {
+            if func.is_local() { continue; }
+            let Some(ident) = func.identifier() else { continue };
+            let func_names = ident.names();
+            if func_names.is_empty() { continue; }
+            let annotations = extract_annotations(func.syntax());
+            if let Some(ret) = annotations.returns.into_iter().next()
+                && !matches!(&ret, AnnotationType::Simple(s) if s.is_empty()) {
+                    func_return_types.insert(func_names.join("."), ret);
+            }
+        }
+    }
+
+    // Track local variable return types from annotated function calls
+    let mut local_return_types: HashMap<String, AnnotationType> = HashMap::default();
+    // Track local variables assigned from function calls whose return type isn't known
+    // locally (e.g. stub/external methods), as the `FieldValueKind::FunctionCall` that a
+    // `ns.Field = localVar` export forwards instead of a FieldRef, letting build_on_stubs
+    // resolve the return type.
+    let mut local_call_origins: HashMap<String, FieldValueKind> = HashMap::default();
+    let mut local_call_roots: HashMap<String, String> = HashMap::default();
+    for stmt in &all_stmts {
+        if let Statement::LocalAssign(assign) = stmt
+            && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
+                let names = name_list.names();
+                let exprs = expr_list.expressions();
+                if names.len() == 1 && exprs.len() == 1
+                    && let Expression::FunctionCall(call) = &exprs[0]
+                    && let Some(call_ident) = call.identifier() {
+                        let call_names = call_ident.names();
+                        // A `class_vars` local (a `@class` local, or the defclass-style guess
+                        // that `F("Name", ...)` builds class `Name`) is exported as that
+                        // class. Its call is still recorded when every argument is a string
+                        // literal: a `@returns-enum` call's members replace the guess
+                        // (`apply_enum_call_globals`).
+                        let literal_args = literal_call_args(call);
+                        let class_typed = class_vars.contains_key(&names[0]);
+                        if !call_names.is_empty() && (!class_typed || !literal_args.is_empty()) {
+                            let func_key = call_names.join(".");
+                            if !class_typed && let Some(ret_type) = func_return_types.get(&func_key) {
+                                local_return_types.insert(names[0].clone(), ret_type.clone());
+                            } else {
+                                // Return type not known from same-file definitions; store the
+                                // call origin so build_on_stubs can resolve it. `scan_funcall_callee`
+                                // empties the chain (and drops the string-arg hint) for a chained
+                                // receiver (`local x = LibStub("X"):M()`) so the forwarded origin
+                                // can't mis-resolve as a same-named global.
+                                let (callee_chain, first_string_arg) = scan_funcall_callee(
+                                    call, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
+                                );
+                                if !funcall_has_chained_receiver(call) {
+                                    local_call_roots.insert(names[0].clone(), call_names[0].clone());
+                                }
+                                local_call_origins.insert(
+                                    names[0].clone(),
+                                    FieldValueKind::FunctionCall(callee_chain, first_string_arg, literal_args),
+                                );
+                            }
+                        }
+                    }
+            }
+    }
+
     // Every `local` the file declares — `local_vars` plus the forward declarations
     // without an initializer it skips — so a table-constructor entry calling one
     // isn't typed from a same-named global.
@@ -1234,6 +1536,8 @@ pub fn scan_file_globals_with_synth(
         class_vars: &class_vars,
         local_type_vars: &local_type_vars,
         locals: &callee_locals,
+        local_call_origins: &local_call_origins,
+        local_call_roots: &local_call_roots,
     };
 
     // Capture the accumulated shape of plain local data tables (`local C = {}` then
@@ -1279,69 +1583,6 @@ pub fn scan_file_globals_with_synth(
         }
     }
 
-    // Track return types of same-file function definitions (e.g. `---@return Foo \n function X.bar()`)
-    // so that `local x = X.bar(); Class.field = x` propagates `Foo` as the field type cross-file.
-    let mut func_return_types: HashMap<String, AnnotationType> = HashMap::default();
-    for stmt in &all_stmts {
-        if let Statement::FunctionDefinition(func) = stmt {
-            if func.is_local() { continue; }
-            let Some(ident) = func.identifier() else { continue };
-            let func_names = ident.names();
-            if func_names.is_empty() { continue; }
-            let annotations = extract_annotations(func.syntax());
-            if let Some(ret) = annotations.returns.into_iter().next()
-                && !matches!(&ret, AnnotationType::Simple(s) if s.is_empty()) {
-                    func_return_types.insert(func_names.join("."), ret);
-            }
-        }
-    }
-
-    // Track local variable return types from annotated function calls
-    let mut local_return_types: HashMap<String, AnnotationType> = HashMap::default();
-    // Track local variables assigned from function calls whose return type isn't known
-    // locally (e.g. stub/external methods), as the `FieldValueKind::FunctionCall` that a
-    // `ns.Field = localVar` export forwards instead of a FieldRef, letting build_on_stubs
-    // resolve the return type.
-    let mut local_call_origins: HashMap<String, FieldValueKind> = HashMap::default();
-    for stmt in &all_stmts {
-        if let Statement::LocalAssign(assign) = stmt
-            && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
-                let names = name_list.names();
-                let exprs = expr_list.expressions();
-                if names.len() == 1 && exprs.len() == 1
-                    && let Expression::FunctionCall(call) = &exprs[0]
-                    && let Some(call_ident) = call.identifier() {
-                        let call_names = call_ident.names();
-                        // A `class_vars` local (a `@class` local, or the defclass-style guess
-                        // that `F("Name", ...)` builds class `Name`) is exported as that
-                        // class. Its call is still recorded when every argument is a string
-                        // literal: a `@returns-enum` call's members replace the guess
-                        // (`apply_enum_call_globals`).
-                        let literal_args = literal_call_args(call);
-                        let class_typed = class_vars.contains_key(&names[0]);
-                        if !call_names.is_empty() && (!class_typed || !literal_args.is_empty()) {
-                            let func_key = call_names.join(".");
-                            if !class_typed && let Some(ret_type) = func_return_types.get(&func_key) {
-                                local_return_types.insert(names[0].clone(), ret_type.clone());
-                            } else {
-                                // Return type not known from same-file definitions; store the
-                                // call origin so build_on_stubs can resolve it. `scan_funcall_callee`
-                                // empties the chain (and drops the string-arg hint) for a chained
-                                // receiver (`local x = LibStub("X"):M()`) so the forwarded origin
-                                // can't mis-resolve as a same-named global.
-                                let (callee_chain, first_string_arg) = scan_funcall_callee(
-                                    call, addon_ns_var.as_deref(), &class_vars, &local_type_vars,
-                                );
-                                local_call_origins.insert(
-                                    names[0].clone(),
-                                    FieldValueKind::FunctionCall(callee_chain, first_string_arg, literal_args),
-                                );
-                            }
-                        }
-                    }
-            }
-    }
-
     // Capture full signatures of local functions (both `local function f()` and
     // `local f = function()`) keyed by name. Assigning a local function to a
     // namespace/class field (`ns.f = f`) then re-uses the captured signature so
@@ -1373,6 +1614,23 @@ pub fn scan_file_globals_with_synth(
             _ => {}
         }
     }
+
+    let local_values = LocalValues {
+        scope: &callee_scope,
+        local_type_annotations: &local_type_annotations,
+        local_return_types: &local_return_types,
+        local_literal_types: &local_literal_types,
+        local_functions: &local_functions,
+        local_function_sigs: &local_function_sigs,
+        local_tables: &local_tables,
+        local_table_field_kinds: &local_table_field_kinds,
+        class_var_guesses: &class_var_guesses,
+    };
+    let ctor_entries = CtorEntryScan {
+        locals: &local_values,
+        owned_path: owned_path.as_deref(),
+        implicit_protected_prefix,
+    };
 
     // Named globals created as a side effect of calling functions annotated with
     // `@creates-global` (e.g. WoW's `CreateFrame(type, "Name")` creates `_G.Name`).
@@ -1645,12 +1903,21 @@ pub fn scan_file_globals_with_synth(
                                 ctor_fields,
                                 ctor_elements,
                                 declares_class,
+                                ctor_method: false,
                                 name_start: ns, name_end: ne,
                                 mixin_parents,
                                 returns_class_name: false,
                                 returns_enum: false,
                                 secret: None,
                             });
+                            // A constructor's entries: a class's methods, or the global's own
+                            // table's entries.
+                            if let Expression::TableConstructor(tc) = &effective {
+                                match class_vars.get(&names[0]) {
+                                    Some(class_name) => ctor_entries.push(&mut globals, CtorEntries::Methods, class_name, &[], tc),
+                                    None => ctor_entries.push(&mut globals, CtorEntries::All, &names[0], &[], tc),
+                                }
+                            }
                         } else if names.len() >= 2 {
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
                             // these write to an element OF the table, not to the field itself.
@@ -1712,43 +1979,7 @@ pub fn scan_file_globals_with_synth(
                                     );
                                     FieldValueKind::FunctionCall(callee_names, first_string_arg, literal_call_args(call))
                                 }
-                                Expression::Identifier(ident) => {
-                                    let mut rhs_names = ident.names();
-                                    if rhs_names.len() == 1 && local_functions.contains(&rhs_names[0]) {
-                                        FieldValueKind::Function
-                                    } else if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
-                                        // Carry the local table's accumulated shape (captured
-                                        // above) so `data.constants = constants` exposes
-                                        // `constants`'s fields cross-file, not a bare `table`.
-                                        FieldValueKind::Table(
-                                            local_table_field_kinds.get(&rhs_names[0]).cloned().unwrap_or_default(),
-                                        )
-                                    } else if rhs_names.len() == 1 {
-                                        if let Some(call_origin) = local_call_origins.get(&rhs_names[0]) {
-                                            // Local was assigned from a function call whose return type
-                                            // isn't known locally — forward the call origin so
-                                            // build_on_stubs can resolve the return type cross-file.
-                                            call_origin.clone()
-                                        } else {
-                                            // Single-name reference (e.g. a local or global);
-                                            // preserve so cross-file resolution can look it up
-                                            // in scope0 symbols / stubs.
-                                            FieldValueKind::FieldRef(rhs_names)
-                                        }
-                                    } else if rhs_names.len() >= 2 {
-                                        // Canonicalize root for field references (e.g. Util.FRAME → Banking.Util.FRAME)
-                                        if addon_ns_var.as_deref() == Some(rhs_names[0].as_str()) {
-                                            rhs_names[0] = ADDON_NS_NAME.to_string();
-                                        } else if let Some(cn) = class_vars.get(&rhs_names[0]) {
-                                            rhs_names[0] = cn.clone();
-                                        } else if let Some(type_name) = local_type_vars.get(&rhs_names[0]) {
-                                            rhs_names[0] = type_name.clone();
-                                        }
-                                        FieldValueKind::FieldRef(rhs_names)
-                                    } else {
-                                        FieldValueKind::Unknown
-                                    }
-                                }
+                                Expression::Identifier(ident) => local_values.kind(ident.names()),
                                 Expression::BinaryExpression(bin) => {
                                     match bin.kind() {
                                         Operator::Concatenate => FieldValueKind::String(None),
@@ -1775,26 +2006,10 @@ pub fn scan_file_globals_with_synth(
                                 extract_table_literal_annotation(tc)
                                     .map_or_else(Vec::new, |tl| vec![tl])
                             } else if let Expression::Identifier(ident) = &effective {
-                                let rhs_names = ident.names();
-                                if rhs_names.len() == 1 {
-                                    if let Some(class_name) = class_vars.get(&rhs_names[0]) {
-                                        vec![AnnotationType::Simple(class_name.clone())]
-                                    } else if let Some(type_name) = local_type_vars.get(&rhs_names[0]) {
-                                        vec![AnnotationType::Simple(type_name.clone())]
-                                    } else if let Some(vt) = local_type_annotations.get(&rhs_names[0]) {
-                                        // Explicit `@type` in a compound form (union / `table<K,V>` /
-                                        // shape) the Simple-only `local_type_vars` above can't hold.
-                                        // An annotation, so it must outrank the inferred return type
-                                        // below — matching how the Simple `@type` case already wins.
-                                        vec![vt.clone()]
-                                    } else if let Some(ret_type) = local_return_types.get(&rhs_names[0]) {
-                                        vec![ret_type.clone()]
-                                    } else if let Some(vt) = local_literal_types.get(&rhs_names[0]) {
-                                        // Scalar-literal inference: lowest priority. A literal local is
-                                        // never a call, so this never collides with `local_return_types`.
-                                        vec![vt.clone()]
-                                    } else { Vec::new() }
-                                } else { Vec::new() }
+                                match ident.names().as_slice() {
+                                    [name] => local_values.declared_type(name).into_iter().collect(),
+                                    _ => Vec::new(),
+                                }
                             } else { Vec::new() };
                             // When the RHS is a single local function with a captured
                             // signature, emit a method on the namespace/class so the full
@@ -1838,6 +2053,19 @@ pub fn scan_file_globals_with_synth(
                                 );
                                 continue;
                             }
+                            // A constructor's entries belong to the table it builds: the
+                            // field's own (an anonymous one, whose type the constructor
+                            // is), or the class a `---@class` makes it. Emitted after the
+                            // field's write, whose coarse entries they replace. Not under a
+                            // plain local table, whose methods only an export carries.
+                            let local_table_root = local_tables.contains(root_name) && !is_addon_root
+                                && !class_vars.contains_key(root_name) && !local_type_vars.contains_key(root_name);
+                            let ctor_owner = match &effective {
+                                Expression::TableConstructor(tc) if annotations.var_type.is_none() && !local_table_root => {
+                                    Some((tc, annotations.class.clone(), canonical_name.clone()))
+                                }
+                                _ => None,
+                            };
                             let range = assign.syntax().text_range();
                             // An explicit inline `@private`/`@protected` on the field
                             // assignment wins; otherwise fall back to the name convention.
@@ -1873,6 +2101,7 @@ pub fn scan_file_globals_with_synth(
                                 ctor_fields: Vec::new(),
                                 ctor_elements: false,
                                 declares_class: false,
+                                ctor_method: false,
                                 name_start: u32::from(range.start()),
                                 name_end: u32::from(range.end()),
                                 mixin_parents: Vec::new(),
@@ -1880,6 +2109,11 @@ pub fn scan_file_globals_with_synth(
                                 returns_enum: false,
                                 secret: None,
                             });
+                            match ctor_owner {
+                                Some((tc, Some(class_name), _)) => ctor_entries.push(&mut globals, CtorEntries::Methods, &class_name, &[], tc),
+                                Some((tc, None, owner)) => ctor_entries.push(&mut globals, CtorEntries::References, &owner, &names[1..], tc),
+                                None => {}
+                            }
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.
                             if is_addon_root && names.len() == 2 {
@@ -1893,6 +2127,16 @@ pub fn scan_file_globals_with_synth(
                             }
                         }
                     }
+                }
+            }
+            // `---@class C` on `local X = { ... }`: the constructor's function
+            // entries are C's methods.
+            Statement::LocalAssign(assign) => {
+                if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list())
+                    && let ([name], [Expression::TableConstructor(tc)]) = (name_list.names().as_slice(), expr_list.expressions().as_slice())
+                    && let Some(class_name) = class_vars.get(name)
+                {
+                    ctor_entries.push(&mut globals, CtorEntries::Methods, class_name, &[], tc);
                 }
             }
             _ => {}
@@ -2050,6 +2294,7 @@ pub fn scan_file_globals_with_synth(
                     ctor_fields: Vec::new(),
                     ctor_elements: false,
                     declares_class: false,
+                    ctor_method: false,
                     name_start: ns,
                     name_end: ne,
                     mixin_parents: Vec::new(),
@@ -2216,6 +2461,7 @@ pub fn scan_file_globals_with_synth(
                 ctor_fields: Vec::new(),
                 ctor_elements: false,
                 declares_class: false,
+                ctor_method: false,
                 name_start: ns,
                 name_end: ne,
                 mixin_parents: Vec::new(),
@@ -2494,6 +2740,7 @@ pub fn scan_created_globals(
                 ctor_fields: Vec::new(),
                 ctor_elements: false,
                 declares_class: false,
+                ctor_method: false,
                 name_start: u32::from(range.start()),
                 name_end: u32::from(range.end()),
                 mixin_parents: Vec::new(),
@@ -2622,8 +2869,9 @@ end
         let root = SyntaxNode::new_root(&tree);
         let globals = scan_file_globals(root, None);
 
+        // The in-function writes, registered after the constructor's entries.
         let field_kind = |field: &str| -> Option<&FieldValueKind> {
-            globals.iter().find_map(|g| match &g.kind {
+            globals.iter().rev().find_map(|g| match &g.kind {
                 ExternalGlobalKind::TableField(_, name, kind) if name == field => Some(kind),
                 _ => None,
             })

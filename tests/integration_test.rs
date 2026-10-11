@@ -5502,6 +5502,43 @@ fn constructor_call_entries_crossfile() {
 }
 
 #[test]
+fn ctor_entries_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ctor-entries/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ctor-entries"),
+    });
+}
+
+#[test]
+fn ctor_entries_defining_file() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ctor-entries/defs.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/ctor-entries"),
+    });
+}
+
+#[test]
+fn ctor_entries_cold_build() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ctor-entries/cold_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/ctor-entries"),
+    });
+}
+
+#[test]
+fn ctor_entries_defining_file_reads_own_methods() {
+    // The defining file reads its constructor's methods from its own definitions,
+    // so it never harvests itself to type them (`overlay_ctor_functions`).
+    let dir = std::path::Path::new("tests/ctor-entries");
+    let pg = fresh_workspace_globals(dir);
+    assert_eq!(last_local_hover(&pg, dir, "defs.lua"), "(local) label: string");
+    assert_eq!(pg.deferred_harvests.analyses(), 0);
+}
+
+#[test]
 fn map_dot_access() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/map-dot-access.lua",
@@ -7780,6 +7817,12 @@ fn test_unused_function_cross_file() {
     assert!(
         !unused_names.contains("NS._IgnoredMethod"),
         "NS._IgnoredMethod should not be flagged (underscore prefix)",
+    );
+
+    // A table constructor's function entries are not flagged.
+    assert!(
+        !unused_names.iter().any(|n| n.contains("OnUnusedEvent")),
+        "a constructor's function entry should not be flagged, got: {:?}", unused_names,
     );
 
     // Union-receiver regression: calling widget:Process() on AlphaWidget|BetaWidget

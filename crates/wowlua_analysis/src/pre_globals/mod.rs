@@ -799,6 +799,111 @@ fn record_added_fields(
     }
 }
 
+/// Whether `fi` is the placeholder the scan stands in for a constructor entry
+/// holding a function with: the signature-less `function` of a function entry,
+/// from its value kind ([`populate_table_fields`]) or a `TableLiteral` entry on
+/// an anonymous table (`anonymous_owner`), or the latter's `any` for a reference
+/// to a local function. The method defined at the entry replaces it.
+fn is_function_placeholder(fi: &FieldInfo, exprs: &LayeredVec<Expr>, anonymous_owner: bool) -> bool {
+    fi.expr.is_external()
+        && match (&exprs[fi.expr.ext_offset()], &fi.annotation) {
+            (Expr::Literal(ValueType::Function(None)), None) => true,
+            (Expr::Literal(ValueType::Function(None)), Some(ValueType::Function(None)))
+            | (Expr::Literal(ValueType::Any), Some(ValueType::Any)) => anonymous_owner,
+            _ => false,
+        }
+}
+
+/// The `(class, field)` pairs only `---@class` constructors' function entries
+/// give a class, as a bare `function` (`ClassDecl::ctor_function_entries`): no
+/// declaration of the class has the field otherwise (a `@field`, a typed entry, a
+/// `self` write). A method defined at one replaces it.
+fn ctor_function_fields(class_decls: &[ClassDecl]) -> HashSet<(&str, &str)> {
+    let typed: HashSet<(&str, &str)> = class_decls.iter()
+        .flat_map(|c| c.fields.iter()
+            .filter(|(name, _, _)| !c.ctor_function_entries.contains(name))
+            .map(|(name, _, _)| (c.name.as_str(), name.as_str())))
+        .collect();
+    class_decls.iter()
+        .flat_map(|c| c.ctor_function_entries.iter().map(|f| (c.name.as_str(), f.as_str())))
+        .filter(|key| !typed.contains(key))
+        .collect()
+}
+
+/// Whether the method `method_name` defined on `target` replaces the field
+/// there: a scan placeholder for the same function entry (see
+/// [`is_function_placeholder`] and [`ctor_function_fields`]).
+fn method_replaces_placeholder(
+    tables: &LayeredVec<TableInfo>,
+    exprs: &LayeredVec<Expr>,
+    ctor_functions: &HashSet<(&str, &str)>,
+    target: TableIndex,
+    method_name: &str,
+) -> bool {
+    let table = &tables[target.ext_offset()];
+    let Some(fi) = table.fields.get(method_name) else { return false };
+    match &table.class_name {
+        None => is_function_placeholder(fi, exprs, true),
+        Some(class) => is_function_placeholder(fi, exprs, false)
+            || (ctor_functions.contains(&(class.as_str(), method_name))
+                && fi.expr.is_external()
+                && matches!(exprs[fi.expr.ext_offset()], Expr::Literal(ValueType::Function(None)))),
+    }
+}
+
+/// The anonymous table `fi`'s value is.
+fn anonymous_table_of(fi: &FieldInfo, tables: &LayeredVec<TableInfo>, exprs: &LayeredVec<Expr>) -> Option<TableIndex> {
+    if !fi.expr.is_external() {
+        return None;
+    }
+    match exprs[fi.expr.ext_offset()] {
+        Expr::Literal(ValueType::Table(Some(t))) if tables[t.ext_offset()].class_name.is_none() => Some(t),
+        _ => None,
+    }
+}
+
+/// Merge into `dst`, the table a field's write assigns, the fields of `src`, the
+/// anonymous table definitions under the field (the dotted `path`) walked into
+/// before the write landed: a field `dst` lacks is added, a placeholder for a
+/// constructor's function entry takes the method defined there, and an anonymous
+/// table both hold merges the same way, deeper paths then resolving to `dst`'s.
+/// Any other field of `dst` wins.
+fn merge_walked_fields(
+    src: TableIndex,
+    dst: TableIndex,
+    path: &str,
+    tables: &mut LayeredVec<TableInfo>,
+    exprs: &LayeredVec<Expr>,
+    sub_tables: &mut HashMap<(String, String), TableIndex>,
+    depth: usize,
+) {
+    if src == dst || depth > 16 {
+        return;
+    }
+    let anonymous_dst = tables[dst.ext_offset()].class_name.is_none();
+    let entries: Vec<(String, FieldInfo)> = tables[src.ext_offset()].fields.iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for (name, fi) in entries {
+        let Some(existing) = tables[dst.ext_offset()].fields.get(&name) else {
+            tables[dst.ext_offset()].fields.insert(name, fi);
+            continue;
+        };
+        let is_method = fi.expr.is_external() && matches!(exprs[fi.expr.ext_offset()], Expr::FunctionDef(_));
+        if is_method && is_function_placeholder(existing, exprs, anonymous_dst) {
+            tables[dst.ext_offset()].fields.insert(name, fi);
+        } else if anonymous_dst
+            && let (Some(from), Some(into)) = (anonymous_table_of(&fi, tables, exprs), anonymous_table_of(existing, tables, exprs))
+        {
+            let key = (path.to_string(), name);
+            if sub_tables.get(&key) == Some(&from) {
+                sub_tables.insert(key.clone(), into);
+            }
+            merge_walked_fields(from, into, &format!("{path}.{}", key.1), tables, exprs, sub_tables, depth + 1);
+        }
+    }
+}
+
 /// The arenas, logs and location map a global's constructor entries are merged
 /// into, borrowed off a build context (see [`merge_ctor_fields`]).
 struct CtorFieldsCtx<'a> {
@@ -2074,6 +2179,7 @@ impl BuildContext {
         //     and the method lands on the root.
         // Done BEFORE inheritance so methods are inherited by child classes.
         let call_fields = call_field_writes(globals);
+        let ctor_functions = ctor_function_fields(external_classes);
         let mut seen_methods: HashSet<(String, String)> = HashSet::default();
         for g in globals {
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
@@ -2085,6 +2191,8 @@ impl BuildContext {
                         .or(through_call.then_some(class_idx))
                 });
                 let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table || class_field_root.is_some());
+                // A constructor's entry is never an `@accessor` method of the root.
+                if g.ctor_method && !path.is_empty() && !use_deep_path { continue; }
                 let target_idx = if use_deep_path {
                     let Some(&root_idx) = self.non_class_tables.get(&g.name).or(class_field_root.as_ref()) else { continue };
                     let Some((leaf_idx, _)) = walk_deep_path(
@@ -2171,20 +2279,24 @@ impl BuildContext {
                     if g.body_derived_returns {
                         self.deferred_returns.insert(func_idx);
                     }
-                    // Record display name for unused-function diagnostics.
-                    let display_name = if is_addon_ns {
-                        let mut parts = path.clone();
-                        parts.push(method_name.clone());
-                        parts.join(".")
-                    } else {
-                        let sep = if *is_colon { ":" } else { "." };
-                        if path.is_empty() {
-                            format!("{}{sep}{method_name}", g.name)
+                    // Record display name for unused-function diagnostics. A constructor's
+                    // function entries are values frameworks often call (option and
+                    // callback tables), so that leaves them out.
+                    if !g.ctor_method {
+                        let display_name = if is_addon_ns {
+                            let mut parts = path.clone();
+                            parts.push(method_name.clone());
+                            parts.join(".")
                         } else {
-                            format!("{}.{}{sep}{method_name}", g.name, path.join("."))
-                        }
-                    };
-                    self.function_names.insert(func_idx, display_name);
+                            let sep = if *is_colon { ":" } else { "." };
+                            if path.is_empty() {
+                                format!("{}{sep}{method_name}", g.name)
+                            } else {
+                                format!("{}.{}{sep}{method_name}", g.name, path.join("."))
+                            }
+                        };
+                        self.function_names.insert(func_idx, display_name);
+                    }
                     self.function_to_field.insert(func_idx, (target_idx, method_name.clone()));
                 }
                 let expr_id = ExprId(EXT_BASE + self.exprs.len());
@@ -2238,6 +2350,8 @@ impl BuildContext {
                 if g.is_override {
                     self.tables[local_idx].fields.insert(method_name.clone(), field_info);
                     self.override_methods.insert(func_idx);
+                } else if method_replaces_placeholder(&self.tables, &self.exprs, &ctor_functions, target_idx, method_name) {
+                    self.tables[local_idx].fields.insert(method_name.clone(), field_info);
                 } else {
                     self.tables[local_idx].fields.entry(method_name.clone()).or_insert(field_info);
                 }
@@ -4669,6 +4783,7 @@ mod tests {
             field_descriptions: crate::collections::HashMap::default(),
             bare_inferred_field_names: crate::collections::HashSet::default(),
             typed_ctor_entries: crate::collections::HashSet::default(),
+            ctor_function_entries: crate::collections::HashSet::default(),
             deferred_field_call_ranges: crate::collections::HashMap::default(),
             enum_call: None,
             secret_when: Vec::new(),

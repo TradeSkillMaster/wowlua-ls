@@ -1,9 +1,14 @@
 ---@diagnostic disable: unused-local
 -- Another file reads the constructor through the workspace scan: a call-valued
--- entry is typed from the callee's return once every global is registered, and
--- an inline `--[[@as T]]` cast on an entry is honored.
+-- entry, or one naming a local assigned a call, is typed from the callee's
+-- return once every global is registered, and an inline `--[[@as T]]` cast on
+-- an entry is honored.
 local a = NS.CONST.A
 --    ^ hover: (local) a: Widget
+local b = NS.CONST.B
+--    ^ hover: (local) b: Widget
+local f = NS.CONST.F
+--    ^ hover: (local) f: Widget
 local c = NS.CONST.C
 --    ^ hover: (local) c: number
 local e = NS.CONST.E
@@ -31,4 +36,4 @@ local gA = G_ENTRIES.A
 local gB = G_ENTRIES.sub.B
 --    ^ hover: (local) gB: Widget
 
-_G.useConstructorEntries = { a, c, e, readConfig, declared, declaredAbove, replaced, gReplaced, shadowed, gA, gB }
+_G.useConstructorEntries = { a, b, c, e, f, readConfig, declared, declaredAbove, replaced, gReplaced, shadowed, gA, gB }

@@ -1701,3 +1701,15 @@ local selfFieldGet = SelfFieldData:Get("alpha")
 ---@field beta string
 local SelfFieldDerived = {}
 local selfFieldGetDerived = SelfFieldDerived:Get("beta")
+
+-- ── A `@class` constructor's functions are the class's methods ─────────────
+---@class CtorMethods
+local CtorMethods = {
+    ---@return number
+    Next = function(self) return 1 end,
+    Label = function(self) return "x" end,
+}
+local ctorNext = CtorMethods:Next()
+--    ^ hover: (local) ctorNext: number
+local ctorLabel = CtorMethods:Label()
+--    ^ hover: (local) ctorLabel: string

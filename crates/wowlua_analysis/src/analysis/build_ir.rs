@@ -2019,6 +2019,12 @@ impl<'a> Analysis<'a> {
                     && let Some(fi) = self.ir.tables[cur_table.val()].fields.get_mut(field_name)
                 {
                     fi.extra_exprs.push(expr_id);
+                } else if inline_annotation.is_none()
+                    && func_id.is_none()
+                    && let Some(ValueType::Table(Some(scan_table))) = self.ir.get_field(cur_table, field_name)
+                        .and_then(|f| f.annotation.clone())
+                {
+                    self.overlay_ctor_functions(scan_table, expr_id, 0);
                 }
             } else {
                 self.deep_field_injections.push(DeepFieldInjection {
@@ -2088,6 +2094,14 @@ impl<'a> Analysis<'a> {
                         description: None,
                         from_scan: false,
                     });
+                }
+                if inline_annotation.is_none()
+                    && func_id.is_none()
+                    && let Some(ValueType::Table(Some(scan_table))) = self.ir.tables[table_idx.val()].fields.get(field_name)
+                        .filter(|f| f.from_scan)
+                        .and_then(|f| f.annotation.clone())
+                {
+                    self.overlay_ctor_functions(scan_table, expr_id, 0);
                 }
             } else {
                 // External table: store in per-file overlay.
@@ -2576,6 +2590,36 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Lay the function entries of the constructor `rhs` this file writes over
+    /// `scan_table`, the scan's anonymous copy of it (`ns.T = { f = function() end }`),
+    /// nested constructors' entries likewise: other files read the methods the scan
+    /// registered for them, but this file reads its own definitions, as it does a
+    /// `function ns.T.f()` it defines.
+    fn overlay_ctor_functions(&mut self, scan_table: TableIndex, rhs: ExprId, depth: usize) {
+        if depth > 16 || !scan_table.is_external() || self.ir.table(scan_table).class_name.is_some() {
+            return;
+        }
+        let Some(local) = self.ir.find_table_index(rhs).filter(|t| !t.is_external()) else { return };
+        let entries: Vec<(String, FieldInfo)> = self.ir.tables[local.val()].fields.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        for (name, fi) in entries {
+            match self.ir.expr(fi.expr) {
+                Expr::FunctionDef(_) => self.ir.insert_overlay_field(scan_table, name, fi),
+                Expr::TableConstructor(_) => {
+                    let nested = self.ir.table(scan_table).fields.get(&name).and_then(|f| match f.annotation {
+                        Some(ValueType::Table(Some(t))) => Some(t),
+                        _ => self.ir.find_table_index(f.expr),
+                    });
+                    if let Some(nested) = nested {
+                        self.overlay_ctor_functions(nested, fi.expr, depth + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Merge a runtime table constructor's fields into the `@class`/`@enum` class
     /// table it was annotated with. Author-declared (`@field`) or prescan-created
     /// fields win, but enum literal values are copied onto the class field's expr
@@ -2608,6 +2652,7 @@ impl<'a> Analysis<'a> {
             let ctor_inferred = is_enum
                 || self.ir.ctor_placeholder_fields.contains(&(class_table_idx, name.clone()));
             let runtime_is_table = matches!(self.ir.expr(field_info.expr), Expr::TableConstructor(_));
+            let runtime_is_function = matches!(self.ir.expr(field_info.expr), Expr::FunctionDef(_));
             match self.ir.tables[class_table_idx.val()].fields.entry(name) {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     if ctor_inferred
@@ -2617,6 +2662,14 @@ impl<'a> Analysis<'a> {
                         // A nested constructor the scan typed as a bare `table`:
                         // its own table is the field's value, so a later
                         // `function C.sub.f()` attaches to it as on a plain table.
+                        let visibility = e.get().visibility;
+                        e.insert(FieldInfo { visibility, ..field_info });
+                    } else if ctor_inferred
+                        && runtime_is_function
+                        && matches!(e.get().annotation, Some(ValueType::Function(None)))
+                    {
+                        // A function entry the scan typed as a bare `function`: its
+                        // definition here carries the signature.
                         let visibility = e.get().visibility;
                         e.insert(FieldInfo { visibility, ..field_info });
                     } else if ctor_inferred && matches!(e.get().annotation, Some(ValueType::Any)) {

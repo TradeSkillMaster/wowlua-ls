@@ -296,12 +296,14 @@ impl<'a> Analysis<'a> {
                     // A placeholder `Any` / bare `table` field that the user did
                     // NOT declare (via `@field`, or a type on the constructor entry
                     // itself) was synthesized from a table-constructor value the
-                    // scan could only type coarsely; mark it so the merge may
-                    // upgrade it to the runtime constructor's real value. An
-                    // explicit `@field x any` is left out, preserving the escape hatch.
-                    if matches!(vt, ValueType::Any | ValueType::Table(None))
+                    // scan could only type coarsely, as was a function entry's bare
+                    // `function`; mark it so the merge may upgrade it to the runtime
+                    // constructor's real value. An explicit `@field x any` is left
+                    // out, preserving the escape hatch.
+                    if (matches!(vt, ValueType::Any | ValueType::Table(None))
                         && !class.declared_field_names.contains(field_name)
-                        && !class.typed_ctor_entries.contains(field_name)
+                        && !class.typed_ctor_entries.contains(field_name))
+                        || class.ctor_function_entries.contains(field_name)
                     {
                         self.ir.ctor_placeholder_fields.insert((table_idx, field_name.clone()));
                     }

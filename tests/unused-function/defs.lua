@@ -50,6 +50,12 @@ function NS._IgnoredMethod()
     return 14
 end
 
+-- A constructor's function entries are values a framework may call (an option
+-- or callback table): not flagged even when nothing in the workspace calls them.
+NS.Handlers = {
+    OnUnusedEvent = function() return 15 end,
+}
+
 -- Two workspace classes with a shared method name, called via a union-typed
 -- receiver. Neither should be flagged as unused. This case is covered by
 -- interface detection (2+ workspace tables defining the same method name).

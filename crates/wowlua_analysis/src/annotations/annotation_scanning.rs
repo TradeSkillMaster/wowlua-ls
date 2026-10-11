@@ -430,6 +430,12 @@ pub struct ExternalGlobal {
     /// only — `#[serde(skip)]`, no BLOB_VERSION bump.
     #[serde(skip)]
     pub declares_class: bool,
+    /// A method written as a table-constructor entry (`X.y = { f = function() end }`):
+    /// it belongs on the constructor's table, so the build never lands it on the
+    /// path's root the way it does an `@accessor` method. Runtime only —
+    /// `#[serde(skip)]`.
+    #[serde(skip)]
+    pub ctor_method: bool,
     /// Byte range of the function/variable *name* token (for precise diagnostic
     /// positioning). Falls back to `def_start`/`def_end` when unavailable.
     #[serde(default)]
@@ -505,6 +511,7 @@ impl ExternalGlobal {
             ctor_fields: Vec::new(),
             ctor_elements: false,
             declares_class: false,
+            ctor_method: false,
             name_start: 0,
             name_end: 0,
             mixin_parents: Vec::new(),
@@ -1111,6 +1118,7 @@ pub fn scan_method_funcall_self_fields(
                 ctor_fields: Vec::new(),
                 ctor_elements: false,
                 declares_class: false,
+                ctor_method: false,
                 name_start: range.0,
                 name_end: range.1,
                 mixin_parents: Vec::new(),

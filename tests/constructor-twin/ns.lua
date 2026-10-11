@@ -24,3 +24,11 @@ end
 ---@class Config
 ---@field handler any
 local Config = {}
+
+---@class Factory
+Factory = {}
+
+---@return Widget
+function Factory.Make()
+    return Widget
+end

@@ -4,11 +4,16 @@
 -- the constructor take those entries from the local constructor instead (the
 -- scan table stays the receiver, so a literal entry still reads through it).
 local localWidget = MakeThing()
+-- A local assigned a call through a `@class` local: the callee is the class's.
+---@class Factory
+local Factory = Factory
+local fromFactory = Factory.Make()
 NS.CONST = {
     A = MakeThing(),
     B = localWidget,
     C = 5,
     E = MakeThing() --[[@as Special]],
+    F = fromFactory,
 }
 local t = NS.CONST
 local a = NS.CONST.A
@@ -21,5 +26,7 @@ local ta = t.A
 --    ^ hover: (local) ta: Widget
 local e = NS.CONST.E
 --    ^ hover: (local) e: Special
+local f = NS.CONST.F
+--    ^ hover: (local) f: Widget
 
-_G.useConstructorTwin = { t, a, b, c, ta, e }
+_G.useConstructorTwin = { t, a, b, c, ta, e, f }

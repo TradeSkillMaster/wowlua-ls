@@ -723,12 +723,7 @@ pub fn scan_paths_with_overrides(
         // Pre-collect @field names so funcall/bare scans can skip fields already declared.
         // Typed self-fields from other files aren't included yet, so a small number of
         // redundant funcall entries may be emitted — build_on_stubs deduplicates them.
-        let mut typed_field_names: HashSet<(String, String)> = HashSet::default();
-        for decl in &classes {
-            for (field_name, _, _) in &decl.fields {
-                typed_field_names.insert((decl.name.clone(), field_name.clone()));
-            }
-        }
+        let typed_field_names = collect_typed_field_names(classes.iter());
         if !known_classes.is_empty() {
             let per_file: Vec<_> = paths.par_iter()
                 .filter_map(|p| {
@@ -750,14 +745,10 @@ pub fn scan_paths_with_overrides(
             let mut bare_count = 0usize;
             for (path, file_typed, file_funcall, file_bare) in per_file {
                 for tsf in file_typed {
-                    if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name) {
-                        let already_has = decl.fields.iter().any(|(n, _, _)| n == &tsf.field_name);
-                        if !already_has {
-                            decl.fields.push((tsf.field_name.clone(), tsf.annotation_type, tsf.visibility));
-                            decl.field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
-                            decl.field_paths.entry(tsf.field_name).or_insert_with(|| path.clone());
-                            typed_count += 1;
-                        }
+                    if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name)
+                        && add_self_field(decl, tsf, &path)
+                    {
+                        typed_count += 1;
                     }
                 }
                 // Bare fields: lowest priority — skip if funcall covers the same field
@@ -774,17 +765,10 @@ pub fn scan_paths_with_overrides(
                     if funcall_field_names.contains(&(tsf.class_name.clone(), tsf.field_name.clone())) {
                         continue;
                     }
-                    if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name) {
-                        let already_has = decl.fields.iter().any(|(n, _, _)| n == &tsf.field_name);
-                        if !already_has {
-                            decl.fields.push((tsf.field_name.clone(), tsf.annotation_type, tsf.visibility));
-                            decl.field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
-                            decl.field_paths.entry(tsf.field_name.clone()).or_insert_with(|| path.clone());
-                            if tsf.inferred {
-                                decl.bare_inferred_field_names.insert(tsf.field_name);
-                            }
-                            bare_count += 1;
-                        }
+                    if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name)
+                        && add_self_field(decl, tsf, &path)
+                    {
+                        bare_count += 1;
                     }
                 }
                 funcall_count += file_funcall.len();

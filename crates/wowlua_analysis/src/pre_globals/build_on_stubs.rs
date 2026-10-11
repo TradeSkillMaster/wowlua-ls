@@ -14,6 +14,7 @@ use super::{
     FnBuildCtx, FnMeta, DeepPathCtx,
     apply_mixin_parent_inheritance,
     call_field_writes, call_field_method_table, keep_call_field_methods,
+    ctor_function_fields, method_replaces_placeholder, merge_walked_fields,
 };
 
 struct BuildOnStubsContext<'a> {
@@ -485,6 +486,7 @@ impl<'a> BuildOnStubsContext<'a> {
         }
 
         let call_fields = call_field_writes(ws_globals);
+        let ctor_functions = ctor_function_fields(ws_classes);
         let mut seen_methods: HashSet<(String, String)> = HashSet::default();
         // (table, method) pairs claimed by a `@meta` override (processed first via
         // `method_order`). A `@meta` override is authoritative, so a later duplicate
@@ -503,6 +505,8 @@ impl<'a> BuildOnStubsContext<'a> {
                         .or(through_call.then_some(class_idx))
                 });
                 let use_deep_path = !path.is_empty() && (is_addon_ns || is_non_class_table || class_field_root.is_some());
+                // A constructor's entry is never an `@accessor` method of the root.
+                if g.ctor_method && !path.is_empty() && !use_deep_path { continue; }
                 let target_idx = if use_deep_path {
                     let Some(&root_idx) = self.non_class_tables.get(&g.name).or(class_field_root.as_ref()) else { continue };
                     let Some((leaf_idx, _)) = walk_deep_path(
@@ -581,20 +585,24 @@ impl<'a> BuildOnStubsContext<'a> {
                     if g.body_derived_returns {
                         self.deferred_returns.insert(func_idx);
                     }
-                    // Record display name for unused-function diagnostics.
-                    let display_name = if is_addon_ns {
-                        let mut parts = path.clone();
-                        parts.push(method_name.clone());
-                        parts.join(".")
-                    } else {
-                        let sep = if *is_colon { ":" } else { "." };
-                        if path.is_empty() {
-                            format!("{}{sep}{method_name}", g.name)
+                    // Record display name for unused-function diagnostics. A constructor's
+                    // function entries are values frameworks often call (option and
+                    // callback tables), so that leaves them out.
+                    if !g.ctor_method {
+                        let display_name = if is_addon_ns {
+                            let mut parts = path.clone();
+                            parts.push(method_name.clone());
+                            parts.join(".")
                         } else {
-                            format!("{}.{}{sep}{method_name}", g.name, path.join("."))
-                        }
-                    };
-                    self.function_names.insert(func_idx, display_name);
+                            let sep = if *is_colon { ":" } else { "." };
+                            if path.is_empty() {
+                                format!("{}{sep}{method_name}", g.name)
+                            } else {
+                                format!("{}.{}{sep}{method_name}", g.name, path.join("."))
+                            }
+                        };
+                        self.function_names.insert(func_idx, display_name);
+                    }
                     self.function_to_field.insert(func_idx, (target_idx, method_name.clone()));
                 }
                 let expr_id = ExprId(EXT_BASE + self.exprs.len());
@@ -674,6 +682,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                     self.tables[local_idx].fields.insert(method_name.clone(), new_field);
                     true
+                } else if method_replaces_placeholder(&self.tables, &self.exprs, &ctor_functions, target_idx, method_name) {
+                    self.tables[local_idx].fields.insert(method_name.clone(), new_field);
+                    true
                 } else {
                     // `or_insert` only writes when the field is absent; we own it iff
                     // there was nothing there before.
@@ -749,17 +760,19 @@ impl<'a> BuildOnStubsContext<'a> {
                 };
                 if let Some(vt) = value_type {
                     // When overriding a field auto-created by walk_deep_path (annotation=None),
-                    // copy self-scanned fields from the existing sub-table to the class table
-                    // so they remain accessible through the class type. Uses or_insert so
-                    // class-declared fields (@field annotations) take precedence. A
-                    // constructor entry `ClassFieldPaths` opened (still its placeholder
-                    // annotation) moves only into an anonymous table: copied into a class's
-                    // own table, its contents would reach every instance.
+                    // merge the definitions walked into it (`merge_walked_fields`) into the
+                    // written table so they remain accessible through its type: class-declared
+                    // fields (@field annotations) take precedence, and a constructor's function
+                    // entry takes the method defined there. A constructor entry — a global
+                    // constructor's (`ctor_entries`), or one `ClassFieldPaths` opened (still
+                    // its placeholder annotation) — moves only into an anonymous table: copied
+                    // into a class's own table, its contents would reach every instance.
+                    let anonymous_value = matches!(vt, ValueType::Table(Some(idx)) if self.tables[idx.ext_offset()].class_name.is_none());
                     if let ValueType::Table(Some(class_idx)) = &vt
                         && let Some(existing_fi) = self.tables[local_idx].fields.get(field_name)
                         && match &existing_fi.annotation {
-                            None => true,
-                            Some(ValueType::Table(None)) => self.tables[class_idx.ext_offset()].class_name.is_none(),
+                            None => anonymous_value || !self.ctor_entries.contains(&(leaf_idx, field_name.clone())),
+                            Some(ValueType::Table(None)) => anonymous_value,
                             _ => false,
                         }
                         && existing_fi.expr.is_external()
@@ -768,12 +781,8 @@ impl<'a> BuildOnStubsContext<'a> {
                         let sub_idx = *sub_idx;
                         let class_idx = *class_idx;
                         if sub_idx != class_idx {
-                            let sub_fields: Vec<(String, FieldInfo)> = self.tables[sub_idx.ext_offset()].fields.iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
-                            for (name, fi) in sub_fields {
-                                self.tables[class_idx.ext_offset()].fields.entry(name).or_insert(fi);
-                            }
+                            let path = format!("{leaf_parent_name}.{field_name}");
+                            merge_walked_fields(sub_idx, class_idx, &path, &mut self.tables, &self.exprs, &mut self.sub_tables, 0);
                             // Update sub_tables so deeper paths resolve against the class table.
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), class_idx);
                         }

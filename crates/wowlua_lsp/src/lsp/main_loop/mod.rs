@@ -2481,6 +2481,7 @@ mod tests {
                 ctor_fields: Vec::new(),
                 ctor_elements: false,
                 declares_class: false,
+                ctor_method: false,
                 name_start: 0,
                 name_end: 0,
                 mixin_parents: Vec::new(),
@@ -2983,6 +2984,7 @@ mod tests {
             ctor_fields: Vec::new(),
             ctor_elements: false,
             declares_class: false,
+            ctor_method: false,
             name_start: 0,
             name_end: 0,
             mixin_parents: Vec::new(),
@@ -3303,6 +3305,24 @@ mod tests {
         assert!(
             matches!(rebuild(named("\n", "\"A\", \"B\"")), RebuildScope::None),
             "moving the call without changing its members must not trigger a rebuild",
+        );
+    }
+
+    #[test]
+    fn ctor_method_edits_trigger_rebuild() {
+        // A constructor's function entries are methods other files call, so
+        // editing one's signature must rebuild.
+        let mut ws = WorkspaceState::for_test(Some(PathBuf::from("/project")));
+        let uri: lsp_types::Uri = "file:///project/test.lua".parse().unwrap();
+        let mut rebuild = |src: String| {
+            let tree = crate::syntax::parser::parse(&src);
+            maybe_rebuild_workspace(&uri, crate::syntax::SyntaxNode::new_root(&tree), &mut ws)
+        };
+        let module = |ret: &str| format!("local _, ns = ...\nns.Mod = {{\n    ---@return {ret}\n    Get = function() end,\n}}\n");
+        let _ = rebuild(module("number"));
+        assert!(
+            !matches!(rebuild(module("string")), RebuildScope::None),
+            "a constructor method's signature edit must trigger a rebuild",
         );
     }
 

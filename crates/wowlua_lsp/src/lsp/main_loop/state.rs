@@ -29,15 +29,40 @@ impl PendingEditMap {
 }
 
 /// Collect (class_name, field_name) pairs from all @field entries on the given classes.
-/// Used to tell the self-field scan which fields are already declared.
+/// Used to tell the self-field scan which fields are already declared. A
+/// constructor's function entry isn't: a `self` write types it (see
+/// [`add_self_field`]).
 pub(super) fn collect_typed_field_names<'a>(classes: impl Iterator<Item = &'a ClassDecl>) -> HashSet<(String, String)> {
     let mut names = HashSet::default();
     for class in classes {
         for (field_name, _, _) in &class.fields {
-            names.insert((class.name.clone(), field_name.clone()));
+            if !class.ctor_function_entries.contains(field_name) {
+                names.insert((class.name.clone(), field_name.clone()));
+            }
         }
     }
     names
+}
+
+/// Add the self-field `tsf`, written in `path`, to its class `decl`: as a new
+/// field, or over a constructor's function entry the class scan could only type
+/// as a bare `function`, which the write types as it does a field a method is
+/// defined at. Returns whether it landed.
+pub(super) fn add_self_field(decl: &mut ClassDecl, tsf: TypedSelfField, path: &std::path::Path) -> bool {
+    let field = (tsf.field_name.clone(), tsf.annotation_type, tsf.visibility);
+    match decl.fields.iter().position(|(name, _, _)| *name == tsf.field_name) {
+        Some(i) if decl.ctor_function_entries.remove(&tsf.field_name) => decl.fields[i] = field,
+        Some(_) => return false,
+        None => {
+            decl.fields.push(field);
+            decl.field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
+            decl.field_paths.entry(tsf.field_name.clone()).or_insert_with(|| path.to_path_buf());
+        }
+    }
+    if tsf.inferred {
+        decl.bare_inferred_field_names.insert(tsf.field_name);
+    }
+    true
 }
 
 /// Merge typed + bare self-fields, skipping bare fields when a funcall field
@@ -256,15 +281,7 @@ impl WorkspaceState {
             for (source_path, self_fields) in &self.ws_file_self_fields {
                 for tsf in self_fields {
                     if let Some(&idx) = class_index.get(&tsf.class_name) {
-                        let already_has = ws_classes[idx].fields.iter().any(|(n, _, _)| n == &tsf.field_name);
-                        if !already_has {
-                            ws_classes[idx].fields.push((tsf.field_name.clone(), tsf.annotation_type.clone(), tsf.visibility));
-                            ws_classes[idx].field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
-                            ws_classes[idx].field_paths.entry(tsf.field_name.clone()).or_insert_with(|| source_path.clone());
-                            if tsf.inferred {
-                                ws_classes[idx].bare_inferred_field_names.insert(tsf.field_name.clone());
-                            }
-                        }
+                        add_self_field(&mut ws_classes[idx], tsf.clone(), source_path);
                     }
                 }
             }
