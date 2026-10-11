@@ -3588,28 +3588,18 @@ impl<'a> Analysis<'a> {
     }
 
     /// Narrow the active flavor set in `scope_idx` to the intersection of
-    /// `new_mask` with whatever is already active. Used by flavor guards.
+    /// `new_mask` with whatever is already active. Used by flavor guards; the
+    /// guards applied to one scope (an `and` chain's operands, successive early
+    /// exits) compose.
     pub fn narrow_scope_flavors(&mut self, scope_idx: ScopeIndex, new_mask: u8) {
-        let parent_scope = if scope_idx.val() < self.ir.scopes.len() {
-            self.ir.scopes[scope_idx.val()].parent.unwrap_or(scope_idx)
-        } else {
-            scope_idx
-        };
-        let parent_mask = self.active_flavors_at(parent_scope);
-        let effective = parent_mask & new_mask;
+        let effective = self.active_flavors_at(scope_idx) & new_mask;
         self.scope_flavors.insert(scope_idx, effective);
     }
 
-    /// Set the active flavor set in `scope_idx` to `parent_mask & !exclude_mask`
-    /// — used for else-branches of flavor comparisons.
+    /// Remove `exclude_mask` from the active flavor set in `scope_idx` — used
+    /// for else-branches of flavor comparisons and early exits.
     pub fn exclude_scope_flavors(&mut self, scope_idx: ScopeIndex, exclude_mask: u8) {
-        let parent_scope = if scope_idx.val() < self.ir.scopes.len() {
-            self.ir.scopes[scope_idx.val()].parent.unwrap_or(scope_idx)
-        } else {
-            scope_idx
-        };
-        let parent_mask = self.active_flavors_at(parent_scope);
-        let effective = parent_mask & !exclude_mask;
+        let effective = self.active_flavors_at(scope_idx) & !exclude_mask;
         self.scope_flavors.insert(scope_idx, effective);
     }
 

@@ -6113,34 +6113,57 @@ fn quick_fix_wrong_flavor_api_wraps_in_guard() {
 }
 
 #[test]
-fn quick_fix_wrong_flavor_api_mainline_guard_covers_forever() {
+fn quick_fix_wrong_flavor_api_guard_follows_active_flavors() {
     use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range, Uri};
-    // Forever reports `WOW_PROJECT_MAINLINE` too, so that guard fits an API on
-    // Retail and Forever, but not a Retail-only API in a project targeting Forever.
-    let src = "C_Foo.Bar()\n";
-    let (tree, analysis) = build_analysis_for_quickfix(src);
+    use wowlua_ls::flavor::{FLAVOR_CLASSIC, FLAVOR_CLASSIC_ERA, FLAVOR_FOREVER, FLAVOR_RETAIL};
+    // The guard keeps each flavor the call runs under that has the API, one
+    // `WOW_PROJECT_*` constant per flavor, so it never names a flavor the
+    // project doesn't target.
     let uri: Uri = "file:///test.lua".parse().unwrap();
-    let guard_for = |message: &str| {
+    let guard_for = |src: &str, project_flavors: u8, missing: &str, available: &str| {
+        let tree = wowlua_ls::syntax::parser::parse(src);
+        let config = AnalysisConfig { project_flavors, ..Default::default() };
+        let mut analysis = Analysis::new_with_tree(&tree, Arc::new(PreResolvedGlobals::empty()), config);
+        analysis.resolve_types();
+        let analysis = analysis.into_result();
+        let (line, character) = src.lines().enumerate()
+            .find_map(|(i, l)| l.find("C_Foo.Bar()").map(|c| (i as u32, c as u32)))
+            .unwrap();
         let diag = lsp_types::Diagnostic {
             range: Range {
-                start: Position { line: 0, character: 0 },
-                end:   Position { line: 0, character: 11 },
+                start: Position { line, character },
+                end:   Position { line, character: character + 11 },
             },
             severity: Some(DiagnosticSeverity::WARNING),
             code: Some(NumberOrString::String("wrong-flavor-api".to_string())),
             source: Some("wowlua_ls".to_string()),
-            message: message.to_string(),
+            message: format!("API 'C_Foo.Bar' not available in flavor '{missing}' (available in: {available})"),
             ..Default::default()
         };
         let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)), None);
         find_action_edit(&actions, "Guard with").map(|edit| apply_text_edit(src, edit))
     };
-    assert_eq!(
-        guard_for("API 'C_Foo.Bar' not available in flavor 'Classic Era' (available in: Retail, Forever)").as_deref(),
-        Some("if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then\n    C_Foo.Bar()\nend\n"));
-    assert_eq!(guard_for("API 'C_Foo.Bar' not available in flavor 'Forever' (available in: Retail)"), None);
-    assert_eq!(guard_for("API 'C_Foo.Bar' not available in flavor 'Classic, Forever' (available in: Retail)"), None);
-    assert_eq!(guard_for("API 'C_Foo.Bar' not available in flavor 'Retail' (available in: Forever)"), None);
+    let call = "C_Foo.Bar()\n";
+    let wrapped = |condition: &str| Some(format!("if {condition} then\n    C_Foo.Bar()\nend\n"));
+    let not_classic = FLAVOR_RETAIL | FLAVOR_CLASSIC_ERA | FLAVOR_FOREVER;
+
+    // Forever reports `WOW_PROJECT_CAMELOT`: an API on the retail client needs
+    // both constants when the project targets Forever, `WOW_PROJECT_MAINLINE`
+    // alone when it doesn't.
+    assert_eq!(guard_for(call, not_classic, "Classic Era", "Retail, Forever"),
+        wrapped("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE or WOW_PROJECT_ID == WOW_PROJECT_CAMELOT"));
+    assert_eq!(guard_for(call, FLAVOR_RETAIL | FLAVOR_CLASSIC, "Classic", "Retail, Forever"),
+        wrapped("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE"));
+    assert_eq!(guard_for(call, FLAVOR_RETAIL | FLAVOR_FOREVER, "Retail", "Forever"),
+        wrapped("WOW_PROJECT_ID == WOW_PROJECT_CAMELOT"));
+    assert_eq!(guard_for(call, not_classic, "Retail", "Classic, Classic Era, Forever"),
+        wrapped("WOW_PROJECT_ID == WOW_PROJECT_CLASSIC or WOW_PROJECT_ID == WOW_PROJECT_CAMELOT"));
+    // An enclosing guard narrows the flavors the call runs under.
+    let guarded = "if WOW_PROJECT_ID ~= WOW_PROJECT_CLASSIC then\n    C_Foo.Bar()\nend\n";
+    assert_eq!(guard_for(guarded, not_classic, "Forever", "Retail, Classic Era").as_deref(),
+        Some("if WOW_PROJECT_ID ~= WOW_PROJECT_CLASSIC then\n    if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then\n        C_Foo.Bar()\n    end\nend\n"));
+    // No one constant covers the rolling Classic flavor.
+    assert_eq!(guard_for(call, FLAVOR_RETAIL | FLAVOR_CLASSIC, "Retail", "Classic, Classic Era"), None);
 }
 
 #[test]

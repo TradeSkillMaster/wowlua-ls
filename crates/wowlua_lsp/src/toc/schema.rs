@@ -139,7 +139,7 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
     },
     TocFieldDef {
         name: "AllowLoadGameType",
-        doc: "Restricts which game flavors can load this addon. Comma-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot`. If omitted, the addon loads on all flavors.",
+        doc: "Restricts which game flavors can load this addon. Comma-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot` (or `forever`). If omitted, the addon loads on all flavors.",
         required: false,
         value_kind: TocValueKind::GameTypeList,
         aliases: &[],
@@ -149,7 +149,7 @@ pub static TOC_FIELD_CATALOG: &[TocFieldDef] = &[
     // neither), and is included on a maintainer report that the client honors it.
     TocFieldDef {
         name: "ExcludeLoadGameType",
-        doc: "The inverse of `AllowLoadGameType`: the addon loads on every game flavor *except* the ones listed. Comma- or space-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot`.",
+        doc: "The inverse of `AllowLoadGameType`: the addon loads on every game flavor *except* the ones listed. Comma- or space-separated list of: `mainline`, `classic`, `vanilla`, `cata`, `wrath`, `tbc`, `mists`, `camelot` (or `forever`).",
         required: false,
         value_kind: TocValueKind::GameTypeList,
         aliases: &[],
@@ -211,6 +211,7 @@ pub static GAME_TYPE_VALUES: &[(&str, &str)] = &[
     ("mainline", "Retail and Forever"),
     ("standard", "Retail, excluding Plunderstorm"),
     ("camelot", "World of Warcraft: Forever"),
+    ("forever", "World of Warcraft: Forever (same as `camelot`)"),
     ("classic", "All Classic flavors (Classic Era, Cata, Wrath, TBC, Mists)"),
     ("vanilla", "Classic Era (Vanilla only)"),
     ("cata", "Cataclysm Classic"),
@@ -223,8 +224,8 @@ pub static GAME_TYPE_VALUES: &[(&str, &str)] = &[
 
 /// Known `[Directive]` names for file path lines (load conditions + path variables).
 pub static FILE_DIRECTIVES: &[(&str, &str)] = &[
-    ("AllowLoadGameType", "Restricts this file to specific game flavors (comma- or space-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, camelot, plunderstorm, wowhack)."),
-    ("ExcludeLoadGameType", "Loads this file on every game flavor except the ones listed (comma- or space-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, camelot, plunderstorm, wowhack)."),
+    ("AllowLoadGameType", "Restricts this file to specific game flavors (comma- or space-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, camelot, forever, plunderstorm, wowhack)."),
+    ("ExcludeLoadGameType", "Loads this file on every game flavor except the ones listed (comma- or space-separated: mainline, standard, classic, vanilla, cata, wrath, tbc, mists, camelot, forever, plunderstorm, wowhack)."),
     ("AllowLoadTextLocale", "Restricts this file to specific client text locales (comma-separated, e.g. enUS, frFR)."),
     ("AllowLoad", "Restricts this file to an environment (ingame / glue). Functionally inoperable for addons."),
     ("Family", "Path variable that expands to the game family subdirectory."),

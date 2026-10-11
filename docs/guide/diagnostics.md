@@ -36,7 +36,7 @@ Many diagnostics offer **quick fixes** (code actions — the lightbulb / <kbd>Ct
 | `incomplete-signature-doc` | Generate the missing `@param` / `@return` annotations |
 | `trailing-space` | Remove the trailing whitespace |
 
-The config-editing fixes (`undefined-global`, `create-global`) only appear when a `.wowluarc.json` governs the file. The `wrong-flavor-api` guard is offered only when one `WOW_PROJECT_*` constant covers exactly the flavors the API is available on: `WOW_PROJECT_MAINLINE` (Retail and Forever, or Retail alone when your project doesn't target Forever) or `WOW_PROJECT_CLASSIC` (Classic Era). The `secret-*` guard is offered only when each flagged value is a name or field chain and the statement is a call, assignment, `if`, `while`, or `repeat` (not a `local` declaration or `return`).
+The config-editing fixes (`undefined-global`, `create-global`) only appear when a `.wowluarc.json` governs the file. The `wrong-flavor-api` guard compares `WOW_PROJECT_ID` against one constant for each flavor that runs the code (your target flavors, minus any an enclosing guard rules out) and has the API: `WOW_PROJECT_MAINLINE` (Retail), `WOW_PROJECT_CLASSIC` (Classic Era), `WOW_PROJECT_CAMELOT` (Forever). It isn't offered when Classic is among them, since Classic spans several expansion constants. The `secret-*` guard is offered only when each flagged value is a name or field chain and the statement is a call, assignment, `if`, `while`, or `repeat` (not a `local` declaration or `return`).
 
 ## Suppressing diagnostics
 

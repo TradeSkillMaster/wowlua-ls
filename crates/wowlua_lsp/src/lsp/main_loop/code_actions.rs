@@ -275,8 +275,8 @@ pub fn compute_quick_fixes(
                 .unwrap_or_default()
         }
         "wrong-flavor-api" => {
-            let Some((tree, _)) = tree_and_analysis else { return vec![] };
-            make_flavor_guard_action(uri, text, diag, tree)
+            let Some((tree, analysis)) = tree_and_analysis else { return vec![] };
+            make_flavor_guard_action(uri, text, diag, tree, analysis)
                 .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
                 .unwrap_or_default()
         }
@@ -1199,30 +1199,25 @@ fn enclosing_block_statement_kind(tree: &SyntaxTree, offset: u32) -> Option<(u32
 
 /// Quick fix for `wrong-flavor-api`: wrap the enclosing statement in a
 /// `if WOW_PROJECT_ID == WOW_PROJECT_* then … end` guard so the call only runs on
-/// the flavors where the API exists. Only offered when one `WOW_PROJECT_*`
-/// constant covers exactly those flavors: `WOW_PROJECT_MAINLINE` (Retail and
-/// Forever — Retail alone when the project doesn't target Forever) or
-/// `WOW_PROJECT_CLASSIC` (Classic Era). The rolling Classic flavor spans several
-/// expansion constants, so no one guard is correct there.
+/// the flavors where the API exists. The guard keeps each flavor the call runs
+/// under that has the API — `WOW_PROJECT_MAINLINE` (Retail), `WOW_PROJECT_CLASSIC`
+/// (Classic Era), `WOW_PROJECT_CAMELOT` (Forever), joined with `or` — so it never
+/// names a flavor the project doesn't target. Not offered when that includes the
+/// rolling Classic flavor, which spans several expansion constants.
 pub(super) fn make_flavor_guard_action(
     uri: &lsp_types::Uri,
     text: &str,
     diag: &lsp_types::Diagnostic,
     tree: &SyntaxTree,
+    analysis: &AnalysisResult,
 ) -> Option<CodeAction> {
     // Message: "… not available in flavor '<flavors>' (available in: <flavors>)".
-    let (head, available) = diag.message.rsplit_once("(available in: ")?;
-    let available = available.strip_suffix(')')?;
-    let missing = head.rsplit_once("not available in flavor '")?.1;
-    let const_name = match available.trim() {
-        "Retail, Forever" => "WOW_PROJECT_MAINLINE",
-        "Retail" if !missing.contains("Forever") => "WOW_PROJECT_MAINLINE",
-        "Classic Era" => "WOW_PROJECT_CLASSIC",
-        _ => return None,
-    };
+    let available = diag.message.rsplit_once("(available in: ")?.1.strip_suffix(')')?;
+    let available = crate::flavor::parse_flavor_display_list(available)?;
 
     let utf8 = use_utf8();
     let ds = crate::lsp::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, utf8);
+    let const_names = crate::flavor::wow_project_constants_for(available & analysis.active_flavors_at_offset(ds))?;
     let (stmt_start, stmt_end) = enclosing_block_statement(tree, ds)?;
     let (stmt_start, stmt_end) = (stmt_start as usize, stmt_end as usize);
     if stmt_end > text.len() || stmt_start > stmt_end { return None; }
@@ -1236,14 +1231,15 @@ pub(super) fn make_flavor_guard_action(
         return None;
     }
 
-    let (range_start, new_text) =
-        wrap_statement_in_if(text, stmt_start, stmt_end, &format!("WOW_PROJECT_ID == {const_name}"))?;
+    let condition = const_names.iter().map(|c| format!("WOW_PROJECT_ID == {c}")).collect::<Vec<_>>().join(" or ");
+    let (range_start, new_text) = wrap_statement_in_if(text, stmt_start, stmt_end, &condition)?;
     let numbers = crate::lsp::SafeLinePositions::new(text);
     let edit = lsp_types::TextEdit {
         range: numbers.lsp_range(range_start, stmt_end, utf8),
         new_text,
     };
-    Some(single_edit_quickfix(uri, diag, format!("Guard with `{}` check", const_name), edit))
+    let title = const_names.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(" or ");
+    Some(single_edit_quickfix(uri, diag, format!("Guard with {title} check"), edit))
 }
 
 /// Wrap the statement at `[stmt_start, stmt_end)` in `if <condition> then … end`,

@@ -55,3 +55,20 @@ if WOW_PROJECT_ID ~= WOW_PROJECT_MISTS_CLASSIC and (IsRetail() and PlayerGetTime
 if WOW_PROJECT_ID ~= WOW_PROJECT_MISTS_CLASSIC and (IsRetail() and PlayerGetTimerunningSeasonID() or 0) then return end
 if not (WOW_PROJECT_ID == WOW_PROJECT_MISTS_CLASSIC) and (IsRetail() and PlayerGetTimerunningSeasonID()) then return end
 if WOW_PROJECT_ID ~= WOW_PROJECT_MISTS_CLASSIC and (WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and PlayerGetTimerunningSeasonID()) then return end
+
+-- `or` / `and` of comparisons combine, in conditions and in boolean flags.
+if WOW_PROJECT_ID == WOW_PROJECT_CLASSIC or WOW_PROJECT_ID == WOW_PROJECT_MISTS_CLASSIC then
+    AbandonQuest()
+end
+local isClassicClient = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC or WOW_PROJECT_ID == WOW_PROJECT_MISTS_CLASSIC
+if isClassicClient then
+    AbandonQuest()
+end
+
+-- An `if` body sees every guard of an `and`, and none of a falsy `or`.
+if IsRetail() and WOW_PROJECT_ID ~= WOW_PROJECT_MISTS_CLASSIC then
+    PlayerGetTimerunningSeasonID()
+end
+if not (WOW_PROJECT_ID == WOW_PROJECT_CLASSIC or IsRetail()) then
+    PlayerGetTimerunningSeasonID()
+end

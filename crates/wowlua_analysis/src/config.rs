@@ -988,12 +988,14 @@ fn parse_toc_files(dir: &Path) -> TocParseResult {
             // Effective flavor for this TOC: suffixed TOCs use their suffix flavor,
             // minus the flavors a more specific sibling TOC takes (`_Camelot` over
             // `_Mainline`); the base TOC covers all flavors NOT claimed by any suffix.
+            // A sibling for the same game type (`_Forever` beside `_Camelot`)
+            // takes nothing from it.
             let toc_flavor = match &entry.suffix {
                 Some((suffix, sf)) => {
                     let siblings = indices.iter()
                         .filter_map(|&j| toc_entries[j].suffix.as_ref())
                         .map(|(s, _)| s.as_str())
-                        .filter(|s| *s != suffix.as_str());
+                        .filter(|s| !crate::flavor::same_game_type(s, suffix));
                     let flavor = sf & !crate::flavor::flavors_claimed_by_toc_suffixes(siblings);
                     if flavor == 0 {
                         continue;
@@ -2580,6 +2582,51 @@ Shared.lua
         assert_eq!(*result.file_flavors.get(&dir.join("Camelot/Init.lua")).unwrap(), FLAVOR_FOREVER);
         assert_eq!(*result.file_flavors.get(&dir.join("Standard/Init.lua")).unwrap(), FLAVOR_RETAIL);
         assert_eq!(*result.file_flavors.get(&dir.join("Mainline/Init.lua")).unwrap(), FLAVOR_FOREVER);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_forever_alias() {
+        use crate::flavor::{FLAVOR_RETAIL, FLAVOR_FOREVER};
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_forever_alias");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Forever")).unwrap();
+        std::fs::write(dir.join("Forever").join("Init.lua"), "").unwrap();
+        // The client accepts `forever` wherever it accepts `camelot`: the TOC
+        // suffix, `[Game]`, and game type lists.
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "## Interface: 120100\nRetail.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Forever.toc"),
+            "## Interface: 16001\n[Game]/Init.lua\nShared.lua [ExcludeLoadGameType forever]\n").unwrap();
+        std::fs::write(dir.join("Other.toc"), "## Interface: 120100\nOther.lua [AllowLoadGameType standard, forever]\n").unwrap();
+
+        let result = parse_toc_files(&dir);
+        let flavors = |f: &str| *result.file_flavors.get(&dir.join(f)).unwrap();
+        assert_eq!(flavors("Retail.lua"), FLAVOR_RETAIL);
+        assert_eq!(flavors("Forever/Init.lua"), FLAVOR_FOREVER);
+        assert_eq!(result.file_flavors.get(&dir.join("Shared.lua")), None);
+        assert_eq!(flavors("Other.lua"), FLAVOR_RETAIL | FLAVOR_FOREVER);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_camelot_and_forever_suffixes_together() {
+        use crate::flavor::{FLAVOR_RETAIL, FLAVOR_FOREVER};
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_camelot_and_forever");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // One addon shipping both spellings of Forever's TOC: neither takes
+        // Forever away from the other.
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "## Interface: 120100\nRetail.lua\nShared.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Camelot.toc"), "## Interface: 16001\nForever.lua\nShared.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Forever.toc"), "## Interface: 16001\nForever.lua\nShared.lua\n").unwrap();
+
+        let result = parse_toc_files(&dir);
+        let flavors = |f: &str| *result.file_flavors.get(&dir.join(f)).unwrap();
+        assert_eq!(flavors("Retail.lua"), FLAVOR_RETAIL);
+        assert_eq!(flavors("Forever.lua"), FLAVOR_FOREVER);
+        assert_eq!(flavors("Shared.lua"), FLAVOR_RETAIL | FLAVOR_FOREVER);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

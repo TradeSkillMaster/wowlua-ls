@@ -6,9 +6,9 @@
 //!   - `retail` (0x1) — the live retail game
 //!   - `classic` (0x2) — the rolling Classic progression, including MoP Classic
 //!   - `classic_era` (0x4) — Classic Era (vanilla)
-//!   - `forever` (0x8) — World of Warcraft: Forever (game type `camelot`), a
-//!     vanilla-era game on the retail client: it shares retail's API and
-//!     `WOW_PROJECT_MAINLINE`, and loads mainline-family TOCs and files
+//!   - `forever` (0x8) — World of Warcraft: Forever (game type `camelot`, alias
+//!     `forever`), a vanilla-era game on the retail client: it shares retail's
+//!     API, reports `WOW_PROJECT_CAMELOT`, and loads mainline-family TOCs and files
 //!
 //! During stub generation, flavor bitmasks are derived from API presence across
 //! BlizzardInterfaceResources branches (live / classic / classic_era / forever).
@@ -53,10 +53,10 @@ pub fn parse_flavor_list(names: &[String]) -> u8 {
 }
 
 /// WOW_PROJECT_* constant name → the flavors whose `WOW_PROJECT_ID` it is.
-/// Forever reports `WOW_PROJECT_MAINLINE`, so that one covers two flavors.
 pub fn wow_project_constant_flavor(name: &str) -> Option<u8> {
     match name {
-        "WOW_PROJECT_MAINLINE" => Some(FLAVOR_RETAIL | FLAVOR_FOREVER),
+        "WOW_PROJECT_MAINLINE" => Some(FLAVOR_RETAIL),
+        "WOW_PROJECT_CAMELOT" => Some(FLAVOR_FOREVER),
         "WOW_PROJECT_CLASSIC" => Some(FLAVOR_CLASSIC_ERA),
         "WOW_PROJECT_BURNING_CRUSADE_CLASSIC"
         | "WOW_PROJECT_WRATH_CLASSIC"
@@ -66,14 +66,46 @@ pub fn wow_project_constant_flavor(name: &str) -> Option<u8> {
     }
 }
 
+/// The `WOW_PROJECT_*` constants to compare `WOW_PROJECT_ID` against, joined with
+/// `or`, for a check that holds on exactly the flavors in `mask`: the inverse of
+/// [`wow_project_constant_flavor`]. `None` for an empty mask or one including
+/// the rolling Classic flavor, which spans several expansion constants.
+pub fn wow_project_constants_for(mask: u8) -> Option<Vec<&'static str>> {
+    if mask & FLAVOR_ALL == 0 || mask & FLAVOR_CLASSIC != 0 {
+        return None;
+    }
+    let constants = [
+        (FLAVOR_RETAIL, "WOW_PROJECT_MAINLINE"),
+        (FLAVOR_CLASSIC_ERA, "WOW_PROJECT_CLASSIC"),
+        (FLAVOR_FOREVER, "WOW_PROJECT_CAMELOT"),
+    ];
+    Some(constants.into_iter().filter(|(bit, _)| mask & bit != 0).map(|(_, name)| name).collect())
+}
+
+/// Each flavor bit and its display name, in display order.
+const FLAVOR_DISPLAY_NAMES: [(u8, &str); 4] = [
+    (FLAVOR_RETAIL, "Retail"),
+    (FLAVOR_CLASSIC, "Classic"),
+    (FLAVOR_CLASSIC_ERA, "Classic Era"),
+    (FLAVOR_FOREVER, "Forever"),
+];
+
 /// Render a flavor mask as a human-readable list: "Retail, Classic".
 pub fn format_flavor_list(mask: u8) -> String {
-    let mut parts = Vec::new();
-    if mask & FLAVOR_RETAIL != 0 { parts.push("Retail"); }
-    if mask & FLAVOR_CLASSIC != 0 { parts.push("Classic"); }
-    if mask & FLAVOR_CLASSIC_ERA != 0 { parts.push("Classic Era"); }
-    if mask & FLAVOR_FOREVER != 0 { parts.push("Forever"); }
-    parts.join(", ")
+    FLAVOR_DISPLAY_NAMES.iter()
+        .filter(|(bit, _)| mask & bit != 0)
+        .map(|(_, name)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Parse a [`format_flavor_list`] rendering back into its mask. `None` if any
+/// entry isn't a flavor's display name.
+pub fn parse_flavor_display_list(list: &str) -> Option<u8> {
+    list.split(", ").try_fold(0u8, |mask, name| {
+        let (bit, _) = FLAVOR_DISPLAY_NAMES.iter().find(|(_, n)| *n == name.trim())?;
+        Some(mask | bit)
+    })
 }
 
 /// Effective flavor mask for diagnostic purposes. A stored `0` (no data) is
@@ -184,12 +216,13 @@ pub fn is_interface_header(key: &str) -> bool {
 
 /// Map a TOC filename suffix (without the leading `_`) to a flavor mask.
 /// Returns `None` for unrecognized suffixes (e.g. `_Options`). `_Mainline` also
-/// loads on Forever, which falls back to it when there is no `_Camelot` TOC.
+/// loads on Forever, which falls back to it when there is no `_Camelot` (or
+/// `_Forever`) TOC.
 pub fn parse_toc_suffix(suffix: &str) -> Option<u8> {
     match suffix {
         "Mainline" => Some(FLAVOR_RETAIL | FLAVOR_FOREVER),
         "Standard" => Some(FLAVOR_RETAIL),
-        "Camelot" => Some(FLAVOR_FOREVER),
+        "Camelot" | "Forever" => Some(FLAVOR_FOREVER),
         "Classic" => Some(FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA),
         "Vanilla" => Some(FLAVOR_CLASSIC_ERA),
         "Cata" | "Wrath" | "TBC" | "Mists" => Some(FLAVOR_CLASSIC),
@@ -204,7 +237,7 @@ pub fn parse_game_type_name(name: &str) -> Option<u8> {
     match name.trim().to_ascii_lowercase().as_str() {
         "mainline" => Some(FLAVOR_RETAIL | FLAVOR_FOREVER),
         "standard" => Some(FLAVOR_RETAIL),
-        "camelot" => Some(FLAVOR_FOREVER),
+        "camelot" | "forever" => Some(FLAVOR_FOREVER),
         "classic" => Some(FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA),
         "vanilla" => Some(FLAVOR_CLASSIC_ERA),
         "cata" | "wrath" | "tbc" | "mists" => Some(FLAVOR_CLASSIC),
@@ -289,7 +322,7 @@ pub fn flavors_claimed_by_toc_suffixes<'a>(suffixes: impl IntoIterator<Item = &'
 /// family name standing for every one of its members.
 fn fully_listed_flavors<'a>(names: impl IntoIterator<Item = &'a str>) -> u8 {
     let mut listed: Vec<&str> = Vec::new();
-    for name in names {
+    for name in names.into_iter().map(canonical_game_type) {
         match family_members(name) {
             Some(members) => listed.extend_from_slice(members),
             None => listed.push(name),
@@ -300,6 +333,18 @@ fn fully_listed_flavors<'a>(names: impl IntoIterator<Item = &'a str>) -> u8 {
         .filter(|(leaf, _)| !listed.iter().any(|l| l.eq_ignore_ascii_case(leaf)))
         .fold(0u8, |acc, (_, bit)| acc | bit);
     FLAVOR_ALL & !surviving
+}
+
+/// The game type `name` stands for: the client accepts `forever` as an alias of
+/// `camelot`.
+fn canonical_game_type(name: &str) -> &str {
+    if name.eq_ignore_ascii_case("forever") { "camelot" } else { name }
+}
+
+/// Whether two game type names (TOC suffixes or list entries) are the same game
+/// type: case-insensitive, with `forever` and `camelot` the same.
+pub fn same_game_type(a: &str, b: &str) -> bool {
+    canonical_game_type(a).eq_ignore_ascii_case(canonical_game_type(b))
 }
 
 /// The leaf game types behind a family name (`mainline`, `classic`), or `None`
@@ -331,6 +376,7 @@ pub const FAMILY_EXPANSIONS: &[(&str, u8)] = &[
 pub const GAME_EXPANSIONS: &[(&str, u8)] = &[
     ("Standard", FLAVOR_RETAIL),
     ("Camelot", FLAVOR_FOREVER),
+    ("Forever", FLAVOR_FOREVER),
     ("Vanilla", FLAVOR_CLASSIC_ERA),
     ("TBC", FLAVOR_CLASSIC),
     ("Wrath", FLAVOR_CLASSIC),
@@ -382,10 +428,33 @@ mod tests {
     }
 
     #[test]
-    fn wow_project_mainline_covers_forever() {
-        assert_eq!(wow_project_constant_flavor("WOW_PROJECT_MAINLINE"), Some(FLAVOR_RETAIL | FLAVOR_FOREVER));
+    fn wow_project_constants() {
+        assert_eq!(wow_project_constant_flavor("WOW_PROJECT_MAINLINE"), Some(FLAVOR_RETAIL));
+        assert_eq!(wow_project_constant_flavor("WOW_PROJECT_CAMELOT"), Some(FLAVOR_FOREVER));
         assert_eq!(wow_project_constant_flavor("WOW_PROJECT_CLASSIC"), Some(FLAVOR_CLASSIC_ERA));
         assert_eq!(wow_project_constant_flavor("WOW_PROJECT_MISTS_CLASSIC"), Some(FLAVOR_CLASSIC));
+
+        assert_eq!(wow_project_constants_for(FLAVOR_RETAIL | FLAVOR_FOREVER),
+                   Some(vec!["WOW_PROJECT_MAINLINE", "WOW_PROJECT_CAMELOT"]));
+        assert_eq!(wow_project_constants_for(FLAVOR_CLASSIC_ERA | FLAVOR_FOREVER),
+                   Some(vec!["WOW_PROJECT_CLASSIC", "WOW_PROJECT_CAMELOT"]));
+        assert_eq!(wow_project_constants_for(FLAVOR_RETAIL | FLAVOR_CLASSIC), None);
+        assert_eq!(wow_project_constants_for(0), None);
+        // The inverse of `wow_project_constant_flavor` for every flavor that has one.
+        for bit in [FLAVOR_RETAIL, FLAVOR_CLASSIC_ERA, FLAVOR_FOREVER] {
+            let constants = wow_project_constants_for(bit).unwrap();
+            assert_eq!(constants.len(), 1);
+            assert_eq!(wow_project_constant_flavor(constants[0]), Some(bit));
+        }
+    }
+
+    #[test]
+    fn flavor_display_list_round_trips() {
+        for mask in 1..=FLAVOR_ALL {
+            assert_eq!(parse_flavor_display_list(&format_flavor_list(mask)), Some(mask));
+        }
+        assert_eq!(format_flavor_list(FLAVOR_RETAIL | FLAVOR_CLASSIC_ERA), "Retail, Classic Era");
+        assert_eq!(parse_flavor_display_list("Retail, Bogus"), None);
     }
 
     #[test]
@@ -433,6 +502,7 @@ mod tests {
         assert_eq!(parse_toc_suffix("Mainline"), Some(FLAVOR_RETAIL | FLAVOR_FOREVER));
         assert_eq!(parse_toc_suffix("Standard"), Some(FLAVOR_RETAIL));
         assert_eq!(parse_toc_suffix("Camelot"), Some(FLAVOR_FOREVER));
+        assert_eq!(parse_toc_suffix("Forever"), Some(FLAVOR_FOREVER));
         assert_eq!(parse_toc_suffix("Classic"), Some(FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA));
         assert_eq!(parse_toc_suffix("Vanilla"), Some(FLAVOR_CLASSIC_ERA));
         assert_eq!(parse_toc_suffix("Cata"), Some(FLAVOR_CLASSIC));
@@ -448,6 +518,7 @@ mod tests {
         assert_eq!(parse_game_type_name("mainline"), Some(FLAVOR_RETAIL | FLAVOR_FOREVER));
         assert_eq!(parse_game_type_name("standard"), Some(FLAVOR_RETAIL));
         assert_eq!(parse_game_type_name("camelot"), Some(FLAVOR_FOREVER));
+        assert_eq!(parse_game_type_name("forever"), Some(FLAVOR_FOREVER));
         assert_eq!(parse_game_type_name("classic"), Some(FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA));
         assert_eq!(parse_game_type_name("vanilla"), Some(FLAVOR_CLASSIC_ERA));
         assert_eq!(parse_game_type_name("cata"), Some(FLAVOR_CLASSIC));
@@ -492,6 +563,7 @@ mod tests {
         // Forever is the one game type behind its bit; excluding every retail
         // game type leaves it loading.
         assert_eq!(parse_excluded_flavors("camelot"), FLAVOR_FOREVER);
+        assert_eq!(parse_excluded_flavors("Forever"), FLAVOR_FOREVER);
         assert_eq!(parse_excluded_flavors("standard, plunderstorm, wowhack"), FLAVOR_RETAIL);
         // `standard` leaves the event game types, which share the retail bit.
         assert_eq!(parse_excluded_flavors("standard"), 0);
@@ -517,10 +589,19 @@ mod tests {
     }
 
     #[test]
+    fn same_game_type_folds_the_forever_alias() {
+        assert!(same_game_type("Camelot", "Forever"));
+        assert!(same_game_type("forever", "camelot"));
+        assert!(same_game_type("Vanilla", "vanilla"));
+        assert!(!same_game_type("Camelot", "Mainline"));
+    }
+
+    #[test]
     fn specific_toc_suffixes_claim_their_flavors() {
         // A `_Camelot` TOC takes Forever away from `_Mainline`, `_Vanilla` takes
         // Classic Era away from `_Classic`.
         assert_eq!(flavors_claimed_by_toc_suffixes(["Camelot"]), FLAVOR_FOREVER);
+        assert_eq!(flavors_claimed_by_toc_suffixes(["Forever"]), FLAVOR_FOREVER);
         assert_eq!(flavors_claimed_by_toc_suffixes(["Vanilla", "Camelot"]), FLAVOR_CLASSIC_ERA | FLAVOR_FOREVER);
         // Classic's bit stays on `_Classic` until every Classic game type has its own TOC.
         assert_eq!(flavors_claimed_by_toc_suffixes(["Mists"]), 0);

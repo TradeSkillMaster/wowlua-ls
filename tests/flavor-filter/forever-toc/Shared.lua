@@ -7,18 +7,21 @@ C_GameRules.GetForeverExperiencePreset()
 -- ^ diag: wrong-flavor-api
 PlayerGetTimerunningSeasonID()
 
--- Forever reports WOW_PROJECT_MAINLINE too, so this guard keeps both flavors.
+-- Forever reports WOW_PROJECT_CAMELOT, so each constant narrows to one flavor.
 if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
+    C_PvP.HasRandomTrainingGroundWinToday()
+elseif WOW_PROJECT_ID == WOW_PROJECT_CAMELOT then
+    C_GameRules.GetForeverExperiencePreset()
+end
+
+-- Together they are the retail client, which keeps both flavors.
+if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE or WOW_PROJECT_ID == WOW_PROJECT_CAMELOT then
     C_PvP.HasRandomTrainingGroundWinToday()
     -- ^ diag: wrong-flavor-api
 end
 
--- A guard that tells the two apart narrows to one.
----@flavor-narrows forever
----@return boolean
-local function IsForever() return WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and select(4, GetBuildInfo()) < 20000 end
-
-if IsForever() then
+local isForever = WOW_PROJECT_ID == WOW_PROJECT_CAMELOT
+if isForever then
     C_GameRules.GetForeverExperiencePreset()
 else
     C_PvP.HasRandomTrainingGroundWinToday()

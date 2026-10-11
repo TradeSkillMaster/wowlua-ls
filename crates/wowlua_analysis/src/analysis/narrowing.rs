@@ -67,19 +67,25 @@ fn extract_wow_project_comparison(lhs: &Expression<'_>, rhs: &Expression<'_>) ->
 
 /// The flavors in which `expr`, a `WOW_PROJECT_ID` comparison, is truthy:
 /// `WOW_PROJECT_ID == WOW_PROJECT_<const>` (either operand order) → the flavors
-/// reporting that constant (`WOW_PROJECT_MAINLINE`: retail and Forever), `~=` →
-/// every other flavor. `not` complements and parentheses unwrap. Purely
-/// syntactic, so the cross-file scan uses it too.
+/// reporting that constant, `~=` → every other flavor. `or` unions two such
+/// comparisons and `and` intersects them (`WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+/// or WOW_PROJECT_ID == WOW_PROJECT_CAMELOT` is the retail client), `not`
+/// complements and parentheses unwrap. Purely syntactic, so the cross-file scan
+/// uses it too.
 pub fn wow_project_guard_mask(expr: &Expression<'_>) -> Option<u8> {
     match expr {
         Expression::BinaryExpression(bin) => {
+            let terms = bin.get_terms();
+            let [lhs, rhs] = terms.as_slice() else { return None };
             let is_eq = match bin.kind() {
                 Operator::Equals => true,
                 Operator::NotEquals => false,
+                Operator::Or => return Some(wow_project_guard_mask(lhs)? | wow_project_guard_mask(rhs)?),
+                Operator::And => {
+                    return Some(wow_project_guard_mask(lhs)? & wow_project_guard_mask(rhs)?).filter(|&mask| mask != 0);
+                }
                 _ => return None,
             };
-            let terms = bin.get_terms();
-            let [lhs, rhs] = terms.as_slice() else { return None };
             let mask = crate::flavor::wow_project_constant_flavor(&extract_wow_project_comparison(lhs, rhs)?)?;
             Some(if is_eq { mask } else { crate::flavor::FLAVOR_ALL & !mask })
         }
@@ -4667,24 +4673,33 @@ mod flavor_guard_tests {
 
     #[test]
     fn wow_project_comparison_masks() {
-        // Forever reports `WOW_PROJECT_MAINLINE` too.
-        let mainline = FLAVOR_RETAIL | FLAVOR_FOREVER;
-        let not_retail = FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA;
-        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE"), Some(mainline));
-        assert_eq!(guard_mask("WOW_PROJECT_MAINLINE == WOW_PROJECT_ID"), Some(mainline));
+        let not_retail = FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA | FLAVOR_FOREVER;
+        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE"), Some(FLAVOR_RETAIL));
+        assert_eq!(guard_mask("WOW_PROJECT_MAINLINE == WOW_PROJECT_ID"), Some(FLAVOR_RETAIL));
         assert_eq!(guard_mask("WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE"), Some(not_retail));
+        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_CAMELOT"), Some(FLAVOR_FOREVER));
         assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MISTS_CLASSIC"), Some(FLAVOR_CLASSIC));
         assert_eq!(guard_mask("(WOW_PROJECT_ID == WOW_PROJECT_CLASSIC)"), Some(FLAVOR_CLASSIC_ERA));
         assert_eq!(guard_mask("not (WOW_PROJECT_ID == WOW_PROJECT_MAINLINE)"), Some(not_retail));
-        assert_eq!(guard_mask("not (WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE)"), Some(mainline));
+        assert_eq!(guard_mask("not (WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE)"), Some(FLAVOR_RETAIL));
         assert_eq!(guard_mask("WOW_PROJECT_ID ~= WOW_PROJECT_CLASSIC"),
                    Some(FLAVOR_RETAIL | FLAVOR_CLASSIC | FLAVOR_FOREVER));
+        // `or` / `and` of comparisons combine their masks.
+        let retail_client = FLAVOR_RETAIL | FLAVOR_FOREVER;
+        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE or WOW_PROJECT_ID == WOW_PROJECT_CAMELOT"),
+                   Some(retail_client));
+        assert_eq!(guard_mask("(WOW_PROJECT_ID ~= WOW_PROJECT_MAINLINE and WOW_PROJECT_ID ~= WOW_PROJECT_CAMELOT)"),
+                   Some(FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA));
+        assert_eq!(guard_mask("not (WOW_PROJECT_ID == WOW_PROJECT_MAINLINE or WOW_PROJECT_ID == WOW_PROJECT_CAMELOT)"),
+                   Some(FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA));
+        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and WOW_PROJECT_ID == WOW_PROJECT_CLASSIC"), None);
         // `not X == Y` is `(not X) == Y`.
         assert_eq!(guard_mask("not WOW_PROJECT_ID == WOW_PROJECT_MAINLINE"), None);
         assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_UNKNOWN"), None);
         assert_eq!(guard_mask("WOW_PROJECT_ID == 1"), None);
         assert_eq!(guard_mask("WOW_PROJECT_ID < WOW_PROJECT_MAINLINE"), None);
         assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE or x"), None);
+        assert_eq!(guard_mask("WOW_PROJECT_ID == WOW_PROJECT_MAINLINE and x"), None);
     }
 
     #[test]
@@ -4693,7 +4708,7 @@ mod flavor_guard_tests {
         let tree = crate::syntax::parser::Parser::new(src).parse();
         let assign = SyntaxNode::new_root(&tree).descendants().find_map(LocalAssign::cast).unwrap();
         let rhs = assign.expression_list().unwrap().expressions();
-        assert_eq!(assignment_flavor_guard(0, rhs.first()), FLAVOR_RETAIL | FLAVOR_FOREVER);
+        assert_eq!(assignment_flavor_guard(0, rhs.first()), FLAVOR_RETAIL);
         assert_eq!(assignment_flavor_guard(FLAVOR_CLASSIC_ERA, rhs.first()), FLAVOR_CLASSIC_ERA);
         assert_eq!(assignment_flavor_guard(0, None), 0);
     }

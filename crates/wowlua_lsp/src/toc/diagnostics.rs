@@ -310,8 +310,11 @@ mod tests {
 
     #[test]
     fn valid_game_type_camelot() {
-        // Forever's game type, in Blizzard's own header and per-line forms.
+        // Forever's game type, in Blizzard's own header and per-line forms, and
+        // its `forever` alias.
         let diags = run("## Interface: 16001\n## AllowLoadGameType: standard, camelot\nCore.lua [ExcludeLoadGameType camelot]\n");
+        assert!(!diags.iter().any(|d| d.code == "toc-invalid-value"));
+        let diags = run("## Interface: 16001\n## AllowLoadGameType: forever\nCore.lua [ExcludeLoadGameType standard, forever]\n");
         assert!(!diags.iter().any(|d| d.code == "toc-invalid-value"));
     }
 
